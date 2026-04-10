@@ -286,6 +286,35 @@ export function useTechVisitDetail(visitId: string | undefined) {
     onError: handleMutationError,
   });
 
+  // 2026-04-09: Reversible workflow controls.
+  // - cancelRoute: en_route → scheduled (with sub-1-min discard on the route entry)
+  // - cancelStart: in_progress → en_route (with sub-1-min discard on the on-site entry)
+  // - pauseJob:    in_progress → paused
+  // - resumeJob:   paused → in_progress (starts a fresh on-site time entry)
+  const cancelRouteMutation = useMutation({
+    mutationFn: () => apiRequest(`/api/tech/visits/${visitId}/cancel-route`, { method: "POST", body: JSON.stringify({}) }),
+    onSuccess: applyVisitUpdate,
+    onError: handleMutationError,
+  });
+
+  const cancelStartMutation = useMutation({
+    mutationFn: () => apiRequest(`/api/tech/visits/${visitId}/cancel-start`, { method: "POST", body: JSON.stringify({}) }),
+    onSuccess: applyVisitUpdate,
+    onError: handleMutationError,
+  });
+
+  const pauseJobMutation = useMutation({
+    mutationFn: () => apiRequest(`/api/tech/visits/${visitId}/pause`, { method: "POST", body: JSON.stringify({}) }),
+    onSuccess: applyVisitUpdate,
+    onError: handleMutationError,
+  });
+
+  const resumeJobMutation = useMutation({
+    mutationFn: () => apiRequest(`/api/tech/visits/${visitId}/resume`, { method: "POST", body: JSON.stringify({}) }),
+    onSuccess: applyVisitUpdate,
+    onError: handleMutationError,
+  });
+
   // Action: Complete visit with outcome
   const completeMutation = useMutation({
     mutationFn: (payload: { outcome: string; outcomeNote?: string }) =>
@@ -365,6 +394,11 @@ export function useTechVisitDetail(visitId: string | undefined) {
     // Actions
     startTravel: startTravelMutation,
     startJob: startJobMutation,
+    // 2026-04-09: reversible workflow controls + pause/resume
+    cancelRoute: cancelRouteMutation,
+    cancelStart: cancelStartMutation,
+    pauseJob: pauseJobMutation,
+    resumeJob: resumeJobMutation,
     complete: completeMutation,
     addNote: addNoteMutation,
     addPart: addPartMutation,

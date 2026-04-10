@@ -28,13 +28,16 @@
 import { db } from "../../db";
 import { invoices, clientLocations, customerCompanies } from "@shared/schema";
 import { eq, and, inArray } from "drizzle-orm";
-import type { Invoice, Client, CustomerCompany } from "@shared/schema";
+import type { Invoice, Client, CustomerCompany, Payment } from "@shared/schema";
 import { QboClient } from "./QboClient";
 import type { QboTokens } from "./QboClient";
 import { QboCustomerService } from "./QboCustomerService";
 import type { CustomerSyncResult } from "./QboCustomerService";
 import { QboInvoiceService } from "./QboInvoiceService";
 import type { InvoiceSyncResult } from "./QboInvoiceService";
+// 2026-04-09: Outbound payment sync wiring
+import { QboPaymentService } from "./QboPaymentService";
+import type { PaymentSyncResult } from "./QboPaymentService";
 import { QboSyncLogger } from "./QboSyncLogger";
 
 // ============================================================
@@ -42,7 +45,7 @@ import { QboSyncLogger } from "./QboSyncLogger";
 // ============================================================
 
 export interface EntitySyncResult {
-  entityType: "customer_company" | "client_location" | "invoice";
+  entityType: "customer_company" | "client_location" | "invoice" | "payment";
   entityId: string;
   success: boolean;
   qboId?: string;
@@ -90,6 +93,8 @@ export class QboSyncOrchestrator {
   private syncRunId: string | undefined;
   private customerService: QboCustomerService;
   private invoiceService: QboInvoiceService;
+  // 2026-04-09: Outbound payment sync service.
+  private paymentService: QboPaymentService;
   private logger: QboSyncLogger;
 
   constructor(client: QboClient, companyId: string, triggeredBy?: string, syncRunId?: string) {
@@ -99,6 +104,7 @@ export class QboSyncOrchestrator {
     this.syncRunId = syncRunId;
     this.customerService = new QboCustomerService(client, companyId, triggeredBy);
     this.invoiceService = new QboInvoiceService(client, companyId, triggeredBy);
+    this.paymentService = new QboPaymentService(client, companyId, triggeredBy);
     this.logger = new QboSyncLogger(companyId, triggeredBy, syncRunId);
   }
 
@@ -154,6 +160,58 @@ export class QboSyncOrchestrator {
       return {
         entityType: "invoice",
         entityId: invoiceId,
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  // ============================================================
+  // PAYMENT SYNC (2026-04-09 — outbound only)
+  // ============================================================
+
+  /**
+   * Sync a single Payment to QBO. The action determines whether the
+   * underlying QBO operation is a create, update, or void.
+   *
+   * For "delete", the caller can pass an optional `paymentSnapshot` if the
+   * local payment row has already been deleted (the QBO void needs the
+   * qboPaymentId / qboSyncToken which would otherwise be unreachable).
+   *
+   * Never throws — returns a structured result.
+   */
+  async syncPayment(
+    paymentId: string,
+    action: "create" | "update" | "delete",
+    paymentSnapshot?: Payment,
+  ): Promise<EntitySyncResult> {
+    try {
+      let result: PaymentSyncResult;
+      switch (action) {
+        case "create":
+          result = await this.paymentService.createPayment(paymentId);
+          break;
+        case "update":
+          result = await this.paymentService.updatePayment(paymentId);
+          break;
+        case "delete":
+          result = await this.paymentService.deletePayment(paymentId, paymentSnapshot);
+          break;
+      }
+
+      return {
+        entityType: "payment",
+        entityId: paymentId,
+        success: result.success,
+        qboId: result.qboPaymentId,
+        error: result.error,
+        skipped: result.skipped,
+        skipReason: result.skipReason,
+      };
+    } catch (err) {
+      return {
+        entityType: "payment",
+        entityId: paymentId,
         success: false,
         error: err instanceof Error ? err.message : String(err),
       };
@@ -546,18 +604,19 @@ export class QboSyncOrchestrator {
     totalErrors.push(...clientLocationsResult.errors);
 
     // Step 3: Get and sync unsynced Invoices (excluding drafts)
+    // 2026-04-09: invoices.isActive / deletedAt guards removed — invoices have no
+    // soft-delete state under the permanent-delete model.
     const invoicesToCheck = await db
       .select()
       .from(invoices)
       .where(
         and(
-          eq(invoices.companyId, this.companyId),
-          eq(invoices.isActive, true)
+          eq(invoices.companyId, this.companyId)
         )
       );
 
     const unsyncedInvoiceIds = invoicesToCheck
-      .filter(i => !i.qboInvoiceId && i.status !== "draft" && !i.deletedAt)
+      .filter(i => !i.qboInvoiceId && i.status !== "draft")
       .map(i => i.id);
 
     const invoicesResult = await this.syncInvoices(unsyncedInvoiceIds);

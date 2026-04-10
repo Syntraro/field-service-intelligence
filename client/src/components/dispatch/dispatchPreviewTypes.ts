@@ -8,6 +8,8 @@
  * - Removed "open" (not a real visit status; visits start as "scheduled")
  * - Added "on_hold" and "cancelled"
  * - "on_site" retained for backward compat with DB data but normalized to "in_progress" in UI
+ * 2026-04-10: Added "paused" — tech-side pause state, distinct from "on_hold"
+ *             (office-side dispatch hold). Mirrors shared/schema.ts jobVisitStatusEnum.
  */
 export type VisitStatus =
   | "scheduled"
@@ -15,6 +17,7 @@ export type VisitStatus =
   | "en_route"
   | "on_site"      // legacy DB value — display as "In Progress"
   | "in_progress"
+  | "paused"
   | "on_hold"
   | "completed"
   | "cancelled";

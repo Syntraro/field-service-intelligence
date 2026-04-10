@@ -28,8 +28,15 @@ import type { QuoteTemplate } from "@shared/schema";
 import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
 import {
   useProductSearch, getProductKey, getProductLabel, getProductDescription,
+  productOptionToCatalogItem,
   type ProductOption,
 } from "@/lib/entities/productEntity";
+import type { LineItemDraft } from "@shared/lineItem";
+import {
+  catalogItemToDraft,
+  blankDraft,
+  hydrateDraft,
+} from "@/lib/entities/lineItemMapper";
 
 interface QuoteTemplateModalProps {
   open: boolean;
@@ -37,12 +44,34 @@ interface QuoteTemplateModalProps {
   template: QuoteTemplate | null;
 }
 
-interface LineItemDraft {
-  id: string;
-  productId: string | null;
-  description: string;
-  quantity: string;
-  unitPrice: string;
+// 2026-04-09 (P9-P10 Phase A): The local `LineItemDraft` shadow interface that
+// used to live here has been removed. The canonical `LineItemDraft` from
+// `@shared/lineItem` is now the in-memory editing shape — same draft type as
+// invoice and quote line surfaces. The on-the-wire template payload is still
+// the lightweight `{productId, description, quantity, unitPrice, sortOrder}`
+// shape (template tables don't store tax/total fields by design). The
+// projection happens in exactly one place: `templateLineFromDraft` below.
+
+/**
+ * Project a canonical `LineItemDraft` down to the lightweight quote-template
+ * line payload the server expects. Templates are content references — they
+ * never store tax or computed totals — so the canonical `taxRate`,
+ * `taxAmount`, `lineSubtotal`, `lineTotal`, `lineItemType`, and `source`
+ * fields are intentionally dropped here.
+ *
+ * This is the "one obvious projection function" for quote template lines.
+ * If a future template surface (job templates, PM templates) needs the same
+ * lightweight projection, lift it into `lineItemMapper.ts`. Until then it
+ * stays local to this file to avoid premature abstraction.
+ */
+function templateLineFromDraft(draft: LineItemDraft, sortOrder: number) {
+  return {
+    productId: draft.productId,
+    description: draft.description.trim(),
+    quantity: draft.quantity,
+    unitPrice: draft.unitPrice || "0.00",
+    sortOrder,
+  };
 }
 
 export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateModalProps) {
@@ -79,14 +108,19 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
           setDescription(templateDetails.description || "");
           setIsDefault(templateDetails.isDefault);
           setIsActive(templateDetails.isActive);
+          // 2026-04-09 (Phase A): Hydrate persisted template lines through the
+          // canonical `hydrateDraft` so the editor sees the full canonical
+          // shape (zero-defaulted tax/total fields the template doesn't store).
+          // `hydrateDraft` requires a non-empty `id`; fall back to a synthetic
+          // index-based id for legacy rows that somehow lack one.
           setLineItems(
-            (templateDetails.lines || []).map((line: any, index: number) => ({
-              id: line.id || `line_${index}`,
-              productId: line.productId || null,
-              description: line.description || "",
-              quantity: String(line.quantity || "1"),
-              unitPrice: String(line.unitPrice || "0.00"),
-            }))
+            (templateDetails.lines || []).map((line: any, index: number) =>
+              hydrateDraft({
+                ...line,
+                id: line.id || `line_${index}`,
+                source: "template",
+              }),
+            ),
           );
           setIsFormReady(true);
         } else {
@@ -133,27 +167,21 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
   });
 
   const handleAddLineItem = () => {
-    const newId = `new_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    setLineItems((prev) => [
-      ...prev,
-      {
-        id: newId,
-        productId: null,
-        description: "",
-        quantity: "1",
-        unitPrice: "0.00",
-      },
-    ]);
+    // Phase A: blank canonical draft instead of inline literal
+    setLineItems((prev) => [...prev, blankDraft({ source: "template" })]);
   };
 
   const handleRemoveLineItem = (id: string) => {
     setLineItems((prev) => prev.filter((item) => item.id !== id));
   };
 
+  // Field updater scoped to the editable text fields the template UI exposes.
+  // The wider canonical draft has 17 fields; templates only edit description,
+  // quantity, unitPrice in this surface.
   const handleLineItemChange = (
     id: string,
-    field: keyof LineItemDraft,
-    value: string
+    field: "description" | "quantity" | "unitPrice",
+    value: string,
   ) => {
     setLineItems((prev) =>
       prev.map((item) =>
@@ -182,17 +210,15 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
       }
     }
 
+    // Phase A: lines projected from canonical drafts via the local
+    // `templateLineFromDraft` projection function. Template tables don't
+    // store tax/total fields by design, so the lightweight subset wire shape
+    // is unchanged.
     const payload = {
       name: name.trim(),
       description: description.trim() || null,
       isDefault,
-      lines: validLineItems.map((li, index) => ({
-        productId: li.productId || null,
-        description: li.description.trim(),
-        quantity: li.quantity,
-        unitPrice: li.unitPrice || "0.00",
-        sortOrder: index,
-      })),
+      lines: validLineItems.map((draft, index) => templateLineFromDraft(draft, index)),
     };
 
     saveMutation.mutate(payload);
@@ -323,9 +349,18 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
                             <LineItemProductCell
                               item={item}
                               onSelect={(product) => {
-                                setLineItems(prev => prev.map(li =>
-                                  li.id === item.id ? { ...li, productId: product.id, description: product.name, unitPrice: product.unitPrice || li.unitPrice } : li
-                                ));
+                                // Phase A: replace inline catalog→draft mapping with the
+                                // canonical mapper. Preserve the existing row id, sortOrder,
+                                // and quantity so the table doesn't reorder and the user's
+                                // edited quantity isn't reset.
+                                setLineItems(prev => prev.map(li => {
+                                  if (li.id !== item.id) return li;
+                                  const fresh = catalogItemToDraft(
+                                    productOptionToCatalogItem(product),
+                                    { source: "template", quantity: li.quantity },
+                                  );
+                                  return { ...fresh, id: li.id, sortOrder: li.sortOrder };
+                                }));
                               }}
                               onClear={() => {
                                 setLineItems(prev => prev.map(li =>
@@ -415,6 +450,11 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
 }
 
 // ── Line item product cell using canonical selector ──
+// 2026-04-09 (Phase A): `item` is now the canonical `LineItemDraft` from
+// `@shared/lineItem`. The selected `ProductOption` is reconstructed from the
+// draft's catalog-bound fields (productId, description, productType, unitPrice,
+// unitCost) so the selector renders the correct chip without a parallel
+// `selectedProduct` state.
 function LineItemProductCell({ item, onSelect, onClear, onDescriptionChange }: {
   item: LineItemDraft;
   onSelect: (product: ProductOption) => void;
@@ -424,9 +464,16 @@ function LineItemProductCell({ item, onSelect, onClear, onDescriptionChange }: {
   const [searchText, setSearchText] = useState("");
   const { data: results = [], isLoading } = useProductSearch(searchText);
 
-  // If product is selected, show as selected state; otherwise show search
+  // If product is selected, show as selected state; otherwise show search.
+  // Reconstructed purely from the canonical draft — no parallel state.
   const selectedValue: ProductOption | null = item.productId
-    ? { id: item.productId, name: item.description, type: "product", unitPrice: item.unitPrice, cost: null }
+    ? {
+        id: item.productId,
+        name: item.description,
+        type: item.productType ?? "product",
+        unitPrice: item.unitPrice,
+        cost: item.unitCost,
+      }
     : null;
 
   return (

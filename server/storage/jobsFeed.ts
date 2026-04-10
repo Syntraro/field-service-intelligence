@@ -522,7 +522,18 @@ export interface JobCounts {
     on_route: number;
     on_hold: number;
   };
+  /**
+   * Grand total across all lifecycle buckets (including archived).
+   * Retained for backward compatibility with existing consumers.
+   */
   total: number;
+  /**
+   * 2026-04-09: Non-archived total (total - lifecycle.archived).
+   * Added so consumers no longer need to subtract archived manually when
+   * computing the "Active Work" / "All" tab count. Canonical replacement
+   * for the ad-hoc `counts.total - counts.lifecycle.archived` idiom.
+   */
+  activeTotal: number;
 }
 
 /**
@@ -545,10 +556,15 @@ export async function getJobCounts(ctx: QueryCtx): Promise<JobCounts> {
     .where(and(eq(jobs.companyId, ctx.tenantId), activeJobFilter()));
 
   const r = rows[0];
+  // 2026-04-09: activeTotal = total minus archived. Computed once here so all
+  // consumers get a single canonical "active work" number instead of each
+  // surface re-deriving it.
+  const activeTotal = r.total - r.archived;
   return {
     lifecycle: { open: r.open, completed: r.completed, invoiced: r.invoiced, archived: r.archived },
     openSubStatus: { in_progress: r.subInProgress, on_route: r.subOnRoute, on_hold: r.subOnHold },
     total: r.total,
+    activeTotal,
   };
 }
 

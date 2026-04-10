@@ -385,7 +385,6 @@ router.get(
         and(
           eq(invoices.companyId, companyId),
           eq(invoices.customerCompanyId, customerCompanyId),
-          isNull(invoices.deletedAt),
           inArray(invoices.status, statusFilter),
         )
       )
@@ -429,7 +428,6 @@ router.get(
           eq(invoices.id, invoiceId),
           eq(invoices.companyId, companyId),
           eq(invoices.customerCompanyId, customerCompanyId),
-          isNull(invoices.deletedAt),
         )
       )
       .limit(1);

@@ -1,16 +1,30 @@
 /**
- * QboReconciliationService - Compares QBO and local invoice/payment state
+ * QboReconciliationService - READ-ONLY diagnostic comparison of QBO and local
+ * invoice/payment state.
  *
- * Handles:
- * - Comparing local invoice balance with QBO balance
- * - Detecting payments in QBO that don't exist locally
- * - Creating local payment records from QBO (explicit apply only)
+ * 2026-04-09: This service was reduced in scope to support the locked product
+ * decision that QBO payment sync is one-way (App → QBO). Previously this
+ * service had a `reconcileApply` method that imported QBO payments into the
+ * local payments table AND directly mutated invoices.amountPaid / balance
+ * outside of the canonical local writer (paymentRepository.recalculateInvoiceBalance).
  *
- * IMPORTANT:
- * - No auto-sync: All reconciliation must be explicitly triggered
- * - No silent mutations: dry run returns differences, apply creates records
- * - All actions are logged to qbo_sync_events
- * - Enforces companyId isolation
+ * Both behaviors are now retired:
+ *   1. `reconcileApply` no longer imports payments. It returns a structured
+ *      "retired" result and writes a SKIPPED log event. This is enforced at
+ *      the service layer so no caller (queue, route, UI) can re-enable it
+ *      without intentionally modifying the service.
+ *   2. The dual-writer `updateInvoiceBalance` private helper has been removed
+ *      entirely. Locked product rule #6 forbids ANY QBO sync code path from
+ *      mutating invoice financial fields directly.
+ *
+ * What this service still does:
+ *   - `reconcileDryRun` is preserved as a READ-ONLY diagnostic tool. It
+ *     fetches the QBO invoice + payments, compares them to local state, and
+ *     returns the differences. It does NOT mutate anything. Admins use it
+ *     when troubleshooting drift; the App is the source of truth so any
+ *     drift is corrected manually in QBO, not by importing back into the App.
+ *
+ * Tenant isolation: enforced via companyId on every query.
  */
 
 import { db } from "../../db";
@@ -78,16 +92,12 @@ export interface ReconcileApplyResult {
  * QboReconciliationService compares local and QBO state
  */
 export class QboReconciliationService {
-  private client: QboClient;
   private companyId: string;
   private readService: QboReadService;
   private logger: QboSyncLogger;
-  private triggeredBy: string | undefined;
 
   constructor(client: QboClient, companyId: string, triggeredBy?: string) {
-    this.client = client;
     this.companyId = companyId;
-    this.triggeredBy = triggeredBy;
     this.readService = new QboReadService(client, companyId, triggeredBy);
     this.logger = new QboSyncLogger(companyId, triggeredBy);
   }
@@ -200,138 +210,42 @@ export class QboReconciliationService {
   }
 
   /**
-   * Apply reconciliation - creates local payment records for QBO payments
-   * Only creates payments that don't exist locally
+   * RETIRED 2026-04-09 — Inbound payment import is no longer an active product
+   * behavior. The locked product decision is one-way payment sync (App → QBO).
+   * The App is the source of truth; any drift in QBO is resolved manually in
+   * QBO, never imported back.
+   *
+   * This method now logs a SKIPPED event and returns a structured "retired"
+   * result. It does NOT touch the local payments table or invoice financial
+   * fields. Callers (route handler, queue processor) must surface the retired
+   * state to the user clearly — silently swallowing the call would violate
+   * locked rule #5 ("no silent failure paths").
+   *
+   * If you find yourself wanting to revive this method, re-read the locked
+   * product decisions in maybeSyncPayment.ts and QboPaymentService.ts. The
+   * dual-writer problem this prevents is the entire reason the new outbound
+   * sync exists.
    */
   async reconcileApply(invoiceId: string): Promise<ReconcileApplyResult> {
-    const startTime = Date.now();
-
-    // First do a dry run to get the differences
-    const dryRunResult = await this.reconcileDryRun(invoiceId);
-
-    if (!dryRunResult.success || !dryRunResult.data) {
-      await this.logger.log({
-        eventType: "RECONCILE_APPLY",
-        result: "FAILURE",
-        invoiceId,
-        errorMessage: dryRunResult.error || dryRunResult.skipReason || "Dry run failed",
-        durationMs: Date.now() - startTime,
-      });
-
-      return {
-        success: false,
-        invoiceId,
-        paymentsCreated: 0,
-        totalAmountApplied: 0,
-        createdPaymentIds: [],
-        errors: [dryRunResult.error || dryRunResult.skipReason || "Failed to analyze invoice"],
-        skipped: dryRunResult.skipped,
-        skipReason: dryRunResult.skipReason,
-      };
-    }
-
-    const reconciliation = dryRunResult.data;
-
-    // If no missing payments, nothing to do
-    if (reconciliation.missingPayments.length === 0) {
-      await this.logger.log({
-        eventType: "RECONCILE_APPLY",
-        result: "NO_CHANGES",
-        invoiceId,
-        qboEntityId: reconciliation.qboInvoiceId,
-        responsePayload: { message: "No missing payments to create" },
-        durationMs: Date.now() - startTime,
-      });
-
-      return {
-        success: true,
-        invoiceId,
-        paymentsCreated: 0,
-        totalAmountApplied: 0,
-        createdPaymentIds: [],
-        errors: [],
-      };
-    }
-
-    // Create local payments for each missing QBO payment
-    const createdPaymentIds: string[] = [];
-    const errors: string[] = [];
-    let totalAmountApplied = 0;
-
-    for (const missingPayment of reconciliation.missingPayments) {
-      try {
-        const [created] = await db
-          .insert(payments)
-          .values({
-            companyId: this.companyId,
-            invoiceId,
-            amount: String(missingPayment.qboAmount),
-            method: this.mapQboPaymentMethod(missingPayment.qboMethod),
-            reference: missingPayment.qboReference || `QBO:${missingPayment.qboPaymentId}`,
-            receivedAt: new Date(missingPayment.qboPaymentDate),
-            notes: `Imported from QuickBooks Online (Payment ID: ${missingPayment.qboPaymentId})`,
-          })
-          .returning();
-
-        if (created) {
-          createdPaymentIds.push(created.id);
-          totalAmountApplied += missingPayment.qboAmount;
-
-          // Log individual payment creation
-          await this.logger.log({
-            eventType: "PAYMENT_CREATED_FROM_QBO",
-            result: "SUCCESS",
-            invoiceId,
-            qboEntityId: missingPayment.qboPaymentId,
-            responsePayload: {
-              localPaymentId: created.id,
-              amount: missingPayment.qboAmount,
-            },
-          });
-        }
-      } catch (err) {
-        const errorMsg = `Failed to create payment for QBO payment ${missingPayment.qboPaymentId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`;
-        errors.push(errorMsg);
-
-        await this.logger.log({
-          eventType: "PAYMENT_CREATED_FROM_QBO",
-          result: "FAILURE",
-          invoiceId,
-          qboEntityId: missingPayment.qboPaymentId,
-          errorMessage: errorMsg,
-        });
-      }
-    }
-
-    // Update invoice balance if payments were created
-    if (createdPaymentIds.length > 0) {
-      await this.updateInvoiceBalance(invoiceId);
-    }
-
-    const durationMs = Date.now() - startTime;
+    const reason =
+      "Inbound payment reconcile-apply is retired (2026-04-09). Payments now sync one-way (App → QBO). Resolve any QBO drift manually in QuickBooks.";
 
     await this.logger.log({
       eventType: "RECONCILE_APPLY",
-      result: errors.length === 0 ? "SUCCESS" : "FAILURE",
+      result: "SKIPPED",
       invoiceId,
-      qboEntityId: reconciliation.qboInvoiceId,
-      responsePayload: {
-        paymentsCreated: createdPaymentIds.length,
-        totalAmountApplied,
-        errors: errors.length,
-      },
-      durationMs,
+      errorMessage: reason,
     });
 
     return {
-      success: errors.length === 0,
+      success: false,
       invoiceId,
-      paymentsCreated: createdPaymentIds.length,
-      totalAmountApplied,
-      createdPaymentIds,
-      errors,
+      paymentsCreated: 0,
+      totalAmountApplied: 0,
+      createdPaymentIds: [],
+      errors: [],
+      skipped: true,
+      skipReason: reason,
     };
   }
 
@@ -449,75 +363,10 @@ export class QboReconciliationService {
     });
   }
 
-  /**
-   * Map QBO payment method to local payment method
-   */
-  private mapQboPaymentMethod(qboMethod: string | null): string {
-    if (!qboMethod) return "other";
-
-    const methodLower = qboMethod.toLowerCase();
-    if (methodLower.includes("cash")) return "cash";
-    if (methodLower.includes("check") || methodLower.includes("cheque")) return "cheque";
-    if (methodLower.includes("credit")) return "credit";
-    if (methodLower.includes("debit")) return "debit";
-    if (methodLower.includes("transfer") || methodLower.includes("eft") || methodLower.includes("ach")) {
-      return "e-transfer";
-    }
-    return "other";
-  }
-
-  /**
-   * Update invoice balance after creating payments
-   */
-  private async updateInvoiceBalance(invoiceId: string): Promise<void> {
-    // Sum all payments for this invoice
-    const allPayments = await db
-      .select()
-      .from(payments)
-      .where(
-        and(
-          eq(payments.invoiceId, invoiceId),
-          eq(payments.companyId, this.companyId)
-        )
-      );
-
-    const totalPaid = allPayments.reduce(
-      (sum, p) => sum + parseFloat(p.amount),
-      0
-    );
-
-    // Get current invoice total
-    const [invoice] = await db
-      .select()
-      .from(invoices)
-      .where(
-        and(
-          eq(invoices.id, invoiceId),
-          eq(invoices.companyId, this.companyId)
-        )
-      )
-      .limit(1);
-
-    if (!invoice) return;
-
-    const total = parseFloat(invoice.total);
-    const newBalance = Math.max(0, total - totalPaid);
-
-    // Update invoice
-    await db
-      .update(invoices)
-      .set({
-        amountPaid: String(totalPaid),
-        balance: String(newBalance),
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(invoices.id, invoiceId),
-          eq(invoices.companyId, this.companyId)
-        )
-      );
-  }
+  // 2026-04-09: `mapQboPaymentMethod` and `updateInvoiceBalance` were removed
+  // along with `reconcileApply`. The latter was a dual-writer that mutated
+  // invoices.amountPaid / balance directly, violating locked product rule #6.
+  // The canonical writer remains paymentRepository.recalculateInvoiceBalance.
 }
 
 // ============================================================

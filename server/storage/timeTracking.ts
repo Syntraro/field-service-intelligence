@@ -9,7 +9,7 @@
  */
 
 import { db } from "../db";
-import { eq, and, sql, desc, isNull, isNotNull, lt, gte, or, asc, lte } from "drizzle-orm";
+import { eq, and, sql, desc, isNull, isNotNull, lt, gte, or, asc, lte, inArray } from "drizzle-orm";
 import { activeWorkJobFilter } from "./jobFilters";
 import {
   workSessions,
@@ -142,7 +142,15 @@ export class TimeTrackingRepository extends BaseRepository {
   }
 
   /**
-   * Clock in - creates a new work session for today
+   * Clock in - creates a new work session for today.
+   *
+   * 2026-04-08: `workDateOverride` accepted from the route layer so the
+   * stored `workDate` matches the tenant timezone (the same convention
+   * `getOpenWorkSession` and the Today screen already use). Without this,
+   * the inline UTC fallback can drift from the tenant's local "today",
+   * which produced the "Today screen says Not Clocked In + clock-in
+   * throws already-has-open-session" deadlock for tenants in non-UTC
+   * timezones during the local-vs-UTC date offset window.
    */
   async clockIn(
     companyId: string,
@@ -154,13 +162,26 @@ export class TimeTrackingRepository extends BaseRepository {
       overrideApprovalLock?: boolean;
       overrideReason?: string;
       actingUserId?: string;
+      /**
+       * Tenant-timezone YYYY-MM-DD date string. When provided, used as the
+       * stored `workDate` for the new session AND for the same-day collision
+       * check against any existing open session. The route at
+       * `server/routes/timeTracking.ts` resolves the tenant timezone via
+       * `companyRepository.getCompanyTimezone` and passes the local date.
+       * Falls back to UTC date string if not provided (legacy callers /
+       * direct storage usage / scripts) so behavior is unchanged for them.
+       */
+      workDateOverride?: string;
     }
   ): Promise<WorkSession> {
     this.assertCompanyId(companyId);
     this.validateUUID(technicianId, "technicianId");
 
     const now = options?.at ?? new Date();
-    const workDate = now.toISOString().split("T")[0]; // YYYY-MM-DD
+    // Prefer the tenant-timezone date string passed by the route layer.
+    // Falls back to UTC for legacy/direct callers; the route always sets it.
+    const workDate =
+      options?.workDateOverride ?? now.toISOString().split("T")[0]; // YYYY-MM-DD
 
     // Check approval lock
     await this.enforceApprovalLock(companyId, technicianId, workDate, {
@@ -574,6 +595,68 @@ export class TimeTrackingRepository extends BaseRepository {
     excludeEntryId?: string
   ): Promise<TimeEntry[]> {
     return this._overlapQuery(db, companyId, technicianId, startAt, endAt, excludeEntryId);
+  }
+
+  /**
+   * 2026-04-09: Stop a time entry and discard it if the resulting duration is
+   * under 1 minute. Used by tech-side reversible actions (cancel-route,
+   * cancel-start, pause) where a tech tap-then-tap-back should not pollute
+   * payroll with sub-minute segments.
+   *
+   * Behavior:
+   *   - Stops the running entry (or the explicitly-targeted entry by id).
+   *   - If durationMinutes < 1 after stop, hard-deletes the row.
+   *   - If durationMinutes >= 1, leaves the stopped entry intact.
+   *
+   * Returns the stopped entry, OR null if it was discarded as trivial.
+   *
+   * Locked product decision: ignore accidental sub-1-minute segments. Valid
+   * recorded time (>= 1 min) is always preserved.
+   */
+  async stopAndDiscardIfTrivial(
+    companyId: string,
+    technicianId: string,
+    options?: {
+      timeEntryId?: string;
+      at?: Date;
+    }
+  ): Promise<{ stopped: TimeEntry | null; discarded: boolean }> {
+    const stopped = await this.stopTimeEntry(companyId, technicianId, options);
+    if (!stopped) {
+      return { stopped: null, discarded: false };
+    }
+    // Compute the raw elapsed time in milliseconds. Cannot rely on
+    // stopped.durationMinutes here because stopTimeEntry uses Math.round
+    // which would map a 30-second segment to "1 minute" — but per the
+    // locked product decision, anything under 60 actual seconds is an
+    // accidental sub-minute segment and must be discarded.
+    const elapsedMs =
+      stopped.endAt && stopped.startAt
+        ? stopped.endAt.getTime() - stopped.startAt.getTime()
+        : 0;
+    if (elapsedMs < 60_000) {
+      // Discard the trivial segment. Use raw delete (bypassing the admin
+      // delete method which would require an actingUserId and would write
+      // an audit log we don't want for tech-side cancellations).
+      await db
+        .delete(timeEntries)
+        .where(and(
+          eq(timeEntries.id, stopped.id),
+          eq(timeEntries.companyId, companyId),
+        ));
+      console.log(JSON.stringify({
+        event: "time_entry_sub_minute_discarded",
+        companyId,
+        technicianId,
+        timeEntryId: stopped.id,
+        type: stopped.type,
+        elapsedMs,
+        durationMinutes: stopped.durationMinutes,
+        timestamp: new Date().toISOString(),
+      }));
+      return { stopped: null, discarded: true };
+    }
+    return { stopped, discarded: false };
   }
 
   /**
@@ -1068,17 +1151,22 @@ export class TimeTrackingRepository extends BaseRepository {
 
     // ── Overlap guard: auto-stop any open entry before starting a new one ──
     // This prevents phantom/overlapping segments across all status transitions.
+    // 2026-04-09: routed through stopAndDiscardIfTrivial so accidental taps
+    // (start+immediately-stop within < 1 minute) are discarded instead of
+    // landing in payroll.
     const autoStopOpen = async (reason: string) => {
       const running = await this.getRunningTimeEntry(companyId, technicianId);
       if (!running) return;
 
-      // Stop the running entry
-      await this.stopTimeEntry(companyId, technicianId, {
-        timeEntryId: running.id,
-        at: now,
-      });
+      const stopResult = await this.stopAndDiscardIfTrivial(
+        companyId,
+        technicianId,
+        { timeEntryId: running.id, at: now },
+      );
 
-      // Record an auto-stop audit event
+      // Record an auto-stop audit event regardless of discard outcome
+      // (the audit trail captures intent even when the segment is too short
+      // to keep). The notes field includes whether the segment was discarded.
       await db.insert(technicianJobStatusEvents).values({
         companyId,
         jobId: running.jobId ?? jobId,
@@ -1086,8 +1174,8 @@ export class TimeTrackingRepository extends BaseRepository {
         status: "auto_stop",
         at: now,
         source: options.source ?? "mobile",
-        notes: `Auto-stopped ${running.type} entry (${reason}). Previous entry: ${running.id}, job: ${running.jobId}`,
-        timeEntryId: running.id,
+        notes: `Auto-stopped ${running.type} entry (${reason})${stopResult.discarded ? " — discarded as sub-1-minute" : ""}. Previous entry: ${running.id}, job: ${running.jobId}`,
+        timeEntryId: stopResult.discarded ? null : running.id,
       });
 
       console.log(JSON.stringify({
@@ -1129,19 +1217,42 @@ export class TimeTrackingRepository extends BaseRepository {
         break;
 
       case "paused":
-        // Stop current running entry for this technician
-        const pausedEntry = await this.stopTimeEntry(companyId, technicianId, { at: now });
-        timeEntry = pausedEntry ?? undefined;
+        // Stop current running entry for this technician.
+        // 2026-04-09: discard sub-1-minute segments to ignore accidental taps.
+        const pausedResult = await this.stopAndDiscardIfTrivial(
+          companyId,
+          technicianId,
+          { at: now },
+        );
+        timeEntry = pausedResult.stopped ?? undefined;
+        break;
+
+      case "resumed":
+        // 2026-04-09: tech is resuming work on a paused job. Start a fresh
+        // on_site time entry for this job. autoStopOpen guards against any
+        // open entry for a different job/technician.
+        await autoStopOpen("tech resumed visit");
+        timeEntry = await this.startTimeEntry(companyId, technicianId, {
+          type: "on_site",
+          jobId,
+          at: now,
+          notes: options.notes,
+        });
         break;
 
       case "completed":
-        // Stop the open entry for this job (if any)
+        // Stop the open entry for this job (if any).
+        // 2026-04-09: route the stop through stopAndDiscardIfTrivial so an
+        // immediate-complete-after-start (e.g. accidental tap) does not
+        // pollute payroll with sub-minute segments.
         const onSiteEntry = await this.getRunningTimeEntry(companyId, technicianId);
         if (onSiteEntry && onSiteEntry.jobId === jobId) {
-          timeEntry = (await this.stopTimeEntry(companyId, technicianId, {
-            timeEntryId: onSiteEntry.id,
-            at: now,
-          })) ?? undefined;
+          const completedResult = await this.stopAndDiscardIfTrivial(
+            companyId,
+            technicianId,
+            { timeEntryId: onSiteEntry.id, at: now },
+          );
+          timeEntry = completedResult.stopped ?? undefined;
         }
         // If no running entry for this job, no-op (don't create phantom entries)
         break;
@@ -2987,6 +3098,212 @@ export class TimeTrackingRepository extends BaseRepository {
       technicians,
     };
   }
+
+  // ============================================================================
+  // 2026-04-10: TECHNICIAN LIVE STATE — dispatcher visibility projection
+  // ============================================================================
+  //
+  // Pure read projection over canonical sources of truth:
+  //   - work_sessions (clock_in_at IS NOT NULL AND clock_out_at IS NULL) → attendance
+  //   - job_visits (status IN en_route|on_site|in_progress|paused, is_active=true) → activity
+  //
+  // Returns one row per technician id passed in. The route layer is responsible
+  // for picking which technicians to query (typically the schedulable set used
+  // by the dispatch board).
+  //
+  // Precedence (matches the product spec):
+  //   paused > on_site/in_progress > en_route > clocked_in (idle) > clocked_out
+  //
+  // No new tables. No schema changes. No side effects. Two SELECTs per call.
+  //
+  // Why a single helper instead of letting the office client stitch fields:
+  //   - dispatcher state is derived from TWO unrelated tables (work_sessions
+  //     and job_visits). A second source of truth on the client would be
+  //     fragile. The helper is the canonical projection — every dispatcher
+  //     surface that needs live state goes through here.
+
+  /**
+   * Derive a clean dispatcher-facing live state for each technician.
+   *
+   * @param companyId  tenant id
+   * @param technicianIds  user ids to project (typically schedulable techs)
+   * @returns one TechnicianLiveState per input id, in input order
+   */
+  async getTechnicianLiveStates(
+    companyId: string,
+    technicianIds: string[],
+  ): Promise<TechnicianLiveState[]> {
+    this.assertCompanyId(companyId);
+    if (technicianIds.length === 0) return [];
+    for (const id of technicianIds) {
+      this.validateUUID(id, "technicianId");
+    }
+
+    // ── 1. Attendance: open work session per tech ───────────────────────────
+    // Open = clock_out_at IS NULL. Indexed by (company_id, technician_id) via
+    // work_sessions_open_idx — narrow scan, no full table read.
+    const openSessions = await db
+      .select({
+        technicianId: workSessions.technicianId,
+        clockInAt: workSessions.clockInAt,
+      })
+      .from(workSessions)
+      .where(
+        and(
+          eq(workSessions.companyId, companyId),
+          isNull(workSessions.clockOutAt),
+          inArray(workSessions.technicianId, technicianIds),
+        ),
+      );
+    const clockedInMap = new Map<string, Date>();
+    for (const s of openSessions) {
+      // If a tech somehow has multiple open sessions (legacy bad data), keep
+      // the most recent clock-in so we still surface "clocked in" deterministically.
+      const prior = clockedInMap.get(s.technicianId);
+      if (!prior || s.clockInAt > prior) {
+        clockedInMap.set(s.technicianId, s.clockInAt);
+      }
+    }
+
+    // ── 2. Activity: active visit per tech ──────────────────────────────────
+    // Active = status in the live workflow set AND is_active = true.
+    // Match the route handler model: a tech "owns" the visit if they are the
+    // primary assignee OR appear in assignedTechnicianIds[].
+    //
+    // Tech-id binding: `inArray(col, jsArray)` for the scalar primary column,
+    // and a properly-bound `ARRAY[?, ?, ...]::varchar[]` literal for the
+    // Postgres-array overlap. Drizzle's plain `${jsArray}` template
+    // interpolation does NOT auto-convert a JS array to a Postgres array, so
+    // the literal must be built via sql.join with one bound placeholder per id.
+    const techIdsLiteral = sql.join(
+      technicianIds.map((id) => sql`${id}`),
+      sql`, `,
+    );
+    const activeVisits = await db
+      .select({
+        id: jobVisits.id,
+        jobId: jobVisits.jobId,
+        status: jobVisits.status,
+        assignedTechnicianId: jobVisits.assignedTechnicianId,
+        assignedTechnicianIds: jobVisits.assignedTechnicianIds,
+        updatedAt: jobVisits.updatedAt,
+      })
+      .from(jobVisits)
+      .where(
+        and(
+          eq(jobVisits.companyId, companyId),
+          eq(jobVisits.isActive, true),
+          sql`${jobVisits.status} IN ('en_route', 'on_site', 'in_progress', 'paused')`,
+          or(
+            inArray(jobVisits.assignedTechnicianId, technicianIds),
+            sql`${jobVisits.assignedTechnicianIds} && ARRAY[${techIdsLiteral}]::varchar[]`,
+          ),
+        ),
+      );
+
+    // Bucket each tech's active visits and pick the highest-precedence one.
+    // Precedence rank: paused (4) > on_site/in_progress (3) > en_route (2).
+    const rankOf = (status: string): number => {
+      switch (status) {
+        case "paused": return 4;
+        case "on_site":
+        case "in_progress": return 3;
+        case "en_route": return 2;
+        default: return 0;
+      }
+    };
+
+    type ActiveVisitRow = typeof activeVisits[number];
+    const visitByTech = new Map<string, ActiveVisitRow>();
+    for (const v of activeVisits) {
+      const owners = new Set<string>();
+      if (v.assignedTechnicianId) owners.add(v.assignedTechnicianId);
+      if (Array.isArray(v.assignedTechnicianIds)) {
+        for (const id of v.assignedTechnicianIds) {
+          if (id) owners.add(id);
+        }
+      }
+      owners.forEach((techId) => {
+        if (!technicianIds.includes(techId)) return;
+        const current = visitByTech.get(techId);
+        if (
+          !current ||
+          rankOf(v.status) > rankOf(current.status) ||
+          (rankOf(v.status) === rankOf(current.status) &&
+            (v.updatedAt?.getTime() ?? 0) > (current.updatedAt?.getTime() ?? 0))
+        ) {
+          visitByTech.set(techId, v);
+        }
+      });
+    }
+
+    // ── 3. Project per technician ───────────────────────────────────────────
+    return technicianIds.map((technicianId) => {
+      const isClockedIn = clockedInMap.has(technicianId);
+      const activeVisit = visitByTech.get(technicianId);
+
+      // Default: clocked out, no activity
+      let attendanceStatus: TechnicianLiveState["attendanceStatus"] = "clocked_out";
+      let activityStatus: TechnicianLiveState["activityStatus"] = "idle";
+      let label = "Clocked Out";
+
+      if (isClockedIn) {
+        attendanceStatus = "clocked_in";
+        label = "Clocked In";
+      }
+
+      if (activeVisit) {
+        // Active workflow always wins over plain "clocked in" — see precedence note above.
+        // A tech with an active visit is implicitly clocked in for label purposes,
+        // but we report the actual attendance flag honestly so the office can
+        // detect the bad-data case (active visit + no open work session).
+        switch (activeVisit.status) {
+          case "paused":
+            activityStatus = "paused";
+            label = "Paused";
+            break;
+          case "on_site":
+          case "in_progress":
+            activityStatus = "on_site";
+            label = "On Site";
+            break;
+          case "en_route":
+            activityStatus = "en_route";
+            label = "En Route";
+            break;
+        }
+      }
+
+      return {
+        technicianId,
+        attendanceStatus,
+        activityStatus,
+        activeVisitId: activeVisit?.id ?? null,
+        activeJobId: activeVisit?.jobId ?? null,
+        label,
+      };
+    });
+  }
+}
+
+/**
+ * 2026-04-10: Dispatcher-facing technician live state.
+ *
+ * Single canonical projection consumed by the dispatch board sidebar so the
+ * office can see "Clocked Out / Clocked In / En Route / On Site / Paused"
+ * without inferring state from scattered fields.
+ *
+ * Derived from work_sessions (attendance) + job_visits (activity). The
+ * `label` is the rendered string the UI should display as-is — see
+ * getTechnicianLiveStates() for the precedence rule.
+ */
+export interface TechnicianLiveState {
+  technicianId: string;
+  attendanceStatus: "clocked_out" | "clocked_in";
+  activityStatus: "idle" | "en_route" | "on_site" | "paused";
+  activeVisitId: string | null;
+  activeJobId: string | null;
+  label: string;
 }
 
 export const timeTrackingRepository = new TimeTrackingRepository();

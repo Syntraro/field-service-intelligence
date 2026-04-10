@@ -1,6 +1,6 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { apiRequest, queryClient, initCSRF } from "./queryClient";
+import { apiRequest, queryClient, initCSRF, resetCsrf, resetSessionExpiredGuard } from "./queryClient";
 
 export interface User {
   id: string;
@@ -18,6 +18,13 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<User>;
   signup: (email: string, password: string) => Promise<User>;
   logout: () => Promise<void>;
+  /**
+   * 2026-04-10 Phase-2 Fix A — canonical "the session is gone, clean up
+   * everything locally" entry point. Called by SessionExpiredDialog instead
+   * of an ad-hoc queryClient.clear(). Does NOT round-trip to /api/auth/logout
+   * (the session is already gone server-side).
+   */
+  clearAuth: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -43,8 +50,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } else if (isError || data === null) {
       setUser(null);
       setUserInitialized(true);
+    } else if (!isLoading && data === undefined) {
+      // 2026-04-10 Phase-2 Fix A: post-clearAuth() safety net. After
+      // queryClient.removeQueries({queryKey:["/api/auth/me"]}), data is
+      // undefined and isError is false — neither branch above matches and
+      // the local user state would otherwise stay stale. This branch wipes
+      // it the moment isLoading settles, so a stale user can never bounce
+      // the Login page back into the protected app.
+      setUser(null);
+      setUserInitialized(true);
     }
-  }, [data, isError]);
+  }, [data, isError, isLoading]);
+
+  /**
+   * 2026-04-10 Phase-2 Fix A: canonical local auth-state wipe.
+   * Mirrors logoutMutation.onMutate + onSuccess but skips the server round
+   * trip (the session is already gone server-side). Wraps the four pieces
+   * of "I am no longer authenticated client-side" cleanup so the dialog
+   * does not have to know the internals.
+   */
+  const clearAuth = useCallback(() => {
+    setUser(null);
+    setUserInitialized(true);
+    queryClient.removeQueries({ queryKey: ["/api/auth/me"] });
+    queryClient.clear();
+    resetCsrf();
+  }, []);
 
   const loginMutation = useMutation({
     mutationFn: async ({ email, password }: { email: string; password: string }) =>
@@ -55,6 +86,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     onSuccess: (userData) => {
       setUser(userData);
       queryClient.setQueryData(["/api/auth/me"], userData);
+      // 2026-04-10 Phase-2 Fix A/B: a real successful login re-arms the
+      // session-expired one-shot guard so the next genuine expiration can
+      // open the modal again.
+      resetSessionExpiredGuard();
       // Pre-warm CSRF token for the new session (non-blocking).
       // The old token may be invalid after passport session regeneration,
       // but apiRequest auto-retries on EBADCSRFTOKEN, so this is safe.
@@ -71,6 +106,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     onSuccess: (userData) => {
       setUser(userData);
       queryClient.setQueryData(["/api/auth/me"], userData);
+      // 2026-04-10 Phase-2: signup is a successful auth — re-arm the guard.
+      resetSessionExpiredGuard();
       initCSRF().catch(() => {});
     },
   });
@@ -97,6 +134,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         login: (e, p) => loginMutation.mutateAsync({ email: e, password: p }),
         signup: (e, p) => signupMutation.mutateAsync({ email: e, password: p }),
         logout: () => logoutMutation.mutateAsync(),
+        clearAuth,
       }}
     >
       {children}

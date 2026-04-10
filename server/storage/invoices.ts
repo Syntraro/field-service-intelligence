@@ -1,9 +1,11 @@
 import { db } from "../db";
 import { eq, and, sql, desc, or, lt, isNull, isNotNull, asc, inArray } from "drizzle-orm";
-import { invoices, invoiceLines, clients, payments, jobs, jobParts, laborEntries, technicians, timeEntries, users, companySettings, customerCompanies, items } from "@shared/schema";
+import { invoices, invoiceLines, invoiceTaxLines, clients, payments, jobs, jobParts, laborEntries, technicians, timeEntries, users, companySettings, customerCompanies, items } from "@shared/schema";
 import { BaseRepository, parseDecimal } from "./base";
 import { activeJobFilter } from "./jobFilters";
-import { activeInvoiceFilter, UNPAID_INVOICE_STATUSES } from "./invoicesFeed";
+import { UNPAID_INVOICE_STATUSES } from "./invoicesFeed";
+// 2026-04-09: activeInvoiceFilter removed from runtime — invoices have no
+// soft-delete state under the permanent-delete model. See migrations/2026_04_09_invoice_permanent_delete.sql.
 import { locationDisplayNameExpr } from "../lib/queryHelpers";
 import { encodeCursor, decodeCursor } from "../utils/cursor";
 import type { PaginationParams } from "../utils/pagination";
@@ -134,7 +136,6 @@ export class InvoiceRepository extends BaseRepository {
       discountAmount: invoices.discountAmount,
       discountNotes: invoices.discountNotes,
       dirty: invoices.dirty,
-      isActive: invoices.isActive,
       version: invoices.version,
       createdAt: invoices.createdAt,
       updatedAt: invoices.updatedAt,
@@ -150,8 +151,7 @@ export class InvoiceRepository extends BaseRepository {
       .from(invoices)
       .leftJoin(clients, eq(invoices.locationId, clients.id))
       .where(and(
-        eq(invoices.companyId, companyId),
-        activeInvoiceFilter()
+        eq(invoices.companyId, companyId)
       ))
       .$dynamic();
 
@@ -269,7 +269,6 @@ export class InvoiceRepository extends BaseRepository {
         discountAmount: invoices.discountAmount,
         discountNotes: invoices.discountNotes,
         dirty: invoices.dirty,
-        isActive: invoices.isActive,
         version: invoices.version,
         createdAt: invoices.createdAt,
         updatedAt: invoices.updatedAt,
@@ -288,8 +287,7 @@ export class InvoiceRepository extends BaseRepository {
       .leftJoin(clients, eq(invoices.locationId, clients.id))
       .where(and(
         eq(invoices.id, invoiceId),
-        eq(invoices.companyId, companyId),
-        activeInvoiceFilter()
+        eq(invoices.companyId, companyId)
       ))
       .limit(1);
 
@@ -316,8 +314,7 @@ export class InvoiceRepository extends BaseRepository {
       .where(
         and(
           eq(invoices.companyId, companyId),
-          eq(invoices.jobId, jobId),
-          activeInvoiceFilter()
+          eq(invoices.jobId, jobId)
         )
       )
       .limit(1);
@@ -337,8 +334,7 @@ export class InvoiceRepository extends BaseRepository {
       })
       .from(invoices)
       .where(and(
-        eq(invoices.companyId, companyId),
-        activeInvoiceFilter()
+        eq(invoices.companyId, companyId)
       ))
       .groupBy(invoices.status);
 
@@ -369,11 +365,11 @@ export class InvoiceRepository extends BaseRepository {
           version: sql`${invoices.version} + 1`,
           updatedAt: new Date()
         })
-        // 2026-03-18: Added soft-delete guard — cannot mutate deleted invoices
+        // 2026-04-09: soft-delete guard removed — invoices have no soft-delete state
+        // under the permanent-delete model.
         .where(and(
           eq(invoices.id, invoiceId),
-          eq(invoices.companyId, companyId),
-          activeInvoiceFilter()
+          eq(invoices.companyId, companyId)
         ))
         .returning();
 
@@ -388,13 +384,13 @@ export class InvoiceRepository extends BaseRepository {
         version: sql`${invoices.version} + 1`, // Increment version
         updatedAt: new Date(),
       })
-      // 2026-03-18: Added soft-delete guard — cannot mutate deleted invoices
+      // 2026-04-09: soft-delete guard removed — invoices have no soft-delete state
+      // under the permanent-delete model.
       .where(
         and(
           eq(invoices.id, invoiceId),
           eq(invoices.companyId, companyId),
-          eq(invoices.version, currentVersion), // Check version matches!
-          activeInvoiceFilter()
+          eq(invoices.version, currentVersion) // Check version matches!
         )
       )
       .returning();
@@ -696,7 +692,6 @@ export class InvoiceRepository extends BaseRepository {
       .where(
         and(
           eq(invoices.companyId, companyId),
-          activeInvoiceFilter(),
           sql`CAST(${invoices.balance} AS numeric) > 0`,
           inArray(invoices.status, UNPAID_INVOICE_STATUSES)
         )
@@ -1464,8 +1459,7 @@ export class InvoiceRepository extends BaseRepository {
           .where(
             and(
               eq(invoices.companyId, companyId),
-              eq(invoices.jobId, jobId),
-              activeInvoiceFilter()
+              eq(invoices.jobId, jobId)
             )
           )
           .limit(1);
@@ -1731,6 +1725,115 @@ export class InvoiceRepository extends BaseRepository {
             eq(invoiceLines.id, item.id)
           ));
       }
+    });
+  }
+
+  /**
+   * Permanently delete an invoice (2026-04-09 — permanent-delete model).
+   *
+   * Eligibility (matches `InvoiceHeaderCard.tsx` `canDelete` UI gate):
+   *   - status === 'draft'
+   *   - qboInvoiceId is null (never delete a QBO-synced invoice)
+   *   - amountPaid is zero (cannot delete an invoice that has any payment activity)
+   *
+   * Transactional steps (in order):
+   *   1. SELECT FOR UPDATE the invoice row (tenant-isolated). Throw 404 if missing.
+   *   2. Validate eligibility. Throw 409 with a clean message if any rule fails.
+   *   3. Release any time_entries lock fields that point at this invoice. The
+   *      time_entries.invoice_id FK is ON DELETE SET NULL and would handle that
+   *      column on its own, but the lock-related columns (locked_at,
+   *      locked_by_invoice_id, lock_reason, invoice_line_id, invoiced_at) have
+   *      no FK and would dangle. Clear them inside this tx.
+   *   4. Explicitly delete invoice_tax_lines for this invoice. The schema
+   *      declares ON DELETE CASCADE, but the live DB has historically been
+   *      missing the FK constraint on this child table — the explicit delete
+   *      keeps the operation correct regardless of the FK state. (The 2026-04-09
+   *      permanent-delete migration adds the FK.)
+   *   5. DELETE FROM invoices. The DB then fires:
+   *        - CASCADE on invoice_lines, payments
+   *        - SET NULL on jobs.invoice_id, pm_billing_events.invoice_id,
+   *          qbo_sync_events.invoice_id, time_entries.invoice_id
+   *      Job remains valid as a standalone record per the locked product decision.
+   *
+   * Returns true on success. Tenant isolation: every query filters by companyId.
+   */
+  async deleteInvoice(companyId: string, invoiceId: string): Promise<boolean> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(invoiceId, "invoiceId");
+
+    return await db.transaction(async (tx) => {
+      // 1. Lock the invoice row
+      const [invoice] = await tx
+        .select()
+        .from(invoices)
+        .where(and(
+          eq(invoices.id, invoiceId),
+          eq(invoices.companyId, companyId),
+        ))
+        .for("update")
+        .limit(1);
+
+      if (!invoice) {
+        throw this.notFoundError("Invoice");
+      }
+
+      // 2. Eligibility checks (matches UI canDelete gate)
+      if (invoice.status !== "draft") {
+        throw this.conflictError(
+          `Cannot delete invoice in status '${invoice.status}'. Only draft invoices can be deleted.`
+        );
+      }
+      if (invoice.qboInvoiceId) {
+        throw this.conflictError(
+          "Cannot delete an invoice that has been synced to QuickBooks. Void it in QuickBooks first."
+        );
+      }
+      if (parseFloat(invoice.amountPaid || "0") > 0) {
+        throw this.conflictError(
+          "Cannot delete an invoice with payments recorded. Remove the payments first."
+        );
+      }
+
+      // 3. Release time_entries lock + invoice linkage. The FK on
+      //    time_entries.invoice_id is ON DELETE SET NULL, so it would clear on
+      //    its own — but the lock fields (no FK) would dangle. Clear them all
+      //    explicitly here so post-delete state is clean.
+      await tx
+        .update(timeEntries)
+        .set({
+          invoiceId: null,
+          invoiceLineId: null,
+          invoicedAt: null,
+          lockedAt: null,
+          lockedByInvoiceId: null,
+          lockReason: null,
+        })
+        .where(and(
+          eq(timeEntries.companyId, companyId),
+          or(
+            eq(timeEntries.invoiceId, invoiceId),
+            eq(timeEntries.lockedByInvoiceId, invoiceId),
+          )!
+        ));
+
+      // 4. Explicit invoice_tax_lines delete (defense-in-depth — see header).
+      await tx
+        .delete(invoiceTaxLines)
+        .where(and(
+          eq(invoiceTaxLines.companyId, companyId),
+          eq(invoiceTaxLines.invoiceId, invoiceId),
+        ));
+
+      // 5. Delete the invoice. CASCADE on invoice_lines + payments fires;
+      //    SET NULL on jobs.invoice_id and other soft links fires automatically.
+      await tx
+        .delete(invoices)
+        .where(and(
+          eq(invoices.id, invoiceId),
+          eq(invoices.companyId, companyId),
+        ));
+
+      return true;
     });
   }
 }

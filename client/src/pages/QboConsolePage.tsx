@@ -39,6 +39,7 @@ import {
   Package,
   Copy,
   ClipboardCheck,
+  DollarSign,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -501,6 +502,10 @@ type ErrorCategory = "auth" | "rate_limit" | "validation" | "mapping" | "conflic
 // CONSTANTS & HELPERS
 // ============================================================
 
+// 2026-04-09: Added PAYMENT_CREATE/UPDATE/DELETE outbound events. RECONCILE_APPLY
+// and PAYMENT_CREATED_FROM_QBO are kept in the filter list because historical
+// rows may still be present in qbo_sync_events, but these event types are no
+// longer produced by active code paths (inbound payment reconcile is retired).
 const EVENT_TYPE_OPTIONS = [
   { value: "all", label: "All Event Types" },
   { value: "CUSTOMER_CREATE", label: "Customer Create" },
@@ -508,10 +513,13 @@ const EVENT_TYPE_OPTIONS = [
   { value: "INVOICE_CREATE", label: "Invoice Create" },
   { value: "INVOICE_UPDATE", label: "Invoice Update" },
   { value: "INVOICE_READ", label: "Invoice Read" },
+  { value: "PAYMENT_CREATE", label: "Payment Create (Outbound)" },
+  { value: "PAYMENT_UPDATE", label: "Payment Update (Outbound)" },
+  { value: "PAYMENT_DELETE", label: "Payment Void (Outbound)" },
   { value: "PAYMENT_READ", label: "Payment Read" },
   { value: "RECONCILE_DRY_RUN", label: "Reconcile (Dry Run)" },
-  { value: "RECONCILE_APPLY", label: "Reconcile (Apply)" },
-  { value: "PAYMENT_CREATED_FROM_QBO", label: "Payment from QBO" },
+  { value: "RECONCILE_APPLY", label: "Reconcile (Apply) — retired" },
+  { value: "PAYMENT_CREATED_FROM_QBO", label: "Payment from QBO — retired" },
   { value: "CUSTOMER_IMPORT", label: "Customer Import" },
 ];
 
@@ -630,7 +638,7 @@ export default function QboConsolePage() {
   const [invoiceId, setInvoiceId] = useState("");
   const [eventTypeFilter, setEventTypeFilter] = useState("all");
   const [resultFilter, setResultFilter] = useState("all");
-  const [showApplyConfirm, setShowApplyConfirm] = useState(false);
+  // 2026-04-09: showApplyConfirm REMOVED — Reconcile (Apply) is retired.
   const [showMappingConfig, setShowMappingConfig] = useState(false);
   const [queueStatusFilter, setQueueStatusFilter] = useState("all");
   const [dryRunInvoiceId, setDryRunInvoiceId] = useState("");
@@ -1450,29 +1458,56 @@ export default function QboConsolePage() {
     },
   });
 
-  const reconcileApplyMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const response = await fetch(`/api/qbo/reconcile/invoice/${id}/apply`, { method: "POST", credentials: "include" });
+  // 2026-04-09: reconcileApplyMutation REMOVED. Inbound payment reconcile-apply
+  // is retired — payments now sync one-way (App → QBO). The dry-run mutation
+  // remains as a read-only diagnostic for admins troubleshooting drift.
+
+  // 2026-04-09: Outbound payment sync toggle. Mirrors the master qboEnabled
+  // toggle pattern but for the per-feature payment sync gate.
+  const { data: paymentSyncSettings, refetch: refetchPaymentSync } = useQuery<{
+    success: boolean;
+    qboEnabled: boolean;
+    qboPaymentSyncEnabled: boolean;
+  }>({
+    queryKey: ["/api/qbo/payment-sync"],
+    queryFn: async () => {
+      const res = await fetch("/api/qbo/payment-sync", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch payment sync settings");
+      return res.json();
+    },
+  });
+
+  const togglePaymentSyncMutation = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      const response = await fetch("/api/qbo/payment-sync", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ enabled }),
+      });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
-        throw new Error(error.error || "Apply failed");
+        throw new Error(error.error || "Failed to update payment sync setting");
       }
-      return response.json();
+      return response.json() as Promise<{
+        success: boolean;
+        qboEnabled: boolean;
+        qboPaymentSyncEnabled: boolean;
+      }>;
     },
     onSuccess: (data) => {
       toast({
-        title: data.success ? "Payments applied" : "Apply failed",
-        description: data.success
-          ? `Created ${data.paymentsCreated} payment(s), total: $${data.totalAmountApplied.toFixed(2)}`
-          : data.errors?.join(", ") || data.skipReason || "Operation failed",
-        variant: data.success ? "default" : "destructive",
+        title: data.qboPaymentSyncEnabled ? "Payment sync enabled" : "Payment sync disabled",
+        description: data.qboPaymentSyncEnabled
+          ? data.qboEnabled
+            ? "New payments will sync to QuickBooks after they are recorded locally."
+            : "Payment sync is on, but QBO master sync is still off. Enable QBO sync to start syncing."
+          : "Payments will stay local only. QBO will not be updated when you record, edit, or delete payments.",
       });
-      refetchStatus();
-      refetchEvents();
-      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      refetchPaymentSync();
     },
     onError: (err: Error) => {
-      toast({ title: "Apply error", description: err.message, variant: "destructive" });
+      toast({ title: "Update failed", description: err.message, variant: "destructive" });
     },
   });
 
@@ -1485,12 +1520,7 @@ export default function QboConsolePage() {
   const isMappingConfigured = mappingConfigData?.status?.configured ?? false;
   const canImport = isConnected && isMappingConfigured && (importPreflight?.ok ?? false);
   const isProduction = connectionStatus?.environment === "production";
-  const isAnyMutationPending = syncInvoiceMutation.isPending || syncWithDepsMutation.isPending || reconcileDryRunMutation.isPending || reconcileApplyMutation.isPending;
-
-  const handleApplyConfirm = () => {
-    setShowApplyConfirm(false);
-    reconcileApplyMutation.mutate(invoiceId);
-  };
+  const isAnyMutationPending = syncInvoiceMutation.isPending || syncWithDepsMutation.isPending || reconcileDryRunMutation.isPending;
 
   // ============================================================
   // RENDER
@@ -2410,6 +2440,56 @@ export default function QboConsolePage() {
                   )}
                 </div>
 
+                {/* 2026-04-09: Outbound payment sync toggle. Independent of the
+                    master qboEnabled toggle — payment sync requires BOTH to be
+                    true to actually run, but the user can leave this off while
+                    invoice sync is on (e.g. if they want to handle payments
+                    manually in QBO). The helper at server/services/qbo/maybeSyncPayment.ts
+                    enforces both gates on every call. */}
+                <div className="border-t pt-4 space-y-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1">
+                      <p className="text-sm font-medium flex items-center gap-2">
+                        <DollarSign className="h-4 w-4 text-muted-foreground" />
+                        Outbound Payment Sync (App → QBO)
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        When enabled, payments you record, edit, or delete in this app are mirrored to QuickBooks. The app remains the source of truth — QBO never writes back. Inbound payment import is retired.
+                      </p>
+                      {paymentSyncSettings?.qboPaymentSyncEnabled && !paymentSyncSettings?.qboEnabled && (
+                        <Alert className="mt-2 text-xs">
+                          <AlertTriangle className="h-3 w-3" />
+                          <AlertDescription>
+                            Payment sync is on, but the master QBO sync above is off. Enable QBO sync to start mirroring payments.
+                          </AlertDescription>
+                        </Alert>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge
+                        variant={paymentSyncSettings?.qboPaymentSyncEnabled ? "default" : "secondary"}
+                        className={paymentSyncSettings?.qboPaymentSyncEnabled ? "bg-green-600" : ""}
+                      >
+                        {paymentSyncSettings?.qboPaymentSyncEnabled ? "On" : "Off"}
+                      </Badge>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => togglePaymentSyncMutation.mutate(!paymentSyncSettings?.qboPaymentSyncEnabled)}
+                        disabled={togglePaymentSyncMutation.isPending || paymentSyncSettings === undefined}
+                        data-testid="button-toggle-payment-sync"
+                      >
+                        {togglePaymentSyncMutation.isPending ? (
+                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                        ) : (
+                          <Power className="h-3 w-3 mr-1" />
+                        )}
+                        {paymentSyncSettings?.qboPaymentSyncEnabled ? "Disable" : "Enable"}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
                 {/* Dry-Run Section */}
                 <div className="border-t pt-4 space-y-3">
                   <p className="text-sm font-medium">Dry-Run Testing</p>
@@ -2968,11 +3048,13 @@ export default function QboConsolePage() {
                   {reconcileDryRunMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />}
                   Reconcile (Preview)
                 </Button>
-                <Button variant="destructive" onClick={() => setShowApplyConfirm(true)} disabled={!invoiceId || isAnyMutationPending}>
-                  {reconcileApplyMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Zap className="h-4 w-4 mr-2" />}
-                  Reconcile (Apply)
-                </Button>
+                {/* 2026-04-09: Reconcile (Apply) button REMOVED. Inbound payment
+                    reconcile-apply is retired — payments now sync one-way (App → QBO).
+                    Resolve QBO drift manually in QuickBooks. */}
               </div>
+              <p className="text-xs text-muted-foreground">
+                Reconcile (Preview) is read-only — it shows differences between this invoice and QuickBooks but does not import any payments. The app is the source of truth for payments; resolve drift manually in QuickBooks if needed.
+              </p>
             </CardContent>
           </Card>
 
@@ -3447,24 +3529,8 @@ export default function QboConsolePage() {
       {/* DIALOGS */}
       {/* ============================================================ */}
 
-      {/* Apply Confirmation Dialog */}
-      <AlertDialog open={showApplyConfirm} onOpenChange={setShowApplyConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Apply Reconciliation?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will create local payment records based on QBO payment data.
-              This action modifies your local data and cannot be easily undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleApplyConfirm}>
-              Apply Payments
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* 2026-04-09: Apply Confirmation Dialog REMOVED. Inbound payment
+          reconcile-apply is retired — payments now sync one-way (App → QBO). */}
 
       {/* Enable QBO Confirmation Dialog */}
       <AlertDialog open={showEnableConfirm} onOpenChange={setShowEnableConfirm}>

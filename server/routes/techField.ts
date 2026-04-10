@@ -202,6 +202,26 @@ const timestampSchema = z.object({
   at: z.string().datetime().optional(),
 }).strict();
 
+// 2026-04-10: Map orchestrator's ACTIVE_VISIT_CONFLICT error to a clean 409
+// instead of letting it bubble as a 500. The orchestrator throws a plain
+// Error with this stable prefix from assertNoOtherActiveVisitForTech.
+//
+// 2026-04-10 micro-patch: also maps RUNNING_TIME_ENTRY_EXISTS — the resume
+// guard inside resumeVisit refuses to silently auto-stop a stale running
+// entry. Both prefixes mean "the tech is in an inconsistent state, surface
+// it instead of plowing through" and both deserve a clean 409.
+function maybeMapActiveVisitConflict(err: unknown): never {
+  if (err instanceof Error) {
+    if (err.message.startsWith("RUNNING_TIME_ENTRY_EXISTS:")) {
+      throw createError(409, err.message.replace(/^RUNNING_TIME_ENTRY_EXISTS:\s*/, ""));
+    }
+    if (err.message.startsWith("ACTIVE_VISIT_CONFLICT:")) {
+      throw createError(409, err.message.replace(/^ACTIVE_VISIT_CONFLICT:\s*/, ""));
+    }
+  }
+  throw err;
+}
+
 router.post(
   "/visits/:visitId/en-route",
   requireSchedulable,
@@ -218,13 +238,18 @@ router.post(
 
     // 2026-03-18 BP-3 fix: Delegate workflow mutation to canonical orchestrator.
     // Orchestrator owns validation, status write, version increment, and schedule sync.
-    const result = await lifecycle.setVisitEnRoute({
-      type: "SET_VISIT_EN_ROUTE",
-      companyId,
-      visitId: visit.id,
-      jobId: visit.jobId,
-      at: now,
-    });
+    // 2026-04-10: pass actingUserId so the orchestrator enforces single-active-visit.
+    let result;
+    try {
+      result = await lifecycle.setVisitEnRoute({
+        type: "SET_VISIT_EN_ROUTE",
+        companyId,
+        visitId: visit.id,
+        jobId: visit.jobId,
+        at: now,
+        actingUserId: userId,
+      });
+    } catch (err) { maybeMapActiveVisitConflict(err); }
 
     // Tech-field-specific side effect: start travel time entry
     let activeTimeEntry: { id: string; type: string; startAt: Date } | null = null;
@@ -269,13 +294,18 @@ router.post(
 
     // 2026-03-18 BP-4 fix: Delegate workflow mutation to canonical orchestrator.
     // Orchestrator owns validation, status write, checkedInAt, version increment, and schedule sync.
-    const result = await lifecycle.startVisit({
-      type: "START_VISIT",
-      companyId,
-      visitId: visit.id,
-      jobId: visit.jobId,
-      at: now,
-    });
+    // 2026-04-10: pass actingUserId so the orchestrator enforces single-active-visit.
+    let result;
+    try {
+      result = await lifecycle.startVisit({
+        type: "START_VISIT",
+        companyId,
+        visitId: visit.id,
+        jobId: visit.jobId,
+        at: now,
+        actingUserId: userId,
+      });
+    } catch (err) { maybeMapActiveVisitConflict(err); }
 
     // Tech-field-specific side effect: stop travel entry + start on_site entry
     let activeTimeEntry: { id: string; type: string; startAt: Date } | null = null;
@@ -354,6 +384,199 @@ router.post(
 
     // activeTimeEntry: null signals timer must stop immediately
     res.json({ visit: result.visit, outcome, activeTimeEntry: null });
+  })
+);
+
+// ============================================================================
+// 2026-04-09: Reversible workflow controls — cancel-route, cancel-start,
+// pause, resume. Each follows the same pattern as en-route/start/complete:
+// load assigned visit → call orchestrator → mirror time-entry side effect
+// via timeTrackingRepository.recordJobStatus → emit dispatch SSE → return
+// the merged visit + activeTimeEntry shape the tech app already consumes.
+//
+// Sub-1-minute time entries created by an immediate cancel/pause are
+// discarded by stopAndDiscardIfTrivial inside recordJobStatus — no special
+// handling needed at the route layer.
+// ============================================================================
+
+// POST /api/tech/visits/:visitId/cancel-route
+router.post(
+  "/visits/:visitId/cancel-route",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+
+    const visit = await jobVisitsRepository.getAssignedVisit(companyId, req.params.visitId, userId);
+    if (!visit) throw createError(404, "Visit not found or not assigned to you");
+
+    const { at } = validateSchema(timestampSchema, req.body);
+    const now = at ? new Date(at) : new Date();
+
+    const result = await lifecycle.cancelVisitRoute({
+      type: "CANCEL_VISIT_ROUTE",
+      companyId,
+      visitId: visit.id,
+      jobId: visit.jobId,
+      at: now,
+    });
+
+    // Stop the running travel time entry. recordJobStatus("paused") routes
+    // through stopAndDiscardIfTrivial so a sub-1-minute segment is dropped.
+    try {
+      await timeTrackingRepository.recordJobStatus(companyId, userId, visit.jobId, {
+        status: "paused",
+        at: now,
+        notes: `Visit #${visit.visitNumber} — route cancelled`,
+        source: "mobile",
+      });
+    } catch {
+      // Non-fatal: there may be no running entry.
+    }
+
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visit.id, ts: new Date().toISOString() });
+
+    // activeTimeEntry: null signals the tech app to stop the live timer.
+    res.json({ ...result.visit, activeTimeEntry: null });
+  })
+);
+
+// POST /api/tech/visits/:visitId/cancel-start
+router.post(
+  "/visits/:visitId/cancel-start",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+
+    const visit = await jobVisitsRepository.getAssignedVisit(companyId, req.params.visitId, userId);
+    if (!visit) throw createError(404, "Visit not found or not assigned to you");
+
+    const { at } = validateSchema(timestampSchema, req.body);
+    const now = at ? new Date(at) : new Date();
+
+    const result = await lifecycle.cancelVisitStart({
+      type: "CANCEL_VISIT_START",
+      companyId,
+      visitId: visit.id,
+      jobId: visit.jobId,
+      at: now,
+    });
+
+    // Stop the running on_site entry; sub-1-minute segments are discarded.
+    try {
+      await timeTrackingRepository.recordJobStatus(companyId, userId, visit.jobId, {
+        status: "paused",
+        at: now,
+        notes: `Visit #${visit.visitNumber} — start cancelled`,
+        source: "mobile",
+      });
+    } catch {
+      // Non-fatal
+    }
+
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visit.id, ts: new Date().toISOString() });
+
+    res.json({ ...result.visit, activeTimeEntry: null });
+  })
+);
+
+// POST /api/tech/visits/:visitId/pause
+router.post(
+  "/visits/:visitId/pause",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+
+    const visit = await jobVisitsRepository.getAssignedVisit(companyId, req.params.visitId, userId);
+    if (!visit) throw createError(404, "Visit not found or not assigned to you");
+
+    const { at } = validateSchema(timestampSchema, req.body);
+    const now = at ? new Date(at) : new Date();
+
+    // 2026-04-10: Stricter pause guardrail (#4) — refuse if there is no
+    // running time entry for the acting tech. A pause request without a
+    // running timer indicates state divergence (visit is in_progress but
+    // the on-site entry was already stopped, e.g. by a stale tab). Refusing
+    // forces the user to refresh and retry from a known good state.
+    const runningEntry = await timeTrackingRepository.getRunningTimeEntry(companyId, userId);
+    if (!runningEntry) {
+      throw createError(
+        409,
+        "No running time entry to pause. Refresh and try again — the visit may already be paused on another device."
+      );
+    }
+
+    const result = await lifecycle.pauseVisit({
+      type: "PAUSE_VISIT",
+      companyId,
+      visitId: visit.id,
+      jobId: visit.jobId,
+      at: now,
+    });
+
+    try {
+      await timeTrackingRepository.recordJobStatus(companyId, userId, visit.jobId, {
+        status: "paused",
+        at: now,
+        notes: `Visit #${visit.visitNumber} — paused`,
+        source: "mobile",
+      });
+    } catch {
+      // Non-fatal
+    }
+
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visit.id, ts: new Date().toISOString() });
+
+    res.json({ ...result.visit, activeTimeEntry: null });
+  })
+);
+
+// POST /api/tech/visits/:visitId/resume
+router.post(
+  "/visits/:visitId/resume",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+
+    const visit = await jobVisitsRepository.getAssignedVisit(companyId, req.params.visitId, userId);
+    if (!visit) throw createError(404, "Visit not found or not assigned to you");
+
+    const { at } = validateSchema(timestampSchema, req.body);
+    const now = at ? new Date(at) : new Date();
+
+    let result;
+    try {
+      result = await lifecycle.resumeVisit({
+        type: "RESUME_VISIT",
+        companyId,
+        visitId: visit.id,
+        jobId: visit.jobId,
+        at: now,
+        actingUserId: userId,
+      });
+    } catch (err) { maybeMapActiveVisitConflict(err); }
+
+    let activeTimeEntry: { id: string; type: string; startAt: Date } | null = null;
+    try {
+      const { timeEntry } = await timeTrackingRepository.recordJobStatus(companyId, userId, visit.jobId, {
+        status: "resumed",
+        at: now,
+        notes: `Visit #${visit.visitNumber} — resumed`,
+        source: "mobile",
+      });
+      if (timeEntry) {
+        activeTimeEntry = { id: timeEntry.id, type: timeEntry.type, startAt: timeEntry.startAt };
+      }
+    } catch {
+      // Non-fatal
+    }
+
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visit.id, ts: new Date().toISOString() });
+
+    res.json({ ...result.visit, activeTimeEntry });
   })
 );
 

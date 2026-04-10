@@ -1,8 +1,36 @@
+/**
+ * PartsBillingCard — Job parts editor on the Job Detail page.
+ *
+ * 2026-04-10 (P9-P10 Phase B): Migrated to the canonical client pipeline.
+ *
+ *   - Local `LocalLineItem` / `OriginalItemState` shadow types: REMOVED.
+ *   - Direct `/api/items?limit=1000` prefetch: REMOVED.
+ *   - Custom inline product-search dropdown: REPLACED with the canonical
+ *     `CreateOrSelectField` + `useProductSearch` selector.
+ *   - Inline catalog→draft mapping in `handleSelectProduct`: REPLACED with
+ *     `catalogItemToDraft(productOptionToCatalogItem(product), {...})`.
+ *   - Inline POST/PUT job-part payload construction: REPLACED with
+ *     `draftToJobPartPayload(draft)` (server-side projection via
+ *     `canonicalToJobPartFields` in `server/routes/jobs.ts`).
+ *   - Dead `LineItemRow` component (defined but never rendered — only
+ *     `SortableLineItemRow` was used): REMOVED.
+ *   - Per-row notes textarea: REMOVED. The canonical model uses a single
+ *     editable description field per row. The persisted `description`
+ *     column on `job_parts` is the line label; if a user picked a product,
+ *     the catalog name auto-fills and they can edit it.
+ *
+ * Preserved behavior:
+ *   - Add / edit / delete / save / cancel row workflow
+ *   - Drag-and-drop reorder
+ *   - Apply Template (replace / merge) flow + AddProductModal create-new
+ *   - Margin / profit / total reporting to parent
+ *   - Same query keys + invalidation cadence (no SSE/refetch drift)
+ */
 import { useMemo, useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,16 +42,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import {
   Select,
   SelectContent,
@@ -51,6 +69,23 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { JobPart, Item, JobTemplate } from "@shared/schema";
+import type { LineItemDraft } from "@shared/lineItem";
+import { parseMoney } from "@shared/lineItem";
+import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
+import {
+  useProductSearch,
+  getProductKey,
+  getProductLabel,
+  getProductDescription,
+  productOptionToCatalogItem,
+  type ProductOption,
+} from "@/lib/entities/productEntity";
+import {
+  catalogItemToDraft,
+  blankDraft,
+  hydrateDraft,
+  draftToJobPartPayload,
+} from "@/lib/entities/lineItemMapper";
 import { useAuth } from "@/lib/auth";
 
 // Office roles that can apply templates
@@ -62,31 +97,13 @@ interface PartsBillingCardProps {
   onTotalsChange?: (totals: { totalPrice: number; totalCost: number; profit: number }) => void;
 }
 
-interface LocalLineItem {
-  id: string;
-  isNew?: boolean;
-  isDraft?: boolean;
-  productId?: string | null;
-  /** Resolved from catalog via server JOIN — "product" or "service", null for ad-hoc */
-  itemType?: string | null;
-  description: string;
-  notes: string;
-  quantity: string;
-  unitCost: string;
-  unitPrice: string;
-  source: string;
-  sortOrder: number;
-}
-
-interface OriginalItemState {
-  productId?: string | null;
-  description: string;
-  notes: string;
-  quantity: string;
-  unitCost: string;
-  unitPrice: string;
-}
-
+/**
+ * Display-only currency formatter.
+ *
+ * Uses the standard browser `Intl.NumberFormat` for the `$1,234.56` rendering
+ * — this is the only display-side helper. Money parsing always goes through
+ * `parseMoney` from `@shared/lineItem`; never through bare `parseFloat`.
+ */
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -100,10 +117,13 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
   const { user } = useAuth();
   const isOfficeUser = Boolean(user?.role && OFFICE_ROLES.includes(user.role));
 
-  const [items, setItems] = useState<LocalLineItem[]>([]);
+  // 2026-04-10 Phase B: items are canonical `LineItemDraft[]` — same shape as
+  // every other line-item surface in the client. No local shadow type.
+  const [items, setItems] = useState<LineItemDraft[]>([]);
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [savingRowId, setSavingRowId] = useState<string | null>(null);
-  const [originalItems, setOriginalItems] = useState<Record<string, OriginalItemState>>({});
+  // Snapshot of the original draft at edit-start, for cancel-restore.
+  const [originalDrafts, setOriginalDrafts] = useState<Record<string, LineItemDraft>>({});
   const [productModalState, setProductModalState] = useState<{
     open: boolean;
     seedName: string;
@@ -195,46 +215,34 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
     setTemplateConfirmState({ open: false, templateId: null, templateName: "", mode: "replace" });
   };
 
-  const { data: catalogData } = useQuery<Item[]>({
-    queryKey: ["/api/items", { limit: 1000 }],
-    queryFn: async () => {
-      const res = await fetch("/api/items?limit=1000", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch catalog");
-      const json = await res.json();
-      // Normalize: server returns { data: [...] } when ?limit is explicit, or raw array
-      return Array.isArray(json) ? json : json.data || json.items || [];
-    },
-  });
-  const catalogParts: Item[] = catalogData ?? [];
-
+  // 2026-04-10 Phase B: Hydrate persisted job_parts rows into canonical drafts.
+  // No catalog prefetch — the persisted `description` is the canonical line
+  // label. Catalog reads are now per-row via `useProductSearch`.
   useEffect(() => {
     if (!jobParts || editingRowId) return;
-    
-    const catalogKey = catalogParts.map(p => p.id + p.cost + p.unitPrice).join(",");
-    const partsKey = JSON.stringify(jobParts.map(jp => jp.id + jp.quantity + jp.unitCost + jp.unitPrice + jp.productId + jp.sortOrder)) + "|" + catalogKey;
+
+    const partsKey = JSON.stringify(
+      jobParts.map(jp => jp.id + jp.quantity + jp.unitCost + jp.unitPrice + jp.productId + jp.sortOrder),
+    );
     if (partsKey === lastSyncedPartsRef.current) return;
-    
-    const mappedItems = jobParts.map((jp, index) => {
-      const catalogItem = catalogParts.find((p) => p.id === jp.productId);
-      const productName = catalogItem?.name || catalogItem?.description || "";
-      return {
-        id: jp.id,
-        isNew: false,
-        isDraft: false,
-        productId: jp.productId,
-        itemType: jp.itemType ?? null, // Server-resolved from catalog JOIN
-        description: productName || jp.description,
-        notes: productName ? jp.description : "",
-        quantity: jp.quantity,
-        unitCost: jp.unitCost || catalogItem?.cost || "0",
-        unitPrice: jp.unitPrice || "0",
-        source: "manual",
+
+    const mappedItems: LineItemDraft[] = jobParts.map((jp, index) => {
+      const draft = hydrateDraft({
+        ...jp,
+        // job_parts has no `notes`, no tax/total fields, no `lineItemType`,
+        // no `source` — hydrateDraft fills safe defaults.
         sortOrder: jp.sortOrder ?? index,
-      };
+      });
+      // Carry the catalog itemType through so the row can show the right
+      // affordance (product vs service) without re-fetching the catalog.
+      if (jp.itemType === "product" || jp.itemType === "service") {
+        draft.productType = jp.itemType;
+      }
+      return draft;
     });
     lastSyncedPartsRef.current = partsKey;
     setItems(mappedItems);
-  }, [jobParts, catalogParts, editingRowId]);
+  }, [jobParts, editingRowId]);
 
   const reorderMutation = useMutation({
     mutationFn: async (newOrder: { id: string; sortOrder: number }[]) => {
@@ -262,12 +270,12 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
 
     const oldIndex = items.findIndex((i) => i.id === active.id);
     const newIndex = items.findIndex((i) => i.id === over.id);
-    
+
     const newItems = arrayMove(items, oldIndex, newIndex).map((item, idx) => ({
       ...item,
       sortOrder: idx,
     }));
-    
+
     setItems(newItems);
     reorderMutation.mutate(
       newItems.filter(i => !i.isNew).map((item, idx) => ({ id: item.id, sortOrder: idx }))
@@ -275,12 +283,14 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
   };
 
   const { totalPrice, totalCost, profit, margin } = useMemo(() => {
+    // 2026-04-10 Phase B: parseMoney is the canonical money parser; do not use
+    // bare parseFloat on money strings.
     const totalPrice = items.reduce(
-      (sum, i) => sum + parseFloat(i.unitPrice || "0") * parseFloat(i.quantity || "0"),
+      (sum, i) => sum + parseMoney(i.unitPrice) * parseMoney(i.quantity),
       0
     );
     const totalCost = items.reduce(
-      (sum, i) => sum + parseFloat(i.unitCost || "0") * parseFloat(i.quantity || "0"),
+      (sum, i) => sum + parseMoney(i.unitCost) * parseMoney(i.quantity),
       0
     );
     const profit = totalPrice - totalCost;
@@ -294,53 +304,22 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
   }, [totalPrice, totalCost, profit, onTotalsChange]);
 
   const handleAddLineItem = () => {
-    const id = `new_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const newItem: LocalLineItem = {
-      id,
-      isNew: true,
-      isDraft: true,
-      description: "",
-      notes: "",
-      quantity: "1",
-      unitCost: "",
-      unitPrice: "",
-      source: "manual",
-      sortOrder: items.length,
-    };
-    setItems((prev) => [...prev, newItem]);
-    setEditingRowId(id);
-    setOriginalItems((prev) => ({
-      ...prev,
-      [id]: {
-        productId: null,
-        description: "",
-        notes: "",
-        quantity: "1",
-        unitCost: "",
-        unitPrice: "",
-      },
-    }));
+    // 2026-04-10 Phase B: blank canonical draft instead of inline literal.
+    const draft = blankDraft({ source: "manual", sortOrder: items.length });
+    setItems((prev) => [...prev, draft]);
+    setEditingRowId(draft.id);
+    setOriginalDrafts((prev) => ({ ...prev, [draft.id]: draft }));
   };
 
   const handleEnterEdit = (id: string) => {
     const item = items.find((i) => i.id === id);
     if (item) {
-      setOriginalItems((prev) => ({
-        ...prev,
-        [id]: {
-          productId: item.productId,
-          description: item.description,
-          notes: item.notes,
-          quantity: item.quantity,
-          unitCost: item.unitCost,
-          unitPrice: item.unitPrice,
-        },
-      }));
+      setOriginalDrafts((prev) => ({ ...prev, [id]: item }));
     }
     setEditingRowId(id);
   };
 
-  const handleRowChange = (id: string, patch: Partial<LocalLineItem>) => {
+  const handleRowChange = (id: string, patch: Partial<LineItemDraft>) => {
     setItems((prev) =>
       prev.map((item) => (item.id === id ? { ...item, ...patch, isDraft: true } : item))
     );
@@ -351,14 +330,10 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
     if (item?.isNew) {
       setItems((prev) => prev.filter((i) => i.id !== id));
     } else {
-      const orig = originalItems[id];
+      const orig = originalDrafts[id];
       if (orig) {
         setItems((prev) =>
-          prev.map((i) =>
-            i.id === id
-              ? { ...i, ...orig, isDraft: false }
-              : i
-          )
+          prev.map((i) => (i.id === id ? { ...orig, isDraft: false } : i))
         );
       }
     }
@@ -372,7 +347,7 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
       if (editingRowId === id) setEditingRowId(null);
       return;
     }
-    
+
     try {
       setSavingRowId(id);
       await apiRequest(`/api/jobs/${jobId}/parts/${id}`, {
@@ -394,35 +369,22 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
 
     try {
       setSavingRowId(id);
-      const qty = String(parseFloat(item.quantity) || 1);
-      const price = String(parseFloat(item.unitPrice) || 0);
-      const desc = item.notes?.trim() || item.description || "Unnamed item";
-        
-      const cost = String(parseFloat(item.unitCost) || 0);
-      
+      // 2026-04-10 Phase B: canonical payload via draftToJobPartPayload.
+      // The server route validates against canonicalLineItemInput and
+      // projects the input down to the persisted job_parts subset via
+      // `canonicalToJobPartFields` in server/routes/jobs.ts. We send the
+      // full canonical shape (the server drops what it doesn't store).
+      const payload = draftToJobPartPayload(item);
+
       if (item.isNew) {
         await apiRequest(`/api/jobs/${jobId}/parts`, {
           method: "POST",
-          body: JSON.stringify({
-            description: desc,
-            quantity: qty,
-            unitCost: cost,
-            unitPrice: price,
-            productId: item.productId || null,
-            source: item.source || "manual",
-          }),
+          body: JSON.stringify(payload),
         });
       } else {
         await apiRequest(`/api/jobs/${jobId}/parts/${item.id}`, {
           method: "PUT",
-          body: JSON.stringify({
-            description: desc,
-            quantity: qty,
-            unitCost: cost,
-            unitPrice: price,
-            productId: item.productId || null,
-            source: item.source,
-          }),
+          body: JSON.stringify(payload),
         });
       }
 
@@ -436,14 +398,23 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
     }
   };
 
-  const handleSelectProduct = (lineId: string, product: Item) => {
-    handleRowChange(lineId, {
-      productId: product.id,
-      description: product.name || product.description || "",
-      notes: "",
-      unitCost: product.cost || "0",
-      unitPrice: product.unitPrice || "0",
-    });
+  /**
+   * 2026-04-10 Phase B: canonical catalog→draft mapping. Replaces the inline
+   * field map. Preserves the row id, sortOrder, and existing quantity so the
+   * table doesn't reorder and the user's edited quantity isn't reset.
+   */
+  const handleSelectProduct = (lineId: string, product: ProductOption) => {
+    setItems((prev) =>
+      prev.map((li) => {
+        if (li.id !== lineId) return li;
+        const fresh = catalogItemToDraft(productOptionToCatalogItem(product), {
+          source: "manual",
+          quantity: li.quantity,
+          sortOrder: li.sortOrder,
+        });
+        return { ...fresh, id: li.id, isDraft: true };
+      }),
+    );
   };
 
   const createProductMutation = useMutation({
@@ -453,8 +424,8 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
         body: JSON.stringify({
           name: data.name,
           description: data.description || null,
-          cost: String(parseFloat(data.cost) || 0),
-          unitPrice: String(parseFloat(data.unitPrice) || 0),
+          cost: String(parseMoney(data.cost)),
+          unitPrice: String(parseMoney(data.unitPrice)),
           type: data.type,
           isTaxable: true,
           isActive: true,
@@ -464,12 +435,26 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
     onSuccess: (newPart: Item) => {
       queryClient.invalidateQueries({ queryKey: ["/api/items"] });
       if (productModalState.lineItemId) {
-        handleRowChange(productModalState.lineItemId, {
-          productId: newPart.id,
-          description: newPart.name || newPart.description || "",
-          unitCost: newPart.cost || "0",
-          unitPrice: newPart.unitPrice || "0",
-        });
+        // Apply the freshly-created catalog item to the row via the canonical
+        // mapper — same path as a normal product selection.
+        setItems((prev) =>
+          prev.map((li) => {
+            if (li.id !== productModalState.lineItemId) return li;
+            const productOption: ProductOption = {
+              id: newPart.id,
+              name: newPart.name ?? newPart.description ?? "Untitled",
+              type: (newPart.type as string) ?? "product",
+              unitPrice: newPart.unitPrice ?? null,
+              cost: newPart.cost ?? null,
+            };
+            const fresh = catalogItemToDraft(productOptionToCatalogItem(productOption), {
+              source: "manual",
+              quantity: li.quantity,
+              sortOrder: li.sortOrder,
+            });
+            return { ...fresh, id: li.id, isDraft: true };
+          }),
+        );
       }
       setProductModalState({ open: false, seedName: "", lineItemId: null });
       toast({ title: "Product created", description: "New product added to catalog." });
@@ -523,7 +508,6 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
                       <SortableLineItemRow
                         key={item.id}
                         item={item}
-                        catalog={catalogParts.filter((p) => p.isActive !== false)}
                         isEditing={editingRowId === item.id}
                         isSaving={savingRowId === item.id}
                         onEnterEdit={() => handleEnterEdit(item.id)}
@@ -779,237 +763,22 @@ function TemplatePickerList({
   );
 }
 
-interface LineItemRowProps {
-  item: LocalLineItem;
-  catalog: Item[];
+// ── Sortable line item row — uses canonical CreateOrSelectField for catalog selection ──
+
+interface SortableLineItemRowProps {
+  item: LineItemDraft;
   isEditing: boolean;
   isSaving: boolean;
   onEnterEdit: () => void;
-  onChange: (patch: Partial<LocalLineItem>) => void;
+  onChange: (patch: Partial<LineItemDraft>) => void;
   onSave: () => void;
   onCancel: () => void;
   onDelete: () => void;
-  onSelectProduct: (product: Item) => void;
+  onSelectProduct: (product: ProductOption) => void;
   onRequestAddProduct: (name: string) => void;
 }
 
-/** Resolve display name: mapped description → live catalog lookup → "No product" */
-function resolveProductDisplay(item: LocalLineItem, catalog: Item[]): string {
-  if (item.description) return item.description;
-  if (item.productId) {
-    const cat = catalog.find((c) => c.id === item.productId);
-    if (cat) return cat.name || cat.description || "";
-  }
-  return "";
-}
-
-function LineItemRow({
-  item,
-  catalog,
-  isEditing,
-  isSaving,
-  onEnterEdit,
-  onChange,
-  onSave,
-  onCancel,
-  onDelete,
-  onSelectProduct,
-  onRequestAddProduct,
-}: LineItemRowProps) {
-  const [query, setQuery] = useState(item.description ?? "");
-  const [showDropdown, setShowDropdown] = useState(false);
-
-  useEffect(() => {
-    setQuery(item.description ?? "");
-  }, [item.description]);
-
-  const suggestions = useMemo(() => {
-    if (!query.trim()) return catalog.slice(0, 8);
-    const lower = query.toLowerCase();
-    return catalog
-      .filter((c) => (c.name || c.description || "").toLowerCase().includes(lower))
-      .slice(0, 8);
-  }, [catalog, query]);
-
-  const lineTotal = parseFloat(item.unitPrice || "0") * parseFloat(item.quantity || "0");
-  const productDisplay = resolveProductDisplay(item, catalog);
-
-  if (!isEditing) {
-    return (
-      <tr
-        className={`border-b border-border/50 hover:bg-muted/50 cursor-pointer ${item.isDraft ? 'bg-amber-50 dark:bg-amber-950/20 border-l-2 border-l-amber-400' : ''}`}
-        onClick={onEnterEdit}
-        data-testid={`row-line-item-${item.id}`}
-      >
-        <td className="py-3 pr-3 align-top">
-          <div className="flex items-center gap-2">
-            <div className="text-xs font-medium">
-              {productDisplay || <span className="italic text-muted-foreground">No product</span>}
-            </div>
-            {item.isDraft && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 font-medium">
-                Draft
-              </span>
-            )}
-          </div>
-          {/* Show notes only when they contain real secondary text (not a duplicate of the product name) */}
-          {item.notes && item.notes.trim() && item.notes.trim() !== productDisplay.trim() && (
-            <div className="mt-0.5 text-xs font-normal text-muted-foreground whitespace-pre-line">{item.notes}</div>
-          )}
-        </td>
-        <td className="py-3 px-3 text-right align-top text-xs">{item.quantity}</td>
-        <td className="py-3 px-3 text-right align-top text-xs">{formatCurrency(parseFloat(item.unitCost || "0"))}</td>
-        <td className="py-3 px-3 text-right align-top text-xs">{formatCurrency(parseFloat(item.unitPrice || "0"))}</td>
-        <td className="py-3 pl-3 pr-1 text-right align-top text-xs font-semibold">{formatCurrency(lineTotal)}</td>
-      </tr>
-    );
-  }
-
-  return (
-    <tr className="border-b border-border/50 bg-primary/5">
-      <td className="py-2.5 pr-3 align-top">
-        <div className="relative">
-          <Input
-            className="text-xs"
-            placeholder="Search product / service..."
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              onChange({ description: e.target.value });
-              setShowDropdown(true);
-            }}
-            onFocus={() => setShowDropdown(true)}
-            onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
-            data-testid={`input-product-search-${item.id}`}
-          />
-          {showDropdown && (
-            <div className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md border bg-popover shadow-lg">
-              {suggestions.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    onSelectProduct(c);
-                    setQuery(c.name || c.description || "");
-                    setShowDropdown(false);
-                  }}
-                  className="flex w-full flex-col items-start px-2.5 py-1.5 text-left hover:bg-muted"
-                >
-                  <span className="text-xs">{c.name || c.description}</span>
-                  {c.sku && <span className="text-[11px] text-muted-foreground">SKU: {c.sku}</span>}
-                </button>
-              ))}
-              <div className="border-t" />
-              <button
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => onRequestAddProduct(query)}
-                className="flex w-full items-center px-2.5 py-1.5 text-left text-xs text-primary hover:bg-primary/10"
-              >
-                + Add "{query || "new item"}" as product
-              </button>
-            </div>
-          )}
-        </div>
-        <Textarea
-          className="mt-1.5 text-xs min-h-[2.25rem] resize-y"
-          rows={2}
-          placeholder="Description / notes..."
-          value={item.notes}
-          onChange={(e) => onChange({ notes: e.target.value })}
-          data-testid={`input-notes-${item.id}`}
-        />
-        <div className="flex items-center gap-2 mt-2">
-          <Button
-            type="button"
-            size="sm"
-            onClick={onSave}
-            disabled={isSaving}
-            data-testid={`button-save-line-${item.id}`}
-            className="h-7 text-xs"
-          >
-            {isSaving ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : (
-              <>
-                <Check className="h-3 w-3 mr-1" />
-                Save
-              </>
-            )}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={onCancel}
-            disabled={isSaving}
-            data-testid={`button-cancel-line-${item.id}`}
-            className="h-7 text-xs"
-          >
-            <X className="h-3 w-3 mr-1" />
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={onDelete}
-            disabled={isSaving}
-            className="h-7 text-xs text-destructive hover:text-destructive"
-            data-testid={`button-delete-line-${item.id}`}
-          >
-            <Trash2 className="h-3 w-3 mr-1" />
-            Delete
-          </Button>
-        </div>
-      </td>
-      <td className="py-2.5 px-3 align-top">
-        <Input
-          type="number"
-          min={0}
-          className="text-xs text-right w-full"
-          value={item.quantity}
-          onChange={(e) => onChange({ quantity: e.target.value || "0" })}
-          data-testid={`input-qty-${item.id}`}
-        />
-      </td>
-      <td className="py-2.5 px-3 align-top">
-        <div className="relative">
-          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">$</span>
-          <Input
-            type="number"
-            min={0}
-            step="0.01"
-            placeholder="0.00"
-            className="text-xs text-right w-full pl-5 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-            value={item.unitCost || ""}
-            onChange={(e) => onChange({ unitCost: e.target.value })}
-            data-testid={`input-cost-${item.id}`}
-          />
-        </div>
-      </td>
-      <td className="py-2.5 px-3 align-top">
-        <div className="relative">
-          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">$</span>
-          <Input
-            type="number"
-            min={0}
-            step="0.01"
-            placeholder="0.00"
-            className="text-xs text-right w-full pl-5 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-            value={item.unitPrice || ""}
-            onChange={(e) => onChange({ unitPrice: e.target.value })}
-            data-testid={`input-price-${item.id}`}
-          />
-        </div>
-      </td>
-      <td className="py-2.5 pl-3 pr-1 align-top text-right text-xs font-semibold">{formatCurrency(lineTotal)}</td>
-    </tr>
-  );
-}
-
-function SortableLineItemRow(props: LineItemRowProps) {
+function SortableLineItemRow(props: SortableLineItemRowProps) {
   const {
     attributes,
     listeners,
@@ -1025,23 +794,24 @@ function SortableLineItemRow(props: LineItemRowProps) {
     opacity: isDragging ? 0.5 : 1,
   };
 
-  const [query, setQuery] = useState(props.item.description ?? "");
-  const [showDropdown, setShowDropdown] = useState(false);
+  // 2026-04-10 Phase B: per-row catalog search via canonical useProductSearch.
+  // No prefetched 1000-row catalog; the hook only fires after 2 chars.
+  const [searchText, setSearchText] = useState("");
+  const { data: searchResults = [], isLoading: isSearchLoading } = useProductSearch(searchText);
 
-  useEffect(() => {
-    setQuery(props.item.description ?? "");
-  }, [props.item.description]);
+  // Reconstruct a ProductOption from the canonical draft for the selector chip.
+  const selectedValue: ProductOption | null = props.item.productId
+    ? {
+        id: props.item.productId,
+        name: props.item.description,
+        type: props.item.productType ?? "product",
+        unitPrice: props.item.unitPrice,
+        cost: props.item.unitCost,
+      }
+    : null;
 
-  const suggestions = useMemo(() => {
-    if (!query.trim()) return props.catalog.slice(0, 8);
-    const lower = query.toLowerCase();
-    return props.catalog
-      .filter((c) => (c.name || c.description || "").toLowerCase().includes(lower))
-      .slice(0, 8);
-  }, [props.catalog, query]);
-
-  const lineTotal = parseFloat(props.item.unitPrice || "0") * parseFloat(props.item.quantity || "0");
-  const productDisplay = resolveProductDisplay(props.item, props.catalog);
+  const lineTotal = parseMoney(props.item.unitPrice) * parseMoney(props.item.quantity);
+  const productDisplay = props.item.description;
 
   if (!props.isEditing) {
     return (
@@ -1076,14 +846,10 @@ function SortableLineItemRow(props: LineItemRowProps) {
               </span>
             )}
           </div>
-          {/* Show notes only when they contain real secondary text (not a duplicate of the product name) */}
-          {props.item.notes && props.item.notes.trim() && props.item.notes.trim() !== productDisplay.trim() && (
-            <div className="mt-0.5 text-xs font-normal text-muted-foreground whitespace-pre-line">{props.item.notes}</div>
-          )}
         </td>
         <td className="py-3 px-3 text-right align-top text-xs">{props.item.quantity}</td>
-        <td className="py-3 px-3 text-right align-top text-xs">{formatCurrency(parseFloat(props.item.unitCost || "0"))}</td>
-        <td className="py-3 px-3 text-right align-top text-xs">{formatCurrency(parseFloat(props.item.unitPrice || "0"))}</td>
+        <td className="py-3 px-3 text-right align-top text-xs">{formatCurrency(parseMoney(props.item.unitCost))}</td>
+        <td className="py-3 px-3 text-right align-top text-xs">{formatCurrency(parseMoney(props.item.unitPrice))}</td>
         <td className="py-3 pl-3 pr-1 text-right align-top text-xs font-semibold">
           {formatCurrency(lineTotal)}
         </td>
@@ -1110,57 +876,38 @@ function SortableLineItemRow(props: LineItemRowProps) {
         </div>
       </td>
       <td className="py-2.5 pr-3 align-top">
-        <div className="relative">
-          <Input
-            className="text-xs"
-            placeholder="Search product / service..."
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              props.onChange({ description: e.target.value });
-              setShowDropdown(true);
-            }}
-            onFocus={() => setShowDropdown(true)}
-            onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
-            data-testid={`input-product-search-${props.item.id}`}
-          />
-          {showDropdown && (
-            <div className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md border bg-popover shadow-lg">
-              {suggestions.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    props.onSelectProduct(c);
-                    setQuery(c.name || c.description || "");
-                    setShowDropdown(false);
-                  }}
-                  className="flex w-full flex-col items-start px-2.5 py-1.5 text-left hover:bg-muted"
-                >
-                  <span className="text-xs">{c.name || c.description}</span>
-                  {c.sku && <span className="text-[11px] text-muted-foreground">SKU: {c.sku}</span>}
-                </button>
-              ))}
-              <div className="border-t" />
-              <button
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => props.onRequestAddProduct(query)}
-                className="flex w-full items-center px-2.5 py-1.5 text-left text-xs text-primary hover:bg-primary/10"
-              >
-                + Add "{query || "new item"}" as product
-              </button>
-            </div>
-          )}
-        </div>
-        <Textarea
-          className="mt-1.5 text-xs min-h-[2.25rem] resize-y"
-          rows={2}
-          placeholder="Description / notes..."
-          value={props.item.notes}
-          onChange={(e) => props.onChange({ notes: e.target.value })}
-          data-testid={`input-notes-${props.item.id}`}
+        {/* 2026-04-10 Phase B: canonical CreateOrSelectField replaces the
+            custom in-row dropdown + manual catalog filter. The catalog
+            search fires only after 2 chars. The "create new" callback opens
+            the existing AddProductModal seeded with the current search text. */}
+        <CreateOrSelectField<ProductOption>
+          label=""
+          compact
+          value={selectedValue}
+          onChange={(product) => {
+            if (product) {
+              props.onSelectProduct(product);
+              setSearchText("");
+            } else {
+              // Clear: drop catalog link, keep description editable for manual entry
+              props.onChange({ productId: null });
+              setSearchText("");
+            }
+          }}
+          searchResults={searchResults}
+          searchLoading={isSearchLoading}
+          searchText={searchText || (selectedValue ? "" : props.item.description)}
+          onSearchTextChange={(text) => {
+            setSearchText(text);
+            // Manual-entry fallback: if no product is selected, mirror text to description
+            if (!props.item.productId) props.onChange({ description: text });
+          }}
+          getKey={getProductKey}
+          getLabel={getProductLabel}
+          getDescription={getProductDescription}
+          createLabel={`Add "${searchText || "new item"}" as product`}
+          onCreateNew={(text) => props.onRequestAddProduct(text)}
+          placeholder="Search product / service..."
         />
         <div className="flex items-center gap-2 mt-2">
           <Button

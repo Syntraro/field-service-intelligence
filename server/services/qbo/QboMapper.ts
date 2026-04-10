@@ -32,9 +32,15 @@ export {
   toQboInvoicePayload,
   fromQboInvoicePayload,
   extractLocationIdFromMemo,
+
+  // 2026-04-09: Payment mappers (one-way outbound)
+  type QBOPaymentLine,
+  type QBOPaymentPayload,
+  type QBOPaymentResponse,
+  toQboPaymentPayload,
 } from "../../qbo/mappers";
 
-import type { CustomerCompany, Client, Invoice, InvoiceLine } from "@shared/schema";
+import type { CustomerCompany, Client, Invoice, InvoiceLine, Payment } from "@shared/schema";
 import type { QboSyncStatus } from "@shared/schema";
 
 /**
@@ -106,6 +112,63 @@ export function validateClientLocationForSync(
 }
 
 /**
+ * Validates that a payment is ready for outbound QBO sync.
+ *
+ * 2026-04-09: This is the gate for outbound payment sync. It enforces:
+ *   - The parent invoice must already be synced to QBO (we never auto-sync
+ *     the parent invoice — that stays a manual operation per existing patterns).
+ *   - The parent invoice must not be voided (QBO will reject payments on voids).
+ *   - The payment amount must be positive and parseable.
+ *
+ * Returns a structured `{ valid, reason }` shape so callers can log skip
+ * reasons clearly. The caller is responsible for the upstream toggle check
+ * (companies.qboPaymentSyncEnabled) — that lives in the route/service layer
+ * because it's a business decision, not a payload validation.
+ *
+ * Rule: this validator NEVER mutates anything; it only inspects state.
+ */
+export function validatePaymentForSync(
+  payment: Payment,
+  invoice: Invoice,
+): {
+  valid: boolean;
+  reason?: string;
+} {
+  // The parent invoice must be synced to QBO before we can attach a payment
+  // to it. Per the locked product decision, we do NOT auto-sync the invoice
+  // here — the user must sync the invoice manually first.
+  if (!invoice.qboInvoiceId) {
+    return {
+      valid: false,
+      reason: "Parent invoice has not been synced to QuickBooks. Sync the invoice first, then retry the payment.",
+    };
+  }
+
+  // Voided invoices cannot accept new payments in QBO. (Locally we already
+  // block delete-from-voided in paymentRepository.deletePayment, but new
+  // payment creates against an already-voided invoice would be rejected by
+  // QBO with a confusing error — surface a clean message instead.)
+  if (invoice.status === "void" || invoice.status === "cancelled" || invoice.status === "voided") {
+    return {
+      valid: false,
+      reason: "Cannot sync payment to a voided invoice in QuickBooks.",
+    };
+  }
+
+  // Amount must be positive. The local payment validation should already
+  // enforce this; the duplicate check here is defense-in-depth.
+  const amount = parseFloat(payment.amount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return {
+      valid: false,
+      reason: `Payment amount must be greater than zero (got "${payment.amount}").`,
+    };
+  }
+
+  return { valid: true };
+}
+
+/**
  * Validates that an invoice is ready for QBO sync
  * CRITICAL: Draft invoices must NEVER be synced
  */
@@ -137,9 +200,9 @@ export function validateInvoiceForSync(invoice: Invoice): {
     return { valid: false, reason: "Invoice issue date is required for QBO sync" };
   }
 
-  if (!invoice.isActive || invoice.deletedAt) {
-    return { valid: false, reason: "Deleted invoices cannot be synced to QBO" };
-  }
+  // 2026-04-09: invoice soft-delete check removed — invoices have no soft-delete state
+  // under the permanent-delete model. A deleted invoice no longer exists in the table
+  // at all, so this validator can never see one.
 
   return { valid: true };
 }
@@ -154,10 +217,7 @@ export function shouldSyncInvoice(invoice: Invoice): boolean {
     return false;
   }
 
-  // Don't sync deleted invoices
-  if (!invoice.isActive || invoice.deletedAt) {
-    return false;
-  }
+  // 2026-04-09: invoice soft-delete check removed — see validateInvoiceForSync above.
 
   // Don't sync if already synced and not dirty
   if (invoice.qboInvoiceId && !invoice.dirty) {

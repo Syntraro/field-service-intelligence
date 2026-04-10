@@ -4,6 +4,242 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-04-09: Bulk Archived Jobs Cleanup — Destructive Warning Polish + Canonical activeTotal Counts
+
+### Problem
+Two small but real gaps in the (just-shipped) bulk archived jobs cleanup tool plus its surrounding counts surfaces:
+
+1. **No pre-click destructive warning.** The bulk cleanup card had a CardHeader description that mentioned permanence, and a post-preview "Confirmation required" Alert that fired only when invoice-linked rows were in scope. Neither was a *persistent, pre-click* destructive note. An admin could open the card, run a preview, and not see a clear "this is permanent" warning until *after* engaging the tool.
+2. **Ad-hoc subtraction in the Jobs page counts consumer.** `client/src/pages/Jobs.tsx:380` computed the "All" tab number as `counts.total - counts.lifecycle.archived`. The math was correct, but it was a magic-formula pattern that any future counts consumer would have had to re-derive. There was no canonical "active total" field on the server contract.
+
+### Solution
+Three additive changes — no behavior change to the canonical delete path, no second confirmation surface, no audit log.
+
+1. **Persistent destructive `Alert` above the filters grid.** `BulkArchivedJobsCleanupCard.tsx` now renders a destructive note as the first child of `CardContent`, *above* filters/preview/run controls, so it is visible **before** anyone clicks Preview. Exact copy: *"This permanently deletes jobs and related job records. This cannot be undone."* When a preview returns invoice-linked rows in scope (`preview.invoiceLinkedCount > 0`), a follow-up line appears under it: *"Linked invoices will be kept, but detached from the deleted jobs."* The existing yes/no `AlertDialog` is unchanged.
+2. **`JobCounts.activeTotal` as the canonical "active work" field.** `getJobCounts()` in `server/storage/jobsFeed.ts` now returns `activeTotal: total - lifecycle.archived` alongside the existing `total`. Computed once on the server. The client mirror in `client/src/hooks/useJobsFeed.ts` was extended to match. `total` is unchanged for backward compatibility — every existing consumer keeps working.
+3. **`Jobs.tsx` switched to `counts.activeTotal`.** Single-line consumer fix. The default-counts fallback object also now carries `activeTotal: 0` so the loading-state shape stays in sync. Audited the entire repo (`grep -r 'total - .*archived'` and `grep -r 'lifecycle\.archived'` across `client/` + `server/`): only the one Jobs.tsx call site needed to change.
+
+### Architecture preserved
+- Reused the existing bulk cleanup tool exactly. No new delete logic. No new audit logs. No new routes. No second confirmation surface.
+- Did not touch `server/services/bulkJobCleanupService.ts`, `server/storage/jobs.ts:deleteJob`, the `OWNER_ONLY` admin gate, or any FK / cascade plumbing.
+- Did not rewrite Jobs.tsx — only the single line that subtracted archived manually plus the fallback shape.
+- Route → Service → Storage layering untouched. The `activeTotal` field is computed inside the existing `getJobCounts` SQL aggregator's JS post-processing — no new query, no new index, no extra round-trip.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `client/src/components/admin/BulkArchivedJobsCleanupCard.tsx` | Added persistent destructive `Alert` above the filters grid. Conditional invoice-detach line gated on `preview.invoiceLinkedCount > 0`. New testids: `alert-bulk-cleanup-destructive-note`, `text-bulk-cleanup-destructive-note`, `text-bulk-cleanup-invoice-detach-note`. |
+| `server/storage/jobsFeed.ts` | Added `activeTotal: number` to `JobCounts` interface. `getJobCounts()` now computes `r.total - r.archived` and includes it in the returned object. Existing `total` field unchanged. |
+| `client/src/hooks/useJobsFeed.ts` | Mirrored `activeTotal: number` on the client `JobCounts` interface. |
+| `client/src/pages/Jobs.tsx` | `totalCount` switched from `counts.total - counts.lifecycle.archived` to `counts.activeTotal`. Default-counts fallback object updated to include `activeTotal: 0`. |
+
+### Files added
+
+| File | Purpose |
+|---|---|
+| `tests/job-counts-active-total.test.ts` | 4 vitest cases against a real Neon tenant. Fixture creates one job in each lifecycle bucket (open, completed, invoiced, archived) and asserts: response shape includes `activeTotal`; semantics (`activeTotal === total - lifecycle.archived`); exact math (`total=4, archived=1, activeTotal=3`); `total` parity (sum of lifecycle buckets). |
+| `tests/bulk-cleanup-card-copy.test.ts` | 5 source-level cases that lock the destructive copy strings, the `preview.invoiceLinkedCount > 0` gate on the follow-up line, the testid surface, and the position above the filters grid. (No React component-test harness in this repo, so the copy is locked at the source level.) |
+| `tests/jobs-page-counts-consumer.test.ts` | 3 source-level cases that lock the use of `counts.activeTotal`, forbid the manual `counts.total - counts.lifecycle.archived` subtraction, and verify the fallback object carries `activeTotal: 0`. |
+
+### Verification
+- `npm run check` → `tsc` exit 0.
+- `vitest run tests/job-counts-active-total.test.ts` → **4/4 pass**.
+- `vitest run tests/bulk-cleanup-card-copy.test.ts tests/jobs-page-counts-consumer.test.ts` → **8/8 pass**.
+- `vitest run tests/bulk-archived-jobs-cleanup.test.ts` → **8/8 pass** (regression check on the existing bulk cleanup integration tests).
+- Codebase audit: `grep -r 'total\s*-\s*.*archived'` across `client/` + `server/` returns zero production-code matches; only documentation/comments + the lock-tests reference the old idiom.
+
+---
+
+## 2026-04-09: Tech App — Reversible Workflow Controls + Pause/Resume + Visible Clock Out
+
+### Problem
+Three accumulating tech-app issues:
+1. **Clock Out invisible.** The clocked-in strip on `TodayPage.tsx` showed Clock Out as a tiny `text-xs font-semibold` "Out" link in the corner, while Clock In was a full-weight primary button. Techs were missing the action.
+2. **No reversibility.** Tapping Start Route (`en-route`) or Start Job (`start`) was a one-way trip. A tech who tapped by accident, got rerouted, or went home sick had no way to undo the state from the mobile app — and the running time entry kept ticking.
+3. **No pause/resume.** Lunch breaks, interruptions, and split shifts had no first-class affordance. Techs were either leaving the timer running (overstating labor) or hitting Complete and re-creating the visit (losing audit trail).
+
+A fourth latent problem fed all three: accidental taps were producing 5–30 second time entries that landed in payroll because nothing filtered them out.
+
+### Solution
+A surgical pass that adds four reversible actions (Cancel Route, Cancel Start, Pause, Resume), promotes Clock Out to visual parity with Clock In, and centralizes a sub-1-minute discard helper inside `timeTrackingRepository`. All five new product behaviors share the same canonical Route → Service → Storage architecture used by the existing `en-route` / `start` / `complete` actions.
+
+**State machine additions:**
+- Visit status `paused` (new) — distinct from `on_hold` (office-side dispatch hold). Reflects tech-side break/interruption.
+- Tech-event status `resumed` (new) — fed into `recordJobStatus` to start a fresh on-site time entry on resume.
+
+**Sub-1-minute discard policy:** the new helper `stopAndDiscardIfTrivial(companyId, technicianId, options)` stops a running entry and, if the raw `endAt - startAt` ms diff is `< 60_000`, hard-deletes the row (bypassing the admin audit log because tech-side cancellations should not pollute payroll). Wired into `recordJobStatus` for the `paused` and `completed` cases, plus the `autoStopOpen` overlap guard. Threshold uses raw ms — not the `Math.round(... / 60000)` `durationMinutes` value — so a 30-second segment is correctly discarded even though `Math.round(30/60) === 1`.
+
+### Architecture preserved
+- Route → Service → Storage layering. Each new POST route loads the assigned visit, calls the orchestrator, mirrors the time-entry side effect via `recordJobStatus`, emits dispatch SSE, returns the merged visit + activeTimeEntry shape the tech app already consumes.
+- Time-entry writes still flow exclusively through `timeTrackingRepository`. The new helper is the only path that hard-deletes a `time_entries` row outside `deleteTimeEntry`, and it does so intentionally.
+- Visit lifecycle still flows through `jobLifecycleOrchestrator`. Each new orchestrator function follows the existing `setVisitEnRoute` / `startVisit` pattern: load → validate transition → version-incremented update → `syncJobToVisits`.
+- `requireSchedulable` tech gate, tenant isolation by `req.companyId`, and `getAssignedVisit` (the per-visit auth check that the tech is assigned to the visit) are unchanged.
+- New enum values (`jobVisitStatusEnum.paused`, `technicianJobStatusEnum.resumed`) are TypeScript-only narrowings — both DB columns are plain `text` so no schema migration is required.
+
+### Files changed
+- **Schema:** `shared/schema.ts` — `paused` added to `jobVisitStatusEnum`; `resumed` added to `technicianJobStatusEnum`.
+- **Service (orchestrator):** `server/services/jobLifecycleOrchestrator.ts` — new intent types `CancelVisitRouteIntent`, `CancelVisitStartIntent`, `PauseVisitIntent`, `ResumeVisitIntent` plus four new exported functions implementing the transitions.
+- **Storage:** `server/storage/timeTracking.ts` — new `stopAndDiscardIfTrivial` helper; new `case "resumed"` in `recordJobStatus`; `paused`/`completed` cases routed through the discard helper; `autoStopOpen` updated to use the helper and to record the discard outcome in the audit notes.
+- **Routes:** `server/routes/techField.ts` — four new POST routes (`cancel-route`, `cancel-start`, `pause`, `resume`).
+- **Tech UI hook:** `client/src/tech-app/hooks/useTechVisitDetail.ts` — four new mutations.
+- **Tech UI page:** `client/src/tech-app/pages/VisitDetailPage.tsx` — Cancel Route on the en_route strip; Cancel Start + Pause on the on-site strip; Resume + Complete on the new paused strip. `isActive` extended. Strip color flips to amber when paused.
+- **Tech UI page:** `client/src/tech-app/pages/TodayPage.tsx` — Clock Out promoted to primary button (`bg-rose-600 text-white text-sm font-bold`, same dimensions as Clock In). `JobCard.isActive` extended to include `paused`.
+- **Tech UI utils:** `client/src/tech-app/utils/visitDisplay.ts` — `paused` label/color added.
+- **Tests:** `tests/tech-visit-workflow-controls.test.ts` (new, 11 cases, all passing).
+- **Docs:** `CHANGELOG.md`, `docs/REFACTORING_LOG.md` (this entry).
+
+### Verification (11/11 PASS)
+- `stopAndDiscardIfTrivial` discards a 30-second entry (raw ms threshold).
+- `stopAndDiscardIfTrivial` preserves a 90-second entry (durationMinutes = 2 after Math.round).
+- `cancelVisitRoute` reverts `en_route → scheduled` and rejects when status ≠ `en_route`.
+- `cancelVisitStart` reverts `in_progress → en_route`, preserves `checkedInAt`, rejects when status is not in_progress/on_site.
+- `pauseVisit` sets `in_progress → paused` and rejects from non-active states.
+- `resumeVisit` sets `paused → in_progress` and rejects from non-paused states.
+- `recordJobStatus("resumed")` starts a fresh `on_site` time entry.
+- `npm run check` → `tsc` exit 0.
+
+### Out of scope
+- The existing `delete-job-regression.test.ts` (which still tests pre-2026-04-09 conditional soft-delete behavior) is not touched here. Pre-existing tech debt from the invoice permanent-delete refactor.
+- Office-side dispatch board copy for the new `paused` visit status — the badge color is in place via `STATUS_COLORS` but the office-side display map (separate file) was not audited for the new value.
+- Backfilling existing in-flight visits with the new state. The new transitions only fire when techs explicitly invoke the new actions.
+
+---
+
+## 2026-04-09: Admin Bulk Archived-Jobs Cleanup Tool
+
+### Problem
+After the invoice permanent-delete refactor, the production database still held 714 archived jobs (`status='archived'`) — data that the old "Close & archive" lifecycle option had been accumulating because there was no UI path to cleanly remove them. The canonical `jobRepository.deleteJob` could handle each one individually, but there was no batch tool, no preview, and no warning surface for the case where an archived job was still linked to an invoice.
+
+### Solution
+A two-step admin tool wrapped around the canonical delete path:
+
+1. **Preview** (`POST /api/admin/jobs/bulk-cleanup/preview`) — read-only. Filters by `status='archived'`, optional age cutoff (`olderThanDays`), optional `includeInvoiceLinked`, optional `limit` (capped at 1000). Returns counts, sample (up to 25 rows), and `warningRequired` + `warningMessage` if any in-scope job is invoice-linked.
+
+2. **Run** (`POST /api/admin/jobs/bulk-cleanup/run`) — executes in batches of 50. Refuses to proceed (HTTP 409 with the structured warning) when invoice-linked jobs are in scope and `confirmed !== true`. With confirmation, iterates each matched job and calls `jobRepository.deleteJob`, capturing per-job failures without aborting the batch.
+
+**Reuses canonical delete:** the bulk service does NOT touch the jobs table directly except for the read-side filter query. Each delete delegates to `jobRepository.deleteJob`, which is transactional, detaches `invoices.job_id`, cleans `attention_items`, and hard-deletes the row (FK cascades handle the 9 child tables; FK SET NULL preserves time_entries / tasks / recurring_job_instances history).
+
+**Linkage detection:** the preview classifies a job as invoice-linked if EITHER `jobs.invoice_id IS NOT NULL` OR an `invoices` row references it via `invoices.job_id`. After the 2026-04-09 invoice permanent-delete migration, both directions are now FK-enforced (`jobs.invoice_id` SET NULL, `invoices.job_id` SET NULL), but the bulk service still checks both because the application contract is the same regardless of FK install state.
+
+**Warning copy is exact:**
+> "Some archived jobs are linked to invoices. Deleting these jobs will keep the invoices, but detach them from the jobs. Do you still want to proceed?"
+
+### Architecture preserved
+- `Route → Service → Storage`. New service in `server/services/bulkJobCleanupService.ts`. New routes in `server/routes/admin.ts`. Storage layer untouched.
+- Owner-only access via the existing `router.use(requireRole(OWNER_ONLY))` middleware on the admin sub-router. No new role middleware added.
+- Tenant isolation: every read and every delete is scoped by `req.companyId`. Cross-tenant cleanup is intentionally not supported.
+- No duplicate delete logic. No raw shortcut SQL DELETE on the jobs table from this service.
+- No audit log. Per product decision, the operator (owner role) is the only actor and the action is intentional.
+
+### Files changed
+- **Service (new):** `server/services/bulkJobCleanupService.ts`
+  - `previewBulkCleanup(companyId, filters)` → `BulkCleanupPreview`
+  - `runBulkCleanup(companyId, filters, { confirmed })` → `BulkCleanupRunResult | BulkCleanupWarning`
+  - `isBulkCleanupWarning(value)` type guard for the route handler
+- **Routes (additions):** `server/routes/admin.ts`
+  - `POST /jobs/bulk-cleanup/preview`
+  - `POST /jobs/bulk-cleanup/run` (returns 409 with the structured warning when confirmation required)
+- **UI (new):** `client/src/components/admin/BulkArchivedJobsCleanupCard.tsx` — filters, preview, destructive warning AlertDialog, run, summary table with per-job failure rows.
+- **UI (changed):** `client/src/pages/Admin.tsx` — added "Maintenance" tab between "Settings" and "Feedback", renders the new card.
+- **Tests (new):** `tests/bulk-archived-jobs-cleanup.test.ts` — 8 vitest cases, all passing.
+- **Docs:** `CHANGELOG.md`, `docs/REFACTORING_LOG.md` (this entry).
+
+### Verification
+- `npm run check` → `tsc` exit 0.
+- `NODE_ENV=test node --env-file=.env node_modules/vitest/vitest.mjs run tests/bulk-archived-jobs-cleanup.test.ts` → **8 passed (8)**.
+  - Preview returns correct counts and excludes the open control job.
+  - Per-row classification flags both directions (`jobs.invoice_id` and `invoices.job_id`).
+  - `includeInvoiceLinked=false` excludes both linkage directions.
+  - Run refuses without confirmation when invoice-linked rows are in scope.
+  - Unlinked-only run deletes the job and cascades child rows (`job_parts`, `job_visits`) without confirmation.
+  - Confirmed run deletes invoice-linked archived jobs; both invoices survive with `job_id = NULL`.
+  - Open control job remains untouched after both runs.
+  - Empty batch returns a clean zero-row result.
+
+### Out of scope (not changed)
+- The 714 archived rows in production are NOT auto-cleaned by this work. The tool is intentionally manual: an owner must run the preview, review the sample, and decide.
+- No audit log per product decision.
+- The stale `tests/delete-job-regression.test.ts` (which still tests the pre-2026-04-09 conditional soft-delete behavior) is not touched here. It is pre-existing tech debt from the invoice permanent-delete refactor.
+
+---
+
+## 2026-04-09: Invoice Permanent-Delete Model + Job/Invoice Detachable Linkage
+
+### Problem
+Invoices had a half-built soft-delete system that no application code wrote to but every read path filtered against. The state diverged in production: 4 draft invoices were left with `is_active=false, deleted_at NOT NULL` (via raw SQL outside the codebase), and the partial unique index `invoices_company_job_uq` did not exclude soft-deleted rows. The `createInvoiceFromJob` idempotency check filtered by `activeInvoiceFilter()`, missed the soft-deleted row, fell through to INSERT, hit a unique-constraint violation, and the fallback handler — also filtered — failed to recover. The frontend showed the resulting 500 (or in a related path, "Invoice not found") because the UI navigation pointed at an invoice the storage layer refused to surface.
+
+The job delete path had the inverse problem: `storage.deleteJob` conditionally soft-deleted whenever an invoice existed (preserving it via `deletedAt + isActive=false`), which produced a "removed in UI but still in DB" state and required two divergent code paths. The UI's "Delete Job" button → canonical hard delete vs "Close & archive" → status change had been collapsing the two concepts in users' heads.
+
+The schema also had real drift: `invoice_tax_lines` was declared in `shared/schema.ts` with FK CASCADE to `invoices.id` but the table had never been created in the live DB; the FK on `invoices.job_id` was missing entirely; and the existing `jobs.invoice_id` FK SET NULL was the only piece of the link that worked correctly.
+
+### Solution
+
+**Locked product decisions enforced by this refactor:**
+1. Invoices are permanent-delete only. No soft-delete state, no `is_active`/`deleted_at` columns, no half-built filters.
+2. Jobs and invoices are separate records. The link between them is detachable in both directions.
+3. Deleting an invoice does NOT break the linked job. Deleting a job does NOT break the linked invoice.
+4. Dependent child records cascade-delete with their parent.
+
+**Schema changes** (`migrations/2026_04_09_invoice_permanent_delete.sql`, applied 2026-04-09 19:28 UTC):
+- `DELETE FROM invoices WHERE deleted_at IS NOT NULL OR is_active = false` — removes the 4 stale anomaly rows.
+- `ALTER TABLE invoices DROP COLUMN is_active, DROP COLUMN deleted_at`.
+- `CREATE TABLE invoice_tax_lines (...)` — closes the schema↔DB drift; the table was declared in `shared/schema.ts` and referenced by 5 server files but had never been migrated. Audited live: 0 invoices have a `tax_group_id`, so no historical tax snapshots are lost by creating the table empty.
+- `ALTER TABLE invoice_tax_lines ADD CONSTRAINT invoice_tax_lines_invoice_id_fkey ... ON DELETE CASCADE`.
+- `ALTER TABLE invoices ADD CONSTRAINT invoices_job_id_fk ... ON DELETE SET NULL` — symmetric with the existing `jobs.invoice_id` FK so the link auto-detaches in both directions at the database level.
+
+**Backend changes:**
+- `server/storage/invoices.ts` — added `deleteInvoice(companyId, invoiceId)` storage method. Transactional, `SELECT FOR UPDATE`, eligibility checks (draft only, not QBO-synced, zero payments) returning structured `notFoundError`/`conflictError`. Inside the tx: clears `time_entries` lock state (`invoice_id`, `invoice_line_id`, `invoiced_at`, `locked_at`, `locked_by_invoice_id`, `lock_reason`) where the deleted invoice was the lock holder, explicitly deletes `invoice_tax_lines` (defense-in-depth alongside the FK CASCADE), then deletes the invoice row. The DB cascades handle `invoice_lines` and `payments`; the FK SET NULL on `jobs.invoice_id`, `pm_billing_events.invoice_id`, `qbo_sync_events.invoice_id`, `time_entries.invoice_id` fires automatically.
+- `server/storage/invoices.ts` — removed every `activeInvoiceFilter()` call (8 sites) and dropped the `isActive` field from select projections. The import was removed.
+- `server/storage/invoicesFeed.ts` — deleted the `activeInvoiceFilter()` function definition and its export. Removed the filter from `getInvoicesFeed`, `getInvoiceStats`, the overdue query, and the `feedSelectFields` projection. `InvoiceFeedItem.isActive` removed from the type and the row mapper.
+- `server/storage/dashboard.ts` — removed `activeInvoiceFilter()` import and the inline `sql\`${invoices.isActive} = true\`` guards from `getInvoiceCounts` and the financial-summary AR queries.
+- `server/storage/reports.ts` — removed `eq(invoices.isActive, true)` from the AR aging query.
+- `server/services/qbo/QboMapper.ts` — removed the `!invoice.isActive || invoice.deletedAt` guards from `validateInvoiceForSync` and `shouldSyncInvoice`.
+- `server/services/qbo/QboSyncOrchestrator.ts` — removed the `isActive`/`deletedAt` filters from `syncAllUnsynced`'s invoice query.
+- `server/routes/portal.ts` — removed the `isNull(invoices.deletedAt)` guards from the customer-portal invoice list and detail queries.
+- `server/routes/admin.ts` — removed the soft-delete bucket counts from the admin diagnostic and health-check routes; replaced with a simple status breakdown.
+- `server/storage/jobs.ts` — rewrote `deleteJob` as unconditional permanent delete. Transactional, `SELECT FOR UPDATE`. Inside the tx: detaches `invoices.job_id` (defense-in-depth alongside the new FK SET NULL), deletes `attention_items` (no FK, manual cleanup), deletes the job row. The conditional soft-delete branch was removed; the dual `jobs.invoiceId` + `invoices.job_id` belt-and-suspenders inspection is gone.
+- `server/routes/invoices.ts` — added `DELETE /api/invoices/:id` route. Maps storage layer's `notFoundError`/`conflictError` to HTTP 404/409. Frontend was already wired to call this endpoint via `InvoiceHeaderCard`'s "Delete Draft" button — the route was the missing piece.
+- `server/storage/index.ts` — registered `deleteInvoice` in the storage facade interface and bindings.
+- `shared/schema.ts` — removed the `invoices.isActive` and `invoices.deletedAt` column declarations and the corresponding fields from `updateInvoiceSchema`.
+
+**Frontend changes:**
+- `client/src/pages/InvoiceDetailPage.tsx` — replaced the bare "Invoice not found" `<div>` with a friendlier render that shows an explanation and a "Back to invoices" button. Triggered when `details` is undefined (after a 404 from `GET /api/invoices/:id/details`). The existing delete button + confirm dialog + mutation chain is unchanged — they were already wired to the missing backend route, which now exists.
+
+### Verified end-to-end (24/24 PASS, transactional fixtures rolled back)
+- **Case 1:** invoice delete leaves linked job intact and FK SET NULL clears `jobs.invoice_id`.
+- **Case 2:** job delete leaves linked invoice intact and FK SET NULL clears `invoices.job_id`.
+- **Case 3:** invoice delete cascades to `invoice_lines`, `payments`, `invoice_tax_lines`.
+- **Case 4:** job delete cascades to `job_parts`, `job_visits` (and the other 9 cascade children).
+- **Case 5:** `time_entries` lock state release before invoice delete leaves the time entry intact with all lock fields cleared.
+- **Case 6:** the unique `(company_id, invoice_number)` constraint frees up after delete — proves the soft-delete-driven "Invoice not found" loop is gone.
+- **Case 7:** schema confirmation that `invoices.is_active` and `invoices.deleted_at` are dropped.
+- **Case 8:** all three FK constraints in place (`invoices.job_id` SET NULL, `jobs.invoice_id` SET NULL, `invoice_tax_lines.invoice_id` CASCADE).
+
+`npm run check` → `tsc` exit 0 (clean) after every phase. Live DB state after migration: 2 invoices (the 4 stale draft anomalies removed), 722 jobs unchanged.
+
+### Files changed
+- **Schema:** `shared/schema.ts`, `migrations/2026_04_09_invoice_permanent_delete.sql` (new)
+- **Storage:** `server/storage/invoices.ts`, `server/storage/invoicesFeed.ts`, `server/storage/dashboard.ts`, `server/storage/reports.ts`, `server/storage/jobs.ts`, `server/storage/index.ts`
+- **Routes:** `server/routes/invoices.ts`, `server/routes/admin.ts`, `server/routes/portal.ts`
+- **Services:** `server/services/qbo/QboMapper.ts`, `server/services/qbo/QboSyncOrchestrator.ts`
+- **Lib (docs only):** `server/lib/queryHelpers.ts`
+- **Frontend:** `client/src/pages/InvoiceDetailPage.tsx`
+- **Docs:** `CHANGELOG.md`, `docs/REFACTORING_LOG.md` (this entry)
+
+### Architecture preserved
+- `Route → Service → Storage` layering unchanged. `DELETE /api/invoices/:id` → `storage.deleteInvoice`. `DELETE /api/jobs/:id` → `storage.deleteJob`. No business logic in the routes.
+- Tenant isolation enforced on every read and write via `companyId`.
+- Optimistic locking on `invoices.version` and `jobs.version` unchanged.
+- Existing canonical paths preserved: invoice line delete (`DELETE /api/invoices/:id/lines/:lineId`), payment delete (`DELETE /api/payments/:id`), invoice void (`POST /api/invoices/:id/void`), and "Close & archive" job lifecycle (`POST /api/jobs/:id/close { mode: "archive" }`) all stay distinct from the new delete operations.
+
+### Out of scope (not changed)
+- The 714 archived jobs in production. They are `status='archived'` (an intentional lifecycle state, not a delete) and require a separate product decision before bulk cleanup.
+- Customer-portal invoice list (`server/routes/portal.ts`) — only the soft-delete filter was removed; portal-side authorization is unchanged.
+- Drift detector script (`scripts/check-schema-drift.ts`) still has the stale `jobs.job_type` nullability check unrelated to this work.
+
+---
+
 ## 2026-03-25: Labor Unification Final Cleanup
 
 ### Problem

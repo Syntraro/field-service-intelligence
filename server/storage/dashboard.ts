@@ -5,8 +5,10 @@
  * for the Dashboard page.
  *
  * Phase 5 B2: Refactored from class-based DashboardRepository to
- * function-based QueryCtx pattern. Uses canonical activeJobFilter()
- * and activeInvoiceFilter() guards instead of inline conditions.
+ * function-based QueryCtx pattern. Uses canonical activeJobFilter() guard
+ * for jobs. 2026-04-09: invoice queries no longer use activeInvoiceFilter()
+ * because invoices use the permanent-delete model — see
+ * migrations/2026_04_09_invoice_permanent_delete.sql.
  *
  * NORMALIZED JOB STATUS MODEL (4 values only):
  * - "open"      - Active job that can be worked on
@@ -26,7 +28,8 @@ import { jobs, invoices, clientLocations as clients, customerCompanies, recurrin
 import { eq, and, or, sql, asc, isNull, gte, lt, inArray } from "drizzle-orm";
 import type { QueryCtx } from "../lib/queryCtx";
 import { activeJobFilter } from "./jobFilters";
-import { activeInvoiceFilter, UNPAID_INVOICE_STATUSES, UNPAID_INVOICE_STATUS_SQL } from "./invoicesFeed";
+// 2026-04-09: activeInvoiceFilter dropped (permanent-delete model — no soft delete on invoices)
+import { UNPAID_INVOICE_STATUSES, UNPAID_INVOICE_STATUS_SQL } from "./invoicesFeed";
 import { db } from "../db";
 
 // ---------------------------------------------------------------------------
@@ -43,11 +46,12 @@ export interface WorkflowSummary {
     unscheduledCount: number;
     /**
      * 2026-04-08: Live overdue count.
-     * Replaces the dashboard's previous read of attention_items["job.overdue"],
-     * which was materialized and had no time-based refresher → silently stale.
-     * Computed from the canonical jobs table using the same effectiveEndExpr +
-     * openSubStatus exclusion the modal already uses, so dashboard count and
-     * modal list stay in lockstep by construction.
+     * Replaced the dashboard's previous read of the attention_items overdue
+     * rule, which was materialized and had no time-based refresher → silently
+     * stale. 2026-04-09: the corresponding attention rule was deleted entirely
+     * (server/lib/attentionRules.ts) — overdue is now ONLY computed live here.
+     * Uses the same effectiveEndExpr + openSubStatus exclusion the modal uses,
+     * so dashboard count and modal list stay in lockstep by construction.
      */
     overdueCount: number;
   };
@@ -125,12 +129,12 @@ async function getJobCounts(ctx: QueryCtx) {
           AND (${jobs.openSubStatus} IS NULL OR ${jobs.openSubStatus} != 'on_hold'))
       `.as("unscheduled_count"),
       // 2026-04-08: Live overdue count — single SoT with the modal.
+      // This is the SOLE source of the overdue count for the dashboard widget.
       // Predicates byte-equivalent to:
-      //   server/lib/attentionRules.ts (job.overdue rule, lines 112-120)
       //   server/storage/dashboard.ts getNeedsAttentionJobs overdue branch (lines 295-303)
       //   server/storage/jobsFeed.ts overdue filter (lines 402-408)
       // Reuses the same effectiveEndExpr SQL helper so any future change to
-      // the overdue definition propagates to all four call sites in one place.
+      // the overdue definition propagates to all three call sites in one place.
       overdueCount: sql<number>`
         COUNT(*) FILTER (WHERE ${jobs.status} = 'open'
           AND ${jobs.scheduledStart} IS NOT NULL
@@ -171,7 +175,7 @@ async function getInvoiceCounts(ctx: QueryCtx) {
       `.as("past_due_count"),
     })
     .from(invoices)
-    .where(and(eq(invoices.companyId, ctx.tenantId), activeInvoiceFilter()));
+    .where(and(eq(invoices.companyId, ctx.tenantId)));
 
   const c = result[0] || { outstandingCount: 0, pastDueCount: 0 };
   return {
@@ -452,6 +456,7 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
       .orderBy(sql`TO_CHAR(${payments.receivedAt}, 'YYYY-MM')`),
 
     // Invoice stats (AR)
+    // 2026-04-09: invoices.isActive guard removed (permanent-delete model)
     db.select({
       status: invoices.status,
       count: sql<number>`count(*)::int`,
@@ -460,7 +465,6 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
       .where(and(
         eq(invoices.companyId, companyId),
         inArray(invoices.status, UNPAID),
-        sql`${invoices.isActive} = true`,
       ))
       .groupBy(invoices.status),
 
@@ -472,7 +476,6 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
       .where(and(
         eq(invoices.companyId, companyId),
         inArray(invoices.status, UNPAID),
-        sql`${invoices.isActive} = true`,
         sql`CAST(${invoices.balance} AS numeric) > 0`,
         sql`${invoices.dueDate} < CURRENT_DATE`,
       )),
@@ -483,7 +486,6 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
     }).from(invoices)
       .where(and(
         eq(invoices.companyId, companyId),
-        sql`${invoices.isActive} = true`,
         gte(invoices.sentAt, monthStart),
       )),
 

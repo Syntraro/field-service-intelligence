@@ -83,8 +83,7 @@ export class ReportsRepository extends BaseRepository {
       .where(
         and(
           eq(invoices.companyId, companyId),
-          // Legacy data compatibility: treat NULL isActive as active
-          eq(invoices.isActive, true),
+          // 2026-04-09: invoices.isActive guard removed (permanent-delete model)
           inArray(invoices.status, ["sent", "partial_paid"]),
           gt(sql`CAST(${invoices.balance} AS DECIMAL)`, 0)
         )

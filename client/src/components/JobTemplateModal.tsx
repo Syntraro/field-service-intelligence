@@ -1,5 +1,28 @@
+/**
+ * JobTemplateModal — Job template editor.
+ *
+ * 2026-04-10 (P9-P10 Phase B): Migrated to the canonical client pipeline.
+ *
+ *   - Local `LineItemDraft` shadow interface: REMOVED. The canonical
+ *     `LineItemDraft` from `@shared/lineItem` is now the in-memory editing
+ *     shape (same as invoice, quote, quote-template, job parts, PM template,
+ *     visit parts).
+ *   - Direct `/api/items?limit=200` prefetch: REMOVED. The catalog is now
+ *     queried per-row via `useProductSearch` (fires after 2 chars).
+ *   - Custom Popover/Command product selector: REPLACED with the canonical
+ *     `CreateOrSelectField` + `useProductSearch`.
+ *   - Inline catalog→draft mapping in `handleProductSelect`: REPLACED with
+ *     `catalogItemToDraft(productOptionToCatalogItem(product), {...})`.
+ *
+ * Persistence rule: job_templates.lines stores the lightweight shape
+ * `{ productId, descriptionOverride, quantity, unitPriceOverride, sortOrder }`.
+ * The save payload still uses that shape via the local
+ * `templateLineFromDraft` projection helper. Templates are content references
+ * — they never store tax/totals — so the canonical `LineItemDraft` lives in
+ * memory and the projection happens at save time.
+ */
 import { useState, useEffect } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -31,42 +54,34 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command";
-import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Plus, Trash2, Loader2, GripVertical, Check, ChevronsUpDown, HelpCircle, PlusCircle } from "lucide-react";
-import { cn } from "@/lib/utils";
-import type { JobTemplate, Item } from "@shared/schema";
+import { Plus, Trash2, Loader2, GripVertical, HelpCircle } from "lucide-react";
+import type { JobTemplate } from "@shared/schema";
 import { apiRequest } from "@/lib/queryClient";
+import type { LineItemDraft } from "@shared/lineItem";
+import { parseMoney } from "@shared/lineItem";
+import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
+import {
+  useProductSearch,
+  getProductKey,
+  getProductLabel,
+  getProductDescription,
+  productOptionToCatalogItem,
+  type ProductOption,
+} from "@/lib/entities/productEntity";
+import {
+  catalogItemToDraft,
+  blankDraft,
+  hydrateDraft,
+} from "@/lib/entities/lineItemMapper";
 
 interface JobTemplateModalProps {
   open: boolean;
   onClose: () => void;
   template: JobTemplate | null;
-}
-
-interface LineItemDraft {
-  id: string;
-  productId: string;
-  descriptionOverride: string;
-  quantity: string;
-  unitPriceOverride: string;
-  productSearchOpen?: boolean;
-  searchValue?: string;
 }
 
 interface QuickAddPartData {
@@ -75,6 +90,41 @@ interface QuickAddPartData {
   sku: string;
   description: string;
   unitPrice: string;
+}
+
+/**
+ * Project a canonical `LineItemDraft` down to the lightweight job-template
+ * line payload the server expects: `{ productId, descriptionOverride,
+ * quantity, unitPriceOverride, sortOrder }`. Templates are content references
+ * — they never store tax/computed totals — so the canonical `taxRate`,
+ * `taxAmount`, `lineSubtotal`, `lineTotal`, `lineItemType`, and `source`
+ * fields are intentionally dropped here.
+ *
+ * `descriptionOverride` is the canonical `description` field with one
+ * subtlety: in the legacy job-template schema, an empty `descriptionOverride`
+ * meant "use the catalog product's default name at apply time". The same
+ * convention is preserved here — when the user has not typed a custom
+ * description, the field is sent as `null`.
+ *
+ * Local to this file, matching the same pattern as `templateLineFromDraft`
+ * in QuoteTemplateModal.tsx. If a future template surface needs the same
+ * lightweight shape, lift it into `lineItemMapper.ts` — until then it stays
+ * local to avoid premature abstraction.
+ */
+function templateLineFromDraft(
+  draft: LineItemDraft,
+  defaultName: string,
+  sortOrder: number,
+) {
+  const description = draft.description.trim();
+  const hasOverride = description.length > 0 && description !== defaultName.trim();
+  return {
+    productId: draft.productId,
+    descriptionOverride: hasOverride ? description : null,
+    quantity: draft.quantity,
+    unitPriceOverride: draft.unitPrice && draft.unitPrice !== "0.00" ? draft.unitPrice : null,
+    sortOrder,
+  };
 }
 
 const JOB_TYPE_OPTIONS = [
@@ -96,8 +146,8 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
   const [description, setDescription] = useState("");
   const [isDefaultForJobType, setIsDefaultForJobType] = useState(false);
   const [isActive, setIsActive] = useState(true);
+  // 2026-04-10 Phase B: canonical LineItemDraft, not the local shadow.
   const [lineItems, setLineItems] = useState<LineItemDraft[]>([]);
-  const [isSaving, setIsSaving] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [quickAddForLineId, setQuickAddForLineId] = useState<string | null>(null);
   const [quickAddData, setQuickAddData] = useState<QuickAddPartData>({
@@ -107,26 +157,6 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
     description: "",
     unitPrice: "",
   });
-
-  const { data: catalogData } = useQuery<Item[]>({
-    queryKey: ["/api/items", { limit: 200 }],
-    queryFn: async () => {
-      const res = await fetch("/api/items?limit=200", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch catalog");
-      const json = await res.json();
-      // Unwrap paginated response: backend returns { data: [...] } when ?limit is explicit
-      return Array.isArray(json) ? json : Array.isArray(json?.data) ? json.data : [];
-    },
-    enabled: open,
-  });
-  // Defensive: normalize in case TanStack Query cache holds a wrapped response from a shared queryKey
-  const rawCatalog: Item[] = Array.isArray(catalogData) ? catalogData
-    : Array.isArray((catalogData as any)?.data) ? (catalogData as any).data
-    : [];
-  if (rawCatalog.length === 0 && catalogData && process.env.NODE_ENV !== "production") {
-    console.warn("[JobTemplateModal] catalogData was not an array:", typeof catalogData);
-  }
-  const catalogParts = rawCatalog.filter((p: Item) => p?.isActive !== false);
 
   const { data: templateDetails, isLoading: isLoadingDetails } = useQuery<
     JobTemplate & { lines: any[] }
@@ -153,14 +183,29 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
           setDescription(templateDetails.description || "");
           setIsDefaultForJobType(templateDetails.isDefaultForJobType);
           setIsActive(templateDetails.isActive);
+          // 2026-04-10 Phase B: hydrate persisted lines through the canonical
+          // hydrateDraft. Legacy template lines store `descriptionOverride` /
+          // `unitPriceOverride` — we map those onto the canonical
+          // `description` / `unitPrice` fields. The product's default name
+          // (resolved from the JOIN-included `productName` field, falling
+          // back to `descriptionOverride`) becomes the description when no
+          // override is set, so the row reads naturally in the editor.
           setLineItems(
-            (templateDetails.lines || []).map((line: any, index: number) => ({
-              id: line.id || `line_${index}`,
-              productId: line.productId || "",
-              descriptionOverride: line.descriptionOverride || "",
-              quantity: String(line.quantity || "1"),
-              unitPriceOverride: line.unitPriceOverride || "",
-            }))
+            (templateDetails.lines || []).map((line: any, index: number) => {
+              const productName = line.productName || line.product?.name || "";
+              const description = line.descriptionOverride || productName || "";
+              const unitPrice = line.unitPriceOverride || line.productUnitPrice || line.product?.unitPrice || "0";
+              return hydrateDraft({
+                id: line.id || `line_${index}`,
+                description,
+                quantity: String(line.quantity || "1"),
+                unitPrice,
+                unitCost: line.productCost || line.product?.cost || "0",
+                productId: line.productId || null,
+                source: "template",
+                sortOrder: index,
+              });
+            }),
           );
           setIsFormReady(true);
         } else {
@@ -197,23 +242,30 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
     onSuccess: (newPart) => {
       queryClient.invalidateQueries({ queryKey: ["/api/items"] });
       toast({ title: "Part created", description: `"${newPart.name}" has been added to your catalog.` });
-      
+
       if (quickAddForLineId) {
+        // 2026-04-10 Phase B: route the freshly-created catalog item through
+        // the canonical mapper, same path as a normal product selection.
         setLineItems((prev) =>
-          prev.map((item) =>
-            item.id === quickAddForLineId
-              ? {
-                  ...item,
-                  productId: newPart.id,
-                  unitPriceOverride: newPart.unitPrice?.toString() || "",
-                  productSearchOpen: false,
-                  searchValue: "",
-                }
-              : item
-          )
+          prev.map((li) => {
+            if (li.id !== quickAddForLineId) return li;
+            const productOption: ProductOption = {
+              id: newPart.id,
+              name: newPart.name ?? newPart.description ?? "Untitled",
+              type: (newPart.type as string) ?? "product",
+              unitPrice: newPart.unitPrice ?? null,
+              cost: newPart.cost ?? null,
+            };
+            const fresh = catalogItemToDraft(productOptionToCatalogItem(productOption), {
+              source: "template",
+              quantity: li.quantity,
+              sortOrder: li.sortOrder,
+            });
+            return { ...fresh, id: li.id };
+          }),
         );
       }
-      
+
       setQuickAddOpen(false);
       setQuickAddForLineId(null);
       setQuickAddData({ name: "", type: "product", sku: "", description: "", unitPrice: "" });
@@ -232,7 +284,6 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
       description: "",
       unitPrice: "",
     });
-    toggleProductSearch(lineItemId, false);
     setQuickAddOpen(true);
   };
 
@@ -264,56 +315,45 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
   });
 
   const handleAddLineItem = () => {
-    const newId = `new_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    setLineItems((prev) => [
-      ...prev,
-      {
-        id: newId,
-        productId: "",
-        descriptionOverride: "",
-        quantity: "1",
-        unitPriceOverride: "",
-      },
-    ]);
+    // 2026-04-10 Phase B: blank canonical draft instead of inline literal.
+    setLineItems((prev) => [...prev, blankDraft({ source: "template", sortOrder: prev.length })]);
   };
 
   const handleRemoveLineItem = (id: string) => {
     setLineItems((prev) => prev.filter((item) => item.id !== id));
   };
 
+  /**
+   * Field updater scoped to the editable text fields the template UI exposes.
+   * The wider canonical draft has 17 fields; templates only edit description,
+   * quantity, unitPrice in this surface.
+   */
   const handleLineItemChange = (
     id: string,
-    field: keyof LineItemDraft,
-    value: string
+    field: "description" | "quantity" | "unitPrice",
+    value: string,
   ) => {
     setLineItems((prev) =>
-      prev.map((item) =>
-        item.id === id ? { ...item, [field]: value } : item
-      )
+      prev.map((item) => (item.id === id ? { ...item, [field]: value } : item)),
     );
   };
 
-  const handleProductSelect = (itemId: string, productId: string) => {
-    const product = catalogParts.find((p) => p.id === productId);
+  /**
+   * 2026-04-10 Phase B: canonical catalog→draft mapping. Replaces the inline
+   * field map. Preserves the row id, sortOrder, and existing quantity so the
+   * table doesn't reorder and the user's edited quantity isn't reset.
+   */
+  const handleProductSelect = (itemId: string, product: ProductOption) => {
     setLineItems((prev) =>
-      prev.map((item) =>
-        item.id === itemId
-          ? {
-              ...item,
-              productId,
-              unitPriceOverride: item.unitPriceOverride || (product?.unitPrice?.toString() ?? ""),
-              productSearchOpen: false,
-            }
-          : item
-      )
-    );
-  };
-
-  const toggleProductSearch = (itemId: string, open: boolean) => {
-    setLineItems((prev) =>
-      prev.map((item) =>
-        item.id === itemId ? { ...item, productSearchOpen: open } : item
-      )
+      prev.map((li) => {
+        if (li.id !== itemId) return li;
+        const fresh = catalogItemToDraft(productOptionToCatalogItem(product), {
+          source: "template",
+          quantity: li.quantity,
+          sortOrder: li.sortOrder,
+        });
+        return { ...fresh, id: li.id };
+      }),
     );
   };
 
@@ -334,8 +374,12 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
     }
 
     for (const li of validLineItems) {
-      const qty = parseFloat(li.quantity);
-      if (isNaN(qty) || qty <= 0) {
+      // 2026-04-10 Phase E polish: parseMoney replaces bare parseFloat. The
+      // explicit isNaN guard is no longer needed because parseMoney coerces
+      // every malformed input (NaN, "", null, "abc") to 0, which the qty<=0
+      // gate already catches.
+      const qty = parseMoney(li.quantity);
+      if (qty <= 0) {
         toast({
           title: "Validation error",
           description: "Quantity must be greater than 0 for all line items.",
@@ -345,32 +389,22 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
       }
     }
 
+    // 2026-04-10 Phase B: lines projected from canonical drafts via the local
+    // `templateLineFromDraft` projection function. Template tables don't store
+    // tax/total fields by design, so the lightweight subset wire shape is
+    // unchanged from before the migration.
     const payload = {
       name: name.trim(),
       jobType: jobType || null,
       description: description.trim() || null,
       isDefaultForJobType: jobType ? isDefaultForJobType : false,
       isActive,
-      lines: validLineItems.map((li, index) => ({
-        productId: li.productId,
-        descriptionOverride: li.descriptionOverride.trim() || null,
-        quantity: li.quantity,
-        unitPriceOverride: li.unitPriceOverride.trim() || null,
-        sortOrder: index,
-      })),
+      lines: validLineItems.map((li, index) =>
+        templateLineFromDraft(li, li.description, index),
+      ),
     };
 
     saveMutation.mutate(payload);
-  };
-
-  const getProductPrice = (productId: string): string => {
-    const product = catalogParts.find((p) => p.id === productId);
-    return product?.unitPrice || "0";
-  };
-
-  const getProductName = (productId: string): string => {
-    const product = catalogParts.find((p) => p.id === productId);
-    return product?.name || product?.description || "";
   };
 
   return (
@@ -510,177 +544,79 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {lineItems.map((item, index) => {
-                        const defaultPrice = item.productId
-                          ? getProductPrice(item.productId)
-                          : "";
-                        const selectedProduct = item.productId
-                          ? catalogParts.find((p) => p.id === item.productId)
-                          : null;
-                        return (
-                          <TableRow key={item.id}>
-                            <TableCell className="text-muted-foreground cursor-grab">
-                              <GripVertical className="h-4 w-4" />
-                            </TableCell>
-                            <TableCell>
-                              <Popover
-                                open={item.productSearchOpen}
-                                onOpenChange={(open) => toggleProductSearch(item.id, open)}
-                              >
-                                <PopoverTrigger asChild>
-                                  <Button
-                                    variant="outline"
-                                    role="combobox"
-                                    aria-expanded={item.productSearchOpen}
-                                    className="w-full justify-between text-sm font-normal"
-                                    data-testid={`select-product-${index}`}
-                                  >
-                                    <span className="truncate">
-                                      {selectedProduct
-                                        ? selectedProduct.name || selectedProduct.description
-                                        : "Select product..."}
-                                    </span>
-                                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                                  </Button>
-                                </PopoverTrigger>
-                                <PopoverContent className="w-[300px] p-0" align="start">
-                                  <Command>
-                                    <CommandInput
-                                      placeholder="Search products..."
-                                      value={item.searchValue || ""}
-                                      onValueChange={(val) =>
-                                        setLineItems((prev) =>
-                                          prev.map((li) =>
-                                            li.id === item.id
-                                              ? { ...li, searchValue: val }
-                                              : li
-                                          )
-                                        )
-                                      }
-                                    />
-                                    <CommandList>
-                                      <CommandEmpty>
-                                        <div className="py-2 text-center">
-                                          <p className="text-sm text-muted-foreground mb-2">
-                                            No products found.
-                                          </p>
-                                          <Button
-                                            variant="outline"
-                                            size="sm"
-                                            onClick={() =>
-                                              openQuickAddDialog(
-                                                item.id,
-                                                item.searchValue || ""
-                                              )
-                                            }
-                                            data-testid={`button-add-part-${index}`}
-                                          >
-                                            <PlusCircle className="h-4 w-4 mr-1" />
-                                            Add "{item.searchValue || "new part"}"
-                                          </Button>
-                                        </div>
-                                      </CommandEmpty>
-                                      <CommandGroup>
-                                        {catalogParts.map((p) => (
-                                          <CommandItem
-                                            key={p.id}
-                                            value={p.name || p.description || p.id}
-                                            onSelect={() => handleProductSelect(item.id, p.id)}
-                                          >
-                                            <Check
-                                              className={cn(
-                                                "mr-2 h-4 w-4",
-                                                item.productId === p.id
-                                                  ? "opacity-100"
-                                                  : "opacity-0"
-                                              )}
-                                            />
-                                            <div className="flex flex-col">
-                                              <span>{p.name || p.description}</span>
-                                              {p.sku && (
-                                                <span className="text-xs text-muted-foreground">
-                                                  SKU: {p.sku}
-                                                </span>
-                                              )}
-                                            </div>
-                                          </CommandItem>
-                                        ))}
-                                      </CommandGroup>
-                                    </CommandList>
-                                  </Command>
-                                </PopoverContent>
-                              </Popover>
-                            </TableCell>
-                            <TableCell>
-                              <Input
-                                value={item.descriptionOverride}
-                                onChange={(e) =>
-                                  handleLineItemChange(
-                                    item.id,
-                                    "descriptionOverride",
-                                    e.target.value
-                                  )
-                                }
-                                placeholder={selectedProduct?.description || "Leave blank for default"}
-                                className="text-sm"
-                                data-testid={`input-description-${index}`}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <Input
-                                type="number"
-                                min="0.01"
-                                step="0.01"
-                                value={item.quantity}
-                                onChange={(e) =>
-                                  handleLineItemChange(
-                                    item.id,
-                                    "quantity",
-                                    e.target.value
-                                  )
-                                }
-                                className="text-sm"
-                                data-testid={`input-quantity-${index}`}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <div className="space-y-1">
-                                <Input
-                                  type="number"
-                                  min="0"
-                                  step="0.01"
-                                  value={item.unitPriceOverride}
-                                  onChange={(e) =>
-                                    handleLineItemChange(
-                                      item.id,
-                                      "unitPriceOverride",
-                                      e.target.value
-                                    )
-                                  }
-                                  placeholder={defaultPrice ? `$${defaultPrice}` : ""}
-                                  className="text-sm"
-                                  data-testid={`input-price-${index}`}
-                                />
-                                {item.productId && !item.unitPriceOverride && (
-                                  <p className="text-[10px] text-muted-foreground">
-                                    Default: ${defaultPrice}
-                                  </p>
-                                )}
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => handleRemoveLineItem(item.id)}
-                                data-testid={`button-remove-${index}`}
-                              >
-                                <Trash2 className="h-4 w-4 text-muted-foreground" />
-                              </Button>
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
+                      {lineItems.map((item, index) => (
+                        <TableRow key={item.id}>
+                          <TableCell className="text-muted-foreground cursor-grab">
+                            <GripVertical className="h-4 w-4" />
+                          </TableCell>
+                          <TableCell>
+                            {/* 2026-04-10 Phase B: canonical CreateOrSelectField + useProductSearch
+                                replaces the custom Popover/Command product picker. The "create new"
+                                callback opens the existing QuickAdd dialog seeded with the search text. */}
+                            <JobTemplateProductCell
+                              item={item}
+                              index={index}
+                              onSelect={(product) => handleProductSelect(item.id, product)}
+                              onClear={() =>
+                                setLineItems((prev) =>
+                                  prev.map((li) =>
+                                    li.id === item.id ? { ...li, productId: null } : li,
+                                  ),
+                                )
+                              }
+                              onRequestAddProduct={(searchText) => openQuickAddDialog(item.id, searchText)}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              value={item.description}
+                              onChange={(e) =>
+                                handleLineItemChange(item.id, "description", e.target.value)
+                              }
+                              placeholder="Leave blank for default"
+                              className="text-sm"
+                              data-testid={`input-description-${index}`}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              min="0.01"
+                              step="0.01"
+                              value={item.quantity}
+                              onChange={(e) =>
+                                handleLineItemChange(item.id, "quantity", e.target.value)
+                              }
+                              className="text-sm"
+                              data-testid={`input-quantity-${index}`}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={item.unitPrice}
+                              onChange={(e) =>
+                                handleLineItemChange(item.id, "unitPrice", e.target.value)
+                              }
+                              placeholder="0.00"
+                              className="text-sm"
+                              data-testid={`input-price-${index}`}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleRemoveLineItem(item.id)}
+                              data-testid={`button-remove-${index}`}
+                            >
+                              <Trash2 className="h-4 w-4 text-muted-foreground" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
                     </TableBody>
                   </Table>
                 </div>
@@ -826,5 +762,66 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
         </DialogContent>
       </Dialog>
     </Dialog>
+  );
+}
+
+// ── Per-row product cell using the canonical CreateOrSelectField ──
+//
+// 2026-04-10 Phase B: Replaces the previous Popover/Command custom selector.
+// Each row owns its own search-text state because the canonical
+// useProductSearch hook is keyed by query string. The selected ProductOption
+// is reconstructed from the canonical draft so the chip renders without a
+// parallel `selectedProduct` state.
+function JobTemplateProductCell({
+  item,
+  index,
+  onSelect,
+  onClear,
+  onRequestAddProduct,
+}: {
+  item: LineItemDraft;
+  index: number;
+  onSelect: (product: ProductOption) => void;
+  onClear: () => void;
+  onRequestAddProduct: (searchText: string) => void;
+}) {
+  const [searchText, setSearchText] = useState("");
+  const { data: results = [], isLoading } = useProductSearch(searchText);
+
+  const selectedValue: ProductOption | null = item.productId
+    ? {
+        id: item.productId,
+        name: item.description,
+        type: item.productType ?? "product",
+        unitPrice: item.unitPrice,
+        cost: item.unitCost,
+      }
+    : null;
+
+  return (
+    <CreateOrSelectField<ProductOption>
+      label=""
+      compact
+      value={selectedValue}
+      onChange={(product) => {
+        if (product) {
+          onSelect(product);
+          setSearchText("");
+        } else {
+          onClear();
+          setSearchText("");
+        }
+      }}
+      searchResults={results}
+      searchLoading={isLoading}
+      searchText={searchText}
+      onSearchTextChange={setSearchText}
+      getKey={getProductKey}
+      getLabel={getProductLabel}
+      getDescription={getProductDescription}
+      createLabel={`Add "${searchText || "new part"}"`}
+      onCreateNew={(text) => onRequestAddProduct(text)}
+      placeholder="Search products..."
+    />
   );
 }

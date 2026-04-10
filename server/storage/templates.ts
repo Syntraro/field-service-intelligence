@@ -217,15 +217,21 @@ export class TemplateRepository extends BaseRepository {
 
     // Batch-fetch referenced products so we can fall back to product name/price
     // when the template line has no descriptionOverride or unitPriceOverride
+    // 2026-04-10 FIX: SELECT now includes `items.cost` so the bulk insert
+    // below can hydrate `job_parts.unit_cost` from the catalog. Previously
+    // omitted, which made every applied-template line land as NULL
+    // unit_cost — the primary active source of the data integrity bug.
+    // See `normalizeJobPartUnitCost` in server/storage/jobs.ts for the
+    // canonical contract every job_parts insert path must satisfy.
     const productIds = Array.from(new Set(lines.map((l) => l.productId).filter(Boolean)));
-    const productMap = new Map<string, { name: string | null; description: string | null; unitPrice: string | null }>();
+    const productMap = new Map<string, { name: string | null; description: string | null; unitPrice: string | null; cost: string | null }>();
     if (productIds.length > 0) {
       const products = await db
-        .select({ id: items.id, name: items.name, description: items.description, unitPrice: items.unitPrice })
+        .select({ id: items.id, name: items.name, description: items.description, unitPrice: items.unitPrice, cost: items.cost })
         .from(items)
         .where(inArray(items.id, productIds));
       for (const p of products) {
-        productMap.set(p.id, { name: p.name, description: p.description, unitPrice: p.unitPrice });
+        productMap.set(p.id, { name: p.name, description: p.description, unitPrice: p.unitPrice, cost: p.cost });
       }
     }
 
@@ -278,6 +284,10 @@ export class TemplateRepository extends BaseRepository {
           quantity: line.quantity,
           // Use template override → product price → zero fallback
           unitPrice: line.unitPriceOverride || product?.unitPrice || "0",
+          // 2026-04-10 FIX: hydrate unit_cost from catalog so applied template
+          // lines carry their cost basis. Falls back to null when the catalog
+          // row has no cost (or has been deleted) — never fabricated.
+          unitCost: product?.cost ?? null,
           sortOrder,
         })
         .returning();

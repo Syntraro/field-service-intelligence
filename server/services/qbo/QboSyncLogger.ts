@@ -18,6 +18,8 @@ export interface SyncEventParams {
   clientLocationId?: string | null;
   invoiceId?: string | null;
   itemId?: string | null;
+  // 2026-04-09: paymentId for outbound payment sync events (PAYMENT_CREATE / UPDATE / DELETE).
+  paymentId?: string | null;
   // QBO references
   qboEntityId?: string | null;
   qboSyncToken?: string | null;
@@ -76,6 +78,8 @@ export class QboSyncLogger {
         clientLocationId: params.clientLocationId ?? null,
         invoiceId: params.invoiceId ?? null,
         itemId: params.itemId ?? null,
+        // 2026-04-09: paymentId for outbound payment events
+        paymentId: params.paymentId ?? null,
         qboEntityId: params.qboEntityId ?? null,
         qboSyncToken: params.qboSyncToken ?? null,
         requestPayload: params.requestPayload ? JSON.stringify(params.requestPayload) : null,
@@ -235,6 +239,89 @@ export class QboSyncLogger {
     await this.log({
       eventType,
       result: "SKIPPED",
+      invoiceId: params.invoiceId,
+      errorMessage: params.reason,
+    });
+  }
+
+  // ==========================================================================
+  // 2026-04-09: Outbound payment sync logging (App → QBO).
+  // Mirrors the invoice helpers above. The `paymentId` is captured directly
+  // (using the new qboSyncEvents.paymentId column added in the same migration)
+  // and `invoiceId` is captured alongside for cross-entity correlation.
+  // ==========================================================================
+
+  /**
+   * Log a successful outbound payment sync
+   */
+  async logPaymentSuccess(
+    eventType: "PAYMENT_CREATE" | "PAYMENT_UPDATE" | "PAYMENT_DELETE",
+    params: {
+      paymentId: string;
+      invoiceId: string;
+      qboPaymentId: string;
+      qboSyncToken: string;
+      requestPayload?: unknown;
+      responsePayload?: unknown;
+      durationMs?: number;
+    }
+  ): Promise<void> {
+    await this.log({
+      eventType,
+      result: "SUCCESS",
+      paymentId: params.paymentId,
+      invoiceId: params.invoiceId,
+      qboEntityId: params.qboPaymentId,
+      qboSyncToken: params.qboSyncToken,
+      requestPayload: params.requestPayload,
+      responsePayload: params.responsePayload,
+      durationMs: params.durationMs,
+    });
+  }
+
+  /**
+   * Log a failed outbound payment sync
+   */
+  async logPaymentFailure(
+    eventType: "PAYMENT_CREATE" | "PAYMENT_UPDATE" | "PAYMENT_DELETE",
+    params: {
+      paymentId: string;
+      invoiceId: string;
+      errorMessage: string;
+      errorCode?: string;
+      requestPayload?: unknown;
+      responsePayload?: unknown;
+      durationMs?: number;
+    }
+  ): Promise<void> {
+    await this.log({
+      eventType,
+      result: "FAILURE",
+      paymentId: params.paymentId,
+      invoiceId: params.invoiceId,
+      errorMessage: params.errorMessage,
+      errorCode: params.errorCode,
+      requestPayload: params.requestPayload,
+      responsePayload: params.responsePayload,
+      durationMs: params.durationMs,
+    });
+  }
+
+  /**
+   * Log a skipped outbound payment sync (e.g., parent invoice not synced)
+   */
+  async logPaymentSkipped(
+    eventType: "PAYMENT_CREATE" | "PAYMENT_UPDATE" | "PAYMENT_DELETE",
+    params: {
+      paymentId: string;
+      invoiceId: string;
+      reason: string;
+    }
+  ): Promise<void> {
+    await this.log({
+      eventType,
+      result: "SKIPPED",
+      paymentId: params.paymentId,
       invoiceId: params.invoiceId,
       errorMessage: params.reason,
     });

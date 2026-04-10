@@ -371,6 +371,48 @@ export class QboClient {
     const encodedQuery = encodeURIComponent(query);
     return this.get<T>(`/query?query=${encodedQuery}`);
   }
+
+  // ============================================================
+  // PAYMENT ENDPOINTS (2026-04-09 — outbound payment sync)
+  // ============================================================
+  //
+  // QBO uses POST /payment for both create and update — the difference is
+  // whether the payload includes Id+SyncToken (update) or not (create).
+  // Voids use POST /payment?operation=void with Id+SyncToken+SparseUpdate.
+  //
+  // All three respect QBO_READ_ONLY_MODE via the underlying `post` method.
+
+  /**
+   * Create a new payment in QBO. Payload must NOT include Id or SyncToken.
+   */
+  async createPayment<T>(payload: unknown): Promise<QboApiResponse<T>> {
+    return this.post<T>("/payment", payload);
+  }
+
+  /**
+   * Update an existing payment in QBO. Payload MUST include Id and SyncToken.
+   * QBO uses POST (not PUT) for updates with the entity body.
+   */
+  async updatePayment<T>(payload: unknown): Promise<QboApiResponse<T>> {
+    return this.post<T>("/payment", payload);
+  }
+
+  /**
+   * Void an existing payment in QBO. Payload MUST include Id and SyncToken.
+   * Voiding preserves the QBO accounting audit trail (the payment row stays
+   * but its TotalAmt becomes 0). This is the canonical "delete" operation
+   * for our outbound payment sync — locked product decision.
+   */
+  async voidPayment<T>(payload: unknown): Promise<QboApiResponse<T>> {
+    return this.post<T>("/payment?operation=void", payload);
+  }
+
+  /**
+   * Get a payment by ID
+   */
+  async getPayment<T>(paymentId: string): Promise<QboApiResponse<T>> {
+    return this.get<T>(`/payment/${paymentId}`);
+  }
 }
 
 /**

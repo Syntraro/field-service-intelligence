@@ -96,7 +96,6 @@ export interface InvoiceFeedItem {
   // Timestamps
   sentAt: string | null;
   viewedAt: string | null;
-  isActive: boolean | null;
   version: number;
   createdAt: string;
   updatedAt: string | null;
@@ -126,13 +125,11 @@ export const UNPAID_INVOICE_STATUSES: string[] = ["awaiting_payment", "sent", "p
 /** Raw SQL fragment derived from UNPAID_INVOICE_STATUSES for hand-written queries. */
 export const UNPAID_INVOICE_STATUS_SQL = UNPAID_INVOICE_STATUSES.map(s => `'${s}'`).join(", ");
 
-/** Canonical soft-delete filter for invoices: isActive=true AND deletedAt IS NULL. */
-function activeInvoiceFilter() {
-  return and(
-    eq(invoices.isActive, true),
-    isNull(invoices.deletedAt)
-  );
-}
+// 2026-04-09: activeInvoiceFilter() REMOVED — invoices have no soft-delete state
+// under the permanent-delete model. The is_active and deleted_at columns are
+// dropped in migrations/2026_04_09_invoice_permanent_delete.sql. All callers
+// in this file no longer add the filter to their WHERE clauses; tenant
+// isolation by company_id is unchanged.
 
 /**
  * Compute isPastDue: payment-eligible status + balance > 0 + dueDate < today.
@@ -197,7 +194,6 @@ const feedSelectFields = {
   // Timestamps
   sentAt: invoices.sentAt,
   viewedAt: invoices.viewedAt,
-  isActive: invoices.isActive,
   version: invoices.version,
   createdAt: invoices.createdAt,
   updatedAt: invoices.updatedAt,
@@ -234,7 +230,6 @@ function mapFeedRow(row: any): InvoiceFeedItem {
     discountAmount: row.discountAmount ?? null,
     sentAt: toISOOrNull(row.sentAt),
     viewedAt: toISOOrNull(row.viewedAt),
-    isActive: row.isActive ?? null,
     version: row.version ?? 0,
     createdAt: toISOOrNull(row.createdAt) || new Date().toISOString(),
     updatedAt: toISOOrNull(row.updatedAt),
@@ -282,8 +277,7 @@ export async function getInvoicesFeed(
     .leftJoin(jobs, and(eq(invoices.jobId, jobs.id), activeJobFilter()))
     .where(
       and(
-        eq(invoices.companyId, ctx.tenantId),
-        activeInvoiceFilter()
+        eq(invoices.companyId, ctx.tenantId)
       )
     )
     .$dynamic();
@@ -384,8 +378,7 @@ export async function getInvoiceStats(
     .from(invoices)
     .where(
       and(
-        eq(invoices.companyId, ctx.tenantId),
-        activeInvoiceFilter()
+        eq(invoices.companyId, ctx.tenantId)
       )
     )
     .groupBy(invoices.status);
@@ -413,7 +406,6 @@ export async function getInvoiceStats(
     .where(
       and(
         eq(invoices.companyId, ctx.tenantId),
-        activeInvoiceFilter(),
         sql`CAST(${invoices.balance} AS numeric) > 0`,
         inArray(invoices.status, UNPAID_INVOICE_STATUSES),
         sql`${invoices.dueDate} < CURRENT_DATE`
@@ -439,4 +431,5 @@ export async function getInvoiceStats(
 // Exported helpers
 // ---------------------------------------------------------------------------
 
-export { computeIsPastDue, activeInvoiceFilter };
+// 2026-04-09: activeInvoiceFilter no longer exported — function removed.
+export { computeIsPastDue };

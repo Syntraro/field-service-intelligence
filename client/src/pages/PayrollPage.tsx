@@ -351,20 +351,12 @@ export default function PayrollPage() {
     return buildJobRows(weekData.entries, weekDates);
   }, [weekData, weekDates]);
 
-  // Compute day totals and grand total from rows (including pending edits)
-  const { dayTotals, grandTotal } = useMemo(() => {
-    const totals = [0, 0, 0, 0, 0, 0, 0];
-    for (const row of jobRows) {
-      for (let i = 0; i < 7; i++) {
-        const editKey = `${row.jobKey}:${i}`;
-        const edited = pendingEdits[editKey];
-        const val = edited !== undefined ? (parseHoursInput(edited) ?? row.days[i]) : row.days[i];
-        totals[i] += val;
-      }
-    }
-    return { dayTotals: totals, grandTotal: totals.reduce((a, b) => a + b, 0) };
-  }, [jobRows, pendingEdits]);
-
+  // 2026-04-08 fix: Shift totals (top strip + totals row) come from work_sessions
+  // via `currentSummary` (defined below from `summaries`), NOT from time_entries
+  // aggregates. Previously this useMemo summed `jobRows` (time_entries) into
+  // `dayTotals`/`grandTotal`, which made closed clock-in/out shifts invisible
+  // whenever no visit-based time_entries existed. Job rows below the totals row
+  // still come from time_entries and remain unchanged.
   const hasPendingEdits = Object.keys(pendingEdits).length > 0;
 
   // ── Mutations ──
@@ -776,7 +768,8 @@ export default function PayrollPage() {
                 {weekTechId && (
                   <div className="flex items-center gap-3 ml-auto">
                     <div className="text-right">
-                      <p className="font-mono font-semibold text-sm">{formatMinutes(grandTotal)}</p>
+                      {/* Shift total — sourced from work_sessions via currentSummary (payroll attendance), not time_entries. */}
+                      <p className="font-mono font-semibold text-sm">{formatMinutes(currentSummary?.totalMinutes ?? 0)}</p>
                       <p className="text-xs text-muted-foreground">total</p>
                     </div>
                     {currentSummary?.approved ? (
@@ -911,15 +904,19 @@ export default function PayrollPage() {
                               </TableRow>
                             );
                           })}
-                          {/* Totals row */}
+                          {/* Totals row — sourced from work_sessions via currentSummary (payroll attendance). */}
+                          {/* Server emits daily[] in Mon→Sun order matching weekDates, so index alignment is direct. */}
                           <TableRow className="bg-muted/50 font-medium">
                             <TableCell>Total</TableCell>
-                            {dayTotals.map((total, i) => (
-                              <TableCell key={i} className="text-center text-xs font-mono">
-                                {total === 0 ? "-" : formatMinutes(total)}
-                              </TableCell>
-                            ))}
-                            <TableCell className="text-right font-mono">{formatMinutes(grandTotal)}</TableCell>
+                            {weekDates.map((_, i) => {
+                              const dailyTotal = currentSummary?.daily[i]?.totalMinutes ?? 0;
+                              return (
+                                <TableCell key={i} className="text-center text-xs font-mono">
+                                  {dailyTotal === 0 ? "-" : formatMinutes(dailyTotal)}
+                                </TableCell>
+                              );
+                            })}
+                            <TableCell className="text-right font-mono">{formatMinutes(currentSummary?.totalMinutes ?? 0)}</TableCell>
                           </TableRow>
                         </>
                       )}

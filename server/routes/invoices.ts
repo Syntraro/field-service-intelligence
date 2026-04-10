@@ -36,7 +36,8 @@ import * as lifecycle from "../services/jobLifecycleOrchestrator";
 import { getQueryCtx } from "../lib/queryCtx";
 import { getInvoicesFeed, getInvoiceStats as getCanonicalInvoiceStats, UNPAID_INVOICE_STATUSES } from "../storage/invoicesFeed";
 // 2026-04-08: P7 — Canonical line-item input schema (shared with quotes/jobs)
-import { canonicalLineItemInput } from "@shared/lineItem";
+// 2026-04-08: Stabilization pass — canonical money helpers for tax math
+import { canonicalLineItemInput, moneyString, parseMoney, formatMoney } from "@shared/lineItem";
 
 const router = Router();
 
@@ -292,6 +293,28 @@ router.get("/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
   res.json(invoice);
 }));
 
+// 2026-04-09: DELETE /api/invoices/:id — canonical permanent invoice delete.
+//
+// Eligibility: only draft, never QBO-synced, zero payments. The storage method
+// enforces all three rules under SELECT FOR UPDATE and throws structured 404/409
+// errors. Cleanup of invoice_lines, payments, invoice_tax_lines, and time_entries
+// lock state happens inside one transaction. Job linkage is auto-detached via
+// the FK SET NULL on jobs.invoice_id — the job remains valid as a standalone
+// record (locked product decision: deleting an invoice must NOT break the job).
+router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  try {
+    await storage.deleteInvoice(req.companyId!, req.params.id);
+    res.json({ success: true });
+  } catch (err: any) {
+    // Map storage layer errors to HTTP. notFoundError → 404, conflictError → 409.
+    if (err?.statusCode) throw err;
+    if (err?.message?.startsWith("Cannot delete")) {
+      throw createError(409, err.message);
+    }
+    throw err;
+  }
+}));
+
 // GET /api/invoices/:id/details - Get full invoice details (composite endpoint)
 router.get("/:id/details", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
@@ -400,22 +423,37 @@ router.post("/:id/lines", requireRole(MANAGER_ROLES), requireEditableStatus(), a
   // Check lock (throws 409 if locked without override)
   checkQboLineItemLock(invoice, 'add', { overrideQboLock, overrideReason });
 
-  // If invoice has an active tax group and line doesn't specify tax, apply the group's rate.
-  // 2026-04-08: P7 — Canonical line-item input has money fields as strings; this
-  // block parses them to numbers for the math, then writes back as strings.
-  const incomingTaxRateNum = parseFloat(lineData.taxRate ?? "0");
-  if (invoice.taxGroupId && (!lineData.taxRate || incomingTaxRateNum === 0)) {
+  // If the invoice has an active tax group and the incoming line has no
+  // explicit tax rate, apply the group's rate.
+  //
+  // Money discipline (2026-04-08 stabilization pass):
+  //   - Canonical schema delivers `lineData.taxRate` / `lineData.lineSubtotal`
+  //     as canonical money strings. Both are guaranteed present (the schema
+  //     applies defaults), so the previous `?? "0"` defensive coalescing was
+  //     dead code and is removed here.
+  //   - Math is performed in JS numbers via `parseMoney`. Never operate on
+  //     the strings directly; never use `+` between mixed types.
+  //   - Results are written back via `formatMoney`. `taxRate` uses 4 decimal
+  //     places to match the canonical schema regex; amounts use 2.
+  //   - `Math.round(x * 100) / 100` rounds to cents; `Number.isFinite` and
+  //     the helpers' built-in fallback to "0.00" / "0.0000" guarantee no
+  //     `NaN` / `undefined` / empty-string can leak into the line item.
+  if (invoice.taxGroupId && parseMoney(lineData.taxRate) === 0) {
     const { taxRepository } = await import("../storage/tax");
     const group = await taxRepository.getTaxGroup(req.companyId!, invoice.taxGroupId);
     if (group && group.rates.length > 0) {
-      const combinedRate = group.rates.reduce((s: number, r: any) => s + parseFloat(r.rate || "0"), 0);
-      const taxRateDecimal = combinedRate / 100;
-      const subtotalNum = parseFloat(lineData.lineSubtotal ?? "0");
-      const taxAmountNum = Math.round(subtotalNum * taxRateDecimal * 100) / 100;
-      const lineTotalNum = Math.round((subtotalNum + taxAmountNum) * 100) / 100;
-      lineData.taxRate = String(taxRateDecimal);
-      lineData.taxAmount = taxAmountNum.toFixed(2);
-      lineData.lineTotal = lineTotalNum.toFixed(2);
+      const combinedRatePct = group.rates.reduce(
+        (sum: number, r: any) => sum + parseMoney(r.rate),
+        0,
+      );
+      const taxRateDecimal = combinedRatePct / 100;
+      const subtotal = parseMoney(lineData.lineSubtotal);
+      const taxAmount = Math.round(subtotal * taxRateDecimal * 100) / 100;
+      const lineTotal = Math.round((subtotal + taxAmount) * 100) / 100;
+
+      lineData.taxRate = formatMoney(taxRateDecimal, 4);
+      lineData.taxAmount = formatMoney(taxAmount, 2);
+      lineData.lineTotal = formatMoney(lineTotal, 2);
     }
   }
 
@@ -489,15 +527,21 @@ router.patch("/:id/lines/reorder", requireRole(MANAGER_ROLES), requireEditableSt
 }));
 
 // PATCH /api/invoices/:id/lines/:lineId - Update a single line item (with QBO lock check)
+// 2026-04-09: Money fields use canonical `moneyString` (string-on-the-wire, with
+// `z.coerce.string()` so legacy number-sending callers still work) instead of
+// inline `z.number()`. This closes the PATCH schema drift identified in the
+// payment-system audit and aligns this route with `createInvoiceLineSchema`
+// (which already extends `canonicalLineItemInput`). Behavior is unchanged for
+// existing callers; this is a contract-cleanup pass.
 const updateInvoiceLineSchema = z.object({
   description: z.string().min(1).max(500).optional(),
-  quantity: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
-  unitPrice: z.number().min(0).max(999999.99).optional(),
-  unitCost: z.number().min(0).max(999999.99).optional(),
-  lineSubtotal: z.number().min(0).max(999999.99).optional(),
-  taxRate: z.number().min(0).max(1).optional(),
-  taxAmount: z.number().min(0).max(999999.99).optional(),
-  lineTotal: z.number().min(0).max(999999.99).optional(),
+  quantity: moneyString.optional(),
+  unitPrice: moneyString.optional(),
+  unitCost: moneyString.optional(),
+  lineSubtotal: moneyString.optional(),
+  taxRate: moneyString.optional(),
+  taxAmount: moneyString.optional(),
+  lineTotal: moneyString.optional(),
   productId: z.string().uuid().nullable().optional(),
   overrideQboLock: z.boolean().optional(),
   overrideReason: z.string().min(10).max(500).optional(),

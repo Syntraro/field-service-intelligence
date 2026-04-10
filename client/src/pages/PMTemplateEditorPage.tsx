@@ -4,9 +4,25 @@
  * Routes:
  *   /pm/templates/new          — create new template
  *   /pm/templates/:id/edit     — edit existing template
+ *
+ * 2026-04-10 (P9-P10 Phase B): Migrated to the canonical client pipeline.
+ *
+ *   - Local `TemplateLineItem` interface: REMOVED.
+ *   - Direct `/api/items?limit=200` prefetch: REMOVED.
+ *   - Inline `TemplateLineItemRow` custom dropdown picker: REPLACED with the
+ *     canonical `CreateOrSelectField` + `useProductSearch`.
+ *   - Inline catalog→draft mapping in `selectProduct`: REPLACED with
+ *     `catalogItemToDraft(productOptionToCatalogItem(product), {...})`.
+ *
+ * Persistence rule: PM template `defaultLineItemsJson` is a lightweight JSON
+ * blob with `{productId, description, quantity, unitPrice}` per row. The
+ * canonical `LineItemDraft` lives in memory and is projected at save time
+ * via the local `pmTemplateLineFromDraft` helper. Templates are content
+ * references — they never store tax/totals — so the canonical extra fields
+ * are intentionally dropped at the projection.
  */
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation, useParams } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -31,7 +47,23 @@ import {
   Trash2,
   Save,
 } from "lucide-react";
-import type { PmTemplate, Item } from "@shared/schema";
+import type { PmTemplate } from "@shared/schema";
+import type { LineItemDraft } from "@shared/lineItem";
+import { parseMoney } from "@shared/lineItem";
+import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
+import {
+  useProductSearch,
+  getProductKey,
+  getProductLabel,
+  getProductDescription,
+  productOptionToCatalogItem,
+  type ProductOption,
+} from "@/lib/entities/productEntity";
+import {
+  catalogItemToDraft,
+  blankDraft,
+  hydrateDraft,
+} from "@/lib/entities/lineItemMapper";
 
 // ============================================================================
 // Constants
@@ -94,81 +126,71 @@ function MonthPicker({ selected, onChange }: { selected: number[]; onChange: (m:
 }
 
 // ============================================================================
-// Product Search Line Item Row
+// Per-row product cell using the canonical CreateOrSelectField
 // ============================================================================
-
-interface TemplateLineItem {
-  productId: string | null;
-  description: string;
-  quantity: string;
-  unitPrice: string;
-}
+//
+// 2026-04-10 Phase B: Replaces the previous custom dropdown row. Each row
+// owns its own search-text state because useProductSearch is keyed by query
+// string. The selected ProductOption is reconstructed from the canonical
+// draft fields so the chip renders without a parallel selectedProduct state.
 
 function TemplateLineItemRow({
   item,
   index,
-  catalog,
   onChange,
+  onSelect,
+  onClear,
   onRemove,
 }: {
-  item: TemplateLineItem;
+  item: LineItemDraft;
   index: number;
-  catalog: Item[];
-  onChange: (index: number, patch: Partial<TemplateLineItem>) => void;
+  onChange: (index: number, patch: Partial<LineItemDraft>) => void;
+  onSelect: (index: number, product: ProductOption) => void;
+  onClear: (index: number) => void;
   onRemove: (index: number) => void;
 }) {
-  const [query, setQuery] = useState(item.description);
-  const [showDropdown, setShowDropdown] = useState(false);
+  const [searchText, setSearchText] = useState("");
+  const { data: results = [], isLoading } = useProductSearch(searchText);
 
-  useEffect(() => { setQuery(item.description); }, [item.description]);
-
-  const suggestions = useMemo(() => {
-    if (!query.trim()) return catalog.slice(0, 8);
-    const lower = query.toLowerCase();
-    return catalog.filter((c) => (c.name || c.description || "").toLowerCase().includes(lower)).slice(0, 8);
-  }, [catalog, query]);
-
-  function selectProduct(product: Item) {
-    onChange(index, {
-      productId: product.id,
-      description: product.name || product.description || "",
-      unitPrice: product.unitPrice || "0",
-    });
-    setQuery(product.name || product.description || "");
-    setShowDropdown(false);
-  }
+  const selectedValue: ProductOption | null = item.productId
+    ? {
+        id: item.productId,
+        name: item.description,
+        type: item.productType ?? "product",
+        unitPrice: item.unitPrice,
+        cost: item.unitCost,
+      }
+    : null;
 
   return (
     <div className="flex items-start gap-2">
-      <div className="flex-1 relative">
-        <Input
-          placeholder="Search product / service..."
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            onChange(index, { description: e.target.value, productId: null });
-            setShowDropdown(true);
+      <div className="flex-1">
+        <CreateOrSelectField<ProductOption>
+          label=""
+          compact
+          value={selectedValue}
+          onChange={(product) => {
+            if (product) {
+              onSelect(index, product);
+              setSearchText("");
+            } else {
+              onClear(index);
+              setSearchText("");
+            }
           }}
-          onFocus={() => setShowDropdown(true)}
-          onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
-          className="text-sm"
+          searchResults={results}
+          searchLoading={isLoading}
+          searchText={searchText || (selectedValue ? "" : item.description)}
+          onSearchTextChange={(text) => {
+            setSearchText(text);
+            // Manual-entry fallback: if no product is selected, mirror text to description
+            if (!item.productId) onChange(index, { description: text });
+          }}
+          getKey={getProductKey}
+          getLabel={getProductLabel}
+          getDescription={getProductDescription}
+          placeholder="Search product / service..."
         />
-        {showDropdown && suggestions.length > 0 && (
-          <div className="absolute z-50 mt-1 max-h-48 w-full overflow-auto rounded-md border bg-popover shadow-lg">
-            {suggestions.map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => selectProduct(c)}
-                className="flex w-full items-center justify-between px-2.5 py-1.5 text-left hover:bg-muted text-sm"
-              >
-                <span>{c.name || c.description}</span>
-                {c.unitPrice && <span className="text-xs text-muted-foreground">${c.unitPrice}</span>}
-              </button>
-            ))}
-          </div>
-        )}
       </div>
       <Input
         type="number"
@@ -192,6 +214,27 @@ function TemplateLineItemRow({
   );
 }
 
+/**
+ * Project a canonical `LineItemDraft` down to the lightweight PM template
+ * line shape stored in `defaultLineItemsJson`. PM templates are content
+ * references — they never store tax/computed totals — so only the four
+ * fields the persistence shape uses are emitted. `quantity` is parsed
+ * to a number to match the previous wire format.
+ *
+ * Local to this file, matching the same pattern as `templateLineFromDraft`
+ * in QuoteTemplateModal.tsx and JobTemplateModal.tsx.
+ */
+function pmTemplateLineFromDraft(draft: LineItemDraft) {
+  return {
+    productId: draft.productId,
+    description: draft.description,
+    // 2026-04-10 Phase E polish: parseMoney replaces bare parseFloat.
+    // Same fallback semantics (invalid → 0 → defaulted to 1).
+    quantity: parseMoney(draft.quantity) || 1,
+    unitPrice: draft.unitPrice,
+  };
+}
+
 // ============================================================================
 // Main Editor Page
 // ============================================================================
@@ -209,18 +252,6 @@ export default function PMTemplateEditorPage() {
   });
   const existing = isEdit ? existingTemplates.find((t) => t.id === params.id) : null;
 
-  // Fetch Products & Services catalog for line item search
-  const { data: catalogData } = useQuery<Item[]>({
-    queryKey: ["/api/items", { limit: 200 }],
-    queryFn: async () => {
-      const res = await fetch("/api/items?limit=200", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch catalog");
-      const json = await res.json();
-      return Array.isArray(json) ? json : json.data || json.items || [];
-    },
-  });
-  const catalog: Item[] = catalogData ?? [];
-
   // --- Form state ---
   const [name, setName] = useState("");
   const [summary, setSummary] = useState("");
@@ -234,7 +265,8 @@ export default function PMTemplateEditorPage() {
   const [billingMode, setBillingMode] = useState("");
   const [billingLabel, setBillingLabel] = useState("");
   const [defaultPrice, setDefaultPrice] = useState("");
-  const [lineItems, setLineItems] = useState<TemplateLineItem[]>([]);
+  // 2026-04-10 Phase B: canonical LineItemDraft, not the local shadow.
+  const [lineItems, setLineItems] = useState<LineItemDraft[]>([]);
 
   // Populate form when existing template loads
   useEffect(() => {
@@ -253,12 +285,22 @@ export default function PMTemplateEditorPage() {
       setDefaultPrice((existing.defaultPrice as string) ?? "");
       const raw = existing.defaultLineItemsJson;
       if (Array.isArray(raw)) {
-        setLineItems(raw.map((li: any) => ({
-          productId: li.productId ?? null,
-          description: li.description ?? "",
-          quantity: String(li.quantity ?? "1"),
-          unitPrice: String(li.unitPrice ?? "0"),
-        })));
+        // 2026-04-10 Phase B: hydrate persisted lines through the canonical
+        // hydrateDraft. The PM template JSON shape only has 4 fields; the
+        // other canonical fields fill with safe zero-defaults.
+        setLineItems(
+          raw.map((li: any, index: number) =>
+            hydrateDraft({
+              id: li.id || `pm_line_${index}`,
+              description: li.description ?? "",
+              quantity: String(li.quantity ?? "1"),
+              unitPrice: String(li.unitPrice ?? "0"),
+              productId: li.productId ?? null,
+              source: "template",
+              sortOrder: index,
+            }),
+          ),
+        );
       }
     }
   }, [existing]);
@@ -280,13 +322,11 @@ export default function PMTemplateEditorPage() {
       billingMode: billingMode || null,
       billingLabel: billingLabel.trim() || null,
       defaultPrice: defaultPrice.trim() || null,
+      // 2026-04-10 Phase B: lines projected from canonical drafts via the local
+      // pmTemplateLineFromDraft helper. PM templates store a lightweight subset
+      // of canonical fields by design.
       defaultLineItemsJson: lineItems.length > 0
-        ? lineItems.map((li) => ({
-            productId: li.productId,
-            description: li.description,
-            quantity: parseFloat(li.quantity) || 1,
-            unitPrice: li.unitPrice,
-          }))
+        ? lineItems.map(pmTemplateLineFromDraft)
         : null,
     };
   }
@@ -335,8 +375,32 @@ export default function PMTemplateEditorPage() {
     }
   }
 
-  function handleLineItemChange(index: number, patch: Partial<TemplateLineItem>) {
+  function handleLineItemChange(index: number, patch: Partial<LineItemDraft>) {
     setLineItems((prev) => prev.map((li, i) => (i === index ? { ...li, ...patch } : li)));
+  }
+
+  /**
+   * 2026-04-10 Phase B: canonical catalog→draft mapping. Replaces the inline
+   * field map. Preserves the row position and existing quantity.
+   */
+  function handleLineItemSelect(index: number, product: ProductOption) {
+    setLineItems((prev) =>
+      prev.map((li, i) => {
+        if (i !== index) return li;
+        const fresh = catalogItemToDraft(productOptionToCatalogItem(product), {
+          source: "template",
+          quantity: li.quantity,
+          sortOrder: i,
+        });
+        return { ...fresh, id: li.id };
+      }),
+    );
+  }
+
+  function handleLineItemClear(index: number) {
+    setLineItems((prev) =>
+      prev.map((li, i) => (i === index ? { ...li, productId: null } : li)),
+    );
   }
 
   const showPartsWarning = includeLocParts === true && lineItems.length > 0;
@@ -474,7 +538,12 @@ export default function PMTemplateEditorPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setLineItems((prev) => [...prev, { productId: null, description: "", quantity: "1", unitPrice: "0" }])}
+              onClick={() =>
+                setLineItems((prev) => [
+                  ...prev,
+                  blankDraft({ source: "template", sortOrder: prev.length }),
+                ])
+              }
             >
               <Plus className="h-3 w-3 mr-1" />Add Item
             </Button>
@@ -483,11 +552,12 @@ export default function PMTemplateEditorPage() {
             <div className="space-y-2">
               {lineItems.map((li, i) => (
                 <TemplateLineItemRow
-                  key={i}
+                  key={li.id}
                   item={li}
                   index={i}
-                  catalog={catalog}
                   onChange={handleLineItemChange}
+                  onSelect={handleLineItemSelect}
+                  onClear={handleLineItemClear}
                   onRemove={(idx) => setLineItems((prev) => prev.filter((_, j) => j !== idx))}
                 />
               ))}

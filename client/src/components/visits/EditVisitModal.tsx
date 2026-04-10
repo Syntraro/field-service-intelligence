@@ -5,6 +5,26 @@
  * reworked line items to read-only summary + Quick Add.
  * Line items read/write job_parts directly — no visit-level storage.
  * Equipment selection persisted via equipmentIds on job_visits.
+ *
+ * 2026-04-10 (P9-P10 Phase B): Migrated the parts Quick Add flow to the
+ * canonical client pipeline.
+ *
+ *   - Direct `/api/items?limit=1000` lazy prefetch: REMOVED.
+ *   - Inline `Popover`-based catalog filter: REPLACED with the canonical
+ *     `CreateOrSelectField` + `useProductSearch`.
+ *   - Inline `handleSelectCatalogItem` field map: REPLACED with
+ *     `catalogItemToDraft(productOptionToCatalogItem(product), {...})`.
+ *   - Inline `addLineItemMutation` payload object: REPLACED with
+ *     `draftToJobPartPayload(draft)`.
+ *   - The local `newItem` plain object: REPLACED with a canonical
+ *     `LineItemDraft`.
+ *
+ * Untouched (out of Phase B scope):
+ *   - Scheduling, equipment, visit lifecycle, all dispatch callbacks.
+ *   - The `JobPartReadRow` type below is the READ shape for the parts
+ *     listing query — it is NOT a draft. Drafts only exist for the
+ *     editing row. Read DTOs are not in scope for the "no shadow line
+ *     item types" rule (which is about in-memory editing shapes).
  */
 
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
@@ -33,6 +53,22 @@ import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import { AddEquipmentDialog } from "@/components/AddEquipmentDialog";
 import type { JobVisit } from "@shared/schema";
+import type { LineItemDraft } from "@shared/lineItem";
+import { parseMoney } from "@shared/lineItem";
+import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
+import {
+  useProductSearch,
+  getProductKey,
+  getProductLabel,
+  getProductDescription,
+  productOptionToCatalogItem,
+  type ProductOption,
+} from "@/lib/entities/productEntity";
+import {
+  catalogItemToDraft,
+  blankDraft,
+  draftToJobPartPayload,
+} from "@/lib/entities/lineItemMapper";
 
 // ============================================================================
 // Props
@@ -97,7 +133,13 @@ function initScheduleForm(visit: JobVisit): ScheduleFormState {
   return { date: dateStr, startTime, endTime, assignedTechnicianIds: techIds };
 }
 
-interface JobLineItem { id: string; description: string; quantity: string; unitPrice: string | null; unitCost: string | null; productId: string | null; itemType?: string | null; sortOrder: number; }
+/**
+ * Read shape for the job-parts listing query. NOT a draft — drafts only exist
+ * during the Quick Add edit flow and use the canonical `LineItemDraft`. This
+ * type only exists because the listing renders read-only summary rows from
+ * the persisted `job_parts` table.
+ */
+interface JobPartReadRow { id: string; description: string; quantity: string; unitPrice: string | null; unitCost: string | null; productId: string | null; itemType?: string | null; sortOrder: number; }
 
 /** Location equipment record — used for the equipment selector */
 interface LocationEquipmentRecord {
@@ -145,9 +187,9 @@ export function EditVisitModal({
   const [lineItemsExpanded, setLineItemsExpanded] = useState(false);
 
   // Quick Add line item state
+  // 2026-04-10 Phase B: canonical LineItemDraft replaces the local plain object.
   const [addingItem, setAddingItem] = useState(false);
-  const [newItem, setNewItem] = useState({ description: "", quantity: "1", unitPrice: "", productId: "" });
-  const [catalogSearch, setCatalogSearch] = useState("");
+  const [newDraft, setNewDraft] = useState<LineItemDraft | null>(null);
 
   const { teamMembers: technicians } = useTechniciansDirectory();
   const techOptions = technicians.map((t) => ({ id: t.id, displayName: getMemberDisplayName(t) }));
@@ -159,19 +201,15 @@ export function EditVisitModal({
     enabled: open && !!visitId,
   });
 
-  const { data: lineItemsRaw } = useQuery<JobLineItem[]>({
+  const { data: lineItemsRaw } = useQuery<JobPartReadRow[]>({
     queryKey: ["/api/jobs", jobId, "parts"],
     queryFn: async () => { const r = await fetch(`/api/jobs/${jobId}/parts`, { credentials: "include" }); if (!r.ok) throw new Error("Failed"); const d = await r.json(); return Array.isArray(d) ? d : d.items || d.data || []; },
     enabled: open && !!jobId,
   });
-  const lineItems: JobLineItem[] = lineItemsRaw ?? [];
+  const lineItems: JobPartReadRow[] = lineItemsRaw ?? [];
 
-  const { data: catalogRaw } = useQuery<any>({
-    queryKey: ["/api/items", { limit: 1000 }],
-    queryFn: async () => { const r = await fetch(`/api/items?limit=1000`, { credentials: "include" }); if (!r.ok) return []; const d = await r.json(); return Array.isArray(d) ? d : d.data || d.items || []; },
-    enabled: open && addingItem,
-  });
-  const catalog: { id: string; name: string; description?: string; unitPrice?: string }[] = catalogRaw ?? [];
+  // 2026-04-10 Phase B: catalog is now per-row via useProductSearch (fires
+  // after 2 chars). The previous /api/items?limit=1000 lazy prefetch is gone.
 
   // Location equipment — full equipment set at this site (broader than job-linked subset)
   const { data: locationEquipmentRaw } = useQuery<LocationEquipmentRecord[]>({
@@ -207,7 +245,7 @@ export function EditVisitModal({
       }
     }
   }, [visit, jobEquipmentFallback]);
-  useEffect(() => { if (!open) { setAddingItem(false); setCatalogSearch(""); setEquipmentSearch(""); } }, [open]);
+  useEffect(() => { if (!open) { setAddingItem(false); setNewDraft(null); setEquipmentSearch(""); } }, [open]);
 
   // ── Invalidation ──
   const invalidateVisitQueries = () => { queryClient.invalidateQueries({ queryKey: ["visit-detail", visitId] }); queryClient.invalidateQueries({ queryKey: ["visits"] }); queryClient.invalidateQueries({ queryKey: ["jobs"] }); queryClient.invalidateQueries({ queryKey: ["/api/calendar"] }); queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] }); queryClient.invalidateQueries({ queryKey: ["dashboard"] }); };
@@ -234,31 +272,42 @@ export function EditVisitModal({
   });
 
   // ── Line item Quick Add mutation ──
-  const cancelAddRow = () => { setAddingItem(false); setNewItem({ description: "", quantity: "1", unitPrice: "", productId: "" }); setCatalogSearch(""); };
+  // 2026-04-10 Phase B: payload built via canonical draftToJobPartPayload.
+  const cancelAddRow = () => { setAddingItem(false); setNewDraft(null); };
+
+  const startAddRow = () => {
+    setAddingItem(true);
+    setLineItemsExpanded(true);
+    setNewDraft(blankDraft({ source: "manual" }));
+  };
 
   const addLineItemMutation = useMutation({
-    mutationFn: async (data: { description: string; quantity: string; unitPrice?: string; productId?: string }) => apiRequest(`/api/jobs/${jobId}/parts`, { method: "POST", body: JSON.stringify(data) }),
+    mutationFn: async (draft: LineItemDraft) =>
+      apiRequest(`/api/jobs/${jobId}/parts`, {
+        method: "POST",
+        body: JSON.stringify(draftToJobPartPayload(draft)),
+      }),
     onSuccess: () => { invalidateLineItems(); cancelAddRow(); },
     onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
-  // Catalog search — live filter matching name + description, case-insensitive
-  const searchTerm = addingItem ? catalogSearch.trim().toLowerCase() : "";
-  const filteredCatalog = searchTerm.length >= 1
-    ? catalog.filter(p =>
-        p.name.toLowerCase().includes(searchTerm) ||
-        (p.description && p.description.toLowerCase().includes(searchTerm))
-      ).slice(0, 20)
-    : [];
-
-  const handleSelectCatalogItem = (item: typeof catalog[0]) => {
-    setNewItem({ description: item.name, quantity: "1", unitPrice: item.unitPrice || "", productId: item.id });
-    setCatalogSearch("");
+  /**
+   * 2026-04-10 Phase B: canonical catalog→draft mapping. Replaces the inline
+   * field map. Auto-fills description, unitPrice, unitCost, productId from
+   * the picked catalog item.
+   */
+  const handleSelectCatalogItem = (product: ProductOption) => {
+    setNewDraft((prev) =>
+      catalogItemToDraft(productOptionToCatalogItem(product), {
+        source: "manual",
+        quantity: prev?.quantity ?? "1",
+      }),
+    );
   };
 
   const handleSubmitNewItem = () => {
-    if (!newItem.description.trim()) return;
-    addLineItemMutation.mutate({ description: newItem.description.trim(), quantity: newItem.quantity, unitPrice: newItem.unitPrice || undefined, productId: newItem.productId || undefined });
+    if (!newDraft || !newDraft.description.trim()) return;
+    addLineItemMutation.mutate(newDraft);
   };
 
   // ── Equipment helpers ──
@@ -348,8 +397,11 @@ export function EditVisitModal({
   const selectedDate = schedule.date ? parseISO(schedule.date) : undefined;
   const isVisitCompleted = visit?.status === "completed";
   const isVisitCancelled = visit?.status === "cancelled";
-  const calcTotal = (qty: string, price: string | null) => ((parseFloat(qty) || 0) * (parseFloat(price || "0") || 0)).toFixed(2);
-  const lineItemsTotal = lineItems.reduce((sum, li) => sum + (parseFloat(li.quantity) || 0) * (parseFloat(li.unitPrice || "0") || 0), 0);
+  // 2026-04-10 Phase E polish: bare parseFloat replaced with canonical parseMoney
+  // for the read-only display totals on the parts listing. Same semantics
+  // (invalid input → 0), one canonical money parser across the file.
+  const calcTotal = (qty: string, price: string | null) => (parseMoney(qty) * parseMoney(price)).toFixed(2);
+  const lineItemsTotal = lineItems.reduce((sum, li) => sum + parseMoney(li.quantity) * parseMoney(li.unitPrice), 0);
 
   return (
     <>
@@ -585,7 +637,7 @@ export function EditVisitModal({
                         {lineItems.length > 0 ? `${lineItems.length} item${lineItems.length !== 1 ? "s" : ""} · $${lineItemsTotal.toFixed(2)}` : "0 items"}
                       </span>
                     </button>
-                    <button onClick={(e) => { e.stopPropagation(); setAddingItem(true); setLineItemsExpanded(true); setCatalogSearch(""); }} className="text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-0.5"><Plus className="h-3 w-3" />Quick Add</button>
+                    <button onClick={(e) => { e.stopPropagation(); startAddRow(); }} className="text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-0.5"><Plus className="h-3 w-3" />Quick Add</button>
                   </div>
 
                   {/* Expandable body */}
@@ -599,7 +651,7 @@ export function EditVisitModal({
                             <div key={item.id} className="grid grid-cols-[1fr_52px_72px_72px] gap-2 px-4 py-2 items-center text-xs">
                               <span className="text-slate-700 truncate">{item.description}</span>
                               <span className="text-right text-slate-500">&times;{item.quantity}</span>
-                              <span className="text-right text-slate-500">${parseFloat(item.unitPrice || "0").toFixed(2)}</span>
+                              <span className="text-right text-slate-500">${parseMoney(item.unitPrice).toFixed(2)}</span>
                               <span className="text-right font-medium text-slate-700">${calcTotal(item.quantity, item.unitPrice)}</span>
                             </div>
                           ))}
@@ -611,38 +663,32 @@ export function EditVisitModal({
                         </div>
                       )}
 
-                      {/* Quick Add row — catalog-first search */}
-                      {addingItem && (
+                      {/* Quick Add row — canonical CreateOrSelectField + canonical draft */}
+                      {addingItem && newDraft && (
                         <div className="border-t border-slate-100 bg-emerald-50/15 relative">
                           <div className="grid grid-cols-[1fr_52px_72px_72px_56px] gap-2 px-4 py-1.5 items-center">
-                            <Popover open={catalogSearch.length >= 1} onOpenChange={() => {}}>
-                              <PopoverTrigger asChild>
-                                <div className="w-full">
-                                  <Input value={catalogSearch || newItem.description} onChange={(e) => { const v = e.target.value; setCatalogSearch(v); setNewItem(p => ({ ...p, description: v, productId: "" })); }}
-                                    className="h-7 text-xs" placeholder="Search products/services..." autoFocus />
-                                </div>
-                              </PopoverTrigger>
-                              <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start" sideOffset={2} onOpenAutoFocus={(e) => e.preventDefault()}>
-                                <div className="max-h-60 overflow-y-auto">
-                                  {filteredCatalog.map(p => (
-                                    <button key={p.id} onClick={() => handleSelectCatalogItem(p)} className="w-full text-left px-3 py-1.5 text-xs hover:bg-emerald-50 flex items-center justify-between">
-                                      <span className="truncate text-slate-700">{p.name}</span>
-                                      {p.unitPrice && <span className="text-slate-400 ml-2">${parseFloat(p.unitPrice).toFixed(2)}</span>}
-                                    </button>
-                                  ))}
-                                  {filteredCatalog.length === 0 && (
-                                    <div className="px-3 py-2 text-xs text-slate-500">
-                                      No matches — <button onClick={() => { setNewItem(p => ({ ...p, description: catalogSearch })); setCatalogSearch(""); }} className="text-emerald-600 font-semibold hover:underline">create &ldquo;{catalogSearch}&rdquo;</button>
-                                    </div>
-                                  )}
-                                </div>
-                              </PopoverContent>
-                            </Popover>
-                            <Input value={newItem.quantity} onChange={(e) => setNewItem(p => ({ ...p, quantity: e.target.value }))} className="h-7 text-xs text-right" />
-                            <Input value={newItem.unitPrice} onChange={(e) => setNewItem(p => ({ ...p, unitPrice: e.target.value }))} className="h-7 text-xs text-right" placeholder="0.00" />
-                            <span className="text-xs text-right text-slate-500">${calcTotal(newItem.quantity, newItem.unitPrice)}</span>
+                            {/* 2026-04-10 Phase B: canonical CreateOrSelectField + useProductSearch
+                                replaces the inline Popover catalog filter. Manual descriptions are
+                                still supported via the search-text fallback (no productId set). */}
+                            <QuickAddProductCell
+                              draft={newDraft}
+                              onSelect={handleSelectCatalogItem}
+                              onDescriptionChange={(value) =>
+                                setNewDraft((prev) =>
+                                  prev ? { ...prev, description: value, productId: null } : prev,
+                                )
+                              }
+                              onClear={() =>
+                                setNewDraft((prev) =>
+                                  prev ? { ...prev, productId: null } : prev,
+                                )
+                              }
+                            />
+                            <Input value={newDraft.quantity} onChange={(e) => setNewDraft(p => p ? { ...p, quantity: e.target.value } : p)} className="h-7 text-xs text-right" />
+                            <Input value={newDraft.unitPrice} onChange={(e) => setNewDraft(p => p ? { ...p, unitPrice: e.target.value } : p)} className="h-7 text-xs text-right" placeholder="0.00" />
+                            <span className="text-xs text-right text-slate-500">${calcTotal(newDraft.quantity, newDraft.unitPrice)}</span>
                             <div className="flex gap-0.5">
-                              <button onClick={handleSubmitNewItem} disabled={!newItem.description.trim() || addLineItemMutation.isPending} className="h-6 w-6 flex items-center justify-center rounded hover:bg-emerald-100 text-emerald-600 disabled:text-slate-300 disabled:hover:bg-transparent transition-colors" title="Save">
+                              <button onClick={handleSubmitNewItem} disabled={!newDraft.description.trim() || addLineItemMutation.isPending} className="h-6 w-6 flex items-center justify-center rounded hover:bg-emerald-100 text-emerald-600 disabled:text-slate-300 disabled:hover:bg-transparent transition-colors" title="Save">
                                 <Check className="h-3.5 w-3.5" />
                               </button>
                               <button onClick={cancelAddRow} className="h-6 w-6 flex items-center justify-center rounded hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors" title="Cancel">
@@ -691,5 +737,66 @@ export function EditVisitModal({
         <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Schedule Overlap</AlertDialogTitle><AlertDialogDescription>This technician already has a visit at this time.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogAction onClick={() => { setShowConflictAlert(false); onOpenChange(false); }}>OK</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
       </AlertDialog>
     </>
+  );
+}
+
+// ── Quick Add product cell using the canonical CreateOrSelectField ──
+//
+// 2026-04-10 Phase B: Replaces the inline Popover catalog filter inside the
+// EditVisitModal Quick Add row. Same shape as the per-row product cells in
+// PartsBillingCard / JobTemplateModal / PMTemplateEditorPage / QuoteTemplateModal.
+// The selected ProductOption is reconstructed from the canonical draft so the
+// chip renders without a parallel selectedProduct state.
+function QuickAddProductCell({
+  draft,
+  onSelect,
+  onDescriptionChange,
+  onClear,
+}: {
+  draft: LineItemDraft;
+  onSelect: (product: ProductOption) => void;
+  onDescriptionChange: (value: string) => void;
+  onClear: () => void;
+}) {
+  const [searchText, setSearchText] = useState("");
+  const { data: results = [], isLoading } = useProductSearch(searchText);
+
+  const selectedValue: ProductOption | null = draft.productId
+    ? {
+        id: draft.productId,
+        name: draft.description,
+        type: draft.productType ?? "product",
+        unitPrice: draft.unitPrice,
+        cost: draft.unitCost,
+      }
+    : null;
+
+  return (
+    <CreateOrSelectField<ProductOption>
+      label=""
+      compact
+      value={selectedValue}
+      onChange={(product) => {
+        if (product) {
+          onSelect(product);
+          setSearchText("");
+        } else {
+          onClear();
+          setSearchText("");
+        }
+      }}
+      searchResults={results}
+      searchLoading={isLoading}
+      searchText={searchText || (selectedValue ? "" : draft.description)}
+      onSearchTextChange={(text) => {
+        setSearchText(text);
+        // Manual-entry fallback: if no product is selected, mirror text to description
+        if (!draft.productId) onDescriptionChange(text);
+      }}
+      getKey={getProductKey}
+      getLabel={getProductLabel}
+      getDescription={getProductDescription}
+      placeholder="Search products/services..."
+    />
   );
 }

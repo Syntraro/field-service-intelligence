@@ -6,7 +6,307 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### Tech app: reversible workflow controls + Pause/Resume + visible Clock Out (2026-04-09)
+
+Five things in one surgical pass on the tech mobile app:
+
+1. **Clock Out parity (UI).** The clocked-in strip on `TodayPage.tsx` previously showed a tiny `text-xs font-semibold` "Out" link. It now uses the same height, padding, font weight, and visual hierarchy as the Clock In button — a primary destructive button labeled "Clock Out". `data-testid="button-clock-out"`.
+2. **Cancel Route.** New `POST /api/tech/visits/:visitId/cancel-route`. Reverts an `en_route` visit back to `scheduled`. The running travel time entry is stopped and discarded if it is sub-1-minute (see #5). The route history event is still recorded via `recordJobStatus("paused", ...)` so the audit trail captures the cancellation.
+3. **Cancel Start.** New `POST /api/tech/visits/:visitId/cancel-start`. Reverts an `in_progress` / `on_site` visit back to `en_route`. `checkedInAt` is **preserved** (mirrors the existing reopenVisit policy of not mutating historical labor data). The on-site time entry is stopped and discarded if sub-1-minute.
+4. **Pause Job + Resume Job.**
+   - New `POST /api/tech/visits/:visitId/pause` — visit transitions `in_progress` → `paused` (new visit status). The running on-site entry is stopped (sub-1-min discard).
+   - New `POST /api/tech/visits/:visitId/resume` — visit transitions `paused` → `in_progress`. A fresh on-site time entry is started.
+   - The new visit status `paused` is distinct from `on_hold` (office-side dispatch hold) so the dispatch board can show the difference.
+5. **Sub-1-minute segment discard.** New canonical helper `timeTrackingRepository.stopAndDiscardIfTrivial(companyId, technicianId, options)`. Stops a running time entry; if the raw elapsed time is `< 60_000` ms, hard-deletes the row. Wired into:
+   - `recordJobStatus` "paused" case (covers the cancel-route, cancel-start, and pause flows)
+   - `recordJobStatus` "completed" case (covers immediate-complete-after-start)
+   - `autoStopOpen` guard (covers the en-route/start chain when a tech overlaps actions)
+
+   Valid recorded time (`>= 1` actual minute) is always preserved. The threshold is computed from the raw `endAt - startAt` ms diff so a 30-second segment is discarded even though `Math.round(30/60) === 1`.
+
+**Locked product behavior verified by tests:**
+- A 30-second time entry is hard-deleted on stop.
+- A 90-second time entry is preserved (durationMinutes = 2 after `Math.round`).
+- `cancelVisitRoute` rejects when status is not `en_route`.
+- `cancelVisitStart` rejects when status is not `in_progress` / `on_site`. Preserves `checkedInAt`.
+- `pauseVisit` rejects when status is not `in_progress` / `on_site`.
+- `resumeVisit` rejects when status is not `paused`.
+- `recordJobStatus("resumed")` starts a fresh on-site time entry on the running tech.
+
+**Architecture preserved:**
+- `Route → Service → Storage`. New routes are thin wrappers over the existing canonical orchestrator pattern (load assigned visit → call orchestrator → mirror time-entry side effect via `recordJobStatus` → emit dispatch SSE → return merged shape).
+- All four new orchestrator functions (`cancelVisitRoute`, `cancelVisitStart`, `pauseVisit`, `resumeVisit`) follow the same shape as the existing `setVisitEnRoute` / `startVisit`: load → validate transition → update with version increment → `syncJobToVisits`.
+- Time entries are still owned by `timeTrackingRepository` exclusively. The new helper `stopAndDiscardIfTrivial` is the only path that deletes time_entry rows outside the existing admin `deleteTimeEntry` method, and it bypasses the audit log intentionally (per product decision: tech-side cancellations should not pollute the timesheet).
+- The `OWNER_ONLY` admin gate, `requireSchedulable` tech gate, and tenant isolation contracts are unchanged.
+- New tech-event status `"resumed"` added to `technicianJobStatusEnum`. New visit status `"paused"` added to `jobVisitStatusEnum`. Both columns are plain `text` in the live DB so no schema migration is required — the enum values are TypeScript-only constraints.
+
+**Files changed:**
+- **Schema:** `shared/schema.ts` — added `paused` to `jobVisitStatusEnum`, added `resumed` to `technicianJobStatusEnum`.
+- **Service:** `server/services/jobLifecycleOrchestrator.ts` — new intent types `CancelVisitRouteIntent`, `CancelVisitStartIntent`, `PauseVisitIntent`, `ResumeVisitIntent` + result types + four implementations.
+- **Storage:** `server/storage/timeTracking.ts` — new `stopAndDiscardIfTrivial` helper; new `case "resumed"` in `recordJobStatus` switch (starts fresh on-site entry); the `paused`, `completed`, and `autoStopOpen` paths now route through the discard helper.
+- **Routes:** `server/routes/techField.ts` — four new POST routes (`cancel-route`, `cancel-start`, `pause`, `resume`) following the same pattern as `en-route` / `start`.
+- **Tech UI hook:** `client/src/tech-app/hooks/useTechVisitDetail.ts` — four new mutations (`cancelRoute`, `cancelStart`, `pauseJob`, `resumeJob`) wired through `applyVisitUpdate`.
+- **Tech UI page:** `client/src/tech-app/pages/VisitDetailPage.tsx` — added Cancel Route button on the en_route strip, Cancel Start + Pause buttons on the on-site strip, Resume + Complete buttons on the new paused strip. `isActive` extended to include `paused`. Indicator color flips to amber when paused.
+- **Tech UI page:** `client/src/tech-app/pages/TodayPage.tsx` — Clock Out promoted to a real primary button matching Clock In's hierarchy. `JobCard.isActive` extended to include `paused`.
+- **Tech UI utils:** `client/src/tech-app/utils/visitDisplay.ts` — added `paused` label and color to `STATUS_LABELS` / `STATUS_COLORS`.
+- **Tests:** `tests/tech-visit-workflow-controls.test.ts` — 11 vitest cases (11 pass) covering the discard helper, all four orchestrator transitions (success + rejection paths), and the resumed time-entry case.
+- **Docs:** `CHANGELOG.md`, `docs/REFACTORING_LOG.md`.
+
+**Verification:**
+- `npm run check` → `tsc` exit 0.
+- `vitest run tests/tech-visit-workflow-controls.test.ts` → **11/11 pass**.
+
+#### Admin: Bulk Archived Jobs Cleanup tool (2026-04-09)
+
+New owner-only admin tool for permanently deleting archived jobs in batches. Reuses the canonical `jobRepository.deleteJob` storage path — no shortcut SQL, no audit log, preview-then-confirm flow.
+
+**Endpoints (gated by the existing `OWNER_ONLY` middleware on `/api/admin/*`):**
+- `POST /api/admin/jobs/bulk-cleanup/preview` — read-only. Returns `totalMatched`, `totalEligible`, `invoiceLinkedCount`, `unlinkedCount`, `warningRequired`, `warningMessage`, and a `sample` of up to 25 rows for visual review.
+- `POST /api/admin/jobs/bulk-cleanup/run` — executes in batches of 50. Refuses to proceed (HTTP 409) when invoice-linked archived jobs are in scope and `confirmed !== true`. With `confirmed: true`, processes all matched jobs and returns `{ attempted, deleted, skipped, failed, invoiceLinkedProcessed, failures[] }`.
+
+**Filters:**
+- `archivedOnly: true` (locked — the tool only operates on `status='archived'` jobs)
+- `olderThanDays?: number | null` (optional age cutoff using `COALESCE(updatedAt, createdAt)`)
+- `includeInvoiceLinked?: boolean | null` (when `false`, excludes any job linked via either `jobs.invoice_id` or `invoices.job_id`)
+- `limit?: number | null` (hard cap at 1000)
+
+**Confirmation flow:** the preview reports whether any in-scope archived jobs are linked to invoices. The run endpoint refuses to execute (409 with structured `{ warningRequired: true, message, invoiceLinkedCount, totalMatched }`) unless the caller explicitly passes `confirmed: true`. The exact warning message:
+
+> "Some archived jobs are linked to invoices. Deleting these jobs will keep the invoices, but detach them from the jobs. Do you still want to proceed?"
+
+**Canonical delete reuse:** the bulk service does NOT touch the jobs table directly except for read-side filtering. Each delete is delegated to `jobRepository.deleteJob`, which:
+- Detaches `invoices.job_id = NULL` for any invoice referencing the job (defense-in-depth alongside the `ON DELETE SET NULL` FK added in `migrations/2026_04_09_invoice_permanent_delete.sql`).
+- Cleans `attention_items` (no FK).
+- Hard-deletes the job row, triggering FK CASCADE on `job_visits`, `job_parts`, `job_notes`, `job_equipment`, `job_status_events`, `job_schedule_audit`, `job_expenses`, `labor_entries`, `technician_job_status_events`, and FK SET NULL on `tasks.job_id`, `time_entries.job_id`, `recurring_job_instances.generated_job_id`.
+
+**Failure handling:** each delete is its own transaction (inside `jobRepository.deleteJob`). One failure does NOT abort the batch — the per-job error is captured in the `failures` array and processing continues.
+
+**Admin UI:** new "Maintenance" tab on the Admin page (`client/src/pages/Admin.tsx`) hosts the new `BulkArchivedJobsCleanupCard` component. Filters → Preview → optional destructive warning dialog → Run → summary.
+
+**No audit log:** product decision. The cleanup is owner-only and runs against the operator's own tenant.
+
+**Files added:**
+- `server/services/bulkJobCleanupService.ts` — service with `previewBulkCleanup`, `runBulkCleanup`, and `isBulkCleanupWarning` type guard.
+- `client/src/components/admin/BulkArchivedJobsCleanupCard.tsx` — admin UI surface.
+- `tests/bulk-archived-jobs-cleanup.test.ts` — 8 vitest cases (8 pass).
+
+**Files changed:**
+- `server/routes/admin.ts` — registered the two new routes inside the existing owner-only sub-router.
+- `client/src/pages/Admin.tsx` — added the "Maintenance" tab and rendered the new card.
+- `CHANGELOG.md`, `docs/REFACTORING_LOG.md` — this entry.
+
+**Verification:**
+- `npm run check` → `tsc` exit 0.
+- `vitest run tests/bulk-archived-jobs-cleanup.test.ts` → 8/8 tests pass:
+  1. Preview returns 3 archived fixture jobs and excludes the open control.
+  2. Preview classifies invoice-linked jobs in BOTH directions and emits the warning.
+  3. `includeInvoiceLinked=false` excludes both linkage directions.
+  4. Run REFUSES with `confirmed=false` when invoice-linked jobs are in scope.
+  5. Run deletes the unlinked archived job WITHOUT confirmation when the filter excludes invoice-linked rows; child rows (`job_parts`, `job_visits`) are cascade-deleted.
+  6. Run with `confirmed=true` deletes invoice-linked archived jobs and leaves both invoices intact with `job_id = NULL` (detached cleanly).
+  7. The open control job is untouched after both runs.
+  8. Empty batch returns a clean zero-row result; `failures` array is the surface for per-job error capture.
+
+### Changed
+
+#### Bulk Archived Jobs Cleanup: destructive-warning polish + canonical activeTotal counts (2026-04-09)
+
+Surgical follow-up to the bulk cleanup tool. Three additive changes; no behavior change to the canonical delete path.
+
+1. **Persistent destructive note in the cleanup card.** `BulkArchivedJobsCleanupCard.tsx` now renders a destructive `Alert` above the filters/preview/run controls — visible **before** anyone clicks Preview. Exact copy: *"This permanently deletes jobs and related job records. This cannot be undone."* When a preview returns invoice-linked rows in scope (`preview.invoiceLinkedCount > 0`), a second line appears under it: *"Linked invoices will be kept, but detached from the deleted jobs."* The existing yes/no `AlertDialog` is unchanged. No second confirmation. No type-to-confirm.
+2. **Backend: `JobCounts.activeTotal` (additive).** `getJobCounts()` in `server/storage/jobsFeed.ts` now returns `activeTotal` alongside the existing `total`. `activeTotal = total - lifecycle.archived`, computed once on the server. The `total` field is unchanged for backward compatibility.
+3. **Frontend: `Jobs.tsx` switched to `counts.activeTotal`.** `client/src/pages/Jobs.tsx:380` previously did `counts.total - counts.lifecycle.archived` by hand. Replaced with the canonical `counts.activeTotal`. The default-counts fallback object now also carries `activeTotal: 0` so the loading-state shape stays in sync. The client mirror `JobCounts` interface in `client/src/hooks/useJobsFeed.ts` was extended to match.
+
+**Why:** the destructive note was the missing pre-click warning — the existing CardHeader description and the post-preview "Confirmation required" Alert both fired *after* the user had already engaged the tool. The activeTotal cleanup eliminates an ad-hoc subtraction pattern that any future counts consumer would have had to re-derive.
+
+**Constraints respected:**
+- Reused the existing bulk cleanup tool exactly as implemented. No new delete logic, no new audit logs, no new routes, no second confirmation surface.
+- Did not touch `server/services/bulkJobCleanupService.ts`, `server/storage/jobs.ts:deleteJob`, or any of the canonical delete plumbing.
+- Did not rewrite Jobs.tsx — only the single line that subtracted archived manually + the fallback shape.
+- Preserved the Route → Service → Storage architecture.
+
+**Files changed:**
+- `client/src/components/admin/BulkArchivedJobsCleanupCard.tsx` — added the persistent destructive `Alert` above the filters grid; conditional invoice-detach line gated on `preview.invoiceLinkedCount > 0`.
+- `server/storage/jobsFeed.ts` — added `activeTotal: number` to `JobCounts` interface; computed in `getJobCounts()` as `r.total - r.archived`.
+- `client/src/hooks/useJobsFeed.ts` — mirrored `activeTotal` on the client `JobCounts` interface.
+- `client/src/pages/Jobs.tsx` — `totalCount` switched from `counts.total - counts.lifecycle.archived` to `counts.activeTotal`; default-counts fallback object updated.
+
+**Files added:**
+- `tests/job-counts-active-total.test.ts` — 4 vitest cases against a real Neon tenant with 4 fixture jobs (one in each lifecycle bucket): shape, semantics (`activeTotal === total - archived`), exact math (`total=4, archived=1, activeTotal=3`), and `total` parity (sum of lifecycle buckets).
+- `tests/bulk-cleanup-card-copy.test.ts` — 5 source-level cases that lock the destructive copy strings, the `preview.invoiceLinkedCount > 0` gate on the follow-up line, the testid surface, and the position above the filters grid.
+- `tests/jobs-page-counts-consumer.test.ts` — 3 source-level cases that lock the use of `counts.activeTotal`, forbid the manual `counts.total - counts.lifecycle.archived` subtraction, and verify the fallback object carries `activeTotal: 0`.
+
+**Verification:**
+- `npm run check` → `tsc` exit 0.
+- `vitest run tests/job-counts-active-total.test.ts` → **4/4 pass**.
+- `vitest run tests/bulk-cleanup-card-copy.test.ts tests/jobs-page-counts-consumer.test.ts` → **8/8 pass**.
+- Regression check: `vitest run tests/bulk-archived-jobs-cleanup.test.ts` → **8/8 pass** (existing bulk cleanup integration tests unaffected).
+
+#### Invoices: permanent-delete model + detachable job/invoice linkage (2026-04-09)
+
+Replaces the half-built invoice soft-delete system (no writers, drift in production, broken `createInvoiceFromJob` idempotency loop) with a permanent-delete model where jobs and invoices are independent records connected by detachable foreign keys.
+
+**Locked product decisions:**
+1. No invoice soft delete. The `is_active` and `deleted_at` columns are dropped.
+2. Deleting an invoice does NOT break the linked job. The job's `invoice_id` is auto-cleared by `ON DELETE SET NULL`.
+3. Deleting a job does NOT break the linked invoice. A new FK on `invoices.job_id ON DELETE SET NULL` (added in this migration) auto-clears the back-pointer; the storage layer also detaches it explicitly inside its delete transaction as defense-in-depth.
+4. Dependent child records cascade-delete with their parent (`invoice_lines`, `payments`, `invoice_tax_lines` for invoices; `job_visits`, `job_parts`, `job_notes`, `job_equipment`, `job_status_events`, `job_schedule_audit`, `job_expenses`, `labor_entries`, `technician_job_status_events` for jobs).
+5. Children that survive: `time_entries`, `tasks`, `recurring_job_instances` for jobs (history outlives the job); `pm_billing_events`, `qbo_sync_events` for invoices (audit/billing trail).
+
+**Migration applied:** `migrations/2026_04_09_invoice_permanent_delete.sql` (applied 2026-04-09 19:28 UTC).
+- Hard-deletes the 4 stale soft-deleted draft invoices that were poisoning the unique index.
+- Drops `invoices.is_active` and `invoices.deleted_at`.
+- Creates the missing `invoice_tax_lines` table (declared in `shared/schema.ts` and referenced by 5 server files but never migrated to the live DB) with the FK to `invoices(id) ON DELETE CASCADE`.
+- Adds `invoices.job_id REFERENCES jobs(id) ON DELETE SET NULL`.
+
+**Fixes the "Invoice not found" bug** that surfaced after job-template-apply + close. Root cause: `createInvoiceFromJob`'s idempotency check filtered by `activeInvoiceFilter()`, missed the soft-deleted row, fell through to INSERT, hit the `invoices_company_job_uq` unique constraint (which did not exclude soft-deleted rows), and the fallback handler — also filtered — couldn't recover. The chain is now structurally impossible: there are no soft-deleted invoice rows, the unique constraint slots free up automatically on hard delete, and the FK SET NULL keeps `jobs.invoice_id` clean.
+
+**Files changed:**
+- `migrations/2026_04_09_invoice_permanent_delete.sql` (new)
+- `shared/schema.ts` — dropped `invoices.isActive` + `invoices.deletedAt` columns and the matching fields from `updateInvoiceSchema`
+- `server/storage/invoices.ts` — added `deleteInvoice(companyId, invoiceId)` transactional method (eligibility checks: draft only, not QBO-synced, zero payments; clears `time_entries` lock state; explicit `invoice_tax_lines` delete; then DB cascades). Removed all 8 `activeInvoiceFilter()` call sites and the `isActive` field from select projections.
+- `server/storage/invoicesFeed.ts` — deleted the `activeInvoiceFilter()` function, removed it from the export, removed `isActive` from `InvoiceFeedItem` type and the row mapper, removed the filter from `getInvoicesFeed` + `getInvoiceStats` + the overdue query.
+- `server/storage/dashboard.ts` — removed `activeInvoiceFilter()` import and inline `isActive = true` guards.
+- `server/storage/reports.ts` — removed AR aging soft-delete guard.
+- `server/storage/jobs.ts` — rewrote `deleteJob` as transactional unconditional permanent delete with explicit `invoices.job_id` detach. The conditional soft-delete branch and the belt-and-suspenders dual-source invoice check are gone.
+- `server/storage/index.ts` — registered `deleteInvoice` in the storage facade.
+- `server/routes/invoices.ts` — added `DELETE /api/invoices/:id` route (the frontend has had a `deleteMutation` calling this endpoint for some time; the route was the missing piece). Maps `notFoundError` → 404, `conflictError` → 409.
+- `server/routes/admin.ts` — replaced soft-delete bucket counts with status breakdown in the admin diagnostic + health-check routes.
+- `server/routes/portal.ts` — removed soft-delete guards from customer-portal invoice queries.
+- `server/services/qbo/QboMapper.ts` — removed soft-delete checks from `validateInvoiceForSync` and `shouldSyncInvoice`.
+- `server/services/qbo/QboSyncOrchestrator.ts` — removed soft-delete filters from `syncAllUnsynced`'s invoice query.
+- `server/lib/queryHelpers.ts` — updated documentation comment to note `activeInvoiceFilter` is gone.
+- `client/src/pages/InvoiceDetailPage.tsx` — replaced bare `<div>Invoice not found</div>` with a friendly error state including a "Back to invoices" button. The existing Delete Draft button + confirm dialog + mutation chain are unchanged — they were already wired to the now-existing backend route.
+- `CHANGELOG.md` — this entry.
+- `docs/REFACTORING_LOG.md` — full refactor write-up.
+
+**Verification:**
+- `npm run check` → `tsc` exit 0 (clean).
+- Live DB end-to-end behavior verification (24/24 PASS, all fixtures rolled back via savepoint):
+  - invoice delete leaves linked job intact and clears `jobs.invoice_id` (FK SET NULL fires)
+  - job delete leaves linked invoice intact and clears `invoices.job_id` (FK SET NULL fires)
+  - invoice delete cascades `invoice_lines`, `payments`, `invoice_tax_lines`
+  - job delete cascades `job_parts`, `job_visits` (and the other 9 cascade children)
+  - `time_entries` lock state release before invoice delete leaves the time entry intact with all lock fields cleared
+  - unique `(company_id, invoice_number)` frees up after delete (proves the soft-delete-driven 23505 loop is gone)
+  - `invoices.is_active` and `invoices.deleted_at` dropped from the live schema
+  - all three FK constraints in place (`invoices.job_id` SET NULL, `jobs.invoice_id` SET NULL, `invoice_tax_lines.invoice_id` CASCADE)
+- Grep across `server/`, `client/`, `shared/`: zero remaining live references to `activeInvoiceFilter`, `invoices.isActive`, or `invoices.deletedAt`. Only dated removal-comment annotations remain.
+
+**Out of scope:**
+- The 714 archived jobs in `jobs` (`status='archived'` is an intentional lifecycle state, not a delete; cleanup is a separate product decision).
+- The drift detector script's stale `jobs.job_type` nullability check (unrelated to this work).
+
+#### QBO outbound payment sync — wired & inbound reconcile retired (2026-04-09)
+
+Completes the one-way outbound QuickBooks payment sync that was scaffolded earlier in the day. The data model, mapper, service, orchestrator, logger, and `maybeSyncPaymentToQbo` helper were already in place. This pass wires those into live HTTP routes, retires the conflicting inbound reconcile-apply path, and exposes the company-level toggle in the QBO console.
+
+**Locked product decisions enforced:**
+1. App is the source of truth — QBO mirrors local actions when payment sync is enabled.
+2. One-way sync only (App → QBO). Inbound payment import is retired.
+3. Optional company-level toggle (`companies.qbo_payment_sync_enabled`); default off.
+4. Payment correction supported: create, update, void (mapped to QBO `void` to preserve audit trail).
+5. No silent divergence — failures write `payments.qbo_sync_status = 'ERROR'` and a `qbo_sync_events` row.
+6. No dual writers — QBO sync code never touches `invoices.amount_paid / balance / status`. The canonical writer is `paymentRepository.recalculateInvoiceBalance` (unchanged).
+
+**Wiring (server):**
+- `server/routes/payments.ts` — POST/PATCH/DELETE now invoke `maybeSyncPaymentToQbo` AFTER local canonical reconciliation has committed. The DELETE handler captures a tenant-isolated `payments` snapshot BEFORE deletion so the QBO void call can read `qboPaymentId` / `qboSyncToken`. All hooks are `void`-fired so the HTTP response is sent first; helper never throws. Errors surface on `payments.qbo_sync_status` for the UI.
+- `server/routes/qbo.ts` — Added `GET/PUT /api/qbo/payment-sync` (toggle read/write) and `POST /api/qbo/sync/payment/:id` (manual retry). The retry endpoint reuses the same helper as the post-write hook so behavior is identical; it surfaces a synchronous 400 if the toggle is off so the user knows why nothing happened.
+
+**Inbound reconcile retired:**
+- `server/services/qbo/QboReconciliationService.ts` — `reconcileApply` no longer imports payments or mutates invoice fields. It now logs a `RECONCILE_APPLY` SKIPPED event and returns a structured "retired" result. The dual-writer `updateInvoiceBalance` private helper and the dead `mapQboPaymentMethod` helper were deleted. `reconcileDryRun` (read-only diagnostic) is preserved for admins troubleshooting drift.
+- `server/services/qbo/QboQueueProcessor.ts` — `RECONCILE_APPLY` action is refused at the queue layer with `retryable: false` and a clear error message, so any pre-retirement queued jobs fail loudly instead of silently mutating state. `RECONCILE` (dry-run only) is preserved.
+- `server/routes/qbo.ts` — `POST /api/qbo/reconcile/invoice/:id/apply` returns `410 Gone` with an explanatory body. The handler no longer touches the service.
+
+**UI:**
+- `client/src/pages/QboConsolePage.tsx` —
+  - Added the payment sync toggle to the Go-Live card with on/off badge, an Enable/Disable button, and a warning when the user enables payment sync while the master `qboEnabled` toggle is still off.
+  - Removed the `Reconcile (Apply)` button, the `Apply Confirmation` AlertDialog, and the `reconcileApplyMutation` / `showApplyConfirm` / `handleApplyConfirm` state. The Reconcile (Preview) button stays as a read-only diagnostic.
+  - Replaced misleading copy. The Invoice Sync Actions card now explains explicitly that the app is the source of truth for payments.
+  - Added `PAYMENT_CREATE / UPDATE / DELETE` to the event-type filter; marked `RECONCILE_APPLY` and `PAYMENT_CREATED_FROM_QBO` as "retired" in the filter labels (kept selectable so historical rows can still be queried).
+
+**Files changed:**
+- `server/routes/payments.ts` — wire create/update/delete to outbound sync; snapshot-before-delete.
+- `server/routes/qbo.ts` — add `GET/PUT /api/qbo/payment-sync`, add `POST /api/qbo/sync/payment/:id`, retire `POST /api/qbo/reconcile/invoice/:id/apply`.
+- `server/services/qbo/QboReconciliationService.ts` — retire `reconcileApply`, delete dead helpers, header rewritten.
+- `server/services/qbo/QboQueueProcessor.ts` — refuse `RECONCILE_APPLY` at queue layer.
+- `client/src/pages/QboConsolePage.tsx` — add payment sync toggle, remove apply button + dialog, add new event types.
+- `CHANGELOG.md` — this entry.
+
+**Files NOT changed (already in place from earlier 2026-04-09 pass):**
+- `shared/schema.ts` — `payments.qbo_payment_id / qbo_sync_token / qbo_sync_status / qbo_sync_error / qbo_last_synced_at`, `companies.qbo_payment_sync_enabled`, `qbo_sync_events.payment_id`, `PAYMENT_CREATE/UPDATE/DELETE` event types.
+- `migrations/2026_04_09_qbo_payment_sync.sql` — additive migration for the above.
+- `server/services/qbo/QboMapper.ts` (re-exports from `server/qbo/mappers.ts`) — `toQboPaymentPayload` + `validatePaymentForSync`.
+- `server/services/qbo/QboPaymentService.ts` — create/update/delete (void) operations with sync-status tracking; never mutates invoice financial fields.
+- `server/services/qbo/QboSyncOrchestrator.ts` — `syncPayment(id, action, snapshot?)`.
+- `server/services/qbo/QboClient.ts` — `createPayment` / `updatePayment` / `voidPayment`.
+- `server/services/qbo/QboSyncLogger.ts` — `logPaymentSuccess / Failure / Skipped`.
+- `server/services/qbo/maybeSyncPayment.ts` — fire-and-forget helper that gates on the toggle and surfaces failures via `payments.qbo_sync_status`.
+- `server/services/qbo/QboReadService.ts` — preserved as a read-only fetcher used by `reconcileDryRun`. Does not write any local payment state.
+- `server/services/qbo/QboWebhookService.ts` — preserved. Invoice events still enqueue `RECONCILE` (dry-run only); Payment events create drift alerts only. No webhook path can create local payments.
+
+**Migration:** `2026_04_09_qbo_payment_sync.sql` is additive (5 columns on `payments`, 1 column on `companies`, 1 column on `qbo_sync_events`, 1 partial unique index for QBO payment idempotency). Apply with `npm run db:migrate:one -- migrations/2026_04_09_qbo_payment_sync.sql`. Defaults are off, so existing companies retain the current local-only payment behavior until they explicitly enable the toggle.
+
+**Verification:**
+- `npm run check` → `tsc` exit 0 (clean).
+- Grep confirms no live caller of `reconcileApply` other than the service itself (the route returns 410, the queue processor refuses the action, the UI mutation was removed).
+- Grep confirms no remaining `PAYMENT_CREATED_FROM_QBO` event writers in the codebase (the only producer was the deleted apply path).
+- Outbound invoice sync paths (`server/services/qbo/QboInvoiceService.ts`, `server/qbo/mappers.ts toQboInvoicePayload`, sync routes) untouched.
+- Tenant isolation preserved on every new query (`companyId` filter on all `payments` and `companies` reads/writes).
+- Locked rule #6 (no dual writers) enforced architecturally: the only file that touches `invoices.amountPaid / balance / status` remains `server/storage/payments.ts:recalculateInvoiceBalance`; QBO sync code only writes to `payments.qbo_*` columns.
+
+#### P9-P10 Phase A: Canonical line-item swap on Invoice, Quote, Quote Template surfaces (2026-04-09)
+
+Surgical client-side migration of three line-item editing surfaces to the canonical line-item layer. Backend stabilization (canonical Zod schema, mapper, payload adapters) was completed in earlier passes; this is the consumer adoption pass for the lowest-risk surfaces. Phase B (PartsBillingCard, JobTemplateModal, PMTemplateEditorPage, EditVisitModal), Phase C (tech app), and Phase D (PartsSelectorModal) are out of scope for this pass.
+
+**Migrated surfaces:**
+- `client/src/pages/InvoiceDetailPage.tsx` — `AddLineItemRow` and `SortableLineRow` now use a single `LineItemDraft` for editing instead of 5 / 3 separate state vars. Selection runs through `catalogItemToDraft(productOptionToCatalogItem(product))`. Edit mode hydrates via `hydrateDraft(line)`. Save mutations (`addLineMutation`, `updateLineMutation`) accept `LineItemDraft` and serialize via `draftToInvoiceLinePayload`. Edit mode now preserves `unitCost`, `taxRate`, `taxAmount` from the original line because they round-trip through the draft.
+- `client/src/pages/QuoteDetailPage.tsx` — Add-line dialog state collapsed from 5 vars (`newLineDescription`, `newLineQuantity`, `newLinePrice`, `newLineProductId`, `selectedProduct`) into one `LineItemDraft`. The selector's value is reconstructed from the draft, eliminating the parallel `selectedProduct` source of truth. `addLineMutation` accepts `LineItemDraft` and projects via `draftToQuoteLinePayload`. Line subtotal/total computed in canonical money helpers (`parseMoney` / `formatMoney`).
+- `client/src/components/QuoteTemplateModal.tsx` — Local `LineItemDraft` shadow interface deleted. Editor now imports the canonical `LineItemDraft` from `@shared/lineItem`. New rows via `blankDraft({source: "template"})`. Loaded rows via `hydrateDraft`. Catalog selection via `catalogItemToDraft(productOptionToCatalogItem(product), { quantity })` (preserves the user's existing quantity on a late product swap). Save payload generated by a single local projection function `templateLineFromDraft(draft, sortOrder)` — the lightweight template line shape on the wire is unchanged (templates intentionally don't store tax/total fields).
+
+**New canonical adapter:**
+- `client/src/lib/entities/productEntity.ts` — Added `productOptionToCatalogItem(p: ProductOption): CatalogItem`. The catalog search hook returns the narrow `ProductOption` shape (5 fields) while `catalogItemToDraft` accepts the wider `CatalogItem` shape (12 fields). This adapter is the only sanctioned bridge — call sites use it as `catalogItemToDraft(productOptionToCatalogItem(product))`.
+
+**Backend hardening (PATCH schema drift fix):**
+- `shared/lineItem.ts` — `moneyString` exported (was previously a private const) so route-local schemas can extend their partial-update validators with the canonical money shape instead of redefining `z.number()` per field.
+- `server/routes/invoices.ts` — `updateInvoiceLineSchema` (PATCH `/api/invoices/:id/lines/:lineId`) now uses `moneyString.optional()` for `quantity`, `unitPrice`, `unitCost`, `lineSubtotal`, `taxRate`, `taxAmount`, `lineTotal` instead of inline `z.number()`. This closes the contract drift identified in the payment-system audit (silent zod coercion was masking a string-on-the-wire / number-in-the-schema mismatch). Behavior is unchanged for existing callers; this is a contract-cleanup pass aligning the PATCH schema with the canonical `canonicalLineItemInput` shape used by the POST route.
+
+**Architecture preserved:**
+- `LineItemDraft`, `catalogItemToDraft`, `hydrateDraft`, `blankDraft`, `draftToInvoiceLinePayload`, `draftToQuoteLinePayload`, `CreateOrSelectField`, `useProductSearch` are unchanged. All the canonical layer was already in place.
+- `ProductOption` and `CatalogItem` types unchanged. The new adapter bridges them without modifying either.
+- Quote template line tables (`quote_template_lines`) unchanged — templates are content references and intentionally don't store tax/total fields. The canonical draft is projected down to the lightweight wire shape locally.
+- `useProductsServices` (admin Products & Services manager) untouched — it's a CRUD admin tool, not a catalog selector.
+- DnD reorder, query invalidation, error toasts, dialog state, loading states, and all `data-testid` attributes preserved.
+
+**Files NOT changed (out of scope for Phase A):**
+- `PartsBillingCard.tsx`, `JobTemplateModal.tsx`, `PMTemplateEditorPage.tsx`, `EditVisitModal.tsx`, `tech-app/pages/VisitDetailPage.tsx`, `PartsSelectorModal.tsx` — Phases B / C / D of the migration plan.
+- Tax application (`batchApplyLineTax`), invoice/quote line storage methods, `recalculateInvoiceTotalsInTx`, the rest of the invoice routes — performance baseline + scope discipline.
+
+**Verification:** Typecheck clean (`npm run check` → `tsc` exit 0). Grep confirms zero remaining inline `handleSelectProduct` mappers in the three migrated surfaces, zero inline payload object construction in their mutations, and zero uses of `parseFloat` on money fields in the migrated code (all money flows through `parseMoney` / `formatMoney`).
+
 ### Fixed
+
+#### Office Timesheets: shift totals now sourced from work_sessions, not time_entries (2026-04-08)
+
+Surgical render-path fix for the office Timesheets page. Closed clock-in/out shifts (and any clocked time without visit-based labor slices) were invisible because the displayed totals were computed from `time_entries` aggregates while the data on disk lived in `work_sessions`. The page already fetched `/api/payroll/weekly` (work_sessions summaries), but the response was only used for the approval pill and CSV-button enable state — never for displayed minutes.
+
+**Behavior change:**
+- Top strip "total" and the per-day totals row at the bottom of the weekly grid now read from `currentSummary` (work_sessions, payroll attendance source of truth) via `currentSummary?.totalMinutes` and `currentSummary?.daily[i]?.totalMinutes`.
+- Per-job grid rows below the totals row continue to come from `time_entries` (job/labor breakdown). Job-row totals still update live with unsaved cell edits.
+- During unsaved cell edits, the column totals row reflects the work_sessions baseline rather than the in-progress edited sum. Per-row totals still reflect edits. After save and refetch, both converge.
+
+**Architecture preserved:**
+- `work_sessions` remains the payroll/attendance source of truth.
+- `time_entries` remains the labor/job-slice breakdown.
+- No new endpoints, no new queries, no schema changes, no write-path changes, no new tables, no fake labor rows.
+- Approval pill (`currentSummary?.approved`), Approve mutation, CSV export button enable/disable, week navigation, technician selection, and save/reset behavior for manual entries are all untouched.
+
+**Files changed:**
+- `client/src/pages/PayrollPage.tsx` — Removed the dead `useMemo` that summed `jobRows` into `dayTotals`/`grandTotal` (no remaining consumers after the swap). Replaced three render sites: strip total at the technician card, per-day totals row cells, and the grand-total cell in the totals row. Added a bug-fix comment at the deletion site explaining the architectural rationale.
+
+**Verification:** Typecheck clean. No remaining live references to `dayTotals` or `grandTotal` in `PayrollPage.tsx`.
 
 #### Invoice lifecycle status normalization (2026-04-08)
 

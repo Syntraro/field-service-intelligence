@@ -1,4 +1,4 @@
-import type { CustomerCompany, Client, Invoice, InvoiceLine, QboMappingConfig } from "@shared/schema";
+import type { CustomerCompany, Client, Invoice, InvoiceLine, Payment, QboMappingConfig } from "@shared/schema";
 
 // QBO Customer/Sub-Customer JSON payload interfaces
 export interface QBOAddress {
@@ -682,3 +682,143 @@ export function extractLocationIdFromMemo(memo: string | null): string | null {
   const match = memo.match(/\(Location ID: ([^)]+)\)/);
   return match ? match[1] : null;
 }
+
+// ============================================================
+// PAYMENT MAPPERS: APP -> QBO
+// ============================================================
+//
+// 2026-04-09: Outbound payment sync (one-way only). Locked product decisions:
+//   - App is the source of truth; QBO mirrors.
+//   - QBO sync NEVER mutates invoice.amountPaid / balance / status.
+//   - Each local payment maps 1:1 to a QBO Payment row. The local payment
+//     model has one invoice per payment, so QBO Payment.Line[].LinkedTxn[]
+//     always has exactly one entry pointing at the parent invoice.
+//   - Payment delete in our app maps to QBO `void` (preserves audit trail in
+//     QBO accounting), not `delete`.
+//   - The mapper produces a payload only. Field validation lives in
+//     validatePaymentForSync (server/services/qbo/QboMapper.ts).
+
+/**
+ * QBO Payment line item — references the linked invoice transaction.
+ * Each payment in our app has exactly one LinkedTxn entry.
+ */
+export interface QBOPaymentLine {
+  Amount: number;
+  LinkedTxn: Array<{
+    TxnId: string;   // QBO Invoice.Id
+    TxnType: "Invoice";
+  }>;
+}
+
+/**
+ * QBO Payment payload (the wire shape sent to POST /payment).
+ * For updates, Id and SyncToken must be set.
+ */
+export interface QBOPaymentPayload {
+  Id?: string;            // Only for updates / void
+  SyncToken?: string;     // Required for updates / void
+  TotalAmt: number;
+  CustomerRef: { value: string };
+  TxnDate: string;        // ISO date YYYY-MM-DD
+  Line: QBOPaymentLine[];
+  PaymentMethodRef?: { value: string };  // QBO PaymentMethod.Id (optional — QBO has its own list)
+  PaymentRefNum?: string;                // Cheque #, transaction id, etc.
+  PrivateNote?: string;                  // Internal note (not visible to customer in QBO)
+  CurrencyRef?: { value: string };
+  // For voids:
+  void?: boolean;
+}
+
+/**
+ * QBO Payment response (the wire shape returned by POST /payment).
+ */
+export interface QBOPaymentResponse {
+  Id: string;
+  SyncToken: string;
+  TotalAmt: number;
+  CustomerRef: { value: string; name?: string };
+  TxnDate: string;
+  Line?: QBOPaymentLine[];
+  PaymentMethodRef?: { value: string; name?: string };
+  PaymentRefNum?: string;
+  PrivateNote?: string;
+  MetaData?: {
+    CreateTime: string;
+    LastUpdatedTime: string;
+  };
+}
+
+/**
+ * Maps a local Payment + parent Invoice to a QBO Payment payload.
+ *
+ * Caller is responsible for ensuring `invoice.qboInvoiceId` is set
+ * (validated separately by `validatePaymentForSync`). The customer ref
+ * comes from the invoice's CustomerRef (resolved via the same
+ * `determineCustomerRefId` logic the invoice service uses) — this
+ * function takes the resolved id directly so the mapper stays pure.
+ *
+ * `forUpdate` controls whether `Id` and `SyncToken` are included for
+ * QBO update / void operations. Updates require both.
+ */
+export function toQboPaymentPayload(
+  payment: Payment,
+  invoice: Invoice,
+  customerRefId: string,
+  forUpdate: boolean = false,
+): QBOPaymentPayload {
+  // QBO uses ISO date strings without time components
+  const txnDate = payment.receivedAt
+    ? new Date(payment.receivedAt).toISOString().split("T")[0]
+    : new Date().toISOString().split("T")[0];
+
+  const amountNum = parseFloat(payment.amount);
+  if (!Number.isFinite(amountNum) || amountNum <= 0) {
+    throw new Error(`Invalid payment amount for QBO sync: ${payment.amount}`);
+  }
+
+  if (!invoice.qboInvoiceId) {
+    throw new Error("Cannot build QBO payment payload: parent invoice has no qboInvoiceId");
+  }
+
+  const payload: QBOPaymentPayload = {
+    TotalAmt: amountNum,
+    CustomerRef: { value: customerRefId },
+    TxnDate: txnDate,
+    Line: [
+      {
+        Amount: amountNum,
+        LinkedTxn: [
+          {
+            TxnId: invoice.qboInvoiceId,
+            TxnType: "Invoice",
+          },
+        ],
+      },
+    ],
+  };
+
+  // Optional fields — only include when present so the QBO payload is minimal
+  if (payment.reference) {
+    payload.PaymentRefNum = payment.reference;
+  }
+
+  // Append a stable correlation marker to PrivateNote for round-trip identification
+  // (helps support: a manual QBO query can find the matching local payment).
+  const noteParts: string[] = [];
+  if (payment.notes) noteParts.push(payment.notes);
+  noteParts.push(`(Local payment ID: ${payment.id})`);
+  payload.PrivateNote = noteParts.join(" ");
+
+  if (invoice.currency && invoice.currency !== "CAD") {
+    payload.CurrencyRef = { value: invoice.currency };
+  }
+
+  // For updates / voids, include Id and SyncToken
+  if (forUpdate && payment.qboPaymentId && payment.qboSyncToken) {
+    payload.Id = payment.qboPaymentId;
+    payload.SyncToken = payment.qboSyncToken;
+  }
+
+  return payload;
+}
+

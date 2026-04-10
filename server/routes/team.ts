@@ -25,6 +25,7 @@ import {
 import { getRolesWithPermissions } from "../permissions";
 import { ensureRolesAndPermissionsSeeded } from "./roles";
 import { filterSchedulableTechnicians } from "../domain/scheduling";
+import { timeTrackingRepository } from "../storage/timeTracking";
 
 const router = Router();
 
@@ -281,6 +282,34 @@ router.get(
     }));
 
     res.json(result);
+  })
+);
+
+// GET /api/team/technicians/live-state - 2026-04-10
+// Dispatcher visibility projection: derived clocked_in/clocked_out + en_route /
+// on_site / paused / idle for every schedulable technician. Single canonical
+// projection used by the dispatch board sidebar so the office never has to
+// stitch attendance + visit state on the client.
+//
+// Same auth model as the other technicians endpoints (read-only, all auth
+// users can read; the global tenantIsolation middleware enforces companyId).
+router.get(
+  "/technicians/live-state",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const members = await storage.getTeamMembers(companyId);
+    // Match the schedulable filter used by the existing /technicians endpoint
+    // so the live-state map and the technician roster always agree on which
+    // techs exist.
+    const { schedulable } = filterSchedulableTechnicians(
+      members,
+      "GET /api/team/technicians/live-state",
+    );
+    const ids = schedulable.map((m) => m.id);
+
+    const states = await timeTrackingRepository.getTechnicianLiveStates(companyId, ids);
+
+    res.json(states);
   })
 );
 

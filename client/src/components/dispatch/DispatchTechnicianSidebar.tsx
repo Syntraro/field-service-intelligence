@@ -2,14 +2,45 @@
  * DispatchTechnicianSidebar — left column with technician names/avatars.
  * Each row aligns with a DispatchLaneRow in the timeline.
  * Splits technicians into working (on-shift) and off-shift groups.
+ *
+ * 2026-04-10: Renders a small live-state chip next to each tech name (Clocked
+ * Out / Clocked In / En Route / On Site / Paused). The state is sourced from
+ * the canonical /api/team/technicians/live-state projection — no client-side
+ * stitching of attendance + visit state.
  */
+import { useMemo } from "react";
 import type { Technician } from "./dispatchPreviewTypes";
 import { UNASSIGNED_TECH_ID } from "./dispatchPreviewTypes";
 import { LANE_HEIGHT_PX, DIVIDER_HEIGHT_PX } from "./dispatchPreviewUtils";
+import { useTechnicianLiveStates, type TechnicianLiveState } from "@/hooks/useTechnicians";
 
 type Props = {
   technicians: Technician[];
 };
+
+/**
+ * Color mapping for the live-state chip. Reuses the same palette family the
+ * dispatch board already uses for visit status (visitStatusColor in
+ * dispatchPreviewUtils.ts) so En Route/On Site/Paused render in identical
+ * colors at the tech level and the visit level.
+ */
+function liveStateChipClasses(state: TechnicianLiveState | undefined): string {
+  if (!state) return "bg-slate-100 text-slate-500 border-slate-200";
+  switch (state.activityStatus) {
+    case "paused":
+      return "bg-yellow-50 text-yellow-800 border-yellow-200";
+    case "on_site":
+      return "bg-lime-50 text-lime-800 border-lime-300";
+    case "en_route":
+      return "bg-amber-50 text-amber-700 border-amber-200";
+    case "idle":
+    default:
+      // No active visit — fall back to attendance.
+      return state.attendanceStatus === "clocked_in"
+        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+        : "bg-slate-100 text-slate-500 border-slate-200";
+  }
+}
 
 /** Thin separator between working and off-shift groups — explicit height matches all board columns */
 function OffShiftDivider() {
@@ -27,6 +58,16 @@ export default function DispatchTechnicianSidebar({ technicians }: Props) {
   const working = technicians.filter(t => t.isWorking !== false);
   const offShift = technicians.filter(t => t.isWorking === false);
 
+  // 2026-04-10: Live state map keyed by technician id. Sourced from the
+  // canonical /api/team/technicians/live-state projection. The hook returns
+  // an empty array on first paint and SSE-invalidated refreshes — both safe.
+  const { states } = useTechnicianLiveStates();
+  const liveStateById = useMemo(() => {
+    const m = new Map<string, TechnicianLiveState>();
+    for (const s of states) m.set(s.technicianId, s);
+    return m;
+  }, [states]);
+
   return (
     <div className="flex-shrink-0 border-r bg-white">
       {/* Header spacer — aligns with hour header row */}
@@ -38,6 +79,8 @@ export default function DispatchTechnicianSidebar({ technicians }: Props) {
       {working.map((t, i) => {
         const isUnassigned = t.id === UNASSIGNED_TECH_ID;
         const hasNext = i < working.length - 1 || offShift.length > 0;
+        // 2026-04-10: live state chip — only for real techs, not the Unassigned virtual row
+        const liveState = isUnassigned ? undefined : liveStateById.get(t.id);
         return (
           <div
             key={t.id}
@@ -59,7 +102,19 @@ export default function DispatchTechnicianSidebar({ technicians }: Props) {
             >
               {t.initials}
             </div>
-            <p className={`truncate text-[13px] font-medium leading-tight ${isUnassigned ? "text-slate-500 italic" : "text-foreground"}`}>{t.name}</p>
+            <div className="min-w-0 flex-1">
+              <p className={`truncate text-[13px] font-medium leading-tight ${isUnassigned ? "text-slate-500 italic" : "text-foreground"}`}>{t.name}</p>
+              {!isUnassigned && liveState && (
+                <span
+                  className={`mt-0.5 inline-block rounded-full border px-1.5 py-px text-[9px] font-medium leading-none ${liveStateChipClasses(liveState)}`}
+                  data-testid={`tech-live-state-${t.id}`}
+                  data-state={liveState.activityStatus === "idle" ? liveState.attendanceStatus : liveState.activityStatus}
+                  title={liveState.label}
+                >
+                  {liveState.label}
+                </span>
+              )}
+            </div>
           </div>
         );
       })}

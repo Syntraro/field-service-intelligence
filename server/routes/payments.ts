@@ -15,9 +15,16 @@ import { AuthedRequest } from "../auth/tenantIsolation";
 import { paymentRepository } from "../storage/payments";
 import { invoiceRepository } from "../storage/invoices";
 import { isInvoicePaid } from "../lib/invoicePredicates";
-import { paymentMethodEnum } from "@shared/schema";
+import { paymentMethodEnum, payments as paymentsTable } from "@shared/schema";
+import { db } from "../db";
+import { eq, and } from "drizzle-orm";
 import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
+// 2026-04-09: Outbound QBO payment sync — fire-and-forget hook called AFTER
+// canonical local reconciliation. Helper enforces the company toggle, never
+// throws, never mutates invoice financial state. See locked product decisions
+// in maybeSyncPayment.ts and QboPaymentService.ts.
+import { maybeSyncPaymentToQbo } from "../services/qbo/maybeSyncPayment";
 
 const router = Router();
 
@@ -88,6 +95,14 @@ router.post(
       }
 
       res.status(201).json(payment);
+
+      // 2026-04-09: Outbound QBO payment sync — fire-and-forget AFTER local
+      // canonical reconciliation has already committed (paymentRepository.createPayment
+      // wraps insert + recalculateInvoiceBalance in a transaction). The helper checks
+      // companies.qboPaymentSyncEnabled internally; when disabled this is a quiet no-op.
+      // The sync runs after the HTTP response is sent so a slow QBO call cannot
+      // block the user. Errors surface on payments.qboSyncStatus, not via res.
+      void maybeSyncPaymentToQbo(req.companyId!, payment.id, "create", req.user?.id);
     } catch (error: any) {
       if (error.statusCode) throw error;
       if (error.message?.includes("Cannot add payment")) {
@@ -122,6 +137,12 @@ router.patch(
       );
 
       res.json(payment);
+
+      // 2026-04-09: Outbound QBO payment sync — mirror the local edit to QBO
+      // after the response is sent. updatePayment in QboPaymentService falls
+      // through to createPayment if the row was never synced before, so this
+      // safely handles both first-sync and re-sync.
+      void maybeSyncPaymentToQbo(req.companyId!, req.params.id, "update", req.user?.id);
     } catch (error: any) {
       if (error.statusCode) throw error;
       throw error;
@@ -135,8 +156,36 @@ router.delete(
   requireRole(MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     try {
+      // 2026-04-09: Snapshot the payment row BEFORE the local delete so the
+      // outbound QBO void call can read qboPaymentId / qboSyncToken (which
+      // are gone after delete). We pass the snapshot through to the helper.
+      // Tenant-isolated by companyId. If the row doesn't exist, paymentRepository
+      // will throw notFound below — keep the existing behavior intact.
+      const [snapshot] = await db
+        .select()
+        .from(paymentsTable)
+        .where(
+          and(
+            eq(paymentsTable.id, req.params.id),
+            eq(paymentsTable.companyId, req.companyId!),
+          ),
+        )
+        .limit(1);
+
       await paymentRepository.deletePayment(req.companyId!, req.params.id);
       res.json({ success: true });
+
+      // Fire QBO void after local delete commits. If snapshot is missing the
+      // helper logs a skip and exits cleanly — no throw can leak from here.
+      if (snapshot) {
+        void maybeSyncPaymentToQbo(
+          req.companyId!,
+          req.params.id,
+          "delete",
+          req.user?.id,
+          snapshot,
+        );
+      }
     } catch (error: any) {
       if (error.statusCode) throw error;
       if (error.message?.includes("Cannot delete payments")) {

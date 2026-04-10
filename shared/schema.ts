@@ -70,6 +70,11 @@ export const companies = pgTable("companies", {
   qboEnabled: boolean("qbo_enabled").notNull().default(false),
   qboEnvironment: text("qbo_environment").notNull().default("sandbox"), // "sandbox" | "production"
   qboRealmId: text("qbo_realm_id"), // QBO company ID for webhook mapping
+  // 2026-04-09: Outbound payment sync toggle. Independent of qboEnabled because
+  // a company may want to sync invoices to QBO without auto-pushing every
+  // payment correction. Gates BOTH the post-write hook AND manual retry —
+  // when false, payment sync does not happen at all.
+  qboPaymentSyncEnabled: boolean("qbo_payment_sync_enabled").notNull().default(false),
   // QBO onboarding — set once on first successful import run (fetched > 0)
   qboOnboardingCatalogImportedAt: timestamp("qbo_onboarding_catalog_imported_at"),
   qboOnboardingCustomersImportedAt: timestamp("qbo_onboarding_customers_imported_at"),
@@ -1163,9 +1168,8 @@ export const invoices = pgTable("invoices", {
   discountNotes: text("discount_notes"), // Optional reason/description for discount
   // Status
   dirty: boolean("dirty").notNull().default(false), // True if edited after last sync (legacy)
-  isActive: boolean("is_active").notNull().default(true), // Legacy soft delete (use deletedAt)
-  // Soft delete (canonical)
-  deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
+  // 2026-04-09: isActive + deletedAt REMOVED — invoices use permanent-delete model.
+  // The columns are dropped in migrations/2026_04_09_invoice_permanent_delete.sql.
   // Optimistic locking
   version: integer("version").notNull().default(0), // Incremented on every update
   // Metadata
@@ -1239,8 +1243,7 @@ export const updateInvoiceSchema = z.object({
   lastBillingEditAt: z.date().nullable().optional(),
   lastBillingEditBy: z.string().nullable().optional(),
   dirty: z.boolean().optional(),
-  isActive: z.boolean().optional(),
-  deletedAt: z.date().nullable().optional(),
+  // 2026-04-09: isActive / deletedAt removed — invoices use permanent-delete model.
   // Discount fields (Phase 11)
   discountType: z.enum(["PERCENT", "AMOUNT"]).nullable().optional(),
   discountPercent: z.string().nullable().optional(), // numeric as string
@@ -1330,11 +1333,30 @@ export const payments = pgTable("payments", {
   receivedAt: timestamp("received_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   notes: text("notes"),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  // 2026-04-09: Outbound QBO payment sync fields. Mirror the convention used
+  // on customer_companies / items / invoices. None of these are mutated by the
+  // canonical local payment writer (paymentRepository.recalculateInvoiceBalance);
+  // they are written ONLY by the QBO payment sync service after a successful
+  // QBO POST. Locked product decision #6: invoice financial state remains
+  // controlled by the canonical local writer; QBO sync never mutates it.
+  qboPaymentId: text("qbo_payment_id"), // QBO Payment.Id, set on first successful create
+  qboSyncToken: text("qbo_sync_token"), // QBO Payment.SyncToken (required for updates)
+  qboSyncStatus: text("qbo_sync_status").notNull().default("NOT_SYNCED"), // NOT_SYNCED | SYNCED | PENDING | ERROR
+  qboSyncError: text("qbo_sync_error"), // Last sync error message, cleared on next successful sync
+  qboLastSyncedAt: timestamp("qbo_last_synced_at"), // Last successful sync timestamp
 });
 
 export const insertPaymentSchema = createInsertSchema(payments).omit({
   id: true,
   createdAt: true,
+  // 2026-04-09: QBO sync fields are system-managed by the QBO payment sync
+  // service. They must never be set via user input — that's how the canonical
+  // local writer / QBO writer separation is enforced at the validation layer.
+  qboPaymentId: true,
+  qboSyncToken: true,
+  qboSyncStatus: true,
+  qboSyncError: true,
+  qboLastSyncedAt: true,
 }).extend({
   method: z.enum(paymentMethodEnum).default("other"),
   receivedAt: z.string().optional(), // Accept string for date input
@@ -2241,6 +2263,9 @@ export const jobVisitStatusEnum = [
   "en_route",
   "on_site",
   "in_progress",
+  // 2026-04-09: tech-side pause state — set by POST /api/tech/visits/:id/pause,
+  // cleared by /resume. Distinct from on_hold (office-side dispatch hold).
+  "paused",
   "on_hold",
   "completed",
   "cancelled",
@@ -2278,6 +2303,12 @@ export const jobVisits = pgTable("job_visits", {
   checkedInAt: timestamp("checked_in_at"),
   checkedOutAt: timestamp("checked_out_at"),
   // actualDurationMinutes: DROPPED — labor duration is derived from time_entries (labor unification)
+
+  // 2026-04-10: Captured by startVisit() before transitioning to in_progress.
+  // Read by cancelVisitStart() to restore the visit to its actual prior state
+  // (en_route OR scheduled), instead of always restoring to en_route. Cleared
+  // on successful cancel and on complete.
+  previousStatus: text("previous_status"),
 
   // Notes
   visitNotes: text("visit_notes"),
@@ -2877,6 +2908,10 @@ export const qboSyncEventTypeEnum = [
   "QBO_ENABLED",
   "QBO_DISABLED",
   "INVOICE_DRY_RUN",
+  // 2026-04-09: Outbound payment sync events (App → QBO)
+  "PAYMENT_CREATE",
+  "PAYMENT_UPDATE",
+  "PAYMENT_DELETE",
 ] as const;
 export type QboSyncEventType = typeof qboSyncEventTypeEnum[number];
 
@@ -2887,13 +2922,19 @@ export const qboSyncEvents = pgTable("qbo_sync_events", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   // Event type and result
-  eventType: text("event_type").notNull(), // CUSTOMER_CREATE, CUSTOMER_UPDATE, INVOICE_CREATE, INVOICE_UPDATE
+  eventType: text("event_type").notNull(), // CUSTOMER_CREATE, CUSTOMER_UPDATE, INVOICE_CREATE, INVOICE_UPDATE, PAYMENT_CREATE/UPDATE/DELETE
   result: text("result").notNull(), // SUCCESS, FAILURE, SKIPPED
   // Entity references (nullable - one will be set based on event type)
   customerCompanyId: varchar("customer_company_id").references(() => customerCompanies.id, { onDelete: "set null" }),
   clientLocationId: varchar("client_location_id").references(() => clientLocations.id, { onDelete: "set null" }),
   invoiceId: varchar("invoice_id").references(() => invoices.id, { onDelete: "set null" }),
   itemId: varchar("item_id").references(() => items.id, { onDelete: "set null" }),
+  // 2026-04-09: Added for outbound payment sync events. Inbound payment events
+  // (e.g. PAYMENT_READ, PAYMENT_CREATED_FROM_QBO) historically used invoiceId
+  // because they originate from an invoice context. Outbound PAYMENT_CREATE /
+  // UPDATE / DELETE events use this column for direct correlation to the local
+  // payment row.
+  paymentId: varchar("payment_id").references(() => payments.id, { onDelete: "set null" }),
   // QBO references (captured at sync time)
   qboEntityId: text("qbo_entity_id"), // QBO Customer.Id or Invoice.Id
   qboSyncToken: text("qbo_sync_token"), // QBO SyncToken at time of operation
@@ -3510,7 +3551,9 @@ export const workSessionSourceEnum = ["mobile", "web", "import"] as const;
 export type WorkSessionSource = typeof workSessionSourceEnum[number];
 
 // Technician job status - for mobile status updates that drive time tracking
-export const technicianJobStatusEnum = ["dispatched", "en_route", "arrived", "paused", "completed"] as const;
+// 2026-04-09: added "resumed" so tech pause/resume is reversible.
+// recordJobStatus(..., status: "resumed") starts a fresh on_site time entry.
+export const technicianJobStatusEnum = ["dispatched", "en_route", "arrived", "paused", "resumed", "completed"] as const;
 export type TechnicianJobStatus = typeof technicianJobStatusEnum[number];
 
 // ============================================================================
@@ -4594,13 +4637,12 @@ export type Event = typeof events.$inferSelect;
 
 // ============================================================================
 // ATTENTION ITEMS — Materialized "needs attention" queue with rule-based detection
-// Single backend canonical queue for: requires invoicing, overdue, unassigned, unscheduled
+// Single backend canonical queue for: requires invoicing, unassigned, unscheduled
 // Phase 1 Architecture: Event Log + Attention Queue
 // ============================================================================
 
 export const attentionRuleTypeEnum = [
   "job.requires_invoicing",
-  "job.overdue",
   "job.unassigned",
   "job.unscheduled",
   "invoice.past_due",
@@ -4624,7 +4666,7 @@ export const attentionItems = pgTable("attention_items", {
   tenantId: varchar("tenant_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   entityType: text("entity_type").notNull(), // job | invoice | quote | client | other
   entityId: varchar("entity_id").notNull(),
-  ruleType: text("rule_type").notNull(), // job.requires_invoicing | job.overdue | ...
+  ruleType: text("rule_type").notNull(), // job.requires_invoicing | job.unassigned | job.unscheduled | ...
   severity: text("severity").notNull().default("medium"), // high | medium | low
   status: text("status").notNull().default("open"), // open | resolved
   firstDetectedAt: timestamp("first_detected_at").notNull().default(sql`CURRENT_TIMESTAMP`),

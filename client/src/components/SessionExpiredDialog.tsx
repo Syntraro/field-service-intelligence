@@ -9,26 +9,49 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { queryClient, initCSRF } from "@/lib/queryClient";
+import { initCSRF } from "@/lib/queryClient";
+import { useAuth } from "@/lib/auth";
+
+/** Auth-page prefixes — never open the dialog on top of these. */
+const AUTH_PAGE_PREFIXES = ["/login", "/signup", "/request-reset", "/reset-password"];
 
 /**
  * Listens for "session-expired" custom events (fired by queryClient on 401)
  * and shows a friendly dialog prompting the user to log in again.
  * After login, returns the user to the page they were on.
+ *
+ * 2026-04-10 Phase-2 Fix C: routes the click through the canonical
+ * useAuth().clearAuth() instead of an ad-hoc queryClient.clear(), so the
+ * AuthProvider's local user state is wiped at the same instant the cache is.
+ * Also refuses to open on top of an auth page.
  */
 export default function SessionExpiredDialog() {
   const [open, setOpen] = useState(false);
   const [location, setLocation] = useLocation();
+  const { clearAuth } = useAuth();
 
   useEffect(() => {
-    const handler = () => setOpen(true);
+    const handler = () => {
+      // 2026-04-10 Phase-2 Fix C: belt-and-suspenders guard. The dispatcher
+      // in queryClient.ts already filters by pathname, but if a stale event
+      // arrives during the navigation gap we still refuse to open on top of
+      // an auth page.
+      const pathname = window.location.pathname;
+      for (const prefix of AUTH_PAGE_PREFIXES) {
+        if (pathname.startsWith(prefix)) return;
+      }
+      setOpen(true);
+    };
     window.addEventListener("session-expired", handler);
     return () => window.removeEventListener("session-expired", handler);
   }, []);
 
   const handleLogin = () => {
     setOpen(false);
-    queryClient.clear();
+    // 2026-04-10 Phase-2 Fix A/C: canonical local-state wipe. Replaces the
+    // previous ad-hoc queryClient.clear() so the AuthProvider's user state
+    // is reset in the same render pass as the query cache.
+    clearAuth();
     // Pre-warm CSRF for the login page (non-blocking)
     initCSRF().catch(() => {});
     // Encode the current path so Login can redirect back after auth

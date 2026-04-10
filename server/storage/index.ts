@@ -141,6 +141,8 @@ export interface IStorage {
   updateInvoiceLine: typeof invoiceRepository.updateInvoiceLine;
   batchApplyLineTax: typeof invoiceRepository.batchApplyLineTax;
   deleteInvoiceLine: typeof invoiceRepository.deleteInvoiceLine;
+  // 2026-04-09: canonical permanent invoice delete (no soft-delete)
+  deleteInvoice: typeof invoiceRepository.deleteInvoice;
   refreshInvoiceFromJob: typeof invoiceRepository.refreshInvoiceFromJob;
   updateInvoice: typeof invoiceRepository.updateInvoice;
   createInvoiceFromJob: typeof invoiceRepository.createInvoiceFromJob;
@@ -342,6 +344,7 @@ export const storage: IStorage = {
   updateInvoiceLine: invoiceRepository.updateInvoiceLine.bind(invoiceRepository),
   batchApplyLineTax: invoiceRepository.batchApplyLineTax.bind(invoiceRepository),
   deleteInvoiceLine: invoiceRepository.deleteInvoiceLine.bind(invoiceRepository),
+  deleteInvoice: invoiceRepository.deleteInvoice.bind(invoiceRepository),
   refreshInvoiceFromJob: invoiceRepository.refreshInvoiceFromJob.bind(invoiceRepository),
   updateInvoice: invoiceRepository.updateInvoice.bind(invoiceRepository),
   createInvoiceFromJob: invoiceRepository.createInvoiceFromJob.bind(invoiceRepository),

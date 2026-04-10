@@ -68,6 +68,11 @@ const VISIT_JOB_KEYS: readonly (readonly string[])[] = [
   ["jobs"],          // prefix-matches ["jobs", "detail", jobId] and ["jobs", ...] list queries
   ["visits"],        // prefix-matches ["visits", jobId, "all"] visit list on job detail
   ["/api/jobs"],     // prefix-matches ["/api/jobs", jobId, "notes"|"time-summary"|"time-entries"|...]
+  // 2026-04-10: Dispatch board sidebar live-state chip — visit transitions
+  // (en-route, start, pause, resume, cancel-route, cancel-start, complete)
+  // change the technician's derived activity status, so the office-side
+  // projection must refresh with the same signal.
+  ["/api/team/technicians/live-state"],
 ];
 
 /** Prefix-matched query keys for task signals */
@@ -97,6 +102,9 @@ const TIME_KEYS: readonly (readonly string[])[] = [
   ["/api/jobs"],               // Job Detail time-summary/time-entries (sub-resources)
   ["dashboard", "workflow"],       // Jobs widget — operational counts
   ["dashboard", "today-summary"],  // Today's Operations cards
+  // 2026-04-10: Dispatch board sidebar live-state chip — clock in / clock out
+  // flips the attendance bucket, so the office-side projection must refresh.
+  ["/api/team/technicians/live-state"],
 ];
 
 // Task queries need predicate-based invalidation because:

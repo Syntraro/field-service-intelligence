@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, useLocation, Link } from "wouter";
 import { format, isValid, parseISO, isPast } from "date-fns";
@@ -48,7 +48,21 @@ import {
 import type { Quote, QuoteLine, Client, CustomerCompany } from "@shared/schema";
 import { ApplyQuoteTemplateModal } from "@/components/ApplyQuoteTemplateModal";
 import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
-import { useProductSearch, getProductKey, getProductLabel, getProductDescription, type ProductOption } from "@/lib/entities/productEntity";
+import {
+  useProductSearch, getProductKey, getProductLabel, getProductDescription,
+  productOptionToCatalogItem,
+  type ProductOption,
+} from "@/lib/entities/productEntity";
+import {
+  type LineItemDraft,
+  parseMoney,
+  formatMoney,
+} from "@shared/lineItem";
+import {
+  catalogItemToDraft,
+  blankDraft,
+  draftToQuoteLinePayload,
+} from "@/lib/entities/lineItemMapper";
 import { Briefcase as BriefcaseIcon, FileSearch, CalendarCheck } from "lucide-react";
 import { MetaRow } from "@/components/ui/meta-row";
 
@@ -79,15 +93,39 @@ export default function QuoteDetailPage() {
   const [showAddLineDialog, setShowAddLineDialog] = useState(false);
   const [showApplyTemplateModal, setShowApplyTemplateModal] = useState(false);
   const [showConvertToJobConfirm, setShowConvertToJobConfirm] = useState(false);
-  const [newLineDescription, setNewLineDescription] = useState("");
-  const [newLineQuantity, setNewLineQuantity] = useState("1");
-  const [newLinePrice, setNewLinePrice] = useState("");
-  const [newLineProductId, setNewLineProductId] = useState<string | null>(null);
+  // 2026-04-09 (P9-P10 Phase A): The five separate add-line state vars
+  // (newLineDescription, newLineQuantity, newLinePrice, newLineProductId,
+  // selectedProduct) have been collapsed into a single canonical
+  // `LineItemDraft`. Catalog selection runs through `catalogItemToDraft`,
+  // save runs through `draftToQuoteLinePayload`. The CreateOrSelectField's
+  // `value` is reconstructed from the draft, eliminating the parallel
+  // `selectedProduct` source of truth.
+  const [addLineDraft, setAddLineDraft] = useState<LineItemDraft>(() => blankDraft());
   const [productSearch, setProductSearch] = useState("");
-  const [selectedProduct, setSelectedProduct] = useState<ProductOption | null>(null);
+
+  // Reset the draft each time the dialog opens so users always see a clean form.
+  useEffect(() => {
+    if (showAddLineDialog) {
+      setAddLineDraft(blankDraft());
+      setProductSearch("");
+    }
+  }, [showAddLineDialog]);
 
   // Product search for add line dialog
   const { data: productResults = [], isLoading: productSearchLoading } = useProductSearch(productSearch, { enabled: showAddLineDialog });
+
+  // Reconstruct the selector's "current value" purely from the canonical draft —
+  // no parallel `selectedProduct` state. The selector renders the chip when
+  // `addLineDraft.productId` is set; otherwise the input is in search mode.
+  const addLineSelectedProduct: ProductOption | null = addLineDraft.productId
+    ? {
+        id: addLineDraft.productId,
+        name: addLineDraft.description,
+        type: addLineDraft.productType ?? "product",
+        unitPrice: addLineDraft.unitPrice,
+        cost: addLineDraft.unitCost,
+      }
+    : null;
 
   // Send quote modal state
   const [sendRecipients, setSendRecipients] = useState("");
@@ -177,31 +215,30 @@ export default function QuoteDetailPage() {
   });
 
   const addLineMutation = useMutation({
-    mutationFn: (data: { description: string; quantity: string; unitPrice: string; productId?: string | null }) => {
-      const qty = parseFloat(data.quantity) || 1;
-      const price = parseFloat(data.unitPrice) || 0;
-      const subtotal = (qty * price).toFixed(2);
+    // 2026-04-09 (P9-P10 Phase A): mutation accepts a canonical `LineItemDraft`
+    // and serializes via `draftToQuoteLinePayload`. Line subtotal/total are
+    // computed in canonical money helpers (parseMoney/formatMoney) right
+    // before the payload projection so the final draft has the right totals.
+    // The server quote-line route stores client-supplied values as-is; no
+    // server-side recomputation, which is why we project here.
+    mutationFn: (draft: LineItemDraft) => {
+      const qty = parseMoney(draft.quantity);
+      const price = parseMoney(draft.unitPrice);
+      const subtotal = formatMoney(qty * price);
+      const finalDraft: LineItemDraft = {
+        ...draft,
+        lineSubtotal: subtotal,
+        lineTotal: subtotal,
+      };
       return apiRequest(`/api/quotes/${quoteId}/lines`, {
         method: "POST",
-        body: JSON.stringify({
-          description: data.description,
-          quantity: data.quantity,
-          unitPrice: data.unitPrice,
-          lineSubtotal: subtotal,
-          lineTotal: subtotal,
-          productId: data.productId || null,
-        }),
+        body: JSON.stringify(draftToQuoteLinePayload(finalDraft)),
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
       setShowAddLineDialog(false);
-      setNewLineDescription("");
-      setNewLineQuantity("1");
-      setNewLinePrice("");
-      setNewLineProductId(null);
-      setSelectedProduct(null);
-      setProductSearch("");
+      // useEffect on showAddLineDialog handles draft reset on next open.
       toast({ title: "Line item added" });
     },
     onError: (error: Error) => {
@@ -879,6 +916,10 @@ export default function QuoteDetailPage() {
       </Dialog>
 
       {/* Add Line Item Dialog */}
+      {/* 2026-04-09 (P9-P10 Phase A): All inputs bind to the canonical
+          `addLineDraft`. Selection runs through `catalogItemToDraft`; the
+          selector's `value` is reconstructed from the draft. There is no
+          parallel `selectedProduct`/`newLine*` state. */}
       <Dialog open={showAddLineDialog} onOpenChange={setShowAddLineDialog}>
         <DialogContent>
           <DialogHeader>
@@ -891,17 +932,21 @@ export default function QuoteDetailPage() {
             {/* Product search / description */}
             <CreateOrSelectField<ProductOption>
               label="Product / Service"
-              value={selectedProduct}
+              value={addLineSelectedProduct}
               onChange={(product) => {
                 if (product) {
-                  setSelectedProduct(product);
-                  setNewLineProductId(product.id);
-                  setNewLineDescription(product.name);
-                  if (product.unitPrice) setNewLinePrice(product.unitPrice);
+                  // Replace the draft via the canonical mapper. Preserve the
+                  // user's existing quantity (if any) so a late product swap
+                  // doesn't reset it to "1".
+                  setAddLineDraft(
+                    catalogItemToDraft(productOptionToCatalogItem(product), {
+                      quantity: addLineDraft.quantity,
+                    }),
+                  );
                   setProductSearch("");
                 } else {
-                  setSelectedProduct(null);
-                  setNewLineProductId(null);
+                  // Clear the catalog binding but keep what the user has typed.
+                  setAddLineDraft({ ...addLineDraft, productId: null });
                 }
               }}
               searchResults={productResults}
@@ -909,21 +954,27 @@ export default function QuoteDetailPage() {
               searchText={productSearch}
               onSearchTextChange={(text) => {
                 setProductSearch(text);
-                if (!selectedProduct) setNewLineDescription(text);
+                // Manual-entry fallback: when no product is bound, the search
+                // input doubles as the description field.
+                if (!addLineDraft.productId) {
+                  setAddLineDraft({ ...addLineDraft, description: text });
+                }
               }}
               getKey={getProductKey}
               getLabel={getProductLabel}
               getDescription={getProductDescription}
               placeholder="Search products or type description..."
             />
-            {/* Manual description override */}
-            {selectedProduct && (
+            {/* Manual description override (visible once a product is bound) */}
+            {addLineDraft.productId && (
               <div>
                 <Label htmlFor="line-description">Description</Label>
                 <Input
                   id="line-description"
-                  value={newLineDescription}
-                  onChange={(e) => setNewLineDescription(e.target.value)}
+                  value={addLineDraft.description}
+                  onChange={(e) =>
+                    setAddLineDraft({ ...addLineDraft, description: e.target.value })
+                  }
                   data-testid="input-line-description"
                 />
               </div>
@@ -931,26 +982,38 @@ export default function QuoteDetailPage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label htmlFor="line-quantity">Quantity</Label>
-                <Input id="line-quantity" type="number" min="1" value={newLineQuantity}
-                  onChange={(e) => setNewLineQuantity(e.target.value)} data-testid="input-line-quantity" />
+                <Input
+                  id="line-quantity"
+                  type="number"
+                  min="1"
+                  value={addLineDraft.quantity}
+                  onChange={(e) =>
+                    setAddLineDraft({ ...addLineDraft, quantity: e.target.value })
+                  }
+                  data-testid="input-line-quantity"
+                />
               </div>
               <div>
                 <Label htmlFor="line-price">Unit Price</Label>
-                <Input id="line-price" type="number" step="0.01" placeholder="0.00" value={newLinePrice}
-                  onChange={(e) => setNewLinePrice(e.target.value)} data-testid="input-line-price" />
+                <Input
+                  id="line-price"
+                  type="number"
+                  step="0.01"
+                  placeholder="0.00"
+                  value={addLineDraft.unitPrice}
+                  onChange={(e) =>
+                    setAddLineDraft({ ...addLineDraft, unitPrice: e.target.value })
+                  }
+                  data-testid="input-line-price"
+                />
               </div>
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowAddLineDialog(false)}>Cancel</Button>
             <Button
-              onClick={() => addLineMutation.mutate({
-                description: newLineDescription,
-                quantity: newLineQuantity,
-                unitPrice: newLinePrice,
-                productId: newLineProductId,
-              })}
-              disabled={!newLineDescription || addLineMutation.isPending}
+              onClick={() => addLineMutation.mutate(addLineDraft)}
+              disabled={!addLineDraft.description.trim() || addLineMutation.isPending}
               data-testid="button-save-line"
             >
               {addLineMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}

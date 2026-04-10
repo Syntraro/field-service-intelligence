@@ -13,10 +13,12 @@ export const NO_ADDRESS = "No address";
 
 // ── Status display ──
 
+// 2026-04-09: added "paused" — tech-side pause state, distinct from on_hold (office-side dispatch hold).
 export const STATUS_LABELS: Record<string, string> = {
   scheduled: "Scheduled", dispatched: "Scheduled",
   en_route: "En Route",
   in_progress: "On Site", on_site: "On Site",
+  paused: "Paused",
   completed: "Completed",
   on_hold: "On Hold", cancelled: "Cancelled",
 };
@@ -25,6 +27,7 @@ export const STATUS_COLORS: Record<string, string> = {
   scheduled: "bg-slate-100 text-slate-600", dispatched: "bg-slate-100 text-slate-600",
   en_route: "bg-blue-100 text-blue-700",
   in_progress: "bg-[#22c55e]/10 text-[#22c55e]", on_site: "bg-[#22c55e]/10 text-[#22c55e]",
+  paused: "bg-amber-100 text-amber-700",
   completed: "bg-emerald-100 text-emerald-700",
   on_hold: "bg-red-100 text-red-700", cancelled: "bg-slate-100 text-slate-400",
 };

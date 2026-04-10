@@ -4,6 +4,30 @@
  * Tabs: Overview | Notes | Equipment | Parts
  * All data from single GET /api/tech/visits/:visitId (hydrated equipment).
  * Mutations: add note, add part, remove equipment, visit lifecycle.
+ *
+ * 2026-04-10 (P9-P10 Phase C): The AddPartSheet catalog selector was migrated
+ * onto the canonical client pipeline:
+ *
+ *   - The local `ProductItem` shadow type was REMOVED.
+ *   - The inline `useQuery(["/api/items", search])` was REPLACED with the
+ *     canonical `useProductSearch(searchText)` hook.
+ *   - The manual `<input>` + `<button>` result-list selector was REPLACED
+ *     with the canonical `CreateOrSelectField<ProductOption>` plus the
+ *     shared `getProductKey` / `getProductLabel` / `getProductDescription`
+ *     option helpers.
+ *   - The "create new tech catalog item" path now normalizes the response
+ *     through `normalizeProductRow` so the selected value matches the
+ *     canonical `ProductOption` shape.
+ *
+ * The save contract is INTENTIONALLY ASYMMETRIC and is preserved unchanged:
+ *
+ *     POST /api/tech/visits/:visitId/parts
+ *     payload: { productId, quantity, equipmentId }
+ *
+ * Per the canonical Rule 6 in `shared/lineItem.ts`, the server hydrates
+ * description / unitPrice / unitCost from the catalog on the tech path.
+ * The office `draftToJobPartPayload(...)` helper is intentionally NOT used
+ * here. Do not migrate this route to the full canonical input shape.
  */
 import { useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
@@ -23,16 +47,15 @@ import {
   STATUS_LABELS, OUTCOME_LABELS, OUTCOME_COLORS, DEFAULT_OUTCOME_COLOR,
 } from "../utils/visitDisplay";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-
-// ── Shared types ──
-
-interface ProductItem {
-  id: string;
-  name: string;
-  sku: string | null;
-  type: string;
-  unitPrice: string | null;
-}
+import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
+import {
+  useProductSearch,
+  getProductKey,
+  getProductLabel,
+  getProductDescription,
+  normalizeProductRow,
+  type ProductOption,
+} from "@/lib/entities/productEntity";
 
 // ── Live timer ──
 
@@ -108,6 +131,11 @@ function OutcomeModal({ onSelect, onCancel }: {
 // EquipmentSheet modal removed — equipment card tap opens EquipmentDetailScreen directly
 
 // ── Product search for Add Part ──
+//
+// 2026-04-10 Phase C: Selector standardized onto the canonical client
+// pipeline (useProductSearch + CreateOrSelectField + ProductOption helpers).
+// Save contract is intentionally REF-BASED — see the file-level header for
+// the full asymmetry note.
 
 function AddPartSheet({ equipmentId, onClose, addPart, onError }: {
   equipmentId: string | null;
@@ -115,41 +143,47 @@ function AddPartSheet({ equipmentId, onClose, addPart, onError }: {
   addPart: { mutateAsync: (p: { productId: string; quantity: string; equipmentId?: string | null }) => Promise<any>; isPending: boolean };
   onError: (err: any) => void;
 }) {
-  const [search, setSearch] = useState("");
+  // Canonical ProductOption is the in-memory shape — same as every office
+  // selector after Phase A/B. No tech-local shadow type.
+  const [selected, setSelected] = useState<ProductOption | null>(null);
+  const [searchText, setSearchText] = useState("");
   const [qty, setQty] = useState("1");
-  const [selected, setSelected] = useState<ProductItem | null>(null);
   const [creating, setCreating] = useState(false);
   const [newPrice, setNewPrice] = useState("");
   const [newType, setNewType] = useState<"product" | "service">("product");
   const [createPending, setCreatePending] = useState(false);
 
+  // 2026-04-10 Phase C: canonical search hook. Fires after 2 chars; same
+  // /api/items endpoint, same caching, same normalized ProductOption[] shape
+  // as every office selector.
+  const { data: searchResults = [], isLoading: isSearchLoading } = useProductSearch(searchText);
+
   const handleCreateItem = async () => {
-    if (!search.trim() || createPending) return;
+    if (!searchText.trim() || createPending) return;
     setCreatePending(true);
     try {
-      const created = await apiRequest<ProductItem>("/api/tech/items", {
+      // Tech-side catalog create stays on the tech route (server-side
+      // permission model is intentionally narrower for technicians than the
+      // office /api/items route). The response is normalized through the
+      // canonical normalizeProductRow so the selected value matches the
+      // ProductOption shape every other surface uses.
+      const created = await apiRequest<unknown>("/api/tech/items", {
         method: "POST",
-        body: JSON.stringify({ name: search.trim(), type: newType, unitPrice: newPrice || null }),
+        body: JSON.stringify({ name: searchText.trim(), type: newType, unitPrice: newPrice || null }),
       });
-      setSelected(created);
+      setSelected(normalizeProductRow(created));
       setCreating(false);
     } catch (err: any) { onError(err); }
     finally { setCreatePending(false); }
   };
 
-  const { data: products } = useQuery<ProductItem[]>({
-    queryKey: ["/api/items", search],
-    queryFn: async () => {
-      const resp = await apiRequest<any>(`/api/items?q=${encodeURIComponent(search)}`);
-      // Backend returns array (legacy) or { data, meta } (paginated) — normalize to array
-      return Array.isArray(resp) ? resp : (resp?.data ?? []);
-    },
-    enabled: search.length >= 2,
-  });
-
   const handleSubmit = async () => {
     if (!selected || addPart.isPending) return;
     try {
+      // 2026-04-10 Phase C: REF-BASED save contract preserved verbatim.
+      // Server hydrates description/unitPrice/unitCost from the catalog row
+      // matching `productId`. Do NOT use draftToJobPartPayload — that's the
+      // office contract. See `shared/lineItem.ts` Rule 6 for the rationale.
       await addPart.mutateAsync({ productId: selected.id, quantity: qty, equipmentId });
       onClose();
     } catch (err: any) { onError(err); }
@@ -164,35 +198,36 @@ function AddPartSheet({ equipmentId, onClose, addPart, onError }: {
         </div>
         {!selected ? (
           <>
-            <div className="relative mb-2">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products…"
-                className="w-full h-9 pl-9 pr-3 text-sm border border-slate-200 rounded-lg" autoFocus />
-            </div>
-            <div className="overflow-y-auto flex-1 -mx-1">
-              {(products ?? []).map(p => (
-                <button key={p.id} onClick={() => setSelected(p)}
-                  className="w-full text-left px-3 py-2.5 hover:bg-slate-50 rounded-lg flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium text-slate-800">{p.name}</p>
-                    <p className="text-xs text-slate-400">{p.sku || p.type}</p>
-                  </div>
-                  {p.unitPrice && <span className="text-xs font-semibold text-slate-500">${p.unitPrice}</span>}
-                </button>
-              ))}
-              {search.length >= 2 && (products ?? []).length === 0 && (
-                <div className="text-center py-4 space-y-2">
-                  <p className="text-xs text-slate-400">No products found</p>
-                  <button onClick={() => setCreating(true)}
-                    className="text-xs font-semibold text-emerald-600 hover:text-emerald-700">
-                    + Create "{search}"
-                  </button>
-                </div>
-              )}
+            {/* 2026-04-10 Phase C: canonical CreateOrSelectField replaces the
+                manual input + result-list. The "Create new" callback opens the
+                inline tech catalog create form below. */}
+            <div className="mb-2">
+              <CreateOrSelectField<ProductOption>
+                label=""
+                compact
+                value={null}
+                onChange={(product) => {
+                  if (product) {
+                    setSelected(product);
+                    setSearchText("");
+                    setCreating(false);
+                  }
+                }}
+                searchResults={searchResults}
+                searchLoading={isSearchLoading}
+                searchText={searchText}
+                onSearchTextChange={setSearchText}
+                getKey={getProductKey}
+                getLabel={getProductLabel}
+                getDescription={getProductDescription}
+                createLabel={`Create "${searchText || "new item"}"`}
+                onCreateNew={() => setCreating(true)}
+                placeholder="Search products…"
+              />
             </div>
             {creating && (
               <div className="border-t border-slate-200 pt-3 space-y-2">
-                <p className="text-xs font-semibold text-slate-600">Create new item: {search}</p>
+                <p className="text-xs font-semibold text-slate-600">Create new item: {searchText}</p>
                 <div className="flex gap-2">
                   <button onClick={() => setNewType("product")}
                     className={`flex-1 h-8 rounded-lg text-xs font-semibold border ${newType === "product" ? "border-emerald-400 bg-emerald-50 text-emerald-700" : "border-slate-200 text-slate-500"}`}>
@@ -205,7 +240,7 @@ function AddPartSheet({ equipmentId, onClose, addPart, onError }: {
                 </div>
                 <input value={newPrice} onChange={e => setNewPrice(e.target.value)} placeholder="Unit price (optional)"
                   type="number" step="0.01" className="w-full h-9 px-3 text-sm border border-slate-200 rounded-lg" />
-                <button onClick={handleCreateItem} disabled={createPending}
+                <button onClick={handleCreateItem} disabled={createPending || !searchText.trim()}
                   className="w-full h-10 rounded-lg bg-emerald-600 text-white text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-1.5">
                   {createPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Create & Select
                 </button>
@@ -216,7 +251,10 @@ function AddPartSheet({ equipmentId, onClose, addPart, onError }: {
           <div className="space-y-3">
             <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-3">
               <p className="text-sm font-semibold text-slate-800">{selected.name}</p>
-              <p className="text-xs text-slate-500">{selected.sku || selected.type}{selected.unitPrice && ` · $${selected.unitPrice}`}</p>
+              <p className="text-xs text-slate-500">
+                {selected.type === "service" ? "Service" : "Product"}
+                {selected.unitPrice && ` · $${selected.unitPrice}`}
+              </p>
             </div>
             <div>
               <label className="text-xs font-semibold text-slate-500 mb-1 block">Quantity</label>
@@ -623,6 +661,8 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
     visit, isLoading, isError, refetch,
     startTravel, startJob, complete, addNote, addPart, deletePart, removeEquipment, addEquipment,
     updateVisitNotes, updateJob,
+    // 2026-04-09: reversible workflow controls + pause/resume
+    cancelRoute, cancelStart, pauseJob, resumeJob,
   } = useTechVisitDetail(visitId);
 
   const [showOutcome, setShowOutcome] = useState(false);
@@ -647,8 +687,10 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
   if (isError || !visit) return <ErrorState onBack={onBack} onRetry={refetch} />;
 
   const isTerminal = visit.status === "completed" || visit.status === "on_hold" || visit.status === "cancelled";
-  const isActive = visit.status === "en_route" || visit.status === "in_progress" || visit.status === "on_site";
+  // 2026-04-09: paused is an active workflow state — visit is in flight, just not currently timing.
+  const isActive = visit.status === "en_route" || visit.status === "in_progress" || visit.status === "on_site" || visit.status === "paused";
   const isOnSite = visit.status === "in_progress" || visit.status === "on_site";
+  const isPaused = visit.status === "paused";
   const isScheduled = visit.status === "scheduled" || visit.status === "dispatched";
 
   const showSuccess = (msg: string) => { setActionSuccess(msg); setTimeout(() => setActionSuccess(null), 3000); };
@@ -667,6 +709,26 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
   const handleStartJob = async () => {
     setActionError(null);
     try { await startJob.mutateAsync(); showSuccess("On site — job started"); } catch (err: any) { showError(err); }
+  };
+  // 2026-04-09: reversible workflow + pause/resume handlers.
+  // Sub-1-minute time entries created by accidental taps are dropped on the
+  // server (timeTrackingRepository.stopAndDiscardIfTrivial) so the tech does
+  // not see phantom 5-second segments in payroll.
+  const handleCancelRoute = async () => {
+    setActionError(null);
+    try { await cancelRoute.mutateAsync(); showSuccess("Route cancelled"); } catch (err: any) { showError(err); }
+  };
+  const handleCancelStart = async () => {
+    setActionError(null);
+    try { await cancelStart.mutateAsync(); showSuccess("Start cancelled — back to en route"); } catch (err: any) { showError(err); }
+  };
+  const handlePauseJob = async () => {
+    setActionError(null);
+    try { await pauseJob.mutateAsync(); showSuccess("Paused"); } catch (err: any) { showError(err); }
+  };
+  const handleResumeJob = async () => {
+    setActionError(null);
+    try { await resumeJob.mutateAsync(); showSuccess("Resumed"); } catch (err: any) { showError(err); }
   };
   const handleComplete = async (outcome: string, outcomeNote?: string) => {
     setActionError(null); setShowOutcome(false);
@@ -707,7 +769,14 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
     } catch (err: any) { showError(err); }
   };
 
-  const anyPending = startTravel.isPending || startJob.isPending || complete.isPending;
+  const anyPending =
+    startTravel.isPending ||
+    startJob.isPending ||
+    complete.isPending ||
+    cancelRoute.isPending ||
+    cancelStart.isPending ||
+    pauseJob.isPending ||
+    resumeJob.isPending;
 
   // Group notes by equipment
   const generalNotes = visit.notes.filter(n => !n.equipmentId);
@@ -744,25 +813,87 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
       </div>
 
       {/* ══════ TIMER STRIP ══════ */}
+      {/* 2026-04-09: indicator + label color change for paused state.
+          Reversible Cancel buttons sit on the en_route and on-site strips.
+          Pause/Resume sits on the on-site / paused strip. Sub-1-min segments
+          are discarded server-side; the UI just calls the canonical actions. */}
       {isActive && !isTerminal && (
-        <div className="px-3 py-1.5 flex items-center gap-2 bg-[#22c55e]/10">
-          <span className="h-2.5 w-2.5 rounded-full shrink-0 bg-[#22c55e] animate-pulse" />
-          <span className="text-sm font-semibold text-[#22c55e]">{STATUS_LABELS[visit.status] || visit.status}</span>
-          <span className="text-base font-bold tabular-nums text-[#22c55e]">
-            {visit.timerStartedAt ? <LiveTimer startedAt={visit.timerStartedAt} /> : "00:00:00"}
+        <div className={`px-3 py-1.5 flex items-center gap-2 ${isPaused ? "bg-amber-100" : "bg-[#22c55e]/10"}`}>
+          <span className={`h-2.5 w-2.5 rounded-full shrink-0 ${isPaused ? "bg-amber-500" : "bg-[#22c55e] animate-pulse"}`} />
+          <span className={`text-sm font-semibold ${isPaused ? "text-amber-700" : "text-[#22c55e]"}`}>
+            {STATUS_LABELS[visit.status] || visit.status}
           </span>
-          <div className="ml-auto flex items-center gap-1.5">
+          <span className={`text-base font-bold tabular-nums ${isPaused ? "text-amber-700" : "text-[#22c55e]"}`}>
+            {visit.timerStartedAt && !isPaused ? <LiveTimer startedAt={visit.timerStartedAt} /> : "00:00:00"}
+          </span>
+          <div className="ml-auto flex items-center gap-1.5 flex-wrap justify-end">
             {visit.status === "en_route" && (
-              <button onClick={handleStartJob} disabled={anyPending}
-                className="h-8 px-3 rounded-lg bg-[#22c55e] text-white text-sm font-bold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60">
-                {startJob.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Start Job
-              </button>
+              <>
+                <button
+                  onClick={handleCancelRoute}
+                  disabled={anyPending}
+                  className="h-8 px-3 rounded-lg bg-white border border-slate-300 text-slate-700 text-sm font-semibold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  data-testid="button-cancel-route"
+                >
+                  {cancelRoute.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Cancel Route
+                </button>
+                <button
+                  onClick={handleStartJob}
+                  disabled={anyPending}
+                  className="h-8 px-3 rounded-lg bg-[#22c55e] text-white text-sm font-bold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  data-testid="button-start-job"
+                >
+                  {startJob.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Start Job
+                </button>
+              </>
             )}
             {isOnSite && (
-              <button onClick={() => setShowOutcome(true)} disabled={anyPending}
-                className="h-8 px-3 rounded-lg bg-[#22c55e] text-white text-sm font-bold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60">
-                <Check className="h-3.5 w-3.5" />Complete
-              </button>
+              <>
+                <button
+                  onClick={handleCancelStart}
+                  disabled={anyPending}
+                  className="h-8 px-3 rounded-lg bg-white border border-slate-300 text-slate-700 text-sm font-semibold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  data-testid="button-cancel-start"
+                >
+                  {cancelStart.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Cancel Start
+                </button>
+                <button
+                  onClick={handlePauseJob}
+                  disabled={anyPending}
+                  className="h-8 px-3 rounded-lg bg-amber-500 text-white text-sm font-bold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  data-testid="button-pause-job"
+                >
+                  {pauseJob.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Pause
+                </button>
+                <button
+                  onClick={() => setShowOutcome(true)}
+                  disabled={anyPending}
+                  className="h-8 px-3 rounded-lg bg-[#22c55e] text-white text-sm font-bold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  data-testid="button-complete"
+                >
+                  <Check className="h-3.5 w-3.5" />Complete
+                </button>
+              </>
+            )}
+            {isPaused && (
+              <>
+                <button
+                  onClick={handleResumeJob}
+                  disabled={anyPending}
+                  className="h-8 px-3 rounded-lg bg-[#22c55e] text-white text-sm font-bold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  data-testid="button-resume-job"
+                >
+                  {resumeJob.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Resume
+                </button>
+                <button
+                  onClick={() => setShowOutcome(true)}
+                  disabled={anyPending}
+                  className="h-8 px-3 rounded-lg bg-white border border-slate-300 text-slate-700 text-sm font-semibold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  data-testid="button-complete-paused"
+                >
+                  <Check className="h-3.5 w-3.5" />Complete
+                </button>
+              </>
             )}
           </div>
         </div>

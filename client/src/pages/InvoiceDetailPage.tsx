@@ -61,7 +61,22 @@ import {
 } from "@/components/ui/select";
 import type { Invoice, InvoiceLine, Payment, Client, CustomerCompany, Job } from "@shared/schema";
 import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
-import { useProductSearch, getProductKey, getProductLabel, getProductDescription, type ProductOption } from "@/lib/entities/productEntity";
+import {
+  useProductSearch, getProductKey, getProductLabel, getProductDescription,
+  productOptionToCatalogItem,
+  type ProductOption,
+} from "@/lib/entities/productEntity";
+import {
+  type LineItemDraft,
+  parseMoney,
+  formatMoney,
+} from "@shared/lineItem";
+import {
+  catalogItemToDraft,
+  blankDraft,
+  hydrateDraft,
+  draftToInvoiceLinePayload,
+} from "@/lib/entities/lineItemMapper";
 import { InvoiceHeaderCard } from "@/components/InvoiceHeaderCard";
 import { ConfirmSendModal } from "@/components/invoice/ConfirmSendModal";
 import { ConfirmVoidModal } from "@/components/invoice/ConfirmVoidModal";
@@ -123,65 +138,84 @@ function getBalanceColor(balance: string, isPastDue: boolean): string {
 
 // Add Line Item — compact inline form using canonical product selector
 
+// 2026-04-09 (P9-P10 Phase A): The five separate state vars (`desc`, `qty`,
+// `price`, `selectedProduct`, `productCost`) have been collapsed into a single
+// canonical `LineItemDraft`. Selection runs through `catalogItemToDraft` and
+// the parent's `onAdd` callback now receives a `LineItemDraft` directly. The
+// parent mutation projects via `draftToInvoiceLinePayload`.
+//
 // Add Line Item — table-row-based editor matching PartsBillingCard add-row pattern
 function AddLineItemRow({ onAdd, isPending, onCancel }: {
-  onAdd: (data: {
-    description: string; quantity: string; unitPrice: number;
-    lineSubtotal: number; lineTotal: number;
-    productId?: string | null; unitCost?: number;
-  }) => void;
+  onAdd: (draft: LineItemDraft) => void;
   isPending: boolean;
   onCancel: () => void;
 }) {
-  const [desc, setDesc] = useState("");
-  const [qty, setQty] = useState("1");
-  const [price, setPrice] = useState("");
-  const [selectedProduct, setSelectedProduct] = useState<ProductOption | null>(null);
-  const [productCost, setProductCost] = useState<number>(0);
+  const [draft, setDraft] = useState<LineItemDraft>(() => blankDraft());
   const [productSearch, setProductSearch] = useState("");
 
   // Canonical product search via productEntity
   const { data: searchResults = [], isLoading: searchLoading } = useProductSearch(productSearch);
 
-  const handleSelectProduct = (product: ProductOption | null) => {
-    if (product) {
-      setDesc(product.name);
-      setPrice(product.unitPrice || "0");
-      setSelectedProduct(product);
-      setProductCost(parseFloat(product.cost || "0") || 0);
-      setProductSearch("");
-    } else {
-      setSelectedProduct(null);
-      setProductCost(0);
-    }
-  };
+  // Reconstruct the selector's "current value" from the canonical draft —
+  // no parallel `selectedProduct` state.
+  const selectedProduct: ProductOption | null = draft.productId
+    ? {
+        id: draft.productId,
+        name: draft.description,
+        type: draft.productType ?? "product",
+        unitPrice: draft.unitPrice,
+        cost: draft.unitCost,
+      }
+    : null;
 
   const handleSubmit = () => {
-    if (!desc.trim() || !price) return;
-    const q = parseFloat(qty) || 1;
-    const p = parseFloat(price) || 0;
-    const subtotal = Math.round(q * p * 100) / 100;
+    if (!draft.description.trim() || !parseMoney(draft.unitPrice)) return;
+    // Compute line subtotal/total with canonical money helpers right before
+    // handing the draft to the parent. The server invoice-lines POST route
+    // will recompute tax server-side via batchApplyLineTax if a tax group is
+    // active, but the unitPrice/quantity-based subtotal must be set here.
+    const qty = parseMoney(draft.quantity);
+    const price = parseMoney(draft.unitPrice);
+    const subtotal = formatMoney(qty * price);
     onAdd({
-      description: desc.trim(), quantity: String(q), unitPrice: p,
-      lineSubtotal: subtotal, lineTotal: subtotal,
-      productId: selectedProduct?.id || null, unitCost: productCost || undefined,
+      ...draft,
+      lineSubtotal: subtotal,
+      lineTotal: subtotal,
     });
-    setDesc(""); setQty("1"); setPrice(""); setSelectedProduct(null); setProductCost(0);
+    // Reset for the next add (parent also closes the row, but resetting
+    // ensures a clean state if it's reopened).
+    setDraft(blankDraft());
+    setProductSearch("");
   };
 
-  const lineTotal = (parseFloat(qty) || 0) * (parseFloat(price) || 0);
+  const lineTotal = parseMoney(draft.quantity) * parseMoney(draft.unitPrice);
 
   // Render as a table row matching PartsBillingCard edit-row pattern
   return (
     <tr className="border-b border-border/50 bg-primary/5" data-testid="add-line-item-form">
       <td className="py-2.5 pr-2 align-top w-8" />
       <td className="py-2.5 pr-3 align-top">
-        {/* Product/service search — canonical selector */}
+        {/* Product/service search — canonical selector. The onChange callback
+            is intentionally inline (no named handleSelectProduct wrapper) so the
+            only catalog→draft mapping site is the canonical mapper itself. */}
         <CreateOrSelectField<ProductOption>
           label=""
           compact
           value={selectedProduct}
-          onChange={handleSelectProduct}
+          onChange={(product) => {
+            if (product) {
+              // Preserve the user's existing quantity on a late product swap.
+              setDraft(
+                catalogItemToDraft(productOptionToCatalogItem(product), {
+                  quantity: draft.quantity,
+                }),
+              );
+              setProductSearch("");
+            } else {
+              // Clear the catalog binding but keep what the user has typed.
+              setDraft({ ...draft, productId: null });
+            }
+          }}
           searchResults={searchResults}
           searchLoading={searchLoading}
           searchText={productSearch}
@@ -197,14 +231,20 @@ function AddLineItemRow({ onAdd, isPending, onCancel }: {
           className="mt-1.5 text-xs min-h-[2.25rem] resize-y"
           rows={2}
           placeholder="Description / notes..."
-          value={desc}
-          onChange={(e) => setDesc(e.target.value)}
+          value={draft.description}
+          onChange={(e) => setDraft({ ...draft, description: e.target.value })}
           data-testid="input-new-line-desc"
         />
 
         {/* Save/Cancel buttons — matches PartsBillingCard button group */}
         <div className="flex items-center gap-2 mt-2">
-          <Button size="sm" onClick={handleSubmit} disabled={isPending || !desc.trim() || !price} className="h-7 text-xs" data-testid="button-confirm-add-line">
+          <Button
+            size="sm"
+            onClick={handleSubmit}
+            disabled={isPending || !draft.description.trim() || !parseMoney(draft.unitPrice)}
+            className="h-7 text-xs"
+            data-testid="button-confirm-add-line"
+          >
             <Check className="h-3 w-3 mr-1" />
             Save
           </Button>
@@ -215,27 +255,55 @@ function AddLineItemRow({ onAdd, isPending, onCancel }: {
         </div>
       </td>
       <td className="py-2.5 px-3 align-top">
-        <Input type="number" min={0} className="text-xs text-right w-full" value={qty} onChange={(e) => setQty(e.target.value || "1")} step="0.01" data-testid="input-new-line-qty" />
+        <Input
+          type="number"
+          min={0}
+          className="text-xs text-right w-full"
+          value={draft.quantity}
+          onChange={(e) => setDraft({ ...draft, quantity: e.target.value || "1" })}
+          step="0.01"
+          data-testid="input-new-line-qty"
+        />
       </td>
       <td className="py-2.5 px-3 align-top">
         <div className="relative">
           <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">$</span>
-          <Input type="number" min={0} step="0.01" placeholder="0.00" className="text-xs text-right w-full pl-5 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" value={price} onChange={(e) => setPrice(e.target.value)} data-testid="input-new-line-price" />
+          <Input
+            type="number"
+            min={0}
+            step="0.01"
+            placeholder="0.00"
+            className="text-xs text-right w-full pl-5 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+            value={draft.unitPrice}
+            onChange={(e) => setDraft({ ...draft, unitPrice: e.target.value })}
+            data-testid="input-new-line-price"
+          />
         </div>
       </td>
       <td className="py-2.5 px-3 align-top" />
       <td className="py-2.5 pl-3 pr-1 align-top text-right text-xs font-semibold">
-        {price ? formatCurrency(lineTotal) : ""}
+        {parseMoney(draft.unitPrice) ? formatCurrency(lineTotal) : ""}
       </td>
     </tr>
   );
 }
 
 // Sortable line item row — matches PartsBillingCard row structure
+//
+// 2026-04-09 (P9-P10 Phase A): The three edit state vars (`editDesc`,
+// `editQty`, `editPrice`) have been collapsed into a single canonical
+// `LineItemDraft`. The draft is hydrated from the persisted line via
+// `hydrateDraft(line)` on entering edit mode (synchronously, in the click
+// handler, so the edit row never flashes stale values). On save, the parent
+// receives the full canonical draft and projects it via
+// `draftToInvoiceLinePayload`. unitCost / taxRate / taxAmount survive the
+// edit because they are carried through on the draft from `hydrateDraft`,
+// then sent back unchanged in the PATCH payload — preserving server-side
+// fields the user didn't touch.
 function SortableLineRow({ line, isEditing, onEdit, onDelete }: {
   line: InvoiceLine;
   isEditing: boolean;
-  onEdit?: (lineId: string, data: Record<string, unknown>) => void;
+  onEdit?: (lineId: string, draft: LineItemDraft) => void;
   onDelete?: (lineId: string) => void;
 }) {
   const {
@@ -248,9 +316,7 @@ function SortableLineRow({ line, isEditing, onEdit, onDelete }: {
   } = useSortable({ id: line.id });
 
   const [inlineEdit, setInlineEdit] = useState(false);
-  const [editDesc, setEditDesc] = useState(line.description);
-  const [editQty, setEditQty] = useState(line.quantity);
-  const [editPrice, setEditPrice] = useState(line.unitPrice);
+  const [editDraft, setEditDraft] = useState<LineItemDraft>(() => hydrateDraft(line as unknown as Record<string, unknown>));
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -258,14 +324,23 @@ function SortableLineRow({ line, isEditing, onEdit, onDelete }: {
     opacity: isDragging ? 0.5 : 1,
   };
 
+  // Synchronously hydrate a fresh draft from the current line whenever the
+  // user enters edit mode. Batched with `setInlineEdit` so the edit row
+  // renders with the up-to-date line values immediately.
+  const handleEnterEdit = () => {
+    setEditDraft(hydrateDraft(line as unknown as Record<string, unknown>));
+    setInlineEdit(true);
+  };
+
   const handleSaveEdit = () => {
-    const qty = parseFloat(editQty) || 1;
-    const price = parseFloat(editPrice) || 0;
-    const subtotal = Math.round(qty * price * 100) / 100;
+    // Recompute line subtotal/total client-side because the PATCH route does
+    // not recompute on update. unitCost, taxRate, taxAmount survive untouched
+    // from the hydrated draft.
+    const qty = parseMoney(editDraft.quantity);
+    const price = parseMoney(editDraft.unitPrice);
+    const subtotal = formatMoney(qty * price);
     onEdit?.(line.id, {
-      description: editDesc,
-      quantity: String(qty),
-      unitPrice: price,
+      ...editDraft,
       lineSubtotal: subtotal,
       lineTotal: subtotal,
     });
@@ -273,9 +348,7 @@ function SortableLineRow({ line, isEditing, onEdit, onDelete }: {
   };
 
   const handleCancelEdit = () => {
-    setEditDesc(line.description);
-    setEditQty(line.quantity);
-    setEditPrice(line.unitPrice);
+    setEditDraft(hydrateDraft(line as unknown as Record<string, unknown>));
     setInlineEdit(false);
   };
 
@@ -290,7 +363,13 @@ function SortableLineRow({ line, isEditing, onEdit, onDelete }: {
           </div>
         </td>
         <td className="py-2.5 pr-3 align-top">
-          <Input value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className="text-xs" placeholder="Description" data-testid={`input-edit-desc-${line.id}`} />
+          <Input
+            value={editDraft.description}
+            onChange={(e) => setEditDraft({ ...editDraft, description: e.target.value })}
+            className="text-xs"
+            placeholder="Description"
+            data-testid={`input-edit-desc-${line.id}`}
+          />
           <div className="flex items-center gap-2 mt-2">
             <Button size="sm" onClick={handleSaveEdit} className="h-7 text-xs" data-testid={`button-save-line-${line.id}`}>
               <Check className="h-3 w-3 mr-1" />
@@ -307,19 +386,34 @@ function SortableLineRow({ line, isEditing, onEdit, onDelete }: {
           </div>
         </td>
         <td className="py-2.5 px-3 align-top">
-          <Input type="number" value={editQty} onChange={(e) => setEditQty(e.target.value)} className="text-xs text-right w-full" step="0.01" min="0" data-testid={`input-edit-qty-${line.id}`} />
+          <Input
+            type="number"
+            value={editDraft.quantity}
+            onChange={(e) => setEditDraft({ ...editDraft, quantity: e.target.value })}
+            className="text-xs text-right w-full"
+            step="0.01"
+            min="0"
+            data-testid={`input-edit-qty-${line.id}`}
+          />
         </td>
         <td className="py-2.5 px-3 align-top">
           <div className="relative">
             <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">$</span>
-            <Input type="number" value={editPrice} onChange={(e) => setEditPrice(e.target.value)} className="text-xs text-right w-full pl-5 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" step="0.01" min="0" placeholder="0.00" data-testid={`input-edit-price-${line.id}`} />
+            <Input
+              type="number"
+              value={editDraft.unitPrice}
+              onChange={(e) => setEditDraft({ ...editDraft, unitPrice: e.target.value })}
+              className="text-xs text-right w-full pl-5 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+              step="0.01"
+              min="0"
+              placeholder="0.00"
+              data-testid={`input-edit-price-${line.id}`}
+            />
           </div>
         </td>
         <td className="py-2.5 px-3 align-top" />
         <td className="py-2.5 pl-3 pr-1 align-top text-right text-xs font-semibold">
-          {formatCurrency(
-            (parseFloat(editQty) || 0) * (parseFloat(editPrice) || 0)
-          )}
+          {formatCurrency(parseMoney(editDraft.quantity) * parseMoney(editDraft.unitPrice))}
         </td>
       </tr>
     );
@@ -331,7 +425,7 @@ function SortableLineRow({ line, isEditing, onEdit, onDelete }: {
       style={style}
       data-testid={`row-line-item-${line.id}`}
       className={`border-b border-border/50 hover:bg-muted/50 ${isEditing ? "cursor-pointer" : ""} ${isDragging ? "bg-muted" : ""}`}
-      onClick={isEditing ? () => setInlineEdit(true) : undefined}
+      onClick={isEditing ? handleEnterEdit : undefined}
     >
       <td className="py-3 pr-2 align-top w-8">
         {isEditing && (
@@ -621,9 +715,17 @@ export default function InvoiceDetailPage() {
   });
 
   // Line item CRUD mutations
+  // 2026-04-09 (P9-P10 Phase A): Both mutations now accept canonical
+  // `LineItemDraft` and serialize via `draftToInvoiceLinePayload`. The
+  // contextual extras (lineNumber, overrideQboLock, overrideReason) can be
+  // added later via the second arg of `draftToInvoiceLinePayload` if needed;
+  // current usage doesn't require them.
   const addLineMutation = useMutation({
-    mutationFn: (data: { description: string; quantity: string; unitPrice: number; lineSubtotal: number; lineTotal: number; productId?: string | null; unitCost?: number }) =>
-      apiRequest(`/api/invoices/${invoiceId}/lines`, { method: "POST", body: JSON.stringify(data) }),
+    mutationFn: (draft: LineItemDraft) =>
+      apiRequest(`/api/invoices/${invoiceId}/lines`, {
+        method: "POST",
+        body: JSON.stringify(draftToInvoiceLinePayload(draft)),
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
@@ -633,8 +735,11 @@ export default function InvoiceDetailPage() {
   });
 
   const updateLineMutation = useMutation({
-    mutationFn: ({ lineId, data }: { lineId: string; data: Record<string, unknown> }) =>
-      apiRequest(`/api/invoices/${invoiceId}/lines/${lineId}`, { method: "PATCH", body: JSON.stringify(data) }),
+    mutationFn: ({ lineId, draft }: { lineId: string; draft: LineItemDraft }) =>
+      apiRequest(`/api/invoices/${invoiceId}/lines/${lineId}`, {
+        method: "PATCH",
+        body: JSON.stringify(draftToInvoiceLinePayload(draft)),
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
@@ -996,7 +1101,12 @@ export default function InvoiceDetailPage() {
   };
 
   if (!invoiceId) {
-    return <div className="p-6">Invoice not found</div>;
+    return (
+      <div className="p-6 space-y-3" data-testid="invoice-not-found">
+        <p className="text-sm text-muted-foreground">Invoice not found.</p>
+        <Button variant="outline" size="sm" onClick={() => setLocation("/invoices")}>Back to invoices</Button>
+      </div>
+    );
   }
 
   if (isLoading) {
@@ -1008,7 +1118,16 @@ export default function InvoiceDetailPage() {
   }
 
   if (!details) {
-    return <div className="p-6">Invoice not found</div>;
+    // 2026-04-09: invoice may have been permanently deleted from another tab
+    // or via the canonical DELETE /api/invoices/:id route. Provide a way out.
+    return (
+      <div className="p-6 space-y-3" data-testid="invoice-not-found">
+        <p className="text-sm text-muted-foreground">
+          This invoice no longer exists. It may have been deleted.
+        </p>
+        <Button variant="outline" size="sm" onClick={() => setLocation("/invoices")}>Back to invoices</Button>
+      </div>
+    );
   }
 
   const { invoice, lines, location, customerCompany, job, billingAddress, serviceAddress, primaryContact } = details;
@@ -1205,7 +1324,7 @@ export default function InvoiceDetailPage() {
                                   key={line.id}
                                   line={line}
                                   isEditing={isEditing}
-                                  onEdit={(lineId, data) => updateLineMutation.mutate({ lineId, data })}
+                                  onEdit={(lineId, draft) => updateLineMutation.mutate({ lineId, draft })}
                                   onDelete={(lineId) => deleteLineMutation.mutate(lineId)}
                                 />
                               ))
@@ -1213,7 +1332,7 @@ export default function InvoiceDetailPage() {
                             {/* Add row renders inside tbody, matching PartsBillingCard pattern */}
                             {isEditing && canEdit && showAddRow && (
                               <AddLineItemRow
-                                onAdd={(data) => { addLineMutation.mutate(data); setShowAddRow(false); }}
+                                onAdd={(draft) => { addLineMutation.mutate(draft); setShowAddRow(false); }}
                                 isPending={addLineMutation.isPending}
                                 onCancel={() => setShowAddRow(false)}
                               />

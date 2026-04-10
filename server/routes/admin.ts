@@ -22,6 +22,12 @@ import { updateTenantFeaturesSchema } from "@shared/schema";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 import { invalidateCompanyCache } from "../services/cache";
 import { runTimeAlertsForCompany, runTimeAlertsWorker, getAlertThresholds, runWeeklyDigestWorker } from "../services/timeAlertsWorker";
+// 2026-04-09: Bulk archived-job cleanup tool (admin-only)
+import {
+  previewBulkCleanup,
+  runBulkCleanup,
+  isBulkCleanupWarning,
+} from "../services/bulkJobCleanupService";
 
 // ============================================================================
 // Security: Confirmation Token
@@ -60,6 +66,65 @@ const router = Router();
 
 // All admin routes require owner role
 router.use(requireRole(OWNER_ONLY));
+
+// ============================================================================
+// Bulk Archived-Job Cleanup (2026-04-09)
+// ============================================================================
+//
+// Two-step admin tool for permanently deleting archived jobs in batches.
+// Reuses the canonical jobRepository.deleteJob path — no shortcut SQL.
+//
+//   POST /api/admin/jobs/bulk-cleanup/preview
+//        → returns counts, sample, and whether a warning is required.
+//
+//   POST /api/admin/jobs/bulk-cleanup/run
+//        → executes in batches; refuses to proceed if invoice-linked archived
+//          jobs are present and `confirmed !== true`.
+//
+// Tenant scope: req.companyId from the authenticated owner (the same tenant
+// the admin is operating in). Cross-tenant cleanup is intentionally not
+// supported here — the tool runs on the operator's own tenant only.
+
+const bulkCleanupFiltersSchema = z.object({
+  archivedOnly: z.literal(true),
+  olderThanDays: z.number().int().positive().max(3650).nullable().optional(),
+  includeInvoiceLinked: z.boolean().nullable().optional(),
+  limit: z.number().int().positive().max(1000).nullable().optional(),
+}).strict();
+
+const bulkCleanupRunSchema = z.object({
+  filters: bulkCleanupFiltersSchema,
+  confirmed: z.boolean().optional().default(false),
+}).strict();
+
+router.post(
+  "/jobs/bulk-cleanup/preview",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const filters = validateSchema(bulkCleanupFiltersSchema, req.body?.filters ?? req.body);
+    const preview = await previewBulkCleanup(companyId, filters);
+    res.json(preview);
+  })
+);
+
+router.post(
+  "/jobs/bulk-cleanup/run",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const { filters, confirmed } = validateSchema(bulkCleanupRunSchema, req.body);
+
+    const result = await runBulkCleanup(companyId, filters, { confirmed: confirmed === true });
+
+    if (isBulkCleanupWarning(result)) {
+      // Caller did not pass confirmed=true and invoice-linked jobs are present.
+      // Surface a 409 so the UI can show the warning dialog and re-call with
+      // confirmed=true after the user acknowledges.
+      return res.status(409).json(result);
+    }
+
+    res.json(result);
+  })
+);
 
 // ============================================================================
 // Routes
@@ -814,30 +879,22 @@ router.get(
     // =========================================================================
     // INVOICES - DB counts
     // =========================================================================
+    // 2026-04-09: invoices.isActive / deletedAt buckets removed — invoices use
+    // permanent-delete model (no soft delete). The diagnostic now reports total
+    // count and a status breakdown only.
     const [invoiceTotalResult] = await db
       .select({ count: sql<number>`count(*)` })
       .from(invoices)
       .where(eq(invoices.companyId, companyId));
 
-    const [invoiceIsActiveTrueResult] = await db
-      .select({ count: sql<number>`count(*)` })
+    const invoiceStatusBreakdown = await db
+      .select({
+        status: invoices.status,
+        count: sql<number>`count(*)::int`,
+      })
       .from(invoices)
-      .where(sql`${invoices.companyId} = ${companyId} AND ${invoices.isActive} = true`);
-
-    const [invoiceIsActiveNullResult] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(invoices)
-      .where(sql`${invoices.companyId} = ${companyId} AND ${invoices.isActive} IS NULL`);
-
-    const [invoiceIsActiveFalseResult] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(invoices)
-      .where(sql`${invoices.companyId} = ${companyId} AND ${invoices.isActive} = false`);
-
-    const [invoiceDeletedAtNotNullResult] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(invoices)
-      .where(sql`${invoices.companyId} = ${companyId} AND ${invoices.deletedAt} IS NOT NULL`);
+      .where(eq(invoices.companyId, companyId))
+      .groupBy(invoices.status);
 
     // Sample invoices (up to 5)
     const sampleInvoices = await db
@@ -845,8 +902,6 @@ router.get(
         id: invoices.id,
         invoiceNumber: invoices.invoiceNumber,
         status: invoices.status,
-        isActive: invoices.isActive,
-        deletedAt: invoices.deletedAt,
       })
       .from(invoices)
       .where(eq(invoices.companyId, companyId))
@@ -930,7 +985,8 @@ router.get(
     // =========================================================================
     const totalInDb = Number(invoiceTotalResult.count);
     const returnedByStorage = storageInvoiceResult.items.length;
-    const expectedExclusions = Number(invoiceIsActiveFalseResult.count) + Number(invoiceDeletedAtNotNullResult.count);
+    // 2026-04-09: invoices have no soft-delete state — storage should return all rows.
+    const expectedExclusions = 0;
 
     const locationTotalInDb = Number(locationTotalResult.count);
     const locationReturnedByStorage = storageClientsResult.length;
@@ -940,18 +996,14 @@ router.get(
       companyId,
       invoices: {
         totalInDb,
-        isActiveTrueCount: Number(invoiceIsActiveTrueResult.count),
-        isActiveNullCount: Number(invoiceIsActiveNullResult.count),
-        isActiveFalseCount: Number(invoiceIsActiveFalseResult.count),
-        deletedAtNotNullCount: Number(invoiceDeletedAtNotNullResult.count),
+        // 2026-04-09: report status breakdown instead of soft-delete buckets
+        statusBreakdown: invoiceStatusBreakdown.map(r => ({ status: r.status, count: Number(r.count) })),
         returnedByStorageGetInvoices: returnedByStorage,
-        expectedAfterExclusions: totalInDb - expectedExclusions,
+        expectedAfterExclusions: totalInDb,
         sampleIds: sampleInvoices.map(i => ({
           id: i.id,
           invoiceNumber: i.invoiceNumber,
           status: i.status,
-          isActive: i.isActive,
-          deletedAt: i.deletedAt,
         })),
       },
       locations: {
@@ -1290,10 +1342,11 @@ router.get(
     // Test 1: Invoice visibility - if DB has invoices with isActive=true|NULL,
     // storage method must return at least one
     // =========================================================================
+    // 2026-04-09: invoices have no soft-delete state under the permanent-delete model.
     const [invoiceTotalResult] = await db
       .select({ count: sql<number>`count(*)` })
       .from(invoices)
-      .where(sql`${invoices.companyId} = ${companyId} AND (${invoices.isActive} = true OR ${invoices.isActive} IS NULL)`);
+      .where(eq(invoices.companyId, companyId));
 
     const visibleInvoicesInDb = Number(invoiceTotalResult.count);
     const storageInvoiceResult = await storage.getInvoices(companyId, { limit: 1, offset: 0 });

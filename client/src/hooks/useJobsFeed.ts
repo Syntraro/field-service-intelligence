@@ -132,7 +132,13 @@ export interface JobCounts {
     on_route: number;
     on_hold: number;
   };
+  /** Grand total across all lifecycle buckets (including archived). */
   total: number;
+  /**
+   * 2026-04-09: Non-archived total (total - lifecycle.archived).
+   * Use this instead of subtracting archived manually.
+   */
+  activeTotal: number;
 }
 
 // ---------------------------------------------------------------------------

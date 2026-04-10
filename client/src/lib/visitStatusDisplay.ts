@@ -38,6 +38,8 @@ export function visitStatusColorTech(status: string): string {
     case "en_route":    return "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300";
     case "on_site":     return "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300";
     case "in_progress": return "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300";
+    // 2026-04-10: tech-side pause state, distinct from on_hold (office dispatch hold).
+    case "paused":      return "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300";
     case "completed":   return "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400";
     case "cancelled":   return "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400";
     default:            return "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400";
@@ -49,6 +51,8 @@ export const VISIT_STATUS_OPTIONS = [
   { value: "dispatched",  label: "Dispatched" },
   { value: "en_route",    label: "En Route" },
   { value: "in_progress", label: "In Progress" },
+  // 2026-04-10: paused added to dispatch-side filter dropdown for office parity.
+  { value: "paused",      label: "Paused" },
   { value: "on_hold",     label: "On Hold" },
   { value: "completed",   label: "Completed" },
   { value: "cancelled",   label: "Cancelled" },

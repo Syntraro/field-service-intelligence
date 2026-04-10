@@ -10,7 +10,9 @@
  *
  * Active filters live in their canonical modules:
  * - activeJobFilter() → server/storage/jobFilters.ts
- * - activeInvoiceFilter() → server/storage/invoicesFeed.ts
+ * - 2026-04-09: activeInvoiceFilter() REMOVED — invoices use permanent-delete
+ *   model. The is_active and deleted_at columns are dropped. See
+ *   migrations/2026_04_09_invoice_permanent_delete.sql.
  */
 
 import { eq, inArray, sql } from "drizzle-orm";

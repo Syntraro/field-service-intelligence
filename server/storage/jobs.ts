@@ -724,93 +724,82 @@ export class JobRepository extends BaseRepository {
   // or transitionJobStatus() for domain-validated lifecycle transitions.
 
   /**
-   * Delete job — conditional hard-delete vs soft-delete based on invoice existence.
+   * Permanently delete a job (2026-04-09 — permanent-delete model).
    *
-   * Invoice guard checks TWO sources (belt-and-suspenders):
-   *   1. jobs.invoiceId — the canonical FK from job → invoice
-   *   2. invoices table — any row where invoices.jobId = this job
-   *      (invoices.jobId is denormalized with no FK constraint, so it could
-   *       reference a job even if jobs.invoiceId is NULL due to data inconsistency)
+   * Locked product decision: deleting a job must NOT break the invoice. Jobs
+   * and invoices are separate records and the link between them is detachable.
    *
-   * If EITHER source shows an invoice: soft delete to preserve financial integrity.
-   * Sets deletedAt + isActive = false so it's hidden from active job lists but
-   * invoice references remain valid.
+   * Transactional steps (in order):
+   *   1. SELECT FOR UPDATE the job row (tenant-isolated). Return false if missing.
+   *   2. Detach the back-pointer from invoices: UPDATE invoices SET job_id = NULL
+   *      WHERE company_id = $cid AND job_id = $jid. The 2026-04-09 migration adds
+   *      a FK on invoices.job_id with ON DELETE SET NULL, but the explicit detach
+   *      keeps the operation correct in the same transaction regardless of FK
+   *      install ordering and protects against any historical denormalized rows.
+   *   3. Delete attention_items rows for this job (no FK, manual cleanup).
+   *   4. DELETE FROM jobs. The DB then fires:
+   *        - CASCADE on job_visits, job_parts, job_notes, job_equipment,
+   *          job_status_events, job_schedule_audit, job_expenses, labor_entries,
+   *          technician_job_status_events
+   *        - SET NULL on tasks.job_id, time_entries.job_id,
+   *          recurring_job_instances.generated_job_id (history outlives the job)
+   *      The linked invoice (if any) survives as a standalone historical record
+   *      with its job_id now NULL.
    *
-   * If NO invoice exists anywhere: hard delete the job row.
-   * All dependent rows (job_visits, job_parts, job_equipment, job_status_events,
-   * job_schedule_audit) cascade-delete via FK constraints. Work sessions and
-   * timesheet entries have onDelete: "set null" so they lose the jobId reference
-   * but remain intact for payroll purposes.
+   * No conditional soft-delete branch: under the new model, jobs are always
+   * permanently deleted. The invoice survives via the detach in step 2.
+   *
+   * Returns true on success, false if the job row was not found (matches the
+   * route handler's existing 404 behavior at routes/jobs.ts:400).
    */
   async deleteJob(companyId: string, jobId: string): Promise<boolean> {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
-    // Fetch job to check invoice linkage before deciding delete strategy
-    const [job] = await db
-      .select({ id: jobs.id, invoiceId: jobs.invoiceId })
-      .from(jobs)
-      .where(
-        and(
+    return await db.transaction(async (tx) => {
+      // 1. Lock the job row
+      const [job] = await tx
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(and(
           eq(jobs.id, jobId),
           eq(jobs.companyId, companyId),
-          isNull(jobs.deletedAt)
-        )
-      );
-
-    if (!job) return false;
-
-    // Belt-and-suspenders: also check invoices table for any row referencing this job.
-    // invoices.jobId is denormalized (no FK constraint), so it could reference a job
-    // even if jobs.invoiceId is NULL due to partial transaction failure or data migration.
-    let hasInvoice = Boolean(job.invoiceId);
-    if (!hasInvoice) {
-      const [linkedInvoice] = await db
-        .select({ id: invoices.id })
-        .from(invoices)
-        .where(
-          and(
-            eq(invoices.companyId, companyId),
-            eq(invoices.jobId, jobId)
-          )
-        )
+        ))
+        .for("update")
         .limit(1);
-      hasInvoice = Boolean(linkedInvoice);
-    }
 
-    if (hasInvoice) {
-      // Soft delete — invoice exists, preserve financial integrity
-      const now = new Date();
-      await db
-        .update(jobs)
-        .set({
-          deletedAt: now,
-          isActive: false,
-          version: sql`${jobs.version} + 1`,
-          updatedAt: now,
-        })
-        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
-    } else {
-      // Hard delete — no invoice in either direction, safe to remove completely.
-      // FK cascades handle job_visits, job_parts, job_equipment,
-      // job_status_events, job_schedule_audit. Work sessions/timesheets
-      // get jobId set to null.
-      await db
+      if (!job) return false;
+
+      // 2. Detach the invoice → job back-pointer. Defense-in-depth: even after
+      //    the FK is added in the 2026-04-09 permanent-delete migration, the
+      //    explicit UPDATE keeps this storage method correct in any DB state.
+      await tx
+        .update(invoices)
+        .set({ jobId: null, updatedAt: new Date() })
+        .where(and(
+          eq(invoices.companyId, companyId),
+          eq(invoices.jobId, jobId),
+        ));
+
+      // 3. Clean up attention_items (no FK, manual cleanup)
+      await tx
+        .delete(attentionItems)
+        .where(and(
+          eq(attentionItems.tenantId, companyId),
+          eq(attentionItems.entityType, "job"),
+          eq(attentionItems.entityId, jobId),
+        ));
+
+      // 4. Hard delete the job row. FK cascades and SET NULLs handle the rest.
+      await tx
         .delete(jobs)
-        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
-    }
+        .where(and(
+          eq(jobs.id, jobId),
+          eq(jobs.companyId, companyId),
+        ));
 
-    // Clean up attention items for this job — attention_items has no FK to jobs,
-    // so orphaned rows would continue driving dashboard counts after deletion.
-    await db
-      .delete(attentionItems)
-      .where(and(
-        eq(attentionItems.tenantId, companyId),
-        eq(attentionItems.entityType, "job"),
-        eq(attentionItems.entityId, jobId),
-      ));
-
-    return true;
+      return true;
+    });
   }
 
   /**
@@ -843,6 +832,20 @@ export class JobRepository extends BaseRepository {
    *
    * POST-INVOICE GUARD: Blocked for invoiced jobs unless override is set.
    *
+   * 2026-04-10 FIX: Always hydrates `unit_cost` from the catalog when the
+   * caller passes a `productId` but no explicit `unitCost`. This closes a
+   * silent data-integrity bug where the office add-part route and the
+   * quote → job conversion path were inserting NULL `unit_cost` whenever
+   * the client did not (or could not) supply the cost basis. Profit margin
+   * calculations downstream in PartsBillingCard treated those rows as 100%
+   * margin.
+   *
+   * The hydration is delegated to the canonical `normalizeJobPartUnitCost`
+   * helper at the bottom of this file. Bulk paths (templates.ts apply,
+   * pmJobParts.ts copy, techField.ts add-part) prefetch `items.cost` in
+   * their own query and bypass the helper for performance — see the
+   * helper's docstring for the canonical contract every path must satisfy.
+   *
    * @param options - Mutation options (can include override for invoiced jobs)
    */
   async createJobPart(
@@ -863,12 +866,19 @@ export class JobRepository extends BaseRepository {
     // POST-INVOICE GUARD: Check if job is invoiced
     await this.assertJobNotInvoiced(companyId, jobId, options);
 
+    // 2026-04-10 FIX: hydrate unit_cost from catalog when missing.
+    const hydratedUnitCost = await normalizeJobPartUnitCost({
+      productId: partData.productId,
+      unitCost: partData.unitCost,
+    });
+
     const rows = await db
       .insert(jobParts)
       .values({
         ...partData,
         companyId, // Add tenant isolation
-        jobId
+        jobId,
+        unitCost: hydratedUnitCost,
       })
       .returning();
 
@@ -1780,3 +1790,83 @@ export class JobRepository extends BaseRepository {
 }
 
 export const jobRepository = new JobRepository();
+
+// ============================================================================
+// 2026-04-10: Canonical job_parts.unit_cost normalizer
+// ============================================================================
+//
+// SINGLE SOURCE OF TRUTH for the rule:
+//
+//   "When a job_part is created with a non-null product_id, its unit_cost
+//    MUST come from items.cost. Manual lines (no product_id) may have a
+//    null unit_cost. Caller-supplied unit_cost always wins (even '0.00')."
+//
+// Background:
+//   The office add-part route, the quote → job conversion path, and the
+//   job-template apply path were each silently inserting NULL unit_cost
+//   under specific conditions:
+//     - Office route: relied on the client to send unitCost. Worked after
+//       the P9-P10 client migration but had no backend safety net.
+//     - Quote convert: quote_lines schema doesn't store unit_cost at all,
+//       so the convert path had no source for it and never looked it up.
+//     - Template apply: bulk SELECT omitted items.cost; insert omitted
+//       unitCost (the primary active source of NULL rows in production).
+//
+//   The downstream symptom: PartsBillingCard's profit-margin calculation
+//   treated NULL unit_cost as 0, displaying every affected line as 100%
+//   margin.
+//
+// Wiring (the four insert paths into job_parts):
+//   1. jobRepository.createJobPart  → calls this helper (single-row).
+//   2. templateRepository.applyJobTemplateToJob → bypasses the helper for
+//      bulk efficiency, BUT prefetches items.cost in its existing SELECT
+//      and writes it directly. Same semantic invariant.
+//   3. server/services/pmJobParts.ts copyLocationPMPartsToJob → bypasses
+//      the helper for bulk efficiency, prefetches itemCost from a join.
+//      Same semantic invariant.
+//   4. server/routes/techField.ts POST /api/tech/visits/:id/parts → bypasses
+//      the helper because it already SELECTs items.cost in the same query
+//      that validates the product. Same semantic invariant.
+//
+//   Bulk paths each have a doc comment pointing back here as the canonical
+//   reference. They are NOT independent implementations of the rule — they
+//   are performance-optimized parallel implementations of the SAME rule.
+//
+// Semantics:
+//   - Caller passed `unitCost`: respect it verbatim. Even "0.00" wins. The
+//     helper does not second-guess the caller; if the office UI explicitly
+//     wants a zero-cost manual line, it gets one.
+//   - Caller passed null/undefined `unitCost` AND a `productId`: look up
+//     items.cost and use it. Returns null if the catalog row is missing
+//     (e.g. soft-deleted product) — do not throw, do not fabricate.
+//   - Caller passed null/undefined `unitCost` AND no `productId`: return
+//     null. Manual lines without a catalog link have no cost basis to look
+//     up.
+//
+// This helper does NOT:
+//   - Throw on missing catalog rows. Silently degrades to null.
+//   - Validate companyId. Catalog cost is global by design (the catalog
+//     itself is per-tenant; the lookup is by the productId the caller
+//     already validated belongs to their tenant).
+//   - Round-trip through parseMoney/formatMoney. The cost column is a
+//     numeric(12,2) and Drizzle returns it as a canonical string already.
+export async function normalizeJobPartUnitCost(input: {
+  productId?: string | null;
+  unitCost?: string | null;
+}): Promise<string | null> {
+  // Caller-supplied value always wins.
+  if (input.unitCost != null) {
+    return input.unitCost;
+  }
+  // Manual line — nothing to look up.
+  if (!input.productId) {
+    return null;
+  }
+  // Look up the catalog cost.
+  const [row] = await db
+    .select({ cost: items.cost })
+    .from(items)
+    .where(eq(items.id, input.productId))
+    .limit(1);
+  return row?.cost ?? null;
+}

@@ -49,6 +49,31 @@ export function resetCsrf(): void {
 }
 
 /**
+ * 2026-04-10 Phase-2 Fix B — re-entry guard for the session-expired dispatcher.
+ *
+ * Without this guard, a 401 storm (e.g. multiple dashboard widgets all 401-ing
+ * during the brief stale-user window between modal click and Login mount) will
+ * dispatch "session-expired" repeatedly and reopen the modal in a loop.
+ *
+ * The flag is set on first dispatch and only reset by an explicit successful
+ * login (via auth.tsx loginMutation.onSuccess) or signup. Reset is exported as
+ * resetSessionExpiredGuard().
+ */
+let sessionExpiredFired = false;
+
+/** Auth-page path prefixes — never reopen the modal while we're already here. */
+const AUTH_PAGE_PREFIXES = ["/login", "/signup", "/request-reset", "/reset-password"];
+
+/**
+ * Reset the one-shot session-expired guard. Called by AuthProvider after a
+ * successful login so the next genuine session expiration can fire the modal
+ * again.
+ */
+export function resetSessionExpiredGuard(): void {
+  sessionExpiredFired = false;
+}
+
+/**
  * Dispatch a "session-expired" event when an API call gets 401.
  * The SessionExpiredDialog listens for this to show a friendly prompt.
  * Skip the auth-check endpoint itself (it naturally returns 401 when logged out).
@@ -57,6 +82,21 @@ function notifySessionExpired(url: string): void {
   // Skip endpoints that naturally return 401 during bootstrap or use non-fetch transports
   if (url === "/api/auth/me") return;
   if (url === "/api/dispatch/stream") return;
+
+  // 2026-04-10 Phase-2 Fix B: one-shot guard. The first 401 in a session-expired
+  // burst opens the modal; subsequent in-flight 401s are swallowed until login.
+  if (sessionExpiredFired) return;
+
+  // 2026-04-10 Phase-2 Fix B: never reopen the modal on top of an auth page —
+  // the user is already where they need to be.
+  if (typeof window !== "undefined") {
+    const pathname = window.location.pathname;
+    for (const prefix of AUTH_PAGE_PREFIXES) {
+      if (pathname.startsWith(prefix)) return;
+    }
+  }
+
+  sessionExpiredFired = true;
   window.dispatchEvent(new CustomEvent("session-expired"));
 }
 

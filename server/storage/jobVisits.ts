@@ -799,6 +799,18 @@ export class JobVisitsRepository extends BaseRepository {
       updates.checkedInAt = new Date();
     }
 
+    // 2026-04-10 micro-patch: clear the cancel-start restore marker on terminal
+    // transitions. previousStatus is captured by startVisit so cancelVisitStart
+    // can restore the prior state — once the visit reaches a terminal state
+    // the marker has no semantic meaning and must not linger. In practice the
+    // only caller that reaches here with a terminal status is cancelVisit
+    // (CANCEL_VISIT intent → "cancelled"); "completed" is owned by the
+    // orchestrator's COMPLETE_VISIT path and rejected upstream by the route.
+    // We list both for defense-in-depth.
+    if (status === "cancelled" || status === "completed") {
+      updates.previousStatus = null;
+    }
+
     // 2026-03-20: Removed unreachable completed-status auto-timestamp branch.
     // Visit completion is canonically owned by the orchestrator (COMPLETE_VISIT intent).
     // The route at jobVisits.routes.ts:224 rejects status="completed" before reaching here.

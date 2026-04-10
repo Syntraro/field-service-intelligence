@@ -52,8 +52,7 @@ interface WorkflowSummary {
     onHoldCount: number;
     unscheduledCount: number;
     // 2026-04-08: Live overdue count from /api/dashboard/workflow.
-    // Replaces the previous attention_items["job.overdue"] read which was
-    // materialized + had no time-based refresher → silently stale.
+    // This is the SOLE source of the overdue count for the dashboard widget.
     overdueCount: number;
   };
   invoices: { outstandingCount: number; pastDueCount: number };
@@ -455,10 +454,9 @@ export default function Dashboard() {
   });
 
   // 2026-04-08: Removed `attention.summary` query — Jobs widget overdue count
-  // now reads `workflowData.jobs.overdueCount` (live SQL) instead of the
-  // materialized attention_items["job.overdue"] which had no time-based
-  // refresher and silently went stale. The /api/attention/* endpoints remain
-  // for other consumers; only the dashboard read path is migrated.
+  // now reads `workflowData.jobs.overdueCount` (live SQL). The /api/attention/*
+  // endpoints remain for other rule types (job.requires_invoicing,
+  // job.unassigned, job.unscheduled).
 
   // Today's visit summary — operational live data.
   // Tier A (live): 15s fallback + window-focus refetch + SSE invalidation.

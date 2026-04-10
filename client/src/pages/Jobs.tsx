@@ -376,8 +376,11 @@ export default function Jobs() {
     lifecycle: { open: 0, completed: 0, invoiced: 0, archived: 0 },
     openSubStatus: { in_progress: 0, on_hold: 0, on_route: 0 },
     total: 0,
+    activeTotal: 0,
   };
-  const totalCount = counts.total - counts.lifecycle.archived;
+  // 2026-04-09: Use canonical activeTotal from server instead of subtracting
+  // archived manually. Server computes it as total - lifecycle.archived.
+  const totalCount = counts.activeTotal;
   const statusFilterCount = lifecycleFilter !== "all" ? 1 : 0;
   const workflowFilterCount = openSubStatusFilter !== "any" ? 1 : 0;
 

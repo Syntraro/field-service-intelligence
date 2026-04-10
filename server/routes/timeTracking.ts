@@ -16,6 +16,7 @@ import { Router, type Response } from "express";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { timeTrackingRepository } from "../storage/timeTracking";
+import { companyRepository } from "../storage/company";
 import { MANAGER_ROLES, TECH_ROLES } from "../auth/roles";
 import { requireRole } from "../auth/requireRole";
 import type { AuthedRequest } from "../auth/tenantIsolation";
@@ -57,13 +58,32 @@ timeRouter.post(
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const validated = validateSchema(clockInRequestSchema, req.body);
 
+    // 2026-04-08: Resolve the tenant timezone and compute the local YYYY-MM-DD
+    // date string here, then pass it to the storage layer as `workDateOverride`.
+    // This aligns the stored `work_sessions.workDate` with the tenant-timezone
+    // date that `getOpenWorkSession` (Today screen) uses to look up the open
+    // session. Previously, storage derived `workDate` from UTC, which silently
+    // diverged from the tenant's local "today" during the local-vs-UTC date
+    // offset window — producing the "Today screen says Not Clocked In + clock-in
+    // throws already-has-open-session" deadlock for any non-UTC tenant.
+    //
+    // The `en-CA` locale always formats as YYYY-MM-DD, matching the inline
+    // helper at `server/routes/techField.ts:61` (`todayInTimezone`). This is
+    // the same canonical timezone source — `companyRepository.getCompanyTimezone`
+    // — that techField.ts uses (it wraps the same call), so both routes now
+    // agree on the date convention without introducing a parallel helper.
+    const tz = await companyRepository.getCompanyTimezone(req.companyId!);
+    const at = validated.at ? new Date(validated.at) : new Date();
+    const workDate = at.toLocaleDateString("en-CA", { timeZone: tz });
+
     const session = await timeTrackingRepository.clockIn(
       req.companyId!,
       req.user!.id,
       {
-        at: validated.at ? new Date(validated.at) : undefined,
+        at,
         source: validated.source,
         notes: validated.notes ?? undefined,
+        workDateOverride: workDate,
       }
     );
 

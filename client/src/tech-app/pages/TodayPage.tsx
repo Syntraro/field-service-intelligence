@@ -34,7 +34,8 @@ import { useLocation } from "wouter";
 
 function JobCard({ visit, isNext, onTap }: { visit: TodayVisit; isNext: boolean; onTap: () => void }) {
   const isTerminal = visit.status === "completed" || visit.status === "on_hold" || visit.status === "cancelled";
-  const isActive = visit.status === "en_route" || visit.status === "in_progress" || visit.status === "on_site";
+  // 2026-04-09: paused counts as active in flight (visit is started, just not currently timing).
+  const isActive = visit.status === "en_route" || visit.status === "in_progress" || visit.status === "on_site" || visit.status === "paused";
 
   return (
     <button
@@ -167,7 +168,11 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
       {/* Date navigation */}
       <DaySelector selectedDate={selectedDate} onSelect={setSelectedDate} onPrev={goToPrevDay} onNext={goToNextDay} onToday={goToToday} />
 
-      {/* Clock-in banner */}
+      {/* 2026-04-09: Clock In / Clock Out parity — same placement, padding,
+          font weight, and visual hierarchy. The only differences are the
+          state label, the indicator color, and the button color. */}
+
+      {/* Clock-in banner (not clocked in) */}
       {!isClockedIn && (
         <div className="bg-slate-100 px-3 py-2.5 flex items-center justify-between border-b border-slate-200">
           <div className="flex items-center gap-2">
@@ -178,6 +183,7 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
             onClick={handleClockIn}
             disabled={shiftPending}
             className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#22c55e] text-white text-sm font-bold active:scale-95 transition-transform disabled:opacity-60"
+            data-testid="button-clock-in"
           >
             <LogIn className="h-3 w-3" />
             {clockIn.isPending ? "Clocking in…" : "Clock In"}
@@ -185,21 +191,23 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
         </div>
       )}
 
-      {/* Active shift strip */}
+      {/* Active shift strip (clocked in) — Clock Out is now a real primary
+          button with the same weight as Clock In. */}
       {isClockedIn && (
-        <div className="px-3 py-2 flex items-center justify-between bg-[#22c55e]/5">
+        <div className="bg-[#22c55e]/5 px-3 py-2.5 flex items-center justify-between border-b border-emerald-100">
           <div className="flex items-center gap-2">
             <div className="h-2 w-2 rounded-full bg-[#22c55e] animate-pulse" />
-            <span className="text-sm font-semibold text-[#22c55e]">Working</span>
-            {elapsed && <span className="text-sm text-slate-400 ml-1">{elapsed}</span>}
+            <span className="text-sm font-medium text-[#22c55e]">Working</span>
+            {elapsed && <span className="text-sm text-slate-500 ml-1 tabular-nums">{elapsed}</span>}
           </div>
           <button
             onClick={handleClockOut}
             disabled={shiftPending}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 text-slate-500 text-xs font-semibold disabled:opacity-60"
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-rose-600 text-white text-sm font-bold active:scale-95 transition-transform disabled:opacity-60"
+            data-testid="button-clock-out"
           >
             <LogOut className="h-3 w-3" />
-            {clockOut.isPending ? "Clocking out…" : "Out"}
+            {clockOut.isPending ? "Clocking out…" : "Clock Out"}
           </button>
         </div>
       )}

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useLocation } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -21,7 +21,7 @@ type LoginFormData = z.infer<typeof loginSchema>;
 
 export default function Login() {
   const [, setLocation] = useLocation();
-  const { login, user } = useAuth();
+  const { login } = useAuth();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
 
@@ -33,25 +33,25 @@ export default function Login() {
     },
   });
 
-  // Redirect when user becomes authenticated (role-aware)
-  useEffect(() => {
-    if (user) {
-      if (user.role === "technician") {
+  // 2026-04-10 Phase-2 Fix D: explicit post-login navigation. The previous
+  // implementation used a `useEffect(() => if (user) setLocation(returnTo))`
+  // which caused the session-expired loop — a stale truthy `user` from the
+  // pre-expiration session would fire that effect on Login mount and
+  // immediately bounce the user back into the protected app, where the
+  // 401 storm would reopen the modal. Now we navigate ONLY after a fresh
+  // `await login()` resolves successfully — explicit beats reactive.
+  const onSubmit = async (data: LoginFormData) => {
+    setIsLoading(true);
+    try {
+      const userData = await login(data.email, data.password);
+      // Role-aware destination, computed at the moment of success.
+      if (userData.role === "technician") {
         setLocation("/tech/today");
         return;
       }
       const params = new URLSearchParams(window.location.search);
       const returnTo = params.get("returnTo");
       setLocation(returnTo && returnTo.startsWith("/") ? returnTo : "/");
-    }
-  }, [user, setLocation]);
-
-  const onSubmit = async (data: LoginFormData) => {
-    setIsLoading(true);
-    try {
-      await login(data.email, data.password);
-      // Don't set isLoading to false here - let useEffect handle navigation
-      // isLoading will be checked in useEffect to ensure user state is set before redirect
     } catch (error: any) {
       toast({
         variant: "destructive",

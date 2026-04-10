@@ -55,6 +55,8 @@ export function visitStatusColor(status: VisitStatus): string {
     case "en_route":    return "bg-amber-50 text-amber-700 border-amber-200";
     case "on_site":     return "bg-lime-50 text-lime-800 border-lime-300"; // legacy — same as in_progress
     case "in_progress": return "bg-lime-50 text-lime-800 border-lime-300";
+    // 2026-04-10: tech-side pause state, distinct from on_hold (office-side dispatch hold).
+    case "paused":      return "bg-yellow-50 text-yellow-800 border-yellow-200";
     case "on_hold":     return "bg-orange-50 text-orange-700 border-orange-200";
     case "completed":   return "bg-slate-50 text-slate-400 border-slate-200";
     case "cancelled":   return "bg-gray-50 text-gray-400 border-gray-200";
@@ -131,6 +133,8 @@ export function visitStatusLabel(status: VisitStatus | string): string {
     case "dispatched":  return "Dispatched";
     case "en_route":    return "En Route";
     case "in_progress": return "In Progress";
+    // 2026-04-10: tech-side pause label, distinct from "On Hold" (office-side).
+    case "paused":      return "Paused";
     case "on_hold":     return "On Hold";
     case "completed":   return "Completed";
     case "cancelled":   return "Cancelled";
@@ -146,6 +150,8 @@ export function visitStatusDot(status: VisitStatus): string {
     case "en_route":    return "bg-amber-500";
     case "on_site":     return "bg-lime-500"; // legacy — same as in_progress
     case "in_progress": return "bg-lime-500";
+    // 2026-04-10: tech-side pause dot, distinct from on_hold.
+    case "paused":      return "bg-yellow-500";
     case "on_hold":     return "bg-orange-500";
     case "completed":   return "bg-slate-300";
     case "cancelled":   return "bg-gray-300";

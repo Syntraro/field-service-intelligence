@@ -1081,12 +1081,92 @@ router.get("/:jobId/parts", asyncHandler(async (req: AuthedRequest, res: Respons
   res.json(paginatedCompat(items, meta, explicit));
 }));
 
-// 2026-04-08: P7 — Migrated to canonical line-item input.
-// JobPart table only persists description/quantity/unitCost/unitPrice/productId;
-// canonical extras (taxRate, taxAmount, lineSubtotal, lineTotal, lineItemType,
-// source) are accepted by the schema for shape uniformity but the route
-// handler explicitly destructures only the fields the storage layer writes.
+// ============================================================================
+// JOB PARTS — canonical subset persistence model
+// ----------------------------------------------------------------------------
+// IMPORTANT — read this before adding any line-item field to job_parts:
+//
+// The `job_parts` table is a SUBSET-PERSISTENCE model relative to the canonical
+// line-item shape (see shared/lineItem.ts). Job parts only store five fields:
+//
+//     description, productId, quantity, unitCost, unitPrice
+//
+// The canonical input schema accepts the FULL line-item contract (taxRate,
+// taxAmount, lineSubtotal, lineTotal, lineItemType, source) so that every
+// surface in the app talks one shape. The job-parts route handlers then
+// PROJECT that input down to the persisted subset using the helper below.
+// Anything not in the subset is silently dropped on insert/update.
+//
+// DO NOT add taxRate / taxAmount / lineSubtotal / lineTotal / lineItemType /
+// source persistence to job_parts without an explicit schema migration AND
+// updating the projector below — bypassing the projector means future
+// canonical fields would silently start landing in the DB column list.
+//
+// 2026-04-08 P7: Migrated to canonical input.
+// 2026-04-08 stabilization: Centralized subset projection (was four ad-hoc
+// destructures across POST/PUT and the admin-override POST/PUT).
+// ============================================================================
 const createJobPartSchema = canonicalLineItemInput.strict();
+
+/**
+ * Project a validated canonical line-item input down to the exact set of
+ * fields that the `job_parts` table persists. Used by all four job-parts
+ * write paths (regular POST/PUT + admin-override POST/PUT) so the canonical
+ * → DB projection lives in exactly one place.
+ *
+ * Behavior:
+ *   - `description`, `quantity`, `unitPrice` use canonical defaults if absent.
+ *     The canonical Zod schema also applies these defaults at runtime — the
+ *     fallbacks here are belt-and-suspenders for type safety because Zod v3's
+ *     `.default()` does not always narrow the inferred output type away from
+ *     `string | undefined`. Both layers agree on the same default values.
+ *   - `productId` defaults to `null` for manual lines.
+ *   - `unitCost` is optional in the canonical schema; preserve `undefined` so
+ *     the storage layer can distinguish "not set" from "set to 0".
+ *   - All other canonical fields are silently dropped (see header comment).
+ */
+function canonicalToJobPartFields(input: {
+  description: string;
+  quantity?: string;
+  unitPrice?: string;
+  unitCost?: string;
+  productId?: string | null;
+}) {
+  return {
+    description: input.description,
+    productId: input.productId ?? null,
+    quantity: input.quantity ?? "1",
+    unitCost: input.unitCost,
+    unitPrice: input.unitPrice ?? "0.00",
+  };
+}
+
+/**
+ * Partial variant for PUT/PATCH paths. Returns only the fields that the
+ * caller actually supplied; absent fields stay `undefined` so the storage
+ * layer can leave them unchanged in the DB.
+ */
+function canonicalToJobPartUpdateFields(input: {
+  description?: string;
+  quantity?: string;
+  unitPrice?: string;
+  unitCost?: string;
+  productId?: string | null;
+}) {
+  const out: {
+    description?: string;
+    productId?: string | null;
+    quantity?: string;
+    unitCost?: string;
+    unitPrice?: string;
+  } = {};
+  if (input.description !== undefined) out.description = input.description;
+  if (input.productId !== undefined) out.productId = input.productId;
+  if (input.quantity !== undefined) out.quantity = input.quantity;
+  if (input.unitCost !== undefined) out.unitCost = input.unitCost;
+  if (input.unitPrice !== undefined) out.unitPrice = input.unitPrice;
+  return out;
+}
 
 // POST /api/jobs/:jobId/parts - Add part to job
 router.post("/:jobId/parts", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
@@ -1097,14 +1177,11 @@ router.post("/:jobId/parts", requireRole(MANAGER_ROLES), asyncHandler(async (req
 
   const validated = validateSchema(createJobPartSchema, req.body);
 
+  // Project canonical input → job_parts subset (centralized; see top of file)
   const jobPart = await storage.createJobPart(companyId, req.params.jobId, {
-    description: validated.description,
     companyId,
     jobId: req.params.jobId,
-    productId: validated.productId ?? null,
-    quantity: String(validated.quantity),
-    unitCost: validated.unitCost !== undefined ? String(validated.unitCost) : null,
-    unitPrice: validated.unitPrice !== undefined ? String(validated.unitPrice) : null,
+    ...canonicalToJobPartFields(validated),
   });
 
   res.status(201).json(jobPart);
@@ -1121,13 +1198,12 @@ router.put("/:jobId/parts/:id", requireRole(MANAGER_ROLES), asyncHandler(async (
   if (!job) throw createError(404, "Job not found");
 
   const validated = validateSchema(updateJobPartSchema, req.body);
-  const jobPart = await storage.updateJobPart(companyId, req.params.id, {
-    description: validated.description,
-    productId: validated.productId,
-    quantity: validated.quantity !== undefined ? String(validated.quantity) : undefined,
-    unitCost: validated.unitCost !== undefined ? String(validated.unitCost) : undefined,
-    unitPrice: validated.unitPrice !== undefined ? String(validated.unitPrice) : undefined,
-  });
+  // Project canonical partial input → job_parts subset (centralized; see top of file)
+  const jobPart = await storage.updateJobPart(
+    companyId,
+    req.params.id,
+    canonicalToJobPartUpdateFields(validated),
+  );
   if (!jobPart) throw createError(404, "Job part not found");
 
   res.json(jobPart);
@@ -1408,17 +1484,14 @@ router.post("/:jobId/admin/parts", requireRole(MANAGER_ROLES), asyncHandler(asyn
 
   const validated = validateSchema(createJobPartSchema, partData);
 
+  // Project canonical input → job_parts subset (centralized; see top of file)
   const jobPart = await storage.createJobPart(
     companyId,
     jobId,
     {
-      description: validated.description,
       companyId,
       jobId,
-      productId: validated.productId ?? null,
-      quantity: String(validated.quantity),
-      unitCost: validated.unitCost !== undefined ? String(validated.unitCost) : null,
-      unitPrice: validated.unitPrice !== undefined ? String(validated.unitPrice) : null,
+      ...canonicalToJobPartFields(validated),
     },
     { overrideInvoiceLock: true }
   );
@@ -1442,16 +1515,11 @@ router.put("/:jobId/admin/parts/:id", requireRole(MANAGER_ROLES), asyncHandler(a
   await requireInvoicedJob(companyId, jobId);
 
   const validated = validateSchema(updateJobPartSchema, partData);
+  // Project canonical partial input → job_parts subset (centralized; see top of file)
   const jobPart = await storage.updateJobPart(
     companyId,
     partId,
-    {
-      description: validated.description,
-      productId: validated.productId,
-      quantity: validated.quantity !== undefined ? String(validated.quantity) : undefined,
-      unitCost: validated.unitCost !== undefined ? String(validated.unitCost) : undefined,
-      unitPrice: validated.unitPrice !== undefined ? String(validated.unitPrice) : undefined,
-    },
+    canonicalToJobPartUpdateFields(validated),
     { overrideInvoiceLock: true }
   );
 

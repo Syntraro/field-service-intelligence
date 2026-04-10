@@ -11,6 +11,8 @@ import { useToast } from "@/hooks/use-toast";
 import { Trash2, ShieldCheck, ShieldOff, Package, KeyRound, MessageCircle, Archive, ArchiveRestore, Clock } from "lucide-react";
 // 2026-03-21: NewAddClientDialog replaced by canonical CreateClientModal
 import { CreateClientModal } from "@/components/CreateClientModal";
+// 2026-04-09: Bulk archived-job cleanup admin tool
+import { BulkArchivedJobsCleanupCard } from "@/components/admin/BulkArchivedJobsCleanupCard";
 import { UserSubscriptionDialog } from "@/components/UserSubscriptionDialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
@@ -290,6 +292,7 @@ export default function Admin() {
         <TabsList className="mb-6">
           <TabsTrigger value="users" data-testid="tab-users">User Management</TabsTrigger>
           <TabsTrigger value="settings" data-testid="tab-settings">Settings</TabsTrigger>
+          <TabsTrigger value="maintenance" data-testid="tab-maintenance">Maintenance</TabsTrigger>
           <TabsTrigger value="feedback" data-testid="tab-feedback">
             Feedback
             {feedback.filter(f => f.status === "new").length > 0 && (
@@ -548,6 +551,13 @@ export default function Admin() {
               </div>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* 2026-04-09: Maintenance tab — admin destructive tools */}
+        <TabsContent value="maintenance">
+          <div className="space-y-6">
+            <BulkArchivedJobsCleanupCard />
+          </div>
         </TabsContent>
 
         <TabsContent value="feedback">

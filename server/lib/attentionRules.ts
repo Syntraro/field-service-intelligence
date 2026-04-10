@@ -37,9 +37,6 @@ interface AttentionRule {
   detectForEntity?: (tenantId: string, entityId: string) => Promise<AttentionMatch | null>;
 }
 
-// 2026-03-18: effectiveEndExpr centralized in server/lib/queryHelpers.ts
-import { effectiveEndExpr } from "./queryHelpers";
-
 // ---------------------------------------------------------------------------
 // Rules
 // ---------------------------------------------------------------------------
@@ -91,79 +88,6 @@ const RULES: AttentionRule[] = [
         entityType: "job" as const,
         entityId: row.id,
         meta: { jobNumber: row.jobNumber, clientName: row.companyName },
-      };
-    },
-  },
-
-  {
-    ruleType: "job.overdue",
-    severity: "high",
-    async detect(tenantId) {
-      const rows = await db
-        .select({
-          id: jobs.id,
-          jobNumber: jobs.jobNumber,
-          scheduledStart: jobs.scheduledStart,
-          companyName: sql<string>`COALESCE(${customerCompanies.name}, ${clients.companyName})`,
-        })
-        .from(jobs)
-        .leftJoin(clients, eq(jobs.locationId, clients.id))
-        .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
-        .where(and(
-          eq(jobs.companyId, tenantId),
-          eq(jobs.status, "open"),
-          isNotNull(jobs.scheduledStart),
-          sql`${effectiveEndExpr} < NOW()`,
-          // Exclude jobs actively being worked — they are in progress, not overdue-attention
-          sql`(${jobs.openSubStatus} IS NULL OR ${jobs.openSubStatus} NOT IN ('in_progress', 'on_route'))`,
-          activeJobFilter(),
-        ));
-      return rows.map(r => ({
-        entityType: "job" as const,
-        entityId: r.id,
-        meta: { jobNumber: r.jobNumber, clientName: r.companyName, scheduledAt: r.scheduledStart?.toISOString() },
-      }));
-    },
-    async detectForEntity(tenantId, entityId) {
-      const [row] = await db
-        .select({
-          id: jobs.id,
-          jobNumber: jobs.jobNumber,
-          status: jobs.status,
-          scheduledStart: jobs.scheduledStart,
-          companyName: sql<string>`COALESCE(${customerCompanies.name}, ${clients.companyName})`,
-        })
-        .from(jobs)
-        .leftJoin(clients, eq(jobs.locationId, clients.id))
-        .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
-        .where(and(
-          eq(jobs.companyId, tenantId),
-          eq(jobs.id, entityId),
-          activeJobFilter(),
-        ))
-        .limit(1);
-      if (!row || row.status !== "open" || !row.scheduledStart) return null;
-      // Check overdue in JS (effectiveEnd can't be per-row in single-entity context easily)
-      // Re-query with the SQL condition
-      const [overdue] = await db
-        .select({ id: jobs.id })
-        .from(jobs)
-        .where(and(
-          eq(jobs.companyId, tenantId),
-          eq(jobs.id, entityId),
-          eq(jobs.status, "open"),
-          isNotNull(jobs.scheduledStart),
-          sql`${effectiveEndExpr} < NOW()`,
-          // Exclude jobs actively being worked
-          sql`(${jobs.openSubStatus} IS NULL OR ${jobs.openSubStatus} NOT IN ('in_progress', 'on_route'))`,
-          activeJobFilter(),
-        ))
-        .limit(1);
-      if (!overdue) return null;
-      return {
-        entityType: "job" as const,
-        entityId: row.id,
-        meta: { jobNumber: row.jobNumber, clientName: row.companyName, scheduledAt: row.scheduledStart?.toISOString() },
       };
     },
   },

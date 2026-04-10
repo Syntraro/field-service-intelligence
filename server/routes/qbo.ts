@@ -20,11 +20,14 @@ import { AuthedRequest } from "../auth/tenantIsolation";
 import { createSyncOrchestrator, QboClient, createReconciliationService, createPreflightService, QboCustomerImportService, QboCatalogImportService, isQboReadOnlyMode, isImportReadOnlyEnforced, getQboEnvironment, isImportAllowedInEnvironment } from "../services/qbo";
 import type { QboTokens } from "../services/qbo";
 import { db } from "../db";
-import { customerCompanies, invoices, qboSyncEvents, companies, qboMappingConfigSchema, qboSyncQueue, qboQueueEntityTypeEnum, qboQueueActionEnum, qboEnvironmentEnum, qboConnections } from "@shared/schema";
+import { customerCompanies, invoices, qboSyncEvents, companies, qboMappingConfigSchema, qboSyncQueue, qboQueueEntityTypeEnum, qboQueueActionEnum, qboEnvironmentEnum, qboConnections, payments as paymentsTable } from "@shared/schema";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { QboItemMapper, parseQboMappingConfig, createQueueProcessor, getQueueJobs, getQueueStats, createItemServiceFromTokens } from "../services/qbo";
 import { items } from "@shared/schema";
 import { z } from "zod";
+// 2026-04-09: Outbound payment sync — manual retry endpoint reuses the same
+// helper as the automatic post-write hook in routes/payments.ts.
+import { maybeSyncPaymentToQbo } from "../services/qbo/maybeSyncPayment";
 
 // Intuit OAuth 2.0 endpoints
 const INTUIT_AUTH_URL = "https://appcenter.intuit.com/connect/oauth2";
@@ -532,39 +535,212 @@ router.post(
 
 /**
  * POST /api/qbo/reconcile/invoice/:id/apply
- * Apply reconciliation - creates local payment records for QBO payments
- * Only creates payments that don't exist locally
+ *
+ * RETIRED 2026-04-09 — inbound payment reconcile-apply is no longer an active
+ * product behavior. Returns 410 Gone with a clear explanation. The legacy
+ * service method is preserved as a no-op for safety, but this route no longer
+ * invokes it.
+ *
+ * Locked product decision: payments sync one-way (App → QBO). Drift in QBO is
+ * resolved manually in QuickBooks, never imported back into the app.
+ *
+ * The dry-run companion route (POST /reconcile/invoice/:id) is preserved as
+ * a read-only diagnostic.
  */
 router.post(
   "/reconcile/invoice/:id/apply",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (_req: AuthedRequest, res: Response) => {
+    res.status(410).json({
+      success: false,
+      retired: true,
+      error:
+        "Inbound payment reconcile-apply is retired (2026-04-09). Payments now sync one-way (App → QBO). Resolve any QBO drift manually in QuickBooks.",
+    });
+  })
+);
+
+// ============================================================
+// PAYMENT SYNC TOGGLE & MANUAL RETRY (2026-04-09)
+// ============================================================
+//
+// Outbound payment sync is gated by the company-level
+// `qboPaymentSyncEnabled` toggle. These endpoints expose the toggle state
+// to the QBO settings UI and provide a manual retry path for payments that
+// failed an automatic sync (e.g., when QBO was temporarily unreachable).
+//
+// The retry endpoint reuses the same orchestrator path the maybeSyncPayment
+// helper uses, so the toggle check + validation behavior is identical.
+
+const paymentSyncToggleSchema = z.object({
+  enabled: z.boolean(),
+});
+
+/**
+ * GET /api/qbo/payment-sync
+ * Returns the company's qboPaymentSyncEnabled state.
+ */
+router.get(
+  "/payment-sync",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const [company] = await db
+      .select({
+        qboEnabled: companies.qboEnabled,
+        qboPaymentSyncEnabled: companies.qboPaymentSyncEnabled,
+      })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .limit(1);
+
+    if (!company) {
+      return res.status(404).json({ success: false, error: "Company not found" });
+    }
+
+    res.json({
+      success: true,
+      qboEnabled: company.qboEnabled,
+      qboPaymentSyncEnabled: company.qboPaymentSyncEnabled,
+    });
+  })
+);
+
+/**
+ * PUT /api/qbo/payment-sync
+ * Enables or disables outbound payment sync for the company. The master
+ * `qboEnabled` toggle (PUT /api/qbo/enabled) is independent — payment sync
+ * requires BOTH to be true to actually run, but a company can leave
+ * payment sync off while invoice sync is on.
+ *
+ * No preflight is required: payment sync is additive on top of invoice sync.
+ * If the master toggle is off, this still saves the user's preference but
+ * the helper will quietly no-op until the master toggle is also enabled.
+ */
+router.put(
+  "/payment-sync",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+
+    const parseResult = paymentSyncToggleSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid request body",
+        details: parseResult.error.flatten(),
+      });
+    }
+
+    const { enabled } = parseResult.data;
+
+    await db
+      .update(companies)
+      .set({ qboPaymentSyncEnabled: enabled })
+      .where(eq(companies.id, companyId));
+
+    const [updated] = await db
+      .select({
+        qboEnabled: companies.qboEnabled,
+        qboPaymentSyncEnabled: companies.qboPaymentSyncEnabled,
+      })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .limit(1);
+
+    res.json({
+      success: true,
+      qboEnabled: updated?.qboEnabled ?? false,
+      qboPaymentSyncEnabled: updated?.qboPaymentSyncEnabled ?? false,
+    });
+  })
+);
+
+/**
+ * POST /api/qbo/sync/payment/:id
+ * Manual retry for a single payment. Used when an automatic sync failed
+ * (e.g., QBO was unreachable, parent invoice was not yet synced) and the
+ * admin wants to retry after fixing the underlying issue.
+ *
+ * Behavior is identical to the automatic post-write hook: the helper checks
+ * the toggle, loads tokens, calls the orchestrator. The action is "update"
+ * which falls through to "create" inside QboPaymentService when no
+ * qboPaymentId exists yet — so this works for both first-sync and re-sync.
+ */
+router.post(
+  "/sync/payment/:id",
   requireRole(ADMIN_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { id } = req.params;
     const companyId = req.companyId;
     const userId = req.user?.id;
 
-    // Get QBO tokens
-    const tokens = await getQboTokensForCompany(companyId);
-    if (!tokens) {
-      return res.status(503).json({
+    // Verify the payment exists and is tenant-isolated. We do this here so
+    // a 404 is reported synchronously instead of as a background log entry.
+    const [payment] = await db
+      .select({
+        id: paymentsTable.id,
+        qboSyncStatus: paymentsTable.qboSyncStatus,
+      })
+      .from(paymentsTable)
+      .where(
+        and(
+          eq(paymentsTable.id, id),
+          eq(paymentsTable.companyId, companyId),
+        ),
+      )
+      .limit(1);
+
+    if (!payment) {
+      return res.status(404).json({ success: false, error: "Payment not found" });
+    }
+
+    // Check the toggles synchronously so the retry button surfaces a clear
+    // 400 if the user expects sync to run but it's disabled.
+    const [company] = await db
+      .select({
+        qboEnabled: companies.qboEnabled,
+        qboPaymentSyncEnabled: companies.qboPaymentSyncEnabled,
+      })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .limit(1);
+
+    if (!company?.qboEnabled || !company?.qboPaymentSyncEnabled) {
+      return res.status(400).json({
         success: false,
-        error: "QBO integration not configured for this company",
+        error: "QBO payment sync is disabled. Enable it in QBO settings before retrying.",
       });
     }
 
-    // Create QBO client
-    const client = createQboClient(tokens);
-    if (!client) {
-      return res.status(503).json({
-        success: false,
-        error: "QBO integration not available",
-      });
-    }
+    // Reuse the helper — same code path as the automatic post-write hook.
+    // The helper writes status to the payment row and never throws.
+    await maybeSyncPaymentToQbo(companyId, id, "update", userId);
 
-    // Create reconciliation service and apply
-    const reconciliationService = createReconciliationService(client, companyId, userId);
-    const result = await reconciliationService.reconcileApply(id);
-    res.json(result);
+    // Re-read the payment to surface the latest status from the helper.
+    const [updated] = await db
+      .select({
+        qboSyncStatus: paymentsTable.qboSyncStatus,
+        qboSyncError: paymentsTable.qboSyncError,
+        qboPaymentId: paymentsTable.qboPaymentId,
+        qboLastSyncedAt: paymentsTable.qboLastSyncedAt,
+      })
+      .from(paymentsTable)
+      .where(
+        and(
+          eq(paymentsTable.id, id),
+          eq(paymentsTable.companyId, companyId),
+        ),
+      )
+      .limit(1);
+
+    res.json({
+      success: updated?.qboSyncStatus === "SYNCED",
+      qboSyncStatus: updated?.qboSyncStatus,
+      qboSyncError: updated?.qboSyncError,
+      qboPaymentId: updated?.qboPaymentId,
+      qboLastSyncedAt: updated?.qboLastSyncedAt,
+    });
   })
 );
 

@@ -401,26 +401,34 @@ export class QboQueueProcessor {
         return { success: false, error: "Reconciliation only supported for invoices" };
       }
 
+      // 2026-04-09: RECONCILE_APPLY is RETIRED. The locked product decision is
+      // one-way payment sync (App → QBO) — we no longer import QBO payments
+      // back into the app. Refuse the action at the queue layer with a clear
+      // error so existing queued jobs (e.g. enqueued by a webhook before the
+      // retirement) fail loudly instead of silently mutating state. Use
+      // `retryable: false` so the job is not retried — manual deletion only.
+      if (action === "RECONCILE_APPLY") {
+        return {
+          success: false,
+          error:
+            "RECONCILE_APPLY is retired (2026-04-09). Payment sync is now one-way (App → QBO). Resolve any QBO drift manually in QuickBooks; no inbound payment import is performed.",
+          errorCategory: "validation",
+          retryable: false,
+        };
+      }
+
+      // RECONCILE (dry-run only) is preserved as a read-only diagnostic.
       const client = this.createQboClient();
       if (!client) {
         return { success: false, error: "QBO client not configured" };
       }
 
       const reconciliationService = createReconciliationService(client, this.companyId, this.triggeredBy);
-
-      if (action === "RECONCILE") {
-        const result = await reconciliationService.reconcileDryRun(entityId);
-        if (result.success) {
-          return { success: true, qboEntityId: result.data?.qboInvoiceId };
-        }
-        return { success: false, error: result.error || result.skipReason };
-      } else {
-        const result = await reconciliationService.reconcileApply(entityId);
-        if (result.success) {
-          return { success: true };
-        }
-        return { success: false, error: result.errors?.join("; ") || result.skipReason };
+      const result = await reconciliationService.reconcileDryRun(entityId);
+      if (result.success) {
+        return { success: true, qboEntityId: result.data?.qboInvoiceId };
       }
+      return { success: false, error: result.error || result.skipReason };
     }
 
     // Handle sync actions via orchestrator

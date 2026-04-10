@@ -22,7 +22,7 @@
  */
 
 import { db } from "../db";
-import { and, eq, notInArray, isNull, isNotNull, or, sql } from "drizzle-orm";
+import { and, eq, ne, notInArray, isNull, isNotNull, or, sql } from "drizzle-orm";
 import { jobVisits, jobs, jobNotes } from "@shared/schema";
 import type {
   Job,
@@ -178,6 +178,13 @@ export interface SetVisitEnRouteIntent {
   jobId: string;
   /** Timestamp override (e.g. from mobile device clock). Defaults to server now. */
   at?: Date;
+  /**
+   * 2026-04-10: Acting tech user id. When provided, the orchestrator enforces
+   * single-active-visit per technician — refuses with a clean error if the
+   * tech already has another visit in en_route / in_progress / on_site / paused.
+   * Optional for backward compat with legacy callers (office-side actions).
+   */
+  actingUserId?: string;
 }
 
 /** Start a visit (tech on-site, work beginning). Sets checkedInAt if not already set. */
@@ -188,6 +195,65 @@ export interface StartVisitIntent {
   jobId: string;
   /** Timestamp override (e.g. from mobile device clock). Defaults to server now. */
   at?: Date;
+  /** 2026-04-10: see SetVisitEnRouteIntent.actingUserId */
+  actingUserId?: string;
+}
+
+/**
+ * Cancel an en_route visit — tech taps were accidental, rerouted, going home,
+ * etc. Reverts the visit from `en_route` back to `scheduled`. The route time
+ * entry is stopped and discarded if it is sub-1-minute (handled in
+ * timeTrackingRepository.recordJobStatus via the "paused" path with the
+ * stopAndDiscardIfTrivial helper). 2026-04-09.
+ */
+export interface CancelVisitRouteIntent {
+  type: "CANCEL_VISIT_ROUTE";
+  companyId: string;
+  visitId: string;
+  jobId: string;
+  at?: Date;
+}
+
+/**
+ * Cancel a started visit — tech tapped Start Job by mistake. Reverts from
+ * `in_progress` to `en_route` (preserving any prior travel state). The on_site
+ * time entry is stopped and discarded if sub-1-minute. checkedInAt is preserved
+ * (mirrors the existing reopenVisit policy of not mutating historical labor
+ * data). 2026-04-09.
+ */
+export interface CancelVisitStartIntent {
+  type: "CANCEL_VISIT_START";
+  companyId: string;
+  visitId: string;
+  jobId: string;
+  at?: Date;
+}
+
+/**
+ * Pause a visit — tech is taking a break. Visit goes from `in_progress` to
+ * `paused`. The running on_site time entry is stopped (and discarded if
+ * sub-1-minute). 2026-04-09.
+ */
+export interface PauseVisitIntent {
+  type: "PAUSE_VISIT";
+  companyId: string;
+  visitId: string;
+  jobId: string;
+  at?: Date;
+}
+
+/**
+ * Resume a paused visit. Visit goes from `paused` back to `in_progress`. A
+ * fresh on_site time entry is started. 2026-04-09.
+ */
+export interface ResumeVisitIntent {
+  type: "RESUME_VISIT";
+  companyId: string;
+  visitId: string;
+  jobId: string;
+  at?: Date;
+  /** 2026-04-10: see SetVisitEnRouteIntent.actingUserId */
+  actingUserId?: string;
 }
 
 /** Reopen a completed visit — auto-reopens the parent job if it is terminal. */
@@ -228,6 +294,10 @@ export type OrchestratorIntent =
   | BulkCompleteVisitsIntent
   | SetVisitEnRouteIntent
   | StartVisitIntent
+  | CancelVisitRouteIntent
+  | CancelVisitStartIntent
+  | PauseVisitIntent
+  | ResumeVisitIntent
   | RescheduleVisitIntent
   | ReopenVisitIntent;
 
@@ -293,6 +363,22 @@ export interface SetVisitEnRouteResult {
 }
 
 export interface StartVisitResult {
+  visit: JobVisit;
+}
+
+export interface CancelVisitRouteResult {
+  visit: JobVisit;
+}
+
+export interface CancelVisitStartResult {
+  visit: JobVisit;
+}
+
+export interface PauseVisitResult {
+  visit: JobVisit;
+}
+
+export interface ResumeVisitResult {
   visit: JobVisit;
 }
 
@@ -368,6 +454,9 @@ export async function completeVisit(
       completedAt: now,
       completedByUserId,
       isFollowUpNeeded: isFollowUpNeeded ?? (outcome !== "completed"),
+      // 2026-04-10 patch (#1/#2): clear previousStatus on completion so a
+      // future reopen does not see a stale captured prior state.
+      previousStatus: null,
       updatedAt: now,
       version: existing.version + 1,
     };
@@ -410,14 +499,35 @@ export async function completeVisit(
   // 2026-04-05: Moved into orchestrator so ALL completion paths (tech, office,
   // bulk-complete) stop running time entries canonically. Previously only the
   // techField.ts route stopped entries — office paths left them running.
+  //
+  // 2026-04-10 patch (#5): tighten the cleanup so no orphan active timer can
+  // remain after completion.
+  //   1. Stop the entry for THIS job via stopAndDiscardIfTrivial — trivial
+  //      complete-immediately-after-start segments are discarded instead of
+  //      landing in payroll (consistent with the cancel/pause cleanup).
+  //   2. Defensive sweep: if any other entry is still running for this tech
+  //      after step 1, stop it as well. This catches the rare orphan case
+  //      where the running entry was for a different job (state divergence).
+  //      The sweep also uses stopAndDiscardIfTrivial.
   if (existing.assignedTechnicianId) {
     try {
       const running = await timeTrackingRepository.getRunningTimeEntry(companyId, existing.assignedTechnicianId);
       if (running && running.jobId === jobId) {
-        await timeTrackingRepository.stopTimeEntry(companyId, existing.assignedTechnicianId, {
-          timeEntryId: running.id,
-          at: now,
-        });
+        await timeTrackingRepository.stopAndDiscardIfTrivial(
+          companyId,
+          existing.assignedTechnicianId,
+          { timeEntryId: running.id, at: now },
+        );
+      }
+      // Sweep: any leftover running entry (different job, state divergence)
+      // gets stopped here. Normally a no-op.
+      const stillRunning = await timeTrackingRepository.getRunningTimeEntry(companyId, existing.assignedTechnicianId);
+      if (stillRunning) {
+        await timeTrackingRepository.stopAndDiscardIfTrivial(
+          companyId,
+          existing.assignedTechnicianId,
+          { timeEntryId: stillRunning.id, at: now },
+        );
       }
     } catch {
       // Non-fatal: entry may not exist or already stopped
@@ -876,6 +986,64 @@ export async function setJobSubstatus(
 }
 
 // ============================================================================
+// SINGLE-ACTIVE-VISIT GUARD (2026-04-10)
+// ============================================================================
+
+/**
+ * The visit statuses that count as "active" for a technician — i.e. the tech
+ * is currently on the hook for this visit and cannot also be active on another.
+ * Used by the single-active enforcement guard.
+ */
+const ACTIVE_VISIT_STATUSES = ["en_route", "on_site", "in_progress", "paused"] as const;
+
+/**
+ * Throw if the technician already has another active visit in the same
+ * company. Active = en_route | on_site | in_progress | paused. The current
+ * visit (excludeVisitId) is excluded from the check so an idempotent
+ * re-trigger of the same action does not self-conflict.
+ *
+ * Matches the route-handler auth model: a tech is "the assigned tech" if
+ * they are either the primary `assignedTechnicianId` OR appear in
+ * `assignedTechnicianIds`.
+ *
+ * No-op when actingUserId is undefined (legacy/office callers do not enforce).
+ *
+ * Intentionally throws a plain Error with a stable prefix so route handlers
+ * can map it to a 409 without parsing.
+ */
+async function assertNoOtherActiveVisitForTech(
+  companyId: string,
+  actingUserId: string | undefined,
+  excludeVisitId: string,
+): Promise<void> {
+  if (!actingUserId) return;
+
+  const conflicts = await db
+    .select({
+      id: jobVisits.id,
+      jobId: jobVisits.jobId,
+      status: jobVisits.status,
+    })
+    .from(jobVisits)
+    .where(and(
+      eq(jobVisits.companyId, companyId),
+      eq(jobVisits.isActive, true),
+      ne(jobVisits.id, excludeVisitId),
+      sql`${jobVisits.status} IN ('en_route', 'on_site', 'in_progress', 'paused')`,
+      sql`(${jobVisits.assignedTechnicianId} = ${actingUserId} OR ${actingUserId} = ANY(${jobVisits.assignedTechnicianIds}))`,
+    ))
+    .limit(1);
+
+  if (conflicts.length > 0) {
+    const c = conflicts[0];
+    throw new Error(
+      `ACTIVE_VISIT_CONFLICT: technician already has an active visit (visit ${c.id}, status '${c.status}'). ` +
+      `Cancel or complete that visit first before starting another.`
+    );
+  }
+}
+
+// ============================================================================
 // SET_VISIT_EN_ROUTE
 // ============================================================================
 
@@ -885,11 +1053,14 @@ export async function setJobSubstatus(
  * 2026-03-18 BP-3 fix: Moved from route-level direct db.update(jobVisits) in
  * techField.ts to canonical orchestrator ownership. Validation, mutation, and
  * schedule sync are now centralized here.
+ *
+ * 2026-04-10: enforces single-active-visit per technician via
+ * assertNoOtherActiveVisitForTech when actingUserId is provided.
  */
 export async function setVisitEnRoute(
   intent: SetVisitEnRouteIntent
 ): Promise<SetVisitEnRouteResult> {
-  const { companyId, visitId, jobId, at } = intent;
+  const { companyId, visitId, jobId, at, actingUserId } = intent;
   const now = at ?? new Date();
 
   // Step 1: Load and validate visit
@@ -900,6 +1071,9 @@ export async function setVisitEnRoute(
   if (existing.status === "completed" || existing.status === "cancelled") {
     throw new Error(`Cannot update a ${existing.status} visit`);
   }
+
+  // 2026-04-10: single-active-visit enforcement (#3)
+  await assertNoOtherActiveVisitForTech(companyId, actingUserId, visitId);
 
   // Step 2: Apply visit workflow mutation
   const [updated] = await db
@@ -933,7 +1107,7 @@ export async function setVisitEnRoute(
 export async function startVisit(
   intent: StartVisitIntent
 ): Promise<StartVisitResult> {
-  const { companyId, visitId, jobId, at } = intent;
+  const { companyId, visitId, jobId, at, actingUserId } = intent;
   const now = at ?? new Date();
 
   // Step 1: Load and validate visit
@@ -945,13 +1119,23 @@ export async function startVisit(
     throw new Error(`Cannot start a ${existing.status} visit`);
   }
 
+  // 2026-04-10: single-active-visit enforcement (#3)
+  await assertNoOtherActiveVisitForTech(companyId, actingUserId, visitId);
+
   // Step 2: Apply visit workflow mutation
-  // Preserve existing checkedInAt if already set (idempotent check-in)
+  // Preserve existing checkedInAt if already set (idempotent check-in).
+  // 2026-04-10: capture the prior status into previousStatus so cancelVisitStart
+  // can restore to the actual previous state instead of guessing en_route.
+  // Only writes previousStatus when transitioning FROM a non-in_progress state
+  // (an idempotent re-start should not overwrite the original prior state).
   const [updated] = await db
     .update(jobVisits)
     .set({
       status: "in_progress",
       checkedInAt: existing.checkedInAt ?? now,
+      previousStatus: existing.status === "in_progress" || existing.status === "on_site"
+        ? existing.previousStatus  // already started — keep the original prior state
+        : existing.status,         // first start — capture en_route or scheduled
       updatedAt: now,
       version: existing.version + 1,
     })
@@ -959,6 +1143,236 @@ export async function startVisit(
     .returning();
 
   // Step 3: Sync parent job schedule fields
+  await jobVisitsRepository.syncJobToVisits(companyId, jobId);
+
+  return { visit: updated };
+}
+
+// ============================================================================
+// CANCEL_VISIT_ROUTE (2026-04-09)
+// ============================================================================
+
+/**
+ * Reverse an en_route visit back to scheduled. Used when a tech taps Start
+ * Route by accident, gets rerouted, or no longer heads to that visit.
+ *
+ * Visit transition: en_route → scheduled. Only valid from en_route. Stopping
+ * and discarding the route time entry is the route handler's responsibility
+ * (via timeTrackingRepository.recordJobStatus("paused") which routes through
+ * stopAndDiscardIfTrivial). The route history event is still recorded.
+ */
+export async function cancelVisitRoute(
+  intent: CancelVisitRouteIntent
+): Promise<CancelVisitRouteResult> {
+  const { companyId, visitId, jobId, at } = intent;
+  const now = at ?? new Date();
+
+  const existing = await jobVisitsRepository.getJobVisit(companyId, visitId);
+  if (!existing) {
+    throw new Error(`Visit ${visitId} not found for company ${companyId}`);
+  }
+  if (existing.status !== "en_route") {
+    throw new Error(
+      `Cannot cancel route for visit in status '${existing.status}'. Only en_route visits can be reverted.`
+    );
+  }
+
+  const [updated] = await db
+    .update(jobVisits)
+    .set({
+      status: "scheduled",
+      updatedAt: now,
+      version: existing.version + 1,
+    })
+    .where(and(eq(jobVisits.id, visitId), eq(jobVisits.companyId, companyId)))
+    .returning();
+
+  await jobVisitsRepository.syncJobToVisits(companyId, jobId);
+
+  return { visit: updated };
+}
+
+// ============================================================================
+// CANCEL_VISIT_START (2026-04-09)
+// ============================================================================
+
+/**
+ * Cancel a started visit — tech tapped Start Job by mistake.
+ *
+ * 2026-04-10 patch fixes two integrity gaps in the original implementation:
+ *
+ *   FIX #1 (timestamp behavior): the prior version always preserved
+ *   `checkedInAt`, even for trivial mistaken starts. Now we compute the raw
+ *   elapsed time from `checkedInAt` to `now`. If it is < 60_000 ms (consistent
+ *   with stopAndDiscardIfTrivial's threshold), the segment is considered
+ *   accidental and `checkedInAt` is cleared. Otherwise (>= 1 minute) the
+ *   historical `checkedInAt` is preserved.
+ *
+ *   FIX #2 (restore-to-correct-prior-state): the prior version always
+ *   restored the visit to `en_route`, which was wrong when the tech tapped
+ *   Start Job directly from `scheduled`. Now we read `previousStatus` (which
+ *   `startVisit` captures at transition time) and restore to that. The
+ *   fallback for legacy in-flight visits with NULL previousStatus is still
+ *   `en_route`, matching the pre-patch behavior so existing tabs do not break.
+ *
+ * The on_site time entry is stopped and discarded if sub-1-minute by the
+ * route handler via recordJobStatus("paused"). After a successful cancel
+ * `previousStatus` is cleared so a subsequent Start Job will recapture it.
+ */
+export async function cancelVisitStart(
+  intent: CancelVisitStartIntent
+): Promise<CancelVisitStartResult> {
+  const { companyId, visitId, jobId, at } = intent;
+  const now = at ?? new Date();
+
+  const existing = await jobVisitsRepository.getJobVisit(companyId, visitId);
+  if (!existing) {
+    throw new Error(`Visit ${visitId} not found for company ${companyId}`);
+  }
+  if (existing.status !== "in_progress" && existing.status !== "on_site") {
+    throw new Error(
+      `Cannot cancel start for visit in status '${existing.status}'. Only in_progress / on_site visits can be reverted.`
+    );
+  }
+
+  // FIX #1: compute raw elapsed time from checkedInAt to now. Anything under
+  // 60_000 ms is treated as an accidental start and checkedInAt is cleared.
+  const elapsedMs = existing.checkedInAt
+    ? now.getTime() - existing.checkedInAt.getTime()
+    : 0;
+  const isTrivial = elapsedMs < 60_000;
+
+  // FIX #2: restore to the actual prior state captured by startVisit.
+  // Fallback to en_route for legacy rows with NULL previousStatus (preserves
+  // the pre-patch behavior so existing in-flight visits do not break).
+  const restoreStatus = (existing as any).previousStatus ?? "en_route";
+
+  const [updated] = await db
+    .update(jobVisits)
+    .set({
+      status: restoreStatus,
+      // FIX #1: clear checkedInAt for accidental sub-minute starts; preserve
+      // historical labor data otherwise (mirrors reopenVisit's policy).
+      checkedInAt: isTrivial ? null : existing.checkedInAt,
+      // Clear the captured prior state — a future Start Job will recapture it.
+      previousStatus: null,
+      updatedAt: now,
+      version: existing.version + 1,
+    })
+    .where(and(eq(jobVisits.id, visitId), eq(jobVisits.companyId, companyId)))
+    .returning();
+
+  await jobVisitsRepository.syncJobToVisits(companyId, jobId);
+
+  return { visit: updated };
+}
+
+// ============================================================================
+// PAUSE_VISIT (2026-04-09)
+// ============================================================================
+
+/**
+ * Pause an in-progress visit. Visit transition: in_progress → paused.
+ * The on_site time entry is stopped (and discarded if sub-1-minute) by the
+ * route handler via recordJobStatus("paused").
+ */
+export async function pauseVisit(
+  intent: PauseVisitIntent
+): Promise<PauseVisitResult> {
+  const { companyId, visitId, jobId, at } = intent;
+  const now = at ?? new Date();
+
+  const existing = await jobVisitsRepository.getJobVisit(companyId, visitId);
+  if (!existing) {
+    throw new Error(`Visit ${visitId} not found for company ${companyId}`);
+  }
+  if (existing.status !== "in_progress" && existing.status !== "on_site") {
+    throw new Error(
+      `Cannot pause visit in status '${existing.status}'. Only in_progress / on_site visits can be paused.`
+    );
+  }
+
+  const [updated] = await db
+    .update(jobVisits)
+    .set({
+      status: "paused",
+      updatedAt: now,
+      version: existing.version + 1,
+    })
+    .where(and(eq(jobVisits.id, visitId), eq(jobVisits.companyId, companyId)))
+    .returning();
+
+  await jobVisitsRepository.syncJobToVisits(companyId, jobId);
+
+  return { visit: updated };
+}
+
+// ============================================================================
+// RESUME_VISIT (2026-04-09)
+// ============================================================================
+
+/**
+ * Resume a paused visit. Visit transition: paused → in_progress. A fresh
+ * on_site time entry is started by the route handler via
+ * recordJobStatus("resumed").
+ *
+ * 2026-04-10 micro-patch: explicit running-time-entry guard. Resume must NOT
+ * silently auto-stop a stale running entry — it must refuse so the operator
+ * sees the inconsistency. State drift this catches: visit is paused but a
+ * running time entry still exists due to a stale tab, partial failure, or
+ * inconsistent prior state. Without this guard, autoStopOpen inside
+ * recordJobStatus("resumed") would erase the evidence by stopping the orphan.
+ */
+export async function resumeVisit(
+  intent: ResumeVisitIntent
+): Promise<ResumeVisitResult> {
+  const { companyId, visitId, jobId, at, actingUserId } = intent;
+  const now = at ?? new Date();
+
+  const existing = await jobVisitsRepository.getJobVisit(companyId, visitId);
+  if (!existing) {
+    throw new Error(`Visit ${visitId} not found for company ${companyId}`);
+  }
+  if (existing.status !== "paused") {
+    throw new Error(
+      `Cannot resume visit in status '${existing.status}'. Only paused visits can be resumed.`
+    );
+  }
+
+  // 2026-04-10: single-active-visit enforcement (#3) — resuming this visit
+  // would put the tech in two simultaneously active visits if another one is
+  // already running. Refuse with the same conflict error as Start Route /
+  // Start Job. The current paused visit itself is excluded from the check.
+  await assertNoOtherActiveVisitForTech(companyId, actingUserId, visitId);
+
+  // 2026-04-10 micro-patch: running-time-entry guard. Pause stops the
+  // on_site entry; if anything is still running for this tech at resume time,
+  // we refuse and let the route handler return a clean 409. Stable error
+  // prefix is consumed by techField.ts:maybeMapActiveVisitConflict.
+  if (actingUserId) {
+    const running = await timeTrackingRepository.getRunningTimeEntry(
+      companyId,
+      actingUserId,
+    );
+    if (running) {
+      throw new Error(
+        `RUNNING_TIME_ENTRY_EXISTS: technician already has a running time entry ` +
+          `(entry ${running.id}, type '${running.type}', job ${running.jobId ?? "none"}). ` +
+          `Stop the running entry before resuming.`,
+      );
+    }
+  }
+
+  const [updated] = await db
+    .update(jobVisits)
+    .set({
+      status: "in_progress",
+      updatedAt: now,
+      version: existing.version + 1,
+    })
+    .where(and(eq(jobVisits.id, visitId), eq(jobVisits.companyId, companyId)))
+    .returning();
+
   await jobVisitsRepository.syncJobToVisits(companyId, jobId);
 
   return { visit: updated };
@@ -1239,6 +1653,11 @@ async function bulkCompleteVisitsInternal(
         outcome: "completed",
         completedAt: now,
         isFollowUpNeeded: false,
+        // 2026-04-10 micro-patch: clear the cancel-start restore marker on
+        // every terminal cleanup path. A paused visit caught up in a force
+        // close / bulk complete must not leave a stale previousStatus behind.
+        // Mirrors the same clearing in completeVisit (line 459).
+        previousStatus: null,
         updatedAt: now,
         version: visit.version + 1,
       };
