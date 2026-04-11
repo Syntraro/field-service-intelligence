@@ -12,6 +12,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useSurfaceController } from "@/hooks/useSurfaceController";
+import { getClientDisplayName } from "@shared/clientDisplayName";
 import {
   Search, Loader2, Briefcase, FileText, Building2, MapPin, Truck, UserCircle,
   Plus, LayoutDashboard, LayoutGrid, ClipboardList, Receipt, FileCheck,
@@ -33,6 +34,9 @@ interface SearchResult {
   match: string | null;
   customerCompanyId?: string;
   tenantCompanyId?: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  useCompanyAsPrimary?: boolean | null;
 }
 
 interface SearchResponse {
@@ -445,7 +449,7 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
       >
         <Icon className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
         <div className="flex-1 min-w-0">
-          <div className="font-medium truncate">{sr.title}</div>
+          <div className="font-medium truncate">{sr.type === "customerCompany" ? getClientDisplayName({ name: sr.title, firstName: sr.firstName, lastName: sr.lastName, useCompanyAsPrimary: sr.useCompanyAsPrimary }) : sr.title}</div>
           {sr.subtitle && (
             <div className="text-xs text-muted-foreground truncate">{sr.subtitle}</div>
           )}

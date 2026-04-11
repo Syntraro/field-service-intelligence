@@ -17,21 +17,28 @@
 ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_all_day_start_midnight_check;
 ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_all_day_end_2359_check;
 
--- Recreate with AT TIME ZONE 'UTC' for timezone-invariant evaluation
-ALTER TABLE jobs ADD CONSTRAINT jobs_all_day_start_midnight_check CHECK (
-  is_all_day IS DISTINCT FROM TRUE
-  OR (
-    EXTRACT(HOUR   FROM (scheduled_start AT TIME ZONE 'UTC')) = 0 AND
-    EXTRACT(MINUTE FROM (scheduled_start AT TIME ZONE 'UTC')) = 0 AND
-    EXTRACT(SECOND FROM (scheduled_start AT TIME ZONE 'UTC')) = 0
-  )
-);
+-- Recreate with AT TIME ZONE 'UTC' for timezone-invariant evaluation (idempotent)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'jobs_all_day_start_midnight_check') THEN
+    ALTER TABLE jobs ADD CONSTRAINT jobs_all_day_start_midnight_check CHECK (
+      is_all_day IS DISTINCT FROM TRUE
+      OR (
+        EXTRACT(HOUR   FROM (scheduled_start AT TIME ZONE 'UTC')) = 0 AND
+        EXTRACT(MINUTE FROM (scheduled_start AT TIME ZONE 'UTC')) = 0 AND
+        EXTRACT(SECOND FROM (scheduled_start AT TIME ZONE 'UTC')) = 0
+      )
+    );
+  END IF;
 
-ALTER TABLE jobs ADD CONSTRAINT jobs_all_day_end_2359_check CHECK (
-  is_all_day IS DISTINCT FROM TRUE
-  OR (
-    EXTRACT(HOUR   FROM (scheduled_end AT TIME ZONE 'UTC')) = 23 AND
-    EXTRACT(MINUTE FROM (scheduled_end AT TIME ZONE 'UTC')) = 59 AND
-    EXTRACT(SECOND FROM (scheduled_end AT TIME ZONE 'UTC')) = 59
-  )
-);
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'jobs_all_day_end_2359_check') THEN
+    ALTER TABLE jobs ADD CONSTRAINT jobs_all_day_end_2359_check CHECK (
+      is_all_day IS DISTINCT FROM TRUE
+      OR (
+        EXTRACT(HOUR   FROM (scheduled_end AT TIME ZONE 'UTC')) = 23 AND
+        EXTRACT(MINUTE FROM (scheduled_end AT TIME ZONE 'UTC')) = 59 AND
+        EXTRACT(SECOND FROM (scheduled_end AT TIME ZONE 'UTC')) = 59
+      )
+    );
+  END IF;
+END $$;

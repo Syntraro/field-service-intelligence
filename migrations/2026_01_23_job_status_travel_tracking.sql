@@ -88,9 +88,14 @@ UPDATE jobs SET status = 'canceled' WHERE status = 'cancelled';
 -- Drop old constraint if it exists
 ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_action_required_reason_check;
 
--- Add new constraint: on_hold status requires a hold_reason
-ALTER TABLE jobs ADD CONSTRAINT jobs_hold_reason_check
-    CHECK (status <> 'on_hold' OR hold_reason IS NOT NULL);
+-- Add new constraint: on_hold status requires a hold_reason (idempotent)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'jobs_hold_reason_check') THEN
+    ALTER TABLE jobs ADD CONSTRAINT jobs_hold_reason_check
+      CHECK (status <> 'on_hold' OR hold_reason IS NOT NULL);
+  END IF;
+END $$;
 
 -- ============================================================================
 -- 4. Update default status (for new jobs)

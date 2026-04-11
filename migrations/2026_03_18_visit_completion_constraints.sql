@@ -18,19 +18,26 @@ SET is_follow_up_needed = false
 WHERE outcome = 'completed'
   AND is_follow_up_needed = true;
 
--- Step 3: Add CHECK constraints
-ALTER TABLE job_visits
-  ADD CONSTRAINT job_visits_completion_outcome_check
-    CHECK (status != 'completed' OR outcome IS NOT NULL);
+-- Step 3: Add CHECK constraints (idempotent)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'job_visits_completion_outcome_check') THEN
+    ALTER TABLE job_visits ADD CONSTRAINT job_visits_completion_outcome_check
+      CHECK (status != 'completed' OR outcome IS NOT NULL);
+  END IF;
 
-ALTER TABLE job_visits
-  ADD CONSTRAINT job_visits_completion_timestamp_check
-    CHECK (status != 'completed' OR completed_at IS NOT NULL);
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'job_visits_completion_timestamp_check') THEN
+    ALTER TABLE job_visits ADD CONSTRAINT job_visits_completion_timestamp_check
+      CHECK (status != 'completed' OR completed_at IS NOT NULL);
+  END IF;
 
-ALTER TABLE job_visits
-  ADD CONSTRAINT job_visits_followup_consistency_check
-    CHECK (NOT (outcome = 'completed' AND is_follow_up_needed = true));
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'job_visits_followup_consistency_check') THEN
+    ALTER TABLE job_visits ADD CONSTRAINT job_visits_followup_consistency_check
+      CHECK (NOT (outcome = 'completed' AND is_follow_up_needed = true));
+  END IF;
 
-ALTER TABLE job_visits
-  ADD CONSTRAINT job_visits_scheduled_end_requires_start_check
-    CHECK (scheduled_end IS NULL OR scheduled_start IS NOT NULL);
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'job_visits_scheduled_end_requires_start_check') THEN
+    ALTER TABLE job_visits ADD CONSTRAINT job_visits_scheduled_end_requires_start_check
+      CHECK (scheduled_end IS NULL OR scheduled_start IS NOT NULL);
+  END IF;
+END $$;

@@ -13,15 +13,19 @@ CREATE TABLE IF NOT EXISTS equipment_catalog_items (
   updated_at TIMESTAMP
 );
 
--- Prevent duplicate associations
-ALTER TABLE equipment_catalog_items
-  ADD CONSTRAINT equipment_catalog_items_unique
-  UNIQUE (company_id, equipment_id, catalog_item_id);
+-- Prevent duplicate associations (idempotent)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'equipment_catalog_items_unique') THEN
+    ALTER TABLE equipment_catalog_items
+      ADD CONSTRAINT equipment_catalog_items_unique
+      UNIQUE (company_id, equipment_id, catalog_item_id);
+  END IF;
+END $$;
 
--- Fast lookup by equipment (primary query path)
-CREATE INDEX equipment_catalog_items_equip_idx
+-- Indexes (IF NOT EXISTS — safe on replay)
+CREATE INDEX IF NOT EXISTS equipment_catalog_items_equip_idx
   ON equipment_catalog_items (company_id, equipment_id, sort_order);
 
--- Reverse lookup: find all equipment using a specific catalog item
-CREATE INDEX equipment_catalog_items_item_idx
+CREATE INDEX IF NOT EXISTS equipment_catalog_items_item_idx
   ON equipment_catalog_items (company_id, catalog_item_id);

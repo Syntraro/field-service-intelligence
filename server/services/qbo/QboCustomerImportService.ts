@@ -310,13 +310,15 @@ export class QboCustomerImportService {
     );
 
     // Build normalized name indexes for unlinked records (multi-signal fallback matching)
-    const companyByName = new Map<string, typeof existingCompanies>();
+    type CompanyWithName = { id: string; name: string; email: string | null; phone: string | null; billingPostalCode: string | null; isActive: boolean; deletedAt: Date | null };
+    const companyByName = new Map<string, CompanyWithName[]>();
     for (const c of existingCompanies) {
       if (c.qboCustomerId || c.deletedAt) continue;
-      const key = normalizeBusinessName(c.name);
+      const mapped: CompanyWithName = { id: c.id, name: c.name ?? "", email: c.email, phone: c.phone, billingPostalCode: c.billingPostalCode, isActive: c.isActive, deletedAt: c.deletedAt };
+      const key = normalizeBusinessName(mapped.name);
       const arr = companyByName.get(key);
-      if (arr) arr.push(c);
-      else companyByName.set(key, [c]);
+      if (arr) arr.push(mapped);
+      else companyByName.set(key, [mapped]);
     }
 
     const locationByName = new Map<string, typeof existingLocations>();
@@ -329,7 +331,7 @@ export class QboCustomerImportService {
     }
 
     // Unlinked company pools for secondary signal matching (email, phone)
-    const unlinkedCompanies = existingCompanies.filter(c => !c.qboCustomerId && !c.deletedAt);
+    const unlinkedCompanies = existingCompanies.filter(c => !c.qboCustomerId && !c.deletedAt).map(c => ({ ...c, name: c.name ?? "" }));
     const unlinkedLocations = existingLocations.filter(l => !l.qboCustomerId && !l.deletedAt);
 
     // Step 4: Process parents with multi-signal fallback matching + rule-gated auto-link
@@ -365,7 +367,7 @@ export class QboCustomerImportService {
             candidates: scored.map(s => {
               const c = existingCompanies.find(x => x.id === s.localId)!;
               return {
-                localId: c.id, name: c.name, email: c.email ?? null, phone: c.phone ?? null,
+                localId: c.id, name: c.name ?? "", email: c.email ?? null, phone: c.phone ?? null,
                 postalCode: c.billingPostalCode ?? null, isActive: c.isActive,
                 isLinked: !!c.qboCustomerId, qboId: c.qboCustomerId ?? null,
                 score: s.score, signals: s.signals, confidence: s.confidence,

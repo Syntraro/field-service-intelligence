@@ -207,11 +207,14 @@ router.get("/:companyId/overview", asyncHandler(async (req: AuthedRequest, res: 
  * Update customer company properties (name, phone, email, billing address, active status).
  */
 const updateCustomerCompanySchema = z.object({
-  name: z.string().min(1).max(200).optional(),
+  name: z.string().max(200).nullable().optional(),
+  firstName: z.string().max(100).nullable().optional(),
+  lastName: z.string().max(100).nullable().optional(),
+  useCompanyAsPrimary: z.boolean().optional(),
   phone: z.string().max(50).nullable().optional(),
   email: z.string().max(200).nullable().optional(),
   billingStreet: z.string().max(200).nullable().optional(),
-  billingStreet2: z.string().max(200).nullable().optional(), // Address line 2 (suite, unit, PO box)
+  billingStreet2: z.string().max(200).nullable().optional(),
   billingCity: z.string().max(100).nullable().optional(),
   billingProvince: z.string().max(100).nullable().optional(),
   billingPostalCode: z.string().max(20).nullable().optional(),
@@ -224,6 +227,19 @@ router.patch("/:companyId", requireRole(MANAGER_ROLES), asyncHandler(async (req:
   const { companyId: customerCompanyId } = req.params;
 
   const validated = validateSchema(updateCustomerCompanySchema, req.body);
+
+  // If both name fields are being explicitly cleared, reject
+  if (validated.name !== undefined && validated.firstName !== undefined) {
+    if (!validated.name?.trim() && !validated.firstName?.trim()) {
+      throw createError(400, "At least a first name or company name is required");
+    }
+  }
+
+  // Sync nameSource for backward compat
+  if (validated.useCompanyAsPrimary !== undefined) {
+    (validated as any).nameSource = validated.useCompanyAsPrimary ? "company" : "person";
+  }
+
   const updated = await customerCompanyRepository.updateCustomerCompany(
     tenantCompanyId!,
     customerCompanyId,
@@ -629,7 +645,7 @@ router.get("/:companyId/unlinked-suggestions", asyncHandler(async (req: AuthedRe
   // OR have matching companyName (case-insensitive)
   const suggestions = allOrphans.filter(orphan =>
     orphan.suggestedCustomerCompanyId === customerCompanyId ||
-    (orphan.companyName ?? "").toLowerCase().trim() === customerCompany.name.toLowerCase().trim()
+    (orphan.companyName ?? "").toLowerCase().trim() === (customerCompany.name ?? "").toLowerCase().trim()
   );
 
   res.json({

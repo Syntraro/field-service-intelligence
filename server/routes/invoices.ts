@@ -1031,7 +1031,7 @@ router.get("/:id/pdf", asyncHandler(async (req: AuthedRequest, res: Response) =>
       phone: location.phone,
       email: location.email,
     },
-    customerCompany: customerCompany ? { name: customerCompany.name } : null,
+    customerCompany: customerCompany ? { name: customerCompany.name ?? "" } : null,
   });
 
   const filename = `Invoice-${invoice.invoiceNumber || invoice.id.slice(0, 8)}.pdf`;

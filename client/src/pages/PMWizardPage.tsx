@@ -23,6 +23,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation, useSearch, Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { getClientDisplayName } from "@shared/clientDisplayName";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -296,7 +297,7 @@ function StepTarget({
                   {companies.map((company) => (
                     <CommandItem
                       key={company.id}
-                      value={company.name}
+                      value={getClientDisplayName(company)}
                       onSelect={() => handleSelectCompany(company.id)}
                     >
                       <Check
@@ -304,7 +305,7 @@ function StepTarget({
                           state.customerCompanyId === company.id ? "opacity-100" : "opacity-0"
                         }`}
                       />
-                      {company.name}
+                      {getClientDisplayName(company)}
                     </CommandItem>
                   ))}
                 </CommandGroup>

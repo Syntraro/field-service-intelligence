@@ -1,10 +1,12 @@
 /**
- * EditCompanyDialog — Canonical company billing info editor.
+ * EditCompanyDialog — Canonical client identity + billing editor.
  *
  * Extracted from ClientDetailPage.tsx (2026-03-22).
+ * 2026-04-10: Supports residential/commercial/mixed identity model.
  * Edits CustomerCompany records via PATCH /api/customer-companies/:companyId.
  *
- * Fields: name, phone, email, billing address (street, street2, city, province, postal code).
+ * Fields: firstName, lastName, name (company), useCompanyAsPrimary,
+ *         phone, email, billing address.
  * Owns its own mutation + form state.
  */
 import { useState, useEffect } from "react";
@@ -15,6 +17,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
@@ -31,32 +34,52 @@ export function EditCompanyDialog({
 }: EditCompanyDialogProps) {
   const { toast } = useToast();
 
-  const [editClientForm, setEditClientForm] = useState({
-    name: "", phone: "", email: "",
+  const [form, setForm] = useState({
+    firstName: "", lastName: "", name: "", useCompanyAsPrimary: true,
+    phone: "", email: "",
     billingStreet: "", billingStreet2: "", billingCity: "", billingProvince: "", billingPostalCode: "",
   });
 
   // Initialize form when company data loads — guard prevents overwriting user edits
   useEffect(() => {
     if (parentCompany && !open) {
-      setEditClientForm({
+      setForm({
+        firstName: parentCompany.firstName || "",
+        lastName: parentCompany.lastName || "",
         name: parentCompany.name || "",
+        useCompanyAsPrimary: parentCompany.useCompanyAsPrimary !== false,
         phone: parentCompany.phone || "",
         email: parentCompany.email || "",
-        billingStreet: (parentCompany as any).billingStreet || "",
-        billingStreet2: (parentCompany as any).billingStreet2 || "",
-        billingCity: (parentCompany as any).billingCity || "",
-        billingProvince: (parentCompany as any).billingProvince || "",
-        billingPostalCode: (parentCompany as any).billingPostalCode || "",
+        billingStreet: parentCompany.billingStreet || "",
+        billingStreet2: parentCompany.billingStreet2 || "",
+        billingCity: parentCompany.billingCity || "",
+        billingProvince: parentCompany.billingProvince || "",
+        billingPostalCode: parentCompany.billingPostalCode || "",
       });
     }
   }, [parentCompany, open]);
 
+  // Validation: firstName OR name required (matches create rules)
+  const canSave = !!(form.firstName.trim() || form.name.trim());
+
   const editClientMutation = useMutation({
-    mutationFn: async (data: typeof editClientForm) => {
+    mutationFn: async () => {
       if (!companyId) throw new Error("Company not loaded yet.");
       return await apiRequest(`/api/customer-companies/${companyId}`, {
-        method: "PATCH", body: JSON.stringify(data),
+        method: "PATCH",
+        body: JSON.stringify({
+          firstName: form.firstName.trim() || null,
+          lastName: form.lastName.trim() || null,
+          name: form.name.trim() || null,
+          useCompanyAsPrimary: !form.name.trim() ? false : !form.firstName.trim() ? true : form.useCompanyAsPrimary,
+          phone: form.phone.trim() || null,
+          email: form.email.trim() || null,
+          billingStreet: form.billingStreet.trim() || null,
+          billingStreet2: form.billingStreet2.trim() || null,
+          billingCity: form.billingCity.trim() || null,
+          billingProvince: form.billingProvince.trim() || null,
+          billingPostalCode: form.billingPostalCode.trim() || null,
+        }),
       });
     },
     onSuccess: () => {
@@ -66,7 +89,7 @@ export function EditCompanyDialog({
         queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", companyId] });
       }
       onOpenChange(false);
-      toast({ title: "Client updated", description: "Company details saved." });
+      toast({ title: "Client updated", description: "Client details saved." });
     },
     onError: (error: any) => {
       toast({ title: "Error", description: error?.message || "Failed to update client.", variant: "destructive" });
@@ -75,62 +98,81 @@ export function EditCompanyDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Edit Client</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-2">
-          <div className="space-y-2">
-            <Label>Company Name *</Label>
-            <Input value={editClientForm.name}
-              onChange={e => setEditClientForm(f => ({ ...f, name: e.target.value }))} />
-          </div>
+          {/* Identity fields — matches create modal structure */}
+          <fieldset className="space-y-2">
+            <legend className="text-sm font-medium">
+              Client Identity <span className="text-xs font-normal text-muted-foreground">(first name or company required)</span>
+            </legend>
+            <div className="grid grid-cols-2 gap-2">
+              <Input placeholder="First name" value={form.firstName}
+                onChange={e => setForm(f => ({ ...f, firstName: e.target.value }))} />
+              <Input placeholder="Last name" value={form.lastName}
+                onChange={e => setForm(f => ({ ...f, lastName: e.target.value }))} />
+            </div>
+            <Input placeholder="Company name" value={form.name}
+              onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="edit-use-company-primary"
+                checked={form.useCompanyAsPrimary}
+                onCheckedChange={(checked) => setForm(f => ({ ...f, useCompanyAsPrimary: checked === true }))}
+              />
+              <Label htmlFor="edit-use-company-primary" className="text-sm font-normal cursor-pointer">
+                Use company name as primary client name
+              </Label>
+            </div>
+          </fieldset>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-2">
               <Label>Phone</Label>
-              <Input value={editClientForm.phone}
-                onChange={e => setEditClientForm(f => ({ ...f, phone: e.target.value }))} />
+              <Input value={form.phone}
+                onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} />
             </div>
             <div className="space-y-2">
               <Label>Email</Label>
-              <Input value={editClientForm.email}
-                onChange={e => setEditClientForm(f => ({ ...f, email: e.target.value }))} />
+              <Input value={form.email}
+                onChange={e => setForm(f => ({ ...f, email: e.target.value }))} />
             </div>
           </div>
           <div className="space-y-2">
             <Label>Billing Street</Label>
-            <Input value={editClientForm.billingStreet}
-              onChange={e => setEditClientForm(f => ({ ...f, billingStreet: e.target.value }))} />
+            <Input value={form.billingStreet}
+              onChange={e => setForm(f => ({ ...f, billingStreet: e.target.value }))} />
           </div>
           <div className="space-y-2">
             <Label>Billing Street 2</Label>
-            <Input value={editClientForm.billingStreet2}
-              onChange={e => setEditClientForm(f => ({ ...f, billingStreet2: e.target.value }))}
+            <Input value={form.billingStreet2}
+              onChange={e => setForm(f => ({ ...f, billingStreet2: e.target.value }))}
               placeholder="Suite, Unit, PO Box (optional)" />
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div className="space-y-2">
               <Label>City</Label>
-              <Input value={editClientForm.billingCity}
-                onChange={e => setEditClientForm(f => ({ ...f, billingCity: e.target.value }))} />
+              <Input value={form.billingCity}
+                onChange={e => setForm(f => ({ ...f, billingCity: e.target.value }))} />
             </div>
             <div className="space-y-2">
               <Label>Province</Label>
-              <Input value={editClientForm.billingProvince}
-                onChange={e => setEditClientForm(f => ({ ...f, billingProvince: e.target.value }))} />
+              <Input value={form.billingProvince}
+                onChange={e => setForm(f => ({ ...f, billingProvince: e.target.value }))} />
             </div>
             <div className="space-y-2">
               <Label>Postal Code</Label>
-              <Input value={editClientForm.billingPostalCode}
-                onChange={e => setEditClientForm(f => ({ ...f, billingPostalCode: e.target.value }))} />
+              <Input value={form.billingPostalCode}
+                onChange={e => setForm(f => ({ ...f, billingPostalCode: e.target.value }))} />
             </div>
           </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button
-            onClick={() => editClientMutation.mutate(editClientForm)}
-            disabled={!editClientForm.name.trim() || editClientMutation.isPending}
+            onClick={() => editClientMutation.mutate()}
+            disabled={!canSave || editClientMutation.isPending}
           >
             {editClientMutation.isPending ? "Saving..." : "Save Changes"}
           </Button>

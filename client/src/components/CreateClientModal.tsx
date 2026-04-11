@@ -15,7 +15,7 @@
  * - optional client_contacts row (if contact fields provided)
  */
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
@@ -58,10 +58,12 @@ export function CreateClientModal({
   const [, setLocation] = useLocation();
 
   // ── Form state ──
+  // Client identity: at least one of firstName or companyName required
   const [companyName, setCompanyName] = useState("");
-  // Optional primary contact
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
+  const [clientFirstName, setClientFirstName] = useState("");
+  const [clientLastName, setClientLastName] = useState("");
+  const [useCompanyAsPrimary, setUseCompanyAsPrimary] = useState(true);
+  // Contact info (phone/email) — identity person becomes default primary contact
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   // Service address (maps to first auto-created location)
@@ -96,8 +98,9 @@ export function CreateClientModal({
 
   const resetForm = useCallback(() => {
     setCompanyName("");
-    setFirstName("");
-    setLastName("");
+    setClientFirstName("");
+    setClientLastName("");
+    setUseCompanyAsPrimary(true);
     setPhone("");
     setEmail("");
     setSvcStreet("");
@@ -117,26 +120,19 @@ export function CreateClientModal({
   // ── Mutation ──
   const createMutation = useMutation({
     mutationFn: async () => {
-      // Build contacts array only if any contact field is filled
-      const hasContact = firstName.trim() || lastName.trim() || phone.trim() || email.trim();
-      if (hasContact) {
-        const hasName = firstName.trim() || lastName.trim();
-        const hasContactMethod = phone.trim() || email.trim();
-        if (!hasName) {
-          throw new Error("Contact requires at least a first or last name.");
-        }
-        if (!hasContactMethod) {
-          throw new Error("Contact requires at least a phone number or email.");
-        }
-      }
-
-      const contacts = hasContact
+      // Build default primary contact from identity person + phone/email
+      const contactFirst = clientFirstName.trim();
+      const contactLast = clientLastName.trim();
+      const contactPhone = phone.trim();
+      const contactEmail = email.trim();
+      const hasContactInfo = contactFirst || contactLast || contactPhone || contactEmail;
+      const contacts = hasContactInfo
         ? [
             {
-              firstName: firstName.trim(),
-              lastName: lastName.trim(),
-              phone: phone.trim() || null,
-              email: email.trim() || null,
+              firstName: contactFirst,
+              lastName: contactLast,
+              phone: contactPhone || null,
+              email: contactEmail || null,
               isPrimary: true,
               roles: [],
             },
@@ -184,7 +180,10 @@ export function CreateClientModal({
         method: "POST",
         body: JSON.stringify({
           company: {
-            name: companyName.trim(),
+            name: companyName.trim() || null,
+            firstName: clientFirstName.trim() || null,
+            lastName: clientLastName.trim() || null,
+            useCompanyAsPrimary: !companyName.trim() ? false : !clientFirstName.trim() ? true : useCompanyAsPrimary,
             billingAddress,
             billingSameAsService,
           },
@@ -203,9 +202,10 @@ export function CreateClientModal({
       queryClient.invalidateQueries({
         queryKey: ["/api/subscriptions/can-add-location"],
       });
+      const displayName = companyName.trim() || clientFirstName.trim() || "Client";
       toast({
         title: "Client Created",
-        description: `${companyName.trim()} has been created.`,
+        description: `${displayName} has been created.`,
       });
       resetForm();
       onOpenChange(false);
@@ -220,10 +220,13 @@ export function CreateClientModal({
     },
   });
 
+  // At least one of firstName or companyName required
+  const canSubmit = !!(clientFirstName.trim() || companyName.trim());
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setServerError(null);
-    if (!companyName.trim()) return;
+    if (!canSubmit) return;
     createMutation.mutate();
   };
 
@@ -248,42 +251,49 @@ export function CreateClientModal({
             </div>
           )}
 
-          {/* ── Company Name (required) ── */}
-          <div className="space-y-1.5">
-            <Label htmlFor="cc-company-name">
-              Company Name <span className="text-destructive">*</span>
-            </Label>
-            <Input
-              id="cc-company-name"
-              placeholder="e.g. Acme HVAC Services"
-              value={companyName}
-              onChange={(e) => setCompanyName(e.target.value)}
-              autoFocus
-              required
-              data-testid="input-company-name"
-            />
-          </div>
-
-          {/* ── Primary Contact (optional) ── */}
+          {/* ── Client Identity — at least first name or company name required ── */}
           <fieldset className="space-y-2">
-            <legend className="text-sm font-medium text-muted-foreground">
-              Primary Contact <span className="text-xs font-normal">(optional)</span>
+            <legend className="text-sm font-medium">
+              Client Identity <span className="text-xs font-normal text-muted-foreground">(first name or company required)</span>
             </legend>
             <div className="grid grid-cols-2 gap-2">
               <Input
                 placeholder="First name"
-                value={firstName}
-                onChange={(e) => setFirstName(e.target.value)}
-                data-testid="input-contact-first"
+                value={clientFirstName}
+                onChange={(e) => setClientFirstName(e.target.value)}
+                autoFocus
+                data-testid="input-client-first-name"
               />
               <Input
                 placeholder="Last name"
-                value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
-                data-testid="input-contact-last"
+                value={clientLastName}
+                onChange={(e) => setClientLastName(e.target.value)}
+                data-testid="input-client-last-name"
               />
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <Input
+              placeholder="Company name"
+              value={companyName}
+              onChange={(e) => setCompanyName(e.target.value)}
+              data-testid="input-company-name"
+            />
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="use-company-primary"
+                checked={useCompanyAsPrimary}
+                onCheckedChange={(checked) => setUseCompanyAsPrimary(checked === true)}
+                data-testid="checkbox-use-company-primary"
+              />
+              <Label htmlFor="use-company-primary" className="text-sm font-normal cursor-pointer">
+                Use company name as primary client name
+              </Label>
+            </div>
+          </fieldset>
+
+          {/* ── Contact Info (optional — phone/email for default primary contact) ── */}
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">Phone</Label>
               <Input
                 placeholder="Phone"
                 type="tel"
@@ -291,6 +301,9 @@ export function CreateClientModal({
                 onChange={(e) => setPhone(e.target.value)}
                 data-testid="input-contact-phone"
               />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">Email</Label>
               <Input
                 placeholder="Email"
                 type="email"
@@ -299,7 +312,7 @@ export function CreateClientModal({
                 data-testid="input-contact-email"
               />
             </div>
-          </fieldset>
+          </div>
 
           {/* ── Primary Service Address (optional) ── */}
           <fieldset className="space-y-2">
@@ -406,7 +419,7 @@ export function CreateClientModal({
             </Button>
             <Button
               type="submit"
-              disabled={!companyName.trim() || createMutation.isPending}
+              disabled={!canSubmit || createMutation.isPending}
               data-testid="button-save-client"
             >
               {createMutation.isPending ? (

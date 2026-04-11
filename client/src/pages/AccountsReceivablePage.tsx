@@ -5,6 +5,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { DollarSign, Clock, FileText, AlertTriangle } from "lucide-react";
 import { formatCurrency } from "@/lib/formatters";
+import { getClientDisplayName } from "@shared/clientDisplayName";
 
 interface ARAgingInvoice {
   id: string;
@@ -215,7 +216,7 @@ export default function AccountsReceivablePage() {
                         {invoice.invoiceNumber || "-"}
                       </TableCell>
                       <TableCell>
-                        {invoice.customerCompany.name || invoice.location.companyName}
+                        {invoice.customerCompany ? getClientDisplayName(invoice.customerCompany) : (invoice.location.companyName || "Client")}
                       </TableCell>
                       <TableCell className="text-muted-foreground">
                         {invoice.location.location || "-"}

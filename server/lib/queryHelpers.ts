@@ -144,7 +144,7 @@ export async function bulkResolveCustomerCompanies(
     .where(inArray(customerCompanies.id, companyIds));
 
   for (const row of rows) {
-    map.set(row.id, row.name);
+    map.set(row.id, row.name ?? "");
   }
   return map;
 }

@@ -328,9 +328,14 @@ export const customerCompanies = pgTable("customer_companies", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   // Company information
-  name: text("name").notNull(), // Main company name (maps to QBO DisplayName for parent)
+  name: text("name"), // Company name (nullable for residential clients)
   nameNormalized: text("name_normalized").notNull().default(""), // Lowercase, trimmed, whitespace-collapsed — used for case-insensitive dedup
   legalName: text("legal_name"), // Official legal name if different
+  // Person identity — for residential clients or mixed (person + company)
+  firstName: text("first_name"),
+  lastName: text("last_name"),
+  // When true, company name is used as primary display/billing identity; when false, person name is primary
+  useCompanyAsPrimary: boolean("use_company_as_primary").notNull().default(true),
   phone: text("phone"),
   email: text("email"),
   // Billing address (used for QBO BillAddr)
@@ -348,7 +353,7 @@ export const customerCompanies = pgTable("customer_companies", {
   qboLastSyncedAt: timestamp("qbo_last_synced_at"),
   qboSyncStatus: text("qbo_sync_status").notNull().default("NOT_SYNCED"), // NOT_SYNCED | SYNCED | PENDING | ERROR
   qboSyncError: text("qbo_sync_error"), // Last sync error message if any
-  // Name source: 'company' = use company name as display, 'person' = use contact first+last
+  // Legacy nameSource replaced by useCompanyAsPrimary boolean (2026-04-10)
   nameSource: text("name_source").notNull().default("company"),
   // Soft delete
   deletedAt: timestamp("deleted_at"),

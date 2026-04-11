@@ -9,6 +9,7 @@ import { useQuery, useMutation, keepPreviousData } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
+import { getClientDisplayName } from "@shared/clientDisplayName";
 import {
   ArrowLeft, Loader2, MapPin, User, Calendar, DollarSign, Phone, Mail,
   StickyNote, Trash2, FileText, Send, ChevronRight, Briefcase, Star,
@@ -45,7 +46,8 @@ interface LeadDetail {
   createdAt: string;
   updatedAt: string | null;
   location?: { companyName: string | null; address: string | null; city: string | null; province: string | null; postalCode: string | null; contactName: string | null; email: string | null; phone: string | null } | null;
-  customerCompanyName?: string | null;
+  customerCompanyName?: string | null; // backward compat
+  customerCompany?: { id: string; name: string | null; firstName: string | null; lastName: string | null; useCompanyAsPrimary: boolean } | null;
   createdByName?: string | null;
   originTechnicianName?: string | null;
   assignedToName?: string | null;
@@ -244,8 +246,10 @@ export default function LeadDetailPage() {
                 </div>
                 {/* Client / Location */}
                 <div className="mt-2 pt-1.5 border-t border-slate-100">
-                  {(lead.customerCompanyName || lead.location?.companyName) && (
-                    <p className="text-sm font-semibold text-slate-800">{lead.customerCompanyName || lead.location?.companyName}</p>
+                  {(lead.customerCompany || lead.customerCompanyName || lead.location?.companyName) && (
+                    <p className="text-sm font-semibold text-slate-800">
+                      {lead.customerCompany ? getClientDisplayName(lead.customerCompany) : (lead.customerCompanyName || lead.location?.companyName)}
+                    </p>
                   )}
                   {lead.location?.contactName && (
                     <p className="text-xs text-slate-500 flex items-center gap-1 mt-0.5"><User className="h-3 w-3 text-slate-400" />{lead.location.contactName}</p>

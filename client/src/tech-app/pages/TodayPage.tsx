@@ -24,12 +24,11 @@ import {
 import {
   CalendarDays, MapPin, ChevronRight, Clock, Truck,
   LogIn, LogOut, Navigation,
-  Loader2, RefreshCw, Plus, Briefcase, UserPlus, FileText, X, CheckSquare, Check,
+  Loader2, RefreshCw, Plus, Briefcase, UserPlus, FileText, X, CheckSquare,
 } from "lucide-react";
 import { useLocation } from "wouter";
 import { useTechTasks } from "../hooks/useTechTasks";
 import { toEpochMsSafe, toLocalDateKey } from "../utils/safeDateTime";
-import { ActiveTimerConflictDialog, parseTimerConflict, type ActiveTimerInfo } from "../components/ActiveTimerConflictDialog";
 import type { Task } from "@shared/schema";
 
 // Display maps imported from shared utils/visitDisplay.ts
@@ -133,48 +132,49 @@ function EmptyState({ dateLabel }: { dateLabel?: string }) {
 
 // ── Task card ──
 
-function TaskCard({ task, onComplete, isCompleting, onStart, onStop, isTimerPending, isTimerRunning, onTap }: {
+function TaskCard({ task, isTimerRunning, onTap }: {
   task: Task;
-  onComplete: () => void;
-  isCompleting: boolean;
-  onStart: () => void;
-  onStop: () => void;
-  isTimerPending: boolean;
   /** Whether THIS task has a running timer (from canonical time_entries, NOT task.status) */
   isTimerRunning: boolean;
   onTap: () => void;
 }) {
   const isOverdue = task.scheduledStartAt && new Date(task.scheduledStartAt) < new Date();
   const isSupplier = task.type === "SUPPLIER_VISIT";
+  const isCompleted = task.status === "completed" || task.status === "cancelled";
   // 2026-04-10 INTEGRITY: Use canonical timer state, not task.status
   const isInProgress = isTimerRunning;
 
   return (
     <div
       className={`w-full rounded-md border px-3 py-2.5 active:scale-[0.99] transition-transform cursor-pointer ${
+        isCompleted ? "border-slate-200 bg-slate-50 opacity-60" :
         isInProgress ? "border-emerald-300 bg-emerald-50/50" : "border-slate-200 bg-white"
       }`}
       onClick={onTap}
     >
       <div className="flex items-start gap-2">
         <div className={`h-7 w-7 rounded-md flex items-center justify-center shrink-0 mt-0.5 ${
+          isCompleted ? "bg-slate-100" :
           isSupplier ? "bg-amber-50" : isInProgress ? "bg-emerald-100" : "bg-indigo-50"
         }`}>
           {isSupplier
-            ? <Truck className="text-amber-600" style={{ width: 14, height: 14 }} />
-            : <CheckSquare className={isInProgress ? "text-emerald-600" : "text-indigo-600"} style={{ width: 14, height: 14 }} />
+            ? <Truck className={isCompleted ? "text-slate-400" : "text-amber-600"} style={{ width: 14, height: 14 }} />
+            : <CheckSquare className={isCompleted ? "text-slate-400" : isInProgress ? "text-emerald-600" : "text-indigo-600"} style={{ width: 14, height: 14 }} />
           }
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-sm font-semibold text-slate-700 truncate">{task.title}</span>
-            {isInProgress && (
+            <span className={`text-sm font-semibold truncate ${isCompleted ? "text-slate-400 line-through" : "text-slate-700"}`}>{task.title}</span>
+            {isCompleted && (
+              <span className="text-[10px] font-medium text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full">Done</span>
+            )}
+            {isInProgress && !isCompleted && (
               <span className="text-[10px] font-bold text-emerald-600 bg-emerald-100 px-1.5 py-0.5 rounded-full">In Progress</span>
             )}
-            {isOverdue && !isInProgress && (
+            {isOverdue && !isInProgress && !isCompleted && (
               <span className="text-[10px] font-bold text-red-600 bg-red-50 px-1.5 py-0.5 rounded-full">Overdue</span>
             )}
-            {!task.scheduledStartAt && (
+            {!task.scheduledStartAt && !isCompleted && (
               <span className="text-[10px] font-medium text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full">Unscheduled</span>
             )}
           </div>
@@ -190,36 +190,8 @@ function TaskCard({ task, onComplete, isCompleting, onStart, onStop, isTimerPend
           </div>
           {task.notes && <p className="text-xs text-slate-400 mt-0.5 truncate">{task.notes}</p>}
         </div>
-        <div className="flex items-center gap-1 shrink-0">
-          {/* Timer start/stop — canonical through time_entries */}
-          {isInProgress ? (
-            <button
-              onClick={(e) => { e.stopPropagation(); onStop(); }}
-              disabled={isTimerPending}
-              className="h-8 px-2.5 rounded-md border border-amber-300 bg-amber-50 text-amber-700 text-xs font-semibold flex items-center gap-1 active:scale-95 disabled:opacity-60"
-            >
-              {isTimerPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Clock className="h-3 w-3" />}
-              Stop
-            </button>
-          ) : (
-            <button
-              onClick={(e) => { e.stopPropagation(); onStart(); }}
-              disabled={isTimerPending}
-              className="h-8 px-2.5 rounded-md border border-blue-300 bg-blue-50 text-blue-700 text-xs font-semibold flex items-center gap-1 active:scale-95 disabled:opacity-60"
-            >
-              {isTimerPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Navigation className="h-3 w-3" />}
-              Start
-            </button>
-          )}
-          <button
-            onClick={(e) => { e.stopPropagation(); onComplete(); }}
-            disabled={isCompleting}
-            className="h-8 px-2.5 rounded-md border border-emerald-300 bg-emerald-50 text-emerald-700 text-xs font-semibold flex items-center gap-1 active:scale-95 disabled:opacity-60"
-          >
-            {isCompleting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
-            Done
-          </button>
-        </div>
+        {/* Chevron indicates tap-to-open — actions live on TaskDetailPage */}
+        <ChevronRight className="h-4 w-4 text-slate-300 shrink-0 mt-1" />
       </div>
     </div>
   );
@@ -240,10 +212,8 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
   const goToToday = useCallback(() => setSelectedDate(new Date()), []);
 
   const { visits, isLoading, isError, refetch } = useTodayVisits(dateParam);
-  const { tasks, runningTaskId, startTask, stopTask, closeTask } = useTechTasks();
-  const [completingTaskId, setCompletingTaskId] = useState<string | null>(null);
-  const [timerTaskId, setTimerTaskId] = useState<string | null>(null);
-  const [timerConflict, setTimerConflict] = useState<ActiveTimerInfo | null>(null);
+  const { tasks, runningTaskId } = useTechTasks();
+  // Task actions (start/stop/complete) live on TaskDetailPage — no inline state needed
   const { isClockedIn, clockInAt, clockIn, clockOut } = useTechShift();
   const { formatted: elapsed } = useElapsedTimer(clockInAt, isClockedIn, 10_000);
   const [shiftError, setShiftError] = useState<string | null>(null);
@@ -408,28 +378,8 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
                   <TaskCard
                     key={item.task.id}
                     task={item.task}
-                    isCompleting={completingTaskId === item.task.id}
-                    isTimerPending={timerTaskId === item.task.id}
                     isTimerRunning={runningTaskId === item.task.id}
                     onTap={() => setLocation(`/tech/tasks/${item.task.id}`)}
-                    onStart={async () => {
-                      setTimerTaskId(item.task.id);
-                      try { await startTask.mutateAsync(item.task.id); }
-                      catch (e) { const c = parseTimerConflict(e); if (c) setTimerConflict(c); }
-                      finally { setTimerTaskId(null); }
-                    }}
-                    onStop={async () => {
-                      setTimerTaskId(item.task.id);
-                      try { await stopTask.mutateAsync(item.task.id); }
-                      catch { /* handled by mutation */ }
-                      finally { setTimerTaskId(null); }
-                    }}
-                    onComplete={async () => {
-                      setCompletingTaskId(item.task.id);
-                      try { await closeTask.mutateAsync(item.task.id); }
-                      catch { /* handled by mutation */ }
-                      finally { setCompletingTaskId(null); }
-                    }}
                   />
                 ),
               )}
@@ -450,28 +400,8 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
               <TaskCard
                 key={task.id}
                 task={task}
-                isCompleting={completingTaskId === task.id}
-                isTimerPending={timerTaskId === task.id}
                 isTimerRunning={runningTaskId === task.id}
                 onTap={() => setLocation(`/tech/tasks/${task.id}`)}
-                onStart={async () => {
-                  setTimerTaskId(task.id);
-                  try { await startTask.mutateAsync(task.id); }
-                  catch (e) { const c = parseTimerConflict(e); if (c) setTimerConflict(c); }
-                  finally { setTimerTaskId(null); }
-                }}
-                onStop={async () => {
-                  setTimerTaskId(task.id);
-                  try { await stopTask.mutateAsync(task.id); }
-                  catch { /* handled by mutation */ }
-                  finally { setTimerTaskId(null); }
-                }}
-                onComplete={async () => {
-                  setCompletingTaskId(task.id);
-                  try { await closeTask.mutateAsync(task.id); }
-                  catch { /* handled by mutation */ }
-                  finally { setCompletingTaskId(null); }
-                }}
               />
             ))}
           </div>
@@ -545,12 +475,7 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
           </div>
         </div>
       )}
-      {/* Timer conflict dialog */}
-      <ActiveTimerConflictDialog
-        open={!!timerConflict}
-        onClose={() => setTimerConflict(null)}
-        activeItem={timerConflict}
-      />
+      {/* Timer conflict dialog lives on TaskDetailPage now */}
     </MobileShell>
   );
 }

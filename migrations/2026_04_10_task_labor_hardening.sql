@@ -6,6 +6,10 @@
 --
 -- Run: npm run db:migrate:one -- migrations/2026_04_10_task_labor_hardening.sql
 
-ALTER TABLE time_entries
-  ADD CONSTRAINT time_entries_task_work_requires_task_id
-  CHECK (type != 'task_work' OR task_id IS NOT NULL);
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'time_entries_task_work_requires_task_id') THEN
+    ALTER TABLE time_entries ADD CONSTRAINT time_entries_task_work_requires_task_id
+      CHECK (type != 'task_work' OR task_id IS NOT NULL);
+  END IF;
+END $$;

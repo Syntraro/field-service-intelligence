@@ -137,9 +137,14 @@ ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_hold_reason_check;
 -- Drop existing constraint if any (idempotent)
 ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_status_lifecycle_check;
 
--- Add CHECK constraint to enforce exactly 4 valid statuses
-ALTER TABLE jobs ADD CONSTRAINT jobs_status_lifecycle_check
-    CHECK (status IN ('open', 'completed', 'invoiced', 'archived'));
+-- Add CHECK constraint to enforce exactly 4 valid statuses (idempotent)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'jobs_status_lifecycle_check') THEN
+    ALTER TABLE jobs ADD CONSTRAINT jobs_status_lifecycle_check
+      CHECK (status IN ('open', 'completed', 'invoiced', 'archived'));
+  END IF;
+END $$;
 
 -- ============================================================================
 -- STEP 7: Post-migration verification

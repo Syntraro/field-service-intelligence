@@ -270,14 +270,14 @@ export async function validateJobRow(
         ));
 
       const exactMatches = allCompanies.filter(c =>
-        normalizeBusinessName(c.name) === normalizedName ||
-        normalizeForMatch(c.name) === normalizeForMatch(row.clientName!)
+        normalizeBusinessName(c.name ?? "") === normalizedName ||
+        normalizeForMatch(c.name ?? "") === normalizeForMatch(row.clientName!)
       );
 
       if (exactMatches.length === 1) {
         companyAction = "match";
         matchedCompanyId = exactMatches[0].id;
-        matchedCompanyName = exactMatches[0].name;
+        matchedCompanyName = exactMatches[0].name ?? undefined;
       } else if (exactMatches.length > 1) {
         errors.push(`Client "${row.clientName}" matches ${exactMatches.length} companies — ambiguous`);
       } else {

@@ -257,11 +257,27 @@ const limit = clampInt(req.query.limit as string | undefined, 50, 1, 500);
 
   const futureDueByClientId = buildFutureDueIndex(assignments);
 
-  // Add nextDue to each client
-  const clientsWithDue = result.data.map((c: any) => ({
-    ...c,
-    nextDue: deriveNextDueForClient(c, futureDueByClientId),
-  }));
+  // Enrich with parent company identity fields for canonical display-name resolution
+  const parentIdSet = new Set(result.data.map((c: any) => c.parentCompanyId).filter(Boolean));
+  const parentIds: string[] = [];
+  parentIdSet.forEach(id => parentIds.push(id));
+  const parentIdentityMap = new Map<string, { firstName: string | null; lastName: string | null; useCompanyAsPrimary: boolean }>();
+  if (parentIds.length > 0) {
+    const parents = await customerCompanyRepository.listCustomerCompanies(companyId!);
+    for (const p of parents) parentIdentityMap.set(p.id, { firstName: p.firstName, lastName: p.lastName, useCompanyAsPrimary: p.useCompanyAsPrimary });
+  }
+
+  // Add nextDue + parent identity to each client
+  const clientsWithDue = result.data.map((c: any) => {
+    const parent = c.parentCompanyId ? parentIdentityMap.get(c.parentCompanyId) : null;
+    return {
+      ...c,
+      nextDue: deriveNextDueForClient(c, futureDueByClientId),
+      parentFirstName: parent?.firstName ?? null,
+      parentLastName: parent?.lastName ?? null,
+      parentUseCompanyAsPrimary: parent?.useCompanyAsPrimary ?? true,
+    };
+  });
 
   // Return paginated response
   res.json({
@@ -320,8 +336,11 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
   const userId = req.user.id;
   const { company, primaryLocation, additionalLocations = [], contacts = [] } = req.body;
 
-  if (!company?.name?.trim()) {
-    throw createError(400, "Company name is required");
+  // Require at least one of: firstName or company name
+  const hasCompanyName = !!company?.name?.trim();
+  const hasFirstName = !!company?.firstName?.trim();
+  if (!hasCompanyName && !hasFirstName) {
+    throw createError(400, "At least a first name or company name is required");
   }
 
   // 2026-04-10: Service/billing address split.
@@ -355,13 +374,19 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
 
   // 1) Create (or reuse) customer company row
   // Reuse if same name exists for this tenant (prevents duplicates when users retry)
-  const companyName = company.name.trim();
-  // nameSource: 'company' (default) = use company name as display, 'person' = use contact first+last
-  const nameSource = company.nameSource === "person" ? "person" : "company";
+  const companyName = company.name?.trim() || null;
+  const clientFirstName = company.firstName?.trim() || null;
+  const clientLastName = company.lastName?.trim() || null;
+  const useCompanyAsPrimary = company.useCompanyAsPrimary !== false; // default true
+  // Derive nameSource for backward compat: 'company' if useCompanyAsPrimary, else 'person'
+  const nameSource = useCompanyAsPrimary ? "company" : "person";
   const customerCompany = await customerCompanyRepository.findOrCreateCustomerCompany(
     companyId,
     {
       name: companyName,
+      firstName: clientFirstName,
+      lastName: clientLastName,
+      useCompanyAsPrimary,
       phone: company.phone?.trim() || null,
       email: company.email?.trim() || null,
       billingStreet: company.billingAddress?.street?.trim() || null,
@@ -375,7 +400,11 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
   );
 
   // 2) Create primary location (client record linked to customer company)
-  const primaryLocationName = primaryLocation?.name?.trim() || companyName;
+  // Location name fallback: explicit name → company name → person name
+  const primaryLocationName = primaryLocation?.name?.trim()
+    || companyName
+    || (clientFirstName ? (clientLastName ? `${clientFirstName} ${clientLastName}` : clientFirstName) : null)
+    || "Primary";
   const primarySelectedMonths = primaryLocation?.selectedMonths || [];
 
   const primaryClientData: any = {

@@ -15,6 +15,10 @@
 
 -- Constraint 1: is_all_day=true requires scheduled_start IS NOT NULL
 -- Equivalent to: scheduled_start IS NOT NULL OR is_all_day = false (or is_all_day IS NULL)
-ALTER TABLE jobs
-  ADD CONSTRAINT jobs_allday_requires_start_check
-  CHECK (scheduled_start IS NOT NULL OR is_all_day IS DISTINCT FROM TRUE);
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'jobs_allday_requires_start_check') THEN
+    ALTER TABLE jobs ADD CONSTRAINT jobs_allday_requires_start_check
+      CHECK (scheduled_start IS NOT NULL OR is_all_day IS DISTINCT FROM TRUE);
+  END IF;
+END $$;

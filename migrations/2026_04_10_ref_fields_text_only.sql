@@ -23,9 +23,14 @@ ALTER TABLE reference_field_values
 ALTER TABLE reference_field_definitions
   DROP CONSTRAINT IF EXISTS ref_field_defs_type_check;
 
-ALTER TABLE reference_field_definitions
-  ADD CONSTRAINT ref_field_defs_type_check
-  CHECK (type = 'text');
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ref_field_defs_type_check') THEN
+    ALTER TABLE reference_field_definitions
+      ADD CONSTRAINT ref_field_defs_type_check
+      CHECK (type = 'text');
+  END IF;
+END $$;
 
 -- Step 4: Update the attribution isolation constraint (references number_value/date_value)
 -- The old constraint was on time_entries, not reference_field_values — no change needed here.

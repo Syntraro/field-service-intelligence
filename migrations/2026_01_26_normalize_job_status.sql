@@ -70,13 +70,19 @@ END $$;
 -- Drop old constraint (may not exist in all environments)
 ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_hold_reason_check;
 
--- New constraint: openSubStatus = 'on_hold' requires holdReason
-ALTER TABLE jobs ADD CONSTRAINT jobs_hold_reason_check
-CHECK (open_sub_status <> 'on_hold' OR hold_reason IS NOT NULL);
+-- New constraints (idempotent)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'jobs_hold_reason_check') THEN
+    ALTER TABLE jobs ADD CONSTRAINT jobs_hold_reason_check
+      CHECK (open_sub_status <> 'on_hold' OR hold_reason IS NOT NULL);
+  END IF;
 
--- New constraint: openSubStatus must be NULL when status != 'open'
-ALTER TABLE jobs ADD CONSTRAINT jobs_open_sub_status_invariant_check
-CHECK (status = 'open' OR open_sub_status IS NULL);
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'jobs_open_sub_status_invariant_check') THEN
+    ALTER TABLE jobs ADD CONSTRAINT jobs_open_sub_status_invariant_check
+      CHECK (status = 'open' OR open_sub_status IS NULL);
+  END IF;
+END $$;
 
 -- Step 6: Set default for status column to 'open' (was 'unscheduled')
 -- =============================================================================

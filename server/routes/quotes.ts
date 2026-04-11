@@ -391,7 +391,7 @@ router.get("/:id/pdf", asyncHandler(async (req: AuthedRequest, res: Response) =>
       phone: details.location.phone,
       email: details.location.email,
     },
-    customerCompany: details.customerCompany,
+    customerCompany: details.customerCompany ? { name: details.customerCompany.name ?? "" } : null,
   });
 
   const filename = `Quote-${details.quote.quoteNumber || details.quote.id.slice(0, 8)}.pdf`;
@@ -439,7 +439,7 @@ router.get("/:id/pdf/preview", asyncHandler(async (req: AuthedRequest, res: Resp
       phone: details.location.phone,
       email: details.location.email,
     },
-    customerCompany: details.customerCompany,
+    customerCompany: details.customerCompany ? { name: details.customerCompany.name ?? "" } : null,
   });
 
   const filename = `Quote-${details.quote.quoteNumber || details.quote.id.slice(0, 8)}.pdf`;

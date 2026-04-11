@@ -13,11 +13,15 @@
 ALTER TABLE time_entries
   DROP CONSTRAINT IF EXISTS time_entries_task_work_requires_task_id;
 
--- Add bidirectional constraint
-ALTER TABLE time_entries
-  ADD CONSTRAINT time_entries_type_task_isolation
-  CHECK (
-    (type = 'task_work' AND task_id IS NOT NULL)
-    OR
-    (type != 'task_work' AND task_id IS NULL)
-  );
+-- Add bidirectional constraint (idempotent)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'time_entries_type_task_isolation') THEN
+    ALTER TABLE time_entries ADD CONSTRAINT time_entries_type_task_isolation
+      CHECK (
+        (type = 'task_work' AND task_id IS NOT NULL)
+        OR
+        (type != 'task_work' AND task_id IS NULL)
+      );
+  END IF;
+END $$;

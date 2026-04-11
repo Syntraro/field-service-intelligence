@@ -4,6 +4,7 @@ import { useRoute, useLocation, Link } from "wouter";
 import { format, isValid, parseISO, isPast } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { getClientDisplayName } from "@shared/clientDisplayName";
 import {
   ArrowLeft, Send, MoreHorizontal, Plus, Trash2,
   FileText, Check, X, Phone, Mail, MapPin, Clock, Edit, Loader2, Info, ClipboardList,
@@ -388,7 +389,7 @@ export default function QuoteDetailPage() {
 
   const { quote, lines, location, customerCompany, isExpired } = details;
   const statusInfo = getQuoteStatusBadge(quote.status);
-  const clientName = customerCompany?.name || location.companyName;
+  const clientName = customerCompany ? getClientDisplayName(customerCompany) : (location.companyName || "Client");
   const isDraft = quote.status === "draft";
   const isSent = quote.status === "sent";
   const isApproved = quote.status === "approved";

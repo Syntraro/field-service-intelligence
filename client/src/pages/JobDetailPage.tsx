@@ -8,6 +8,7 @@ import { format } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { getMemberDisplayName } from "@/lib/displayName";
 import { visitStatusLabel } from "@/lib/visitStatusDisplay";
+import { getClientDisplayName } from "@shared/clientDisplayName";
 import { useToast } from "@/hooks/use-toast";
 import { useActivityStore } from "@/lib/activityStore";
 import {
@@ -826,7 +827,7 @@ export default function JobDetailPage() {
 
   // Header-level computed values (same as JobHeaderCard but needed for command-center header)
   // 2026-04-10: location name takes priority, company name is fallback
-  const clientName = job.location?.companyName || job.parentCompany?.name || "Client";
+  const clientName = job.parentCompany ? getClientDisplayName(job.parentCompany) : (job.location?.companyName || "Client");
   const fullAddress = job.location
     ? [job.location.address, job.location.address2, job.location.city, job.location.province, job.location.postalCode].filter(Boolean).join(", ")
     : "";

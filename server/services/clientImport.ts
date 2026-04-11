@@ -300,7 +300,7 @@ async function getCompanyCacheEntry(
 
   const entry: CompanyCacheEntry = {
     exists: true,
-    name: existing.name,
+    name: existing.name ?? "",
     id: existing.id,
     locationKeys,
     contactEmails,
@@ -650,7 +650,7 @@ export async function executeRow(
       if (!resolvedCompany) {
         const existing = await customerCompanyRepository.findCustomerCompanyByNormalizedName(companyId, normalizedName);
         if (existing) {
-          resolvedCompany = { id: existing.id, name: existing.name, created: false };
+          resolvedCompany = { id: existing.id, name: existing.name ?? "", created: false };
 
           // Fill-only billing policy: update empty billing fields with incoming data
           const billingUpdates: Record<string, string | null> = {};
@@ -682,9 +682,13 @@ export async function executeRow(
             billingPostalCode: row.billingPostalCode ?? null,
             billingCountry: row.billingCountry ?? null,
           });
-          resolvedCompany = { id: created.id, name: created.name, created: true };
+          resolvedCompany = { id: created.id, name: created.name ?? "", created: true };
         }
         companyResolveCache.set(normalizedName, resolvedCompany);
+      }
+
+      if (!resolvedCompany) {
+        throw new Error(`Failed to resolve company for row: ${companyName}`);
       }
 
       result.companyId = resolvedCompany.id;

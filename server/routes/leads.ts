@@ -90,12 +90,22 @@ router.get(
         }).from(clientLocations).where(eq(clientLocations.id, lead.locationId)).limit(1)
       : [null];
 
-    // Customer company name if available
-    let customerCompanyName: string | null = null;
+    // Customer company identity object for canonical display-name resolution
+    let customerCompany: { id: string; name: string | null; firstName: string | null; lastName: string | null; useCompanyAsPrimary: boolean } | null = null;
+    let customerCompanyName: string | null = null; // backward compat
     if (lead.customerCompanyId) {
       const { customerCompanies } = await import("@shared/schema");
-      const [cc] = await db.select({ name: customerCompanies.name }).from(customerCompanies).where(eq(customerCompanies.id, lead.customerCompanyId)).limit(1);
-      customerCompanyName = cc?.name ?? null;
+      const [cc] = await db.select({
+        id: customerCompanies.id,
+        name: customerCompanies.name,
+        firstName: customerCompanies.firstName,
+        lastName: customerCompanies.lastName,
+        useCompanyAsPrimary: customerCompanies.useCompanyAsPrimary,
+      }).from(customerCompanies).where(eq(customerCompanies.id, lead.customerCompanyId)).limit(1);
+      if (cc) {
+        customerCompany = cc;
+        customerCompanyName = cc.name ?? null; // backward compat
+      }
     }
 
     res.json({
@@ -104,7 +114,8 @@ router.get(
       originTechnicianName: originTech?.fullName ?? originTech?.firstName ?? null,
       assignedToName: assignedTo?.fullName ?? assignedTo?.firstName ?? null,
       location: location ?? null,
-      customerCompanyName,
+      customerCompany,
+      customerCompanyName, // backward compat — UI should use customerCompany + getClientDisplayName()
     });
   })
 );

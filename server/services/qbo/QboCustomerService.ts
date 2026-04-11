@@ -216,7 +216,7 @@ export class QboCustomerService {
       // Create as sub-customer of parent
       payload = mapClientToQBOSubCustomer(
         client,
-        parentCompany.name,
+        parentCompany.name ?? "",
         parentCompany.qboCustomerId,
         isUpdate
       );

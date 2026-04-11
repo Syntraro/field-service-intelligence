@@ -4,6 +4,7 @@ import { useRoute, useLocation, Link } from "wouter";
 import { format } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { getInvoiceStatusBadge } from "@/lib/statusBadges";
+import { getClientDisplayName } from "@shared/clientDisplayName";
 import { useToast } from "@/hooks/use-toast";
 import {
   Send, Plus, DollarSign, Trash2,
@@ -1139,7 +1140,7 @@ export default function InvoiceDetailPage() {
   const isPastDue = invoice.isPastDue ?? false;
   const statusInfo = getInvoiceStatusBadge(invoice.status, isPastDue);
   const balanceColor = getBalanceColor(invoice.balance, isPastDue);
-  const clientName = customerCompany?.name || location.companyName || "";
+  const clientName = customerCompany ? getClientDisplayName(customerCompany) : (location.companyName || "");
   const canEdit = invoice.status !== "paid" && invoice.status !== "voided";
   const isDraft = invoice.status === "draft";
 

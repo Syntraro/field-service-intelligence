@@ -62,8 +62,8 @@ export function mapCustomerCompanyToQBO(
   forUpdate: boolean = false
 ): QBOCustomerPayload {
   const payload: QBOCustomerPayload = {
-    DisplayName: company.name,
-    CompanyName: company.legalName || company.name,
+    DisplayName: company.name ?? "",
+    CompanyName: company.legalName || (company.name ?? ""),
     Active: company.isActive,
   };
 

@@ -29,6 +29,10 @@ export interface SearchResult {
   match: string | null; // e.g., "job #", "invoice #", "phone", "email"
   customerCompanyId?: string; // For customerCompany results: customer_companies.id
   tenantCompanyId?: string;   // For customerCompany results: owning company (tenant) ID
+  // Canonical identity fields for customerCompany results
+  firstName?: string | null;
+  lastName?: string | null;
+  useCompanyAsPrimary?: boolean | null;
   /** Internal ranking: 0 = exact, 1 = prefix, 2 = contains. Not exposed to client. */
   _rank?: number;
   /** Internal: matched reference value for ranking. Not exposed to client. */
@@ -233,9 +237,13 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
       cc.id as customer_company_id,
       cc.company_id as tenant_company_id,
       cc.name as title,
+      cc.first_name,
+      cc.last_name,
+      cc.use_company_as_primary,
       COALESCE(cc.email, cc.phone, '') as subtitle,
       CASE
         WHEN cc.name ILIKE $2 THEN 'name'
+        WHEN cc.first_name ILIKE $2 OR cc.last_name ILIKE $2 THEN 'name'
         WHEN cc.email ILIKE $2 THEN 'email'
         WHEN $4 AND regexp_replace(cc.phone, '\\D', '', 'g') ILIKE $3 THEN 'phone'
         ELSE 'name'
@@ -246,6 +254,8 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
       AND cc.is_active = true
       AND (
         cc.name ILIKE $2
+        OR cc.first_name ILIKE $2
+        OR cc.last_name ILIKE $2
         OR cc.email ILIKE $2
         OR ($4 AND regexp_replace(cc.phone, '\\D', '', 'g') ILIKE $3)
       )
@@ -434,6 +444,9 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
     match: r.match,
     customerCompanyId: r.customer_company_id,
     tenantCompanyId: r.tenant_company_id,
+    firstName: r.first_name ?? null,
+    lastName: r.last_name ?? null,
+    useCompanyAsPrimary: r.use_company_as_primary ?? null,
   })));
   results.push(...locationRes.rows.map((r: any) => ({
     type: r.type as SearchResultType,

@@ -44,25 +44,38 @@ export class CustomerCompanyRepository extends BaseRepository {
   // ========================================
 
   /**
-   * List all customer companies for a tenant (lightweight: id + name only).
-   * Used by PM wizard company picker and other selectors.
+   * List all customer companies for a tenant with canonical identity fields.
+   * Used by PM wizard company picker, selectors, and any surface needing getClientDisplayName().
    */
   async listCustomerCompanies(
     companyId: string
-  ): Promise<{ id: string; name: string }[]> {
+  ): Promise<{ id: string; name: string; firstName: string | null; lastName: string | null; useCompanyAsPrimary: boolean }[]> {
     this.assertCompanyId(companyId);
 
-    return db
-      .select({ id: customerCompanies.id, name: customerCompanies.name })
+    const rows = await db
+      .select({
+        id: customerCompanies.id,
+        name: customerCompanies.name,
+        firstName: customerCompanies.firstName,
+        lastName: customerCompanies.lastName,
+        useCompanyAsPrimary: customerCompanies.useCompanyAsPrimary,
+      })
       .from(customerCompanies)
       .where(
         and(
           eq(customerCompanies.companyId, companyId),
           eq(customerCompanies.isActive, true),
-          isNull(customerCompanies.deletedAt) // Exclude soft-deleted companies
+          isNull(customerCompanies.deletedAt)
         )
       )
       .orderBy(customerCompanies.name);
+    return rows.map(r => ({
+      id: r.id,
+      name: r.name ?? "",
+      firstName: r.firstName,
+      lastName: r.lastName,
+      useCompanyAsPrimary: r.useCompanyAsPrimary,
+    }));
   }
 
   /**
@@ -145,7 +158,10 @@ export class CustomerCompanyRepository extends BaseRepository {
   async createCustomerCompany(
     companyId: string,
     data: {
-      name: string;
+      name?: string | null;
+      firstName?: string | null;
+      lastName?: string | null;
+      useCompanyAsPrimary?: boolean;
       phone?: string | null;
       email?: string | null;
       billingStreet?: string | null;
@@ -159,12 +175,18 @@ export class CustomerCompanyRepository extends BaseRepository {
   ): Promise<typeof customerCompanies.$inferSelect> {
     this.assertCompanyId(companyId);
 
+    // Normalize on the primary identity for dedup
+    const matchName = data.name?.trim() || (data.firstName ? `${data.firstName} ${data.lastName || ""}`.trim() : "");
+
     const [company] = await db
       .insert(customerCompanies)
       .values({
         companyId,
-        name: data.name,
-        nameNormalized: normalizeForMatch(data.name),
+        name: data.name ?? null,
+        nameNormalized: normalizeForMatch(matchName),
+        firstName: data.firstName ?? null,
+        lastName: data.lastName ?? null,
+        useCompanyAsPrimary: data.useCompanyAsPrimary !== false,
         phone: data.phone ?? null,
         email: data.email ?? null,
         billingStreet: data.billingStreet ?? null,
@@ -229,7 +251,10 @@ export class CustomerCompanyRepository extends BaseRepository {
     companyId: string,
     customerCompanyId: string,
     data: {
-      name?: string;
+      name?: string | null;
+      firstName?: string | null;
+      lastName?: string | null;
+      useCompanyAsPrimary?: boolean;
       phone?: string | null;
       email?: string | null;
       billingStreet?: string | null;
@@ -238,15 +263,17 @@ export class CustomerCompanyRepository extends BaseRepository {
       billingProvince?: string | null;
       billingPostalCode?: string | null;
       billingCountry?: string | null;
+      nameSource?: string | null;
       isActive?: boolean;
     }
   ): Promise<typeof customerCompanies.$inferSelect | null> {
     this.assertCompanyId(companyId);
 
-    // Recompute nameNormalized when name changes
+    // Recompute nameNormalized when name or identity changes
     const updateData: Record<string, unknown> = { ...data };
-    if (data.name != null) {
-      updateData.nameNormalized = normalizeForMatch(data.name);
+    if (data.name !== undefined || data.firstName !== undefined) {
+      const matchName = (data.name ?? "").trim() || ((data.firstName ?? "") + " " + (data.lastName ?? "")).trim();
+      updateData.nameNormalized = normalizeForMatch(matchName);
     }
 
     const [updated] = await db
@@ -271,7 +298,10 @@ export class CustomerCompanyRepository extends BaseRepository {
   async findOrCreateCustomerCompany(
     companyId: string,
     data: {
-      name: string;
+      name?: string | null;
+      firstName?: string | null;
+      lastName?: string | null;
+      useCompanyAsPrimary?: boolean;
       phone?: string | null;
       email?: string | null;
       billingStreet?: string | null;
@@ -285,9 +315,10 @@ export class CustomerCompanyRepository extends BaseRepository {
   ): Promise<typeof customerCompanies.$inferSelect> {
     this.assertCompanyId(companyId);
 
-    // Use normalized matching for case-insensitive dedup
-    const normalized = normalizeForMatch(data.name);
-    const existing = await this.findCustomerCompanyByNormalizedName(companyId, normalized);
+    // Use normalized matching for case-insensitive dedup (company name or person name)
+    const matchName = data.name?.trim() || (data.firstName ? `${data.firstName} ${data.lastName || ""}`.trim() : "");
+    const normalized = normalizeForMatch(matchName);
+    const existing = normalized ? await this.findCustomerCompanyByNormalizedName(companyId, normalized) : null;
     if (existing) return existing;
 
     return await this.createCustomerCompany(companyId, data);
@@ -775,11 +806,11 @@ export class CustomerCompanyRepository extends BaseRepository {
     // Build name -> companies map for exact matching
     const nameToCompanies = new Map<string, { id: string; name: string }[]>();
     for (const cc of allCustomerCompanies) {
-      const key = cc.name.toLowerCase().trim();
+      const key = (cc.name ?? "").toLowerCase().trim();
       if (!nameToCompanies.has(key)) {
         nameToCompanies.set(key, []);
       }
-      nameToCompanies.get(key)!.push(cc);
+      nameToCompanies.get(key)!.push({ id: cc.id, name: cc.name ?? "" });
     }
 
     // Map orphans with suggested matches (only if exactly one match)

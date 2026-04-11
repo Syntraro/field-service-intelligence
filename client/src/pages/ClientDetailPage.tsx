@@ -57,6 +57,7 @@ import { isJobOverdue } from "@shared/schema";
 import { useJobsFeed } from "@/hooks/useJobsFeed";
 import { getJobStatusDisplay } from "@/components/job/jobUtils";
 import { getInvoiceStatusBadge } from "@/lib/statusBadges";
+import { getClientDisplayName } from "@shared/clientDisplayName";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -346,7 +347,7 @@ export default function ClientDetailPage() {
 
   const parentCompany = overview?.company;
   const companyId = parentCompany?.id;
-  const companyName = parentCompany?.name || client?.companyName || "Client";
+  const companyName = parentCompany ? getClientDisplayName(parentCompany) : (client?.companyName || "Client");
 
   // Locations sorted: primary first, then by creation date
   const locations: Client[] = useMemo(() => {

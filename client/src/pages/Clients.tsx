@@ -13,6 +13,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { ListToolbar } from "@/components/layout/ListToolbar";
 // 2026-03-21: Canonical CreateClientModal replaces navigation to /clients/new
 import { CreateClientModal } from "@/components/CreateClientModal";
+import { getClientDisplayName } from "@shared/clientDisplayName";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
 // Removed FixedSizeList (react-window) — plain rendering eliminates double-scroll UX
 import { apiRequest } from "@/lib/queryClient";
@@ -163,7 +164,12 @@ export default function Clients() {
 
       groups.push({
         companyId,
-        companyName: primary.companyName ?? "",
+        companyName: getClientDisplayName({
+          name: primary.companyName,
+          firstName: (primary as any).parentFirstName,
+          lastName: (primary as any).parentLastName,
+          useCompanyAsPrimary: (primary as any).parentUseCompanyAsPrimary,
+        }),
         primaryContact: primary.contactName || "",
         primaryLocationId: primary.id,
         address,

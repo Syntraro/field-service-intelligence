@@ -6,7 +6,123 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### Client identity — final cleanup pass (2026-04-11)
+
+**Leads feed fix (last architectural gap):**
+- `GET /api/leads/:id` now returns `customerCompany` identity object (id, name, firstName, lastName, useCompanyAsPrimary) alongside backward-compat `customerCompanyName` string
+- LeadDetailPage uses `getClientDisplayName(lead.customerCompany)` as primary display, falls back to legacy fields for older data
+
+**Resolver enforcement:**
+- `shared/clientDisplayName.ts` hardened with enforcement comments: "Single source of truth — do not bypass"
+
+**Dead code removed:**
+- `useEffect` unused import removed from CreateClientModal.tsx
+
+**Files changed:** `server/routes/leads.ts`, `client/src/pages/LeadDetailPage.tsx`, `shared/clientDisplayName.ts`, `client/src/components/CreateClientModal.tsx`, `CHANGELOG.md`
+
+#### Client identity — data-layer enforcement pass (2026-04-11)
+
+**Server feed changes:**
+- `GET /api/clients` now enriches each location row with `parentFirstName`, `parentLastName`, `parentUseCompanyAsPrimary` from the parent customer company
+- `GET /api/customer-companies` (list) now returns `firstName`, `lastName`, `useCompanyAsPrimary` alongside `id` and `name`
+- `GET /api/search` customer company results now include `first_name`, `last_name`, `use_company_as_primary` and search against firstName/lastName
+- SearchResult type extended with identity fields
+
+**UI surfaces migrated to canonical resolver:**
+- Clients.tsx list: `getClientDisplayName()` for company group name
+- PMWizardPage company selector: `getClientDisplayName()` for option labels
+- UniversalSearch: `getClientDisplayName()` for customerCompany result titles
+
+**Files changed:** `server/routes/clients.ts`, `server/storage/customerCompanies.ts`, `server/storage/search.ts`, `client/src/pages/Clients.tsx`, `client/src/pages/PMWizardPage.tsx`, `client/src/components/UniversalSearch.tsx`
+
+#### Client identity — final enforcement pass (2026-04-11)
+
+**Checkbox always visible:**
+- Removed conditional hiding of "Use company name as primary client name" checkbox in both Create and Edit modals
+- Checkbox now always shown regardless of which identity fields are filled
+- All identity fields (first name, last name, company name) always visible in forms
+
+**Auto-default enforcement on submit:**
+- Company only (no firstName) → `useCompanyAsPrimary = true` (forced)
+- Person only (no companyName) → `useCompanyAsPrimary = false` (forced)
+- Both present → user's checkbox value preserved
+
+**Global display sweep — canonical resolver enforcement:**
+- QuoteDetailPage: `getClientDisplayName(customerCompany)`
+- AccountsReceivablePage: `getClientDisplayName(invoice.customerCompany)`
+- Previously done: ClientDetailPage, JobDetailPage, InvoiceDetailPage, JobHeaderCard
+
+**Surfaces not yet migrated (feed-level data):**
+- Clients.tsx list (uses `group.companyName` from feed — needs server to return identity fields)
+- Locations.tsx list (uses `loc.companyName` from location record)
+- LeadDetailPage (uses `lead.customerCompanyName` pre-resolved by server)
+- PMWizardPage (uses `company.name` from selector data)
+These require server feed changes to return identity fields — tracked for future pass.
+
+**Files changed:** `CreateClientModal.tsx`, `EditCompanyDialog.tsx`, `QuoteDetailPage.tsx`, `AccountsReceivablePage.tsx`, `CHANGELOG.md`
+
+#### Client identity — UI hardening pass (2026-04-10)
+
+**Create Client modal cleanup:**
+- Removed redundant "Primary Contact" first/last name fields — client identity person IS the default primary contact
+- Phone/email remain as contact info fields
+- Identity person (firstName/lastName) auto-wired into canonical contact creation path
+
+**Edit Client modal — full identity support:**
+- Added firstName, lastName, useCompanyAsPrimary fields (was company-name only)
+- Checkbox appears when both person + company exist
+- Validation matches create: firstName OR companyName required
+
+**PATCH endpoint updated:**
+- `PATCH /api/customer-companies/:companyId` now accepts firstName, lastName, useCompanyAsPrimary
+- Server validates: if both name fields explicitly cleared, rejects with 400
+- Syncs nameSource for backward compat
+
+**Canonical display-name enforcement:**
+- ClientDetailPage, JobDetailPage, InvoiceDetailPage, JobHeaderCard now use `getClientDisplayName()`
+- Replaces ad-hoc `parentCompany?.name || location.companyName || "Client"` patterns
+
+**Files changed:** `CreateClientModal.tsx`, `EditCompanyDialog.tsx`, `server/routes/customer-companies.ts`, `server/storage/customerCompanies.ts`, `ClientDetailPage.tsx`, `JobDetailPage.tsx`, `InvoiceDetailPage.tsx`, `JobHeaderCard.tsx`
+
+#### Client identity model — residential/commercial/mixed support (2026-04-10)
+
+**Schema changes (migration: `2026_04_10_client_identity_fields.sql`):**
+- `customer_companies.name` now nullable (was NOT NULL) — residential clients may not have a company
+- Added `first_name`, `last_name` columns (both nullable)
+- Added `use_company_as_primary` boolean (default true)
+- Existing records unaffected — all have company names, default true is correct
+
+**Canonical display-name resolver (`shared/clientDisplayName.ts`):**
+- `getClientDisplayName()` — single source of truth for client identity display
+- Rules: useCompanyAsPrimary + company name → company; else firstName → person name; else fallback
+- Available to both client and server
+
+**Create Client modal restructured:**
+- Top section: First Name + Last Name + Company Name (no field hardcoded as required)
+- Validation: at least one of firstName or companyName must be provided
+- "Use company name as primary client name" checkbox appears when both exist
+- Server validation matches: rejects if neither firstName nor companyName provided
+
+**~28 type fixes across server files:**
+- All references to `customerCompany.name` handle nullable with `?? ""`
+
+**Files changed:** `shared/schema.ts`, `shared/clientDisplayName.ts` (new), `client/src/components/CreateClientModal.tsx`, `server/routes/clients.ts`, `server/storage/customerCompanies.ts`, plus ~10 server files for nullable type fixes
+
 ### Fixed
+
+#### Tech app task card UX cleanup (2026-04-10)
+
+**Task card in Today view:**
+- Removed inline Start/Stop/Done buttons from task rows
+- Task row is now the primary tap target — opens TaskDetailPage (canonical detail surface)
+- Added chevron-right indicator matching visit card pattern
+- Completed tasks: opacity-60 + line-through on title + "Done" badge
+- Removed orphaned state (completingTaskId, timerTaskId, timerConflict) and unused imports
+- All task actions (start/stop/complete) live exclusively on TaskDetailPage
+
+**Files changed:** `client/src/tech-app/pages/TodayPage.tsx`
 
 #### Client Detail — ActiveWorkSection consolidation (2026-04-10)
 

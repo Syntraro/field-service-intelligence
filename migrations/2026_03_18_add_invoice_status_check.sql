@@ -8,6 +8,14 @@
 --
 -- Run: psql "$DATABASE_URL" -f migrations/2026_03_18_add_invoice_status_check.sql
 
-ALTER TABLE invoices
-  ADD CONSTRAINT invoices_status_check
-  CHECK (status IN ('draft', 'awaiting_payment', 'sent', 'partial_paid', 'paid', 'voided'));
+-- Idempotent: skip if constraint already exists (prevents 42710 on replay)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'invoices_status_check'
+  ) THEN
+    ALTER TABLE invoices
+      ADD CONSTRAINT invoices_status_check
+      CHECK (status IN ('draft', 'awaiting_payment', 'sent', 'partial_paid', 'paid', 'voided'));
+  END IF;
+END $$;
