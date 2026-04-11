@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### Migration replay-safety hardening (2026-04-11)
+
+**Root cause:** `2026_03_28_add_leads.sql` used bare `CREATE INDEX` (no `IF NOT EXISTS`), causing Render deploy to fail with `42P07: relation "idx_leads_company_status" already exists` when the migration was replayed against a DB where indexes already existed.
+
+**Files hardened (6 migrations, 22 statements total):**
+- `2026_03_25_add_visit_id_to_time_entries.sql` — ADD COLUMN + CREATE INDEX guarded
+- `2026_03_27_add_visit_equipment_ids.sql` — ADD COLUMN guarded
+- `2026_03_28_add_leads.sql` — 3x CREATE INDEX guarded (direct fix for deploy failure)
+- `2026_03_28_refactor_contacts_identity.sql` — 5x CREATE INDEX guarded, data migration + RENAME wrapped in DO $$ IF EXISTS guard
+- `2026_04_10_reference_fields.sql` — 2x CREATE TABLE + 5x CREATE INDEX guarded
+- `2026_04_10_task_labor_unification.sql` — 2x ADD COLUMN + 1x CREATE INDEX guarded
+
+**No schema changes.** Only replay guards added (`IF NOT EXISTS`, `IF EXISTS` blocks). Existing schema preserved exactly.
+
 ### Added
 
 #### Client identity — final cleanup pass (2026-04-11)

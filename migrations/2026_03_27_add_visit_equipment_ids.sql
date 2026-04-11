@@ -4,6 +4,6 @@
 -- Run: npm run db:migrate:one -- migrations/2026_03_27_add_visit_equipment_ids.sql
 
 ALTER TABLE job_visits
-  ADD COLUMN equipment_ids VARCHAR(36)[] DEFAULT '{}';
+  ADD COLUMN IF NOT EXISTS equipment_ids VARCHAR(36)[] DEFAULT '{}';
 
 COMMENT ON COLUMN job_visits.equipment_ids IS 'Array of location_equipment IDs selected for this visit';

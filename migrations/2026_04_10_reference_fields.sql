@@ -11,7 +11,7 @@
 -- TABLE 1: reference_field_definitions
 -- ============================================================================
 
-CREATE TABLE reference_field_definitions (
+CREATE TABLE IF NOT EXISTS reference_field_definitions (
   id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id VARCHAR NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
 
@@ -41,14 +41,14 @@ CREATE TABLE reference_field_definitions (
 );
 
 -- Unique key per tenant
-CREATE UNIQUE INDEX ref_field_defs_company_key_uq
+CREATE UNIQUE INDEX IF NOT EXISTS ref_field_defs_company_key_uq
   ON reference_field_definitions(company_id, key);
 
 -- ============================================================================
 -- TABLE 2: reference_field_values
 -- ============================================================================
 
-CREATE TABLE reference_field_values (
+CREATE TABLE IF NOT EXISTS reference_field_values (
   id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id VARCHAR NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
 
@@ -77,20 +77,20 @@ CREATE TABLE reference_field_values (
 );
 
 -- One value per field per entity (upsert target)
-CREATE UNIQUE INDEX ref_field_vals_field_entity_uq
+CREATE UNIQUE INDEX IF NOT EXISTS ref_field_vals_field_entity_uq
   ON reference_field_values(company_id, field_definition_id, entity_type, entity_id);
 
 -- Lookup: all values for a specific entity
-CREATE INDEX ref_field_vals_entity_lookup_idx
+CREATE INDEX IF NOT EXISTS ref_field_vals_entity_lookup_idx
   ON reference_field_values(company_id, entity_type, entity_id);
 
 -- Lookup: all values for a specific definition
-CREATE INDEX ref_field_vals_definition_idx
+CREATE INDEX IF NOT EXISTS ref_field_vals_definition_idx
   ON reference_field_values(company_id, field_definition_id);
 
 -- Text search: GIN trigram index on text_value for ILIKE search
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
-CREATE INDEX ref_field_vals_text_search_gin
+CREATE INDEX IF NOT EXISTS ref_field_vals_text_search_gin
   ON reference_field_values USING gin (text_value gin_trgm_ops)
   WHERE text_value IS NOT NULL;

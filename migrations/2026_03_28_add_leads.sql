@@ -29,9 +29,9 @@ CREATE TABLE IF NOT EXISTS leads (
 );
 
 -- Indexes for leads
-CREATE INDEX idx_leads_company_status ON leads(company_id, status) WHERE is_active = true;
-CREATE INDEX idx_leads_origin_tech ON leads(origin_technician_id) WHERE origin_technician_id IS NOT NULL;
-CREATE INDEX idx_leads_assigned ON leads(assigned_to_user_id) WHERE assigned_to_user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_leads_company_status ON leads(company_id, status) WHERE is_active = true;
+CREATE INDEX IF NOT EXISTS idx_leads_origin_tech ON leads(origin_technician_id) WHERE origin_technician_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_leads_assigned ON leads(assigned_to_user_id) WHERE assigned_to_user_id IS NOT NULL;
 
 -- 2. Add lead_id to quotes
 ALTER TABLE quotes ADD COLUMN IF NOT EXISTS lead_id UUID REFERENCES leads(id) ON DELETE SET NULL;

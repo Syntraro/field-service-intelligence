@@ -12,13 +12,13 @@
 
 -- Step 1: Add task_id to time_entries
 ALTER TABLE time_entries
-  ADD COLUMN task_id VARCHAR REFERENCES tasks(id) ON DELETE SET NULL;
+  ADD COLUMN IF NOT EXISTS task_id VARCHAR REFERENCES tasks(id) ON DELETE SET NULL;
 
-CREATE INDEX time_entries_task_idx ON time_entries(company_id, task_id);
+CREATE INDEX IF NOT EXISTS time_entries_task_idx ON time_entries(company_id, task_id);
 
 -- Step 2: Add is_billable to tasks (default false — server applies jobId-based default on create)
 ALTER TABLE tasks
-  ADD COLUMN is_billable BOOLEAN NOT NULL DEFAULT false;
+  ADD COLUMN IF NOT EXISTS is_billable BOOLEAN NOT NULL DEFAULT false;
 
 -- Step 3: Drop legacy timing columns from tasks
 ALTER TABLE tasks
