@@ -3,6 +3,7 @@ import { Suspense, lazy } from "react";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
+import { PwaUpdatePrompt } from "@/components/PwaUpdatePrompt";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
@@ -726,6 +727,7 @@ function App() {
           <TooltipProvider>
             <Toaster />
             <SessionExpiredDialog />
+            <PwaUpdatePrompt />
             <AppContent />
           </TooltipProvider>
         </ActivityProvider>

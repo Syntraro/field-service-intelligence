@@ -4,7 +4,9 @@
 -- Rule: type='task_work' MUST have a non-null task_id.
 -- This prevents orphaned task_work entries that cannot be traced back to a task.
 --
--- Run: npm run db:migrate:one -- migrations/2026_04_10_task_labor_hardening.sql
+-- Run: npm run db:migrate:one -- migrations/2026_04_10_task_labor_unification_hardening.sql
+-- Renamed from task_labor_hardening → task_labor_unification_hardening to fix lexical sort order
+-- (must run after 2026_04_10_task_labor_unification.sql which adds the task_id column)
 
 DO $$
 BEGIN

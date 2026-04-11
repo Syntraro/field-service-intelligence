@@ -8,6 +8,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### Migration dependency ordering fix (2026-04-11)
+
+**Root cause:** Lexicographic filename sort caused dependent migrations to run before their prerequisites.
+- `ref_fields_text_only` (modifies `reference_field_values`) sorted before `reference_fields` (creates the table) because `_` < `e` in ASCII
+- `task_labor_hardening` (adds constraint on `task_id`) sorted before `task_labor_unification` (creates `task_id` column) because `h` < `u`
+
+**Fix:** Renamed files to correct sort order:
+- `2026_04_10_ref_fields_text_only.sql` → `2026_04_10_reference_fields_text_only.sql`
+- `2026_04_10_task_labor_hardening.sql` → `2026_04_10_task_labor_unification_hardening.sql`
+
+Both migrations are fully idempotent — safe for existing DBs that already applied the old-named files.
+
+### Added
+
+#### PWA Phase 1 — Installability + Shell Caching + Update Flow (2026-04-11)
+
+**Installability:**
+- Added `vite-plugin-pwa` with manifest generation (`name: "Syntraro Field Service"`, `start_url: "/tech/today"`, `display: "standalone"`)
+- Generated PWA icons: 192x192, 512x512, 512x512 maskable, apple-touch-icon (180x180)
+- Added meta tags: `theme-color`, `apple-mobile-web-app-capable`, `apple-mobile-web-app-status-bar-style`, `apple-touch-icon`
+
+**Service worker:**
+- Workbox `generateSW` mode — precaches all built JS/CSS/HTML/font/icon assets (31 entries)
+- Navigation fallback to cached `index.html` for SPA routing while offline
+- API routes (`/api/*`) excluded from all caching via `NetworkOnly` handler + `navigateFallbackDenylist`
+- Google Fonts cached via `CacheFirst` strategy (1-year TTL)
+
+**Update flow:**
+- `PwaUpdatePrompt` component shows banner when new SW version is waiting
+- User can tap "Update" to activate new SW and reload
+- Periodic update check every 60 minutes
+
+**Offline fallback:**
+- `offline.html` static page precached for graceful offline experience
+- SPA shell loads from precache when offline — API errors handled by React
+
+**No API caching. No mutation queueing. No new data flows.**
+
+**Files added:** `client/src/components/PwaUpdatePrompt.tsx`, `client/src/pwa.d.ts`, `client/public/icon-192.png`, `client/public/icon-512.png`, `client/public/apple-touch-icon.png`, `client/public/offline.html`
+**Files changed:** `vite.config.ts`, `client/index.html`, `client/src/App.tsx`, `package.json`
+
+### Fixed
+
 #### Migration replay-safety hardening (2026-04-11)
 
 **Root cause:** `2026_03_28_add_leads.sql` used bare `CREATE INDEX` (no `IF NOT EXISTS`), causing Render deploy to fail with `42P07: relation "idx_leads_company_status" already exists` when the migration was replayed against a DB where indexes already existed.

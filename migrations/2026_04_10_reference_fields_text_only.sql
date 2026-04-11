@@ -8,7 +8,9 @@
 --   2. Drop number_value and date_value columns from reference_field_values
 --   3. Replace type CHECK constraint to allow only 'text'
 --
--- Run: npm run db:migrate:one -- migrations/2026_04_10_ref_fields_text_only.sql
+-- Run: npm run db:migrate:one -- migrations/2026_04_10_reference_fields_text_only.sql
+-- Renamed from ref_fields_text_only → reference_fields_text_only to fix lexical sort order
+-- (must run after 2026_04_10_reference_fields.sql which creates the tables)
 
 -- Step 1: Drop the single-value CHECK constraint (references number_value, date_value)
 ALTER TABLE reference_field_values
