@@ -8,13 +8,13 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose, DialogDescription } from "@/components/ui/dialog";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Trash2, Loader2, Wrench, Info, ChevronDown, ChevronRight } from "lucide-react";
+import { Trash2, Loader2, Wrench, Info, Plus, ChevronDown, ChevronRight } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { LocationEquipment, JobEquipment } from "@shared/schema";
-import { format } from "date-fns";
 import EquipmentCatalogItemsSection from "./EquipmentCatalogItemsSection";
 import { EquipmentDetailModal } from "./EquipmentDetailModal";
+import { AddEquipmentDialog } from "./AddEquipmentDialog";
 
 interface JobEquipmentWithDetails extends JobEquipment {
   equipment: LocationEquipment;
@@ -66,6 +66,7 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
   const [selectedEquipmentId, setSelectedEquipmentId] = useState<string>("");
   const [notes, setNotes] = useState("");
   const [detailEquipment, setDetailEquipment] = useState<LocationEquipment | null>(null);
+  const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
 
   const { data: jobEquipment = [], isLoading: jobEquipmentLoading } = useQuery<JobEquipmentWithDetails[]>({
     queryKey: ["/api/jobs", jobId, "equipment"],
@@ -166,7 +167,7 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
   }
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden" data-testid="card-job-equipment">
+    <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="card-job-equipment">
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
         <CollapsibleTrigger asChild>
           <button className="w-full flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] hover:bg-slate-100 transition-colors" data-testid="trigger-equipment">
@@ -176,17 +177,19 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
             </span>
             <div className="flex items-center gap-2">
               {!hideAddButton && (
-                <button
-                  className="text-xs text-[#76B054] hover:text-[#5F9442] font-medium disabled:opacity-40 disabled:pointer-events-none"
-                  disabled={!locationId || availableEquipment.length === 0}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6"
+                  disabled={!locationId}
                   onClick={(e) => {
                     e.stopPropagation();
                     setIsAddDialogOpen(true);
                   }}
                   data-testid="button-add-job-equipment"
                 >
-                  + Add Equipment
-                </button>
+                  <Plus className="h-3.5 w-3.5" />
+                </Button>
               )}
               {isOpen ? <ChevronDown className="h-4 w-4 text-slate-400 shrink-0" /> : <ChevronRight className="h-4 w-4 text-slate-400 shrink-0" />}
             </div>
@@ -203,13 +206,7 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
               <div className="text-center py-4 text-muted-foreground">
                 <Wrench className="h-6 w-6 mx-auto mb-2 opacity-50" />
                 <p className="text-xs">No equipment linked to this job.</p>
-                {availableEquipment.length === 0 && locationEquipment.length === 0 ? (
-                  <p className="text-xs mt-1">No equipment registered at this location yet.</p>
-                ) : availableEquipment.length === 0 ? (
-                  <p className="text-xs mt-1">All location equipment is already linked.</p>
-                ) : (
-                  <p className="text-xs mt-1">Click "+ Add Equipment" to link equipment.</p>
-                )}
+                <p className="text-xs mt-1">Use the + button to link or create equipment.</p>
               </div>
             ) : (
               <div className="space-y-2">
@@ -266,36 +263,57 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
           <DialogHeader>
             <DialogTitle>Add Equipment to Job</DialogTitle>
             <DialogDescription>
-              Select equipment from this location to link to this job for service tracking.
+              Select existing equipment or create new equipment at this location.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Equipment</label>
-              <Select
-                value={selectedEquipmentId}
-                onValueChange={setSelectedEquipmentId}
+            {availableEquipment.length > 0 ? (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Select Existing Equipment</label>
+                <Select
+                  value={selectedEquipmentId}
+                  onValueChange={setSelectedEquipmentId}
+                >
+                  <SelectTrigger data-testid="select-job-equipment">
+                    <SelectValue placeholder="Select equipment..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableEquipment.map(eq => (
+                      <SelectItem key={eq.id} value={eq.id}>
+                        {eq.name} ({getEquipmentTypeLabel(eq.equipmentType)})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {locationEquipment.length === 0
+                  ? "No equipment registered at this location."
+                  : "All location equipment is already linked to this job."}
+              </p>
+            )}
+            {availableEquipment.length > 0 && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Notes (optional)</label>
+                <Textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="Service notes for this equipment..."
+                  data-testid="input-job-equipment-notes"
+                />
+              </div>
+            )}
+            {/* Create new equipment — always visible so user can add to location */}
+            <div className="border-t pt-3">
+              <Button
+                variant="outline" size="sm" className="w-full text-xs"
+                onClick={() => setIsCreateDialogOpen(true)}
+                data-testid="button-create-new-equipment"
               >
-                <SelectTrigger data-testid="select-job-equipment">
-                  <SelectValue placeholder="Select equipment..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableEquipment.map(eq => (
-                    <SelectItem key={eq.id} value={eq.id}>
-                      {eq.name} ({getEquipmentTypeLabel(eq.equipmentType)})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Notes (optional)</label>
-              <Textarea
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Service notes for this equipment..."
-                data-testid="input-job-equipment-notes"
-              />
+                <Plus className="h-3.5 w-3.5 mr-1" />
+                Create New Equipment
+              </Button>
             </div>
           </div>
           <DialogFooter>
@@ -315,6 +333,19 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Canonical equipment creation dialog — creates at location level */}
+      {locationId && (
+        <AddEquipmentDialog
+          locationId={locationId}
+          open={isCreateDialogOpen}
+          onOpenChange={setIsCreateDialogOpen}
+          onCreated={(created) => {
+            // Auto-select newly created equipment in the link dialog
+            setSelectedEquipmentId(created.id);
+          }}
+        />
+      )}
     </Collapsible>
 
       {/* Equipment Detail Modal */}

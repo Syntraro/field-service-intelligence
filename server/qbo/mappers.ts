@@ -114,7 +114,7 @@ export function mapClientToQBOSubCustomer(
 
   const payload: QBOCustomerPayload = {
     DisplayName: displayName,
-    CompanyName: client.companyName,
+    CompanyName: client.companyName ?? undefined,
     Active: !client.inactive,
     Job: true, // Marks this as a sub-customer in QBO
     ParentRef: { value: parentQboCustomerId },
@@ -166,13 +166,14 @@ export function mapStandaloneClientToQBO(
   client: Client,
   forUpdate: boolean = false
 ): QBOCustomerPayload {
-  const displayName = client.location 
-    ? `${client.companyName}: ${client.location}`
-    : client.companyName;
+  const companyLabel = client.companyName ?? "";
+  const displayName = client.location
+    ? `${companyLabel}: ${client.location}`
+    : companyLabel;
 
   const payload: QBOCustomerPayload = {
     DisplayName: displayName,
-    CompanyName: client.companyName,
+    CompanyName: client.companyName ?? undefined,
     Active: !client.inactive,
   };
 

@@ -103,7 +103,7 @@ export function CreateLeadPage() {
     <MobileShell showNav>
       <div className="bg-[#0f1a2e] px-3 pt-2 pb-2">
         <div className="flex items-center gap-2">
-          <button onClick={() => setLocation("/tech/today")} className="p-1 -ml-1 rounded-lg hover:bg-white/10">
+          <button onClick={() => setLocation("/tech/today")} className="p-1 -ml-1 rounded-md hover:bg-white/10">
             <ArrowLeft className="h-4 w-4 text-white" />
           </button>
           <h1 className="text-base font-bold text-white">Create Lead</h1>
@@ -112,20 +112,20 @@ export function CreateLeadPage() {
 
       <div className="px-3 py-3 pb-28 space-y-3">
         {success && (
-          <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3 flex items-center gap-2">
+          <div className="rounded-md bg-emerald-50 border border-emerald-200 p-3 flex items-center gap-2">
             <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
             <p className="text-xs font-medium text-emerald-700">{success}</p>
           </div>
         )}
         {error && (
-          <div className="rounded-lg bg-red-50 border border-red-200 p-3">
+          <div className="rounded-md bg-red-50 border border-red-200 p-3">
             <p className="text-xs text-red-600">{error}</p>
           </div>
         )}
 
         {/* Context indicator when prefilled */}
         {hasPrefill && prefillName && (
-          <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 space-y-1">
+          <div className="rounded-md bg-amber-50 border border-amber-200 p-3 space-y-1">
             <p className="text-xs font-semibold text-amber-700 flex items-center gap-1">
               <MapPin className="h-3 w-3" />Creating lead for {prefillName}
             </p>
@@ -141,7 +141,7 @@ export function CreateLeadPage() {
         <div>
           <label className="text-xs font-semibold text-slate-500 mb-1 block">Client / Location *</label>
           {locationId ? (
-            <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 flex items-center justify-between">
+            <div className="rounded-md border border-emerald-200 bg-emerald-50/50 p-3 flex items-center justify-between">
               <p className="text-sm font-medium text-slate-800">{locationLabel || "Loading..."}</p>
               {!hasPrefill && (
                 <button onClick={() => { setLocationId(""); setLocationSearch(""); }}
@@ -152,9 +152,9 @@ export function CreateLeadPage() {
             <>
               <input value={locationSearch} onChange={e => setLocationSearch(e.target.value)}
                 placeholder="Search locations..."
-                className="w-full h-9 pl-3 pr-3 text-sm border border-slate-200 rounded-lg" />
+                className="w-full h-9 pl-3 pr-3 text-sm border border-slate-200 rounded-md" />
               {(locationSearch?.length ?? 0) >= 2 && (locations ?? []).length > 0 && (
-                <div className="mt-1 border border-slate-200 rounded-lg overflow-hidden max-h-40 overflow-y-auto">
+                <div className="mt-1 border border-slate-200 rounded-md overflow-hidden max-h-40 overflow-y-auto">
                   {(locations ?? []).map(loc => (
                     <button key={loc.id} onClick={() => { setLocationId(loc.id); setLocationSearch(""); }}
                       className="w-full text-left px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-0">
@@ -173,7 +173,7 @@ export function CreateLeadPage() {
           <label className="text-xs font-semibold text-slate-500 mb-1 block">What did you find? *</label>
           <input value={title} onChange={e => setTitle(e.target.value)}
             placeholder="e.g. Compressor needs replacement, water heater leaking..."
-            className="w-full h-9 px-3 text-sm border border-slate-200 rounded-lg" />
+            className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
         </div>
 
         {/* Description */}
@@ -181,12 +181,12 @@ export function CreateLeadPage() {
           <label className="text-xs font-semibold text-slate-500 mb-1 block">Details</label>
           <textarea ref={descRef} value={description} onChange={e => setDescription(e.target.value)}
             placeholder="Additional details for the office..."
-            className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 resize-none h-24" />
+            className="w-full text-sm border border-slate-200 rounded-md px-3 py-2 resize-none h-24" />
         </div>
 
         {/* Submit */}
         <button onClick={handleSubmit} disabled={!canSubmit}
-          className="w-full h-11 rounded-xl bg-emerald-600 text-white text-base font-bold flex items-center justify-center gap-2 disabled:opacity-60 active:scale-[0.98]">
+          className="w-full h-11 rounded-md bg-emerald-600 text-white text-base font-bold flex items-center justify-center gap-2 disabled:opacity-60 active:scale-[0.98]">
           {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
           Submit Lead
         </button>

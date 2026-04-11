@@ -226,7 +226,7 @@ export default function LeadDetailPage() {
           <div className="space-y-3 min-w-0 min-h-0 overflow-y-auto lg:pr-1">
 
             {/* Lead Summary Card (compact) */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
               <div className="px-4 py-3">
                 <div className="flex items-center gap-2 mb-1">
                   <button onClick={() => setLocation("/leads")} className="text-[11px] text-slate-400 hover:text-slate-600 flex items-center gap-1">
@@ -259,7 +259,7 @@ export default function LeadDetailPage() {
             </div>
 
             {/* Description */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
               <div className="px-5 py-3 bg-[#f8fafc] border-b border-slate-100 flex items-center justify-between">
                 <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
                   <Briefcase className="h-4 w-4 text-[#64748b]" />Description
@@ -313,7 +313,7 @@ export default function LeadDetailPage() {
             </div>
 
             {/* Notes */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
               <div className="px-5 py-3 bg-[#f8fafc] border-b border-slate-100 flex items-center justify-between">
                 <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
                   <StickyNote className="h-4 w-4 text-[#64748b]" />Notes
@@ -351,13 +351,10 @@ export default function LeadDetailPage() {
                       const isConfirmingDelete = noteDeleteConfirmId === n.id;
                       const canEdit = !isTerminal && currentUserId === n.userId;
                       return (
-                        <div key={n.id} className="border border-slate-100 rounded-lg px-3 py-2.5">
+                        <div key={n.id} className="border border-slate-100 rounded-md px-3 py-2.5">
                           <div className="flex items-center justify-between mb-1">
                             <span className="text-xs font-semibold text-slate-500">
                               {n.author}
-                              {n.updatedAt && n.updatedAt !== n.createdAt && (
-                                <span className="ml-1 text-[10px] text-slate-400 font-normal">(edited)</span>
-                              )}
                             </span>
                             <div className="flex items-center gap-2">
                               <span className="text-[10px] text-slate-400">{n.createdAt ? fmtDateTime(n.createdAt) : ""}</span>
@@ -454,7 +451,7 @@ export default function LeadDetailPage() {
           <aside className="space-y-3 min-h-0 overflow-y-auto">
 
             {/* Details / Metadata — top of rail for immediate context */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
               <div className="px-4 py-2 bg-[#f8fafc] border-b border-slate-100">
                 <span className="text-sm font-semibold text-[#0f172a]">Details</span>
               </div>
@@ -472,7 +469,7 @@ export default function LeadDetailPage() {
             </div>
 
             {/* Actions + Quote — single card */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
               <div className="px-4 py-2 bg-[#f8fafc] border-b border-slate-100">
                 <span className="text-sm font-semibold text-[#0f172a]">Actions</span>
               </div>

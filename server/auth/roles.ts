@@ -27,6 +27,10 @@ export const OWNER_ONLY = ["owner"] as const;
 /** Roles that can perform field work (task check-in/out, job completion) */
 export const TECH_ROLES = ["owner", "admin", "manager", "dispatcher", "technician"] as const;
 
+// 2026-04-10: FIELD_TECHNICIAN_ROLES removed. The tech task route now uses
+// requireSchedulable (same as every other tech route) instead of a role-restricted
+// gate. Self-assignment is enforced for ALL mobile users regardless of role.
+
 /** All valid roles in the system */
 export const ALL_ROLES = ["owner", "admin", "manager", "dispatcher", "technician"] as const;
 

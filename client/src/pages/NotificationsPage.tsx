@@ -194,7 +194,7 @@ function NotificationItem({
   return (
     <div
       className={cn(
-        "border rounded-lg p-4 transition-colors",
+        "border rounded-md p-4 transition-colors",
         isUnread && "bg-muted/30 border-primary/20"
       )}
     >
@@ -548,7 +548,7 @@ export default function NotificationsPage() {
             notifications.some((n) =>
               TIME_ALERT_TYPES.slice(0, 4).includes(n.type)
             ) && (
-              <div className="mt-6 p-4 rounded-lg bg-amber-50 border border-amber-200 dark:bg-amber-950 dark:border-amber-800">
+              <div className="mt-6 p-4 rounded-md bg-amber-50 border border-amber-200 dark:bg-amber-950 dark:border-amber-800">
                 <div className="flex items-start gap-3">
                   <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
                   <div>

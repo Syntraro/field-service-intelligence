@@ -24,7 +24,7 @@ export default function IntegrationsPage() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-green-100 dark:bg-green-900">
+                <div className="p-2 rounded-md bg-green-100 dark:bg-green-900">
                   <Cloud className="h-6 w-6 text-green-600 dark:text-green-400" />
                 </div>
                 <div>
@@ -44,7 +44,7 @@ export default function IntegrationsPage() {
       <Card className="opacity-60">
         <CardHeader>
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-muted">
+            <div className="p-2 rounded-md bg-muted">
               <Cloud className="h-6 w-6 text-muted-foreground" />
             </div>
             <div>

@@ -16,10 +16,12 @@ import { TodayPage } from "../pages/TodayPage";
 import { VisitDetailPage } from "../pages/VisitDetailPage";
 import { CreateJobPage } from "../pages/CreateJobPage";
 import { CreateClientPage } from "../pages/CreateClientPage";
+import { CreateTaskPage } from "../pages/CreateTaskPage";
 import TimesheetPage from "../pages/TimesheetPage";
 import { SearchPage } from "../pages/SearchPage";
 import { CreateLeadPage } from "../pages/CreateLeadPage";
 import { LocationDetailPage } from "../pages/LocationDetailPage";
+import { TaskDetailPage } from "../pages/TaskDetailPage";
 import { useTechRealtimeSync } from "../hooks/useTechRealtimeSync";
 
 /** Loading spinner shown during session restore */
@@ -99,8 +101,16 @@ export default function TechApp() {
         <CreateLeadPage />
       </Route>
 
+      <Route path="/tech/create-task">
+        <CreateTaskPage />
+      </Route>
+
       <Route path="/tech/location/:id">
         {(params) => <LocationDetailPage />}
+      </Route>
+
+      <Route path="/tech/tasks/:id">
+        {(params) => <TaskDetailPage taskId={params.id} />}
       </Route>
 
       <Route path="/tech/visit/:id">

@@ -39,7 +39,7 @@ function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg }: {
   icon: React.ElementType; iconColor: string; iconBg: string;
 }) {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-5 py-4">
+    <div className="bg-white rounded-md border border-slate-200 shadow-sm px-5 py-4">
       <div className="flex items-center gap-3">
         <div className={`p-1.5 rounded-md ${iconBg}`}>
           <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
@@ -119,7 +119,7 @@ export default function LeadsPage() {
             <h1 className="text-2xl font-semibold text-slate-900">Leads</h1>
             <p className="text-sm text-slate-500 mt-0.5">Sales pipeline overview with full lead list.</p>
           </div>
-          <Button size="sm" className="gap-1.5 h-9 rounded-lg" onClick={() => setCreateModalOpen(true)} data-testid="button-new-lead">
+          <Button size="sm" className="gap-1.5 h-9 rounded-md" onClick={() => setCreateModalOpen(true)} data-testid="button-new-lead">
             <Plus className="h-4 w-4" />
             New Lead
           </Button>
@@ -141,7 +141,7 @@ export default function LeadsPage() {
               placeholder="Search leads..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 h-9 rounded-lg border-slate-200 bg-white"
+              className="pl-9 h-9 rounded-md border-slate-200 bg-white"
               data-testid="input-search-leads"
             />
           </div>
@@ -167,7 +167,7 @@ export default function LeadsPage() {
         </div>
 
         {/* Table */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden" data-testid="table-leads">
+        <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="table-leads">
           {isLoading ? (
             <div className="text-center py-8 text-slate-500">Loading leads...</div>
           ) : filteredLeads.length === 0 ? (

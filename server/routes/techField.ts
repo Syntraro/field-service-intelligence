@@ -20,6 +20,9 @@ import { db } from "../db";
 import { timeEntries, jobs, clients, jobParts, items, jobEquipment, jobVisits, locationEquipment } from "@shared/schema";
 import { jobNotesRepository } from "../storage/jobNotes";
 import { jobRepository } from "../storage/jobs";
+import { createTechTask, taskRepository } from "../storage/tasks";
+import { createTaskSchema, TECH_ALLOWED_TASK_TYPES } from "../lib/taskSchemas";
+import { startTaskTimer, stopTaskTimer } from "../services/taskTimerService";
 import { and, eq, sql, gte, lt, asc, isNull } from "drizzle-orm";
 import { timeTrackingRepository } from "../storage/timeTracking";
 import { jobVisitsRepository } from "../storage/jobVisits";
@@ -256,6 +259,7 @@ router.post(
     try {
       const { timeEntry } = await timeTrackingRepository.recordJobStatus(companyId, userId, visit.jobId, {
         status: "en_route",
+        visitId: visit.id,
         at: now,
         notes: `Visit #${visit.visitNumber} — en route`,
         source: "mobile",
@@ -312,6 +316,7 @@ router.post(
     try {
       const { timeEntry } = await timeTrackingRepository.recordJobStatus(companyId, userId, visit.jobId, {
         status: "arrived",
+        visitId: visit.id,
         at: now,
         notes: `Visit #${visit.visitNumber} — on site`,
         source: "mobile",
@@ -426,6 +431,7 @@ router.post(
     try {
       await timeTrackingRepository.recordJobStatus(companyId, userId, visit.jobId, {
         status: "paused",
+        visitId: visit.id,
         at: now,
         notes: `Visit #${visit.visitNumber} — route cancelled`,
         source: "mobile",
@@ -467,6 +473,7 @@ router.post(
     try {
       await timeTrackingRepository.recordJobStatus(companyId, userId, visit.jobId, {
         status: "paused",
+        visitId: visit.id,
         at: now,
         notes: `Visit #${visit.visitNumber} — start cancelled`,
         source: "mobile",
@@ -519,6 +526,7 @@ router.post(
     try {
       await timeTrackingRepository.recordJobStatus(companyId, userId, visit.jobId, {
         status: "paused",
+        visitId: visit.id,
         at: now,
         notes: `Visit #${visit.visitNumber} — paused`,
         source: "mobile",
@@ -563,6 +571,7 @@ router.post(
     try {
       const { timeEntry } = await timeTrackingRepository.recordJobStatus(companyId, userId, visit.jobId, {
         status: "resumed",
+        visitId: visit.id,
         at: now,
         notes: `Visit #${visit.visitNumber} — resumed`,
         source: "mobile",
@@ -731,6 +740,9 @@ router.get(
         lockedAt: timeEntries.lockedAt,
         lockedByInvoiceId: timeEntries.lockedByInvoiceId,
         lockReason: timeEntries.lockReason,
+        // Visit/task attribution
+        visitId: timeEntries.visitId,
+        taskId: timeEntries.taskId,
         // Job context (nullable — entry may have no job)
         jobNumber: jobs.jobNumber,
         jobSummary: jobs.summary,
@@ -1286,6 +1298,219 @@ router.post(
       customerCompanyId: customerCompany.id,
     });
   })
+);
+
+// ============================================================================
+// POST /api/tech/tasks — Create a task from the field
+//
+// 2026-04-10: Tech-side task creation. Thin route following the same pattern
+// as POST /api/tech/jobs and POST /api/tech/clients:
+//   - requireSchedulable guard (schedulable users of any role)
+//   - Calls canonical taskRepository.createTask (single storage entry point)
+//   - Emits SSE dispatch event (same scope as the office task route)
+//
+// SELF-ASSIGNMENT ENFORCEMENT:
+//   Technicians can create tasks ONLY for themselves. If the payload includes
+//   an assignedToUserId that does not match the authenticated user, the route
+//   returns 403. This is enforced server-side — the mobile UI does not expose
+//   an assignee picker, but a crafted request must also be rejected.
+//
+//   Managers/admins/dispatchers continue using POST /api/tasks (MANAGER_ROLES)
+//   where they can assign tasks to any user. This route is NOT a replacement
+//   for the office route — it is a tech-scoped entry point that enforces the
+//   self-assignment constraint.
+// ============================================================================
+
+// ============================================================================
+// GET /api/tech/tasks/mine — Active tasks assigned to me
+// ============================================================================
+
+router.get(
+  "/tasks/mine",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+
+    const tz = await companyRepository.getCompanyTimezone(companyId);
+    const todayStr = todayInTimezone(tz);
+    const today = new Date(todayStr + "T00:00:00");
+
+    const tasks = await taskRepository.getActiveTechTasks(companyId, userId, today);
+
+    // 2026-04-10 INTEGRITY: Include canonical running timer state.
+    // The UI must not infer running state from task.status (which stays
+    // "in_progress" even after stopping). Instead, check time_entries.
+    const runningEntry = await timeTrackingRepository.getRunningTimeEntry(companyId, userId);
+    const runningTaskId = runningEntry?.taskId ?? null;
+
+    res.json({ tasks, count: tasks.length, runningTaskId });
+  }),
+);
+
+// ============================================================================
+// POST /api/tech/tasks/:id/close — Complete a task (self-assigned only)
+// ============================================================================
+
+router.post(
+  "/tasks/:id/close",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+    const taskId = req.params.id;
+
+    // Verify the task is assigned to the caller (self-only completion on mobile)
+    const task = await taskRepository.getTask(companyId, taskId);
+    if (!task) throw createError(404, "Task not found");
+    if (task.assignedToUserId !== userId) {
+      throw createError(403, "You can only complete tasks assigned to you.");
+    }
+
+    // 2026-04-10: Stop any running timer before closing (canonical through time_entries)
+    const running = await timeTrackingRepository.getRunningTimeEntry(companyId, userId);
+    if (running && running.taskId === taskId) {
+      await timeTrackingRepository.stopAndDiscardIfTrivial(companyId, userId, {
+        timeEntryId: running.id,
+      });
+    }
+
+    const closed = await taskRepository.closeTask(companyId, taskId, userId);
+    emitDispatch(companyId, { scope: "calendar", entityType: "task", entityId: taskId, ts: new Date().toISOString() });
+    res.json(closed);
+  }),
+);
+
+// 2026-04-10: tech task schema is DERIVED from the canonical createTaskSchema.
+// TECH_ALLOWED_TASK_TYPES narrows the type field to GENERAL + SUPPLIER_VISIT.
+// Supplier visit fields are optional — techs can provide supplierNameOther as
+// a freeform fallback; managers can provide supplierId/supplierLocationId.
+const techCreateTaskSchema = createTaskSchema
+  .pick({
+    title: true,
+    notes: true,
+    scheduledStartAt: true,
+    scheduledEndAt: true,
+    allDay: true,
+    assignedToUserId: true,
+  })
+  .extend({
+    type: z.enum(TECH_ALLOWED_TASK_TYPES),
+    // Supplier visit fields — optional, only relevant when type = SUPPLIER_VISIT
+    supplierId: z.string().uuid().nullable().optional(),
+    supplierLocationId: z.string().uuid().nullable().optional(),
+    supplierNameOther: z.string().max(200).nullable().optional(),
+    poNumber: z.string().max(100).nullable().optional(),
+  })
+  .strict();
+
+router.post(
+  "/tasks",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const user = req.user as any;
+    const userId = user.id;
+
+    // Guard: requireSchedulable is the canonical mobile-eligible gate.
+    // No role restriction — matches every other tech route (create-job,
+    // create-client, add-part). Any schedulable user who opens the mobile
+    // app can create a task. Self-assignment applies to ALL mobile users
+    // regardless of role.
+
+    const data = validateSchema(techCreateTaskSchema, req.body);
+
+    // ── Self-assignment enforcement (route-level belt) ──
+    if (data.assignedToUserId && data.assignedToUserId !== userId) {
+      throw createError(403, "Mobile task creation is always self-assigned.");
+    }
+
+    // Narrow z.preprocess() output
+    const startAt = typeof data.scheduledStartAt === "string" ? data.scheduledStartAt : undefined;
+    const endAt = typeof data.scheduledEndAt === "string" ? data.scheduledEndAt : undefined;
+
+    // Storage-level createTechTask enforces self-assignment again
+    const task = await createTechTask(companyId, userId, {
+      title: data.title,
+      type: data.type,
+      notes: data.notes,
+      scheduledStartAt: startAt,
+      scheduledEndAt: endAt,
+      allDay: data.allDay ?? false,
+    });
+
+    // If SUPPLIER_VISIT, write the extension row with whatever supplier
+    // info the caller provided. Techs typically send supplierNameOther;
+    // managers may send supplierId + supplierLocationId.
+    if (data.type === "SUPPLIER_VISIT") {
+      const hasSvData = data.supplierId || data.supplierLocationId ||
+                        data.supplierNameOther || data.poNumber;
+      if (hasSvData) {
+        try {
+          await taskRepository.updateSupplierVisit(companyId, task.id, {
+            supplierId: data.supplierId ?? null,
+            supplierLocationId: data.supplierLocationId ?? null,
+            supplierNameOther: data.supplierNameOther ?? null,
+            poNumber: data.poNumber ?? null,
+          });
+        } catch (svErr: any) {
+          // Non-fatal: the task was created, supplier details can be added later
+          console.warn("[TECH_TASKS] supplier-visit details write failed:", svErr.message);
+        }
+      }
+    }
+
+    emitDispatch(companyId, {
+      scope: "calendar",
+      entityType: "task",
+      entityId: task.id,
+      ts: new Date().toISOString(),
+    });
+
+    res.status(201).json(task);
+  }),
+);
+
+// ============================================================================
+// POST /api/tech/tasks/:id/start — Start task timer (canonical time_entries)
+// ============================================================================
+//
+// 2026-04-10 HARDENING: Delegates to taskTimerService.startTaskTimer.
+// Service enforces: strict mode (409 if active timer), atomic status+entry.
+// Route is a thin controller — validation + dispatch + response only.
+router.post(
+  "/tasks/:id/start",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+
+    const { task, timeEntry } = await startTaskTimer(companyId, req.params.id, userId);
+
+    emitDispatch(companyId, { scope: "calendar", entityType: "task", entityId: req.params.id, ts: new Date().toISOString() });
+    res.json({ task, timeEntry });
+  }),
+);
+
+// ============================================================================
+// POST /api/tech/tasks/:id/stop — Stop task timer (canonical time_entries)
+// ============================================================================
+//
+// 2026-04-10 HARDENING: Delegates to taskTimerService.stopTaskTimer.
+// Service enforces targeted stop: only stops entry belonging to THIS task.
+// Returns 409 if running entry belongs to a different context.
+router.post(
+  "/tasks/:id/stop",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+
+    const { task, timeEntry } = await stopTaskTimer(companyId, req.params.id, userId);
+
+    emitDispatch(companyId, { scope: "calendar", entityType: "task", entityId: req.params.id, ts: new Date().toISOString() });
+    res.json({ task, timeEntry });
+  }),
 );
 
 export default router;

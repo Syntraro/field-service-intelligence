@@ -59,7 +59,7 @@ export default function NewInvoicePage() {
           <h1 className="text-xl font-semibold text-slate-900">New Invoice</h1>
         </div>
 
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
+        <div className="bg-white rounded-md border border-slate-200 shadow-sm p-6 space-y-4">
           <CreateOrSelectField<LocationOption>
             label="Client / Location *"
             value={selectedLocation}

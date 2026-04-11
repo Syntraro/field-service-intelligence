@@ -4,7 +4,8 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
+// Badge import removed 2026-04-10: QBO status display removed
 import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -52,11 +53,12 @@ export default function SupplierDetailPage() {
 
   const isCreateMode = id === "new";
 
-  // Form state (website removed per requirements)
   const [formData, setFormData] = useState({
     name: "",
     email: "",
     phone: "",
+    accountNumber: "",
+    notes: "",
     isActive: true,
   });
 
@@ -89,18 +91,29 @@ export default function SupplierDetailPage() {
       name: supplier.name || "",
       email: supplier.email || primary?.email || "",
       phone: supplier.phone || primary?.phone || "",
+      accountNumber: supplier.accountNumber || "",
+      notes: supplier.notes || "",
       isActive: supplier.isActive ?? true,
     });
   }, [supplier?.id, locations]);
 
+  /** Normalize form → API: empty strings become null so the DB stores NULL, not "". */
+  const normalizePayload = (data: typeof formData) => ({
+    name: data.name.trim(),
+    email: data.email.trim() || null,
+    phone: data.phone.trim() || null,
+    accountNumber: data.accountNumber.trim() || null,
+    notes: data.notes.trim() || null,
+    isActive: data.isActive,
+  });
+
   // Create supplier mutation
   const createMutation = useMutation({
     mutationFn: async (dataToCreate: typeof formData) => {
-      const res = await apiRequest("/api/suppliers", {
+      return await apiRequest("/api/suppliers", {
         method: "POST",
-        body: JSON.stringify({ name: dataToCreate.name }),
+        body: JSON.stringify(normalizePayload(dataToCreate)),
       });
-      return res;
     },
     onSuccess: (resp: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/suppliers"] });
@@ -118,10 +131,10 @@ export default function SupplierDetailPage() {
 
   // Update supplier mutation
   const updateMutation = useMutation({
-    mutationFn: async (partial: Partial<typeof formData>) => {
+    mutationFn: async (data: typeof formData) => {
       return await apiRequest(`/api/suppliers/${id}`, {
         method: "PATCH",
-        body: JSON.stringify(partial),
+        body: JSON.stringify(normalizePayload(data)),
       });
     },
     onSuccess: () => {
@@ -180,6 +193,26 @@ export default function SupplierDetailPage() {
     },
   });
 
+  // Delete supplier mutation (soft-delete)
+  const [showDeleteSupplier, setShowDeleteSupplier] = useState(false);
+  const deleteSupplierMutation = useMutation({
+    mutationFn: async () => {
+      return await apiRequest(`/api/suppliers/${id}`, { method: "DELETE" });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/suppliers"] });
+      toast({ title: "Supplier deleted" });
+      setLocation("/suppliers");
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error?.message || "Failed to delete supplier",
+        variant: "destructive",
+      });
+    },
+  });
+
   // Delete location mutation
   const deleteLocationMutation = useMutation({
     mutationFn: async (locationId: string) => {
@@ -224,13 +257,6 @@ export default function SupplierDetailPage() {
     setEditLocationOpen(true);
   };
 
-  const getQboStatusBadge = () => {
-    if (!supplier?.qboVendorId) {
-      return <Badge variant="outline">Not Linked to QBO</Badge>;
-    }
-    return <Badge variant="default">Linked to QBO</Badge>;
-  };
-
   if (!isCreateMode && isLoading) {
     return (
       <div className="p-6 bg-[#F4F8F4] dark:bg-gray-900">
@@ -251,6 +277,17 @@ export default function SupplierDetailPage() {
             {isCreateMode ? "New Supplier" : "Supplier Details"}
           </h1>
         </div>
+        {!isCreateMode && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-destructive border-destructive/30 hover:bg-destructive/10"
+            onClick={() => setShowDeleteSupplier(true)}
+          >
+            <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+            Delete Supplier
+          </Button>
+        )}
       </div>
 
       {/* Two-column layout */}
@@ -295,31 +332,43 @@ export default function SupplierDetailPage() {
       placeholder="(555) 123-4567"
     />
   </div>
+
+  <div>
+    <Label htmlFor="accountNumber">Account Number</Label>
+    <Input
+      id="accountNumber"
+      value={formData.accountNumber}
+      onChange={(e) => setFormData({ ...formData, accountNumber: e.target.value })}
+      placeholder="Optional"
+    />
+  </div>
+
+  <div>
+    <Label htmlFor="notes">Notes</Label>
+    <Textarea
+      id="notes"
+      value={formData.notes}
+      onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+      placeholder="Payment terms, contact preferences, etc."
+      rows={3}
+    />
+  </div>
 </div>
               </div>
 
                 {!isCreateMode && (
-                  <>
-                    <div className="flex items-center justify-between py-2">
-                      <Label htmlFor="active">Active</Label>
-                      <Switch
-                        id="active"
-                        checked={formData.isActive}
-                        onCheckedChange={(checked) =>
-                          setFormData({ ...formData, isActive: checked })
-                        }
-                      />
-                    </div>
-
-                    <div className="pt-2">
-                      <Label>QBO Status</Label>
-                      <div className="mt-2">{getQboStatusBadge()}</div>
-                      {supplier?.qboSyncStatus === "ERROR" && supplier.qboSyncError && (
-                        <p className="text-sm text-destructive mt-2">{supplier.qboSyncError}</p>
-                      )}
-                    </div>
-                  </>
+                  <div className="flex items-center justify-between py-2">
+                    <Label htmlFor="active">Active</Label>
+                    <Switch
+                      id="active"
+                      checked={formData.isActive}
+                      onCheckedChange={(checked) =>
+                        setFormData({ ...formData, isActive: checked })
+                      }
+                    />
+                  </div>
                 )}
+                {/* 2026-04-10: QBO Status section removed — supplier QBO sync is not implemented. */}
               
               <div className="flex gap-2 pt-4">
                 <Button onClick={handleSave} disabled={createMutation.isPending || updateMutation.isPending}>
@@ -475,6 +524,29 @@ export default function SupplierDetailPage() {
           </AlertDialog>
         </>
       )}
+
+      {/* Delete supplier confirmation */}
+      <AlertDialog open={showDeleteSupplier} onOpenChange={setShowDeleteSupplier}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Supplier</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete "{supplier?.name || "this supplier"}"?
+              This will also remove all associated locations. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => deleteSupplierMutation.mutate()}
+              disabled={deleteSupplierMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleteSupplierMutation.isPending ? "Deleting..." : "Delete Supplier"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

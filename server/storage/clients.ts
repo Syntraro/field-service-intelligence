@@ -241,7 +241,8 @@ export class ClientRepository extends BaseRepository {
         userId,
         // Allowed user-provided fields (explicit allowlist)
         parentCompanyId: data.parentCompanyId ?? null,
-        companyName: data.companyName,
+        // 2026-04-10: Normalize blank companyName to null so COALESCE fallback works
+        companyName: data.companyName?.trim() || null,
         location: data.location ?? null,
         address: data.address ?? null,
         city: data.city ?? null,
@@ -314,6 +315,11 @@ export class ClientRepository extends BaseRepository {
   ): Promise<Client | null> {
     this.assertCompanyId(companyId);
     this.validateUUID(clientId, "clientId");
+
+    // 2026-04-10: Normalize blank companyName to null so COALESCE fallback works
+    if ("companyName" in patch && typeof patch.companyName === "string") {
+      patch.companyName = patch.companyName.trim() || null;
+    }
 
     // Auto-geocode when address changes and no explicit lat/lng provided
     const addressChanged = patch.address !== undefined || patch.city !== undefined

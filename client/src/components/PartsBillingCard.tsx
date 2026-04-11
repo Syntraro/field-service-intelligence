@@ -538,12 +538,13 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
               <Plus className="h-3 w-3 mr-1" />
               Add Line Item
             </Button>
-            {isOfficeUser && jobTemplates.length > 0 && (
+            {isOfficeUser && (
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => { setTemplatePickerOpen(true); setTemplateSearch(""); }}
-                disabled={applyTemplateMutation.isPending}
+                disabled={applyTemplateMutation.isPending || jobTemplates.length === 0}
+                title={jobTemplates.length === 0 ? "No templates available — create one in Settings → Job Templates" : "Apply a template"}
                 className="border-slate-400 text-slate-800 bg-slate-50 hover:bg-slate-100 hover:border-slate-500 font-medium shadow-sm"
                 data-testid="button-apply-template"
               >
@@ -571,7 +572,7 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
           </DialogHeader>
           <div className="py-4 space-y-3">
             <div
-              className={`p-3 rounded-lg border cursor-pointer transition-colors ${
+              className={`p-3 rounded-md border cursor-pointer transition-colors ${
                 templateConfirmState.mode === "replace"
                   ? "border-primary bg-primary/5"
                   : "border-border hover:border-muted-foreground/50"
@@ -594,7 +595,7 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
               </p>
             </div>
             <div
-              className={`p-3 rounded-lg border cursor-pointer transition-colors ${
+              className={`p-3 rounded-md border cursor-pointer transition-colors ${
                 templateConfirmState.mode === "merge"
                   ? "border-primary bg-primary/5"
                   : "border-border hover:border-muted-foreground/50"

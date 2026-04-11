@@ -775,7 +775,7 @@ export default function TeamMemberDetail() {
               </CardHeader>
               <CardContent className="space-y-4">
                 {!useCustomSchedule && (
-                  <div className="p-4 bg-muted rounded-lg mb-4 flex items-start gap-3">
+                  <div className="p-4 bg-muted rounded-md mb-4 flex items-start gap-3">
                     <Info className="h-5 w-5 text-muted-foreground mt-0.5" />
                     <p className="text-sm text-muted-foreground">
                       This member is using the default company schedule. Enable "Use Custom Schedule" above to customize their hours.
@@ -849,7 +849,7 @@ export default function TeamMemberDetail() {
               </CardHeader>
               <CardContent className="space-y-4">
                 {!isBillableRole && (
-                  <div className="p-4 bg-muted rounded-lg mb-4 flex items-start gap-3">
+                  <div className="p-4 bg-muted rounded-md mb-4 flex items-start gap-3">
                     <Info className="h-5 w-5 text-muted-foreground mt-0.5" />
                     <p className="text-sm text-muted-foreground">
                       These fields are optional for non-field roles. They are mainly used for technicians and other billable staff.
@@ -946,7 +946,7 @@ export default function TeamMemberDetail() {
               <CardContent>
                 {/* Role Capabilities Summary */}
                 <Collapsible className="mb-4">
-                  <div className="p-4 bg-muted rounded-lg">
+                  <div className="p-4 bg-muted rounded-md">
                     <CollapsibleTrigger className="flex items-center justify-between w-full">
                       <div className="flex items-center gap-3">
                         <Shield className="h-5 w-5 text-primary" />
@@ -1058,7 +1058,7 @@ export default function TeamMemberDetail() {
                         open={isOpen}
                         onOpenChange={() => !permissionSearch && toggleSection(category.toLowerCase())}
                       >
-                        <CollapsibleTrigger className="flex items-center justify-between w-full p-3 bg-muted rounded-lg">
+                        <CollapsibleTrigger className="flex items-center justify-between w-full p-3 bg-muted rounded-md">
                           <div className="flex items-center gap-2">
                             <span className="font-medium text-sm uppercase tracking-wider">
                               {category}

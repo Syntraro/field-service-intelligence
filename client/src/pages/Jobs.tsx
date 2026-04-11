@@ -98,7 +98,7 @@ const ITEMS_PER_PAGE = 50;
 
 function SummaryCard({ label, value, note }: { label: string; value: string; note: string }) {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-5 py-4">
+    <div className="bg-white rounded-md border border-slate-200 shadow-sm px-5 py-4">
       <div className="text-xs font-medium text-slate-500 mb-1">{label}</div>
       <div className="text-2xl font-bold text-slate-900 tabular-nums">{value}</div>
       <div className="text-xs text-slate-500 mt-1">{note}</div>
@@ -402,7 +402,7 @@ export default function Jobs() {
           <div className="flex items-center gap-2">
             <Button
               size="sm"
-              className="gap-1.5 h-9 rounded-lg"
+              className="gap-1.5 h-9 rounded-md"
               onClick={() => setShowCreateDialog(true)}
               data-testid="button-new-job"
             >
@@ -444,7 +444,7 @@ export default function Jobs() {
               placeholder={isHistoryMode ? "Search all job history..." : "Search jobs, clients, addresses"}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 h-9 rounded-lg border-slate-200 bg-white"
+              className="pl-9 h-9 rounded-md border-slate-200 bg-white"
               data-testid="input-search-jobs"
             />
           </div>
@@ -506,7 +506,7 @@ export default function Jobs() {
 
         {/* History mode header */}
         {isHistoryMode && (
-          <div className="flex items-center gap-2 px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-600">
+          <div className="flex items-center gap-2 px-4 py-2 bg-slate-50 border border-slate-200 rounded-md text-sm text-slate-600">
             <Search className="h-4 w-4" />
             <span className="font-medium">Searching all job history</span>
           </div>
@@ -516,7 +516,7 @@ export default function Jobs() {
         {!isHistoryMode && searchQuery.trim().length > 0 && (
           <button
             onClick={() => setIsHistoryMode(true)}
-            className="w-full py-1.5 text-center text-xs text-slate-500 hover:text-slate-800 hover:bg-slate-50 border border-slate-200 rounded-lg transition-colors"
+            className="w-full py-1.5 text-center text-xs text-slate-500 hover:text-slate-800 hover:bg-slate-50 border border-slate-200 rounded-md transition-colors"
           >
             Not finding a job? <span className="font-medium underline underline-offset-2">Search all job history</span>
           </button>
@@ -524,14 +524,14 @@ export default function Jobs() {
 
         {/* ── 4. Main Table ── */}
         {isLoading ? (
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden" data-testid="jobs-loading">
+          <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="jobs-loading">
             <div className="text-center py-8">
               <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2 text-slate-500" />
               <span className="text-slate-600">Loading jobs...</span>
             </div>
           </div>
         ) : isHistoryMode ? (
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden" data-testid="table-jobs-history">
+          <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="table-jobs-history">
             <Table>
               <TableHeader>
                 <TableRow className="bg-slate-50">
@@ -602,7 +602,7 @@ export default function Jobs() {
           </div>
         ) : (
         <>
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden" data-testid="table-jobs">
+          <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="table-jobs">
             <Table>
               <TableHeader>
                 <TableRow className="bg-slate-50">
@@ -622,7 +622,7 @@ export default function Jobs() {
                         <div className="flex flex-col items-center gap-2">
                           <Wrench className="h-8 w-8 opacity-50" />
                           <p>No jobs yet</p>
-                          <Button variant="outline" size="sm" className="rounded-lg" onClick={() => setShowCreateDialog(true)} data-testid="button-create-first-job">
+                          <Button variant="outline" size="sm" className="rounded-md" onClick={() => setShowCreateDialog(true)} data-testid="button-create-first-job">
                             <Plus className="h-4 w-4 mr-2" />
                             Create your first job
                           </Button>

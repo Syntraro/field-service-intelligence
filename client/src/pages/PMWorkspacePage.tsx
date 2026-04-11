@@ -722,7 +722,7 @@ function GroupSection({ group, onItemClick, selectedIds, onToggle, onToggleGroup
   const someGroupSelected = eligibleIds.some((id) => selectedIds.has(id));
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="border rounded-lg mb-3">
+    <Collapsible open={open} onOpenChange={setOpen} className="border rounded-md mb-3">
       <CollapsibleTrigger asChild>
         <button className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-muted/50 transition-colors">
           {open ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
@@ -1005,7 +1005,7 @@ function UpcomingTab() {
   return (
     <div className="space-y-4">
       {/* Sub-view selector: Due Now / Upcoming — always mounted */}
-      <div className="flex items-center gap-1 border rounded-lg p-0.5 bg-muted/30 w-fit">
+      <div className="flex items-center gap-1 border rounded-md p-0.5 bg-muted/30 w-fit">
         <button
           onClick={() => handleSubViewChange("due_now")}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
@@ -1051,7 +1051,7 @@ function UpcomingTab() {
 
       {/* Upcoming planning view notice */}
       {!isDueNow && (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/30 rounded-lg px-3 py-2">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/30 rounded-md px-3 py-2">
           <Clock className="h-4 w-4 shrink-0" />
           <span>These items are not yet due. They will move to Due Now when their service window opens.</span>
         </div>
@@ -1098,7 +1098,7 @@ function UpcomingTab() {
         ) : null}
 
         {/* Group-by segmented control */}
-        <div className="flex items-center gap-1 ml-auto border rounded-lg p-0.5 bg-muted/30">
+        <div className="flex items-center gap-1 ml-auto border rounded-md p-0.5 bg-muted/30">
           {GROUP_MODE_OPTIONS.map((opt) => (
             <button
               key={opt.value}

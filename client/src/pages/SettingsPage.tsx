@@ -37,7 +37,6 @@ import {
   Clock,
   Globe,
   Upload,
-  Hash,
   Loader2,
   ChevronRight,
   Shield,
@@ -63,10 +62,10 @@ import { TIMEZONE_OPTIONS } from "@/lib/regionalConstants";
 
 type CompanySettingsFormData = z.infer<typeof insertCompanySettingsSchema>;
 
-interface NumberingSettings {
-  nextJobNumber: number;
-  nextInvoiceNumber: number;
-}
+// 2026-04-10: NumberingSettings interface REMOVED. The numbering settings UI
+// was calling /api/settings/numbering which was never built. Manual job/invoice
+// number editing on the detail pages (with self-healing counter advancement)
+// is the canonical flow. See the audit in this session for the full rationale.
 
 interface LinkCard {
   title: string;
@@ -95,10 +94,9 @@ const SECTIONS: SettingsSection[] = [
     title: "Company",
     icon: Building2,
     type: "inline",
-    preview: "Info, numbering, regional, business hours",
+    preview: "Info, regional, business hours",
     cards: [
       { title: "Company Info", description: "Name, address, contact details", href: "", icon: Building2 },
-      { title: "Numbering Settings", description: "Job and invoice number sequences", href: "", icon: Hash },
       { title: "Business Hours", description: "Set operating hours", href: "/settings/business-hours", icon: Clock },
     ],
   },
@@ -185,7 +183,7 @@ function SettingsLinkCard({ card }: { card: LinkCard }) {
       onClick={() => setLocation(card.href)}
     >
       <CardContent className="flex items-center gap-4 py-4">
-        <div className="p-2 rounded-lg bg-muted group-hover:bg-primary/10 transition-colors">
+        <div className="p-2 rounded-md bg-muted group-hover:bg-primary/10 transition-colors">
           <Icon className="h-5 w-5 text-muted-foreground group-hover:text-primary transition-colors" />
         </div>
         <div className="flex-1 min-w-0">
@@ -370,83 +368,9 @@ function CompanyInfoFields({ registerSave }: { registerSave: (fn: () => void) =>
   );
 }
 
-// ── Inline Numbering fields (no individual save button) ──
-
-function NumberingFields({ registerSave }: { registerSave: (fn: () => void) => void }) {
-  const { toast } = useToast();
-  const { user } = useAuth();
-
-  const { data: numberingSettings, isLoading } = useQuery<NumberingSettings>({
-    queryKey: ["/api/settings/numbering"],
-    enabled: Boolean(user?.id),
-  });
-
-  const [nextJobNumber, setNextJobNumber] = useState("");
-  const [nextInvoiceNumber, setNextInvoiceNumber] = useState("");
-
-  useEffect(() => {
-    if (numberingSettings) {
-      setNextJobNumber(numberingSettings.nextJobNumber.toString());
-      setNextInvoiceNumber(numberingSettings.nextInvoiceNumber.toString());
-    }
-  }, [numberingSettings]);
-
-  const updateMutation = useMutation({
-    mutationFn: async (data: { nextJobNumber?: number; nextInvoiceNumber?: number }) => {
-      return await apiRequest("/api/settings/numbering", { method: "PATCH", body: JSON.stringify(data) });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/settings/numbering"] });
-      toast({ title: "Numbering updated", description: "Numbering settings saved." });
-    },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to update numbering settings.", variant: "destructive" });
-    },
-  });
-
-  // Register save callback with parent — includes validation
-  useEffect(() => {
-    registerSave(() => {
-      const jobNum = parseInt(nextJobNumber, 10);
-      const invNum = parseInt(nextInvoiceNumber, 10);
-      if (isNaN(jobNum) || jobNum < 1) {
-        toast({ title: "Invalid input", description: "Next Job Number must be a positive number.", variant: "destructive" });
-        return;
-      }
-      if (isNaN(invNum) || invNum < 1) {
-        toast({ title: "Invalid input", description: "Next Invoice Number must be a positive number.", variant: "destructive" });
-        return;
-      }
-      updateMutation.mutate({ nextJobNumber: jobNum, nextInvoiceNumber: invNum });
-    });
-  });
-
-  return (
-    <Card className="shadow-sm">
-      <CardContent className="pt-4">
-        <p className="text-xs font-medium text-muted-foreground mb-3 flex items-center gap-1.5">
-          <Hash className="h-3.5 w-3.5" /> Numbering
-        </p>
-        {isLoading ? (
-          <div className="flex items-center justify-center py-4">
-            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="nextJobNumber" className="text-xs">Next Job Number</Label>
-              <Input id="nextJobNumber" type="number" min="1" value={nextJobNumber} onChange={(e) => setNextJobNumber(e.target.value)} className="h-8 text-sm" data-testid="input-next-job-number" />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="nextInvoiceNumber" className="text-xs">Next Invoice Number</Label>
-              <Input id="nextInvoiceNumber" type="number" min="1" value={nextInvoiceNumber} onChange={(e) => setNextInvoiceNumber(e.target.value)} className="h-8 text-sm" data-testid="input-next-invoice-number" />
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
+// 2026-04-10: NumberingFields component REMOVED. See comment above NumberingSettings.
+// Job/invoice numbers are editable inline on their respective detail pages, with
+// self-healing counter advancement. No settings UI needed.
 
 // ── Inline Regional Settings fields (no individual save button) ──
 
@@ -658,7 +582,7 @@ export default function SettingsPage() {
           {filteredSections.map((section) => {
             const Icon = section.icon;
             return (
-              <AccordionItem key={section.id} value={section.id} className="border rounded-lg px-4 bg-card shadow-sm">
+              <AccordionItem key={section.id} value={section.id} className="border rounded-md px-4 bg-card shadow-sm">
                 <AccordionTrigger className="hover:no-underline group">
                   <div className="flex items-center gap-3 min-w-0">
                     <Icon className="h-5 w-5 text-muted-foreground shrink-0" />
@@ -695,23 +619,19 @@ export default function SettingsPage() {
 function CompanySectionContent({ cards, search }: { cards?: LinkCard[]; search: string }) {
   const q = search.toLowerCase();
   const showCompanyInfo = !q || "company info".includes(q) || "name address contact".includes(q) || "company".includes(q);
-  const showNumbering = !q || "numbering".includes(q) || "job number invoice number".includes(q) || "sequence".includes(q);
   const showRegional = !q || "regional".includes(q) || "timezone".includes(q) || "date format time format week start".includes(q);
 
   // Save callback refs — each child registers its save fn
   const companyInfoSaveRef = useRef<() => void>(() => {});
-  const numberingSaveRef = useRef<() => void>(() => {});
   const regionalSaveRef = useRef<() => void>(() => {});
 
   const registerCompanyInfoSave = useCallback((fn: () => void) => { companyInfoSaveRef.current = fn; }, []);
-  const registerNumberingSave = useCallback((fn: () => void) => { numberingSaveRef.current = fn; }, []);
   const registerRegionalSave = useCallback((fn: () => void) => { regionalSaveRef.current = fn; }, []);
 
   const [isSaving, setIsSaving] = useState(false);
   const handleSaveAll = () => {
     setIsSaving(true);
     companyInfoSaveRef.current();
-    numberingSaveRef.current();
     regionalSaveRef.current();
     // Reset after a brief delay to let mutations fire
     setTimeout(() => setIsSaving(false), 1000);
@@ -722,7 +642,7 @@ function CompanySectionContent({ cards, search }: { cards?: LinkCard[]; search: 
 
   return (
     <div className="space-y-3">
-      {/* Two-column layout: Company Info left, Numbering + Regional stacked right */}
+      {/* Two-column layout: Company Info left, Regional right */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-3 items-start">
         {showCompanyInfo && (
           <div className="lg:col-span-3">
@@ -730,7 +650,6 @@ function CompanySectionContent({ cards, search }: { cards?: LinkCard[]; search: 
           </div>
         )}
         <div className="lg:col-span-2 space-y-3">
-          {showNumbering && <NumberingFields registerSave={registerNumberingSave} />}
           {showRegional && <RegionalFields registerSave={registerRegionalSave} />}
         </div>
       </div>

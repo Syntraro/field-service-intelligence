@@ -246,7 +246,7 @@ const { data: currentRolePermissions = [] } = useQuery<string[]>({
                   {rolesWithCounts.map((role) => (
                     <div
                       key={role.id}
-                      className={`flex items-center justify-between p-3 rounded-lg cursor-pointer transition-colors ${
+                      className={`flex items-center justify-between p-3 rounded-md cursor-pointer transition-colors ${
                         selectedRole?.id === role.id
                           ? "bg-primary/10 border border-primary/30"
                           : "bg-muted/50 hover-elevate"
@@ -358,7 +358,7 @@ const { data: currentRolePermissions = [] } = useQuery<string[]>({
                         open={expandedSections.has(category)}
                         onOpenChange={() => toggleSection(category)}
                       >
-                        <CollapsibleTrigger className="flex items-center justify-between w-full p-3 bg-muted rounded-lg">
+                        <CollapsibleTrigger className="flex items-center justify-between w-full p-3 bg-muted rounded-md">
                           <div className="flex items-center gap-2">
                             <span className="font-medium text-sm uppercase tracking-wider">
                               {category}

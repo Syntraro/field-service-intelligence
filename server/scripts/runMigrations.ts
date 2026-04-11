@@ -23,9 +23,21 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Load .env if present (local dev). On Render, DATABASE_URL is set via dashboard env vars.
+const envPath = path.resolve(__dirname, "../../.env");
+if (!process.env.DATABASE_URL && fs.existsSync(envPath)) {
+  const envContent = fs.readFileSync(envPath, "utf-8");
+  for (const line of envContent.split("\n")) {
+    const match = line.match(/^([A-Z_]+)=(.*)$/);
+    if (match && !process.env[match[1]]) {
+      process.env[match[1]] = match[2].trim();
+    }
+  }
+}
+
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) {
-  console.error("ERROR: DATABASE_URL is not set.");
+  console.error("ERROR: DATABASE_URL is not set. Set it as an env var or add a .env file.");
   process.exit(1);
 }
 

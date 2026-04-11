@@ -496,7 +496,7 @@ export class QboCustomerImportService {
             candidates: scored.map(s => {
               const l = existingLocations.find(x => x.id === s.localId)!;
               return {
-                localId: l.id, name: l.companyName, email: l.email ?? null, phone: l.phone ?? null,
+                localId: l.id, name: l.companyName ?? "", email: l.email ?? null, phone: l.phone ?? null,
                 postalCode: l.postalCode ?? null, isActive: !l.inactive,
                 isLinked: !!l.qboCustomerId, qboId: l.qboCustomerId ?? null,
                 score: s.score, signals: s.signals, confidence: s.confidence,
@@ -975,8 +975,8 @@ export class QboCustomerImportService {
    */
   private scoreLocationCandidates(
     qbo: ParsedQBOCustomer,
-    unlinked: Array<{ id: string; companyName: string; location: string | null; email: string | null; phone: string | null; postalCode: string | null; inactive: boolean; deletedAt: Date | null }>,
-    nameIndex: Map<string, Array<{ id: string; companyName: string; location: string | null; email: string | null; phone: string | null; postalCode: string | null; inactive: boolean; deletedAt: Date | null }>>,
+    unlinked: Array<{ id: string; companyName: string | null; location: string | null; email: string | null; phone: string | null; postalCode: string | null; inactive: boolean; deletedAt: Date | null }>,
+    nameIndex: Map<string, Array<{ id: string; companyName: string | null; location: string | null; email: string | null; phone: string | null; postalCode: string | null; inactive: boolean; deletedAt: Date | null }>>,
   ): ScoredCandidate[] {
     const qboName = normalizeBusinessName(qbo.companyName || qbo.displayName);
     const qboEmail = qbo.email?.trim().toLowerCase() || "";

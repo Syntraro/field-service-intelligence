@@ -124,7 +124,7 @@ export function UserSubscriptionDialog({ userId, userEmail }: UserSubscriptionDi
           </div>
 
           {selectedPlan && (
-            <div className="rounded-lg bg-muted p-4 text-sm">
+            <div className="rounded-md bg-muted p-4 text-sm">
               <p className="font-medium mb-2">Plan Details</p>
               {plans.find(p => p.name === selectedPlan) && (
                 <div className="space-y-1 text-muted-foreground">

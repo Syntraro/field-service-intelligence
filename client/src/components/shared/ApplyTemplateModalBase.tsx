@@ -154,7 +154,7 @@ export function ApplyTemplateModalBase<T extends TemplateBase>({
               {(["replace", "merge"] as const).map((m) => (
                 <div
                   key={m}
-                  className={`p-3 rounded-lg border cursor-pointer transition-colors ${
+                  className={`p-3 rounded-md border cursor-pointer transition-colors ${
                     mode === m ? "border-primary bg-primary/5" : "border-border hover:border-muted-foreground/50"
                   } ${applyMutation.isPending ? "opacity-50 pointer-events-none" : ""}`}
                   onClick={() => setMode(m)}
@@ -180,7 +180,7 @@ export function ApplyTemplateModalBase<T extends TemplateBase>({
 
           {/* Selected template info */}
           {selectedTemplate && (
-            <div className="p-3 bg-muted/50 rounded-lg text-sm">
+            <div className="p-3 bg-muted/50 rounded-md text-sm">
               <p className="font-medium">{selectedTemplate.name}</p>
               {selectedTemplate.description && (
                 <p className="text-muted-foreground text-xs mt-1">{selectedTemplate.description}</p>

@@ -313,7 +313,7 @@ export default function Admin() {
             {users.map((user) => (
               <div
                 key={user.id}
-                className="flex items-center justify-between p-4 border rounded-lg"
+                className="flex items-center justify-between p-4 border rounded-md"
                 data-testid={`user-item-${user.id}`}
               >
                 <div className="flex-1">
@@ -589,7 +589,7 @@ export default function Admin() {
                       feedback.filter(f => !f.archived).map((item) => (
                         <div
                           key={item.id}
-                          className="p-4 border rounded-lg space-y-2"
+                          className="p-4 border rounded-md space-y-2"
                           data-testid={`feedback-item-${item.id}`}
                         >
                           <div className="flex items-start justify-between">
@@ -698,7 +698,7 @@ export default function Admin() {
                       feedback.filter(f => f.archived).map((item) => (
                         <div
                           key={item.id}
-                          className="p-4 border rounded-lg space-y-2 bg-muted/30"
+                          className="p-4 border rounded-md space-y-2 bg-muted/30"
                           data-testid={`feedback-item-archived-${item.id}`}
                         >
                           <div className="flex items-start justify-between">

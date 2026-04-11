@@ -66,7 +66,7 @@ function ShiftSummaryCard({ clockInAt, clockOutAt, isActive }: {
   const duration = isActive ? elapsed : (clockOutAt ? formatDurationMinutes(Math.floor((new Date(clockOutAt).getTime() - new Date(clockInAt).getTime()) / 60000)) : "—");
 
   return (
-    <div className="mx-4 rounded-xl bg-white border border-slate-200 shadow-sm px-3 py-2.5 flex items-center justify-between">
+    <div className="mx-4 rounded-md bg-white border border-slate-200 shadow-sm px-3 py-2.5 flex items-center justify-between">
       <div className="flex items-center gap-2">
         {isActive && <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />}
         {!isActive && <LogIn className="h-3.5 w-3.5 text-slate-400" />}
@@ -80,7 +80,141 @@ function ShiftSummaryCard({ clockInAt, clockOutAt, isActive }: {
   );
 }
 
-// ── Time entry card ──
+// ── Grouped entry list — groups job-related entries by jobId ──
+
+const TRAVEL_TYPES = new Set(["travel_to_job", "travel_between_jobs", "travel_to_supplier"]);
+const WORK_TYPES = new Set(["on_site", "supplier_run"]);
+
+function GroupedEntryList({ entries, onTap }: { entries: TimesheetEntry[]; onTap: (id: string) => void }) {
+  // Group visit-linked entries by visitId (canonical).
+  // For no-visitId entries: merge adjacent travel→work pairs for the same job
+  // only when they form a contiguous session (work starts within 5min of travel end).
+  // This prevents unrelated same-day segments from collapsing into one card.
+  const visitGroups = new Map<string, TimesheetEntry[]>();
+  const noVisitJobEntries: TimesheetEntry[] = [];
+  const standalone: TimesheetEntry[] = [];
+
+  entries.forEach((e) => {
+    if (e.jobId && (TRAVEL_TYPES.has(e.type) || WORK_TYPES.has(e.type))) {
+      if (e.visitId) {
+        const group = visitGroups.get(e.visitId) || [];
+        group.push(e);
+        visitGroups.set(e.visitId, group);
+      } else {
+        noVisitJobEntries.push(e);
+      }
+    } else {
+      standalone.push(e);
+    }
+  });
+
+  // Merge contiguous no-visitId travel→work pairs for the same job.
+  // Sort by startAt, then pair travel+work if same job and work starts ≤5min after travel ends.
+  const SESSION_GAP_MS = 5 * 60_000;
+  noVisitJobEntries.sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
+  const claimed = new Set<string>();
+
+  noVisitJobEntries.forEach((travel) => {
+    if (claimed.has(travel.id) || !TRAVEL_TYPES.has(travel.type) || !travel.endAt) return;
+    const travelEnd = new Date(travel.endAt).getTime();
+    // Find the first unclaimed work entry for the same job starting within the gap
+    const work = noVisitJobEntries.find((w) =>
+      !claimed.has(w.id) && w.id !== travel.id &&
+      w.jobId === travel.jobId && WORK_TYPES.has(w.type) &&
+      Math.abs(new Date(w.startAt).getTime() - travelEnd) <= SESSION_GAP_MS
+    );
+    if (work) {
+      const pairKey = `session:${travel.id}`;
+      visitGroups.set(pairKey, [travel, work]);
+      claimed.add(travel.id);
+      claimed.add(work.id);
+    }
+  });
+
+  // Remaining unclaimed no-visitId entries become standalone
+  noVisitJobEntries.forEach((e) => {
+    if (!claimed.has(e.id)) standalone.push(e);
+  });
+
+  // Build render list preserving chronological order by earliest entry in each group
+  const groupedCards: Array<{ type: "group"; key: string; entries: TimesheetEntry[]; sortKey: number } | { type: "single"; entry: TimesheetEntry; sortKey: number }> = [];
+
+  visitGroups.forEach((group, key) => {
+    // Sort within group: travel types first, then work types, then by startAt
+    group.sort((a, b) => {
+      const aTravel = TRAVEL_TYPES.has(a.type) ? 0 : 1;
+      const bTravel = TRAVEL_TYPES.has(b.type) ? 0 : 1;
+      if (aTravel !== bTravel) return aTravel - bTravel;
+      return new Date(a.startAt).getTime() - new Date(b.startAt).getTime();
+    });
+    const earliest = Math.min(...group.map(e => new Date(e.startAt).getTime()));
+    groupedCards.push({ type: "group", key, entries: group, sortKey: earliest });
+  });
+
+  standalone.forEach((e) => {
+    groupedCards.push({ type: "single", entry: e, sortKey: new Date(e.startAt).getTime() });
+  });
+
+  groupedCards.sort((a, b) => a.sortKey - b.sortKey);
+
+  return (
+    <>
+      {groupedCards.map((item) => {
+        if (item.type === "single") {
+          return <TimeEntryCard key={item.entry.id} entry={item.entry} onTap={onTap} />;
+        }
+        const first = item.entries[0];
+        return (
+          <div key={`grp-${item.key}`} className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
+            {/* Job header */}
+            <div className="px-2.5 py-1.5 border-b border-slate-100 bg-slate-50/60">
+              <p className="text-sm font-semibold text-slate-800 truncate">
+                #{first.jobNumber}{first.jobSummary ? ` — ${first.jobSummary}` : ""}
+              </p>
+              {first.locationName && (
+                <p className="text-[11px] text-slate-400 truncate">{first.locationName}</p>
+              )}
+            </div>
+            {/* Child rows */}
+            <div className="divide-y divide-slate-100">
+              {item.entries.map((entry) => (
+                <GroupedEntryRow key={entry.id} entry={entry} onTap={onTap} />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function GroupedEntryRow({ entry, onTap }: { entry: TimesheetEntry; onTap: (id: string) => void }) {
+  const isRunning = entry.endAt === null;
+  const { formatted: runningTime } = useElapsedTimer(entry.startAt, isRunning, 10000);
+  const duration = isRunning
+    ? runningTime
+    : entry.durationMinutes !== null ? formatDurationMinutes(entry.durationMinutes) : "—";
+  const timeRange = isRunning
+    ? `${formatClockTime(entry.startAt)} — now`
+    : entry.endAt ? `${formatClockTime(entry.startAt)} — ${formatClockTime(entry.endAt)}` : formatClockTime(entry.startAt);
+  const isTravel = TRAVEL_TYPES.has(entry.type);
+
+  return (
+    <button type="button" onClick={() => onTap(entry.id)}
+      className="w-full text-left px-2.5 py-1.5 active:bg-slate-50 transition-colors flex items-center gap-2">
+      <div className="flex items-center gap-1.5 flex-1 min-w-0">
+        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 ${isTravel ? "bg-blue-50 text-blue-600" : "bg-emerald-50 text-emerald-600"}`}>
+          {isTravel ? "Travel" : "Work"}
+        </span>
+        {isRunning && <span className="text-[10px] font-medium text-emerald-600 bg-emerald-50 px-1 py-0.5 rounded-full shrink-0">Active</span>}
+        <span className="text-[11px] text-slate-400 truncate">{timeRange}</span>
+      </div>
+      <span className={`text-sm font-semibold tabular-nums shrink-0 ${isRunning ? "text-emerald-600" : "text-slate-700"}`}>{duration}</span>
+    </button>
+  );
+}
+
+// ── Time entry card (standalone / non-grouped) ──
 
 function TimeEntryCard({ entry, onTap }: { entry: TimesheetEntry; onTap: (id: string) => void }) {
   const isRunning = entry.endAt === null;
@@ -100,7 +234,7 @@ function TimeEntryCard({ entry, onTap }: { entry: TimesheetEntry; onTap: (id: st
 
   return (
     <button type="button" onClick={() => onTap(entry.id)}
-      className="w-full text-left bg-white rounded-xl border border-slate-200 shadow-sm p-2.5 active:bg-slate-50 transition-colors">
+      className="w-full text-left bg-white rounded-md border border-slate-200 shadow-sm p-2.5 active:bg-slate-50 transition-colors">
       <div className="flex items-center justify-between mb-0.5">
         <div className="flex items-center gap-1.5">
           <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${ENTRY_TYPE_COLORS[entry.type] || DEFAULT_ENTRY_TYPE_COLOR}`}>
@@ -204,7 +338,7 @@ function EntryEditSheet({
           {entry.jobNumber && (
             <div>
               <label className="text-xs font-medium text-slate-500 block mb-1">Job</label>
-              <div className="text-sm text-slate-800 bg-slate-100 rounded-lg px-3 py-2">
+              <div className="text-sm text-slate-800 bg-slate-100 rounded-md px-3 py-2">
                 #{entry.jobNumber}{entry.jobSummary ? ` — ${entry.jobSummary}` : ""}
               </div>
               <p className="text-sm text-slate-400 mt-1">Job can only be changed from the job itself</p>
@@ -216,7 +350,7 @@ function EntryEditSheet({
             <label className="text-xs font-medium text-slate-500 block mb-1">Start</label>
             <input type="time" value={startInput} onChange={(e) => setStartInput(e.target.value)}
               disabled={!access.fields.startTime || isSaving}
-              className={`w-full text-sm border rounded-lg px-3 py-2 disabled:bg-slate-100 disabled:text-slate-500 ${validation?.errors.startTime ? "border-red-300" : "border-slate-200"}`} />
+              className={`w-full text-sm border rounded-md px-3 py-2 disabled:bg-slate-100 disabled:text-slate-500 ${validation?.errors.startTime ? "border-red-300" : "border-slate-200"}`} />
             {validation?.errors.startTime && <p className="text-sm text-red-500 mt-0.5">{validation.errors.startTime}</p>}
           </div>
 
@@ -225,7 +359,7 @@ function EntryEditSheet({
             <label className="text-xs font-medium text-slate-500 block mb-1">End</label>
             <input type="time" value={endInput} onChange={(e) => setEndInput(e.target.value)}
               disabled={!access.fields.endTime || isSaving}
-              className={`w-full text-sm border rounded-lg px-3 py-2 disabled:bg-slate-100 disabled:text-slate-500 ${validation?.errors.endTime ? "border-red-300" : "border-slate-200"}`} />
+              className={`w-full text-sm border rounded-md px-3 py-2 disabled:bg-slate-100 disabled:text-slate-500 ${validation?.errors.endTime ? "border-red-300" : "border-slate-200"}`} />
             {validation?.errors.endTime && <p className="text-sm text-red-500 mt-0.5">{validation.errors.endTime}</p>}
           </div>
 
@@ -233,7 +367,7 @@ function EntryEditSheet({
           {durationDisplay && (
             <div>
               <label className="text-xs font-medium text-slate-500 block mb-1">Duration</label>
-              <div className="text-sm text-slate-700 bg-slate-50 rounded-lg px-3 py-2">{durationDisplay}</div>
+              <div className="text-sm text-slate-700 bg-slate-50 rounded-md px-3 py-2">{durationDisplay}</div>
             </div>
           )}
 
@@ -242,19 +376,19 @@ function EntryEditSheet({
             <label className="text-xs font-medium text-slate-500 block mb-1">Notes</label>
             <textarea value={noteInput} onChange={(e) => setNoteInput(e.target.value)}
               disabled={!access.fields.notes || isSaving} rows={2}
-              className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 resize-none disabled:bg-slate-100 disabled:text-slate-500"
+              className="w-full text-sm border border-slate-200 rounded-md px-3 py-2 resize-none disabled:bg-slate-100 disabled:text-slate-500"
               placeholder="Add a note…" />
           </div>
 
           {/* Backend error display */}
           {saveError && (
-            <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{saveError.message}</p>
+            <p className="text-sm text-red-600 bg-red-50 rounded-md px-3 py-2">{saveError.message}</p>
           )}
 
           {/* Save button (edit mode only) */}
           {isEdit && (
             <button type="button" onClick={handleSave} disabled={!canSave}
-              className="w-full py-2.5 rounded-lg text-sm font-semibold text-white bg-emerald-600 active:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 transition-colors">
+              className="w-full py-2.5 rounded-md text-sm font-semibold text-white bg-emerald-600 active:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 transition-colors">
               {isSaving ? "Saving…" : "Save Changes"}
             </button>
           )}
@@ -280,7 +414,7 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
     <div className="flex flex-col items-center justify-center py-16 text-slate-400">
       <Clock className="h-10 w-10 mb-2 opacity-40" />
       <p className="text-sm font-medium mb-3">Failed to load timesheet</p>
-      <button onClick={onRetry} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-slate-100 text-slate-600 text-xs font-semibold active:bg-slate-200">
+      <button onClick={onRetry} className="flex items-center gap-1.5 px-4 py-2 rounded-md bg-slate-100 text-slate-600 text-xs font-semibold active:bg-slate-200">
         <RefreshCw className="h-3 w-3" />Retry
       </button>
     </div>
@@ -316,7 +450,7 @@ export default function TimesheetPage() {
       <DaySelector selectedDate={selectedDate} onSelect={goToDay} onPrev={goToPrevDay} onNext={goToNextDay} onToday={goToToday} />
 
       {saveSuccess && (
-        <div className="mx-4 mt-1 px-3 py-1.5 bg-emerald-50 border border-emerald-100 rounded-lg flex items-center gap-1.5">
+        <div className="mx-4 mt-1 px-3 py-1.5 bg-emerald-50 border border-emerald-100 rounded-md flex items-center gap-1.5">
           <Clock className="h-3 w-3 text-emerald-600" />
           <p className="text-xs font-medium text-emerald-700">Entry saved</p>
         </div>
@@ -353,9 +487,7 @@ export default function TimesheetPage() {
               )
             ) : (
               <div className="mx-4 space-y-1.5">
-                {dayEntries.map((entry) => (
-                  <TimeEntryCard key={entry.id} entry={entry} onTap={openEntry} />
-                ))}
+                <GroupedEntryList entries={dayEntries} onTap={openEntry} />
               </div>
             )}
           </>

@@ -37,7 +37,7 @@ export function StatusProgressBar({
 
   if (isArchived) {
     return (
-      <div className="flex items-center gap-2 px-4 py-2 bg-muted rounded-lg">
+      <div className="flex items-center gap-2 px-4 py-2 bg-muted rounded-md">
         <Archive className="h-4 w-4 text-muted-foreground" />
         <span className="text-sm font-medium text-muted-foreground">Job Archived</span>
       </div>

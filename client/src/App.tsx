@@ -20,7 +20,7 @@ import LeadDetailPage from "@/pages/LeadDetailPage";
 import QuoteDetailPage from "@/pages/QuoteDetailPage";
 import Reports from "@/pages/Reports";
 import AccountsReceivablePage from "@/pages/AccountsReceivablePage";
-import FinancialDashboard from "@/pages/FinancialDashboard";
+// FinancialDashboard import removed 2026-04-10: page + route were dead (zero navigation entries)
 import Admin from "@/pages/Admin";
 // PERF-008 (2026-04-08): Lazy-load rarely visited platform-admin / QBO / one-time
 // import pages to shrink the initial main bundle for normal users.
@@ -149,11 +149,7 @@ function Router() {
           <DispatchBoard />
         </ProtectedRoute>
       </Route>
-      <Route path="/calendar">
-        <ProtectedRoute requireAdmin>
-          <DispatchBoard />
-        </ProtectedRoute>
-      </Route>
+      {/* /calendar route removed 2026-04-10: duplicate of /dispatch, zero navigation entries */}
       {/* PM Templates: Full-page create/edit */}
       <Route path="/pm/templates/new">
         <ProtectedRoute requireAdmin>
@@ -243,11 +239,7 @@ function Router() {
           <AccountsReceivablePage />
         </ProtectedRoute>
       </Route>
-      <Route path="/financial-dashboard">
-        <ProtectedRoute requireAdmin>
-          <FinancialDashboard />
-        </ProtectedRoute>
-      </Route>
+      {/* /financial-dashboard route removed 2026-04-10: zero navigation entries, page never linked */}
       <Route path="/admin">
         <ProtectedRoute requireAdmin>
           <Admin />
@@ -371,9 +363,7 @@ function Router() {
       <Route path="/settings/payroll">
         <Redirect to="/timesheets" />
       </Route>
-      <Route path="/settings/timesheets">
-        <Redirect to="/timesheets" />
-      </Route>
+      {/* /settings/timesheets redirect removed 2026-04-10: legacy path with zero navigation entries */}
       <Route path="/notifications">
         <ProtectedRoute requireAdmin>
           <NotificationsPage />
@@ -408,15 +398,8 @@ function Router() {
           <ProductImportPage />
         </ProtectedRoute>
       </Route>
-      {/* /company-settings redirects to the new settings dashboard */}
-      <Route path="/company-settings">
-        <Redirect to="/settings" />
-      </Route>
-      <Route path="/manage-technicians">
-        <ProtectedRoute requireAdmin>
-          <TechnicianManagementPage />
-        </ProtectedRoute>
-      </Route>
+      {/* /company-settings redirect removed 2026-04-10: legacy path with zero navigation entries */}
+      {/* /manage-technicians route removed 2026-04-10: duplicate of /settings/team, zero navigation entries */}
       <Route path="/manage-team">
         <ProtectedRoute requireAdmin>
           <ManageTeam />
@@ -452,11 +435,7 @@ function Router() {
           <SupplierDetailPage />
         </ProtectedRoute>
       </Route>
-      <Route path="/dispatch-preview">
-        <ProtectedRoute requireAdmin>
-          <DispatchBoard />
-        </ProtectedRoute>
-      </Route>
+      {/* /dispatch-preview route removed 2026-04-10: duplicate of /dispatch, zero navigation entries */}
       <Route component={NotFound} />
     </Switch>
     </Suspense>

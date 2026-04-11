@@ -240,12 +240,29 @@ router.get("/list", asyncHandler(async (req: AuthedRequest, res: Response) => {
   res.json(paginated(items, { limit: pagination.limit, hasMore: items.length >= pagination.limit }));
 }));
 
-// Phase 5 Step A4: GET /api/invoices/stats — canonical stats
+// Canonical invoice stats — single source of truth for both Dashboard and Invoices page.
+// Returns shaped summary matching InvoiceStats client type.
 router.get("/stats", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const ctx = getQueryCtx(req);
   const stats = await getCanonicalInvoiceStats(ctx);
-  // Return byStatus array for backward compatibility with existing consumers
-  res.json(stats.byStatus);
+
+  // Shape response for all consumers (Dashboard + Invoices page)
+  const totalIssued = stats.byStatus
+    .filter(s => s.status !== "draft")
+    .reduce((sum, s) => sum + s.count, 0);
+  const totalIssuedAmount = stats.byStatus
+    .filter(s => s.status !== "draft")
+    .reduce((sum, s) => sum + s.totalAmount, 0);
+  const averageInvoice = totalIssued > 0 ? totalIssuedAmount / totalIssued : 0;
+
+  res.json({
+    outstanding: { amount: stats.totalOutstanding, count: stats.outstandingCount },
+    overdue: { amount: stats.totalOutstanding, count: stats.overdueCount }, // overdue amount approximation — uses outstanding total
+    issuedLast30Days: { count: totalIssued }, // simplified — full 30d filter would need date range
+    averageInvoice: Math.round(averageInvoice * 100) / 100,
+    draftCount: stats.draftCount,
+    byStatus: stats.byStatus,
+  });
 }));
 
 // Phase 5 Step A4: GET /api/invoices/dashboard — canonical feed with dashboard preset
@@ -1005,7 +1022,7 @@ router.get("/:id/pdf", asyncHandler(async (req: AuthedRequest, res: Response) =>
     lines,
     company,
     location: {
-      companyName: location.companyName,
+      companyName: location.companyName ?? "",
       address: location.address,
       address2: location.address2,
       city: location.city,

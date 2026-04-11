@@ -37,22 +37,14 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
 
   const menuItems = [];
 
-  // Simplified menu for technicians
+  // 2026-04-10: Legacy technician sidebar entries (/technician, /daily-parts) removed.
+  // Those routes were never registered in App.tsx — the canonical tech experience is
+  // the tech PWA at /tech/today. When a technician logs in, Login.tsx redirects them
+  // to /tech/today; they never see the office sidebar.
   if (user?.role === "technician") {
-    menuItems.push({
-      title: "My Schedule",
-      icon: Smartphone,
-      href: "/technician",
-      isActive: location === "/technician",
-      testId: "nav-technician"
-    });
-    menuItems.push({
-      title: "Daily Parts",
-      icon: Package,
-      href: "/daily-parts",
-      isActive: location === "/daily-parts",
-      testId: "nav-daily-parts"
-    });
+    // Technicians are redirected to /tech/today by Login.tsx — this branch is
+    // effectively unreachable. Kept as a no-op for safety (ProtectedRoute also
+    // redirects technicians to /tech/today).
   } else {
     // Primary: Dashboard, Calendar
     menuItems.push({
@@ -80,7 +72,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       title: "Dispatch",
       icon: LayoutGrid,
       href: "/dispatch",
-      isActive: location === "/dispatch" || location === "/calendar",
+      isActive: location === "/dispatch",
       testId: "nav-dispatch"
     });
     // --- Divider 1 --- Work Management: Jobs, PM, Invoices, Quotes

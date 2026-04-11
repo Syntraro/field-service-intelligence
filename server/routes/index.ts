@@ -57,6 +57,7 @@ import pmPartsRouter from "./pm-parts";
 import { tagCrudRouter, customerCompanyTagRouter, locationTagRouter } from "./tags";
 import techFieldRouter from "./techField";
 import adminTimesheetsRouter from "./adminTimesheets";
+import referenceFieldsRouter from "./referenceFields";
 import visitsRouter from "./visits";
 // Phase 1 Architecture: Event Log + Attention Queue
 import activityRouter from "./activity";
@@ -77,6 +78,8 @@ import clientImportRouter from "./clientImport";
 import jobImportRouter from "./jobImport";
 // Product/Service CSV import
 import productImportRouter from "./productImport";
+// Feedback tracking (internal, no email)
+import feedbackRouter from "./feedback";
 // PM Templates: reusable job content templates for maintenance plans
 import pmTemplatesRouter from "./pmTemplates";
 import pmBillingRouter from "./pmBilling";
@@ -209,6 +212,7 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/subscriptions", subscriptionsRouter);
   app.use("/api/impersonation", impersonationRouter);
   app.use("/api/tasks", tasksRoutes);
+  app.use("/api/feedback", feedbackRouter);
   app.use("/api/suppliers", suppliersRouter);
   app.use("/api/dashboard", dashboardRouter);
   app.use("/api/reports", reportsRouter);
@@ -231,6 +235,7 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/pm/billing", pmBillingRouter); // PM Billing Phase 2: contract billing events + oversight
   app.use("/api/tax", taxRouter); // Tax: rates + groups CRUD
   app.use("/api/search", searchRouter); // Universal search: jobs, invoices, customers, locations, suppliers
+  app.use("/api/reference-fields", referenceFieldsRouter); // Reference fields: definitions + per-entity values
 
   // PM parts: location-level part templates for preventive maintenance
   app.use("/api/locations", pmPartsRouter);

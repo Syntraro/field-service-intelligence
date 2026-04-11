@@ -41,6 +41,23 @@ export function CreateJobPage() {
   const [schedDate, setSchedDate] = useState("");
   const [schedTime, setSchedTime] = useState("");
   const [schedDuration, setSchedDuration] = useState("60");
+
+  // Default date/time when switching to "Schedule Now"
+  const handleScheduleMode = (mode: "later" | "now") => {
+    setScheduleMode(mode);
+    if (mode === "now") {
+      if (!schedDate) {
+        const now = new Date();
+        setSchedDate(now.toISOString().split("T")[0]);
+      }
+      if (!schedTime) {
+        const now = new Date();
+        const hh = String(now.getHours()).padStart(2, "0");
+        const mm = String(now.getMinutes()).padStart(2, "0");
+        setSchedTime(`${hh}:${mm}`);
+      }
+    }
+  };
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -96,8 +113,10 @@ export function CreateJobPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/tech/visits"] });
 
       setSuccess("Job created");
-      // Navigate to visit detail if visitId returned, otherwise today view
-      const targetVisitId = result?.visitId;
+      // 2026-04-10: Only navigate to visit detail if the visit is SCHEDULED
+      // (has a time slot). Unscheduled placeholder visits are not actionable —
+      // navigating there shows an unusable detail page. Go to Today instead.
+      const targetVisitId = scheduleMode === "now" ? result?.visitId : undefined;
       setTimeout(() => {
         setLocation(targetVisitId ? `/tech/visit/${targetVisitId}` : "/tech/today");
       }, 600);
@@ -126,7 +145,7 @@ export function CreateJobPage() {
     <MobileShell showNav>
       <div className="bg-[#0f1a2e] px-3 pt-2 pb-2">
         <div className="flex items-center gap-2">
-          <button onClick={() => setLocation("/tech/today")} className="p-1 -ml-1 rounded-lg hover:bg-white/10">
+          <button onClick={() => setLocation("/tech/today")} className="p-1 -ml-1 rounded-md hover:bg-white/10">
             <ArrowLeft className="h-4 w-4 text-white" />
           </button>
           <h1 className="text-base font-bold text-white">Create Job</h1>
@@ -135,13 +154,13 @@ export function CreateJobPage() {
 
       <div className="px-3 py-3 pb-28 space-y-3">
         {success && (
-          <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3 flex items-center gap-2">
+          <div className="rounded-md bg-emerald-50 border border-emerald-200 p-3 flex items-center gap-2">
             <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
             <p className="text-xs font-medium text-emerald-700">{success}</p>
           </div>
         )}
         {error && (
-          <div className="rounded-lg bg-red-50 border border-red-200 p-3">
+          <div className="rounded-md bg-red-50 border border-red-200 p-3">
             <p className="text-xs text-red-600">{error}</p>
           </div>
         )}
@@ -150,7 +169,7 @@ export function CreateJobPage() {
         <div>
           <label className="text-xs font-semibold text-slate-500 mb-1 block">Location *</label>
           {selectedLocation && locationId ? (
-            <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 flex items-center justify-between">
+            <div className="rounded-md border border-emerald-200 bg-emerald-50/50 p-3 flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-slate-800">{selectedLocation.companyName}</p>
                 <p className="text-xs text-slate-400">{[selectedLocation.address, selectedLocation.city].filter(Boolean).join(", ")}</p>
@@ -163,10 +182,10 @@ export function CreateJobPage() {
               <div className="relative">
                 <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
                 <input value={locationSearch} onChange={e => setLocationSearch(e.target.value)}
-                  placeholder="Search locations..." className="w-full h-9 pl-9 pr-3 text-sm border border-slate-200 rounded-lg" />
+                  placeholder="Search locations..." className="w-full h-9 pl-9 pr-3 text-sm border border-slate-200 rounded-md" />
               </div>
               {locationSearch.length >= 2 && (
-                <div className="mt-1 border border-slate-200 rounded-lg overflow-hidden max-h-48 overflow-y-auto">
+                <div className="mt-1 border border-slate-200 rounded-md overflow-hidden max-h-48 overflow-y-auto">
                   {(locations ?? []).map(loc => (
                     <button key={loc.id} onClick={() => selectLocation(loc)}
                       className="w-full text-left px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-0">
@@ -190,14 +209,14 @@ export function CreateJobPage() {
         <div>
           <label className="text-xs font-semibold text-slate-500 mb-1 block">Summary *</label>
           <input value={summary} onChange={e => setSummary(e.target.value)}
-            placeholder="Brief job summary..." className="w-full h-9 px-3 text-sm border border-slate-200 rounded-lg" />
+            placeholder="Brief job summary..." className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
         </div>
 
         {/* Assigned Technician */}
         <div>
           <label className="text-xs font-semibold text-slate-500 mb-1 block">Assigned To</label>
           <select value={techId} onChange={e => setTechId(e.target.value)}
-            className="w-full h-9 px-3 text-sm border border-slate-200 rounded-lg bg-white">
+            className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md bg-white">
             {(techMembers ?? []).map(t => (
               <option key={t.id} value={t.id}>{t.fullName}{t.id === user?.id ? " (me)" : ""}</option>
             ))}
@@ -208,14 +227,14 @@ export function CreateJobPage() {
         <div>
           <label className="text-xs font-semibold text-slate-500 mb-1 block">Scheduling</label>
           <div className="flex gap-1.5">
-            <button onClick={() => setScheduleMode("later")}
-              className={`flex-1 h-9 rounded-lg text-xs font-semibold border flex items-center justify-center gap-1.5 transition-colors ${
+            <button onClick={() => handleScheduleMode("later")}
+              className={`flex-1 h-9 rounded-md text-xs font-semibold border flex items-center justify-center gap-1.5 transition-colors ${
                 scheduleMode === "later" ? "border-emerald-400 bg-emerald-50 text-emerald-700" : "border-slate-200 text-slate-500"
               }`}>
               <Clock className="h-3 w-3" />Schedule Later
             </button>
-            <button onClick={() => setScheduleMode("now")}
-              className={`flex-1 h-9 rounded-lg text-xs font-semibold border flex items-center justify-center gap-1.5 transition-colors ${
+            <button onClick={() => handleScheduleMode("now")}
+              className={`flex-1 h-9 rounded-md text-xs font-semibold border flex items-center justify-center gap-1.5 transition-colors ${
                 scheduleMode === "now" ? "border-emerald-400 bg-emerald-50 text-emerald-700" : "border-slate-200 text-slate-500"
               }`}>
               <Calendar className="h-3 w-3" />Schedule Now
@@ -225,23 +244,23 @@ export function CreateJobPage() {
 
         {/* Schedule Now inputs */}
         {scheduleMode === "now" && (
-          <div className="space-y-2 rounded-lg border border-slate-200 p-3 bg-slate-50/50">
+          <div className="space-y-2 rounded-md border border-slate-200 p-3 bg-slate-50/50">
             <div className="flex gap-2">
               <div className="flex-1">
                 <label className="text-[10px] font-semibold text-slate-400 mb-0.5 block">Date</label>
                 <input type="date" value={schedDate} onChange={e => setSchedDate(e.target.value)}
-                  className="w-full h-8 px-2 text-xs border border-slate-200 rounded-lg" />
+                  className="w-full h-8 px-2 text-xs border border-slate-200 rounded-md" />
               </div>
               <div className="flex-1">
                 <label className="text-[10px] font-semibold text-slate-400 mb-0.5 block">Start Time</label>
                 <input type="time" value={schedTime} onChange={e => setSchedTime(e.target.value)}
-                  className="w-full h-8 px-2 text-xs border border-slate-200 rounded-lg" />
+                  className="w-full h-8 px-2 text-xs border border-slate-200 rounded-md" />
               </div>
             </div>
             <div>
               <label className="text-[10px] font-semibold text-slate-400 mb-0.5 block">Duration (minutes)</label>
               <input type="number" value={schedDuration} onChange={e => setSchedDuration(e.target.value)}
-                min="15" step="15" className="w-full h-8 px-2 text-xs border border-slate-200 rounded-lg" />
+                min="15" step="15" className="w-full h-8 px-2 text-xs border border-slate-200 rounded-md" />
             </div>
           </div>
         )}
@@ -250,12 +269,12 @@ export function CreateJobPage() {
         <div>
           <label className="text-xs font-semibold text-slate-500 mb-1 block">Description</label>
           <textarea value={description} onChange={e => setDescription(e.target.value)}
-            placeholder="Additional details..." className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 resize-none h-20" />
+            placeholder="Additional details..." className="w-full text-sm border border-slate-200 rounded-md px-3 py-2 resize-none h-20" />
         </div>
 
         {/* Submit */}
         <button onClick={handleSubmit} disabled={!canSubmit}
-          className="w-full h-11 rounded-xl bg-emerald-600 text-white text-base font-bold flex items-center justify-center gap-2 disabled:opacity-60 active:scale-[0.98]">
+          className="w-full h-11 rounded-md bg-emerald-600 text-white text-base font-bold flex items-center justify-center gap-2 disabled:opacity-60 active:scale-[0.98]">
           {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
           {scheduleMode === "now" ? "Create & Schedule" : "Create Job"}
         </button>

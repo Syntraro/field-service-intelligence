@@ -186,6 +186,46 @@ function JobRow({ job, locationLabel, onNavigate }: {
   );
 }
 
+/** Canonical active-work section — single owner of filter + sort + render.
+ *  Used by both CompanyOverviewTab and LocOverviewTab. */
+function ActiveWorkSection({ jobs, locationMap, emptyLabel, onNavigate, limit = 25 }: {
+  jobs: Job[];
+  locationMap?: Map<string, string>;
+  emptyLabel?: string;
+  onNavigate: (p: string) => void;
+  limit?: number;
+}) {
+  const sorted = useMemo(() => {
+    return jobs
+      .filter(j => j.status === "open")
+      .sort((a, b) => {
+        const pa = getJobStatusDisplay(a).priority;
+        const pb = getJobStatusDisplay(b).priority;
+        if (pa !== pb) return pa - pb;
+        return new Date(b.updatedAt ?? b.createdAt).getTime() - new Date(a.updatedAt ?? a.createdAt).getTime();
+      })
+      .slice(0, limit);
+  }, [jobs, limit]);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Active Work</h3>
+        <span className="text-[10px] text-slate-400">{sorted.length} jobs</span>
+      </div>
+      {sorted.length === 0 ? (
+        <p className="text-xs text-slate-400 py-4 text-center">{emptyLabel || "No active work"}</p>
+      ) : (
+        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
+          {sorted.map(j => (
+            <JobRow key={j.id} job={j} locationLabel={locationMap?.get(j.locationId)} onNavigate={onNavigate} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Page ───────────────────────────────────────────────────────────────
 
 export default function ClientDetailPage() {
@@ -557,29 +597,25 @@ export default function ClientDetailPage() {
   const locJobs = selectedLocationId ? jobsByLocation.get(selectedLocationId) ?? [] : [];
   const locInvoices = selectedLocationId ? invoicesByLocation.get(selectedLocationId) ?? [] : [];
   const locQuotes = selectedLocationId ? quotesByLocation.get(selectedLocationId) ?? [] : [];
-  const locOverdueJobs = locJobs.filter(j => isJobOverdue(j));
-  const locActiveJobs = locJobs.filter(j => j.status === "open" && !locOverdueJobs.some(o => o.id === j.id));
+  // locJobs passed directly to LocOverviewTab → ActiveWorkSection (canonical filter owner)
 
   // ── KPI metrics derived from already-loaded data ──
   // These useMemo hooks MUST be above the early returns to preserve hook order.
-  const completedJobsThisYear = useMemo(() => {
-    const yearStart = new Date(new Date().getFullYear(), 0, 1);
-    return companyJobs.filter(j => j.status === "completed" && j.updatedAt && new Date(j.updatedAt) >= yearStart).length;
-  }, [companyJobs]);
-
-  const revenueThisYear = useMemo(() => {
-    const yearStart = new Date(new Date().getFullYear(), 0, 1);
+  // Lifetime revenue: all-time paid invoices
+  const lifetimeRevenue = useMemo(() => {
     return allInvoices
-      .filter(i => i.status === "paid" && i.createdAt && new Date(i.createdAt) >= yearStart)
+      .filter(i => i.status === "paid")
       .reduce((sum, i) => sum + Number(i.total || 0), 0);
   }, [allInvoices]);
 
+  // Outstanding: excludes drafts and voided — matches canonical UNPAID_INVOICE_STATUSES
   const outstandingInvoices = useMemo(() => {
-    const outstanding = allInvoices.filter(i => i.status !== "paid" && i.status !== "voided");
+    const UNPAID = ["awaiting_payment", "sent", "partial_paid"];
+    const outstanding = allInvoices.filter(i => UNPAID.includes(i.status));
     const overdueTotal = outstanding
       .filter(i => i.dueDate && new Date(i.dueDate) < new Date())
-      .reduce((sum, i) => sum + Number(i.total || 0), 0);
-    return { count: outstanding.length, overdueTotal };
+      .reduce((sum, i) => sum + Number(i.balance ? Number(i.balance) : Number(i.total || 0)), 0);
+    return { count: outstanding.length, total: outstanding.reduce((s, i) => s + Number(i.balance ? Number(i.balance) : Number(i.total || 0)), 0), overdueTotal };
   }, [allInvoices]);
 
   // Active jobs per location for location list badges
@@ -616,7 +652,7 @@ export default function ClientDetailPage() {
 
   // Active scope entity name and tags for workspace header
   const scopeEntityName = scopeType === "company"
-    ? companyName
+    ? "All Locations"
     : (selectedLoc ? locationDisplayName(selectedLoc) : "");
   const scopeTags = scopeType === "company" ? companyTags : locationTags;
 
@@ -687,25 +723,20 @@ export default function ClientDetailPage() {
           {/* KPI positioned left-of-center in remaining space */}
           <div className="flex-1 flex justify-start pl-12">
             {/* Contained KPI block */}
-            <div className="flex items-center gap-5 rounded-lg border border-slate-200 bg-slate-50/80 px-5 py-2.5">
+            <div className="flex items-center gap-5 rounded-md border border-slate-200 bg-slate-50/80 px-5 py-2.5">
               <div className="flex items-baseline gap-1.5">
-                <span className="text-slate-600 text-[11px]">Completed</span>
-                <span className="font-bold text-slate-900 text-base tabular-nums">{completedJobsThisYear}</span>
-              </div>
-              <div className="h-5 w-px bg-slate-200" />
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-slate-600 text-[11px]">Revenue</span>
-                <span className="font-bold text-slate-900 text-base">{fmt.format(revenueThisYear)}</span>
-              </div>
-              <div className="h-5 w-px bg-slate-200" />
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-slate-600 text-[11px]">Active</span>
+                <span className="text-slate-600 text-[11px]">Active Jobs</span>
                 <span className="font-bold text-[#76B054] text-base tabular-nums">{activeJobsCount}</span>
               </div>
               <div className="h-5 w-px bg-slate-200" />
               <div className="flex items-baseline gap-1.5">
+                <span className="text-slate-600 text-[11px]">Lifetime Revenue</span>
+                <span className="font-bold text-slate-900 text-base">{fmt.format(lifetimeRevenue)}</span>
+              </div>
+              <div className="h-5 w-px bg-slate-200" />
+              <div className="flex items-baseline gap-1.5">
                 <span className="text-slate-600 text-[11px]">Outstanding</span>
-                <span className="font-bold text-slate-900 text-base tabular-nums">{outstandingInvoices.count}</span>
+                <span className="font-bold text-slate-900 text-base">{fmt.format(outstandingInvoices.total)}</span>
               </div>
               {outstandingInvoices.overdueTotal > 0 && (
                 <>
@@ -714,8 +745,8 @@ export default function ClientDetailPage() {
                     <span className="text-red-500 text-[11px] font-medium">Overdue</span>
                     <span className="font-bold text-red-600 text-base">{fmt.format(outstandingInvoices.overdueTotal)}</span>
                   </div>
-              </>
-            )}
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -725,7 +756,7 @@ export default function ClientDetailPage() {
       <div className="flex flex-1 overflow-hidden p-3 gap-3">
 
         {/* ── LEFT: LOCATION INDEX ── */}
-        <div className="w-[256px] flex-shrink-0 rounded-lg border border-slate-200 bg-white flex flex-col overflow-hidden">
+        <div className="w-[256px] flex-shrink-0 rounded-md border border-slate-200 bg-white flex flex-col overflow-hidden">
           {/* Search / label */}
           <div className="px-3 py-2 border-b border-slate-100">
             {locations.length > 3 ? (
@@ -756,10 +787,7 @@ export default function ClientDetailPage() {
             }`}
           >
             <Building2 className={`h-3.5 w-3.5 flex-shrink-0 ${scopeType === "company" ? "text-[#76B054]" : "text-slate-400"}`} />
-            <div className="min-w-0">
-              <span className={`text-xs font-medium block truncate ${scopeType === "company" ? "text-[#5F9442]" : "text-slate-700"}`}>Company Overview</span>
-              <span className="text-[10px] text-slate-400">All locations</span>
-            </div>
+            <span className={`text-xs font-medium truncate ${scopeType === "company" ? "text-[#5F9442]" : "text-slate-700"}`}>All Locations</span>
           </button>
 
           {/* Location rows */}
@@ -817,7 +845,7 @@ export default function ClientDetailPage() {
         </div>
 
         {/* ── CENTER: WORKSPACE ── */}
-        <div className="flex flex-1 flex-col overflow-hidden min-w-0 rounded-lg border border-slate-200 bg-white">
+        <div className="flex flex-1 flex-col overflow-hidden min-w-0 rounded-md border border-slate-200 bg-white">
           {/* Workspace header + tabs */}
           <div className="border-b border-slate-200 px-5 pt-2.5 pb-0">
             <div className="flex items-center justify-between gap-3 mb-1">
@@ -855,7 +883,7 @@ export default function ClientDetailPage() {
                 )}
               </div>
             ) : scopeType === "company" ? (
-              <p className="text-[11px] text-slate-600 mb-1 pl-6">Client-level view across all {locations.length} locations</p>
+              <p className="text-[11px] text-slate-600 mb-1 pl-6">{companyName} &middot; Across {locations.length} location{locations.length !== 1 ? "s" : ""}</p>
             ) : null}
             {/* Tab bar */}
             <div className="flex -mb-px">
@@ -891,10 +919,8 @@ export default function ClientDetailPage() {
               <>
                 {workspaceTab === "overview" && (
                   <LocOverviewTab
-                    activeJobs={locActiveJobs}
-                    overdueJobs={locOverdueJobs}
+                    jobs={locJobs}
                     equipment={locationEquipment}
-                    location={selectedLoc}
                     onNavigate={setLocation}
                   />
                 )}
@@ -930,7 +956,7 @@ export default function ClientDetailPage() {
         </div>
 
         {/* ── RIGHT: SUPPORT SIDEBAR ── */}
-        <div className={`flex-shrink-0 rounded-lg border border-slate-200 bg-white transition-[width] duration-150 overflow-hidden ${
+        <div className={`flex-shrink-0 rounded-md border border-slate-200 bg-white transition-[width] duration-150 overflow-hidden ${
           rightRailCollapsed ? "w-10" : "w-[320px]"
         }`}>
           {rightRailCollapsed ? (
@@ -1490,46 +1516,21 @@ function ClientActivityCompact({ companyId }: { companyId?: string }) {
 // Company-Scope Workspace Tabs
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Company overview — Active list (excludes archived) sorted by status priority.
- *  Uses canonical getJobStatusDisplay().priority for ordering.
- *  Bug fix: archived jobs (status='archived') excluded from Active list. */
+/** Company overview — delegates to shared ActiveWorkSection. */
 function CompanyOverviewTab({
-  jobs, invoices, quotes, locations, onNavigate,
+  jobs, locations, onNavigate,
 }: {
   jobs: Job[]; invoices: Invoice[]; quotes: EnrichedQuote[];
   locations: Client[]; onNavigate: (p: string) => void;
 }) {
-  // Filter out archived jobs from Active display
-  const activeJobs = useMemo(() => jobs.filter(j => j.status !== "archived"), [jobs]);
-  // Single sorted list: overdue (priority 0) → in-progress (1) → scheduled (2) → open (3) → completed (4+)
-  const sortedJobs = useMemo(() => {
-    return [...activeJobs]
-      .sort((a, b) => {
-        const pa = getJobStatusDisplay(a).priority;
-        const pb = getJobStatusDisplay(b).priority;
-        if (pa !== pb) return pa - pb;
-        return new Date(b.updatedAt ?? b.createdAt).getTime() - new Date(a.updatedAt ?? a.createdAt).getTime();
-      })
-      .slice(0, 25);
-  }, [activeJobs]);
   const locMap = useMemo(() => new Map(locations.map(l => [l.id, locationDisplayName(l)])), [locations]);
-
   return (
-    <div>
-      <div className="flex items-center justify-between mb-1.5">
-        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Active Work</h3>
-        <span className="text-[10px] text-slate-400">{sortedJobs.length} jobs</span>
-      </div>
-      {sortedJobs.length === 0 ? (
-        <p className="text-xs text-slate-400 py-4 text-center">No active jobs across locations</p>
-      ) : (
-        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-          {sortedJobs.map(j => (
-            <JobRow key={j.id} job={j} locationLabel={locMap.get(j.locationId)} onNavigate={onNavigate} />
-          ))}
-        </div>
-      )}
-    </div>
+    <ActiveWorkSection
+      jobs={jobs}
+      locationMap={locMap}
+      emptyLabel="No active jobs across locations"
+      onNavigate={onNavigate}
+    />
   );
 }
 
@@ -1539,32 +1540,18 @@ function CompanyOverviewTab({
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function LocOverviewTab({
-  activeJobs, overdueJobs, equipment, location, onNavigate,
+  jobs, equipment, onNavigate,
 }: {
-  activeJobs: Job[]; overdueJobs: Job[]; equipment: LocationEquipment[];
-  location: Client; onNavigate: (path: string) => void;
+  jobs: Job[]; equipment: LocationEquipment[];
+  onNavigate: (path: string) => void;
 }) {
   return (
     <div className="space-y-4">
-      {/* Active / Overdue work */}
-      <div>
-        <div className="flex items-center justify-between mb-1.5">
-          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Active Work</h3>
-          <span className="text-[10px] text-slate-400">{activeJobs.length + overdueJobs.length} jobs</span>
-        </div>
-        {activeJobs.length === 0 && overdueJobs.length === 0 ? (
-          <p className="text-xs text-slate-400 py-4 text-center">No active work at this location</p>
-        ) : (
-          <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-            {overdueJobs.map(j => (
-              <JobRow key={j.id} job={j} onNavigate={onNavigate} />
-            ))}
-            {activeJobs.map(j => (
-              <JobRow key={j.id} job={j} onNavigate={onNavigate} />
-            ))}
-          </div>
-        )}
-      </div>
+      <ActiveWorkSection
+        jobs={jobs}
+        emptyLabel="No active work at this location"
+        onNavigate={onNavigate}
+      />
 
       {/* Equipment summary */}
       {equipment.length > 0 && (

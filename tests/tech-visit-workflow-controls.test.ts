@@ -105,10 +105,20 @@ async function createFixtures() {
     .limit(1);
   visitId = visit.id;
 
-  // Assign the test technician to the visit.
+  // Assign the test technician to the visit and set a scheduledStart.
+  // 2026-04-10: The new assertVisitIsScheduled guard blocks lifecycle actions
+  // on visits with null scheduledStart. Fixture visits must be "scheduled"
+  // (have a time slot) to test lifecycle transitions correctly.
+  const scheduledStart = new Date();
+  const scheduledEnd = new Date(scheduledStart.getTime() + 60 * 60_000);
   await db
     .update(jobVisits)
-    .set({ assignedTechnicianId: userId, assignedTechnicianIds: [userId] })
+    .set({
+      assignedTechnicianId: userId,
+      assignedTechnicianIds: [userId],
+      scheduledStart,
+      scheduledEnd,
+    })
     .where(eq(jobVisits.id, visitId));
 }
 
@@ -379,12 +389,15 @@ describe("Tech Visit Workflow Controls", () => {
         .set({ status: "scheduled", checkedInAt: null, previousStatus: null })
         .where(eq(jobVisits.id, visitId));
 
+      const secondStart = new Date();
       const [second] = await db
         .insert(jobVisits)
         .values({
           companyId,
           jobId,
           scheduledDate: new Date(),
+          scheduledStart: secondStart,
+          scheduledEnd: new Date(secondStart.getTime() + 60 * 60_000),
           status: "scheduled",
           assignedTechnicianId: userId,
           assignedTechnicianIds: [userId],

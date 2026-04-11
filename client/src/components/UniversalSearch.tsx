@@ -23,7 +23,7 @@ import { cn } from "@/lib/utils";
 // TYPES
 // ========================================
 
-type SearchResultType = "job" | "invoice" | "customerCompany" | "location" | "supplier" | "contact";
+type SearchResultType = "job" | "invoice" | "quote" | "customerCompany" | "location" | "supplier" | "contact";
 
 interface SearchResult {
   type: SearchResultType;
@@ -95,11 +95,12 @@ function buildCommands(callbacks: { onCreateJob?: () => void; onCreateQuote?: ()
 // SEARCH RESULT HELPERS (preserved from original)
 // ========================================
 
-const TYPE_ORDER: SearchResultType[] = ["invoice", "job", "customerCompany", "location", "contact", "supplier"];
+const TYPE_ORDER: SearchResultType[] = ["invoice", "job", "quote", "customerCompany", "location", "contact", "supplier"];
 
 const TYPE_ICONS: Record<SearchResultType, React.ComponentType<{ className?: string }>> = {
   job: Briefcase,
   invoice: FileText,
+  quote: FileCheck,
   customerCompany: Building2,
   location: MapPin,
   contact: UserCircle,
@@ -109,6 +110,7 @@ const TYPE_ICONS: Record<SearchResultType, React.ComponentType<{ className?: str
 const TYPE_LABELS: Record<SearchResultType, string> = {
   job: "Jobs",
   invoice: "Invoices",
+  quote: "Quotes",
   customerCompany: "Companies",
   location: "Locations",
   contact: "Contacts",
@@ -118,6 +120,7 @@ const TYPE_LABELS: Record<SearchResultType, string> = {
 const TYPE_ROUTES: Record<SearchResultType, (id: string) => string> = {
   job: (id) => `/jobs/${id}`,
   invoice: (id) => `/invoices/${id}`,
+  quote: (id) => `/quotes/${id}`,
   customerCompany: (id) => `/clients/${id}`,
   location: (id) => `/clients/${id}`,  // Fallback only — location routing handled explicitly in executeItem
   contact: (id) => `/clients/${id}`,  // Navigate to parent company (contacts live under companies)
@@ -490,7 +493,7 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
       {/* Floating command palette panel */}
       {showPalette && (
         <div
-          className="absolute top-[calc(100%+6px)] right-0 w-96 rounded-lg border border-border bg-popover text-popover-foreground shadow-lg z-50 overflow-hidden"
+          className="absolute top-[calc(100%+6px)] right-0 w-96 rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-50 overflow-hidden"
           data-testid="command-palette"
         >
           <div className="max-h-[420px] overflow-y-auto">

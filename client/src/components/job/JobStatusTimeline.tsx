@@ -116,7 +116,7 @@ export function JobStatusTimeline({ jobId, defaultOpen = false }: JobStatusTimel
 
   return (
     <Collapsible defaultOpen={defaultOpen}>
-      <Card className="rounded-xl border-[#e5e7eb] bg-[#ffffff]">
+      <Card className="rounded-md border-[#e5e7eb] bg-[#ffffff]">
         <CollapsibleTrigger asChild>
           <button
             className="w-full flex items-center justify-between px-5 py-4 bg-[#f8fafc] hover:bg-slate-100 transition-colors border-b border-[#e2e8f0]"

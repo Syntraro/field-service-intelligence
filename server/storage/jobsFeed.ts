@@ -132,6 +132,7 @@ export interface JobHeaderDetail extends JobFeedItem {
     companyName: string | null;
     location: string | null;
     address: string | null;
+    address2: string | null;
     city: string | null;
     province: string | null;
     postalCode: string | null;
@@ -216,6 +217,7 @@ const detailSelectFields = {
     companyName: clients.companyName,
     location: clients.location,
     address: clients.address,
+    address2: clients.address2,
     city: clients.city,
     province: clients.province,
     postalCode: clients.postalCode,
@@ -303,6 +305,7 @@ function mapDetailRow(row: any): JobHeaderDetail {
           companyName: row.location.companyName ?? null,
           location: row.location.location ?? null,
           address: row.location.address ?? null,
+          address2: row.location.address2 ?? null,
           city: row.location.city ?? null,
           province: row.location.province ?? null,
           postalCode: row.location.postalCode ?? null,

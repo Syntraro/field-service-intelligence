@@ -124,7 +124,7 @@ async function backfillForTenant(tenantCompanyId: string, dryRun: boolean): Prom
       }
 
       // Resolve the correct customerCompanyId for this location
-      const resolvedId = await resolveCustomerCompanyForLocation(tenantCompanyId, location);
+      const resolvedId = await resolveCustomerCompanyForLocation(tenantCompanyId, { ...location, companyName: location.companyName ?? "" });
 
       // Case 1: quote.customerCompanyId is NULL
       if (!q.customerCompanyId) {

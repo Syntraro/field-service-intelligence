@@ -439,6 +439,7 @@ export async function completeVisit(
     err.code = "VISIT_ALREADY_TERMINAL";
     throw err;
   }
+  assertVisitIsScheduled(existing);
 
   // Step 2: Visit update + optional job note run in a single transaction.
   const now = new Date();
@@ -1044,6 +1045,36 @@ async function assertNoOtherActiveVisitForTech(
 }
 
 // ============================================================================
+// SHARED GUARD: Unscheduled visit lifecycle block
+// ============================================================================
+//
+// 2026-04-10: Canonical guard preventing lifecycle actions on unscheduled
+// visits (scheduledStart IS NULL). An unscheduled visit is a placeholder
+// created by "Schedule Later" — it should not be actionable until the office
+// or dispatch board assigns a time slot.
+//
+// Applied to: setVisitEnRoute, startVisit, completeVisit, pauseVisit,
+//             resumeVisit, cancelVisitRoute, cancelVisitStart.
+//
+// NOT applied to: rescheduleVisit (the point IS to schedule it),
+//                 cancelVisit (admin can cancel any visit),
+//                 bulkCompleteVisits (force-close during job termination),
+//                 reopenVisit (admin reopens completed visit).
+//
+// The guard reads `scheduledStart` from the visit row already fetched by the
+// calling function — no extra DB query.
+
+function assertVisitIsScheduled(
+  visit: { id: string; scheduledStart: Date | string | null },
+): void {
+  if (!visit.scheduledStart) {
+    throw new Error(
+      "Cannot perform this action on an unscheduled visit. Schedule the visit first.",
+    );
+  }
+}
+
+// ============================================================================
 // SET_VISIT_EN_ROUTE
 // ============================================================================
 
@@ -1071,6 +1102,7 @@ export async function setVisitEnRoute(
   if (existing.status === "completed" || existing.status === "cancelled") {
     throw new Error(`Cannot update a ${existing.status} visit`);
   }
+  assertVisitIsScheduled(existing);
 
   // 2026-04-10: single-active-visit enforcement (#3)
   await assertNoOtherActiveVisitForTech(companyId, actingUserId, visitId);
@@ -1118,6 +1150,7 @@ export async function startVisit(
   if (existing.status === "completed" || existing.status === "cancelled") {
     throw new Error(`Cannot start a ${existing.status} visit`);
   }
+  assertVisitIsScheduled(existing);
 
   // 2026-04-10: single-active-visit enforcement (#3)
   await assertNoOtherActiveVisitForTech(companyId, actingUserId, visitId);
@@ -1171,6 +1204,7 @@ export async function cancelVisitRoute(
   if (!existing) {
     throw new Error(`Visit ${visitId} not found for company ${companyId}`);
   }
+  assertVisitIsScheduled(existing);
   if (existing.status !== "en_route") {
     throw new Error(
       `Cannot cancel route for visit in status '${existing.status}'. Only en_route visits can be reverted.`
@@ -1229,6 +1263,7 @@ export async function cancelVisitStart(
   if (!existing) {
     throw new Error(`Visit ${visitId} not found for company ${companyId}`);
   }
+  assertVisitIsScheduled(existing);
   if (existing.status !== "in_progress" && existing.status !== "on_site") {
     throw new Error(
       `Cannot cancel start for visit in status '${existing.status}'. Only in_progress / on_site visits can be reverted.`
@@ -1286,6 +1321,7 @@ export async function pauseVisit(
   if (!existing) {
     throw new Error(`Visit ${visitId} not found for company ${companyId}`);
   }
+  assertVisitIsScheduled(existing);
   if (existing.status !== "in_progress" && existing.status !== "on_site") {
     throw new Error(
       `Cannot pause visit in status '${existing.status}'. Only in_progress / on_site visits can be paused.`
@@ -1333,6 +1369,7 @@ export async function resumeVisit(
   if (!existing) {
     throw new Error(`Visit ${visitId} not found for company ${companyId}`);
   }
+  assertVisitIsScheduled(existing);
   if (existing.status !== "paused") {
     throw new Error(
       `Cannot resume visit in status '${existing.status}'. Only paused visits can be resumed.`

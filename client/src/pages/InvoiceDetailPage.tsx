@@ -8,8 +8,8 @@ import { useToast } from "@/hooks/use-toast";
 import {
   Send, Plus, DollarSign, Trash2,
   FileText, GripVertical, Check, X,
-  MessageSquare, User, Clock, Edit, ChevronDown, ChevronRight, Settings,
-  Percent, Tag, AlertTriangle
+  MessageSquare, ChevronDown, ChevronRight, Settings,
+  Percent, Tag, AlertTriangle, Pencil
 } from "lucide-react";
 import {
   DndContext,
@@ -31,6 +31,8 @@ import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ReferenceFieldsSection } from "@/components/shared/ReferenceFieldsSection";
+import JobNotesSection from "@/components/JobNotesSection";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -84,14 +86,7 @@ import { QboSyncBanner, isQboSynced, isBillingLocked } from "@/components/invoic
 import { QboOverrideModal, useQboOverride } from "@/components/invoice/QboOverrideModal";
 import { formatCurrency } from "@/lib/formatters";
 
-interface JobNote {
-  id: string;
-  text: string;
-  authorId?: string | null;
-  authorName?: string;
-  createdAt: string;
-  noteType?: string;
-}
+// JobNote interface removed — notes now rendered by canonical JobNotesSection component
 
 // Extended invoice type with derived fields from API
 interface InvoiceWithDerived extends Omit<Invoice, 'paymentTermsDays' | 'issuedAt'> {
@@ -496,9 +491,17 @@ export default function InvoiceDetailPage() {
   const [paymentMethod, setPaymentMethod] = useState("e-transfer");
   const [paymentReference, setPaymentReference] = useState("");
   const [paymentNotes, setPaymentNotes] = useState("");
-  const [activityOpen, setActivityOpen] = useState(false);
   const [workDescOpen, setWorkDescOpen] = useState(true);
+  const [isEditingDescription, setIsEditingDescription] = useState(false);
+  const [workDescDraft, setWorkDescDraft] = useState("");
   const [visibilityOpen, setVisibilityOpen] = useState(false);
+  const [visibilityDraft, setVisibilityDraft] = useState({
+    showLineItems: true,
+    showQuantity: true,
+    showUnitPrice: true,
+    showLineTotals: true,
+    showBalance: true,
+  });
   const [showAddRow, setShowAddRow] = useState(false);
 
   // Phase 11: Discount editing state
@@ -547,17 +550,7 @@ export default function InvoiceDetailPage() {
   });
 
   const jobId = details?.job?.id;
-  const { data: jobNotes = [], isLoading: notesLoading } = useQuery<JobNote[]>({
-    queryKey: ["job", jobId, "notes"],
-    queryFn: async () => {
-      const res = await fetch(`/api/jobs/${jobId}/notes`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch job notes");
-      return res.json();
-    },
-    enabled: !!jobId,
-    // Note CRUD now emits SSE events; office useDispatchStream invalidates ["jobs"] / ["/api/jobs"] family
-    staleTime: 5 * 60_000,
-  });
+  // Job notes are now rendered by canonical JobNotesSection component (writable, shared with Job Detail)
 
   const { data: companySettings } = useQuery<{ taxName?: string; defaultTaxRate?: string }>({
     queryKey: ["/api/company-settings"],
@@ -966,26 +959,6 @@ export default function InvoiceDetailPage() {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
-  const activityEvents = useMemo(() => {
-    if (!details) return [];
-    const { invoice } = details;
-    const items: { date: Date; title: string; subtitle?: string; color: string }[] = [
-      { date: new Date(invoice.createdAt), title: "Invoice created", color: "bg-primary" },
-    ];
-    if (invoice.sentAt) {
-      items.push({ date: new Date(invoice.sentAt), title: "Invoice sent", color: "bg-blue-500" });
-    }
-    payments.forEach((payment) => {
-      items.push({
-        date: new Date(payment.receivedAt),
-        title: `Payment received: ${formatCurrency(payment.amount)}`,
-        subtitle: payment.method ? `via ${payment.method}` : undefined,
-        color: "bg-green-500",
-      });
-    });
-    return items.sort((a, b) => b.date.getTime() - a.date.getTime());
-  }, [details, payments]);
-
   // Calculate profit summary from invoice lines (must be before early returns)
   const profitSummary = useMemo(() => {
     const lines = details?.lines || [];
@@ -1049,6 +1022,37 @@ export default function InvoiceDetailPage() {
       setInternalNotesDraft(details.invoice.notesInternal || "");
     }
   }, [details?.invoice?.clientMessage, details?.invoice?.notesInternal]);
+
+  // Canonical server-side visibility values
+  const serverVisibility = useMemo(() => ({
+    showLineItems: details?.invoice?.showLineItems !== false,
+    showQuantity: details?.invoice?.showQuantity !== false,
+    showUnitPrice: details?.invoice?.showUnitPrice !== false,
+    showLineTotals: details?.invoice?.showLineTotals !== false,
+    showBalance: details?.invoice?.showBalance !== false,
+  }), [details?.invoice?.showLineItems, details?.invoice?.showQuantity, details?.invoice?.showUnitPrice, details?.invoice?.showLineTotals, details?.invoice?.showBalance]);
+
+  const isVisibilityDirty =
+    visibilityDraft.showLineItems !== serverVisibility.showLineItems ||
+    visibilityDraft.showQuantity !== serverVisibility.showQuantity ||
+    visibilityDraft.showUnitPrice !== serverVisibility.showUnitPrice ||
+    visibilityDraft.showLineTotals !== serverVisibility.showLineTotals ||
+    visibilityDraft.showBalance !== serverVisibility.showBalance;
+
+  // Sync visibility draft from server — only when not dirty (protects unsaved changes)
+  useEffect(() => {
+    if (details?.invoice && !isVisibilityDirty) {
+      setVisibilityDraft(serverVisibility);
+    }
+  }, [serverVisibility]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync work description draft — only when not actively editing (protects typed content)
+  const serverWorkDesc = details?.invoice?.workDescription || details?.job?.description || "";
+  useEffect(() => {
+    if (!isEditingDescription) {
+      setWorkDescDraft(serverWorkDesc);
+    }
+  }, [serverWorkDesc]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Phase 11: Discount calculation helpers
   const handleDiscountPercentChange = (value: string) => {
@@ -1135,7 +1139,7 @@ export default function InvoiceDetailPage() {
   const isPastDue = invoice.isPastDue ?? false;
   const statusInfo = getInvoiceStatusBadge(invoice.status, isPastDue);
   const balanceColor = getBalanceColor(invoice.balance, isPastDue);
-  const clientName = customerCompany?.name || location.companyName;
+  const clientName = customerCompany?.name || location.companyName || "";
   const canEdit = invoice.status !== "paid" && invoice.status !== "voided";
   const isDraft = invoice.status === "draft";
 
@@ -1153,91 +1157,82 @@ export default function InvoiceDetailPage() {
   };
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex-1 overflow-auto">
-        <div className="p-4 max-w-7xl mx-auto bg-[#F4F8F4] min-h-screen" data-testid="invoice-detail-page">
-          {/* Phase 10A: QBO Sync Status Banner */}
-          <QboSyncBanner invoice={invoice} className="mb-4" />
+    <div className="bg-[#f1f5f9] h-full flex flex-col" data-testid="invoice-detail-page">
+      <div className="px-4 lg:px-6 py-4 flex-1 flex flex-col min-h-0">
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4 flex-1 min-h-0" data-testid="invoice-body-area">
+            <div className="space-y-2.5 min-w-0 min-h-0 overflow-y-auto lg:pr-1 h-full">
 
-          {/* Past Due Warning Banner */}
-          {isPastDue && (
-            <div className="mb-4 p-3 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg">
-              <div className="flex items-start gap-2">
-                <AlertTriangle className="h-4 w-4 text-red-600 dark:text-red-400 mt-0.5" />
-                <div>
-                  <p className="text-sm font-medium text-red-800 dark:text-red-200">
-                    Invoice is past due
-                  </p>
-                  <p className="text-xs text-red-600 dark:text-red-400 mt-1">
-                    Due date was {invoice.dueDate ? format(new Date(invoice.dueDate), "MMM d, yyyy") : "not set"}.
-                    Consider following up with the client.
-                  </p>
+              {/* Banners — inside left column so right rail starts at top */}
+              <QboSyncBanner invoice={invoice} />
+
+              {isPastDue && (
+                <div className="p-3 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-md">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="h-4 w-4 text-red-600 dark:text-red-400 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-medium text-red-800 dark:text-red-200">Invoice is past due</p>
+                      <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                        Due date was {invoice.dueDate ? format(new Date(invoice.dueDate), "MMM d, yyyy") : "not set"}.
+                      </p>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
-          )}
+              )}
 
-          {/* Sent Invoice Warning Banner */}
-          {(invoice.status === "awaiting_payment" || invoice.status === "sent" || invoice.status === "partial_paid") && !isBillingLocked(invoice) && !isPastDue && (
-            <div className="mb-4 p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg">
-              <div className="flex items-start gap-2">
-                <Send className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5" />
-                <div>
-                  <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
-                    Invoice has been sent to client
-                  </p>
-                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                    If you edit billing details, you should re-send an updated invoice to the client.
-                  </p>
+              {(invoice.status === "awaiting_payment" || invoice.status === "sent" || invoice.status === "partial_paid") && !isBillingLocked(invoice) && !isPastDue && (
+                <div className="p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-md">
+                  <div className="flex items-start gap-2">
+                    <Send className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Invoice has been sent to client</p>
+                      <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">If you edit billing details, re-send an updated invoice.</p>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
-          )}
+              )}
 
-          {/* Invoice Header Card */}
-          <InvoiceHeaderCard
-            invoice={invoice as Invoice}
-            location={location}
-            customerCompany={customerCompany}
-            job={job}
-            billingAddress={billingAddress}
-            serviceAddress={serviceAddress}
-            primaryContact={primaryContact}
-            onEdit={() => setIsEditing(!isEditing)}
-            onSend={() => setShowSendConfirm(true)}
-            onCollectPayment={() => setShowPaymentDialog(true)}
-            onVoid={() => setShowVoidConfirm(true)}
-            onDelete={() => setShowDeleteConfirm(true)}
-            onRefreshFromJob={() => refreshFromJobMutation.mutate(undefined)}
-            refreshPending={refreshFromJobMutation.isPending}
-            voidPending={voidMutation.isPending}
-            deletePending={deleteMutation.isPending}
-            onDownloadPdf={handleDownloadPdf}
-            onPrintPdf={handlePrintPdf}
-            pdfPending={pdfPending}
-            onToggleSent={handleToggleSent}
-            toggleSentPending={toggleSentPending}
-            canEdit={canEdit}
-            isDraft={isDraft}
-            isEditing={isEditing}
-            sendPending={sendMutation.isPending}
-            statusLabel={statusInfo.label}
-            statusVariant={statusInfo.variant}
-            isPastDue={isPastDue}
-            onUpdateInvoiceNumber={(num) => updateInvoiceNumberMutation.mutate(num)}
-            invoiceNumberPending={updateInvoiceNumberMutation.isPending}
-            onUpdatePaymentTerms={(data) => updatePaymentTermsMutation.mutate(data)}
-            paymentTermsPending={updatePaymentTermsMutation.isPending}
-            onUpdateIssueDate={(date) => updateInvoiceFieldsMutation.mutate({ issueDate: date })}
-            issueDatePending={updateInvoiceFieldsMutation.isPending}
-          />
+              {/* Invoice Header Card — inside left column (matches Job Detail) */}
+              <InvoiceHeaderCard
+                invoice={invoice as Invoice}
+                location={location}
+                customerCompany={customerCompany ?? null}
+                job={job ?? null}
+                billingAddress={billingAddress}
+                serviceAddress={serviceAddress}
+                primaryContact={primaryContact}
+                onEdit={() => setIsEditing(!isEditing)}
+                onSend={() => setShowSendConfirm(true)}
+                onCollectPayment={() => setShowPaymentDialog(true)}
+                onVoid={() => setShowVoidConfirm(true)}
+                onDelete={() => setShowDeleteConfirm(true)}
+                onRefreshFromJob={() => refreshFromJobMutation.mutate(undefined)}
+                refreshPending={refreshFromJobMutation.isPending}
+                voidPending={voidMutation.isPending}
+                deletePending={deleteMutation.isPending}
+                onDownloadPdf={handleDownloadPdf}
+                onPrintPdf={handlePrintPdf}
+                pdfPending={pdfPending}
+                onPreview={() => window.open(`/api/invoices/${invoiceId}/pdf`, "_blank")}
+                onToggleSent={handleToggleSent}
+                toggleSentPending={toggleSentPending}
+                canEdit={canEdit}
+                isDraft={isDraft}
+                isEditing={isEditing}
+                sendPending={sendMutation.isPending}
+                statusLabel={statusInfo.label}
+                statusVariant={statusInfo.variant}
+                isPastDue={isPastDue}
+                onUpdateInvoiceNumber={(num) => updateInvoiceNumberMutation.mutate(num)}
+                invoiceNumberPending={updateInvoiceNumberMutation.isPending}
+                onUpdatePaymentTerms={(data) => updatePaymentTermsMutation.mutate({ ...data, paymentTermsDays: data.paymentTermsDays ?? null })}
+                paymentTermsPending={updatePaymentTermsMutation.isPending}
+                onUpdateIssueDate={(date) => updateInvoiceFieldsMutation.mutate({ issueDate: date })}
+                issueDatePending={updateInvoiceFieldsMutation.isPending}
+              />
 
-          <div className="grid gap-3 mt-3 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]" data-testid="invoice-body-area">
-            <div className="flex flex-col gap-2.5 min-w-0 order-1">
-
-              {/* Job Description — matches job detail card pattern */}
-              {(job?.description || invoice.workDescription) && (
-                <div className="rounded-xl border border-[#e5e7eb] bg-[#ffffff] shadow-sm overflow-hidden" data-testid="card-job-description">
+              {/* Job Description — editable from invoice page */}
+              {(job?.description || invoice.workDescription || isEditingDescription) && (
+                <div className="rounded-md border border-[#e5e7eb] bg-[#ffffff] shadow-sm overflow-hidden" data-testid="card-job-description">
                   <Collapsible open={workDescOpen} onOpenChange={setWorkDescOpen}>
                     <CollapsibleTrigger asChild>
                       <button
@@ -1248,14 +1243,63 @@ export default function InvoiceDetailPage() {
                           <FileText className="h-4 w-4 text-[#64748b]" />
                           <span className="text-sm font-semibold text-[#0f172a]">Job Description</span>
                         </div>
-                        {workDescOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground/50" /> : <ChevronRight className="h-4 w-4 text-muted-foreground/50" />}
+                        <div className="flex items-center gap-1">
+                          {canEdit && !isEditingDescription && (
+                            <Button
+                              variant="ghost" size="icon" className="h-6 w-6"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setWorkDescDraft(invoice.workDescription || job?.description || "");
+                                setIsEditingDescription(true);
+                                if (!workDescOpen) setWorkDescOpen(true);
+                              }}
+                              data-testid="button-edit-description"
+                            >
+                              <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+                            </Button>
+                          )}
+                          {workDescOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground/50" /> : <ChevronRight className="h-4 w-4 text-muted-foreground/50" />}
+                        </div>
                       </button>
                     </CollapsibleTrigger>
                     <CollapsibleContent>
                       <div className="px-5 py-4">
-                        <p className="text-sm text-muted-foreground/80 whitespace-pre-wrap" data-testid="text-job-description">
-                          {job?.description || invoice.workDescription}
-                        </p>
+                        {isEditingDescription ? (
+                          <div className="space-y-2">
+                            <Textarea
+                              value={workDescDraft}
+                              onChange={(e) => setWorkDescDraft(e.target.value)}
+                              placeholder="Describe the work performed..."
+                              className="min-h-[100px] text-sm"
+                              data-testid="textarea-work-description"
+                            />
+                            <div className="flex justify-end gap-2">
+                              <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => {
+                                setWorkDescDraft(invoice.workDescription || job?.description || "");
+                                setIsEditingDescription(false);
+                              }}>
+                                Cancel
+                              </Button>
+                              <Button
+                                variant="outline" size="sm" className="h-7 text-xs"
+                                disabled={updateInvoiceFieldsMutation.isPending}
+                                onClick={() => {
+                                  updateInvoiceFieldsMutation.mutate(
+                                    { workDescription: workDescDraft },
+                                    { onSuccess: () => setIsEditingDescription(false) }
+                                  );
+                                }}
+                                data-testid="button-save-description"
+                              >
+                                {updateInvoiceFieldsMutation.isPending ? "Saving..." : "Save"}
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-sm text-muted-foreground/80 whitespace-pre-wrap" data-testid="text-job-description">
+                            {invoice.workDescription || job?.description || "No description."}
+                          </p>
+                        )}
                       </div>
                     </CollapsibleContent>
                   </Collapsible>
@@ -1263,7 +1307,7 @@ export default function InvoiceDetailPage() {
               )}
 
               {/* Products & Services — matches job detail Parts & Billing pattern */}
-              <div className="rounded-xl border border-[#e5e7eb] bg-[#ffffff] shadow-sm overflow-hidden" data-testid="card-products-services">
+              <div className="rounded-md border border-[#e5e7eb] bg-[#ffffff] shadow-sm overflow-hidden" data-testid="card-products-services">
                 <div className="flex items-center justify-between px-5 py-4 bg-[#FAFCFA] border-b border-[#e2e8f0]">
                   <div className="flex items-center gap-2">
                     <DollarSign className="h-4 w-4 text-[#64748b]" />
@@ -1513,42 +1557,14 @@ export default function InvoiceDetailPage() {
               </div>
             </div>
 
-            <div className="flex flex-col gap-2 order-2">
+            <div className="space-y-2.5 min-w-0 min-h-0 overflow-y-auto h-full">
               {/* Payment Terms card removed — now integrated into InvoiceHeaderCard */}
 
-              {invoice.jobId && job && (
+              {/* Technician Notes — canonical writable notes shared with Job Detail */}
+              {jobId && (
                 <Card>
-                  <CardHeader className="pb-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <CardTitle className="text-sm font-medium flex items-center gap-2">
-                        <MessageSquare className="h-4 w-4 text-muted-foreground" />
-                        Technician Notes
-                      </CardTitle>
-                      <Link href={`/jobs/${invoice.jobId}`}>
-                        <Button variant="ghost" size="sm" className="h-6 text-xs px-2" data-testid="link-view-job">
-                          View Job
-                        </Button>
-                      </Link>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="pt-0">
-                    {notesLoading ? (
-                      <p className="text-sm text-muted-foreground">Loading notes...</p>
-                    ) : jobNotes.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">No technician notes for this job.</p>
-                    ) : (
-                      <div className="space-y-3 max-h-[180px] overflow-y-auto pr-1">
-                        {jobNotes.map((note) => (
-                          <div key={note.id} className="text-sm border-l-2 border-muted pl-3 py-1">
-                            <p className="text-foreground">{note.text}</p>
-                            <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
-                              <User className="h-3 w-3" />
-                              {note.authorName || "Tech"} • {format(new Date(note.createdAt), "MMM d, h:mm a")}
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                  <CardContent className="p-0">
+                    <JobNotesSection jobId={jobId} embedded hideHeader={false} showCount={false} />
                   </CardContent>
                 </Card>
               )}
@@ -1649,7 +1665,7 @@ export default function InvoiceDetailPage() {
                 </Card>
               )}
 
-              {/* Client Visibility Settings — always visible, interactive only in edit mode */}
+              {/* Client Visibility Settings — local draft + explicit Save */}
               <Collapsible open={visibilityOpen} onOpenChange={setVisibilityOpen}>
                 <Card>
                   <CollapsibleTrigger asChild>
@@ -1664,103 +1680,70 @@ export default function InvoiceDetailPage() {
                   <CollapsibleContent>
                     <div className="border-t px-4 pb-4 pt-3 space-y-3">
                       <p className="text-xs text-muted-foreground mb-3">
-                        {isEditing ? "Control what the client sees on the invoice PDF." : "What the client sees on the invoice PDF."}
+                        Control what the client sees on the invoice PDF.
                       </p>
                       <div className="flex items-center justify-between">
                         <Label htmlFor="showLineItems" className="text-sm">Show line item breakdown</Label>
-                        <Switch
-                          id="showLineItems"
-                          checked={invoice.showLineItems !== false}
-                          disabled={!isEditing}
-                          onCheckedChange={isEditing ? (checked) => updateInvoiceFieldsMutation.mutate({ showLineItems: checked }) : undefined}
-                          data-testid="switch-show-line-items"
-                        />
+                        <Switch id="showLineItems" checked={visibilityDraft.showLineItems}
+                          onCheckedChange={(checked) => setVisibilityDraft(d => ({ ...d, showLineItems: checked }))}
+                          data-testid="switch-show-line-items" />
                       </div>
                       <div className="flex items-center justify-between">
                         <Label htmlFor="showQuantity" className="text-sm">Show quantities</Label>
-                        <Switch
-                          id="showQuantity"
-                          checked={invoice.showQuantity !== false}
-                          disabled={!isEditing}
-                          onCheckedChange={isEditing ? (checked) => updateInvoiceFieldsMutation.mutate({ showQuantity: checked }) : undefined}
-                          data-testid="switch-show-quantity"
-                        />
+                        <Switch id="showQuantity" checked={visibilityDraft.showQuantity}
+                          onCheckedChange={(checked) => setVisibilityDraft(d => ({ ...d, showQuantity: checked }))}
+                          data-testid="switch-show-quantity" />
                       </div>
                       <div className="flex items-center justify-between">
                         <Label htmlFor="showUnitPrice" className="text-sm">Show unit prices</Label>
-                        <Switch
-                          id="showUnitPrice"
-                          checked={invoice.showUnitPrice !== false}
-                          disabled={!isEditing}
-                          onCheckedChange={isEditing ? (checked) => updateInvoiceFieldsMutation.mutate({ showUnitPrice: checked }) : undefined}
-                          data-testid="switch-show-unit-price"
-                        />
+                        <Switch id="showUnitPrice" checked={visibilityDraft.showUnitPrice}
+                          onCheckedChange={(checked) => setVisibilityDraft(d => ({ ...d, showUnitPrice: checked }))}
+                          data-testid="switch-show-unit-price" />
                       </div>
                       <div className="flex items-center justify-between">
                         <Label htmlFor="showLineTotals" className="text-sm">Show line totals</Label>
-                        <Switch
-                          id="showLineTotals"
-                          checked={invoice.showLineTotals !== false}
-                          disabled={!isEditing}
-                          onCheckedChange={isEditing ? (checked) => updateInvoiceFieldsMutation.mutate({ showLineTotals: checked }) : undefined}
-                          data-testid="switch-show-line-totals"
-                        />
+                        <Switch id="showLineTotals" checked={visibilityDraft.showLineTotals}
+                          onCheckedChange={(checked) => setVisibilityDraft(d => ({ ...d, showLineTotals: checked }))}
+                          data-testid="switch-show-line-totals" />
                       </div>
                       <div className="flex items-center justify-between">
                         <Label htmlFor="showBalance" className="text-sm">Show account balance</Label>
-                        <Switch
-                          id="showBalance"
-                          checked={invoice.showBalance !== false}
-                          disabled={!isEditing}
-                          onCheckedChange={isEditing ? (checked) => updateInvoiceFieldsMutation.mutate({ showBalance: checked }) : undefined}
-                            data-testid="switch-show-balance"
-                          />
+                        <Switch id="showBalance" checked={visibilityDraft.showBalance}
+                          onCheckedChange={(checked) => setVisibilityDraft(d => ({ ...d, showBalance: checked }))}
+                          data-testid="switch-show-balance" />
+                      </div>
+                      {/* Save/Reset — only visible when draft differs from server state */}
+                      {isVisibilityDirty && (
+                        <div className="flex justify-end gap-2 pt-2 border-t">
+                          <Button variant="ghost" size="sm" className="h-7 text-xs"
+                            disabled={updateInvoiceFieldsMutation.isPending}
+                            onClick={() => setVisibilityDraft(serverVisibility)}>
+                            Reset
+                          </Button>
+                          <Button
+                            variant="outline" size="sm" className="h-7 text-xs"
+                            disabled={updateInvoiceFieldsMutation.isPending}
+                            onClick={() => updateInvoiceFieldsMutation.mutate(visibilityDraft)}
+                            data-testid="button-save-visibility"
+                          >
+                            {updateInvoiceFieldsMutation.isPending ? "Saving..." : "Save"}
+                          </Button>
                         </div>
+                      )}
                       </div>
                     </CollapsibleContent>
                   </Card>
                 </Collapsible>
 
-              <Collapsible open={activityOpen} onOpenChange={setActivityOpen}>
-                <Card>
-                  <CollapsibleTrigger asChild>
-                    <button className="w-full flex items-center justify-between px-4 py-3 hover-elevate" data-testid="trigger-activity">
-                      <span className="text-sm font-medium flex items-center gap-2">
-                        <Clock className="h-4 w-4 text-muted-foreground" />
-                        Activity
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {activityOpen ? "Hide" : "Show"}
-                      </span>
-                    </button>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <div className="px-4 pb-4 pt-0">
-                      <div className="relative">
-                        <div className="absolute left-[5px] top-2 bottom-2 w-px bg-border" />
-                        <div className="space-y-3">
-                          {activityEvents.map((event, index) => (
-                            <div key={index} className="flex items-start gap-3 relative">
-                              <div className={`h-3 w-3 rounded-full ${event.color} ring-2 ring-background z-10 mt-0.5`} />
-                              <div className="flex-1 min-w-0">
-                                <p className="text-sm">{event.title}</p>
-                                <p className="text-xs text-muted-foreground">
-                                  {format(event.date, "MMM d, yyyy 'at' h:mm a")}
-                                  {event.subtitle && ` • ${event.subtitle}`}
-                                </p>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  </CollapsibleContent>
-                </Card>
-              </Collapsible>
+              {/* Reference — show job's reference fields when invoice is job-backed */}
+              {jobId ? (
+                <ReferenceFieldsSection entityType="job" entityId={jobId} />
+              ) : (
+                <ReferenceFieldsSection entityType="invoice" entityId={invoiceId!} />
+              )}
             </div>
           </div>
         </div>
-      </div>
 
       <Dialog open={showPaymentDialog} onOpenChange={setShowPaymentDialog}>
         <DialogContent>

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Plus, Building2, CheckCircle2, XCircle } from "lucide-react";
+import { QuickAddSupplierDialog } from "@/components/suppliers/QuickAddSupplierDialog";
 import { Button } from "@/components/ui/button";
 import { ListToolbar } from "@/components/layout/ListToolbar";
 import {
@@ -28,6 +29,9 @@ interface SuppliersResponse {
 export default function SuppliersListPage() {
   const [, setLocation] = useLocation();
   const [searchQuery, setSearchQuery] = useState("");
+  // 2026-04-10: Switched from navigating to /suppliers/new (route never existed)
+  // to the canonical QuickAddSupplierDialog modal pattern.
+  const [addOpen, setAddOpen] = useState(false);
 
   const { data, isLoading } = useQuery<SuppliersResponse>({
     queryKey: ["/api/suppliers", searchQuery],
@@ -54,10 +58,11 @@ export default function SuppliersListPage() {
   };
 
   return (
+    <>
     <TablePageShell
       title="Suppliers"
       actions={
-        <Button onClick={() => setLocation("/suppliers/new")}>
+        <Button onClick={() => setAddOpen(true)}>
           <Plus className="h-4 w-4 mr-2" />
           New Supplier
         </Button>
@@ -154,5 +159,11 @@ export default function SuppliersListPage() {
         </div>
       )}
     </TablePageShell>
+    <QuickAddSupplierDialog
+      open={addOpen}
+      onOpenChange={setAddOpen}
+      onSuccess={(supplier) => setLocation(`/suppliers/${supplier.id}`)}
+    />
+    </>
   );
 }

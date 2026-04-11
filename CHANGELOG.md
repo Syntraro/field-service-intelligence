@@ -6,6 +6,284 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### Client Detail — ActiveWorkSection consolidation (2026-04-10)
+
+**Shared `ActiveWorkSection` component:**
+- Extracted canonical active-work filter (`status === "open"`), sort (by `getJobStatusDisplay().priority`), and render into single `ActiveWorkSection` component
+- Both `CompanyOverviewTab` and `LocOverviewTab` now delegate to `ActiveWorkSection` — no inline filter/sort duplication
+- Removed `locActiveJobs` / `locOverdueJobs` pre-computed variables (no longer needed — `ActiveWorkSection` owns filtering)
+- `LocOverviewTab` now accepts raw `jobs` instead of pre-split arrays
+- `CompanyOverviewTab` slimmed to thin wrapper: builds location map, delegates to `ActiveWorkSection`
+- Jobs tab (`ClientAllJobsTab`) unchanged — its `!== "archived"` filter is correct for the "all non-archived" grouping context
+
+**Files changed:** `client/src/pages/ClientDetailPage.tsx`
+
+#### Client Detail — unified overview behavior + KPI cards + left rail (2026-04-10)
+
+**Left rail:**
+- Renamed "Company Overview" to "All Locations" in left location rail
+- Removed sublabel ("All locations") — single clean label
+- Workspace header also shows "All Locations" (no company name duplication)
+
+**Summary KPI cards:**
+- Reordered to: Active Jobs → Lifetime Revenue → Outstanding (+ conditional Overdue)
+- Removed "Completed" card
+- Revenue changed from this-year-only to lifetime (all-time paid invoices)
+- Outstanding now excludes drafts — matches canonical `UNPAID_INVOICE_STATUSES` (`awaiting_payment`, `sent`, `partial_paid`)
+- Outstanding displays monetary total (was showing count only)
+
+**Company Overview Active Work — excludes completed jobs:**
+- Changed filter from `status !== "archived"` to `status === "open"`
+- Now matches Location Overview canonical filter exactly
+- Completed/invoiced/archived jobs no longer appear in Active Work
+- They remain visible in the Jobs tab
+
+**Files changed:** `client/src/pages/ClientDetailPage.tsx`
+
+#### Equipment card create-new + Client Detail header fix (2026-04-10)
+
+**Equipment card — create-new flow:**
+- "+" button no longer disabled when location has zero available equipment
+- Add Equipment dialog now shows "Create New Equipment" button (always visible)
+- Reuses canonical `AddEquipmentDialog` component (POST `/api/clients/:locationId/equipment`)
+- After creation, new equipment auto-selected in the link dialog (same query key invalidation)
+- Empty state text updated to reflect both link and create capabilities
+- Preserves canonical rule: equipment belongs to location, jobs only link
+
+**Client Detail — Company Overview header:**
+- Workspace header now shows "Company Overview" instead of repeating the company name
+- Eliminates redundancy with the page-level company name header
+- Location-specific header behavior unchanged
+
+**Files changed:** `client/src/components/JobEquipmentSection.tsx`, `client/src/pages/ClientDetailPage.tsx`
+
+#### Invoice Detail hardening — visibility UX, description editing, close error, Activity removal (2026-04-10)
+
+**Remove Activity card from Invoice Detail right rail:**
+- Deleted inline Activity JSX, `activityOpen` state, `activityEvents` useMemo
+- Removed `Clock` import (no longer used)
+- No layout gaps — right rail remains clean
+
+**Client Visibility — local draft + Save pattern:**
+- Replaced per-toggle immediate mutation with local `visibilityDraft` state
+- Switches now update local state instantly (zero lag, no multi-click issue)
+- Save button appears only when draft differs from server state (dirty detection)
+- Reset button to revert unsaved changes
+- Single API call on Save via canonical `PATCH /api/invoices/:id`
+- Eliminates per-toggle API calls, stale-refetch flicker, and noisy toasts
+
+**Invoice description editing:**
+- Job Description card now supports inline edit mode
+- Pencil icon in header activates edit (Textarea + Save/Cancel)
+- Save persists `workDescription` via canonical `updateInvoiceFieldsMutation`
+- Card shows even when empty during editing
+
+**Fix "Invoice not found" on job close with invoice_now:**
+- Root cause: `refreshInvoiceFromJob()` called `this.getInvoice()` which always uses main `db` connection, not the transaction handle. Under READ COMMITTED isolation, a newly-created invoice inside a transaction is invisible to a separate connection.
+- Fix: replaced `this.getInvoice()` with a direct query using `txHandle ?? db` so the lookup participates in the caller's transaction.
+
+**Equipment card (Job Detail):**
+- Replaced "+ Add Equipment" text button with Plus icon button (ghost, h-6 w-6)
+- `e.stopPropagation()` ensures clicking "+" opens modal without toggling collapse
+
+**Files changed:** `client/src/pages/InvoiceDetailPage.tsx`, `server/storage/invoices.ts`, `client/src/components/JobEquipmentSection.tsx`
+
+### Changed
+
+#### Location name nullable + job detail restructure (2026-04-10)
+
+**Location name nullable:**
+- `client_locations.company_name` is now nullable (migration: `2026_04_10_location_name_nullable.sql`)
+- When null/blank, canonical `locationDisplayNameExpr` COALESCE falls back to `customer_companies.name`
+- Frontend already used correct fallback pattern: `parentCompany?.name || location?.companyName || "Client"`
+- ~15 downstream type fixes: added `?? ""` at usage sites for sort, display, and function arguments
+
+**Job detail restructure:**
+- Header: company/location name + address moved to smaller secondary label ABOVE the job title
+- Job title is now the primary visual element
+- Description moved out of header into a dedicated "Job Description" collapsible card above "Parts, Labour & Expenses"
+- Description card collapsed by default; shows preview text when collapsed
+- Job detail location object now includes `address2` (was missing from `detailSelectFields`)
+
+**Files changed:** `shared/schema.ts`, `server/storage/jobsFeed.ts`, `client/src/pages/JobDetailPage.tsx`, plus ~12 files for nullable type fixes.
+
+### Added
+
+#### Reference Fields — Schema + types (Phase 2) (2026-04-10)
+
+Centralized, tenant-scoped reference field system for Jobs, Quotes, and Invoices.
+
+**Tables (migration: `2026_04_10_reference_fields.sql`):**
+- `reference_field_definitions` — field registry: label, key, type (text/number/date), applies-to flags, searchable, active, display_order
+- `reference_field_values` — per-record typed values: text_value, number_value, date_value
+
+**Constraints:**
+- Unique key per tenant (`company_id, key`)
+- At least one applies-to flag must be true
+- Type must be text/number/date
+- Entity type must be job/quote/invoice
+- At most one typed value column populated per row
+- One value per field per entity (unique on `company_id, field_definition_id, entity_type, entity_id`)
+
+**Indexes:**
+- Entity lookup: `(company_id, entity_type, entity_id)`
+- Definition lookup: `(company_id, field_definition_id)`
+- GIN trigram on `text_value` for ILIKE search
+
+**Types:** `ReferenceFieldDefinition`, `InsertReferenceFieldDefinition`, `UpdateReferenceFieldDefinition`, `ReferenceFieldValue`, `UpsertReferenceFieldValue`, enums `referenceFieldTypeEnum`, `referenceFieldEntityTypeEnum`
+
+**Tests:** `tests/reference-fields-schema.test.ts` — 8 tests (S1-S8 constraint validation)
+
+### Fixed
+
+#### Dashboard Tasks widget — resilient error handling on empty/auth state (2026-04-10)
+
+- `client/src/pages/Dashboard.tsx`: TasksPanel now suppresses 401 error display (auth redirect handles it). Non-auth errors show neutral "Unable to load tasks" instead of red destructive styling.
+- Root cause: stale session cookie after DB wipe causes 401 → error state → "Failed to load tasks". The tasks API itself works correctly on empty tables (verified by direct query).
+
+#### Job detail labor rows — source-aware display using canonical sourceType (2026-04-10)
+
+- `server/storage/timeTracking.ts`: `getJobTimeEntries` now returns `taskId`, `visitId`, `sourceType` ("visit" | "task" | "manual"). Uses existing `deriveSourceType` helper.
+- `client/src/pages/JobDetailPage.tsx`: `TimeEntryDisplay` type updated. Labor rows now show source badge (Visit/Task/Manual) with distinct colors. Task notes shown inline when available. No totals or query logic changed.
+
+### Added
+
+#### Visit Attribution — visitId on time_entries (2026-04-10)
+
+Canonical extension: visit-originated labor now writes `visitId` for explicit attribution. `jobId` remains the canonical financial parent. `visitId` is optional operational attribution.
+
+**Schema (migration: `2026_04_10_visit_attribution.sql`):**
+- `time_entries`: ADD `visit_id` varchar FK → job_visits.id ON DELETE SET NULL
+- ADD index `time_entries_visit_idx` (company_id, visit_id)
+- REPLACE constraint `time_entries_type_task_isolation` → `time_entries_type_attribution_isolation`:
+  - `task_work` MUST have `task_id` AND MUST NOT have `visit_id`
+  - non-`task_work` MUST NOT have `task_id`
+  - `visit_id` optional for non-task_work types (manual entry remains valid)
+
+**Write path:**
+- `startTimeEntry` accepts optional `visitId` — snapshotted on insert
+- `recordJobStatus` accepts optional `visitId` — passed through to startTimeEntry
+- All visit timer callers (techField.ts: 6 routes, jobVisits.routes.ts: 1 route) now pass `visitId: visit.id`
+
+**Output shapes:**
+- `getJobTimeSummary` entries: added `visitId`, `sourceType` ("visit" | "task" | "manual")
+- `getTimesheetDay` entries: added `visitId`, `sourceType`
+- `getTimesheetWeek` entries: added `visitId`, `sourceType`
+- `deriveSourceType()` helper: task_work+taskId → "task", visitId set → "visit", else → "manual"
+
+**Data model after this pass:**
+- `time_entries.jobId` = canonical financial parent (unchanged)
+- `time_entries.visitId` = optional visit attribution (new)
+- `time_entries.taskId` = optional task attribution (unchanged)
+- Job-only labor (visitId=null, taskId=null) = valid
+- Visit labor (visitId set, jobId set) = visit-originated
+- Task labor (taskId set, visitId=null) = task-originated
+
+**Tests:** `tests/visit-attribution.test.ts` — 6 tests (V1-V6).
+
+### Security / Hardening
+
+#### Type Isolation Lockdown — bidirectional constraint + transition guard (2026-04-10)
+
+Final integrity lockdown pass. No behavior changes — closes remaining structural gaps.
+
+**Phase A — Bidirectional type isolation constraint:**
+- DB CHECK `time_entries_type_task_isolation`: `task_work` MUST have `task_id`; non-`task_work` MUST NOT have `task_id`.
+- Replaces one-way constraint from hardening pass. Migration: `2026_04_10_type_isolation_constraint.sql`.
+
+**Phase B — Transition guard:**
+- Transition mode in `startTimeEntry` now validates: running entry must be same jobId, must be a visit type (not task_work), and the type pair must be in the allowed transition table (travel_to_job→on_site, on_site→on_site, etc.).
+- Rejects cross-job transitions, task→visit transitions, and invalid type pairs with 409.
+
+**Phase C — Visit context helper:**
+- New `server/lib/visitEntryContext.ts`: `getVisitContextFromEntry(entry)` and `isVisitEntryType(type)`.
+- Centralizes visit/task classification for future `visitId` addition.
+
+**Tests:** `tests/type-isolation-lockdown.test.ts` — 6 tests (L1-L6).
+
+#### Task Labor Hardening — timer enforcement + attribution integrity (2026-04-10)
+
+Surgical correction of 7 architectural drift findings from code-truth audit.
+
+**Timer enforcement (Phase A):**
+- `startTimeEntry` now accepts `mode: "strict" | "transition"`. Default is `strict`.
+- **Strict mode**: hard-blocks (409) if any active timer exists. Used by task start, office manual start.
+- **Transition mode**: auto-stops running entry. Used ONLY by `recordJobStatus` for visit lifecycle transitions (travel→on_site, pause→resume).
+
+**Service layer (Phases B+C):**
+- New `server/services/taskTimerService.ts` — `startTaskTimer()` and `stopTaskTimer()`.
+- `startTaskTimer`: validates → transitions task status → creates time_entry. Strict mode enforced.
+- `stopTaskTimer`: targeted stop — validates `running.taskId === requestedTaskId`. Returns 409 if mismatch.
+- Route layer (`techField.ts`) is now a thin controller delegating to service.
+
+**Schema integrity (Phase D):**
+- DB CHECK constraint: `time_entries_task_work_requires_task_id` — `type != 'task_work' OR task_id IS NOT NULL`.
+- Migration: `2026_04_10_task_labor_hardening.sql`.
+
+**Close/status consistency (Phase F):**
+- `closeTask()` and `updateTask(status: "completed")` both reject with 409 if active timer exists for the task.
+- No hidden side effects — caller must explicitly stop timer before completing.
+
+**Attribution integrity (Phase G):**
+- `updateTask` blocks `jobId` change when task has existing `time_entries`. Prevents inconsistent labor attribution across historical entries.
+
+**Tests:** `tests/task-labor-hardening.test.ts` — 9 tests (H1-H9).
+
+**Files changed:** `server/storage/timeTracking.ts`, `server/storage/tasks.ts`, `server/routes/techField.ts`, `server/services/taskTimerService.ts` (new), `migrations/2026_04_10_task_labor_hardening.sql` (new), `tests/task-labor-hardening.test.ts` (new).
+
+### Changed
+
+#### Task Labor Unification — canonical cutover to time_entries (2026-04-10)
+
+Full canonical cutover: task timing moved from legacy `tasks` fields to `time_entries`.
+
+**Schema changes (migration: `2026_04_10_task_labor_unification.sql`):**
+- `time_entries`: ADD `task_id` varchar FK → tasks.id, ADD index `time_entries_task_idx`
+- `timeEntryTypeEnum`: ADD `task_work` entry type
+- `tasks`: ADD `is_billable` boolean (default false), DROP `checked_in_at`, `checked_out_at`, `actual_duration_minutes`
+
+**Backend changes:**
+- `server/storage/tasks.ts`: Deleted `checkInTask()`, `checkOutTask()`. Rewrote `closeTask()` (no legacy timing). `createTask()` applies billable defaults (jobId → true, no jobId → false). Removed legacy timing from `updateTask()`.
+- `server/storage/timeTracking.ts`: `startTimeEntry()` accepts `taskId`. `getJobTimeSummary()` includes `taskId` in entries. Timesheet queries (`getTimesheetDay`, `getTimesheetWeek`) include `taskId`. `BILLABLE_DEFAULTS` includes `task_work`.
+- `server/routes/techField.ts`: New `POST /api/tech/tasks/:id/start` (creates `task_work` time_entries), `POST /api/tech/tasks/:id/stop`. Close route auto-stops running task timer.
+- `server/routes/tasks.routes.ts`: Deleted `/check-in` and `/check-out` endpoints. Create passes `isBillable`.
+- `server/lib/taskSchemas.ts`: Added `isBillable` to create and update schemas.
+- `shared/schema.ts`: Updated `JobTimeSummary` entries type to include `taskId`. Updated insert/update schemas.
+
+**Frontend changes:**
+- `client/src/tech-app/hooks/useTechTasks.ts`: Added `startTask`/`stopTask` mutations.
+- `client/src/tech-app/pages/TodayPage.tsx`: TaskCard has Start/Stop timer controls + tap navigation.
+- `client/src/tech-app/pages/TaskDetailPage.tsx`: New page with task info, supplier details, Start/Stop/Complete controls.
+- `client/src/tech-app/app/TechApp.tsx`: Route `/tech/tasks/:id` → TaskDetailPage.
+
+**Behavior delta:**
+- Before: task timing stored in `tasks.checkedInAt/checkedOutAt/actualDurationMinutes`
+- After: task timing via canonical `time_entries` (type=`task_work`, taskId set)
+- One-active-timer: enforced by `startTimeEntry` auto-stop (covers visit+task+task overlap)
+- Job labor: task entries with jobId auto-included in `getJobTimeSummary()`
+- Timesheets: task entries auto-included (same query, `type=task_work` distinguishes them)
+
+**Tests:** `tests/task-labor-unification.test.ts` — 12 tests
+
+### Fixed
+
+#### Supplier location: permanent empty-string normalization (2026-04-10)
+
+- Removed `.or(z.literal(''))` hacks from `insertSupplierLocationSchema` and `updateSupplierLocationSchema` in `shared/schema.ts`
+- Extended `normalizeServiceAddress()` in `server/lib/addressNormalize.ts` with `emptyToNull()` — converts blank optional text fields (email, phone, contactName, address, address2, city, country, notes, lat, lng, placeId) to `null` at the API boundary
+- Email validation is now strict: `z.string().email().nullable().optional()` — no more legacy data workarounds
+
+### Added
+
+#### Dev database reset script (2026-04-10)
+
+- `server/scripts/resetBusinessData.ts` — Truncates all business data tables while preserving auth, roles, settings, tax rates, and user profiles
+- Safety guardrails: refuses to run in production, requires `CONFIRM_DEV_RESET=yes`
+- Resets company counters (job/invoice/quote numbers) to 1
+- New package.json script: `npm run db:reset:business`
+
 ### Added
 
 #### Tech app: reversible workflow controls + Pause/Resume + visible Clock Out (2026-04-09)

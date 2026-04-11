@@ -724,7 +724,7 @@ export default function AdminTenantDetail() {
                 {data.recentSyncErrors.map((err) => (
                   <div
                     key={err.id}
-                    className="p-3 rounded-lg bg-muted/50 border border-amber-200"
+                    className="p-3 rounded-md bg-muted/50 border border-amber-200"
                   >
                     <div className="flex items-center justify-between mb-1">
                       <Badge variant="outline" className="text-xs">
@@ -973,7 +973,7 @@ export default function AdminTenantDetail() {
                 This will be recorded in the audit log.
               </p>
             </div>
-            <div className="rounded-lg border p-3 bg-amber-50 dark:bg-amber-950/20">
+            <div className="rounded-md border p-3 bg-amber-50 dark:bg-amber-950/20">
               <div className="flex items-start gap-2">
                 <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5" />
                 <div className="text-sm">
@@ -1103,7 +1103,7 @@ export default function AdminTenantDetail() {
 
             <Separator />
 
-            <div className="rounded-lg border p-3 bg-amber-50 dark:bg-amber-950/20">
+            <div className="rounded-md border p-3 bg-amber-50 dark:bg-amber-950/20">
               <div className="flex items-start gap-2">
                 <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5" />
                 <div className="text-sm">

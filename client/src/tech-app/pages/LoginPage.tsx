@@ -59,7 +59,7 @@ export function LoginPage({ onLogin, error, isLoading }: LoginPageProps) {
                 placeholder="you@company.com"
                 autoComplete="email"
                 disabled={isLoading}
-                className="w-full h-12 rounded-xl border border-slate-200 bg-slate-50 pl-11 pr-4 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#22c55e]/40 focus:border-[#22c55e] transition-shadow disabled:opacity-60"
+                className="w-full h-12 rounded-md border border-slate-200 bg-slate-50 pl-11 pr-4 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#22c55e]/40 focus:border-[#22c55e] transition-shadow disabled:opacity-60"
               />
             </div>
           </div>
@@ -76,20 +76,20 @@ export function LoginPage({ onLogin, error, isLoading }: LoginPageProps) {
                 placeholder="Enter password"
                 autoComplete="current-password"
                 disabled={isLoading}
-                className="w-full h-12 rounded-xl border border-slate-200 bg-slate-50 pl-11 pr-4 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#22c55e]/40 focus:border-[#22c55e] transition-shadow disabled:opacity-60"
+                className="w-full h-12 rounded-md border border-slate-200 bg-slate-50 pl-11 pr-4 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#22c55e]/40 focus:border-[#22c55e] transition-shadow disabled:opacity-60"
               />
             </div>
           </div>
 
           {/* Server error display */}
           {error && (
-            <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>
+            <p className="text-sm text-red-600 bg-red-50 rounded-md px-3 py-2">{error}</p>
           )}
 
           <button
             onClick={handleSubmit}
             disabled={isLoading || !email.trim() || !password}
-            className="w-full h-12 rounded-xl bg-[#22c55e] text-white font-semibold text-sm hover:bg-[#1db350] active:scale-[0.98] transition-all shadow-lg shadow-[#22c55e]/25 disabled:opacity-60 disabled:active:scale-100 flex items-center justify-center gap-2"
+            className="w-full h-12 rounded-md bg-[#22c55e] text-white font-semibold text-sm hover:bg-[#1db350] active:scale-[0.98] transition-all shadow-lg shadow-[#22c55e]/25 disabled:opacity-60 disabled:active:scale-100 flex items-center justify-center gap-2"
           >
             {isLoading ? (
               <>

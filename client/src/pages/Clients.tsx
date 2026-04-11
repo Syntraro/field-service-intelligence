@@ -163,7 +163,7 @@ export default function Clients() {
 
       groups.push({
         companyId,
-        companyName: primary.companyName,
+        companyName: primary.companyName ?? "",
         primaryContact: primary.contactName || "",
         primaryLocationId: primary.id,
         address,

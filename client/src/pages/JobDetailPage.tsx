@@ -46,8 +46,11 @@ import {
   RotateCcw,
   Wrench,
   X,
+  Tag,
 } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { ReferenceFieldsSection } from "@/components/shared/ReferenceFieldsSection";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import JobEquipmentSection from "@/components/JobEquipmentSection";
 import { AddVisitDialog } from "@/components/AddVisitDialog";
 import { EditVisitModal } from "@/components/visits/EditVisitModal";
@@ -261,12 +264,15 @@ function getRunningStatusText(runningType: TimeEntryType | null): string {
   }
 }
 
-// Time Entry type for display
+// Time Entry type for display — matches getJobTimeEntries canonical output
 interface TimeEntryDisplay {
   id: string;
   technicianId: string;
   technicianName: string | null;
   type: TimeEntryType;
+  taskId: string | null;
+  visitId: string | null;
+  sourceType: "visit" | "task" | "manual";
   startAt: string;
   endAt: string | null;
   durationMinutes: number | null;
@@ -279,9 +285,7 @@ interface TimeEntryDisplay {
   lockedAt: string | null;
   lockedByInvoiceId: string | null;
   lockReason: string | null;
-  // Labor unification: visit attribution
-  visitId: string | null;
-  visitNumber: number | null;
+  visitLabel: string | null;
 }
 
 
@@ -363,64 +367,102 @@ function LabourCardContent({
       )}
 
       {/* Entry list — rendered immediately, no nested show/hide step */}
-      <div className="space-y-0.5" data-testid="time-entries-list">
+      <div className="space-y-1" data-testid="time-entries-list">
         {timeEntries.length === 0 ? (
           <p className="text-xs text-muted-foreground italic">Loading...</p>
         ) : (
-          timeEntries.map((entry) => {
-            const isLocked = !!(entry.lockedAt || entry.invoicedAt);
-            // Labour Summary uses cost rate (employee cost), not billable rate
-            const cost = entry.durationMinutes != null && entry.costRateSnapshot
-              ? ((entry.durationMinutes / 60) * parseFloat(entry.costRateSnapshot)).toFixed(2)
-              : null;
-            return (
-              <div
-                key={entry.id}
-                className={cn(
-                  "flex items-center justify-between text-xs py-1.5 px-2 rounded group cursor-pointer hover:bg-muted/60",
-                  entry.invoicedAt ? "bg-muted/50" : "bg-background"
-                )}
-                onClick={() => onEditEntry(entry)}
-                data-testid={`time-entry-${entry.id}`}
-              >
-                {/* Left: technician + date */}
-                <div className="flex flex-col min-w-0">
-                  <span className="font-medium text-slate-700 dark:text-slate-200 truncate">
-                    {entry.technicianName || "Unknown"}
-                  </span>
-                  <span className="text-[11px] text-muted-foreground">
-                    {format(new Date(entry.startAt), "MMM d, yyyy")}
-                    {entry.startAt && entry.endAt && (
-                      <span className="ml-1 text-slate-400">
-                        {format(new Date(entry.startAt), "h:mma")}–{format(new Date(entry.endAt), "h:mma")}
-                      </span>
-                    )}
-                  </span>
-                </div>
-                {/* Right: duration + cost + status indicators */}
-                <div className="flex items-center gap-2 shrink-0 ml-2">
-                  <div className="flex flex-col items-end">
-                    <span className="font-medium tabular-nums">
-                      {entry.durationMinutes != null ? formatMinutes(entry.durationMinutes) : (
-                        <span className="text-green-600 flex items-center gap-1">
-                          <Clock className="h-3 w-3 animate-pulse" />
-                          Running
-                        </span>
+          (() => {
+            // Group visit entries by technician+visitId. Non-visit entries stay ungrouped.
+            const TRAVEL_SET = new Set(["travel_to_job", "travel_between_jobs", "travel_to_supplier"]);
+            type Group = { techName: string; visitLabel: string | null; entries: typeof timeEntries };
+            const groups: Group[] = [];
+            const ungrouped: typeof timeEntries = [];
+            const visitMap = new Map<string, Group>();
+
+            timeEntries.forEach((e) => {
+              if (e.sourceType === "visit" && e.visitId && e.technicianId) {
+                const key = `${e.technicianId}:${e.visitId}`;
+                let g = visitMap.get(key);
+                if (!g) {
+                  g = { techName: e.technicianName || "Unknown", visitLabel: e.visitLabel, entries: [] };
+                  visitMap.set(key, g);
+                  groups.push(g);
+                }
+                g.entries.push(e);
+              } else {
+                ungrouped.push(e);
+              }
+            });
+
+            // Sort within each group: travel first, then by startAt
+            groups.forEach((g) => g.entries.sort((a, b) => {
+              const aT = TRAVEL_SET.has(a.type) ? 0 : 1;
+              const bT = TRAVEL_SET.has(b.type) ? 0 : 1;
+              if (aT !== bT) return aT - bT;
+              return new Date(a.startAt).getTime() - new Date(b.startAt).getTime();
+            }));
+
+            const renderRow = (entry: typeof timeEntries[0], showTech: boolean) => {
+              const isLocked = !!(entry.lockedAt || entry.invoicedAt);
+              const cost = entry.durationMinutes != null && entry.costRateSnapshot
+                ? ((entry.durationMinutes / 60) * parseFloat(entry.costRateSnapshot)).toFixed(2)
+                : null;
+              const isTravel = TRAVEL_SET.has(entry.type);
+              return (
+                <div
+                  key={entry.id}
+                  className={cn(
+                    "flex items-center justify-between text-xs py-1.5 px-2 rounded group cursor-pointer hover:bg-muted/60",
+                    entry.invoicedAt ? "bg-muted/50" : "bg-background"
+                  )}
+                  onClick={() => onEditEntry(entry)}
+                  data-testid={`time-entry-${entry.id}`}
+                >
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    {showTech && <span className="font-medium text-slate-700 dark:text-slate-200 truncate shrink-0">{entry.technicianName || "Unknown"}</span>}
+                    <span className="text-[11px] text-muted-foreground shrink-0">
+                      {format(new Date(entry.startAt), "MMM d")}
+                      {entry.startAt && entry.endAt && (
+                        <span className="ml-0.5 text-slate-400">{format(new Date(entry.startAt), "h:mma")}–{format(new Date(entry.endAt), "h:mma")}</span>
                       )}
                     </span>
-                    {cost && (
-                      <span className="text-[11px] text-muted-foreground tabular-nums">${cost}</span>
-                    )}
-                  </div>
-                  {isLocked && (
-                    <span title="Locked (invoiced)">
-                      <Lock className="h-3 w-3 text-amber-500 shrink-0" />
+                    <span className={cn("text-[10px] font-medium px-1.5 py-0.5 rounded-full shrink-0",
+                      isTravel ? "bg-blue-50 text-blue-600" : entry.sourceType === "task" ? "bg-indigo-50 text-indigo-600" : "bg-emerald-50 text-emerald-600"
+                    )}>
+                      {isTravel ? "En Route" : entry.sourceType === "task" ? "Task" : entry.sourceType === "manual" ? "Manual" : "On Site"}
                     </span>
-                  )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 ml-2">
+                    <div className="flex flex-col items-end">
+                      <span className="font-medium tabular-nums">
+                        {entry.durationMinutes != null ? formatMinutes(entry.durationMinutes) : (
+                          <span className="text-green-600 flex items-center gap-1"><Clock className="h-3 w-3 animate-pulse" />Running</span>
+                        )}
+                      </span>
+                      {cost && <span className="text-[11px] text-muted-foreground tabular-nums">${cost}</span>}
+                    </div>
+                    {isLocked && <span title="Locked (invoiced)"><Lock className="h-3 w-3 text-amber-500 shrink-0" /></span>}
+                  </div>
                 </div>
-              </div>
+              );
+            };
+
+            return (
+              <>
+                {groups.map((g, gi) => (
+                  <div key={`group-${gi}`} className="rounded border border-slate-200/60 overflow-hidden">
+                    <div className="px-2 py-1 bg-slate-50/80">
+                      <span className="text-xs font-medium text-slate-700">{g.techName}</span>
+                    </div>
+                    <div className="divide-y divide-slate-100">
+                      {g.entries.map((e) => renderRow(e, false))}
+                    </div>
+                  </div>
+                ))}
+                {ungrouped.map((e) => renderRow(e, true))}
+              </>
             );
-          })
+          })()
         )}
       </div>
     </div>
@@ -500,6 +542,7 @@ export default function JobDetailPage() {
   const [billingTotals, setBillingTotals] = useState<{ totalPrice: number; totalCost: number; profit: number } | null>(null);
   // Parts & Billing collapse/expand — expanded by default
   const [billingExpanded, setBillingExpanded] = useState(true);
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   // Notes count for display
   const [notesCount, setNotesCount] = useState(0);
   // Notes card collapse/expand — open by default (2026-04-05: dispatcher needs notes visible immediately)
@@ -782,7 +825,8 @@ export default function JobDetailPage() {
   const isOfficeUser = user?.role && (MANAGER_ROLES as readonly string[]).includes(user.role);
 
   // Header-level computed values (same as JobHeaderCard but needed for command-center header)
-  const clientName = job.parentCompany?.name || job.location?.companyName || "Client";
+  // 2026-04-10: location name takes priority, company name is fallback
+  const clientName = job.location?.companyName || job.parentCompany?.name || "Client";
   const fullAddress = job.location
     ? [job.location.address, job.location.address2, job.location.city, job.location.province, job.location.postalCode].filter(Boolean).join(", ")
     : "";
@@ -815,190 +859,109 @@ export default function JobDetailPage() {
         <div className="space-y-2.5 min-w-0 min-h-0 overflow-y-auto lg:pr-1 h-full">
 
           {/* ── Unified Header + Action Bar ────────────────────────────── */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden" data-testid="job-header-command">
-            {/* Section A: Header content */}
+          <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="job-header-command">
+            {/* Section A: Header content — title dominant, metadata right */}
             <div className="px-4 py-3">
-              <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start justify-between gap-6">
+                {/* Left: title → separator → company/address */}
                 <div className="flex-1 min-w-0">
+                  {/* Row 1: Title + status — title is the dominant element */}
                   <div className="flex items-center gap-2">
-                    <h1 className="text-xl font-bold text-slate-900 leading-tight truncate" data-testid="text-job-title">
+                    <h1 className="text-2xl font-bold text-slate-900 leading-snug truncate" data-testid="text-job-title">
                       {job.summary || "Untitled Job"}
                     </h1>
-                    {editingJobNumber ? (
-                      <div className="flex items-center gap-1 shrink-0">
-                        <span className="text-xs text-slate-400">#</span>
-                        <input
-                          ref={jobNumberInputRef}
-                          type="number"
-                          min={1}
-                          step={1}
-                          value={jobNumberDraft}
-                          onChange={(e) => { setJobNumberDraft(e.target.value); setJobNumberError(null); }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") handleJobNumberSave();
-                            if (e.key === "Escape") handleJobNumberCancel();
-                          }}
-                          className="w-16 h-5 px-1 text-xs border rounded bg-background focus:outline-none focus:ring-1 focus:ring-primary"
-                          autoFocus
-                          data-testid="input-job-number"
-                        />
-                        <button type="button" onClick={handleJobNumberSave} className="text-primary text-[10px] font-medium" disabled={updateJobNumberMutation.isPending}>
-                          {updateJobNumberMutation.isPending ? "…" : "✓"}
-                        </button>
-                        <button type="button" onClick={handleJobNumberCancel} className="text-muted-foreground text-[10px]">✕</button>
-                        {jobNumberError && <span className="text-[9px] text-destructive">{jobNumberError}</span>}
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => { setJobNumberDraft(String(job.jobNumber)); setJobNumberError(null); setEditingJobNumber(true); }}
-                        className="text-xs text-slate-400 group cursor-text shrink-0"
-                        data-testid="text-job-number"
-                      >
-                        #{job.jobNumber}
-                        <Pencil className="inline ml-0.5 h-2 w-2 opacity-0 group-hover:opacity-40 transition-opacity" />
-                      </button>
-                    )}
-                    {/* Status pill — top-right of title row */}
                     <StatusPill
                       variant={statusToVariant(job.openSubStatus === "on_hold" ? "on_hold" : job.status)}
                       data-testid="status-badge"
                     >
                       {getJobStatusDisplay(job).label}
                     </StatusPill>
-                    {/* Hold reason badge — surfaces WHY the job is on hold (e.g. "Waiting for Parts") */}
                     {job.openSubStatus === "on_hold" && job.holdReason && (
                       <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-orange-300 text-orange-700 bg-orange-50" data-testid="hold-reason-badge">
                         {getHoldReasonLabel(job.holdReason)}
                       </Badge>
                     )}
                   </div>
-                  {/* Company / address / invoice — visual separation from title */}
-                  <div className="mt-2 flex items-center gap-2 text-sm text-slate-500">
+                  {/* Separator + company/address — more breathing room */}
+                  <div className="border-t border-slate-100 mt-3 pt-2">
                     <button
                       type="button"
                       onClick={() => setLocation(`/clients/${job.locationId}`)}
-                      className="font-medium text-slate-700 hover:text-[#76B054] transition-colors"
-                      data-testid="link-client-title"
+                      className="text-xs font-medium text-slate-600 hover:text-[#76B054] transition-colors truncate block"
+                      data-testid="link-client-header"
                     >
                       {clientName}
                     </button>
                     {fullAddress && (
-                      <>
-                        <span className="text-slate-300">·</span>
-                        <span className="flex items-center gap-1 text-xs text-slate-400 truncate">
-                          <MapPin className="h-3 w-3 shrink-0" />
-                          {fullAddress}
-                        </span>
-                      </>
-                    )}
-                    {jobInvoice && (
-                      <>
-                        <span className="text-slate-300">·</span>
-                        <Link href={`/invoices/${jobInvoice.id}`} className="text-xs text-primary hover:underline font-medium flex items-center gap-1 shrink-0" data-testid="link-invoice">
-                          <Receipt className="h-3 w-3" />
-                          Invoice #{(jobInvoice as any).invoiceNumber || "—"}
-                        </Link>
-                      </>
+                      <span className="flex items-center gap-0.5 text-[11px] text-slate-400 mt-0.5">
+                        <MapPin className="h-2.5 w-2.5 shrink-0" />
+                        {fullAddress}
+                      </span>
                     )}
                   </div>
-                  {/* Inline description — explicit edit mode with Save/Cancel (2026-04-03) */}
-                  <div className="mt-2.5 pt-2 border-t border-slate-100" data-testid="text-job-description">
-                    {editingDescription ? (
-                      <div className="space-y-1">
-                        <textarea
-                          ref={descInputRef}
-                          value={descriptionDraft}
-                          onChange={e => {
-                            setDescriptionDraft(e.target.value);
-                            // Auto-resize: reset to auto then expand to scrollHeight, capped at ~4 lines
-                            const el = e.target;
-                            el.style.height = "auto";
-                            el.style.height = Math.min(el.scrollHeight, 80) + "px";
-                          }}
-                          onKeyDown={e => {
-                            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); handleDescriptionSave(); }
-                            if (e.key === "Escape") handleDescriptionCancel();
-                          }}
-                          rows={1}
-                          style={{ minHeight: "24px", maxHeight: "80px" }}
-                          className="w-full text-xs text-slate-700 bg-transparent border border-primary/30 focus:border-primary rounded px-1.5 outline-none resize-none py-1 placeholder:text-slate-400 overflow-y-auto"
-                          placeholder="Add description…"
-                          autoFocus
-                          onFocus={e => {
-                            // Auto-resize on initial focus to fit existing content
-                            const el = e.target;
-                            el.style.height = "auto";
-                            el.style.height = Math.min(el.scrollHeight, 80) + "px";
-                          }}
-                        />
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={handleDescriptionSave}
-                            disabled={updateDescriptionMutation.isPending}
-                            className="inline-flex items-center gap-0.5 text-[10px] font-medium text-primary hover:text-primary/80 transition-colors disabled:opacity-50"
-                            data-testid="button-description-save"
-                          >
-                            <Check className="h-3 w-3" />
-                            Save
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleDescriptionCancel}
-                            className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-muted-foreground/80 transition-colors"
-                            data-testid="button-description-cancel"
-                          >
-                            <X className="h-3 w-3" />
-                            Cancel
-                          </button>
-                          <span className="text-[9px] text-muted-foreground/40 ml-auto">⌘Enter to save · Esc to cancel</span>
-                        </div>
-                      </div>
-                    ) : (
-                      <div
-                        className="group flex items-start gap-1 cursor-pointer"
-                        onClick={() => { setDescriptionDraft(job.description || ""); setEditingDescription(true); }}
-                        data-testid="button-edit-description"
-                        role="button"
-                        tabIndex={0}
-                        onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setDescriptionDraft(job.description || ""); setEditingDescription(true); } }}
-                      >
-                        {job.description && job.description.trim() !== "" ? (
-                          <p className="text-xs text-slate-600 whitespace-pre-wrap max-h-[4.5rem] overflow-y-auto group-hover:text-slate-800 transition-colors flex-1 min-w-0">
-                            {job.description}
-                          </p>
-                        ) : (
-                          <p className="text-xs text-slate-400 italic group-hover:text-slate-500 transition-colors">
-                            Add description…
-                          </p>
-                        )}
-                        <Pencil className="h-3 w-3 text-slate-300 group-hover:text-slate-500 transition-colors shrink-0 mt-0.5" />
-                      </div>
-                    )}
-                  </div>
+                </div>
+                {/* Right: metadata — left-aligned labels within block, block sits right */}
+                <div className="shrink-0 w-48">
+                  <table className="text-left text-xs w-full">
+                    <tbody>
+                      <tr>
+                        <td className="text-[11px] text-slate-400 pr-3 py-0.5 whitespace-nowrap">Job #</td>
+                        <td className="font-semibold text-slate-700 py-0.5">
+                          {editingJobNumber ? (
+                            <div className="flex items-center gap-1">
+                              <input ref={jobNumberInputRef} type="number" min={1} step={1}
+                                value={jobNumberDraft}
+                                onChange={(e) => { setJobNumberDraft(e.target.value); setJobNumberError(null); }}
+                                onKeyDown={(e) => { if (e.key === "Enter") handleJobNumberSave(); if (e.key === "Escape") handleJobNumberCancel(); }}
+                                className="w-16 h-5 px-1 text-xs border rounded bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                                autoFocus data-testid="input-job-number" />
+                              <button type="button" onClick={handleJobNumberSave} className="text-primary text-[10px] font-medium" disabled={updateJobNumberMutation.isPending}>{updateJobNumberMutation.isPending ? "…" : "✓"}</button>
+                              <button type="button" onClick={handleJobNumberCancel} className="text-muted-foreground text-[10px]">✕</button>
+                            </div>
+                          ) : (
+                            <button type="button" onClick={() => { setJobNumberDraft(String(job.jobNumber)); setJobNumberError(null); setEditingJobNumber(true); }}
+                              className="group cursor-text" data-testid="text-job-number">
+                              {job.jobNumber}
+                              <Pencil className="inline ml-0.5 h-2 w-2 opacity-0 group-hover:opacity-40 transition-opacity" />
+                            </button>
+                          )}
+                          {jobNumberError && <div className="text-[9px] text-destructive">{jobNumberError}</div>}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="text-[11px] text-slate-400 pr-3 py-0.5 whitespace-nowrap">Invoice #</td>
+                        <td className="py-0.5">
+                          {jobInvoice ? (
+                            <Link href={`/invoices/${jobInvoice.id}`} className="font-semibold text-primary hover:underline" data-testid="link-invoice">
+                              {(jobInvoice as any).invoiceNumber || "—"}
+                            </Link>
+                          ) : (
+                            <span className="text-slate-300">—</span>
+                          )}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="text-[11px] text-slate-400 pr-3 py-0.5 whitespace-nowrap">Created</td>
+                        <td className="text-slate-600 py-0.5">{job.createdAt ? format(new Date(job.createdAt), "MMM d, yyyy") : "—"}</td>
+                      </tr>
+                      <tr>
+                        <td className="text-[11px] text-slate-400 pr-3 py-0.5 whitespace-nowrap">Completed</td>
+                        <td className="text-slate-600 py-0.5">{job.closedAt ? format(new Date(job.closedAt), "MMM d, yyyy") : "—"}</td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
               </div>
             </div>
             {/* Section B: Action row — visually unified with header via shared container */}
             <div className="px-4 py-1.5 border-t border-slate-200/60 flex items-center gap-1.5 flex-wrap" data-testid="action-bar">
-              {/* Left group: secondary actions */}
-              <Button variant="outline" size="sm" className="gap-1 text-xs h-7" onClick={() => setShowAddNoteDialog(true)} data-testid="button-header-add-note">
-                <MessageSquare className="h-3.5 w-3.5" />
-                Add Note
-              </Button>
-              <Button variant="outline" size="sm" className="gap-1 text-xs h-7" onClick={() => setTimeEntryModal({ open: true, mode: "create", entry: null })} data-testid="button-header-add-time">
-                <Clock className="h-3.5 w-3.5" />
-                Add Time
-              </Button>
-              <Button variant="outline" size="sm" className="gap-1 text-xs h-7" onClick={() => setShowAddEquipmentDialog(true)} data-testid="button-header-add-equipment">
-                <Wrench className="h-3.5 w-3.5" />
-                Add Equipment
-              </Button>
-              <Button variant="outline" size="sm" className="gap-1 text-xs h-7 text-amber-600 border-amber-200 hover:bg-amber-50 hover:text-amber-700" onClick={() => setShowActionRequiredModal(true)} data-testid="button-hold-action">
-                <Pause className="h-3.5 w-3.5" />
-                Hold
-              </Button>
+              {/* Hold — only for active open jobs, never for completed/archived/invoiced */}
+              {job.status === "open" && (
+                <Button variant="outline" size="sm" className="gap-1 text-xs h-7 text-amber-600 border-amber-200 hover:bg-amber-50 hover:text-amber-700" onClick={() => setShowActionRequiredModal(true)} data-testid="button-hold-action">
+                  <Pause className="h-3.5 w-3.5" />
+                  Hold
+                </Button>
+              )}
               {/* Spacer pushes right group to far right */}
               <div className="flex-1" />
               {/* Right group: primary CTA + overflow */}
@@ -1093,8 +1056,93 @@ export default function JobDetailPage() {
             </div>
           </div>
 
+          {/* ── Job Description Card (collapsed by default) ──────────── */}
+          <div className="rounded-md border border-slate-200 bg-white shadow-sm overflow-hidden" data-testid="job-description-card">
+            <Collapsible open={descriptionExpanded} onOpenChange={setDescriptionExpanded}>
+              <CollapsibleTrigger asChild>
+                <button
+                  className={cn(
+                    "w-full px-4 py-2.5 flex items-center justify-between transition-colors hover:bg-slate-50",
+                    descriptionExpanded && "border-b border-slate-200",
+                  )}
+                >
+                  <div className="flex items-center gap-2">
+                    <FileText className="h-4 w-4 text-slate-400" />
+                    <span className="text-sm font-semibold text-slate-700">Job Description</span>
+                    {!descriptionExpanded && job.description && (
+                      <span className="text-xs text-slate-400 truncate max-w-[200px]">{job.description}</span>
+                    )}
+                  </div>
+                  <ChevronDown className={cn("h-4 w-4 text-slate-400 transition-transform", descriptionExpanded && "rotate-180")} />
+                </button>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="px-4 py-3" data-testid="text-job-description">
+                  {editingDescription ? (
+                    <div className="space-y-1">
+                      <textarea
+                        ref={descInputRef}
+                        value={descriptionDraft}
+                        onChange={e => {
+                          setDescriptionDraft(e.target.value);
+                          const el = e.target;
+                          el.style.height = "auto";
+                          el.style.height = Math.min(el.scrollHeight, 120) + "px";
+                        }}
+                        onKeyDown={e => {
+                          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); handleDescriptionSave(); }
+                          if (e.key === "Escape") handleDescriptionCancel();
+                        }}
+                        rows={2}
+                        style={{ minHeight: "48px", maxHeight: "120px" }}
+                        className="w-full text-sm text-slate-700 bg-transparent border border-primary/30 focus:border-primary rounded px-2 outline-none resize-none py-1.5 placeholder:text-slate-400 overflow-y-auto"
+                        placeholder="Add description…"
+                        autoFocus
+                        onFocus={e => {
+                          const el = e.target;
+                          el.style.height = "auto";
+                          el.style.height = Math.min(el.scrollHeight, 120) + "px";
+                        }}
+                      />
+                      <div className="flex items-center gap-1.5">
+                        <button type="button" onClick={handleDescriptionSave} disabled={updateDescriptionMutation.isPending}
+                          className="inline-flex items-center gap-0.5 text-xs font-medium text-primary hover:text-primary/80 disabled:opacity-50" data-testid="button-description-save">
+                          <Check className="h-3 w-3" /> Save
+                        </button>
+                        <button type="button" onClick={handleDescriptionCancel}
+                          className="inline-flex items-center gap-0.5 text-xs text-muted-foreground hover:text-muted-foreground/80" data-testid="button-description-cancel">
+                          <X className="h-3 w-3" /> Cancel
+                        </button>
+                        <span className="text-[9px] text-muted-foreground/40 ml-auto">Cmd+Enter to save</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      className="group flex items-start gap-1.5 cursor-pointer"
+                      onClick={() => { setDescriptionDraft(job.description || ""); setEditingDescription(true); }}
+                      data-testid="button-edit-description"
+                      role="button" tabIndex={0}
+                      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setDescriptionDraft(job.description || ""); setEditingDescription(true); } }}
+                    >
+                      {job.description && job.description.trim() !== "" ? (
+                        <p className="text-sm text-slate-600 whitespace-pre-wrap flex-1 min-w-0 group-hover:text-slate-800 transition-colors">
+                          {job.description}
+                        </p>
+                      ) : (
+                        <p className="text-sm text-slate-400 italic group-hover:text-slate-500 transition-colors">
+                          Click to add description…
+                        </p>
+                      )}
+                      <Pencil className="h-3.5 w-3.5 text-slate-300 group-hover:text-slate-500 transition-colors shrink-0 mt-0.5" />
+                    </div>
+                  )}
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
+          </div>
+
           {/* ── Unified Card: Parts, Labour & Expenses ────────────────── */}
-          <div id="parts-billing-section" className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden" data-testid="job-main-card">
+          <div id="parts-billing-section" className="rounded-md border border-slate-200 bg-white shadow-sm overflow-hidden" data-testid="job-main-card">
             <Collapsible open={billingExpanded} onOpenChange={setBillingExpanded}>
               <CollapsibleTrigger asChild>
                 <button
@@ -1228,7 +1276,7 @@ export default function JobDetailPage() {
           </div>
 
           {/* ── Visits + Activity ─────────────────────────────────────── */}
-          <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden" data-testid="section-visits-activity">
+          <div className="rounded-md border border-slate-200 bg-white shadow-sm overflow-hidden" data-testid="section-visits-activity">
             <div id="visits-section" data-testid="section-visits">
               <div className="flex items-center justify-between px-5 py-3 bg-slate-50 border-b border-slate-200">
                 <span className="text-[13px] font-bold text-slate-900 tracking-tight flex items-center gap-2">
@@ -1344,7 +1392,7 @@ export default function JobDetailPage() {
         <aside className="space-y-3 min-h-0 overflow-y-auto h-full">
 
           {/* 1. JOB SUMMARY — collapsible, minimized by default, profit visible when collapsed */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden" data-testid="section-job-summary">
+          <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="section-job-summary">
             <Collapsible open={jobSummaryExpanded} onOpenChange={setJobSummaryExpanded}>
               <CollapsibleTrigger asChild>
                 <button className="w-full flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] hover:bg-slate-100 transition-colors">
@@ -1425,27 +1473,24 @@ export default function JobDetailPage() {
           </div>
 
           {/* 2. LABOUR SUMMARY — collapsible, open by default */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden" data-testid="section-labour">
+          <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="section-labour">
             <Collapsible open={labourSummaryExpanded} onOpenChange={setLabourSummaryExpanded}>
               <CollapsibleTrigger asChild>
-                <button className="w-full flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] hover:bg-slate-100 transition-colors">
-                  <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
+                <div className="w-full flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] hover:bg-slate-100 transition-colors">
+                  <button className="flex items-center gap-2 flex-1 min-w-0">
                     <Clock className="h-4 w-4 text-[#64748b]" />
-                    Labour Summary
-                  </span>
-                  <div className="flex items-center gap-2">
-                    {/* Collapsed summary — total hours */}
+                    <span className="text-sm font-semibold text-[#0f172a]">Labour Summary</span>
                     {pageLevelTimeSummary && pageLevelTimeSummary.totalMinutes > 0 && (
-                      <span className="text-xs text-slate-500 tabular-nums">
-                        {formatMinutes(pageLevelTimeSummary.totalMinutes)}
-                      </span>
+                      <span className="text-xs text-slate-500 tabular-nums">{formatMinutes(pageLevelTimeSummary.totalMinutes)}</span>
                     )}
-                    {labourSummaryExpanded
-                      ? <ChevronDown className="h-4 w-4 text-slate-400 shrink-0" />
-                      : <ChevronRight className="h-4 w-4 text-slate-400 shrink-0" />
-                    }
+                  </button>
+                  <div className="flex items-center gap-1">
+                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={(e) => { e.stopPropagation(); setTimeEntryModal({ open: true, mode: "create", entry: null }); }} title="Add Time" data-testid="button-add-time">
+                      <Plus className="h-3.5 w-3.5" />
+                    </Button>
+                    {labourSummaryExpanded ? <ChevronDown className="h-4 w-4 text-slate-400 shrink-0" /> : <ChevronRight className="h-4 w-4 text-slate-400 shrink-0" />}
                   </div>
-                </button>
+                </div>
               </CollapsibleTrigger>
               <CollapsibleContent>
                 <div className="border-t border-slate-200 px-4 py-2.5">
@@ -1461,19 +1506,21 @@ export default function JobDetailPage() {
           </div>
 
           {/* 3. NOTES — collapsible */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden" data-testid="section-notes">
+          <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="section-notes">
             <Collapsible open={notesExpanded} onOpenChange={setNotesExpanded}>
               <CollapsibleTrigger asChild>
-                <button className="w-full flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] hover:bg-slate-100 transition-colors">
-                  <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
+                <div className="w-full flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] hover:bg-slate-100 transition-colors">
+                  <button className="flex items-center gap-2 flex-1 min-w-0">
                     <MessageSquare className="h-4 w-4 text-[#64748b]" />
-                    Notes {notesCount > 0 && `(${notesCount})`}
-                  </span>
-                  {notesExpanded
-                    ? <ChevronDown className="h-4 w-4 text-slate-400 shrink-0" />
-                    : <ChevronRight className="h-4 w-4 text-slate-400 shrink-0" />
-                  }
-                </button>
+                    <span className="text-sm font-semibold text-[#0f172a]">Notes</span>
+                  </button>
+                  <div className="flex items-center gap-1">
+                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={(e) => { e.stopPropagation(); setShowAddNoteDialog(true); }} title="Add Note" data-testid="button-add-note">
+                      <Plus className="h-3.5 w-3.5" />
+                    </Button>
+                    {notesExpanded ? <ChevronDown className="h-4 w-4 text-slate-400 shrink-0" /> : <ChevronRight className="h-4 w-4 text-slate-400 shrink-0" />}
+                  </div>
+                </div>
               </CollapsibleTrigger>
               <CollapsibleContent>
                 <div className="border-t border-slate-200">
@@ -1483,12 +1530,14 @@ export default function JobDetailPage() {
             </Collapsible>
           </div>
 
-          {/* 4. EQUIPMENT — collapsible, collapsed by default */}
+          {/* 4. REFERENCE — compact section in right rail */}
+          <ReferenceFieldsSection entityType="job" entityId={job.id} />
+
+          {/* 5. EQUIPMENT — collapsible, collapsed by default */}
           <JobEquipmentSection
             jobId={job.id}
             locationId={job.locationId}
             defaultOpen={false}
-            hideAddButton
             externalAddOpen={showAddEquipmentDialog}
             onExternalAddOpenChange={setShowAddEquipmentDialog}
           />

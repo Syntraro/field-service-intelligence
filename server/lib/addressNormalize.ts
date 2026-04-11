@@ -34,9 +34,30 @@ export function extractProvince(
 }
 
 /**
+ * Convert empty or whitespace-only strings to null for optional text fields.
+ * Applied at the API boundary so Zod .email() / .url() validators don't
+ * need .or(z.literal('')) hacks for blank form submissions.
+ *
+ * 2026-04-10: Added as part of permanent supplier location normalization.
+ */
+const OPTIONAL_TEXT_FIELDS = new Set([
+  "email", "phone", "contactName", "address", "address2",
+  "city", "country", "notes", "lat", "lng", "placeId", "postalCode",
+]);
+
+function emptyToNull(result: Record<string, unknown>): void {
+  OPTIONAL_TEXT_FIELDS.forEach((key) => {
+    if (key in result && typeof result[key] === "string" && (result[key] as string).trim() === "") {
+      result[key] = null;
+    }
+  });
+}
+
+/**
  * Normalize a service-address DTO (client_locations / supplier_locations).
  * Resolves province from any of the three naming variants into `province`.
  * Normalizes postal code if present.
+ * Converts empty-string optional fields to null (email, phone, etc.).
  */
 export function normalizeServiceAddress(input: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = { ...input };
@@ -54,6 +75,9 @@ export function normalizeServiceAddress(input: Record<string, unknown>): Record<
   if (typeof input.postalCode === "string" && input.postalCode.trim()) {
     result.postalCode = normalizePostalCode(input.postalCode.trim());
   }
+
+  // Empty-string → null for optional text fields
+  emptyToNull(result);
 
   return result;
 }

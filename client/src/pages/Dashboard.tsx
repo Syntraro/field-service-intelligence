@@ -90,7 +90,7 @@ function formatCurrency(amount: number): string {
 
 function DashCard({ children, className = "", elevated }: { children: React.ReactNode; className?: string; elevated?: boolean }) {
   return (
-    <div className={`bg-[#ffffff] dark:bg-gray-900 rounded-lg overflow-hidden border border-[#e2e8f0] dark:border-gray-700 ${className}`} style={{ boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
+    <div className={`bg-[#ffffff] dark:bg-gray-900 rounded-md overflow-hidden border border-[#e2e8f0] dark:border-gray-700 ${className}`} style={{ boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
       {children}
     </div>
   );
@@ -143,7 +143,7 @@ function TodaysOperationsKPIs({ today, isLoading }: {
         <button
           key={stat.label}
           onClick={stat.action ? () => setLocation(resolveDashboardNav(stat.action!)) : undefined}
-          className={`rounded-lg px-3 py-4 text-left transition-colors bg-[#ffffff] border border-[#e2e8f0] hover:bg-[#F0F5F0] ${stat.action ? "cursor-pointer" : "cursor-default"}`}
+          className={`rounded-md px-3 py-4 text-left transition-colors bg-[#ffffff] border border-[#e2e8f0] hover:bg-[#F0F5F0] ${stat.action ? "cursor-pointer" : "cursor-default"}`}
           style={{ boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}
         >
           <div className="flex items-center gap-1.5 mb-0.5">
@@ -310,7 +310,7 @@ function TasksPanel({ collapsed, onToggleCollapsed }: { collapsed: boolean; onTo
 
   if (collapsed) {
     return (
-      <div className="h-full w-14 bg-[#ffffff] dark:bg-gray-900 rounded-lg border border-[#e2e8f0] shadow-sm flex flex-col items-center py-3 gap-2">
+      <div className="h-full w-14 bg-[#ffffff] dark:bg-gray-900 rounded-md border border-[#e2e8f0] shadow-sm flex flex-col items-center py-3 gap-2">
         <Button variant="ghost" size="icon" onClick={onToggleCollapsed} title="Expand tasks" className="rounded-md">
           <PanelRightOpen className="h-5 w-5" />
         </Button>
@@ -326,7 +326,7 @@ function TasksPanel({ collapsed, onToggleCollapsed }: { collapsed: boolean; onTo
   }
 
   return (
-    <div className="w-[380px] bg-[#ffffff] dark:bg-gray-900 rounded-lg border border-[#e2e8f0] flex flex-col" style={{ maxHeight: 'calc(100vh - 8rem)', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
+    <div className="w-[380px] bg-[#ffffff] dark:bg-gray-900 rounded-md border border-[#e2e8f0] flex flex-col" style={{ maxHeight: 'calc(100vh - 8rem)', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
       <div className="px-4 py-2.5 border-b border-[#e2e8f0] dark:border-gray-600 rounded-t-lg">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
@@ -376,8 +376,8 @@ function TasksPanel({ collapsed, onToggleCollapsed }: { collapsed: boolean; onTo
       <div className="flex-1 overflow-y-auto min-h-0">
         {isLoading ? (
           <div className="p-4 text-sm text-muted-foreground">Loading tasks…</div>
-        ) : error ? (
-          <div className="p-4 text-sm text-destructive">Failed to load tasks</div>
+        ) : error && (error as any)?.status !== 401 ? (
+          <div className="p-4 text-sm text-muted-foreground">Unable to load tasks</div>
         ) : filteredTasks.length === 0 ? (
           <div className="text-center py-8 text-sm text-muted-foreground">No tasks</div>
         ) : (
@@ -389,7 +389,7 @@ function TasksPanel({ collapsed, onToggleCollapsed }: { collapsed: boolean; onTo
               const isLast = index === filteredTasks.length - 1;
               return (
                 <div key={t.id} className={`px-4 py-2.5 flex items-start gap-2 cursor-pointer hover:bg-[#F0F5F0] transition-colors relative ${!isLast ? "border-b border-[#e2e8f0]" : ""}`} onClick={() => handleTaskClick(t.id)}>
-                  <Button variant="ghost" size="icon" className="mt-0.5 h-6 w-6 flex-shrink-0 rounded-lg"
+                  <Button variant="ghost" size="icon" className="mt-0.5 h-6 w-6 flex-shrink-0 rounded-md"
                     onClick={(e) => { e.stopPropagation(); if (!isDone) closeTask.mutate(t.id); }} title={isDone ? "Completed" : "Complete"}>
                     {isDone ? <CheckSquare className="h-4 w-4" /> : <Square className="h-4 w-4" />}
                   </Button>
@@ -446,17 +446,27 @@ export default function Dashboard() {
     refetchOnWindowFocus: true,
   });
 
-  const { data: dashboardInvoicesResponse } = useQuery<{ data: Invoice[] }>({
-    queryKey: ["invoices", "dashboard"],
-    queryFn: () => apiRequest(`/api/invoices/dashboard`),
+  // 2026-04-11: Invoice metrics from canonical backend stats — no client-side derivation.
+  // Same endpoint used by Invoices page. Single source of truth for Outstanding/PastDue/Draft.
+  const { data: invoiceStats } = useQuery<{
+    outstanding: { amount: number; count: number };
+    overdue: { amount: number; count: number };
+    draftCount: number;
+  }>({
+    queryKey: ["invoices", "stats"],
+    queryFn: async () => {
+      const res = await fetch("/api/invoices/stats", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch invoice stats");
+      return res.json();
+    },
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
 
-  // 2026-04-08: Removed `attention.summary` query — Jobs widget overdue count
-  // now reads `workflowData.jobs.overdueCount` (live SQL). The /api/attention/*
-  // endpoints remain for other rule types (job.requires_invoicing,
-  // job.unassigned, job.unscheduled).
+  const outstandingTotal = invoiceStats?.outstanding?.amount ?? 0;
+  const outstandingCount = invoiceStats?.outstanding?.count ?? 0;
+  const pastDueCount = invoiceStats?.overdue?.count ?? 0;
+  const draftInvoiceCount = invoiceStats?.draftCount ?? 0;
 
   // Today's visit summary — operational live data.
   // Tier A (live): 15s fallback + window-focus refetch + SSE invalidation.
@@ -466,16 +476,6 @@ export default function Dashboard() {
     staleTime: 15_000,
     refetchOnWindowFocus: true,
   });
-
-  const invoices = dashboardInvoicesResponse?.data || [];
-  const { draftInvoiceCount, outstandingTotal, pastDueInvoices, pastDueTotal } = useMemo(() => {
-    const draft = invoices.filter(i => i.status === "draft").length;
-    const outstanding = invoices.reduce((sum, inv) => sum + parseFloat(inv.balance || "0"), 0);
-    const pastDue = invoices.filter(i => i.isPastDue);
-    const pastDueSum = pastDue.reduce((sum, inv) => sum + parseFloat(inv.balance || "0"), 0);
-    return { draftInvoiceCount: draft, outstandingTotal: outstanding, pastDueInvoices: pastDue, pastDueTotal: pastDueSum };
-  }, [invoices]);
-  const pastDueCount = workflowData?.invoices.pastDueCount ?? pastDueInvoices.length;
 
   return (
     <div className="min-h-screen bg-[#F4F8F4]">
@@ -519,8 +519,8 @@ export default function Dashboard() {
                 headerStrength="medium"
                 isLoading={workflowLoading}
                 rows={[
-                  { label: "Past due invoices", value: formatCurrency(pastDueTotal), sub: pastDueCount > 0 ? `(${pastDueCount})` : "", action: "invoices.pastDue", warn: true, urgentBg: true },
-                  { label: "Outstanding invoices", value: formatCurrency(outstandingTotal), sub: `(${workflowData?.invoices.outstandingCount ?? invoices.length})`, action: "invoices.outstanding" },
+                  { label: "Past due invoices", value: pastDueCount, sub: pastDueCount > 0 ? `(${pastDueCount})` : "", action: "invoices.pastDue", warn: true, urgentBg: true },
+                  { label: "Outstanding invoices", value: formatCurrency(outstandingTotal), sub: `(${outstandingCount})`, action: "invoices.outstanding" },
                   { label: "Draft invoices", value: draftInvoiceCount, action: "invoices.draft" },
                 ]}
               />

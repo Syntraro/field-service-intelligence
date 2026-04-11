@@ -50,25 +50,29 @@ export function useJobVisits(jobId: string, options: UseJobVisitsOptions = {}) {
       (v) => v.isActive && !EXCLUDED_STATUSES.includes(v.status)
     );
 
-    // Split eligible into future and past
+    // 2026-04-10: Split eligible into scheduled (future/past) and unscheduled.
+    // Unscheduled visits (scheduledStart === null) are placeholders from
+    // "Schedule Later" — they must appear in the visits list, not be filtered out.
+    const unscheduledEligible = eligible.filter((v) => !v.scheduledStart);
+
     const futureEligible = eligible
       .filter((v) => v.scheduledStart && new Date(v.scheduledStart) >= now)
       .sort((a, b) => {
-        const aStart = a.scheduledStart ? new Date(a.scheduledStart).getTime() : Infinity;
-        const bStart = b.scheduledStart ? new Date(b.scheduledStart).getTime() : Infinity;
+        const aStart = new Date(a.scheduledStart!).getTime();
+        const bStart = new Date(b.scheduledStart!).getTime();
         return aStart - bStart; // Earliest first
       });
 
     const pastEligible = eligible
       .filter((v) => v.scheduledStart && new Date(v.scheduledStart) < now)
       .sort((a, b) => {
-        const aStart = a.scheduledStart ? new Date(a.scheduledStart).getTime() : 0;
-        const bStart = b.scheduledStart ? new Date(b.scheduledStart).getTime() : 0;
+        const aStart = new Date(a.scheduledStart!).getTime();
+        const bStart = new Date(b.scheduledStart!).getTime();
         return bStart - aStart; // Most recent first
       });
 
-    // Current = earliest future, else most recent past
-    const current = futureEligible[0] || pastEligible[0] || null;
+    // Current = earliest future, else most recent past, else first unscheduled placeholder
+    const current = futureEligible[0] || pastEligible[0] || unscheduledEligible[0] || null;
 
     // Upcoming = future eligible visits AFTER current (skip first if it's the current)
     const upcoming = futureEligible.slice(current && futureEligible[0]?.id === current.id ? 1 : 0);

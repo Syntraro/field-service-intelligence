@@ -106,7 +106,7 @@ export default function Locations() {
   // Sort by company name then location name, then apply tag filter (AND logic)
   const filteredLocations = useMemo(() => {
     let result = [...locations].sort((a, b) => {
-      const cmp = a.companyName.localeCompare(b.companyName);
+      const cmp = (a.companyName ?? "").localeCompare(b.companyName ?? "");
       return cmp !== 0 ? cmp : (a.location ?? "").localeCompare(b.location ?? "");
     });
 
@@ -147,7 +147,7 @@ export default function Locations() {
     const m = new Map<string, string>();
     filteredLocations.forEach((l) => {
       if (selectedRows.has(l.id)) {
-        m.set(l.id, l.location ? `${l.companyName} — ${l.location}` : l.companyName);
+        m.set(l.id, l.location ? `${l.companyName ?? ""} — ${l.location}` : (l.companyName ?? ""));
       }
     });
     return m;

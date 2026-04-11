@@ -39,11 +39,14 @@ export const handleApiError = (err: any, res: Response, defaultMessage = "Operat
   }
 
   // 2026-03-20: 409 Conflict — structured code for client-side detection
+  // 2026-04-10: Extended to pass activeItem context for timer conflicts
   if (err?.status === 409 || err?.statusCode === 409) {
-    return res.status(409).json({
+    const body: Record<string, any> = {
       error: err.message || "Conflict",
       code: err.code || "CONFLICT",
-    });
+    };
+    if (err.activeItem) body.activeItem = err.activeItem;
+    return res.status(409).json(body);
   }
 
   console.error("API Error:", err);

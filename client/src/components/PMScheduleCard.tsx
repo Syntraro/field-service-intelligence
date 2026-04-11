@@ -389,7 +389,7 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
 
                   {/* This month generated job status row */}
                   {currentMonthIncluded && (
-                    <div className="flex items-center justify-between text-xs border rounded-lg px-2.5 py-2 bg-muted/30">
+                    <div className="flex items-center justify-between text-xs border rounded-md px-2.5 py-2 bg-muted/30">
                       <span className="text-muted-foreground">
                         {MONTH_LABELS[currentMonth - 1]} job
                       </span>

@@ -150,7 +150,7 @@ function SummaryCard({ label, value, variant = "default" }: {
     info: "bg-blue-50 text-blue-800",
   };
   return (
-    <div className={`rounded-lg px-4 py-3 ${colors[variant]}`}>
+    <div className={`rounded-md px-4 py-3 ${colors[variant]}`}>
       <div className="text-2xl font-bold">{value}</div>
       <div className="text-xs font-medium mt-0.5">{label}</div>
     </div>
@@ -184,7 +184,7 @@ function UploadStep({ onUpload }: { onUpload: (text: string, fileName: string) =
       </CardHeader>
       <CardContent className="space-y-4">
         <div
-          className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors cursor-pointer ${
+          className={`border-2 border-dashed rounded-md p-12 text-center transition-colors cursor-pointer ${
             dragging ? "border-primary bg-primary/5" : "border-muted-foreground/25 hover:border-muted-foreground/50"
           }`}
           onDragOver={(e) => { e.preventDefault(); setDragging(true); }}

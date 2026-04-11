@@ -154,7 +154,7 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
   // If the request includes it, use it; otherwise resolve from the location
   // (find-or-create the parent customer company if location.parentCompanyId is null).
   const customerCompanyId = validated.customerCompanyId
-    ?? await resolveCustomerCompanyForLocation(companyId, location);
+    ?? await resolveCustomerCompanyForLocation(companyId, { ...location, companyName: location.companyName ?? "" });
 
   const { lines = [], leadId, ...quoteData } = validated;
 
@@ -382,7 +382,7 @@ router.get("/:id/pdf", asyncHandler(async (req: AuthedRequest, res: Response) =>
     lines: details.lines,
     company,
     location: {
-      companyName: details.location.companyName,
+      companyName: details.location.companyName ?? "",
       address: details.location.address,
       address2: details.location.address2,
       city: details.location.city,
@@ -430,7 +430,7 @@ router.get("/:id/pdf/preview", asyncHandler(async (req: AuthedRequest, res: Resp
     lines: details.lines,
     company,
     location: {
-      companyName: details.location.companyName,
+      companyName: details.location.companyName ?? "",
       address: details.location.address,
       address2: details.location.address2,
       city: details.location.city,

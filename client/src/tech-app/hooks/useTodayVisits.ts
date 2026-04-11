@@ -20,7 +20,9 @@ export interface TodayVisit {
   company: string;
   jobTitle: string;
   address: string;
-  scheduledTime: string;     // "8:00 AM" format
+  /** Raw ISO scheduledStart from backend — canonical sort source. Null for unscheduled. */
+  scheduledStartRaw: string | null;
+  scheduledTime: string;     // "8:00 AM" format (display only, NOT for sorting)
   scheduledEnd: string;      // "9:30 AM" format
   status: string;            // Backend status as-is (scheduled, en_route, in_progress, on_site, completed, etc.)
   jobType: string;           // Backend jobType as-is
@@ -71,6 +73,9 @@ function toTodayVisit(v: BackendVisit): TodayVisit {
     company: v.location?.companyName || UNKNOWN_LOCATION,
     jobTitle: v.job.summary || `Job #${v.job.jobNumber}`,
     address: locationParts.length > 0 ? locationParts.join(", ") : NO_ADDRESS,
+    // 2026-04-10: scheduledStartRaw is the canonical ISO datetime for sorting.
+    // scheduledTime is display-only — never use it for chronological ordering.
+    scheduledStartRaw: v.scheduledStart ?? null,
     scheduledTime: formatClockTime(v.scheduledStart),
     scheduledEnd: formatClockTime(v.scheduledEnd),
     status: v.status,

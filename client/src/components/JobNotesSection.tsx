@@ -45,9 +45,11 @@ interface JobNotesSectionProps {
   hideAddButton?: boolean;
   /** When true, hides the internal header row (parent provides its own collapsible header) */
   hideHeader?: boolean;
+  /** When false, hides the note count from the header (default: true) */
+  showCount?: boolean;
 }
 
-export default function JobNotesSection({ jobId, embedded = false, onCountChange, hideAddButton = false, hideHeader = false }: JobNotesSectionProps) {
+export default function JobNotesSection({ jobId, embedded = false, onCountChange, hideAddButton = false, hideHeader = false, showCount = true }: JobNotesSectionProps) {
   const { toast } = useToast();
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
 
@@ -92,7 +94,7 @@ export default function JobNotesSection({ jobId, embedded = false, onCountChange
     >
       <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
         <MessageSquare className="h-4 w-4 text-[#64748b]" />
-        Notes {notes.length > 0 && `(${notes.length})`}
+        Notes{showCount && notes.length > 0 ? ` (${notes.length})` : ""}
       </span>
       {!hideAddButton && (
         <button
@@ -129,7 +131,6 @@ export default function JobNotesSection({ jobId, embedded = false, onCountChange
                   <span className="font-semibold text-slate-700">{getUserName(note)}</span>
                   {" · "}
                   {format(new Date(note.createdAt), "MMM d, h:mm a")}
-                  {note.updatedAt && " · edited"}
                 </span>
                 <Button
                   variant="ghost"

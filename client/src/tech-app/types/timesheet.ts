@@ -31,6 +31,9 @@ export interface TimesheetEntry {
   lockedAt: string | null;
   lockedByInvoiceId: string | null;
   lockReason: string | null;
+  // Attribution (from time_entries canonical columns)
+  visitId: string | null;
+  taskId: string | null;
   // Job context (from server-side join, nullable)
   jobNumber: number | null;
   jobSummary: string | null;

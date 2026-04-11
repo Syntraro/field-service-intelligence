@@ -2,19 +2,20 @@
  * CreateClientModal — Canonical client/company creation modal.
  *
  * 2026-03-21: Created as the single canonical surface for client creation.
- * Replaces: NewClientPage, AddClientPage, QuickAddClientModal, NewAddClientDialog.
- *
- * Product rule: Client creation and client setup are separate concerns.
- * This modal creates a minimal valid client record, then navigates to
- * Client Detail for all further setup (locations, parts, equipment, PM).
+ * 2026-04-10: Service/billing address split.
+ *   - Primary service address shown first (maps to first auto-created location)
+ *   - "Billing same as service" checkbox (default checked)
+ *   - When unchecked, billing section appears prefilled from service values
+ *   - On submit: service address → primary location, billing → customer_company
+ *   - Server enforces billingSameAsService derivation
  *
  * Uses POST /api/clients/full-create which atomically creates:
- * - customer_companies row (with optional billing address)
- * - primary client_locations row (bare minimum, inherits company name)
+ * - customer_companies row (with billing address)
+ * - primary client_locations row (with service address)
  * - optional client_contacts row (if contact fields provided)
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
@@ -27,6 +28,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -62,12 +64,32 @@ export function CreateClientModal({
   const [lastName, setLastName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
-  // Optional billing address
-  const [billingStreet, setBillingStreet] = useState("");
-  const [billingStreet2, setBillingStreet2] = useState("");
-  const [billingCity, setBillingCity] = useState("");
-  const [billingProvince, setBillingProvince] = useState("");
-  const [billingPostal, setBillingPostal] = useState("");
+  // Service address (maps to first auto-created location)
+  const [svcStreet, setSvcStreet] = useState("");
+  const [svcStreet2, setSvcStreet2] = useState("");
+  const [svcCity, setSvcCity] = useState("");
+  const [svcProvince, setSvcProvince] = useState("");
+  const [svcPostal, setSvcPostal] = useState("");
+  // Billing address control
+  const [billingSameAsService, setBillingSameAsService] = useState(true);
+  const [billStreet, setBillStreet] = useState("");
+  const [billStreet2, setBillStreet2] = useState("");
+  const [billCity, setBillCity] = useState("");
+  const [billProvince, setBillProvince] = useState("");
+  const [billPostal, setBillPostal] = useState("");
+
+  // When unchecking "same as service", prefill billing from current service values
+  const handleBillingSameToggle = (checked: boolean) => {
+    if (!checked) {
+      // Prefill billing from service values on reveal
+      setBillStreet(svcStreet);
+      setBillStreet2(svcStreet2);
+      setBillCity(svcCity);
+      setBillProvince(svcProvince);
+      setBillPostal(svcPostal);
+    }
+    setBillingSameAsService(checked);
+  };
 
   // ── Server error display ──
   const [serverError, setServerError] = useState<string | null>(null);
@@ -78,11 +100,17 @@ export function CreateClientModal({
     setLastName("");
     setPhone("");
     setEmail("");
-    setBillingStreet("");
-    setBillingStreet2("");
-    setBillingCity("");
-    setBillingProvince("");
-    setBillingPostal("");
+    setSvcStreet("");
+    setSvcStreet2("");
+    setSvcCity("");
+    setSvcProvince("");
+    setSvcPostal("");
+    setBillingSameAsService(true);
+    setBillStreet("");
+    setBillStreet2("");
+    setBillCity("");
+    setBillProvince("");
+    setBillPostal("");
     setServerError(null);
   }, []);
 
@@ -91,7 +119,6 @@ export function CreateClientModal({
     mutationFn: async () => {
       // Build contacts array only if any contact field is filled
       const hasContact = firstName.trim() || lastName.trim() || phone.trim() || email.trim();
-      // Validate partial contact: if name provided, need at least phone or email
       if (hasContact) {
         const hasName = firstName.trim() || lastName.trim();
         const hasContactMethod = phone.trim() || email.trim();
@@ -116,23 +143,37 @@ export function CreateClientModal({
           ]
         : [];
 
-      // Build billing address only if any field is filled
-      const hasBilling =
-        billingStreet.trim() ||
-        billingStreet2.trim() ||
-        billingCity.trim() ||
-        billingProvince.trim() ||
-        billingPostal.trim();
+      // Build service address for primary location
+      const hasService =
+        svcStreet.trim() || svcStreet2.trim() || svcCity.trim() ||
+        svcProvince.trim() || svcPostal.trim();
 
-      const billingAddress = hasBilling
+      const serviceAddress = hasService
         ? {
-            street: billingStreet.trim() || undefined,
-            street2: billingStreet2.trim() || undefined,
-            city: billingCity.trim() || undefined,
-            province: billingProvince.trim() || undefined,
-            postalCode: billingPostal.trim() || undefined,
+            street: svcStreet.trim() || undefined,
+            street2: svcStreet2.trim() || undefined,
+            city: svcCity.trim() || undefined,
+            province: svcProvince.trim() || undefined,
+            postalCode: svcPostal.trim() || undefined,
           }
         : undefined;
+
+      // Build billing address (only if different from service)
+      let billingAddress: Record<string, string | undefined> | undefined;
+      if (!billingSameAsService) {
+        const hasBilling =
+          billStreet.trim() || billStreet2.trim() || billCity.trim() ||
+          billProvince.trim() || billPostal.trim();
+        billingAddress = hasBilling
+          ? {
+              street: billStreet.trim() || undefined,
+              street2: billStreet2.trim() || undefined,
+              city: billCity.trim() || undefined,
+              province: billProvince.trim() || undefined,
+              postalCode: billPostal.trim() || undefined,
+            }
+          : undefined;
+      }
 
       return apiRequest<{
         customerCompany: { id: string; name: string };
@@ -145,10 +186,10 @@ export function CreateClientModal({
           company: {
             name: companyName.trim(),
             billingAddress,
+            billingSameAsService,
           },
-          // Primary location is required by the data model but we keep it bare-minimum.
-          // It inherits the company name automatically on the backend.
           primaryLocation: {
+            serviceAddress,
             needsDetails: true,
             selectedMonths: [],
           },
@@ -171,7 +212,6 @@ export function CreateClientModal({
       if (onCreated) {
         onCreated(result.customerCompany.id, result.client.id);
       } else {
-        // Default: navigate to client detail
         setLocation(`/clients/${result.customerCompany.id}`);
       }
     },
@@ -188,14 +228,14 @@ export function CreateClientModal({
   };
 
   const handleClose = (nextOpen: boolean) => {
-    if (createMutation.isPending) return; // Don't close while saving
+    if (createMutation.isPending) return;
     if (!nextOpen) resetForm();
     onOpenChange(nextOpen);
   };
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-lg" data-testid="dialog-create-client">
+      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto" data-testid="dialog-create-client">
         <DialogHeader>
           <DialogTitle>New Client</DialogTitle>
         </DialogHeader>
@@ -261,44 +301,98 @@ export function CreateClientModal({
             </div>
           </fieldset>
 
-          {/* ── Billing Address (optional) ── */}
+          {/* ── Primary Service Address (optional) ── */}
           <fieldset className="space-y-2">
             <legend className="text-sm font-medium text-muted-foreground">
-              Billing Address <span className="text-xs font-normal">(optional)</span>
+              Primary Service Address <span className="text-xs font-normal">(optional)</span>
             </legend>
             <Input
               placeholder="Street address"
-              value={billingStreet}
-              onChange={(e) => setBillingStreet(e.target.value)}
-              data-testid="input-billing-street"
+              value={svcStreet}
+              onChange={(e) => setSvcStreet(e.target.value)}
+              data-testid="input-service-street"
             />
             <Input
               placeholder="Unit / Suite"
-              value={billingStreet2}
-              onChange={(e) => setBillingStreet2(e.target.value)}
-              data-testid="input-billing-street2"
+              value={svcStreet2}
+              onChange={(e) => setSvcStreet2(e.target.value)}
+              data-testid="input-service-street2"
             />
             <div className="grid grid-cols-3 gap-2">
               <Input
                 placeholder="City"
-                value={billingCity}
-                onChange={(e) => setBillingCity(e.target.value)}
-                data-testid="input-billing-city"
+                value={svcCity}
+                onChange={(e) => setSvcCity(e.target.value)}
+                data-testid="input-service-city"
               />
               <Input
                 placeholder="Province / State"
-                value={billingProvince}
-                onChange={(e) => setBillingProvince(e.target.value)}
-                data-testid="input-billing-province"
+                value={svcProvince}
+                onChange={(e) => setSvcProvince(e.target.value)}
+                data-testid="input-service-province"
               />
               <Input
                 placeholder="Postal / Zip"
-                value={billingPostal}
-                onChange={(e) => setBillingPostal(e.target.value)}
-                data-testid="input-billing-postal"
+                value={svcPostal}
+                onChange={(e) => setSvcPostal(e.target.value)}
+                data-testid="input-service-postal"
               />
             </div>
           </fieldset>
+
+          {/* ── Billing Address Control ── */}
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="billing-same"
+              checked={billingSameAsService}
+              onCheckedChange={(checked) => handleBillingSameToggle(checked === true)}
+              data-testid="checkbox-billing-same"
+            />
+            <Label htmlFor="billing-same" className="text-sm font-normal cursor-pointer">
+              Billing address same as service address
+            </Label>
+          </div>
+
+          {/* ── Billing Address (visible only when different) ── */}
+          {!billingSameAsService && (
+            <fieldset className="space-y-2">
+              <legend className="text-sm font-medium text-muted-foreground">
+                Billing Address
+              </legend>
+              <Input
+                placeholder="Street address"
+                value={billStreet}
+                onChange={(e) => setBillStreet(e.target.value)}
+                data-testid="input-billing-street"
+              />
+              <Input
+                placeholder="Unit / Suite"
+                value={billStreet2}
+                onChange={(e) => setBillStreet2(e.target.value)}
+                data-testid="input-billing-street2"
+              />
+              <div className="grid grid-cols-3 gap-2">
+                <Input
+                  placeholder="City"
+                  value={billCity}
+                  onChange={(e) => setBillCity(e.target.value)}
+                  data-testid="input-billing-city"
+                />
+                <Input
+                  placeholder="Province / State"
+                  value={billProvince}
+                  onChange={(e) => setBillProvince(e.target.value)}
+                  data-testid="input-billing-province"
+                />
+                <Input
+                  placeholder="Postal / Zip"
+                  value={billPostal}
+                  onChange={(e) => setBillPostal(e.target.value)}
+                  data-testid="input-billing-postal"
+                />
+              </div>
+            </fieldset>
+          )}
 
           {/* ── Footer ── */}
           <DialogFooter className="pt-2">

@@ -140,6 +140,9 @@ export interface DetailVisit {
   visitNotes: string | null;
   company: string;
   address: string;
+  /** 2026-04-10: Raw ISO scheduledStart — SSoT for "is this visit scheduled?"
+   *  Null means unscheduled placeholder. Used by VisitDetailPage to gate actions. */
+  scheduledStart: string | null;
   scheduledTime: string;
   scheduledEnd: string;
   /** Canonical timer start from running time_entry (SSoT for timer display) */
@@ -190,6 +193,7 @@ function toDetailVisit(data: VisitDetailResponse): DetailVisit {
     visitNotes: data.visit.visitNotes ?? null,
     company: loc?.companyName || UNKNOWN_LOCATION,
     address: locationParts.length > 0 ? locationParts.join(", ") : NO_ADDRESS,
+    scheduledStart: data.visit.scheduledStart ?? null,
     scheduledTime: formatClockTime(data.visit.scheduledStart),
     scheduledEnd: formatClockTime(data.visit.scheduledEnd),
     timerStartedAt: data.activeTimeEntry?.startAt ?? null,

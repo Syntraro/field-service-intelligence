@@ -416,7 +416,8 @@ export const clientLocations = pgTable("client_locations", {
   userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Creator - nullable, set null on user delete
   // Parent company reference (optional - if null, this is a standalone client)
   parentCompanyId: varchar("parent_company_id").references(() => customerCompanies.id, { onDelete: "set null" }),
-  companyName: text("company_name").notNull(),
+  // 2026-04-10: nullable — when null/blank, UI falls back to customerCompanies.name
+  companyName: text("company_name"),
   location: text("location"), // Location/site name (e.g. "Toronto Warehouse")
   // Service address
   address: text("address"), // Address line 1
@@ -2656,13 +2657,13 @@ export const tasks = pgTable("tasks", {
   scheduledEndAt: timestamp("scheduled_end_at"),
   allDay: boolean("all_day").notNull().default(false),
 
-  // Actual time tracking (source of truth)
-  checkedInAt: timestamp("checked_in_at"),
-  checkedOutAt: timestamp("checked_out_at"),
-
-  // Duration tracking (in minutes)
+  // Planning
   estimatedDurationMinutes: integer("estimated_duration_minutes"), // Estimated time to complete
-  actualDurationMinutes: integer("actual_duration_minutes"), // Auto-calculated from checkedInAt to checkedOutAt
+  // 2026-04-10: Actual worked time is now derived from time_entries (task labor unification).
+  // Legacy fields checkedInAt, checkedOutAt, actualDurationMinutes DELETED.
+
+  // Billing
+  isBillable: boolean("is_billable").notNull().default(false),
 
   // Optional attribution to a Job and Client/Location (does NOT create billing or calendar coupling)
   jobId: varchar("job_id").references(() => jobs.id, { onDelete: "set null" }),
@@ -2692,15 +2693,15 @@ export const insertTaskSchema = createInsertSchema(tasks).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
-  actualDurationMinutes: true, // Auto-calculated, not user input
   closedAt: true, // Auto-set
   closedByUserId: true, // Auto-set
 }).extend({
   type: z.enum(taskTypeEnum),
   status: z.enum(taskStatusEnum).default("pending"),
-  notes: z.string().max(2000).optional(), // Explicitly allow notes field
+  notes: z.string().max(2000).optional(),
   estimatedDurationMinutes: z.number().int().positive().optional(),
   clientId: z.string().uuid().nullable().optional(),
+  isBillable: z.boolean().optional(), // Server applies default based on jobId presence
 });
 
 export const updateTaskSchema = z.object({
@@ -2715,6 +2716,7 @@ export const updateTaskSchema = z.object({
   allDay: z.boolean().optional(),
   estimatedDurationMinutes: z.number().int().positive().nullable().optional(),
   type: z.enum(taskTypeEnum).optional(),
+  isBillable: z.boolean().optional(),
 }).strict();
 
 export type InsertTask = z.infer<typeof insertTaskSchema>;
@@ -2746,6 +2748,9 @@ export const suppliers = pgTable("suppliers", {
   email: text("email"),
   phone: text("phone"),
   website: text("website"),
+  // 2026-04-10: Account number + notes for enhanced supplier creation
+  accountNumber: text("account_number"),
+  notes: text("notes"),
   // Timestamps
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
@@ -2759,7 +2764,10 @@ export const insertSupplierSchema = createInsertSchema(suppliers).omit({
 }).extend({
   name: z.string().min(1, "Supplier name is required"),
   email: z.string().email().nullable().optional(),
+  phone: z.string().nullable().optional(),
   website: z.string().url().nullable().optional(),
+  accountNumber: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
   qboSyncStatus: z.enum(qboSyncStatusEnum).default("NOT_SYNCED"),
 });
 
@@ -2768,6 +2776,9 @@ export const updateSupplierSchema = z.object({
   email: z.string().email().nullable().optional(),
   phone: z.string().nullable().optional(),
   website: z.string().url().nullable().optional(),
+  // 2026-04-10: account number + notes wired through update flow
+  accountNumber: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
   isActive: z.boolean().optional(),
 });
 
@@ -2819,12 +2830,17 @@ export const insertSupplierLocationSchema = createInsertSchema(supplierLocations
   updatedAt: true,
 }).extend({
   name: z.string().min(1, "Location name is required"),
-  email: z.string().email().optional().or(z.literal('')),
+  // 2026-04-10: consistent with updateSupplierLocationSchema — validate format when present
+  postalCode: postalCodeSchema,
+  // 2026-04-10: strict email — empty strings normalized to null at server boundary
+  email: z.string().email().nullable().optional(),
 });
 
 export const updateSupplierLocationSchema = z.object({
   name: z.string().min(1).optional(),
   address: z.string().nullable().optional(),
+  // 2026-04-10: address2 was missing — caused .strict() to reject edit payloads
+  address2: z.string().nullable().optional(),
   city: z.string().nullable().optional(),
   province: z.string().nullable().optional(),
   postalCode: postalCodeSchema,
@@ -2833,6 +2849,7 @@ export const updateSupplierLocationSchema = z.object({
   lng: z.string().nullable().optional(),
   placeId: z.string().nullable().optional(),
   contactName: z.string().nullable().optional(),
+  // 2026-04-10: strict email — empty strings normalized to null at server boundary
   email: z.string().email().nullable().optional(),
   phone: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
@@ -3542,6 +3559,7 @@ export const timeEntryTypeEnum = [
   "travel_between_jobs",
   "admin",
   "break",
+  "task_work",
   "other"
 ] as const;
 export type TimeEntryType = typeof timeEntryTypeEnum[number];
@@ -3612,6 +3630,11 @@ export const timeEntries = pgTable("time_entries", {
   // Optional links
   workSessionId: varchar("work_session_id").references(() => workSessions.id, { onDelete: "set null" }),
   jobId: varchar("job_id").references(() => jobs.id, { onDelete: "set null" }),
+  // 2026-04-10: Task labor unification — task timers create canonical time_entries
+  taskId: varchar("task_id").references(() => tasks.id, { onDelete: "set null" }),
+  // 2026-04-10: Visit attribution — set for visit-originated labor, null otherwise.
+  // jobId remains the canonical financial parent; visitId is operational attribution.
+  visitId: varchar("visit_id").references(() => jobVisits.id, { onDelete: "set null" }),
   // Entry type
   type: text("type").notNull(), // TimeEntryType
   // Time tracking
@@ -3644,6 +3667,10 @@ export const timeEntries = pgTable("time_entries", {
   techStartIdx: index("time_entries_tech_start_idx").on(table.companyId, table.technicianId, table.startAt),
   // Index for finding entries by job
   jobIdx: index("time_entries_job_idx").on(table.companyId, table.jobId),
+  // 2026-04-10: Index for finding entries by task
+  taskIdx: index("time_entries_task_idx").on(table.companyId, table.taskId),
+  // 2026-04-10: Index for finding entries by visit
+  visitIdx: index("time_entries_visit_idx").on(table.companyId, table.visitId),
   // Index for finding uninvoiced entries
   invoiceIdx: index("time_entries_invoice_idx").on(table.companyId, table.invoiceId),
   // Partial index for finding running entries (endAt IS NULL) - enforced in code
@@ -3673,6 +3700,8 @@ export const insertTimeEntrySchema = createInsertSchema(timeEntries).omit({
 
 export const updateTimeEntrySchema = z.object({
   jobId: z.string().uuid().nullable().optional(),
+  taskId: z.string().uuid().nullable().optional(),
+  visitId: z.string().uuid().nullable().optional(),
   type: z.enum(timeEntryTypeEnum).optional(),
   startAt: z.string().datetime().optional(),
   endAt: z.string().datetime().nullable().optional(),
@@ -3869,6 +3898,10 @@ export interface JobTimeSummary {
     id: string;
     technicianId: string;
     type: TimeEntryType;
+    taskId: string | null;
+    visitId: string | null;
+    /** Derived source: "visit" | "task" | "manual" */
+    sourceType: "visit" | "task" | "manual";
     startAt: Date;
     endAt: Date | null;
     durationMinutes: number | null;
@@ -4874,3 +4907,141 @@ export const leadNotes = pgTable("lead_notes", {
 });
 
 export type LeadNote = typeof leadNotes.$inferSelect;
+
+// ============================================================================
+// REFERENCE FIELDS — Controlled, tenant-scoped, searchable reference data
+// ============================================================================
+//
+// 2026-04-10: Centralized reference field system for Jobs, Quotes, and Invoices.
+// Field definitions are created once by tenant admin and applied across entity types.
+// Field values are stored per-record with typed columns (text/number/date).
+//
+// This is NOT a free-form custom fields system. It is a controlled reference-field
+// registry for short structured values like PO numbers, claim numbers, permits, etc.
+
+// 2026-04-10: Locked to text-only. Number/date support removed.
+export const referenceFieldTypeEnum = ["text"] as const;
+export type ReferenceFieldType = typeof referenceFieldTypeEnum[number];
+
+export const referenceFieldEntityTypeEnum = ["job", "quote", "invoice"] as const;
+export type ReferenceFieldEntityType = typeof referenceFieldEntityTypeEnum[number];
+
+// ── Definitions ──
+
+export const referenceFieldDefinitions = pgTable("reference_field_definitions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+
+  label: varchar("label", { length: 200 }).notNull(),
+  key: varchar("key", { length: 100 }).notNull(),
+
+  type: varchar("type", { length: 20 }).notNull(), // text | number | date
+
+  appliesToJobs: boolean("applies_to_jobs").notNull().default(false),
+  appliesToQuotes: boolean("applies_to_quotes").notNull().default(false),
+  appliesToInvoices: boolean("applies_to_invoices").notNull().default(false),
+
+  searchable: boolean("searchable").notNull().default(true),
+  active: boolean("active").notNull().default(true),
+
+  displayOrder: integer("display_order").notNull().default(0),
+
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  // Unique key per tenant
+  companyKeyUq: uniqueIndex("ref_field_defs_company_key_uq").on(table.companyId, table.key),
+  // At least one applies-to must be true
+  appliesToCheck: check(
+    "ref_field_defs_applies_to_check",
+    sql`${table.appliesToJobs} = true OR ${table.appliesToQuotes} = true OR ${table.appliesToInvoices} = true`
+  ),
+  // Type must be a valid enum value
+  typeCheck: check(
+    "ref_field_defs_type_check",
+    sql`${table.type} IN ('text', 'number', 'date')`
+  ),
+}));
+
+export const insertReferenceFieldDefinitionSchema = createInsertSchema(referenceFieldDefinitions).omit({
+  id: true,
+  companyId: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  label: z.string().min(1).max(200),
+  // 2026-04-10: key and type are optional — server auto-generates key from label, type is always "text"
+  key: z.string().max(100).optional(),
+  type: z.enum(referenceFieldTypeEnum).optional(),
+  appliesToJobs: z.boolean().default(false),
+  appliesToQuotes: z.boolean().default(false),
+  appliesToInvoices: z.boolean().default(false),
+  searchable: z.boolean().default(true),
+  active: z.boolean().default(true),
+  displayOrder: z.number().int().min(0).default(0),
+}).refine(
+  (data) => data.appliesToJobs || data.appliesToQuotes || data.appliesToInvoices,
+  { message: "At least one 'applies to' option must be selected", path: ["appliesToJobs"] }
+);
+
+export const updateReferenceFieldDefinitionSchema = z.object({
+  label: z.string().min(1).max(200).optional(),
+  appliesToJobs: z.boolean().optional(),
+  appliesToQuotes: z.boolean().optional(),
+  appliesToInvoices: z.boolean().optional(),
+  searchable: z.boolean().optional(),
+  active: z.boolean().optional(),
+  displayOrder: z.number().int().min(0).optional(),
+  // key and type are immutable after creation
+}).strict();
+
+export type ReferenceFieldDefinition = typeof referenceFieldDefinitions.$inferSelect;
+export type InsertReferenceFieldDefinition = z.infer<typeof insertReferenceFieldDefinitionSchema>;
+export type UpdateReferenceFieldDefinition = z.infer<typeof updateReferenceFieldDefinitionSchema>;
+
+// ── Values ──
+
+export const referenceFieldValues = pgTable("reference_field_values", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+
+  fieldDefinitionId: varchar("field_definition_id").notNull().references(() => referenceFieldDefinitions.id, { onDelete: "cascade" }),
+
+  entityType: varchar("entity_type", { length: 20 }).notNull(), // job | quote | invoice
+  entityId: varchar("entity_id").notNull(),
+
+  textValue: varchar("text_value", { length: 500 }),
+  // 2026-04-10: number_value and date_value columns dropped — text-only system
+
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  // One value per field per entity
+  fieldEntityUq: uniqueIndex("ref_field_vals_field_entity_uq").on(
+    table.companyId, table.fieldDefinitionId, table.entityType, table.entityId
+  ),
+  // Lookup: all values for a specific entity
+  entityLookupIdx: index("ref_field_vals_entity_lookup_idx").on(
+    table.companyId, table.entityType, table.entityId
+  ),
+  // Lookup: all values for a specific definition
+  definitionIdx: index("ref_field_vals_definition_idx").on(
+    table.companyId, table.fieldDefinitionId
+  ),
+  // Entity type constraint
+  entityTypeCheck: check(
+    "ref_field_vals_entity_type_check",
+    sql`${table.entityType} IN ('job', 'quote', 'invoice')`
+  ),
+  // 2026-04-10: singleValueCheck removed — only text_value column remains
+}));
+
+export const upsertReferenceFieldValueSchema = z.object({
+  fieldDefinitionId: z.string().uuid(),
+  entityType: z.enum(referenceFieldEntityTypeEnum),
+  entityId: z.string().uuid(),
+  textValue: z.string().max(500).nullable().optional(),
+}).strict();
+
+export type ReferenceFieldValue = typeof referenceFieldValues.$inferSelect;
+export type UpsertReferenceFieldValue = z.infer<typeof upsertReferenceFieldValueSchema>;

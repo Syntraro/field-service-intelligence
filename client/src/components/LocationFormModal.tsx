@@ -300,7 +300,7 @@ export default function LocationFormModal({
             </div>
           </div>
 
-          <div className="flex items-center justify-between p-3 border rounded-lg bg-muted/30">
+          <div className="flex items-center justify-between p-3 border rounded-md bg-muted/30">
             <div className="space-y-1">
               <Label className="text-sm font-medium">Bill this location with the parent company</Label>
               <p className="text-xs text-muted-foreground">
@@ -313,7 +313,7 @@ export default function LocationFormModal({
           </div>
 
           {isEditIntent && (
-            <div className="flex items-center justify-between p-3 border rounded-lg">
+            <div className="flex items-center justify-between p-3 border rounded-md">
               <div className="space-y-1">
                 <Label className="text-sm font-medium">Active</Label>
                 <p className="text-xs text-muted-foreground">

@@ -676,7 +676,7 @@ export default function PayrollPage() {
 
       {/* Row 1: View toggle + date controls for active view */}
       <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-1 rounded-lg border bg-muted p-1">
+        <div className="flex items-center gap-1 rounded-md border bg-muted p-1">
           <button onClick={() => setViewMode("day")} className={cn("px-4 py-1.5 text-sm font-medium rounded-md transition-all", viewMode === "day" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>Day</button>
           <button onClick={() => setViewMode("week")} className={cn("px-4 py-1.5 text-sm font-medium rounded-md transition-all", viewMode === "week" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>Week</button>
         </div>

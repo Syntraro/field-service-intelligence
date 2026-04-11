@@ -470,7 +470,7 @@ export default function ManageTeam() {
             <Card>
               <CardContent className="pt-4 pb-4">
                 <div className="flex items-center gap-3">
-                  <div className="p-2 bg-primary/10 rounded-lg">
+                  <div className="p-2 bg-primary/10 rounded-md">
                     <Users className="h-5 w-5 text-primary" />
                   </div>
                   <div>
@@ -483,7 +483,7 @@ export default function ManageTeam() {
             <Card>
               <CardContent className="pt-4 pb-4">
                 <div className="flex items-center gap-3">
-                  <div className="p-2 bg-green-500/10 rounded-lg">
+                  <div className="p-2 bg-green-500/10 rounded-md">
                     <UserCircle className="h-5 w-5 text-green-500" />
                   </div>
                   <div>
@@ -496,7 +496,7 @@ export default function ManageTeam() {
             <Card>
               <CardContent className="pt-4 pb-4">
                 <div className="flex items-center gap-3">
-                  <div className="p-2 bg-blue-500/10 rounded-lg">
+                  <div className="p-2 bg-blue-500/10 rounded-md">
                     <Shield className="h-5 w-5 text-blue-500" />
                   </div>
                   <div>
@@ -509,7 +509,7 @@ export default function ManageTeam() {
             <Card>
               <CardContent className="pt-4 pb-4">
                 <div className="flex items-center gap-3">
-                  <div className="p-2 bg-amber-500/10 rounded-lg">
+                  <div className="p-2 bg-amber-500/10 rounded-md">
                     <Clock className="h-5 w-5 text-amber-500" />
                   </div>
                   <div>

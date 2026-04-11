@@ -1,6 +1,6 @@
 import { db } from "../db";
-import { and, eq, isNull, gte, lte, desc } from "drizzle-orm";
-import { tasks, supplierVisitDetails, suppliers, supplierLocations } from "@shared/schema";
+import { and, eq, isNull, isNotNull, gte, lte, desc, or, asc, sql, ne } from "drizzle-orm";
+import { tasks, timeEntries, supplierVisitDetails, suppliers, supplierLocations } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset } from "./base";
 import { sanitizeSchedulingTimestamps } from "../utils/allDaySanitizer";
 
@@ -44,6 +44,8 @@ export interface TaskCreateInput {
   // Phase 2: Quote assessment link — immutable after create
   quoteId?: string;
   estimatedDurationMinutes?: number;
+  // 2026-04-10: Billable flag. Default: jobId present → true, no jobId → false.
+  isBillable?: boolean;
 }
 
 export interface TaskUpdateInput {
@@ -58,6 +60,7 @@ export interface TaskUpdateInput {
   estimatedDurationMinutes?: number | null;
   type?: string;
   status?: string;
+  isBillable?: boolean;
 }
 
 export class TaskRepository extends BaseRepository {
@@ -131,6 +134,9 @@ export class TaskRepository extends BaseRepository {
     if (input.estimatedDurationMinutes !== undefined)
       values.estimatedDurationMinutes = input.estimatedDurationMinutes;
 
+    // 2026-04-10: Billable defaults — jobId present → true, no jobId → false. User can override.
+    values.isBillable = input.isBillable ?? (input.jobId ? true : false);
+
     // Phase 2: Quote assessment link
     if (input.quoteId !== undefined) values.quoteId = input.quoteId;
 
@@ -161,8 +167,9 @@ export class TaskRepository extends BaseRepository {
     if (filters.type) where.push(eq(tasks.type, filters.type));
     if (filters.jobId) where.push(eq(tasks.jobId, filters.jobId));
 
-    if (filters.fromDate) where.push(gte(tasks.checkedInAt, filters.fromDate));
-    if (filters.toDate) where.push(lte(tasks.checkedInAt, filters.toDate));
+    // 2026-04-10: Legacy checkedInAt removed — filter by createdAt for date range
+    if (filters.fromDate) where.push(gte(tasks.createdAt, filters.fromDate));
+    if (filters.toDate) where.push(lte(tasks.createdAt, filters.toDate));
 
     // Calendar integration: filter by scheduledStartAt date range
     if (filters.scheduledFromDate) where.push(gte(tasks.scheduledStartAt, filters.scheduledFromDate));
@@ -185,6 +192,58 @@ export class TaskRepository extends BaseRepository {
     const items = hasMore ? rows.slice(0, limit) : rows;
 
     return { items, hasMore };
+  }
+
+  /**
+   * 2026-04-10: Tech-visible active tasks for a specific user.
+   *
+   * Visibility rule (matches the audit specification):
+   *   - assigned to the user
+   *   - status NOT IN (completed, cancelled)
+   *   - scheduledStartAt IS NULL (unscheduled → show always)
+   *     OR DATE(scheduledStartAt) <= today (overdue + today → show)
+   *
+   * Ordering:
+   *   1. Overdue (past scheduled, oldest first)
+   *   2. Today scheduled
+   *   3. Unscheduled (newest first)
+   */
+  async getActiveTechTasks(
+    companyId: string,
+    userId: string,
+    today: Date,
+  ): Promise<(typeof tasks.$inferSelect)[]> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(userId, "userId");
+
+    // End of today = start of tomorrow (exclusive upper bound for date comparison)
+    const endOfToday = new Date(today);
+    endOfToday.setDate(endOfToday.getDate() + 1);
+
+    const rows = await db
+      .select()
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.companyId, companyId),
+          eq(tasks.assignedToUserId, userId),
+          ne(tasks.status, "completed"),
+          ne(tasks.status, "cancelled"),
+          or(
+            isNull(tasks.scheduledStartAt),
+            lte(tasks.scheduledStartAt, endOfToday),
+          ),
+        ),
+      )
+      // Order: scheduled first (by date asc = overdue first), then unscheduled
+      .orderBy(
+        sql`CASE WHEN ${tasks.scheduledStartAt} IS NULL THEN 1 ELSE 0 END`,
+        asc(tasks.scheduledStartAt),
+        desc(tasks.createdAt),
+      )
+      .limit(100);
+
+    return rows;
   }
 
   /**
@@ -226,66 +285,17 @@ export class TaskRepository extends BaseRepository {
     return updated;
   }
 
-  /**
-   * Check in to task (tenant-scoped)
-   */
-  async checkInTask(
-    companyId: string,
-    taskId: string
-  ): Promise<typeof tasks.$inferSelect> {
-    this.assertCompanyId(companyId);
-    this.validateUUID(taskId, "taskId");
-
-    const task = await this.getTask(companyId, taskId);
-    if (!task) throw this.notFoundError("Task");
-    if (task.checkedInAt) return task;
-
-    const [updated] = await db
-      .update(tasks)
-      .set({
-        checkedInAt: new Date(),
-        status: "in_progress",
-      })
-      .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
-      .returning();
-
-    return updated;
-  }
+  // 2026-04-10: checkInTask and checkOutTask DELETED — task labor is now
+  // canonical through time_entries. Task start/stop creates/closes time_entries
+  // records via timeTrackingRepository (see techField.ts routes).
 
   /**
-   * Check out of task (tenant-scoped)
-   */
-  async checkOutTask(
-    companyId: string,
-    taskId: string
-  ): Promise<typeof tasks.$inferSelect> {
-    this.assertCompanyId(companyId);
-    this.validateUUID(taskId, "taskId");
-
-    const task = await this.getTask(companyId, taskId);
-    if (!task) throw this.notFoundError("Task");
-    if (!task.checkedInAt) throw this.validationError("Cannot check out before check in");
-    if (task.checkedOutAt) return task;
-
-    const checkOutTime = new Date();
-    const durationMs =
-      checkOutTime.getTime() - new Date(task.checkedInAt).getTime();
-    const actualDurationMinutes = Math.round(durationMs / 60000);
-
-    const [updated] = await db
-      .update(tasks)
-      .set({
-        checkedOutAt: checkOutTime,
-        actualDurationMinutes,
-      })
-      .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
-      .returning();
-
-    return updated;
-  }
-
-  /**
-   * Close task (tenant-scoped)
+   * Close task (tenant-scoped).
+   * Sets status=completed + closure metadata.
+   *
+   * 2026-04-10 HARDENING: Rejects if there is a running timer for this task.
+   * The caller (route/service) must stop the timer before calling closeTask.
+   * This prevents orphaned running time_entries on completed tasks.
    */
   async closeTask(
     companyId: string,
@@ -298,24 +308,29 @@ export class TaskRepository extends BaseRepository {
     const task = await this.getTask(companyId, taskId);
     if (!task) throw this.notFoundError("Task");
 
-    const closeTime = new Date();
-    const updates: any = {
-      status: "completed",
-      closedAt: closeTime,
-      closedByUserId: userId,
-    };
-
-    // If task was checked in but not checked out, auto check-out
-    if (task.checkedInAt && !task.checkedOutAt) {
-      const durationMs =
-        closeTime.getTime() - new Date(task.checkedInAt).getTime();
-      updates.checkedOutAt = closeTime;
-      updates.actualDurationMinutes = Math.round(durationMs / 60000);
+    // Guard: reject if active timer exists for this task
+    const [runningEntry] = await db
+      .select({ id: timeEntries.id })
+      .from(timeEntries)
+      .where(and(
+        eq(timeEntries.companyId, companyId),
+        eq(timeEntries.taskId, taskId),
+        isNull(timeEntries.endAt),
+      ))
+      .limit(1);
+    if (runningEntry) {
+      throw this.conflictError("Cannot close task with an active timer. Stop the timer first.");
     }
+
+    const closeTime = new Date();
 
     const [updated] = await db
       .update(tasks)
-      .set(updates)
+      .set({
+        status: "completed",
+        closedAt: closeTime,
+        closedByUserId: userId,
+      })
       .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
       .returning();
 
@@ -409,7 +424,27 @@ export class TaskRepository extends BaseRepository {
     }
 
     if ("allDay" in input) updates.allDay = input.allDay;
-    if ("jobId" in input) updates.jobId = input.jobId;
+
+    // 2026-04-10 HARDENING: block jobId change if task has existing time_entries.
+    // Changing jobId would cause future timer starts to write a different jobId
+    // than historical entries, creating inconsistent labor attribution.
+    if ("jobId" in input && input.jobId !== task.jobId) {
+      const [existingLabor] = await db
+        .select({ id: timeEntries.id })
+        .from(timeEntries)
+        .where(and(
+          eq(timeEntries.companyId, companyId),
+          eq(timeEntries.taskId, taskId),
+        ))
+        .limit(1);
+      if (existingLabor) {
+        throw this.conflictError(
+          "Cannot change job link: this task has existing labor entries. " +
+          "Reassigning the job would create inconsistent attribution."
+        );
+      }
+      updates.jobId = input.jobId;
+    }
 
     // DUAL-WRITE: Set both clientId and locationId when clientId changes
     if ("clientId" in input) {
@@ -422,27 +457,28 @@ export class TaskRepository extends BaseRepository {
     if ("estimatedDurationMinutes" in input)
       updates.estimatedDurationMinutes = input.estimatedDurationMinutes;
     if ("type" in input) updates.type = input.type;
+    if ("isBillable" in input) updates.isBillable = input.isBillable;
 
     // Handle status changes with automatic timestamp updates
+    // 2026-04-10: Legacy timing fields removed. Timer start/stop is via time_entries.
     if ("status" in input && input.status !== task.status) {
       updates.status = input.status;
 
-      // Auto-set checkedInAt when transitioning to in_progress
-      if (input.status === "in_progress" && !task.checkedInAt) {
-        updates.checkedInAt = new Date();
-      }
-
-      // Auto-set checkedOutAt and calculate duration when transitioning to completed
       if (input.status === "completed") {
-        const completionTime = new Date();
-        updates.closedAt = completionTime;
-
-        if (task.checkedInAt && !task.checkedOutAt) {
-          const durationMs =
-            completionTime.getTime() - new Date(task.checkedInAt).getTime();
-          updates.checkedOutAt = completionTime;
-          updates.actualDurationMinutes = Math.round(durationMs / 60000);
+        // 2026-04-10 HARDENING: reject if active timer exists for this task
+        const [runningEntry] = await db
+          .select({ id: timeEntries.id })
+          .from(timeEntries)
+          .where(and(
+            eq(timeEntries.companyId, companyId),
+            eq(timeEntries.taskId, taskId),
+            isNull(timeEntries.endAt),
+          ))
+          .limit(1);
+        if (runningEntry) {
+          throw this.conflictError("Cannot complete task with an active timer. Stop the timer first.");
         }
+        updates.closedAt = new Date();
       }
     }
 
@@ -598,3 +634,52 @@ export class TaskRepository extends BaseRepository {
 }
 
 export const taskRepository = new TaskRepository();
+
+// ============================================================================
+// 2026-04-10: Storage-level tech task wrapper — self-assignment enforced here
+// ============================================================================
+//
+// Defense-in-depth: even if a future route bypasses the route-level guard,
+// this wrapper forces `createdByUserId = userId` and `assignedToUserId = userId`.
+// The office route continues using `taskRepository.createTask` directly
+// (where free assignment is allowed for MANAGER_ROLES).
+//
+// This wrapper does NOT duplicate storage logic — it delegates to `createTask`
+// after enforcing the constraint.
+
+export interface TechTaskInput {
+  type: string;
+  title: string;
+  notes?: string;
+  scheduledStartAt?: string;
+  scheduledEndAt?: string;
+  allDay?: boolean;
+  estimatedDurationMinutes?: number;
+  isBillable?: boolean;
+}
+
+/**
+ * Create a task that is always self-assigned to the acting technician.
+ *
+ * Enforces at the storage boundary:
+ *   - `createdByUserId = userId`
+ *   - `assignedToUserId = userId`
+ *
+ * The caller CANNOT override either field. If a future route calls this
+ * method, self-assignment holds regardless of what the request payload
+ * contained. This is the only correct entry point for tech-side task
+ * creation.
+ */
+export async function createTechTask(
+  companyId: string,
+  userId: string,
+  input: TechTaskInput,
+): Promise<typeof tasks.$inferSelect> {
+  return taskRepository.createTask(companyId, {
+    ...input,
+    status: "pending",
+    createdByUserId: userId,
+    assignedToUserId: userId,
+    estimatedDurationMinutes: input.estimatedDurationMinutes ?? 60,
+  });
+}

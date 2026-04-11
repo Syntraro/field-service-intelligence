@@ -65,6 +65,12 @@ const connectionString = USE_POOLER
 // Neon uses connection pooling differently than standard PostgreSQL
 // With pooler enabled, Neon handles pooling at the proxy level
 
+// ── DB connection diagnostic (safe — no credentials logged) ──
+try {
+  const u = new URL(connectionString);
+  console.log(`[DB] Host: ${u.hostname} | Database: ${u.pathname.replace("/", "")} | User: ${u.username} | Pooler: ${USE_POOLER}`);
+} catch { console.log("[DB] Could not parse connection URL for diagnostics"); }
+
 const pool = new Pool({
   connectionString,
 

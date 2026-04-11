@@ -231,7 +231,7 @@ export default function Reports() {
             {(filters.length > 0 || belts.length > 0) && (
               <div className="grid md:grid-cols-2 gap-6">
                 {filters.length > 0 && (
-                  <Card className="shadow-md rounded-xl">
+                  <Card className="shadow-md rounded-md">
                     <CardHeader>
                       <CardTitle className="flex items-center justify-between text-lg font-semibold">
                         <div className="flex items-center gap-2">
@@ -281,7 +281,7 @@ export default function Reports() {
                 )}
 
                 {belts.length > 0 && (
-                  <Card className="shadow-md rounded-xl">
+                  <Card className="shadow-md rounded-md">
                     <CardHeader>
                       <CardTitle className="flex items-center justify-between text-lg font-semibold">
                         <div className="flex items-center gap-2">

@@ -57,6 +57,8 @@ interface BackendTimeEntry {
   id: string;
   type: string;
   jobId: string | null;
+  visitId?: string | null;
+  taskId?: string | null;
   startAt: string;
   endAt: string | null;
   durationMinutes: number | null;
@@ -94,6 +96,8 @@ function toTimesheetEntry(e: BackendTimeEntry): TimesheetEntry {
     lockedAt: e.lockedAt,
     lockedByInvoiceId: e.lockedByInvoiceId,
     lockReason: e.lockReason,
+    visitId: e.visitId ?? null,
+    taskId: e.taskId ?? null,
     jobNumber: e.jobNumber ?? null,
     jobSummary: e.jobSummary ?? null,
     locationName: e.locationName ?? null,

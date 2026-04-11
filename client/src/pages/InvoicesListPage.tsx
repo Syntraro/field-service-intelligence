@@ -64,7 +64,7 @@ function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg }: {
   icon: React.ElementType; iconColor: string; iconBg: string;
 }) {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-5 py-4">
+    <div className="bg-white rounded-md border border-slate-200 shadow-sm px-5 py-4">
       <div className="flex items-center gap-3">
         <div className={`p-1.5 rounded-md ${iconBg}`}>
           <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
@@ -185,7 +185,7 @@ export default function InvoicesListPage() {
             <p className="text-sm text-slate-500 mt-0.5">Invoice performance overview with full invoice list.</p>
           </div>
           <Link href="/invoices/new">
-            <Button size="sm" className="gap-1.5 h-9 rounded-lg" data-testid="button-new-invoice">
+            <Button size="sm" className="gap-1.5 h-9 rounded-md" data-testid="button-new-invoice">
               <Plus className="h-4 w-4" />
               New Invoice
             </Button>
@@ -228,7 +228,7 @@ export default function InvoicesListPage() {
               placeholder="Search invoices, clients, numbers"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 h-9 rounded-lg border-slate-200 bg-white"
+              className="pl-9 h-9 rounded-md border-slate-200 bg-white"
               data-testid="input-search-invoices"
             />
           </div>
@@ -270,7 +270,7 @@ export default function InvoicesListPage() {
         </div>
 
         {/* ── 4. Main Table ── */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden" data-testid="table-invoices">
+        <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="table-invoices">
           {isLoading ? (
             <div className="text-center py-8 text-slate-500" data-testid="invoices-loading">Loading invoices...</div>
           ) : filteredInvoices.length === 0 ? (

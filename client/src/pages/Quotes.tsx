@@ -41,7 +41,7 @@ function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg }: {
   icon: React.ElementType; iconColor: string; iconBg: string;
 }) {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-5 py-4">
+    <div className="bg-white rounded-md border border-slate-200 shadow-sm px-5 py-4">
       <div className="flex items-center gap-3">
         <div className={`p-1.5 rounded-md ${iconBg}`}>
           <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
@@ -169,7 +169,7 @@ export default function Quotes() {
             <h1 className="text-2xl font-semibold text-slate-900">Quotes</h1>
             <p className="text-sm text-slate-500 mt-0.5">Quote pipeline overview with full quote list.</p>
           </div>
-          <Button size="sm" className="gap-1.5 h-9 rounded-lg" onClick={() => setNewQuoteModalOpen(true)} data-testid="button-new-quote">
+          <Button size="sm" className="gap-1.5 h-9 rounded-md" onClick={() => setNewQuoteModalOpen(true)} data-testid="button-new-quote">
             <Plus className="h-4 w-4" />
             New Quote
           </Button>
@@ -211,7 +211,7 @@ export default function Quotes() {
               placeholder="Search quotes, clients, numbers"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 h-9 rounded-lg border-slate-200 bg-white"
+              className="pl-9 h-9 rounded-md border-slate-200 bg-white"
               data-testid="input-search-quotes"
             />
           </div>
@@ -237,7 +237,7 @@ export default function Quotes() {
         </div>
 
         {/* ── 4. Main Table ── */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden" data-testid="table-quotes">
+        <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="table-quotes">
           {isLoading ? (
             <div className="text-center py-8 text-slate-500" data-testid="quotes-loading">Loading quotes...</div>
           ) : filteredQuotes.length === 0 ? (

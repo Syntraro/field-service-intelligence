@@ -110,7 +110,8 @@ export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>
   const isTerminal = ["completed", "archived", "invoiced"].includes(job.status);
 
   const locationName = job.location?.location || job.location?.companyName || "Location";
-  const clientName = job.parentCompany?.name || job.location?.companyName || "Client";
+  // 2026-04-10: location name takes priority, company name is fallback
+  const clientName = job.location?.companyName || job.parentCompany?.name || "Client";
   const fullAddress = job.location ?
     [job.location.address, job.location.address2, job.location.city, job.location.province, job.location.postalCode].filter(Boolean).join(", ") : "";
 
@@ -470,7 +471,7 @@ export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>
           ) : (<>
           <div className="space-y-3 py-4">
             <label 
-              className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${closeOption === "invoice_now" ? "border-primary bg-primary/5" : "hover-elevate"}`}
+              className={`flex items-start gap-3 p-3 rounded-md border cursor-pointer transition-colors ${closeOption === "invoice_now" ? "border-primary bg-primary/5" : "hover-elevate"}`}
               data-testid="option-invoice-now"
             >
               <input
@@ -490,7 +491,7 @@ export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>
             </label>
 
             <label 
-              className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${closeOption === "invoice_later" ? "border-primary bg-primary/5" : "hover-elevate"}`}
+              className={`flex items-start gap-3 p-3 rounded-md border cursor-pointer transition-colors ${closeOption === "invoice_later" ? "border-primary bg-primary/5" : "hover-elevate"}`}
               data-testid="option-invoice-later"
             >
               <input
@@ -510,7 +511,7 @@ export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>
             </label>
 
             <label 
-              className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${closeOption === "archive" ? "border-destructive bg-destructive/5" : "hover-elevate"}`}
+              className={`flex items-start gap-3 p-3 rounded-md border cursor-pointer transition-colors ${closeOption === "archive" ? "border-destructive bg-destructive/5" : "hover-elevate"}`}
               data-testid="option-archive"
             >
               <input

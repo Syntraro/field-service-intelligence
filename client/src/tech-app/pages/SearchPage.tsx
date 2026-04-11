@@ -26,7 +26,7 @@ export function SearchPage() {
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search clients, locations..."
-            className="w-full h-10 pl-10 pr-3 text-sm border border-slate-200 rounded-xl bg-white focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300 transition-shadow"
+            className="w-full h-10 pl-10 pr-3 text-sm border border-slate-200 rounded-md bg-white focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300 transition-shadow"
             autoFocus
           />
         </div>
@@ -64,7 +64,7 @@ export function SearchPage() {
                   onClick={() => setLocation(`/tech/location/${r.id}`)}
                   className="w-full text-left px-3 py-3 flex items-center gap-3 hover:bg-slate-50 active:bg-slate-100 transition-colors"
                 >
-                  <div className="h-9 w-9 rounded-lg bg-slate-100 flex items-center justify-center shrink-0">
+                  <div className="h-9 w-9 rounded-md bg-slate-100 flex items-center justify-center shrink-0">
                     <MapPin className="h-4 w-4 text-slate-400" />
                   </div>
                   <div className="flex-1 min-w-0">

@@ -66,7 +66,7 @@ export function DaySelector({ selectedDate, onSelect, onPrev, onNext, onToday }:
           const todayMark = isSameDay(d, todayDate);
           return (
             <button key={d.toISOString()} onClick={() => onSelect(d)}
-              className={`flex flex-col items-center py-1 rounded-lg transition-colors ${
+              className={`flex flex-col items-center py-1 rounded-md transition-colors ${
                 selected ? "bg-emerald-600 text-white shadow-sm" : "text-slate-600 active:bg-slate-100"
               }`}>
               <span className={`text-xs font-medium ${selected ? "text-emerald-100" : "text-slate-400"}`}>

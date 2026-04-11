@@ -10,7 +10,7 @@ import { normalizeForMatch } from "@shared/normalizeForMatch";
 // Orphan location info for admin linking
 export interface OrphanLocation {
   id: string;
-  companyName: string;
+  companyName: string | null;
   location: string | null;
   address: string | null;
   city: string | null;
@@ -784,7 +784,7 @@ export class CustomerCompanyRepository extends BaseRepository {
 
     // Map orphans with suggested matches (only if exactly one match)
     return orphans.map((orphan) => {
-      const key = orphan.companyName.toLowerCase().trim();
+      const key = (orphan.companyName ?? "").toLowerCase().trim();
       const matches = nameToCompanies.get(key) || [];
 
       // Only suggest if exactly ONE match (avoid ambiguity)

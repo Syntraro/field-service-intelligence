@@ -62,7 +62,7 @@ export function SchedulingHistory({ jobId, defaultOpen = false }: SchedulingHist
 
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <Card className="rounded-xl border-[#e5e7eb] bg-[#ffffff]">
+      <Card className="rounded-md border-[#e5e7eb] bg-[#ffffff]">
         <CollapsibleTrigger asChild>
           <button
             className="w-full flex items-center justify-between px-5 py-4 bg-[#f8fafc] hover:bg-slate-100 transition-colors border-b border-[#e2e8f0]"

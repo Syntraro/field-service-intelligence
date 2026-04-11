@@ -27,10 +27,11 @@ interface DispatchSignal {
 
 // ── Tech-app query keys to invalidate ──
 
-/** Visit/dispatch changes → refresh today visits + any open visit detail */
+/** Visit/dispatch changes → refresh today visits + any open visit detail + tasks */
 const VISIT_KEYS: readonly (readonly string[])[] = [
   ["/api/tech/visits/today"],
   ["/api/tech/visits"],  // prefix-matches visit detail queries
+  ["/api/tech/tasks/mine"],  // 2026-04-10: task create/complete/update invalidation
 ];
 
 /** Time changes → refresh shift summary + timesheet day data */
@@ -51,7 +52,7 @@ const FLAG_TIME = 2;
 
 function signalToFlags(signal: DispatchSignal): number {
   let flags = 0;
-  if (signal.scope === "calendar" && (signal.entityType === "visit" || signal.entityType === "job")) {
+  if (signal.scope === "calendar" && (signal.entityType === "visit" || signal.entityType === "job" || signal.entityType === "task")) {
     flags |= FLAG_VISITS;
   }
   if (signal.scope === "time") {

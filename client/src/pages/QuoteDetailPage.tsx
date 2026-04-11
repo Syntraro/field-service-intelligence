@@ -7,12 +7,13 @@ import { useToast } from "@/hooks/use-toast";
 import {
   ArrowLeft, Send, MoreHorizontal, Plus, Trash2,
   FileText, Check, X, Phone, Mail, MapPin, Clock, Edit, Loader2, Info, ClipboardList,
-  Download, Eye, AlertTriangle, ExternalLink
+  Download, Eye, AlertTriangle, ExternalLink, Tag
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getQuoteStatusBadge } from "@/lib/statusBadges";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ReferenceFieldsSection } from "@/components/shared/ReferenceFieldsSection";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -523,7 +524,7 @@ export default function QuoteDetailPage() {
 
           {/* Expiry Warning Banner */}
           {isExpired && isSent && (
-            <div className="flex items-center gap-3 p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800">
+            <div className="flex items-center gap-3 p-4 bg-amber-50 border border-amber-200 rounded-md text-amber-800">
               <AlertTriangle className="h-5 w-5 flex-shrink-0" />
               <div>
                 <p className="font-medium">This quote has expired</p>
@@ -642,6 +643,9 @@ export default function QuoteDetailPage() {
                   </CardContent>
                 </Card>
               )}
+
+              {/* Reference */}
+              <ReferenceFieldsSection entityType="quote" entityId={quote.id} />
             </div>
 
             {/* Sidebar */}
@@ -815,7 +819,7 @@ export default function QuoteDetailPage() {
                 data-testid="input-send-message"
               />
             </div>
-            <div className="p-3 bg-muted/50 rounded-lg text-sm flex items-start gap-2">
+            <div className="p-3 bg-muted/50 rounded-md text-sm flex items-start gap-2">
               <Info className="h-4 w-4 mt-0.5 flex-shrink-0 text-muted-foreground" />
               <span className="text-muted-foreground">
                 A PDF copy of the quote will be attached when sending to recipients.

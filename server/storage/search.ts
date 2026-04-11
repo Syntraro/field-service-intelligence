@@ -19,7 +19,7 @@ import { JOB_ACTIVE_SQL_J } from "./jobFilters";
 // TYPES
 // ========================================
 
-export type SearchResultType = "job" | "invoice" | "customerCompany" | "location" | "supplier" | "contact";
+export type SearchResultType = "job" | "invoice" | "quote" | "customerCompany" | "location" | "supplier" | "contact";
 
 export interface SearchResult {
   type: SearchResultType;
@@ -31,6 +31,8 @@ export interface SearchResult {
   tenantCompanyId?: string;   // For customerCompany results: owning company (tenant) ID
   /** Internal ranking: 0 = exact, 1 = prefix, 2 = contains. Not exposed to client. */
   _rank?: number;
+  /** Internal: matched reference value for ranking. Not exposed to client. */
+  _matchedValue?: string;
 }
 
 interface SearchOptions {
@@ -83,9 +85,12 @@ function matchRank(title: string, query: string): number {
  * only determines which results survive the overall limit.
  */
 function rankResults(results: SearchResult[], query: string): SearchResult[] {
-  // Assign rank based on title vs query proximity
+  // Assign rank: best of title rank or matched reference value rank
   for (const r of results) {
-    r._rank = matchRank(r.title, query);
+    const titleRank = matchRank(r.title, query);
+    // Reference field hits carry _matchedValue — rank by the actual matched value
+    const refRank = r._matchedValue ? matchRank(r._matchedValue, query) : 2;
+    r._rank = Math.min(titleRank, refRank);
   }
   // Stable sort: rank ASC, then title ASC within same rank
   return results.sort((a, b) => {
@@ -139,14 +144,12 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
         'invoice' as type,
         i.id,
         CONCAT('Invoice #', COALESCE(i.invoice_number, i.id)) as title,
-        CONCAT(COALESCE(cc.name, cl.company_name, ''), ' - $', i.total) as subtitle,
+        CONCAT(COALESCE(cl.company_name, cc.name, ''), ' - $', i.total) as subtitle,
         'invoice #' as match
       FROM invoices i
       LEFT JOIN client_locations cl ON i.location_id = cl.id
       LEFT JOIN customer_companies cc ON i.customer_company_id = cc.id
       WHERE i.company_id = $1
-        AND i.is_active = true
-        AND i.deleted_at IS NULL
         AND (
           i.invoice_number ILIKE $2
           OR i.invoice_number ILIKE $3
@@ -337,15 +340,71 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
   `;
 
   // ========================================
-  // Execute queries 1-6 in parallel (Phase 1)
+  // 7b. REFERENCE FIELD VALUE SEARCH
+  // 2026-04-10: Search reference_field_values (text_value only — text-only system)
+  // for searchable definitions. Maps hits back to job/invoice entity results.
+  // Uses GIN trigram index on text_value for performance.
   // ========================================
-  const [invoiceRes, jobNumberRes, customerRes, locationRes, supplierRes, contactRes] = await Promise.all([
+  const refFieldQuery = `
+    SELECT DISTINCT ON (rv.entity_type, rv.entity_id)
+      rv.entity_type,
+      rv.entity_id,
+      rd.label as field_label,
+      rv.text_value as matched_value,
+      CASE rv.entity_type
+        WHEN 'job' THEN (
+          SELECT CONCAT('#', j.job_number, ' - ', j.summary)
+          FROM jobs j WHERE j.id = rv.entity_id AND j.company_id = $1
+            AND j.deleted_at IS NULL AND j.is_active = true
+        )
+        WHEN 'invoice' THEN (
+          SELECT CONCAT('Invoice #', COALESCE(i.invoice_number, i.id))
+          FROM invoices i WHERE i.id = rv.entity_id AND i.company_id = $1 LIMIT 1
+        )
+        WHEN 'quote' THEN (
+          SELECT CONCAT('Quote #', COALESCE(q.quote_number, q.id))
+          FROM quotes q WHERE q.id = rv.entity_id AND q.company_id = $1 LIMIT 1
+        )
+      END as entity_title,
+      CASE rv.entity_type
+        WHEN 'job' THEN (
+          SELECT COALESCE(cl.company_name, '')
+          FROM jobs j LEFT JOIN client_locations cl ON j.location_id = cl.id
+          WHERE j.id = rv.entity_id AND j.company_id = $1 LIMIT 1
+        )
+        WHEN 'invoice' THEN (
+          SELECT CONCAT(COALESCE(cl.company_name, ''), ' - $', i.total)
+          FROM invoices i LEFT JOIN client_locations cl ON i.location_id = cl.id
+          WHERE i.id = rv.entity_id AND i.company_id = $1 LIMIT 1
+        )
+        WHEN 'quote' THEN (
+          SELECT COALESCE(cl.company_name, '')
+          FROM quotes q LEFT JOIN client_locations cl ON q.location_id = cl.id
+          WHERE q.id = rv.entity_id AND q.company_id = $1 LIMIT 1
+        )
+      END as entity_subtitle
+    FROM reference_field_values rv
+    JOIN reference_field_definitions rd
+      ON rv.field_definition_id = rd.id AND rd.company_id = $1
+    WHERE rv.company_id = $1
+      AND rd.searchable = true
+      AND rv.text_value ILIKE $2
+    ORDER BY rv.entity_type, rv.entity_id
+    LIMIT $3
+  `;
+  const refFieldPromise = pool.query(refFieldQuery, [companyId, likePattern, PER_TYPE_SQL_CAP]);
+
+  // ========================================
+  // Execute queries 1-6 + ref fields in parallel (Phase 1)
+  // ========================================
+  const [invoiceRes, jobNumberRes, customerRes, locationRes, supplierRes, contactRes, refFieldRes] = await Promise.all([
     invoicePromise,
     jobNumberPromise,
     pool.query(customerQuery, sharedParams),
     pool.query(locationQuery, sharedParams),
     pool.query(supplierQuery, sharedParams),
     pool.query(contactQuery, sharedParams),
+    refFieldPromise,
   ]);
 
   // Push results in canonical order (same as previous sequential order)
@@ -401,7 +460,30 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
   })));
 
   // ========================================
-  // 7. JOB SUMMARY SEARCH (Phase 2 — depends on Query 2 results)
+  // 7b. Push reference field results (mapped to entity types)
+  // ========================================
+  // Track existing result IDs for dedupe: type+id
+  const seenIds = new Set<string>();
+  results.forEach((r) => seenIds.add(`${r.type}:${r.id}`));
+
+  refFieldRes.rows.forEach((r: any) => {
+    if (!r.entity_title) return; // entity not found (deleted/inactive)
+    const entityType = r.entity_type as SearchResultType;
+    const key = `${entityType}:${r.entity_id}`;
+    if (seenIds.has(key)) return; // dedupe: record already in results from primary search
+    seenIds.add(key);
+    results.push({
+      type: entityType,
+      id: r.entity_id,
+      title: r.entity_title,
+      subtitle: r.entity_subtitle || null,
+      match: `ref: ${r.field_label}`,
+      _matchedValue: r.matched_value || undefined,
+    });
+  });
+
+  // ========================================
+  // 8. JOB SUMMARY SEARCH (Phase 2 — depends on Query 2 results)
   // ========================================
   // Only search job summary if we don't have enough job results from number search
   const jobCountFromNumbers = results.filter(r => r.type === "job").length;
@@ -441,7 +523,7 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
 
   // Strip internal _rank before returning
   const capped = ranked.slice(0, limit);
-  for (const r of capped) delete r._rank;
+  for (const r of capped) { delete r._rank; delete r._matchedValue; }
   return capped;
 }
 

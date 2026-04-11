@@ -406,6 +406,7 @@ router.post(
     try {
       await timeTrackingRepository.recordJobStatus(companyId, visit.assignedTechnicianId, jobId, {
         status: "arrived",
+        visitId: visit.id,
         at: now,
         notes: `Visit #${visit.visitNumber} — checked in (manager)`,
         source: "web",

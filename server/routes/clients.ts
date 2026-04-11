@@ -324,6 +324,23 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
     throw createError(400, "Company name is required");
   }
 
+  // 2026-04-10: Service/billing address split.
+  // If billingSameAsService is true (or omitted for backwards compat), derive
+  // the company billing address from the primary location's service address.
+  // This is enforced server-side — the UI flag is not trusted blindly.
+  if (company.billingSameAsService !== false && primaryLocation?.serviceAddress) {
+    const svc = primaryLocation.serviceAddress;
+    company.billingAddress = {
+      street: svc.street,
+      street2: svc.street2,
+      city: svc.city,
+      province: svc.province,
+      stateOrProvince: svc.stateOrProvince,
+      postalCode: svc.postalCode,
+      country: svc.country,
+    };
+  }
+
   // Check subscription limits (locations count)
   const limitCheck = await storage.canAddLocation(companyId!);
   if (!limitCheck.allowed) {
@@ -792,7 +809,7 @@ router.get("/:id/overview", asyncHandler(async (req: AuthedRequest, res: Respons
       const parentCompany = await customerCompanyRepository.findOrCreateCustomerCompany(
         tenantCompanyId!,
         {
-          name: companyName,
+          name: companyName ?? "",
           phone: client.phone,
           email: client.email,
           billingStreet: client.address,
@@ -808,7 +825,7 @@ router.get("/:id/overview", asyncHandler(async (req: AuthedRequest, res: Respons
       // Link any tenant-owned clients with same companyName that are not yet linked
       const unlinkedSameName = await customerCompanyRepository.getUnlinkedLocationsByCompanyName(
         tenantCompanyId!,
-        companyName
+        companyName ?? ""
       );
 
       if (unlinkedSameName.length > 0) {
@@ -908,7 +925,7 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
     customerCompany = await customerCompanyRepository.findOrCreateCustomerCompany(
       tenantCompanyId,
       {
-        name: legacyParentClient.companyName,
+        name: legacyParentClient.companyName ?? "",
         phone: legacyParentClient.phone,
         email: legacyParentClient.email,
         billingStreet: legacyParentClient.address,
@@ -922,7 +939,7 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
     // Link all same-name unlinked locations under this customer company (Model A normalization)
     const sameNameUnlinked = await customerCompanyRepository.getUnlinkedLocationsByCompanyName(
       tenantCompanyId,
-      legacyParentClient.companyName
+      legacyParentClient.companyName ?? ""
     );
 
     if (sameNameUnlinked.length > 0) {

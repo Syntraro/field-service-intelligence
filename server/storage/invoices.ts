@@ -889,7 +889,14 @@ export class InvoiceRepository extends BaseRepository {
    * Can be called multiple times safely - always produces same result
    */
   async refreshInvoiceFromJob(companyId: string, invoiceId: string, txHandle?: any) {
-    const invoice = await this.getInvoice(companyId, invoiceId);
+    // Use txHandle for the lookup so newly-created invoices are visible
+    // within the same transaction (fixes READ COMMITTED isolation issue)
+    const queryDb = txHandle ?? db;
+    const [invoice] = await queryDb
+      .select({ id: invoices.id, jobId: invoices.jobId, companyId: invoices.companyId })
+      .from(invoices)
+      .where(and(eq(invoices.id, invoiceId), eq(invoices.companyId, companyId)))
+      .limit(1);
     if (!invoice) {
       throw this.notFoundError("Invoice");
     }

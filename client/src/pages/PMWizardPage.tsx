@@ -457,7 +457,7 @@ function StepType({
         <button
           type="button"
           onClick={() => onChange({ fromTemplateId: null, fromPmTemplateId: null })}
-          className={`text-left p-4 rounded-lg border-2 transition-colors ${
+          className={`text-left p-4 rounded-md border-2 transition-colors ${
             mode === "scratch"
               ? "border-primary bg-primary/5"
               : "border-border hover:border-primary/30"
@@ -482,7 +482,7 @@ function StepType({
                 onChange({ fromTemplateId: null });
               }
             }}
-            className={`w-full text-left p-4 rounded-lg border-2 transition-colors ${
+            className={`w-full text-left p-4 rounded-md border-2 transition-colors ${
               mode === "pm_template"
                 ? "border-primary bg-primary/5"
                 : "border-border hover:border-primary/30"
@@ -781,7 +781,7 @@ function StepReview({ state, pmTemplate }: { state: WizardState; pmTemplate: PmT
         </div>
       )}
 
-      <div className="rounded-lg border divide-y text-sm">
+      <div className="rounded-md border divide-y text-sm">
         <Row label="Customer" value={state.customerName || "— (required)"} error={!state.customerCompanyId} />
         <Row label="Location" value={locationOnly || "— (required)"} error={!state.locationId} />
         <Row label="PM Name" value={state.title || "—"} />
@@ -876,7 +876,7 @@ export default function PMWizardPage() {
           locationId: loc.id,
           locationName: [loc.companyName, loc.location].filter(Boolean).join(" — "),
           customerCompanyId: loc.parentCompanyId ?? "",
-          customerName: company?.name ?? loc.companyName,
+          customerName: company?.name ?? loc.companyName ?? "",
           title: prev.title || `PM - ${loc.companyName}${loc.location ? ` — ${loc.location}` : ""}`,
         }));
         // Skip target step if location is prefilled

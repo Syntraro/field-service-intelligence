@@ -629,7 +629,7 @@ router.get("/:companyId/unlinked-suggestions", asyncHandler(async (req: AuthedRe
   // OR have matching companyName (case-insensitive)
   const suggestions = allOrphans.filter(orphan =>
     orphan.suggestedCustomerCompanyId === customerCompanyId ||
-    orphan.companyName.toLowerCase().trim() === customerCompany.name.toLowerCase().trim()
+    (orphan.companyName ?? "").toLowerCase().trim() === customerCompany.name.toLowerCase().trim()
   );
 
   res.json({

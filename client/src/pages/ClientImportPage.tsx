@@ -124,7 +124,7 @@ function UploadStep({ onUpload }: { onUpload: (text: string, fileName: string) =
       </CardHeader>
       <CardContent>
         <div
-          className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors cursor-pointer ${
+          className={`border-2 border-dashed rounded-md p-12 text-center transition-colors cursor-pointer ${
             dragging ? "border-primary bg-primary/5" : "border-muted-foreground/25 hover:border-muted-foreground/50"
           }`}
           onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
@@ -466,7 +466,7 @@ function SummaryCard({ label, value, variant }: { label: string; value: number; 
   };
   const cls = variant ? colors[variant] : "text-foreground bg-muted/50 border-border";
   return (
-    <div className={`rounded-lg border p-3 ${cls}`}>
+    <div className={`rounded-md border p-3 ${cls}`}>
       <div className="text-2xl font-bold">{value}</div>
       <div className="text-xs opacity-80">{label}</div>
     </div>

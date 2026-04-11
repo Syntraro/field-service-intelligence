@@ -183,7 +183,7 @@ export function EquipmentDetailModal({ open, onOpenChange, equipment }: Equipmen
                 const isExpanded = idx === 0 || expandedJobs.has(job.jobId);
 
                 return (
-                  <div key={job.jobId} className="rounded-lg border bg-background overflow-hidden">
+                  <div key={job.jobId} className="rounded-md border bg-background overflow-hidden">
                     {/* Job header */}
                     <button
                       onClick={() => idx !== 0 ? toggleJob(job.jobId) : undefined}

@@ -12,6 +12,9 @@ import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
 import { emitDispatch } from "../lib/dispatchBus";
 import { IS_DEV } from "../utils/devFlags";
+// 2026-04-10: Canonical task schemas extracted to server/lib/taskSchemas.ts
+// so both the office route and the tech route import from the SAME source.
+import { createTaskSchema, updateTaskSchema } from "../lib/taskSchemas";
 
 const router = Router();
 
@@ -19,58 +22,12 @@ const router = Router();
 // VALIDATION SCHEMAS
 // ========================================
 
-const createTaskSchema = z.object({
-  title: z.string().min(1).max(200),
-  notes: z.string().max(2000).optional(), // Primary field for task notes
-  description: z.string().max(2000).optional(), // Backwards compatibility alias for notes
-  dueDate: z.string().datetime().optional(),
-  assignedToUserId: z.string().uuid().optional(),
-  type: z.string().max(50).optional(),
-  jobId: z.string().uuid().optional(),
-  clientId: z.string().uuid().optional(),
-  // Phase 2: Quote assessment link — set for QUOTE_ASSESSMENT tasks only, immutable after create
-  quoteId: z.string().uuid().optional(),
-  estimatedDurationMinutes: z.number().int().positive().optional(),
-  status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional().default("pending"),
-  scheduledStartAt: z.preprocess(
-    (val) => (typeof val === 'string' && val.trim() !== '' ? val : undefined),
-    z.string().datetime().optional()
-  ),
-  scheduledEndAt: z.preprocess(
-    (val) => (typeof val === 'string' && val.trim() !== '' ? val : undefined),
-    z.string().datetime().optional()
-  ),
-  allDay: z.boolean().optional(),
-}).strict();
-
 const assignTaskSchema = z.object({
   assignedToUserId: z.string().uuid().nullable(),
 }).strict();
 
 const closeTaskSchema = z.object({
   userId: z.string().uuid(),
-}).strict();
-
-const updateTaskSchema = z.object({
-  title: z.string().min(1).max(200).optional(),
-  notes: z.string().max(2000).nullable().optional(), // Primary field for task notes
-  description: z.string().max(2000).nullable().optional(), // Backwards compatibility alias for notes
-  dueDate: z.string().datetime().nullable().optional(),
-  assignedToUserId: z.string().uuid().nullable().optional(),
-  status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional(),
-  type: z.string().max(50).optional(),
-  jobId: z.string().uuid().nullable().optional(),
-  clientId: z.string().uuid().nullable().optional(),
-  estimatedDurationMinutes: z.number().int().positive().nullable().optional(),
-  scheduledStartAt: z.preprocess(
-    (val) => (val === null || (typeof val === 'string' && val.trim() === '') ? undefined : val),
-    z.string().datetime().optional()
-  ),
-  scheduledEndAt: z.preprocess(
-    (val) => (val === null || (typeof val === 'string' && val.trim() === '') ? undefined : val),
-    z.string().datetime().optional()
-  ),
-  allDay: z.boolean().optional(),
 }).strict();
 
 const updateSupplierVisitSchema = z.object({
@@ -114,6 +71,8 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
       scheduledStartAt: (validated.scheduledStartAt && typeof validated.scheduledStartAt === 'string') ? validated.scheduledStartAt : undefined,
       scheduledEndAt: (validated.scheduledEndAt && typeof validated.scheduledEndAt === 'string') ? validated.scheduledEndAt : undefined,
       allDay: validated.allDay ?? false,
+      // 2026-04-10: Billable defaults applied in storage.createTask
+      isBillable: validated.isBillable,
     });
 
     if (IS_DEV) console.log("[TASKS_DIAG] POST /api/tasks created:", { id: task.id, type: task.type });
@@ -187,21 +146,8 @@ router.post("/:id/assign", requireRole(MANAGER_ROLES), asyncHandler(async (req: 
   res.json(task);
 }));
 
-/* CHECK-IN */
-router.post("/:id/check-in", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const companyId = req.companyId!;
-  const task = await service.checkInTask(companyId, req.params.id);
-
-  res.json(task);
-}));
-
-/* CHECK-OUT */
-router.post("/:id/check-out", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const companyId = req.companyId!;
-  const task = await service.checkOutTask(companyId, req.params.id);
-
-  res.json(task);
-}));
+// 2026-04-10: check-in/check-out routes DELETED — task timing is now
+// canonical through time_entries (see POST /api/tech/tasks/:id/start|stop).
 
 /* CLOSE */
 router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {

@@ -70,7 +70,7 @@ export default function DispatchBoardHeader({
             24h
           </button>
         )}
-      <div className="inline-flex items-center rounded-lg border bg-white p-0.5">
+      <div className="inline-flex items-center rounded-md border bg-white p-0.5">
         {(["day", "week", "month"] as const).map(v => (
           <button
             key={v}

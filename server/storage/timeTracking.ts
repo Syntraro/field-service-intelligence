@@ -55,8 +55,23 @@ const BILLABLE_DEFAULTS: Record<TimeEntryType, boolean> = {
   travel_between_jobs: true,
   admin: false,
   break: false,
+  task_work: true, // 2026-04-10: default billable, overridden by task.isBillable at route level
   other: false,
 };
+
+/**
+ * Derive the source type of a time entry from its attribution fields.
+ * Used in output shapes so consumers don't infer source from nullable columns.
+ */
+function deriveSourceType(
+  type: string,
+  taskId: string | null,
+  visitId: string | null,
+): "visit" | "task" | "manual" {
+  if (type === "task_work" && taskId) return "task";
+  if (visitId) return "visit";
+  return "manual";
+}
 
 /**
  * Canonical duration helper for work sessions (payroll/timesheet source of truth).
@@ -395,8 +410,21 @@ export class TimeTrackingRepository extends BaseRepository {
   }
 
   /**
-   * Start a new time entry
-   * Automatically stops any currently running entry (for better UX)
+   * Start a new time entry.
+   *
+   * 2026-04-10 HARDENING: Mode-based timer enforcement.
+   *
+   * mode: "strict" (DEFAULT)
+   *   - If an active timer exists for this tech → THROW 409.
+   *   - Used by: task start, office manual start, any new-context entry.
+   *   - Caller must explicitly stop the running entry first if intended.
+   *
+   * mode: "transition"
+   *   - Auto-stops the running entry before inserting the new one.
+   *   - Used ONLY by recordJobStatus (visit lifecycle) where sequential
+   *     transitions (travel→on_site, pause→resume) are canonical.
+   *   - recordJobStatus already does its own autoStopOpen() pre-check;
+   *     transition mode is the safety net inside the insert tx.
    */
   async startTimeEntry(
     companyId: string,
@@ -404,9 +432,12 @@ export class TimeTrackingRepository extends BaseRepository {
     options: {
       type: TimeEntryType;
       jobId?: string | null;
+      taskId?: string | null;
+      visitId?: string | null;
       notes?: string | null;
       billable?: boolean;
       at?: Date;
+      mode?: "strict" | "transition";
       overrideApprovalLock?: boolean;
       overrideReason?: string;
       actingUserId?: string;
@@ -414,6 +445,8 @@ export class TimeTrackingRepository extends BaseRepository {
   ): Promise<TimeEntry> {
     this.assertCompanyId(companyId);
     this.validateUUID(technicianId, "technicianId");
+
+    const mode = options.mode ?? "strict";
 
     // If jobId provided, validate it references an active open job
     if (options.jobId) {
@@ -430,6 +463,60 @@ export class TimeTrackingRepository extends BaseRepository {
 
     const now = options.at ?? new Date();
 
+    // ── Mode-based enforcement ──
+    if (mode === "strict") {
+      // Hard block if any active timer exists
+      const running = await this.getRunningTimeEntry(companyId, technicianId);
+      if (running) {
+        // 2026-04-10: Structured 409 with ACTIVE_TIMER_EXISTS code + context
+        const err = this.conflictError("Cannot start: another timer is already running. Stop it first.");
+        (err as any).code = "ACTIVE_TIMER_EXISTS";
+        (err as any).activeItem = {
+          type: running.taskId ? "task" : "visit",
+          id: running.taskId ?? running.jobId,
+          entryType: running.type,
+          jobId: running.jobId,
+          taskId: running.taskId,
+          notes: running.notes,
+        };
+        throw err;
+      }
+    } else {
+      // Transition mode: validate the running entry is a valid transition source.
+      // Only visit-to-visit transitions within the same job are allowed.
+      const running = await this.getRunningTimeEntry(companyId, technicianId);
+      if (running) {
+        // 2026-04-10 LOCKDOWN: transition mode must NOT stop task_work entries
+        if (running.type === "task_work") {
+          throw this.conflictError(
+            `Cannot transition: active timer is a task entry (task: ${running.taskId}). ` +
+            `Stop the task timer first.`
+          );
+        }
+        // Must be same job context
+        if (running.jobId !== options.jobId) {
+          throw this.conflictError(
+            `Cannot transition: active timer is for job ${running.jobId}, ` +
+            `but new entry targets job ${options.jobId}. Stop the running timer first.`
+          );
+        }
+        // Validate allowed type pair
+        const VALID_TRANSITIONS: Record<string, string[]> = {
+          travel_to_job: ["on_site"],
+          on_site: ["on_site"],           // pause→resume creates a new on_site
+          travel_to_supplier: ["supplier_run"],
+          travel_between_jobs: ["on_site", "travel_to_job"],
+        };
+        const allowed = VALID_TRANSITIONS[running.type];
+        if (!allowed || !allowed.includes(options.type)) {
+          throw this.conflictError(
+            `Invalid transition: ${running.type} → ${options.type} is not allowed.`
+          );
+        }
+      }
+      // If no running entry, transition mode proceeds normally (no-op auto-stop)
+    }
+
     // Check approval lock (read-only, safe outside tx)
     await this.enforceApprovalLock(companyId, technicianId, now, {
       overrideApprovalLock: options?.overrideApprovalLock,
@@ -444,10 +531,12 @@ export class TimeTrackingRepository extends BaseRepository {
     const today = now.toISOString().split("T")[0];
     const openSession = await this.getOpenWorkSession(companyId, technicianId, today);
 
-    // Transaction: auto-stop running entry + insert new entry atomically
+    // Transaction: insert new entry (transition mode auto-stops first)
     return this.tx(async (txDb) => {
-      // Auto-stop any running entry within the same transaction
-      await this.stopRunningTimeEntry(companyId, technicianId, { at: now, txDb });
+      if (mode === "transition") {
+        // Visit lifecycle: auto-stop running entry within the same transaction
+        await this.stopRunningTimeEntry(companyId, technicianId, { at: now, txDb });
+      }
 
       const [entry] = await txDb
         .insert(timeEntries)
@@ -456,6 +545,8 @@ export class TimeTrackingRepository extends BaseRepository {
           technicianId,
           workSessionId: openSession?.id ?? null,
           jobId: options.jobId ?? null,
+          taskId: options.taskId ?? null,
+          visitId: options.visitId ?? null,
           type: options.type,
           startAt: now,
           billable,
@@ -988,13 +1079,18 @@ export class TimeTrackingRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
-    // Get all time entries for the job with technician info + cost rate
+    // Get all time entries for the job with technician info + cost rate.
+    // 2026-04-10: task labor (type=task_work) with matching jobId is included
+    // automatically — no special filter needed since both visit and task entries
+    // carry jobId when they contribute to a job.
     const entries = await db
       .select({
         id: timeEntries.id,
         technicianId: timeEntries.technicianId,
         technicianName: users.fullName,
         type: timeEntries.type,
+        taskId: timeEntries.taskId,
+        visitId: timeEntries.visitId,
         startAt: timeEntries.startAt,
         endAt: timeEntries.endAt,
         durationMinutes: timeEntries.durationMinutes,
@@ -1097,6 +1193,9 @@ export class TimeTrackingRepository extends BaseRepository {
         id: e.id,
         technicianId: e.technicianId,
         type: e.type as TimeEntryType,
+        taskId: e.taskId,
+        visitId: e.visitId,
+        sourceType: deriveSourceType(e.type, e.taskId, e.visitId),
         startAt: e.startAt,
         endAt: e.endAt,
         durationMinutes: e.durationMinutes,
@@ -1125,6 +1224,7 @@ export class TimeTrackingRepository extends BaseRepository {
     jobId: string,
     options: {
       status: TechnicianJobStatus;
+      visitId?: string | null;
       at?: Date;
       notes?: string | null;
       source?: "mobile" | "web";
@@ -1149,70 +1249,38 @@ export class TimeTrackingRepository extends BaseRepository {
     const status = options.status;
     let timeEntry: TimeEntry | undefined;
 
-    // ── Overlap guard: auto-stop any open entry before starting a new one ──
-    // This prevents phantom/overlapping segments across all status transitions.
-    // 2026-04-09: routed through stopAndDiscardIfTrivial so accidental taps
-    // (start+immediately-stop within < 1 minute) are discarded instead of
-    // landing in payroll.
-    const autoStopOpen = async (reason: string) => {
-      const running = await this.getRunningTimeEntry(companyId, technicianId);
-      if (!running) return;
-
-      const stopResult = await this.stopAndDiscardIfTrivial(
-        companyId,
-        technicianId,
-        { timeEntryId: running.id, at: now },
-      );
-
-      // Record an auto-stop audit event regardless of discard outcome
-      // (the audit trail captures intent even when the segment is too short
-      // to keep). The notes field includes whether the segment was discarded.
-      await db.insert(technicianJobStatusEvents).values({
-        companyId,
-        jobId: running.jobId ?? jobId,
-        technicianId,
-        status: "auto_stop",
-        at: now,
-        source: options.source ?? "mobile",
-        notes: `Auto-stopped ${running.type} entry (${reason})${stopResult.discarded ? " — discarded as sub-1-minute" : ""}. Previous entry: ${running.id}, job: ${running.jobId}`,
-        timeEntryId: stopResult.discarded ? null : running.id,
-      });
-
-      console.log(JSON.stringify({
-        event: "time_entry_auto_stopped",
-        companyId,
-        technicianId,
-        stoppedEntryId: running.id,
-        stoppedType: running.type,
-        stoppedJobId: running.jobId,
-        reason,
-        newStatus: status,
-        newJobId: jobId,
-        timestamp: now.toISOString(),
-      }));
-    };
+    // 2026-04-10 INTEGRITY: autoStopOpen REMOVED. No silent timer stops.
+    // All visit start flows go through startTimeEntry which enforces:
+    //   strict mode → 409 if any active timer exists
+    //   transition mode → auto-stop only within same-job visit transitions
+    // Cross-context overlaps (task running while visit starts) are now rejected.
 
     // Handle status-specific time entry logic
     switch (status) {
       case "en_route":
-        // Auto-stop any open entry before starting travel
-        await autoStopOpen("tech started en_route to new visit");
+        // 2026-04-10: strict mode — reject if any unrelated timer is active.
+        // If this tech has a running entry from a different context, they must
+        // stop it first. No silent killing of task timers.
         timeEntry = await this.startTimeEntry(companyId, technicianId, {
           type: "travel_to_job",
           jobId,
+          visitId: options.visitId ?? null,
           at: now,
           notes: options.notes,
+          mode: "strict",
         });
         break;
 
       case "arrived":
-        // Auto-stop any open entry (travel or work for any job) before starting on_site
-        await autoStopOpen("tech arrived at visit");
+        // transition mode: auto-stops travel_to_job for SAME job only.
+        // Rejects if running entry is from different job or is a task timer.
         timeEntry = await this.startTimeEntry(companyId, technicianId, {
           type: "on_site",
           jobId,
+          visitId: options.visitId ?? null,
           at: now,
           notes: options.notes,
+          mode: "transition",
         });
         break;
 
@@ -1228,15 +1296,15 @@ export class TimeTrackingRepository extends BaseRepository {
         break;
 
       case "resumed":
-        // 2026-04-09: tech is resuming work on a paused job. Start a fresh
-        // on_site time entry for this job. autoStopOpen guards against any
-        // open entry for a different job/technician.
-        await autoStopOpen("tech resumed visit");
+        // Resume: strict mode — no running entry should exist (was paused).
+        // If somehow one exists from a different context, reject.
         timeEntry = await this.startTimeEntry(companyId, technicianId, {
           type: "on_site",
           jobId,
+          visitId: options.visitId ?? null,
           at: now,
           notes: options.notes,
+          mode: "strict",
         });
         break;
 
@@ -1319,11 +1387,15 @@ export class TimeTrackingRepository extends BaseRepository {
       technicianId: string;
       technicianName: string | null;
       type: TimeEntryType;
+      taskId: string | null;
+      visitId: string | null;
+      sourceType: "visit" | "task" | "manual";
       startAt: Date;
       endAt: Date | null;
       durationMinutes: number | null;
       billable: boolean;
       billableRateSnapshot: string | null;
+      costRateSnapshot: string | null;
       notes: string | null;
       invoiceId: string | null;
       invoicedAt: Date | null;
@@ -1332,6 +1404,8 @@ export class TimeTrackingRepository extends BaseRepository {
       lockedByInvoiceId: string | null;
       lockReason: string | null;
       createdAt: Date;
+      // Visit display context (null for non-visit entries)
+      visitLabel: string | null;
     }>
   > {
     this.assertCompanyId(companyId);
@@ -1343,6 +1417,8 @@ export class TimeTrackingRepository extends BaseRepository {
         technicianId: timeEntries.technicianId,
         technicianName: users.fullName,
         type: timeEntries.type,
+        taskId: timeEntries.taskId,
+        visitId: timeEntries.visitId,
         startAt: timeEntries.startAt,
         endAt: timeEntries.endAt,
         durationMinutes: timeEntries.durationMinutes,
@@ -1357,9 +1433,12 @@ export class TimeTrackingRepository extends BaseRepository {
         lockedByInvoiceId: timeEntries.lockedByInvoiceId,
         lockReason: timeEntries.lockReason,
         createdAt: timeEntries.createdAt,
+        // Visit display context
+        visitNumber: jobVisits.visitNumber,
       })
       .from(timeEntries)
       .leftJoin(users, eq(timeEntries.technicianId, users.id))
+      .leftJoin(jobVisits, eq(timeEntries.visitId, jobVisits.id))
       .where(
         and(
           eq(timeEntries.companyId, companyId),
@@ -1371,6 +1450,8 @@ export class TimeTrackingRepository extends BaseRepository {
     return entries.map((e) => ({
       ...e,
       type: e.type as TimeEntryType,
+      sourceType: deriveSourceType(e.type, e.taskId, e.visitId),
+      visitLabel: e.visitNumber != null ? `Visit #${e.visitNumber}` : null,
     }));
   }
 
@@ -1797,6 +1878,8 @@ export class TimeTrackingRepository extends BaseRepository {
         technicianId: timeEntries.technicianId,
         workSessionId: timeEntries.workSessionId,
         jobId: timeEntries.jobId,
+        taskId: timeEntries.taskId,
+        visitId: timeEntries.visitId,
         type: timeEntries.type,
         startAt: timeEntries.startAt,
         endAt: timeEntries.endAt,
@@ -2171,6 +2254,9 @@ export class TimeTrackingRepository extends BaseRepository {
       id: string;
       technicianId: string;
       jobId: string | null;
+      taskId: string | null;
+      visitId: string | null;
+      sourceType: "visit" | "task" | "manual";
       jobNumber: number | null;
       jobSummary: string | null;
       jobType: string | null;
@@ -2214,6 +2300,9 @@ export class TimeTrackingRepository extends BaseRepository {
         lockedByInvoiceId: timeEntries.lockedByInvoiceId,
         lockReason: timeEntries.lockReason,
         invoiceId: timeEntries.invoiceId,
+        // 2026-04-10: taskId/visitId for distinguishing labor sources in timesheet
+        taskId: timeEntries.taskId,
+        visitId: timeEntries.visitId,
         // 2026-04-04: Include rate snapshots so edit modal can hydrate cost/hr
         costRateSnapshot: timeEntries.costRateSnapshot,
         billableRateSnapshot: timeEntries.billableRateSnapshot,
@@ -2249,6 +2338,9 @@ export class TimeTrackingRepository extends BaseRepository {
         id: r.id,
         technicianId: r.technicianId,
         jobId: r.jobId,
+        taskId: r.taskId,
+        visitId: r.visitId,
+        sourceType: deriveSourceType(r.type, r.taskId, r.visitId),
         jobNumber: r.jobNumber,
         jobSummary: r.jobSummary,
         jobType: r.jobType,
@@ -2289,6 +2381,9 @@ export class TimeTrackingRepository extends BaseRepository {
       id: string;
       technicianId: string;
       jobId: string | null;
+      taskId: string | null;
+      visitId: string | null;
+      sourceType: "visit" | "task" | "manual";
       jobNumber: number | null;
       jobSummary: string | null;
       locationName: string | null;
@@ -2312,6 +2407,8 @@ export class TimeTrackingRepository extends BaseRepository {
         id: timeEntries.id,
         technicianId: timeEntries.technicianId,
         jobId: timeEntries.jobId,
+        taskId: timeEntries.taskId,
+        visitId: timeEntries.visitId,
         type: timeEntries.type,
         startAt: timeEntries.startAt,
         endAt: timeEntries.endAt,
@@ -2341,6 +2438,9 @@ export class TimeTrackingRepository extends BaseRepository {
         id: r.id,
         technicianId: r.technicianId,
         jobId: r.jobId,
+        taskId: r.taskId,
+        visitId: r.visitId,
+        sourceType: deriveSourceType(r.type, r.taskId, r.visitId),
         jobNumber: r.jobNumber,
         jobSummary: r.jobSummary,
         locationName: r.locationName,

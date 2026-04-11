@@ -17,16 +17,19 @@ import {
 export class ApiError extends Error {
   status: number;
   url: string;
-  /** Server-supplied error code (e.g., "VERSION_MISMATCH", "VISIT_CONFLICT", "CONFLICT").
+  /** Server-supplied error code (e.g., "VERSION_MISMATCH", "VISIT_CONFLICT", "ACTIVE_TIMER_EXISTS").
    *  Extracted from response body `code` field so callers can distinguish 409 subtypes. */
   code?: string;
+  /** Additional structured data from the response body (e.g., activeItem for timer conflicts). */
+  data?: Record<string, any>;
 
-  constructor(status: number, url: string, message: string, code?: string) {
+  constructor(status: number, url: string, message: string, code?: string, data?: Record<string, any>) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.url = url;
     this.code = code;
+    this.data = data;
   }
 }
 
@@ -316,7 +319,8 @@ export async function apiRequest<T = any>(
       response.status,
       url,
       clientMappedMessage,
-      (errorData.code as string) || undefined
+      (errorData.code as string) || undefined,
+      errorData as Record<string, any>,
     );
   }
 

@@ -262,7 +262,7 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
 
         {/* ── Add Note Form ────────────────────── */}
         {isAdding && (
-          <div className="space-y-3 p-4 border rounded-lg bg-muted/30">
+          <div className="space-y-3 p-4 border rounded-md bg-muted/30">
             <Textarea
               placeholder="Enter your note..."
               value={noteText}
@@ -330,7 +330,7 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
           </div>
         ) : (
           notes.map((note) => (
-            <div key={note.id} className="px-3 py-2.5 border rounded-lg text-sm overflow-hidden" data-testid={`note-${note.id}`}>
+            <div key={note.id} className="px-3 py-2.5 border rounded-md text-sm overflow-hidden" data-testid={`note-${note.id}`}>
               {editingNoteId === note.id ? (
                 /* ── Inline Edit ─── */
                 <div className="space-y-3">
@@ -405,7 +405,6 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
                   <div className="flex items-center justify-between mt-2 text-[10px] text-muted-foreground">
                     <span className="truncate mr-2">
                       {note.createdByName || "Unknown"} · {note.createdAt && format(new Date(note.createdAt), "MMM d, h:mm a")}
-                      {note.updatedAt && note.updatedAt !== note.createdAt && " (edited)"}
                     </span>
                     <div className="flex gap-1 flex-shrink-0">
                       <Button variant="ghost" size="sm" className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground" onClick={() => startEdit(note)} data-testid={`button-edit-note-${note.id}`}>

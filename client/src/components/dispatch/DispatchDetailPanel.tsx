@@ -600,7 +600,7 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
 
   return (
     <div className={mode === "popover"
-      ? "flex w-[22rem] flex-col rounded-lg border bg-white shadow-xl"
+      ? "flex w-[22rem] flex-col rounded-md border bg-white shadow-xl"
       : "flex h-full w-80 flex-shrink-0 flex-col border-l-2 border-l-emerald-300 bg-white shadow-lg"
     }>
       {/* ── Header: Client-first hierarchy (drag handle in popover mode) ── */}
@@ -996,7 +996,7 @@ function TaskDetail({ task, onClose, technicians, laneVisits = [], laneTasks = [
 
   return (
     <div className={mode === "popover"
-      ? "flex w-[22rem] flex-col rounded-lg border bg-white shadow-xl"
+      ? "flex w-[22rem] flex-col rounded-md border bg-white shadow-xl"
       : "flex h-full w-80 flex-shrink-0 flex-col border-l-2 border-l-[#76B054] bg-white shadow-lg"
     }>
       <div data-panel-drag-handle className={`flex items-center justify-between border-b bg-[rgba(118,176,84,0.08)] px-3 py-2.5 ${mode === "popover" ? "rounded-t-lg cursor-move" : ""}`}>

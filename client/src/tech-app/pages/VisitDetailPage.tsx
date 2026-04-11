@@ -35,7 +35,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft, Navigation, MapPin, StickyNote, AlertCircle, Check,
   Loader2, RefreshCw, Send, Plus, Wrench, Package, Trash2,
-  ChevronRight, Search, X, FileText,
+  ChevronRight, Search, X, FileText, Clock, Pause,
 } from "lucide-react";
 import { MobileShell } from "../components/MobileShell";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -102,7 +102,7 @@ function OutcomeModal({ onSelect, onCancel }: {
         <div className="space-y-2">
           {outcomes.map(o => (
             <button key={o.key} onClick={() => setSelected(o.key)}
-              className={`w-full text-left p-3 rounded-xl border transition-colors ${selected === o.key ? o.cls : "border-slate-200"}`}>
+              className={`w-full text-left p-3 rounded-md border transition-colors ${selected === o.key ? o.cls : "border-slate-200"}`}>
               <div className="text-sm font-semibold text-slate-800">{o.label}</div>
               <div className="text-xs text-slate-500">{o.desc}</div>
             </button>
@@ -111,13 +111,13 @@ function OutcomeModal({ onSelect, onCancel }: {
         {needsNote && (
           <textarea value={note} onChange={e => setNote(e.target.value)}
             placeholder="Required: describe what's needed…"
-            className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 resize-none h-20" />
+            className="w-full text-sm border border-slate-200 rounded-md px-3 py-2 resize-none h-20" />
         )}
         <div className="flex gap-2">
-          <button onClick={onCancel} className="flex-1 h-10 rounded-lg border border-slate-200 text-sm font-medium text-slate-600">Cancel</button>
+          <button onClick={onCancel} className="flex-1 h-10 rounded-md border border-slate-200 text-sm font-medium text-slate-600">Cancel</button>
           <button onClick={() => selected && canSubmit && onSelect(selected, note.trim() || undefined)}
             disabled={!canSubmit}
-            className="flex-1 h-10 rounded-lg bg-emerald-600 text-white text-sm font-semibold disabled:bg-slate-200 disabled:text-slate-400">
+            className="flex-1 h-10 rounded-md bg-emerald-600 text-white text-sm font-semibold disabled:bg-slate-200 disabled:text-slate-400">
             Confirm
           </button>
         </div>
@@ -194,7 +194,7 @@ function AddPartSheet({ equipmentId, onClose, addPart, onError }: {
       <div className="w-full max-w-md bg-white rounded-t-2xl p-4 shadow-xl max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-bold text-slate-900">Add Part</h2>
-          <button onClick={onClose} className="p-1 rounded-lg hover:bg-slate-100"><X className="h-4 w-4 text-slate-400" /></button>
+          <button onClick={onClose} className="p-1 rounded-md hover:bg-slate-100"><X className="h-4 w-4 text-slate-400" /></button>
         </div>
         {!selected ? (
           <>
@@ -230,18 +230,18 @@ function AddPartSheet({ equipmentId, onClose, addPart, onError }: {
                 <p className="text-xs font-semibold text-slate-600">Create new item: {searchText}</p>
                 <div className="flex gap-2">
                   <button onClick={() => setNewType("product")}
-                    className={`flex-1 h-8 rounded-lg text-xs font-semibold border ${newType === "product" ? "border-emerald-400 bg-emerald-50 text-emerald-700" : "border-slate-200 text-slate-500"}`}>
+                    className={`flex-1 h-8 rounded-md text-xs font-semibold border ${newType === "product" ? "border-emerald-400 bg-emerald-50 text-emerald-700" : "border-slate-200 text-slate-500"}`}>
                     Product
                   </button>
                   <button onClick={() => setNewType("service")}
-                    className={`flex-1 h-8 rounded-lg text-xs font-semibold border ${newType === "service" ? "border-emerald-400 bg-emerald-50 text-emerald-700" : "border-slate-200 text-slate-500"}`}>
+                    className={`flex-1 h-8 rounded-md text-xs font-semibold border ${newType === "service" ? "border-emerald-400 bg-emerald-50 text-emerald-700" : "border-slate-200 text-slate-500"}`}>
                     Service
                   </button>
                 </div>
                 <input value={newPrice} onChange={e => setNewPrice(e.target.value)} placeholder="Unit price (optional)"
-                  type="number" step="0.01" className="w-full h-9 px-3 text-sm border border-slate-200 rounded-lg" />
+                  type="number" step="0.01" className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
                 <button onClick={handleCreateItem} disabled={createPending || !searchText.trim()}
-                  className="w-full h-10 rounded-lg bg-emerald-600 text-white text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-1.5">
+                  className="w-full h-10 rounded-md bg-emerald-600 text-white text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-1.5">
                   {createPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Create & Select
                 </button>
               </div>
@@ -249,7 +249,7 @@ function AddPartSheet({ equipmentId, onClose, addPart, onError }: {
           </>
         ) : (
           <div className="space-y-3">
-            <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-3">
+            <div className="rounded-md border border-emerald-200 bg-emerald-50/50 p-3">
               <p className="text-sm font-semibold text-slate-800">{selected.name}</p>
               <p className="text-xs text-slate-500">
                 {selected.type === "service" ? "Service" : "Product"}
@@ -259,12 +259,12 @@ function AddPartSheet({ equipmentId, onClose, addPart, onError }: {
             <div>
               <label className="text-xs font-semibold text-slate-500 mb-1 block">Quantity</label>
               <input value={qty} onChange={e => setQty(e.target.value)} type="number" min="1" step="1"
-                className="w-full h-9 px-3 text-sm border border-slate-200 rounded-lg" />
+                className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
             </div>
             <div className="flex gap-2">
-              <button onClick={() => setSelected(null)} className="flex-1 h-10 rounded-lg border border-slate-200 text-sm font-medium text-slate-600">Back</button>
+              <button onClick={() => setSelected(null)} className="flex-1 h-10 rounded-md border border-slate-200 text-sm font-medium text-slate-600">Back</button>
               <button onClick={handleSubmit} disabled={addPart.isPending}
-                className="flex-1 h-10 rounded-lg bg-emerald-600 text-white text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-1.5">
+                className="flex-1 h-10 rounded-md bg-emerald-600 text-white text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-1.5">
                 {addPart.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Add Part
               </button>
             </div>
@@ -335,19 +335,19 @@ function AddEquipmentSheet({ visitId, onClose, addEquipment, onError }: {
       <div className="w-full max-w-md bg-white rounded-t-2xl p-4 shadow-xl max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-bold text-slate-900">Add Equipment</h2>
-          <button onClick={onClose} className="p-1 rounded-lg hover:bg-slate-100"><X className="h-4 w-4 text-slate-400" /></button>
+          <button onClick={onClose} className="p-1 rounded-md hover:bg-slate-100"><X className="h-4 w-4 text-slate-400" /></button>
         </div>
         {!creating ? (
           <>
             <div className="relative mb-2">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
               <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search location equipment…"
-                className="w-full h-9 pl-9 pr-3 text-sm border border-slate-200 rounded-lg" autoFocus />
+                className="w-full h-9 pl-9 pr-3 text-sm border border-slate-200 rounded-md" autoFocus />
             </div>
             <div className="overflow-y-auto flex-1 -mx-1">
               {filtered.map((e: any) => (
                 <button key={e.id} onClick={() => handleSelect(e.id)} disabled={addEquipment.isPending}
-                  className="w-full text-left px-3 py-2.5 hover:bg-slate-50 rounded-lg">
+                  className="w-full text-left px-3 py-2.5 hover:bg-slate-50 rounded-md">
                   <p className="text-sm font-medium text-slate-800">{e.name}</p>
                   <p className="text-xs text-slate-400">{[e.equipmentType, e.serialNumber].filter(Boolean).join(" · ")}</p>
                 </button>
@@ -358,7 +358,7 @@ function AddEquipmentSheet({ visitId, onClose, addEquipment, onError }: {
             </div>
             {/* Always-visible create option */}
             <button onClick={() => { setCreating(true); setNewName(search); }}
-              className="w-full mt-2 h-10 rounded-xl border-2 border-dashed border-slate-200 text-sm font-semibold text-emerald-600 flex items-center justify-center gap-1.5 hover:border-emerald-300 hover:bg-emerald-50/50 transition-colors">
+              className="w-full mt-2 h-10 rounded-md border-2 border-dashed border-slate-200 text-sm font-semibold text-emerald-600 flex items-center justify-center gap-1.5 hover:border-emerald-300 hover:bg-emerald-50/50 transition-colors">
               <Plus className="h-3.5 w-3.5" />Create New Equipment
             </button>
           </>
@@ -367,27 +367,27 @@ function AddEquipmentSheet({ visitId, onClose, addEquipment, onError }: {
             <div>
               <label className="text-xs font-semibold text-slate-500 mb-1 block">Name *</label>
               <input value={newName} onChange={e => setNewName(e.target.value)}
-                className="w-full h-9 px-3 text-sm border border-slate-200 rounded-lg" autoFocus />
+                className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" autoFocus />
             </div>
             <div>
               <label className="text-xs font-semibold text-slate-500 mb-1 block">Type</label>
               <input value={newType} onChange={e => setNewType(e.target.value)} placeholder="e.g. RTU, Furnace"
-                className="w-full h-9 px-3 text-sm border border-slate-200 rounded-lg" />
+                className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
             </div>
             <div>
               <label className="text-xs font-semibold text-slate-500 mb-1 block">Model</label>
               <input value={newModel} onChange={e => setNewModel(e.target.value)} placeholder="Model number"
-                className="w-full h-9 px-3 text-sm border border-slate-200 rounded-lg" />
+                className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
             </div>
             <div>
               <label className="text-xs font-semibold text-slate-500 mb-1 block">Serial</label>
               <input value={newSerial} onChange={e => setNewSerial(e.target.value)}
-                className="w-full h-9 px-3 text-sm border border-slate-200 rounded-lg" />
+                className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
             </div>
             <div className="flex gap-2">
-              <button onClick={() => setCreating(false)} className="flex-1 h-10 rounded-lg border border-slate-200 text-sm font-medium text-slate-600">Back</button>
+              <button onClick={() => setCreating(false)} className="flex-1 h-10 rounded-md border border-slate-200 text-sm font-medium text-slate-600">Back</button>
               <button onClick={handleCreate} disabled={!newName.trim() || createPending}
-                className="flex-1 h-10 rounded-lg bg-emerald-600 text-white text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-1.5">
+                className="flex-1 h-10 rounded-md bg-emerald-600 text-white text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-1.5">
                 {createPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Create & Add
               </button>
             </div>
@@ -484,7 +484,7 @@ function EquipmentDetailScreen({ equipmentId, equipment, isTerminal, onClose, on
       {/* Compact header */}
       <div className="bg-[#0f1a2e] px-3 pt-2 pb-2 shrink-0">
         <div className="flex items-center gap-2">
-          <button onClick={onClose} className="p-1 -ml-1 rounded-lg hover:bg-white/10"><ArrowLeft className="h-4 w-4 text-white" /></button>
+          <button onClick={onClose} className="p-1 -ml-1 rounded-md hover:bg-white/10"><ArrowLeft className="h-4 w-4 text-white" /></button>
           <div className="flex-1 min-w-0">
             <h1 className="text-sm font-bold text-white truncate">{eq.name}</h1>
             <p className="text-xs text-slate-400 truncate">{[eq.type, eq.manufacturer].filter(Boolean).join(" · ") || "Equipment"}</p>
@@ -498,7 +498,7 @@ function EquipmentDetailScreen({ equipmentId, equipment, isTerminal, onClose, on
 
           {/* Info card — compact stacked */}
           {infoItems.length > 0 && (
-            <div className="rounded-xl border border-slate-200 bg-white px-3 py-2.5">
+            <div className="rounded-md border border-slate-200 bg-white px-3 py-2.5">
               <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
                 {infoItems.map(([label, value]) => (
                   <div key={label} className="min-w-0">
@@ -513,23 +513,23 @@ function EquipmentDetailScreen({ equipmentId, equipment, isTerminal, onClose, on
           {/* Actions */}
           <div className="flex gap-2">
             <button onClick={() => { onAddNote(eq.id); onClose(); }}
-              className="flex-1 h-9 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 flex items-center justify-center gap-1.5 hover:bg-slate-50 active:bg-slate-100">
+              className="flex-1 h-9 rounded-md border border-slate-200 text-xs font-semibold text-slate-700 flex items-center justify-center gap-1.5 hover:bg-slate-50 active:bg-slate-100">
               <StickyNote className="h-3 w-3" />Add Note
             </button>
             {!isTerminal && !confirmRemove && (
               <button onClick={() => setConfirmRemove(true)}
-                className="flex-1 h-9 rounded-lg border border-red-200 text-xs font-semibold text-red-600 flex items-center justify-center gap-1.5 hover:bg-red-50 active:bg-red-100">
+                className="flex-1 h-9 rounded-md border border-red-200 text-xs font-semibold text-red-600 flex items-center justify-center gap-1.5 hover:bg-red-50 active:bg-red-100">
                 <Trash2 className="h-3 w-3" />Remove
               </button>
             )}
           </div>
           {confirmRemove && (
-            <div className="rounded-lg border border-red-200 bg-red-50 p-3 space-y-2">
+            <div className="rounded-md border border-red-200 bg-red-50 p-3 space-y-2">
               <p className="text-xs font-medium text-red-700">Remove this equipment from the job?</p>
               <div className="flex gap-2">
-                <button onClick={() => setConfirmRemove(false)} className="flex-1 h-8 rounded-lg border border-slate-200 text-xs font-medium text-slate-600">Cancel</button>
+                <button onClick={() => setConfirmRemove(false)} className="flex-1 h-8 rounded-md border border-slate-200 text-xs font-medium text-slate-600">Cancel</button>
                 <button onClick={() => { onRemove(eq.jobEquipmentId); onClose(); }}
-                  className="flex-1 h-8 rounded-lg bg-red-600 text-white text-xs font-semibold">Remove</button>
+                  className="flex-1 h-8 rounded-md bg-red-600 text-white text-xs font-semibold">Remove</button>
               </div>
             </div>
           )}
@@ -538,7 +538,7 @@ function EquipmentDetailScreen({ equipmentId, equipment, isTerminal, onClose, on
           {historyLoading && <div className="text-center py-8"><Loader2 className="h-5 w-5 animate-spin mx-auto text-slate-300" /></div>}
           {historyEmpty && <p className="text-center py-8 text-xs text-slate-400">No history for this equipment</p>}
           {jobHistory.map(job => (
-            <div key={job.jobId} className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+            <div key={job.jobId} className="rounded-md border border-slate-200 bg-white overflow-hidden">
               {/* Job header */}
               <div className="px-3 py-2 bg-slate-50/80 border-b border-slate-100 flex items-center justify-between">
                 <span className="text-xs font-bold text-slate-700">
@@ -596,14 +596,14 @@ function EditableField({ label, value, fieldKey, accentBorder, editingField, edi
 
   if (isEditing) {
     return (
-      <div className={`rounded-xl border ${borderCls} p-3`}>
+      <div className={`rounded-md border ${borderCls} p-3`}>
         <p className={`text-xs font-semibold ${labelCls} uppercase tracking-wider mb-1`}>{label}</p>
         <textarea value={editValue} onChange={e => onChange(e.target.value)}
-          className="w-full text-sm border border-slate-200 rounded-lg px-2 py-1.5 resize-none h-20" autoFocus />
+          className="w-full text-sm border border-slate-200 rounded-md px-2 py-1.5 resize-none h-20" autoFocus />
         <div className="flex gap-2 mt-2">
-          <button onClick={onCancel} className="flex-1 h-8 rounded-lg border border-slate-200 text-xs font-medium text-slate-500">Cancel</button>
+          <button onClick={onCancel} className="flex-1 h-8 rounded-md border border-slate-200 text-xs font-medium text-slate-500">Cancel</button>
           <button onClick={onSave} disabled={isPending}
-            className="flex-1 h-8 rounded-lg bg-emerald-600 text-white text-xs font-semibold disabled:opacity-60 flex items-center justify-center gap-1">
+            className="flex-1 h-8 rounded-md bg-emerald-600 text-white text-xs font-semibold disabled:opacity-60 flex items-center justify-center gap-1">
             {isPending && <Loader2 className="h-3 w-3 animate-spin" />}Save
           </button>
         </div>
@@ -614,7 +614,7 @@ function EditableField({ label, value, fieldKey, accentBorder, editingField, edi
   if (!value) return null;
 
   return (
-    <div className={`rounded-xl border ${borderCls} p-3 cursor-pointer active:bg-slate-50 transition-colors`}
+    <div className={`rounded-md border ${borderCls} p-3 cursor-pointer active:bg-slate-50 transition-colors`}
       onClick={() => onStart(fieldKey, value)}>
       <p className={`text-xs font-semibold ${labelCls} uppercase tracking-wider mb-1`}>{label}</p>
       <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{value}</p>
@@ -645,7 +645,7 @@ function ErrorState({ onBack, onRetry }: { onBack: () => void; onRetry: () => vo
       <div className="flex flex-col items-center justify-center py-16 text-slate-400">
         <AlertCircle className="h-10 w-10 mb-2 opacity-40" />
         <p className="text-sm font-medium mb-3">Failed to load visit</p>
-        <button onClick={onRetry} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-slate-100 text-slate-600 text-xs font-semibold">
+        <button onClick={onRetry} className="flex items-center gap-1.5 px-4 py-2 rounded-md bg-slate-100 text-slate-600 text-xs font-semibold">
           <RefreshCw className="h-3 w-3" />Retry
         </button>
       </div>
@@ -691,7 +691,14 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
   const isActive = visit.status === "en_route" || visit.status === "in_progress" || visit.status === "on_site" || visit.status === "paused";
   const isOnSite = visit.status === "in_progress" || visit.status === "on_site";
   const isPaused = visit.status === "paused";
-  const isScheduled = visit.status === "scheduled" || visit.status === "dispatched";
+  // 2026-04-10: scheduledStart is the SOLE source of truth for actionability.
+  // Status is lifecycle-only (en_route, in_progress, completed, etc.) — it is
+  // NOT used to determine whether Start Travel should render. An unscheduled
+  // placeholder has status="scheduled" but scheduledStart=null — the presence
+  // of scheduledStart is what makes a visit actionable, not the status string.
+  const hasSchedule = !!visit.scheduledStart;
+  // "Ready to start" = has a schedule AND is in a pre-action lifecycle state
+  const isReadyToStart = hasSchedule && !isActive && !isTerminal;
 
   const showSuccess = (msg: string) => { setActionSuccess(msg); setTimeout(() => setActionSuccess(null), 3000); };
   const showError = (err: any) => {
@@ -794,7 +801,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
       {/* ══════ HEADER ══════ */}
       <div className="bg-[#0f1a2e] px-3 pt-2 pb-2">
         <div className="flex items-center gap-2">
-          <button onClick={onBack} className="p-1 -ml-1 rounded-lg hover:bg-white/10 transition-colors">
+          <button onClick={onBack} className="p-1 -ml-1 rounded-md hover:bg-white/10 transition-colors">
             <ArrowLeft className="h-4 w-4 text-white" />
           </button>
           <h1 className="text-base font-bold text-white leading-tight truncate flex-1">{visit.jobTitle}</h1>
@@ -806,7 +813,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
           <div className="flex items-center gap-1 text-xs text-slate-500 min-w-0 flex-1 truncate">
             <MapPin className="h-2.5 w-2.5 shrink-0" /><span className="truncate">{visit.address}</span>
           </div>
-          <button className="flex items-center gap-1 text-sm font-semibold text-[#76B054] shrink-0 ml-2 px-2 py-1 rounded-lg hover:bg-[#76B054]/10 transition-colors">
+          <button className="flex items-center gap-1 text-sm font-semibold text-[#76B054] shrink-0 ml-2 px-2 py-1 rounded-md hover:bg-[#76B054]/10 transition-colors">
             <Navigation className="h-3 w-3" />Directions
           </button>
         </div>
@@ -832,7 +839,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 <button
                   onClick={handleCancelRoute}
                   disabled={anyPending}
-                  className="h-8 px-3 rounded-lg bg-white border border-slate-300 text-slate-700 text-sm font-semibold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  className="h-8 px-3 rounded-md bg-white border border-slate-300 text-slate-700 text-sm font-semibold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
                   data-testid="button-cancel-route"
                 >
                   {cancelRoute.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Cancel Route
@@ -840,7 +847,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 <button
                   onClick={handleStartJob}
                   disabled={anyPending}
-                  className="h-8 px-3 rounded-lg bg-[#22c55e] text-white text-sm font-bold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  className="h-8 px-3 rounded-md bg-[#22c55e] text-white text-sm font-bold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
                   data-testid="button-start-job"
                 >
                   {startJob.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Start Job
@@ -852,23 +859,27 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 <button
                   onClick={handleCancelStart}
                   disabled={anyPending}
-                  className="h-8 px-3 rounded-lg bg-white border border-slate-300 text-slate-700 text-sm font-semibold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  className="h-8 w-8 rounded-md bg-white border border-slate-300 text-slate-500 flex items-center justify-center active:scale-[0.97] disabled:opacity-60"
                   data-testid="button-cancel-start"
+                  title="Cancel Start"
+                  aria-label="Cancel Start"
                 >
-                  {cancelStart.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Cancel Start
+                  {cancelStart.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <X className="h-4 w-4" />}
                 </button>
                 <button
                   onClick={handlePauseJob}
                   disabled={anyPending}
-                  className="h-8 px-3 rounded-lg bg-amber-500 text-white text-sm font-bold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  className="h-8 w-8 rounded-md bg-amber-100 border border-amber-300 text-amber-600 flex items-center justify-center active:scale-[0.97] disabled:opacity-60"
                   data-testid="button-pause-job"
+                  title="Pause"
+                  aria-label="Pause"
                 >
-                  {pauseJob.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Pause
+                  {pauseJob.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Pause className="h-4 w-4" />}
                 </button>
                 <button
                   onClick={() => setShowOutcome(true)}
                   disabled={anyPending}
-                  className="h-8 px-3 rounded-lg bg-[#22c55e] text-white text-sm font-bold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  className="h-8 px-3 rounded-md bg-[#22c55e] text-white text-sm font-bold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
                   data-testid="button-complete"
                 >
                   <Check className="h-3.5 w-3.5" />Complete
@@ -880,7 +891,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 <button
                   onClick={handleResumeJob}
                   disabled={anyPending}
-                  className="h-8 px-3 rounded-lg bg-[#22c55e] text-white text-sm font-bold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  className="h-8 px-3 rounded-md bg-[#22c55e] text-white text-sm font-bold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
                   data-testid="button-resume-job"
                 >
                   {resumeJob.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Resume
@@ -888,7 +899,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 <button
                   onClick={() => setShowOutcome(true)}
                   disabled={anyPending}
-                  className="h-8 px-3 rounded-lg bg-white border border-slate-300 text-slate-700 text-sm font-semibold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  className="h-8 px-3 rounded-md bg-white border border-slate-300 text-slate-700 text-sm font-semibold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
                   data-testid="button-complete-paused"
                 >
                   <Check className="h-3.5 w-3.5" />Complete
@@ -908,11 +919,22 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
         </div>
       )}
 
-      {/* Primary action */}
-      {!isTerminal && isScheduled && (
+      {/* Unscheduled banner — shown when visit has no schedule */}
+      {!isTerminal && !isActive && !hasSchedule && (
+        <div className="px-3 py-2.5 bg-amber-50 border-b border-amber-200 flex items-center gap-2">
+          <Clock className="h-4 w-4 text-amber-600 shrink-0" />
+          <div>
+            <span className="text-xs font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">Unscheduled</span>
+            <p className="text-xs text-amber-600 mt-0.5">Schedule this visit from the dispatch board before starting.</p>
+          </div>
+        </div>
+      )}
+
+      {/* Primary action — only when visit has a schedule and is ready to start */}
+      {isReadyToStart && (
         <div className="px-3 py-2 bg-white border-b border-slate-100">
           <button onClick={handleStartTravel} disabled={anyPending}
-            className="w-full h-11 rounded-xl text-base font-bold flex items-center justify-center gap-2 active:scale-[0.98] bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-60">
+            className="w-full h-11 rounded-md text-base font-bold flex items-center justify-center gap-2 active:scale-[0.98] bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-60">
             {startTravel.isPending && <Loader2 className="h-4 w-4 animate-spin" />}Start Travel
           </button>
         </div>
@@ -949,19 +971,19 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
           <div className="space-y-2">
             {/* Office-owned fields: read-only in tech app */}
             {visit.visitNotes && (
-              <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-3">
+              <div className="rounded-md border border-emerald-200 bg-emerald-50/50 p-3">
                 <p className="text-xs font-semibold text-emerald-600 uppercase tracking-wider mb-1">Visit Instructions</p>
                 <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{visit.visitNotes}</p>
               </div>
             )}
             {visit.jobDescription && (
-              <div className="rounded-xl border border-slate-200 bg-white p-3">
+              <div className="rounded-md border border-slate-200 bg-white p-3">
                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Job Description</p>
                 <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{visit.jobDescription}</p>
               </div>
             )}
             {visit.accessInstructions && (
-              <div className="rounded-xl border border-slate-200 bg-white p-3">
+              <div className="rounded-md border border-slate-200 bg-white p-3">
                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Site Instructions</p>
                 <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{visit.accessInstructions}</p>
               </div>
@@ -974,8 +996,8 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                   {visit.equipment.map(eq => (
                     <div key={eq.id}
                       onClick={() => setHistoryEquipmentId(eq.id)}
-                      className="rounded-xl border border-slate-200 bg-white p-3 flex items-center gap-3 cursor-pointer active:bg-slate-50 transition-colors">
-                      <div className="h-8 w-8 rounded-lg bg-slate-100 flex items-center justify-center shrink-0">
+                      className="rounded-md border border-slate-200 bg-white p-3 flex items-center gap-3 cursor-pointer active:bg-slate-50 transition-colors">
+                      <div className="h-8 w-8 rounded-md bg-slate-100 flex items-center justify-center shrink-0">
                         <Wrench className="h-4 w-4 text-slate-400" />
                       </div>
                       <div className="flex-1 min-w-0">
@@ -997,7 +1019,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 onClick={() => {
                   setLocation(`/tech/create-lead?locationId=${visit.locationId}&visitId=${visitId}`);
                 }}
-                className="w-full h-9 rounded-xl border border-dashed border-amber-200 text-xs font-semibold text-amber-600 flex items-center justify-center gap-1.5 hover:border-amber-300 hover:bg-amber-50/50 transition-colors mt-2"
+                className="w-full h-9 rounded-md border border-dashed border-amber-200 text-xs font-semibold text-amber-600 flex items-center justify-center gap-1.5 hover:border-amber-300 hover:bg-amber-50/50 transition-colors mt-2"
               >
                 <FileText className="h-3.5 w-3.5" />Create Lead from Visit
               </button>
@@ -1050,15 +1072,15 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
           <div className="space-y-2">
             {!isTerminal && (
               <button onClick={() => setShowAddEquipment(true)}
-                className="w-full h-10 rounded-xl border-2 border-dashed border-slate-200 text-sm font-semibold text-slate-500 flex items-center justify-center gap-1.5 hover:border-slate-300 hover:text-slate-600">
+                className="w-full h-10 rounded-md border-2 border-dashed border-slate-200 text-sm font-semibold text-slate-500 flex items-center justify-center gap-1.5 hover:border-slate-300 hover:text-slate-600">
                 <Plus className="h-3.5 w-3.5" />Add Equipment
               </button>
             )}
             {visit.equipment.map(eq => (
-              <div key={eq.id} className="rounded-xl border border-slate-200 bg-white p-3 flex items-center gap-3">
+              <div key={eq.id} className="rounded-md border border-slate-200 bg-white p-3 flex items-center gap-3">
                 <div onClick={() => setHistoryEquipmentId(eq.id)}
                   className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer active:bg-slate-50">
-                  <div className="h-8 w-8 rounded-lg bg-slate-100 flex items-center justify-center shrink-0">
+                  <div className="h-8 w-8 rounded-md bg-slate-100 flex items-center justify-center shrink-0">
                     <Wrench className="h-4 w-4 text-slate-400" />
                   </div>
                   <div className="flex-1 min-w-0">
@@ -1070,7 +1092,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 {!isTerminal && (
                   <button
                     onClick={(e) => { e.stopPropagation(); handleRemoveEquipment(eq.jobEquipmentId); }}
-                    className="p-1.5 rounded-lg hover:bg-red-50 text-slate-300 hover:text-red-500 transition-colors shrink-0"
+                    className="p-1.5 rounded-md hover:bg-red-50 text-slate-300 hover:text-red-500 transition-colors shrink-0"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
@@ -1087,11 +1109,11 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
         {activeTab === "Parts" && (
           <div className="space-y-2">
             <button onClick={() => setAddPartForEquipment(null)}
-              className="w-full h-10 rounded-xl border-2 border-dashed border-slate-200 text-sm font-semibold text-slate-500 flex items-center justify-center gap-1.5 hover:border-slate-300 hover:text-slate-600">
+              className="w-full h-10 rounded-md border-2 border-dashed border-slate-200 text-sm font-semibold text-slate-500 flex items-center justify-center gap-1.5 hover:border-slate-300 hover:text-slate-600">
               <Plus className="h-3.5 w-3.5" />Add Part
             </button>
             {visit.parts.length > 0 ? visit.parts.map(p => (
-              <div key={p.id} className="rounded-xl border border-slate-200 bg-white p-3 flex items-center justify-between">
+              <div key={p.id} className="rounded-md border border-slate-200 bg-white p-3 flex items-center justify-between">
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium text-slate-800 truncate">{p.description}</p>
                   <p className="text-[10px] text-slate-400">
@@ -1154,7 +1176,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
 
 function NoteCard({ note }: { note: DetailNote }) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-3">
+    <div className="rounded-md border border-slate-200 bg-white p-3">
       <div className="flex items-center justify-between mb-1">
         <span className="text-xs font-semibold text-slate-500">{note.author}</span>
         <span className="text-xs text-slate-400">
@@ -1182,16 +1204,16 @@ function NoteInput({ equipmentId, equipment, onEquipmentChange, onSubmit, isPend
   };
   const selectedEq = equipment.find(e => e.id === equipmentId);
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-2">
+    <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
       {lockedEquipment && selectedEq ? (
         // Equipment context enforced — show as label, not changeable
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-emerald-50 border border-emerald-200">
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-emerald-50 border border-emerald-200">
           <Wrench className="h-3 w-3 text-emerald-600 shrink-0" />
           <span className="text-xs font-medium text-emerald-700 truncate">{selectedEq.name}</span>
         </div>
       ) : equipment.length > 0 ? (
         <select value={equipmentId ?? ""} onChange={e => onEquipmentChange(e.target.value || null)}
-          className="w-full h-8 text-xs border border-slate-200 rounded-lg px-2 bg-white text-slate-600">
+          className="w-full h-8 text-xs border border-slate-200 rounded-md px-2 bg-white text-slate-600">
           <option value="">General note</option>
           {equipment.map(eq => <option key={eq.id} value={eq.id}>{eq.name}</option>)}
         </select>
@@ -1199,9 +1221,9 @@ function NoteInput({ equipmentId, equipment, onEquipmentChange, onSubmit, isPend
       <div className="flex gap-2">
         <textarea value={text} onChange={e => setText(e.target.value)} disabled={isPending}
           placeholder={lockedEquipment && selectedEq ? `Note for ${selectedEq.name}…` : "Add a note…"}
-          className="flex-1 text-xs border border-slate-200 rounded-lg px-3 py-2 resize-none h-16 disabled:bg-slate-50" />
+          className="flex-1 text-xs border border-slate-200 rounded-md px-3 py-2 resize-none h-16 disabled:bg-slate-50" />
         <button onClick={handleSubmit} disabled={!text.trim() || isPending}
-          className="self-end h-8 w-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center disabled:bg-slate-200">
+          className="self-end h-8 w-8 rounded-md bg-emerald-600 text-white flex items-center justify-center disabled:bg-slate-200">
           {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
         </button>
       </div>
