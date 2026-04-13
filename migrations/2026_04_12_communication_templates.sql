@@ -10,12 +10,19 @@
 --   BEGIN;
 --     DROP TABLE IF EXISTS communication_templates;
 --   COMMIT;
+--
+-- NOTE on ID types: canonical tenant id (companies.id) is `varchar` storing
+-- UUID strings produced by `gen_random_uuid()`, NOT native `uuid`. The first
+-- version of this migration declared tenant_id/id as `uuid`, which made the
+-- FK to companies(id) fail with:
+--   "Key columns tenant_id and id are of incompatible types: uuid and character varying."
+-- Keep both id and tenant_id as `varchar` to match the canonical type.
 
 BEGIN;
 
 CREATE TABLE IF NOT EXISTS communication_templates (
-  id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id         uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  id                varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id         varchar NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   entity_type       text NOT NULL,
   channel           text NOT NULL,
   subject_template  text,
