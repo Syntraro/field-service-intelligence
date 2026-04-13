@@ -1,5 +1,7 @@
 import { db } from "../db";
 import { eq, and, gte, lte, sql, desc, asc, or, lt, isNull } from "drizzle-orm";
+// 2026-04-12 (Option A): canonical visit-derived crew resolver.
+import { getVisitCrewsForJobs, getVisitCrewForJob } from "./visitCrew";
 import { validate as isUUID } from "uuid";
 import {
   jobs,
@@ -331,8 +333,8 @@ export class JobRepository extends BaseRepository {
       companyId: jobs.companyId,
       locationId: jobs.locationId,
       jobNumber: jobs.jobNumber,
-      primaryTechnicianId: jobs.primaryTechnicianId,
-      assignedTechnicianIds: jobs.assignedTechnicianIds,
+      // 2026-04-12 (Option A): primaryTechnicianId / assignedTechnicianIds
+      // NOT projected from jobs — attached post-query via getVisitCrewsForJobs().
       status: jobs.status,
       priority: jobs.priority,
       jobType: jobs.jobType,
@@ -395,8 +397,16 @@ export class JobRepository extends BaseRepository {
 
     if (filters?.technicianId) {
       this.validateUUID(filters.technicianId, "technicianId");
+      // 2026-04-12 (Option A): filter via active visits instead of the
+      // quiescent jobs.assigned_technician_ids column.
       query = query.where(
-        sql`${filters.technicianId} = ANY(${jobs.assignedTechnicianIds})`
+        sql`EXISTS (
+          SELECT 1 FROM ${jobVisits} jv_tf
+          WHERE jv_tf.job_id = ${jobs.id}
+            AND jv_tf.company_id = ${jobs.companyId}
+            AND jv_tf.is_active = true
+            AND ${filters.technicianId} = ANY(jv_tf.assigned_technician_ids)
+        )`
       );
     }
 
@@ -451,7 +461,18 @@ export class JobRepository extends BaseRepository {
       }
     }
 
-    return { items, meta };
+    // 2026-04-12 final cleanup: attach only the canonical visit-derived crew.
+    // `primaryTechnicianId` is no longer emitted.
+    const crewMap = await getVisitCrewsForJobs(
+      companyId,
+      items.map((j: any) => j.id),
+    );
+    const enriched = items.map((j: any) => ({
+      ...j,
+      assignedTechnicianIds: crewMap.get(j.id)?.assignedTechnicianIds ?? [],
+    }));
+
+    return { items: enriched, meta };
   }
 
   /**
@@ -469,8 +490,7 @@ export class JobRepository extends BaseRepository {
         companyId: jobs.companyId,
         locationId: jobs.locationId,
         jobNumber: jobs.jobNumber,
-        primaryTechnicianId: jobs.primaryTechnicianId,
-        assignedTechnicianIds: jobs.assignedTechnicianIds,
+        // 2026-04-12 (Option A): tech fields attached post-query from visits.
         status: jobs.status,
         openSubStatus: jobs.openSubStatus,
         priority: jobs.priority,
@@ -528,7 +548,14 @@ export class JobRepository extends BaseRepository {
       )
       .limit(1);
 
-    return rows[0] ?? null;
+    const row = rows[0];
+    if (!row) return null;
+    // 2026-04-12 final cleanup: canonical crew only; no primaryTechnicianId.
+    const crew = await getVisitCrewForJob(companyId, row.id, queryDb);
+    return {
+      ...row,
+      assignedTechnicianIds: crew.assignedTechnicianIds,
+    } as any;
   }
 
   /**
@@ -552,12 +579,24 @@ export class JobRepository extends BaseRepository {
     // Sanitize all-day timestamps for UTC-safe DB write (prevents constraint violation)
     sanitizeAllDayTimestamps(normalizedData, normalizedData.id ?? 'new-job');
 
+    // 2026-04-12 final cleanup: the canonical crew input is
+    // `assignedTechnicianIds`. The legacy `primaryTechnicianId` key is still
+    // stripped defensively (any stale caller gets tolerated), but it is NOT
+    // used for seed-visit crew. The crew is forwarded to the seed visit
+    // below; the jobs row has no tech columns.
+    const incomingAssignedTechnicianIds: string[] | null =
+      Array.isArray((normalizedData as any).assignedTechnicianIds)
+        ? (normalizedData as any).assignedTechnicianIds
+        : null;
+    const { primaryTechnicianId: _ptId, assignedTechnicianIds: _atIds, ...jobInsertData } =
+      normalizedData as any;
+
     const job = await db.transaction(async (tx) => {
-      // 1. Insert the job row
+      // 1. Insert the job row (without assignment fields)
       const [createdJob] = await tx
         .insert(jobs)
         .values({
-          ...normalizedData,
+          ...jobInsertData,
           companyId,
           jobNumber,
         })
@@ -589,12 +628,9 @@ export class JobRepository extends BaseRepository {
         visitEnd = now;
       }
 
-      // Forward technician assignment from job payload
-      const assignedTechnicianId =
-        (normalizedData as any).primaryTechnicianId ?? null;
-      const assignedTechnicianIds =
-        (normalizedData as any).assignedTechnicianIds ??
-        (assignedTechnicianId ? [assignedTechnicianId] : null);
+      // Forward crew from job payload onto the seed VISIT only. The job row
+      // itself never carries tech.
+      const assignedTechnicianIds = incomingAssignedTechnicianIds;
 
       // UTC-safe scheduling fix: sanitize visit timestamps before direct insert
       const visitValues: any = {
@@ -605,7 +641,6 @@ export class JobRepository extends BaseRepository {
         scheduledEnd: hasSchedule ? visitEnd : null,
         isAllDay: hasSchedule ? isAllDay : false,
         estimatedDurationMinutes: createdJob.durationMinutes ?? 60,
-        assignedTechnicianId,
         assignedTechnicianIds,
         status: "scheduled",
         visitNumber: 1,
@@ -655,6 +690,16 @@ export class JobRepository extends BaseRepository {
 
     // Normalize date strings to Date objects
     const normalizedPatch = this.normalizeDateFields(patch);
+
+    // 2026-04-12 (Option A): Strip job-level technician fields from update
+    // patches at the canonical choke point. Jobs no longer own assignment —
+    // crews live on visits. Any caller passing these fields is either legacy
+    // or in a code path yet to be migrated; silently dropping them here
+    // prevents job-column writes without breaking callers during migration.
+    if (normalizedPatch && typeof normalizedPatch === "object") {
+      delete (normalizedPatch as any).primaryTechnicianId;
+      delete (normalizedPatch as any).assignedTechnicianIds;
+    }
 
     // Sanitize all-day timestamps for UTC-safe DB write (prevents constraint violation)
     sanitizeAllDayTimestamps(normalizedPatch, jobId);
@@ -1592,7 +1637,7 @@ export class JobRepository extends BaseRepository {
   async getActionRequiredJobs(companyId: string) {
     this.assertCompanyId(companyId);
 
-    return db
+    const rows = await db
       .select({
         id: jobs.id,
         companyId: jobs.companyId,
@@ -1609,8 +1654,7 @@ export class JobRepository extends BaseRepository {
         holdNotes: jobs.holdNotes,
         nextActionDate: jobs.nextActionDate,
         onHoldAt: jobs.onHoldAt,
-        // 2026-03-18: Legacy actionRequired* fields removed — use canonical hold fields above
-        primaryTechnicianId: jobs.primaryTechnicianId,
+        // 2026-04-12 (Option A): primaryTechnicianId derived from visits below.
         createdAt: jobs.createdAt,
         // Location info
         locationName: clients.location,
@@ -1624,7 +1668,6 @@ export class JobRepository extends BaseRepository {
       .where(
         and(
           eq(jobs.companyId, companyId),
-          // SOFT DELETE + DEACTIVATION: Exclude deleted/deactivated jobs
           isNull(jobs.deletedAt),
           eq(jobs.isActive, true),
           eq(jobs.status, "open"),
@@ -1632,11 +1675,18 @@ export class JobRepository extends BaseRepository {
         )
       )
       .orderBy(
-        // nextActionDate ASC NULLS LAST
         sql`${jobs.nextActionDate} ASC NULLS LAST`,
-        // onHoldAt ASC (oldest first)
         asc(jobs.onHoldAt)
       );
+
+    const crewMap = await getVisitCrewsForJobs(
+      companyId,
+      rows.map((r) => r.id),
+    );
+    return rows.map((r) => ({
+      ...r,
+      assignedTechnicianIds: crewMap.get(r.id)?.assignedTechnicianIds ?? [],
+    }));
   }
 
   /**

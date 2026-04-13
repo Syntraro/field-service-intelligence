@@ -6,6 +6,15 @@ import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
+/**
+ * UI typography standard (see docs/UI_TYPOGRAPHY.md):
+ *   Modal/dialog body content should default to 12px (`text-xs`). The
+ *   DialogTitle stays at its current size (intentional emphasis); the
+ *   DialogDescription should be `text-xs` going forward. New dialogs:
+ *   wrap body content with `text-xs` at the root, override only when
+ *   you genuinely need larger emphasis.
+ */
+
 const Dialog = DialogPrimitive.Root
 
 const DialogTrigger = DialogPrimitive.Trigger

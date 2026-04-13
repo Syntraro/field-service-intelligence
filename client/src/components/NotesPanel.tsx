@@ -17,6 +17,12 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
 import type { ClientNote } from "@shared/schema";
+import { AttachmentView } from "@/components/attachments/AttachmentView";
+import {
+  SUPPORTED_MIME_TYPES,
+  useFileUpload,
+  validateFileClientSide,
+} from "@/hooks/useFileUpload";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -36,6 +42,8 @@ interface Attachment {
   originalName: string | null;
   mimeType: string | null;
   size: number | null;
+  storageProvider?: string | null;
+  status?: string | null;
 }
 
 interface NoteWithAttachments extends ClientNote {
@@ -124,28 +132,17 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
 
   // ── Mutations ─────────────────────────────────
 
-  const uploadFilesMutation = useMutation({
-    mutationFn: async (files: File[]): Promise<{ fileId: string }[]> => {
-      const form = new FormData();
-      files.forEach((f) => form.append("files", f));
-      return apiRequest("/api/uploads", { method: "POST", body: form as any });
-    },
-  });
+  // 2026-04-12 Phase 2: client notes use the canonical R2 lifecycle via
+  // useFileUpload. The create path is note-first → per-file 3-step upload.
+  const { upload: uploadAttachment, isUploading: isAttachmentUploading } = useFileUpload();
 
-  const createMutation = useMutation({
+  const createNoteMutation = useMutation({
     mutationFn: async (payload: {
       noteText: string;
       showOnJobs: boolean;
       showOnInvoices: boolean;
       showOnQuotes: boolean;
-      attachmentFileIds: string[];
-    }) => apiRequest(base, { method: "POST", body: JSON.stringify(payload) }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: qk });
-      resetForm();
-      toast({ title: "Note added" });
-    },
-    onError: () => toast({ title: "Error", description: "Failed to add note.", variant: "destructive" }),
+    }) => apiRequest<{ id: string }>(base, { method: "POST", body: JSON.stringify(payload) }),
   });
 
   const updateMutation = useMutation({
@@ -212,24 +209,41 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
     const text = noteText.trim();
     if (!text) return;
 
-    let fileIds: string[] = [];
-    if (pendingFiles.length > 0) {
-      try {
-        const results = await uploadFilesMutation.mutateAsync(pendingFiles.map((pf) => pf.file));
-        fileIds = results.map((r) => r.fileId);
-      } catch {
-        toast({ title: "Upload failed", description: "Could not upload files.", variant: "destructive" });
-        return;
-      }
-    }
+    try {
+      // Step 1 — create the note. We need a persisted noteId before any
+      // attachment can be placed under tenants/.../notes/{noteId}/.
+      const note = await createNoteMutation.mutateAsync({
+        noteText: text,
+        showOnJobs,
+        showOnInvoices,
+        showOnQuotes,
+      });
 
-    createMutation.mutate({
-      noteText: text,
-      showOnJobs,
-      showOnInvoices,
-      showOnQuotes,
-      attachmentFileIds: fileIds,
-    });
+      // Step 2 — upload staged attachments via the R2 3-step lifecycle.
+      // Each successful finalize also inserts the note_attachments join row.
+      for (const pf of pendingFiles) {
+        const err = validateFileClientSide(pf.file);
+        if (err) {
+          toast({ title: "File rejected", description: err, variant: "destructive" });
+          continue;
+        }
+        try {
+          await uploadAttachment(pf.file, { entityType: "client_note", entityId: note.id });
+        } catch (e: any) {
+          toast({
+            title: "Upload failed",
+            description: e?.message || "File failed to upload.",
+            variant: "destructive",
+          });
+        }
+      }
+
+      queryClient.invalidateQueries({ queryKey: qk });
+      resetForm();
+      toast({ title: "Note added" });
+    } catch {
+      toast({ title: "Error", description: "Failed to add note.", variant: "destructive" });
+    }
   };
 
   const startEdit = (note: NoteWithAttachments) => {
@@ -240,7 +254,7 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
     setEditShowOnQuotes(note.showOnQuotes ?? false);
   };
 
-  const isBusy = createMutation.isPending || uploadFilesMutation.isPending;
+  const isBusy = createNoteMutation.isPending || isAttachmentUploading;
 
   // ── Render ────────────────────────────────────
 
@@ -375,29 +389,12 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
                     </div>
                   )}
 
-                  {/* Attachments */}
+                  {/* Attachments — AttachmentView resolves signed URLs for r2 rows */}
                   {note.attachments && note.attachments.length > 0 && (
-                    <div className="flex flex-wrap gap-2 mt-2">
-                      {note.attachments.map((att) =>
-                        isImage(att.mimeType) ? (
-                          <a key={att.id} href={`/api/files/${att.fileId}`} target="_blank" rel="noopener noreferrer" className="block">
-                            <img src={`/api/files/${att.fileId}`} alt={att.originalName || ""} className="h-16 w-16 rounded border object-cover hover:opacity-80" />
-                          </a>
-                        ) : (
-                          <a
-                            key={att.id}
-                            href={`/api/files/${att.fileId}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex items-center gap-1.5 px-2 py-1 border rounded text-xs hover:bg-muted"
-                          >
-                            {att.mimeType?.startsWith("image/") ? <ImageIcon className="h-3.5 w-3.5" /> : <FileIcon className="h-3.5 w-3.5" />}
-                            <span className="max-w-[120px] truncate">{att.originalName || "file"}</span>
-                            <span className="text-muted-foreground">{formatBytes(att.size)}</span>
-                            <Download className="h-3 w-3 text-muted-foreground" />
-                          </a>
-                        )
-                      )}
+                    <div className="space-y-1 mt-2">
+                      {note.attachments.map((att) => (
+                        <AttachmentView key={att.id} attachment={att} />
+                      ))}
                     </div>
                   )}
 

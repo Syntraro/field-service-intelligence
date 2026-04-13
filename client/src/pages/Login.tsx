@@ -58,6 +58,7 @@ export default function Login() {
         title: "Login failed",
         description: error.message || "Invalid email or password",
       });
+    } finally {
       setIsLoading(false);
     }
   };

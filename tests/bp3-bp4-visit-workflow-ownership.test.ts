@@ -80,11 +80,12 @@ async function createScheduledVisit(overrides?: Record<string, unknown>): Promis
     jobType: "PM",
     summary: "bp3bp4_test_job",
     status: "open",
-    primaryTechnicianId: userId,
+    // 2026-04-12 (Option A): crew forwarded to seed visit.
+    assignedTechnicianIds: [userId],
     scheduledStart,
     scheduledEnd,
     isAllDay: false,
-  });
+  } as any);
   createdJobIds.push(job.id);
 
   // Find auto-created visit and set it to scheduled + assigned

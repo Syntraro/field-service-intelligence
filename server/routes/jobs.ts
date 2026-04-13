@@ -42,6 +42,11 @@ import * as lifecycle from "../services/jobLifecycleOrchestrator";
 import { createInvoiceFromJob as createInvoiceFromJobService } from "../services/invoiceCreationService";
 // Phase 1 Architecture: Event Log + Attention Queue
 import { logEventAsync } from "../lib/events";
+// 2026-04-12 Phase 7: canonical email pipeline for job emails.
+import { emailDispatchService } from "../services/emailDispatchService";
+import { templateDataBuilder } from "../services/templateDataBuilder";
+import { communicationTemplatesService } from "../services/communicationTemplatesService";
+import { recipientResolverService } from "../services/recipientResolverService";
 import { recomputeAttentionForEntity } from "../lib/attentionRules";
 // Phase 4 Step A5: Canonical jobs feed module
 import { getQueryCtx } from "../lib/queryCtx";
@@ -1623,5 +1628,97 @@ router.get("/:id/schedule-history", asyncHandler(async (req: AuthedRequest, res:
     history,
   });
 }));
+
+// ============================================================================
+// 2026-04-12 Phase 7: Job email dispatch
+// ============================================================================
+// Canonical path (matches invoice/quote): validate → dispatch → log.
+// No PDF attachment in v1.
+
+const jobEmailBodySchema = z.object({
+  recipients: z.array(z.string().email()).min(1, "At least one recipient required"),
+  subjectOverride: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v.trim().length > 0, { message: "subjectOverride cannot be blank" }),
+  bodyOverride: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v.trim().length > 0, { message: "bodyOverride cannot be blank" }),
+}).passthrough();
+
+const renderJobEmailSchema = z.object({
+  recipients: z.array(z.string().email()).optional(),
+}).passthrough();
+
+router.post(
+  "/:id/render-email",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const tenantId = req.companyId!;
+    const jobId = req.params.id;
+    const { recipients } = validateSchema(renderJobEmailSchema, req.body ?? {});
+    const data = await templateDataBuilder.buildJobTemplateData(tenantId, jobId);
+    const rendered = await communicationTemplatesService.renderTemplateForEntity(
+      tenantId, "job", "email", data,
+    );
+    if (!rendered) throw createError(500, "No template or default available for job email");
+    res.json({ subject: rendered.subject, body: rendered.body, recipients: recipients ?? [] });
+  }),
+);
+
+router.get(
+  "/:id/email-recipients",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    res.json(
+      await recipientResolverService.getDefaultRecipients({
+        tenantId: req.companyId!, entityType: "job", entityId: req.params.id,
+      }),
+    );
+  }),
+);
+
+router.post(
+  "/:id/email",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const tenantId = req.companyId!;
+    const jobId = req.params.id;
+    const { recipients, subjectOverride, bodyOverride } = validateSchema(
+      jobEmailBodySchema,
+      req.body ?? {},
+    );
+
+    const dispatch = await emailDispatchService.sendJobEmail({
+      tenantId,
+      jobId,
+      recipients,
+      subjectOverride,
+      bodyOverride,
+      createdByUserId: req.user?.id ?? null,
+    });
+
+    logEventAsync(getQueryCtx(req), {
+      eventType: "job.emailed",
+      entityType: "job",
+      entityId: jobId,
+      summary: `Job email dispatched to ${dispatch.recipients.length} recipient(s)`,
+      meta: {
+        recipients: dispatch.recipients,
+        resendId: dispatch.emailId,
+      },
+    });
+
+    res.json({
+      dispatch: {
+        emailId: dispatch.emailId,
+        recipients: dispatch.recipients,
+        subject: dispatch.subject,
+        attachmentFilename: dispatch.attachmentFilename,
+      },
+    });
+  }),
+);
 
 export default router;

@@ -25,6 +25,14 @@ import {
   isBillingImpactingPatch,
 } from "../utils/qboInvoiceLock";
 import { generateInvoicePdf } from "../services/invoicePdfService";
+// 2026-04-12 Phase 4: canonical email dispatch for invoice send flow.
+import { emailDispatchService } from "../services/emailDispatchService";
+// 2026-04-12 Phase 5: preview + recipient defaults.
+import { templateDataBuilder } from "../services/templateDataBuilder";
+import { communicationTemplatesService } from "../services/communicationTemplatesService";
+import { recipientResolverService } from "../services/recipientResolverService";
+// Phase 14 (2026-04-12): batch send orchestrator (one email per invoice).
+import { invoiceBatchSendService } from "../services/invoiceBatchSendService";
 import {
   isInvoiceTerminal, isInvoiceDraft, canMarkInvoiceSent, canUndoInvoiceSent,
   isInvoiceAwaitingPayment, isInvoicePartialPaid,
@@ -838,38 +846,199 @@ router.patch("/:id", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async
 // STATUS TRANSITION ENDPOINTS
 // ========================================
 
-// POST /api/invoices/:id/send - Send invoice (draft -> awaiting_payment)
-// Phase 10A: Status changes on QBO-synced invoices require override
+// 2026-04-12 Phase 5: request shape for the invoice send endpoint.
+// `subjectOverride` / `bodyOverride` are one-time overrides: never persisted
+// to the template row; applied only to this single dispatch call.
+const sendInvoiceBodySchema = z.object({
+  recipients: z.array(z.string().email()).min(1, "At least one recipient required"),
+  subjectOverride: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v.trim().length > 0, {
+      message: "subjectOverride cannot be blank",
+    }),
+  bodyOverride: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v.trim().length > 0, {
+      message: "bodyOverride cannot be blank",
+    }),
+  overrideQboLock: z.boolean().optional(),
+  overrideReason: z.string().optional(),
+}).passthrough();
+
+// 2026-04-12 Phase 5: render-only request shape for the preview endpoint.
+const renderInvoiceEmailSchema = z.object({
+  recipients: z.array(z.string().email()).optional(),
+}).passthrough();
+
+// POST /api/invoices/:id/render-email — Preview rendered email WITHOUT sending.
+// Phase 5: shares the exact same data-builder + template-service path as the
+// actual send flow, so what you see is what you get. Never generates a PDF,
+// never calls Resend, never mutates invoice status.
+router.post(
+  "/:id/render-email",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const tenantId = req.companyId!;
+    const invoiceId = req.params.id;
+    const { recipients } = validateSchema(renderInvoiceEmailSchema, req.body ?? {});
+
+    const data = await templateDataBuilder.buildInvoiceTemplateData(tenantId, invoiceId);
+    const rendered = await communicationTemplatesService.renderTemplateForEntity(
+      tenantId,
+      "invoice",
+      "email",
+      data,
+    );
+    if (!rendered) {
+      throw createError(500, "No template or default available for invoice email");
+    }
+
+    res.json({
+      subject: rendered.subject,
+      body: rendered.body,
+      recipients: recipients ?? [],
+    });
+  }),
+);
+
+// GET /api/invoices/:id/email-recipients — Return the default recipient list
+// (billing contacts, with legacy fallbacks). Used by the send modal to
+// pre-fill the "To:" field.
+router.get(
+  "/:id/email-recipients",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const tenantId = req.companyId!;
+    const invoiceId = req.params.id;
+    const result = await recipientResolverService.getDefaultRecipients({
+      tenantId, entityType: "invoice", entityId: invoiceId,
+    });
+    res.json(result);
+  }),
+);
+
+// ============================================================================
+// Phase 14 (2026-04-12): Batch send multiple invoices
+// POST /api/invoices/batch-send
+// ============================================================================
+// Each invoice is dispatched independently through emailDispatchService.
+// One PDF per invoice. One delivery record per invoice. Best-effort —
+// per-invoice failures never abort the batch.
+const batchSendInvoicesSchema = z.object({
+  invoiceIds: z.array(z.string().uuid()).min(1, "At least one invoice required").max(50, "Maximum 50 invoices per batch"),
+  recipientMode: z.enum(["defaults", "manual_override"]),
+  manualRecipients: z.array(z.string().email()).optional(),
+  subjectOverride: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v.trim().length > 0, { message: "subjectOverride cannot be blank" }),
+  bodyOverride: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v.trim().length > 0, { message: "bodyOverride cannot be blank" }),
+}).refine(
+  (data) => data.recipientMode !== "manual_override" || (Array.isArray(data.manualRecipients) && data.manualRecipients.length > 0),
+  { message: "manualRecipients required when recipientMode is 'manual_override'", path: ["manualRecipients"] },
+);
+
+router.post(
+  "/batch-send",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const tenantId = req.companyId!;
+    const data = validateSchema(batchSendInvoicesSchema, req.body ?? {});
+
+    const result = await invoiceBatchSendService.batchSendInvoices({
+      tenantId,
+      invoiceIds: data.invoiceIds,
+      recipientMode: data.recipientMode,
+      manualRecipients: data.manualRecipients,
+      subjectOverride: data.subjectOverride ?? null,
+      bodyOverride: data.bodyOverride ?? null,
+      createdByUserId: req.user?.id ?? null,
+    });
+
+    // Per-invoice event logging happens inside the dispatch service's
+    // tracking row; we emit a single summary event for the batch action.
+    logEventAsync(getQueryCtx(req), {
+      eventType: "invoice.batch_send",
+      entityType: "invoice",
+      // Use the first id as the anchor; full id list is in `meta`.
+      entityId: data.invoiceIds[0],
+      summary: `Batch send: ${result.successCount} sent / ${result.failureCount} failed (${data.invoiceIds.length} selected)`,
+      meta: {
+        recipientMode: data.recipientMode,
+        invoiceIds: data.invoiceIds,
+        successCount: result.successCount,
+        failureCount: result.failureCount,
+      },
+    });
+
+    res.json(result);
+  }),
+);
+
+// POST /api/invoices/:id/send - Send invoice email, THEN transition status.
+// Phase 4 correction (2026-04-12):
+//   1. validate input
+//   2. render + PDF + Resend (via emailDispatchService)
+//   3. ONLY on success: persist invoice status transition
+//   4. log invoice.sent event
+//   5. return updated invoice + dispatch summary
+// Phase 5: supports subjectOverride / bodyOverride (one-time, ephemeral).
 router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const invoice = await storage.getInvoice(req.companyId!, req.params.id);
-  if (!invoice) {
-    throw createError(404, "Invoice not found");
-  }
+  const tenantId = req.companyId!;
+  const invoiceId = req.params.id;
+
+  // ── 1. Validate request body ─────────────────────────────────────────────
+  const { recipients, subjectOverride, bodyOverride } = validateSchema(
+    sendInvoiceBodySchema,
+    req.body ?? {},
+  );
 
   // Parse QBO override from body
   const overrideQboLock = req.body?.overrideQboLock === true;
   const overrideReason = typeof req.body?.overrideReason === 'string' ? req.body.overrideReason : undefined;
 
-  // Validate transition - now transitions to awaiting_payment
+  // ── 2. Pre-dispatch invoice-state checks (no mutation yet) ───────────────
+  // Single fetch of the canonical invoice row; passed into downstream service
+  // calls implicitly via the `invoiceId` + tenant (dispatch fetches its own
+  // for PDF details, which is acceptable — one extra read but zero drift).
+  const invoice = await storage.getInvoice(tenantId, invoiceId);
+  if (!invoice) {
+    throw createError(404, "Invoice not found");
+  }
+
   try {
     assertInvoiceStatusTransition(invoice.status as InvoiceStatus, "awaiting_payment");
   } catch (error: any) {
     throw createError(400, error.message);
   }
 
-  // Validate send requirements
   const errors = validateSendRequirements(invoice);
   if (errors.length > 0) {
     throw createError(400, `Cannot send invoice: ${errors.join(", ")}`);
   }
 
-  // Phase 10A: Check QBO billing lock (status change is billing-impacting)
   if (overrideQboLock) {
     requireQboOverrideReason(overrideQboLock, overrideReason);
   }
   checkQboBillingLock(invoice, { status: 'awaiting_payment' }, { overrideQboLock, overrideReason });
 
-  // Build update payload - transition to awaiting_payment with sent tracking
+  // ── 3. Dispatch email BEFORE mutating invoice state ──────────────────────
+  // Phase 4 correction: if email fails, invoice must NOT be marked sent.
+  const dispatch = await emailDispatchService.sendInvoiceEmail({
+    tenantId,
+    invoiceId,
+    recipients,
+    subjectOverride,
+    bodyOverride,
+    createdByUserId: req.user?.id ?? null,
+  });
+
+  // ── 4. Email succeeded → now persist the status transition ───────────────
   const now = new Date();
   let updatePayload: Record<string, unknown> = {
     status: "awaiting_payment",
@@ -877,13 +1046,11 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
     sentByUserId: req.user?.id,
   };
 
-  // Set issuedAt if not already set
   if (!invoice.issuedAt) {
     updatePayload.issuedAt = now;
   }
 
-  // Ensure dueDate is set (compute from issuedAt + paymentTermsDays if missing)
-  // 2026-03-19: Uses canonical calculateDueDate (F-06 hardening)
+  // 2026-03-19: canonical due-date computation when absent.
   if (!invoice.dueDate) {
     const issuedAt = invoice.issuedAt ? new Date(invoice.issuedAt) : now;
     const paymentTermsDays = invoice.paymentTermsDays ?? 30;
@@ -895,15 +1062,15 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
   if (isQboSynced(invoice) && overrideQboLock && overrideReason) {
     const outOfSyncUpdate = buildOutOfSyncUpdate(overrideReason, req.user?.id);
     updatePayload = { ...updatePayload, ...outOfSyncUpdate };
-    logQboLockOverride(req.companyId!, req.params.id, req.user?.id ?? 'unknown', 'send_invoice', overrideReason, invoice.qboInvoiceId);
+    logQboLockOverride(tenantId, invoiceId, req.user?.id ?? 'unknown', 'send_invoice', overrideReason, invoice.qboInvoiceId);
     warning = "Invoice is now out of sync with QuickBooks. Manual reconciliation required.";
   }
 
   const updated = await storage.updateInvoice(
-    req.companyId!,
-    req.params.id,
+    tenantId,
+    invoiceId,
     undefined,
-    updatePayload
+    updatePayload,
   );
 
   // Phase 1: Log invoice sent event
@@ -912,10 +1079,22 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
     entityType: "invoice",
     entityId: req.params.id,
     summary: `Invoice #${invoice.invoiceNumber} sent`,
-    meta: { invoiceNumber: invoice.invoiceNumber },
+    meta: {
+      invoiceNumber: invoice.invoiceNumber,
+      recipients: dispatch.recipients,
+      resendId: dispatch.emailId,
+    },
   });
 
-  const response: Record<string, unknown> = { ...updated };
+  const response: Record<string, unknown> = {
+    ...updated,
+    dispatch: {
+      emailId: dispatch.emailId,
+      recipients: dispatch.recipients,
+      subject: dispatch.subject,
+      attachmentFilename: dispatch.attachmentFilename,
+    },
+  };
   if (warning) {
     response._qboWarning = warning;
   }

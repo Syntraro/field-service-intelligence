@@ -141,10 +141,12 @@ const SECTIONS: SettingsSection[] = [
     title: "Automation",
     icon: Zap,
     type: "links",
-    preview: "Job templates, quote templates",
+    preview: "Job templates, quote templates, client communication",
     cards: [
       { title: "Job Templates", description: "Reusable job configurations", href: "/settings/job-templates", icon: FileText },
       { title: "Quote Templates", description: "Manage quote templates", href: "/settings/quote-templates", icon: FileCheck },
+      // Phase 11 (2026-04-12): customize outbound email templates.
+      { title: "Client Communication", description: "Customize invoice / quote / job email templates", href: "/settings/communication", icon: FileText },
     ],
   },
   {

@@ -16,7 +16,6 @@ import { storage } from "../storage/index";
 import { emitDispatch } from "../lib/dispatchBus";
 import { normalizeScheduleTimes } from "../domain/scheduling";
 import * as lifecycle from "../services/jobLifecycleOrchestrator";
-import { timeTrackingRepository } from "../storage/timeTracking"; // Labor unification: manager flows now create time entries
 
 const router = Router();
 
@@ -27,7 +26,7 @@ const router = Router();
 const createVisitSchema = z.object({
   scheduledDate: z.string().datetime(),
   estimatedDurationMinutes: z.number().int().positive().default(60),
-  assignedTechnicianId: z.string().uuid().optional(),
+  assignedTechnicianIds: z.array(z.string().uuid()).optional(),
   visitNotes: z.string().max(2000).optional(),
 }).strict();
 
@@ -37,8 +36,6 @@ const updateVisitSchema = z.object({
   scheduledEnd: z.string().datetime().nullable().optional(),
   isAllDay: z.boolean().optional(),
   estimatedDurationMinutes: z.number().int().min(0).nullable().optional(),
-  assignedTechnicianId: z.string().uuid().nullable().optional(),
-  // 2026-03-23: Multi-tech support — persists full crew list (storage already handles this field)
   assignedTechnicianIds: z.array(z.string().uuid()).optional(),
   // 2026-03-27: Visit equipment selection — location_equipment IDs being worked on this visit
   equipmentIds: z.array(z.string()).nullable().optional(),
@@ -76,7 +73,9 @@ router.get(
       companyId,
       jobId: req.params.jobId,
       status: req.query.status as string | undefined,
-      assignedTechnicianId: req.query.assignedTechnicianId as string | undefined,
+      assignedTechnicianIds: req.query.assignedTechnicianId
+        ? [req.query.assignedTechnicianId as string]
+        : undefined,
       offset,
       limit,
     });
@@ -375,104 +374,14 @@ router.post(
   })
 );
 
-/* POST /api/jobs/:jobId/visits/:visitId/check-in - Check in to visit */
-/* Labor unification: now uses canonical lifecycle + time tracking path (same as tech flow) */
-router.post(
-  "/:jobId/visits/:visitId/check-in",
-  requireRole(MANAGER_ROLES),
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const companyId = req.companyId!;
-    const { jobId, visitId } = req.params;
-
-    // Step 1: Load visit and resolve technician
-    const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
-    if (!visit) throw createError(404, "Visit not found");
-    if (!visit.assignedTechnicianId) throw createError(400, "Cannot check in: no technician assigned to this visit");
-    if (visit.checkedInAt) return res.json(visit); // Already checked in — idempotent
-
-    const now = new Date();
-
-    // Step 2: Use canonical lifecycle orchestrator (same as tech flow)
-    // Sets status="in_progress", checkedInAt, version increment, schedule sync
-    const result = await lifecycle.startVisit({
-      type: "START_VISIT",
-      companyId,
-      visitId,
-      jobId,
-      at: now,
-    });
-
-    // Step 3: Create on_site time entry via canonical time tracking (same as tech flow)
-    try {
-      await timeTrackingRepository.recordJobStatus(companyId, visit.assignedTechnicianId, jobId, {
-        status: "arrived",
-        visitId: visit.id,
-        at: now,
-        notes: `Visit #${visit.visitNumber} — checked in (manager)`,
-        source: "web",
-      });
-    } catch {
-      // Non-fatal: time entry may already be running
-    }
-
-    // Step 4: Emit visit.started event
-    const ctx = getQueryCtx(req);
-    logEventAsync(ctx, {
-      eventType: "visit.started",
-      entityType: "visit",
-      entityId: visitId,
-      summary: `Technician checked in to visit (job ${jobId})`,
-      meta: { jobId, trigger: "check-in" },
-    });
-
-    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visitId, ts: now.toISOString() });
-
-    res.json(result.visit);
-  })
-);
-
-/* POST /api/jobs/:jobId/visits/:visitId/check-out - Check out from visit */
-/* 2026-03-18: Check-out records metadata only — does NOT complete the visit */
-/* Labor unification: now stops running time entry + stops writing actualDurationMinutes */
-router.post(
-  "/:jobId/visits/:visitId/check-out",
-  requireRole(MANAGER_ROLES),
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const companyId = req.companyId!;
-    const { visitId } = req.params;
-
-    // Step 1: Load visit and validate
-    const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
-    if (!visit) throw createError(404, "Visit not found");
-    if (!visit.assignedTechnicianId) throw createError(400, "Cannot check out: no technician assigned to this visit");
-    if (!visit.checkedInAt) throw createError(400, "Cannot check out before checking in");
-    if (visit.checkedOutAt) return res.json(visit); // Already checked out
-
-    const checkOutTime = new Date();
-
-    // Step 2: Set checkedOutAt as operational metadata
-    const updated = await jobVisitsRepository.updateJobVisit(companyId, visitId, visit.version, {
-      checkedOutAt: checkOutTime,
-    });
-
-    // Step 3: Stop running time entry scoped to this job's technician
-    // Safety: find the specific running entry for this job, not just any running entry
-    try {
-      const running = await timeTrackingRepository.getRunningTimeEntry(companyId, visit.assignedTechnicianId);
-      if (running && running.jobId === visit.jobId) {
-        await timeTrackingRepository.stopTimeEntry(companyId, visit.assignedTechnicianId, {
-          timeEntryId: running.id,
-          at: checkOutTime,
-        });
-      }
-    } catch {
-      // Non-fatal: no running entry may exist
-    }
-
-    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visitId, ts: checkOutTime.toISOString() });
-    res.json(updated);
-  })
-);
+// 2026-04-12: Office check-in / check-out endpoints removed.
+// Product rule: only technicians check themselves in/out, and only from the
+// tech app. Office/dispatcher/admin users manage labor exclusively through
+// manual time entries (see server/routes/timeTracking.ts). Any caller that
+// still hits the old paths below will now 404, which is the intended signal.
+//
+//   POST /api/jobs/:jobId/visits/:visitId/check-in   — REMOVED
+//   POST /api/jobs/:jobId/visits/:visitId/check-out  — REMOVED
 
 // ========================================
 // POST /api/jobs/:jobId/visits/:visitId/arrived — Phase 4B.1: Technician arrived on site

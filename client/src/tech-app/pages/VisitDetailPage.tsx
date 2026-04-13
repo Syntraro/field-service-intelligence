@@ -34,7 +34,7 @@ import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft, Navigation, MapPin, StickyNote, AlertCircle, Check,
-  Loader2, RefreshCw, Send, Plus, Wrench, Package, Trash2,
+  Loader2, RefreshCw, Send, Plus, Wrench, Package, Trash2, Paperclip, X as CloseIcon,
   ChevronRight, Search, X, FileText, Clock, Pause,
 } from "lucide-react";
 import { MobileShell } from "../components/MobileShell";
@@ -47,6 +47,12 @@ import {
   STATUS_LABELS, OUTCOME_LABELS, OUTCOME_COLORS, DEFAULT_OUTCOME_COLOR,
 } from "../utils/visitDisplay";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { AttachmentView } from "@/components/attachments/AttachmentView";
+import {
+  SUPPORTED_MIME_TYPES,
+  useFileUpload,
+  validateFileClientSide,
+} from "@/hooks/useFileUpload";
 import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
 import {
   useProductSearch,
@@ -741,11 +747,28 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
     setActionError(null); setShowOutcome(false);
     try { await complete.mutateAsync({ outcome, outcomeNote }); showSuccess("Visit completed"); } catch (err: any) { showError(err); }
   };
-  const handleAddNote = async (text: string, equipmentId?: string | null) => {
+  const { upload: uploadAttachment } = useFileUpload();
+  const handleAddNote = async (text: string, equipmentId: string | null, attachments: File[]) => {
     setActionError(null);
     try {
-      await addNote.mutateAsync({ text, equipmentId });
-      // Invalidate equipment history queries so notes appear in equipment detail screen
+      // 1) Create the note (server endpoint returns the created row).
+      const created: any = await addNote.mutateAsync({ text, equipmentId });
+      const noteId: string | undefined = created?.id;
+
+      // 2) Upload each staged attachment via the R2 3-step lifecycle, which
+      //    also inserts the job_note_attachments row.
+      if (noteId && attachments.length > 0) {
+        for (const file of attachments) {
+          try {
+            await uploadAttachment(file, { entityType: "job_note", entityId: noteId });
+          } catch (e: any) {
+            showError(e);
+          }
+        }
+        // Refresh visit detail so the new attachments render in NoteCard.
+        queryClient.invalidateQueries({ queryKey: ["/api/tech/visits", visitId] });
+      }
+
       if (equipmentId) {
         queryClient.invalidateQueries({ queryKey: ["/api/equipment", equipmentId, "notes"] });
         queryClient.invalidateQueries({ queryKey: ["/api/equipment", equipmentId, "timeline"] });
@@ -1184,6 +1207,13 @@ function NoteCard({ note }: { note: DetailNote }) {
         </span>
       </div>
       <p className="text-xs text-slate-700 leading-relaxed">{note.text}</p>
+      {note.attachments && note.attachments.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {note.attachments.map(att => (
+            <AttachmentView key={att.id} attachment={att} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1192,21 +1222,37 @@ function NoteInput({ equipmentId, equipment, onEquipmentChange, onSubmit, isPend
   equipmentId: string | null;
   equipment: DetailEquipment[];
   onEquipmentChange: (id: string | null) => void;
-  onSubmit: (text: string, equipmentId?: string | null) => void;
+  onSubmit: (text: string, equipmentId: string | null, files: File[]) => void | Promise<void>;
   isPending: boolean;
   lockedEquipment?: boolean;
 }) {
   const [text, setText] = useState("");
+  const [staged, setStaged] = useState<File[]>([]);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const handlePick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(e.target.files ?? []);
+    const valid: File[] = [];
+    for (const f of picked) {
+      const err = validateFileClientSide(f);
+      if (err) continue; // silent skip; page-level toast is heavyweight for tech UI
+      valid.push(f);
+    }
+    setStaged(prev => [...prev, ...valid].slice(0, 5));
+    if (fileRef.current) fileRef.current.value = "";
+  };
+  const removeStaged = (i: number) => setStaged(prev => prev.filter((_, idx) => idx !== i));
+
   const handleSubmit = () => {
-    if (!text.trim() || isPending) return;
-    onSubmit(text.trim(), equipmentId);
+    if ((!text.trim() && staged.length === 0) || isPending) return;
+    onSubmit(text.trim(), equipmentId, staged);
     setText("");
+    setStaged([]);
   };
   const selectedEq = equipment.find(e => e.id === equipmentId);
   return (
     <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
       {lockedEquipment && selectedEq ? (
-        // Equipment context enforced — show as label, not changeable
         <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-emerald-50 border border-emerald-200">
           <Wrench className="h-3 w-3 text-emerald-600 shrink-0" />
           <span className="text-xs font-medium text-emerald-700 truncate">{selectedEq.name}</span>
@@ -1222,11 +1268,33 @@ function NoteInput({ equipmentId, equipment, onEquipmentChange, onSubmit, isPend
         <textarea value={text} onChange={e => setText(e.target.value)} disabled={isPending}
           placeholder={lockedEquipment && selectedEq ? `Note for ${selectedEq.name}…` : "Add a note…"}
           className="flex-1 text-xs border border-slate-200 rounded-md px-3 py-2 resize-none h-16 disabled:bg-slate-50" />
-        <button onClick={handleSubmit} disabled={!text.trim() || isPending}
-          className="self-end h-8 w-8 rounded-md bg-emerald-600 text-white flex items-center justify-center disabled:bg-slate-200">
-          {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-        </button>
+        <div className="flex flex-col gap-1">
+          <button type="button" onClick={() => fileRef.current?.click()} disabled={isPending}
+            className="h-8 w-8 rounded-md bg-slate-100 text-slate-600 flex items-center justify-center disabled:opacity-50"
+            aria-label="Attach file">
+            <Paperclip className="h-3.5 w-3.5" />
+          </button>
+          <button onClick={handleSubmit} disabled={(!text.trim() && staged.length === 0) || isPending}
+            className="h-8 w-8 rounded-md bg-emerald-600 text-white flex items-center justify-center disabled:bg-slate-200">
+            {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+          </button>
+        </div>
       </div>
+      <input ref={fileRef} type="file" multiple accept={SUPPORTED_MIME_TYPES.join(",")}
+        className="hidden" onChange={handlePick} />
+      {staged.length > 0 && (
+        <div className="space-y-1">
+          {staged.map((f, i) => (
+            <div key={i} className="flex items-center gap-2 rounded border border-slate-200 px-2 py-1 bg-slate-50">
+              <span className="text-[11px] truncate flex-1">{f.name}</span>
+              <button type="button" onClick={() => removeStaged(i)}
+                className="text-slate-500 hover:text-slate-700">
+                <CloseIcon className="h-3 w-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

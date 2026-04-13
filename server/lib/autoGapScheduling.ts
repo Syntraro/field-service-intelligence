@@ -109,7 +109,7 @@ async function fetchVisitsInRange(
   techIds?: string[],
 ): Promise<ScheduledVisitRow[]> {
   const techFilter = techIds && techIds.length > 0
-    ? sql`AND (jv.assigned_technician_id = ANY(${techIds}) OR jv.assigned_technician_ids && ${techIds})`
+    ? sql`AND jv.assigned_technician_ids && ${techIds}`
     : sql``;
 
   const { rows } = await db.execute(sql`
@@ -118,7 +118,7 @@ async function fetchVisitsInRange(
       jv.scheduled_start AS "scheduledStart",
       jv.scheduled_end AS "scheduledEnd",
       jv.estimated_duration_minutes AS "estimatedDurationMinutes",
-      COALESCE(jv.assigned_technician_id, jv.assigned_technician_ids[1]) AS "technicianId",
+      jv.assigned_technician_ids[1] AS "technicianId",
       cl.lat AS "locationLat",
       cl.lng AS "locationLng",
       cl.company_name AS "locationName",

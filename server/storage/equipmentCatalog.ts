@@ -186,9 +186,7 @@ export const equipmentCatalogRepository = {
         outcomeNote: jobVisits.outcomeNote,
         completedAt: jobVisits.completedAt,
         equipmentNotes: jobEquipment.notes,
-        techFirstName: users.firstName,
-        techLastName: users.lastName,
-        techFullName: users.fullName,
+        assignedTechnicianIds: jobVisits.assignedTechnicianIds,
       })
       .from(jobEquipment)
       .innerJoin(jobs, eq(jobEquipment.jobId, jobs.id))
@@ -197,7 +195,6 @@ export const equipmentCatalogRepository = {
         eq(jobVisits.isActive, true),
         isNull(jobVisits.archivedAt),
       ))
-      .leftJoin(users, eq(jobVisits.assignedTechnicianId, users.id))
       .where(
         and(
           eq(jobEquipment.companyId, companyId),

@@ -56,13 +56,14 @@ async function setup() {
 
 async function createJob(): Promise<string> {
   const now = new Date();
+  // 2026-04-12 (Option A): crew forwarded to seed visit; job row unassigned.
   const job = await jobRepository.createJob(companyId, {
     companyId, locationId, jobType: "PM", summary: "sdguard_test_job",
-    status: "open", primaryTechnicianId: userId,
+    status: "open", assignedTechnicianIds: [userId],
     scheduledStart: new Date(now.getTime() + 3600000),
     scheduledEnd: new Date(now.getTime() + 7200000),
     isAllDay: false,
-  });
+  } as any);
   createdJobIds.push(job.id);
   return job.id;
 }
@@ -83,7 +84,7 @@ async function createVisit(jobId: string, overrides: Record<string, unknown> = {
     visitNumber: visitNum,
     isActive: true,
     status: "scheduled",
-    assignedTechnicianId: userId,
+    assignedTechnicianIds: [userId],
     ...overrides,
   });
   createdVisitIds.push(id);
@@ -220,8 +221,9 @@ describe("Visit Write SQL-Level Soft-Delete Guards", () => {
     expect(row.status).toBe("scheduled");
   });
 
-  // Labor unification: checkInJobVisit tests removed — method deleted.
-  // Manager check-in now uses lifecycle.startVisit() + recordJobStatus().
+  // checkInJobVisit tests removed — method deleted. 2026-04-12: office
+  // check-in/out endpoints are gone entirely; only the tech app performs
+  // self check-in via lifecycle.startVisit().
 
   // ==========================================================================
   // Active visits still update normally (positive control)

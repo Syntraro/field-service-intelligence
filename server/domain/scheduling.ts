@@ -18,8 +18,9 @@
  * - "scheduled" is derived from: scheduledStart IS NOT NULL
  *   Use: isJobScheduled(job) from shared/schema.ts
  *   NOTE: isAllDay is a DISPLAY flag only, not a scheduling determinant
- * - "assigned" is derived from: primaryTechnicianId IS NOT NULL OR assignedTechnicianIds.length > 0
- *   Use: isJobAssigned(job) from shared/schema.ts
+ * - "assigned" is derived from: job has at least one visit with a non-empty crew
+ *   Use: isJobAssigned(visits) from shared/schema.ts (Option A, 2026-04-12 — jobs
+ *   no longer own assignment; visits are canonical)
  *
  * WORKFLOW SUB-STATUS (only valid when status = 'open'):
  * - null           - Default, no special workflow state
@@ -40,7 +41,7 @@
  */
 
 import type { JobStatus, OpenSubStatus } from "@shared/schema";
-import { isJobScheduled, isJobAssigned, isBacklogEligible } from "@shared/schema";
+import { isJobScheduled, isBacklogEligible } from "@shared/schema";
 import { JOB_TERMINAL_STATUSES, isTerminalStatus } from "./jobLifecycle";
 import { resolveTechnicianName } from "../lib/resolveTechnicianName";
 
@@ -421,73 +422,32 @@ export interface UserLike {
 }
 
 // ============================================================================
-// Canonical Technician Assignment Model
+// Canonical Visit Crew Normalization (2026-04-12)
 // ============================================================================
 
 /**
- * CANONICAL TECHNICIAN ASSIGNMENT INVARIANT:
- * If primaryTechnicianId is set, it MUST be included in assignedTechnicianIds.
+ * Canonical visit-crew normalizer.
  *
- * This ensures:
- * - Single source of truth: assignedTechnicianIds is THE array of all assigned techs
- * - Primary is a convenience pointer, not a separate assignment channel
- * - Queries can use assignedTechnicianIds for all "is assigned to this tech?" checks
+ * Input: an array of technician user IDs (or null / undefined).
+ * Output: `{ assignedTechnicianIds }` — the sole crew column. No lead technician.
+ *
+ * Rules: dedupe (first occurrence wins), strip falsy, preserve order.
  */
-export function assertTechnicianAssignmentInvariant(
-  job: { id?: string; primaryTechnicianId?: string | null; assignedTechnicianIds?: string[] | null },
-  contextLabel = "assertTechnicianAssignmentInvariant"
-): void {
-  const { primaryTechnicianId, assignedTechnicianIds } = job;
-  const jobId = job.id || "unknown";
-
-  // If no primary, nothing to check
-  if (!primaryTechnicianId) {
-    return;
+export function normalizeVisitCrewWrite(
+  crew: string[] | null | undefined,
+): { assignedTechnicianIds: string[] } {
+  if (!Array.isArray(crew)) {
+    return { assignedTechnicianIds: [] };
   }
-
-  // If primary is set, assignedTechnicianIds must exist and contain primary
-  const assigned = assignedTechnicianIds || [];
-  if (!assigned.includes(primaryTechnicianId)) {
-    const error = `[${contextLabel}] INVARIANT VIOLATION: job ${jobId} has ` +
-      `primaryTechnicianId=${primaryTechnicianId} but it's not in assignedTechnicianIds=[${assigned.join(", ")}]`;
-    if (process.env.NODE_ENV === "development") {
-      throw new Error(error);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of crew) {
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      out.push(id);
     }
-    console.error(error);
   }
-}
-
-/**
- * Normalize technician assignment fields to ensure invariants are maintained.
- * Call this before any write operation that modifies technician assignments.
- *
- * @param technicianUserId - The technician to assign (or null to unassign)
- * @param existingAssigned - Current assignedTechnicianIds (for merging if needed)
- * @returns Normalized { primaryTechnicianId, assignedTechnicianIds } ready for DB write
- */
-export function normalizeTechnicianAssignment(
-  technicianUserId: string | null | undefined,
-  existingAssigned?: string[] | null
-): { primaryTechnicianId: string | null; assignedTechnicianIds: string[] } {
-  if (!technicianUserId) {
-    // Unassigning: clear primary, keep existing array or empty
-    // Note: For full unassignment, caller should pass empty existingAssigned
-    return {
-      primaryTechnicianId: null,
-      assignedTechnicianIds: existingAssigned?.filter(id => id !== technicianUserId) || [],
-    };
-  }
-
-  // Assigning: set primary and ensure they're in the array
-  const assigned = existingAssigned || [];
-  const newAssigned = assigned.includes(technicianUserId)
-    ? assigned
-    : [...assigned, technicianUserId];
-
-  return {
-    primaryTechnicianId: technicianUserId,
-    assignedTechnicianIds: newAssigned,
-  };
+  return { assignedTechnicianIds: out };
 }
 
 // ============================================================================
@@ -574,32 +534,44 @@ export function filterSchedulableTechnicians<T extends UserLike>(
 
 /**
  * Check if a job is assigned to a technician who is NOT schedulable.
- * Used for calendar rendering - jobs assigned to hidden techs need special handling.
+ * Used for calendar rendering — jobs assigned to hidden techs need special handling.
  *
- * @param job - Job with technician assignments
+ * 2026-04-12 (Option A): signature now takes the job's **visits** rather
+ * than the legacy job-level assignment columns. Callers must resolve visits
+ * up-front (single join / bulk fetch). Jobs no longer own assignment.
+ *
+ * @param visits - Active visits belonging to the job
  * @param schedulableTechIds - Set of schedulable technician IDs
- * @returns Object with diagnostic info if assigned to non-schedulable tech
+ * @returns Diagnostic info about hidden/visible techs across the crew union
  */
 export function checkJobTechnicianVisibility(
-  job: JobLike,
+  visits: Array<{ assignedTechnicianIds?: string[] | null }> | null | undefined,
   schedulableTechIds: Set<string>
 ): {
   hasHiddenTechnician: boolean;
   hiddenTechnicianIds: string[];
   visibleTechnicianIds: string[];
 } {
-  const assigned = job.assignedTechnicianIds || [];
+  const union = new Set<string>();
+  if (visits) {
+    for (const v of visits) {
+      if (Array.isArray(v.assignedTechnicianIds)) {
+        for (const id of v.assignedTechnicianIds) {
+          if (id) union.add(id);
+        }
+      }
+    }
+  }
+
   const hiddenTechnicianIds: string[] = [];
   const visibleTechnicianIds: string[] = [];
-
-  for (const techId of assigned) {
+  for (const techId of Array.from(union)) {
     if (schedulableTechIds.has(techId)) {
       visibleTechnicianIds.push(techId);
     } else {
       hiddenTechnicianIds.push(techId);
     }
   }
-
   return {
     hasHiddenTechnician: hiddenTechnicianIds.length > 0,
     hiddenTechnicianIds,
@@ -819,16 +791,8 @@ export function hasSchedule(job: JobLike): boolean {
   return isJobScheduled(job);
 }
 
-/**
- * Check if job has a technician assigned
- * @deprecated Use isJobAssigned from shared/schema.ts instead
- */
-export function hasTechnicianAssigned(job: {
-  primaryTechnicianId?: string | null;
-  assignedTechnicianIds?: string[] | null;
-}): boolean {
-  return isJobAssigned(job);
-}
+// 2026-04-12 (Option A): hasTechnicianAssigned() removed. Jobs no longer own
+// assignment. Use isJobAssigned(visits) from @shared/schema instead.
 
 // ============================================================================
 // Scheduling Diagnostics

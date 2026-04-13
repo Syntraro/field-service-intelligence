@@ -1,8 +1,9 @@
 import { db } from "../db";
-import { and, eq, desc, gte, lte, asc, sql, notInArray, isNull, isNotNull, or } from "drizzle-orm";
+import { and, eq, desc, gte, lte, asc, sql, notInArray, isNull, isNotNull, or, inArray } from "drizzle-orm";
 import { activeJobFilter } from "./jobFilters";
-import { jobVisits, jobs, jobNotes, users, clientLocations, jobEquipment, locationEquipment, jobParts, items } from "@shared/schema";
+import { jobVisits, jobs, jobNotes, users, clientLocations, jobEquipment, locationEquipment, jobParts, items, jobNoteAttachments, files } from "@shared/schema";
 import { BaseRepository, clampLimit } from "./base";
+import { isTechnicianAssignedToVisit } from "../guards/visitAssignmentGuards";
 import { sanitizeAllDayTimestamps, sanitizeSchedulingTimestamps, parseTimestampAsUTC } from "../utils/allDaySanitizer";
 import {
   activeVisitGuard,
@@ -52,7 +53,7 @@ export interface JobVisitListFilters {
   companyId: string;
   jobId?: string;
   status?: string;
-  assignedTechnicianId?: string;
+  assignedTechnicianIds?: string[];
   fromDate?: Date;
   toDate?: Date;
   offset?: number;
@@ -83,8 +84,10 @@ export class JobVisitsRepository extends BaseRepository {
 
     if (filters.jobId) where.push(eq(jobVisits.jobId, filters.jobId));
     if (filters.status) where.push(eq(jobVisits.status, filters.status));
-    if (filters.assignedTechnicianId)
-      where.push(eq(jobVisits.assignedTechnicianId, filters.assignedTechnicianId));
+    if (filters.assignedTechnicianIds && filters.assignedTechnicianIds.length > 0) {
+      const literal = sql.join(filters.assignedTechnicianIds.map((id) => sql`${id}`), sql`, `);
+      where.push(sql`${jobVisits.assignedTechnicianIds} && ARRAY[${literal}]::varchar[]`);
+    }
     // Part 1: Filter by scheduledStart (not scheduledDate)
     if (filters.fromDate) where.push(gte(jobVisits.scheduledStart, filters.fromDate));
     if (filters.toDate) where.push(lte(jobVisits.scheduledStart, filters.toDate));
@@ -250,10 +253,9 @@ export class JobVisitsRepository extends BaseRepository {
 
     if (!visit) return null;
 
-    // Assignment check
+    // 2026-04-12 scalar removal: crew membership is the sole eligibility check.
     const isAssigned =
-      visit.assignedTechnicianId === userId ||
-      (visit.assignedTechnicianIds && visit.assignedTechnicianIds.includes(userId));
+      Array.isArray(visit.assignedTechnicianIds) && visit.assignedTechnicianIds.includes(userId);
     if (!isAssigned) return null;
 
     // Fetch job
@@ -316,7 +318,7 @@ export class JobVisitsRepository extends BaseRepository {
       );
 
     // Fetch job notes (includes optional equipmentId for equipment-linked notes)
-    const notes = await db
+    const noteRows = await db
       .select({
         id: jobNotes.id,
         noteText: jobNotes.noteText,
@@ -331,6 +333,40 @@ export class JobVisitsRepository extends BaseRepository {
       .leftJoin(users, eq(jobNotes.userId, users.id))
       .where(and(eq(jobNotes.companyId, companyId), eq(jobNotes.jobId, visit.jobId)))
       .orderBy(desc(jobNotes.createdAt));
+
+    // Hydrate attachments in one pass so tech-app NoteCard can display them
+    // uniformly with the office view. Filters soft-deleted file rows.
+    const noteIds = noteRows.map((n) => n.id);
+    const attachmentRows = noteIds.length > 0
+      ? await db
+          .select({
+            id: jobNoteAttachments.id,
+            noteId: jobNoteAttachments.noteId,
+            fileId: jobNoteAttachments.fileId,
+            originalName: files.originalName,
+            mimeType: files.mimeType,
+            size: files.size,
+            storageProvider: files.storageProvider,
+            status: files.status,
+          })
+          .from(jobNoteAttachments)
+          .innerJoin(files, eq(jobNoteAttachments.fileId, files.id))
+          .where(and(
+            eq(jobNoteAttachments.companyId, companyId),
+            inArray(jobNoteAttachments.noteId, noteIds),
+            eq(files.status, "uploaded"),
+          ))
+      : [];
+    const attachmentsByNote = new Map<string, typeof attachmentRows>();
+    for (const a of attachmentRows) {
+      const list = attachmentsByNote.get(a.noteId) ?? [];
+      list.push(a);
+      attachmentsByNote.set(a.noteId, list);
+    }
+    const notes = noteRows.map((n) => ({
+      ...n,
+      attachments: attachmentsByNote.get(n.id) ?? [],
+    }));
 
     // Fetch job parts (canonical billing line items for this job)
     const parts = await db
@@ -377,12 +413,7 @@ export class JobVisitsRepository extends BaseRepository {
       );
 
     if (!visit) return null;
-
-    const isAssigned =
-      visit.assignedTechnicianId === userId ||
-      (visit.assignedTechnicianIds && visit.assignedTechnicianIds.includes(userId));
-
-    return isAssigned ? visit : null;
+    return isTechnicianAssignedToVisit(userId, visit) ? visit : null;
   }
 
   /**
@@ -410,7 +441,7 @@ export class JobVisitsRepository extends BaseRepository {
     // 2026-03-18: Uses canonical predicate from visitPredicates.ts
     const visitRows: Array<{
       id: string; scheduledStart: Date | null; scheduledEnd: Date | null;
-      isAllDay: boolean; assignedTechnicianId: string | null;
+      isAllDay: boolean;
       assignedTechnicianIds: string[] | null; status: string; isActive: boolean;
     }> = await queryDb
       .select({
@@ -418,7 +449,7 @@ export class JobVisitsRepository extends BaseRepository {
         scheduledStart: jobVisits.scheduledStart,
         scheduledEnd: jobVisits.scheduledEnd,
         isAllDay: jobVisits.isAllDay,
-        assignedTechnicianId: jobVisits.assignedTechnicianId,
+        // 2026-04-12 scalar removal: crew array only.
         assignedTechnicianIds: jobVisits.assignedTechnicianIds,
         status: jobVisits.status,
         isActive: jobVisits.isActive,
@@ -435,6 +466,9 @@ export class JobVisitsRepository extends BaseRepository {
       // was unscheduled but the job-level scheduledStart remained set, making
       // the visit invisible on both the scheduled board and unscheduled panel.
       // The job-level schedule must always reflect the actual visit state.
+      // 2026-04-12 (Option A): scheduling mirror only. Job-level technician
+      // columns are quiescent — they are not cleared here (or anywhere) and
+      // must not be relied on.
       await queryDb
         .update(jobs)
         .set({
@@ -442,8 +476,6 @@ export class JobVisitsRepository extends BaseRepository {
           scheduledEnd: null,
           isAllDay: false,
           durationMinutes: null,
-          primaryTechnicianId: null,
-          assignedTechnicianIds: null,
           updatedAt: new Date(),
           version: sql`${jobs.version} + 1`,
         })
@@ -489,18 +521,16 @@ export class JobVisitsRepository extends BaseRepository {
       durationMinutes = Math.max(15, Math.round((scheduledEnd.getTime() - scheduledStart.getTime()) / 60000));
     }
 
-    // Mirror technician fields
-    const primaryTechnicianId = chosen.assignedTechnicianId ?? null;
-    const assignedTechnicianIds = chosen.assignedTechnicianIds ?? (primaryTechnicianId ? [primaryTechnicianId] : null);
-
-    // Build update payload, then sanitize all-day timestamps for DB constraint compliance
+    // 2026-04-12 (Option A): Technician mirror REMOVED. Jobs no longer own
+    // assignment — visits are canonical. This sync still mirrors scheduling
+    // (scheduledStart/scheduledEnd/isAllDay/durationMinutes) from the chosen
+    // visit onto the job, but assignedTechnicianIds / primaryTechnicianId on
+    // the job row are quiescent and must not be written.
     const jobUpdate: any = {
       scheduledStart,
       scheduledEnd,
       isAllDay,
       durationMinutes,
-      primaryTechnicianId,
-      assignedTechnicianIds,
       updatedAt: new Date(),
       version: sql`${jobs.version} + 1`,
     };
@@ -581,10 +611,9 @@ export class JobVisitsRepository extends BaseRepository {
       scheduledEnd = new Date(scheduledStart.getTime() + estimatedDurationMinutes * 60_000);
     }
 
-    // Part 2: assignedTechnicianIds fallback from single assignedTechnicianId
-    const assignedTechnicianIds =
-      input.assignedTechnicianIds ??
-      (input.assignedTechnicianId ? [input.assignedTechnicianId] : null);
+    const assignedTechnicianIds: string[] | null = Array.isArray(input.assignedTechnicianIds)
+      ? input.assignedTechnicianIds
+      : null;
 
     // Inherit job-level equipment if no explicit visit equipment provided
     let equipmentIds: string[] | null = input.equipmentIds ?? null;
@@ -609,7 +638,6 @@ export class JobVisitsRepository extends BaseRepository {
       scheduledEnd,
       isAllDay,
       estimatedDurationMinutes,
-      assignedTechnicianId: input.assignedTechnicianId ?? null,
       assignedTechnicianIds,
       status: input.status ?? "scheduled",
       visitNumber,
@@ -685,9 +713,10 @@ export class JobVisitsRepository extends BaseRepository {
       updates.scheduledDate = input.scheduledDate ?? existing.scheduledDate; // preserve legacy date or keep as-is
     }
 
-    // Non-schedule fields
-    if ("assignedTechnicianId" in input)
-      updates.assignedTechnicianId = input.assignedTechnicianId;
+    if ("assignedTechnicianIds" in input) {
+      const crew = Array.isArray(input.assignedTechnicianIds) ? input.assignedTechnicianIds : [];
+      updates.assignedTechnicianIds = crew;
+    }
     if ("status" in input) updates.status = input.status;
     if ("visitNotes" in input) updates.visitNotes = input.visitNotes;
     if ("isActive" in input) updates.isActive = input.isActive;
@@ -704,7 +733,9 @@ export class JobVisitsRepository extends BaseRepository {
     }
     if ("isAllDay" in input) updates.isAllDay = input.isAllDay;
     if ("visitNumber" in input) updates.visitNumber = input.visitNumber;
-    if ("assignedTechnicianIds" in input) updates.assignedTechnicianIds = input.assignedTechnicianIds;
+    // 2026-04-12: assignedTechnicianIds handled in the canonical paired
+    // crew-write block above — do NOT re-assign here or the scalar lead
+    // column would stay stale.
     // equipmentIds intentionally NOT written here. Equipment mutations go through
     // canonical job_equipment service (jobRepository.createJobEquipment / deleteJobEquipment).
     // job_visits.equipmentIds is a read-only snapshot set at visit creation only.

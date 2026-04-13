@@ -95,10 +95,10 @@ function toEnrichedVisit(r: {
   };
 }
 
-/** SQL fragment: visit is assigned to userId (single or multi-tech). */
-function assignedToUser(userId: string) {
-  return sql`(${jobVisits.assignedTechnicianId} = ${userId} OR ${userId} = ANY(${jobVisits.assignedTechnicianIds}))`;
-}
+import { technicianAssignedToVisitFilter } from "../guards/visitAssignmentGuards";
+
+/** SQL fragment: visit is assigned to userId (crew membership). */
+const assignedToUser = technicianAssignedToVisitFilter;
 
 function assertCompanyId(companyId: string): void {
   if (!companyId || typeof companyId !== "string") {
@@ -307,7 +307,6 @@ export interface VisitFeedItem {
   isAllDay: boolean;
   scheduledStart: string | null;
   scheduledEnd: string | null;
-  assignedTechnicianId: string | null;
   assignedTechnicianIds: string[];
   visitNotes: string | null;
   checkedInAt: string | null;
@@ -334,7 +333,6 @@ function toVisitFeedItem(v: EnrichedVisit): VisitFeedItem {
     isAllDay: v.isAllDay ?? false,
     scheduledStart: v.scheduledStart ? new Date(v.scheduledStart).toISOString() : null,
     scheduledEnd: v.scheduledEnd ? new Date(v.scheduledEnd).toISOString() : null,
-    assignedTechnicianId: v.assignedTechnicianId ?? null,
     assignedTechnicianIds: v.assignedTechnicianIds ?? [],
     visitNotes: v.visitNotes ?? null,
     checkedInAt: v.checkedInAt ? new Date(v.checkedInAt).toISOString() : null,

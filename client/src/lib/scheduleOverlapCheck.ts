@@ -32,9 +32,10 @@ export async function detectScheduleConflict(
       `/api/calendar?start=${encodeURIComponent(dayStart)}&end=${encodeURIComponent(dayEnd)}`
     );
 
-    // Filter to this technician's events
+    // 2026-04-12 (Option A): calendar event crew is visit-derived server-side.
+    // No fallback to primaryTechnicianId.
     const techEvents = (data?.events ?? [])
-      .filter(e => e.assignedTechnicianIds?.includes(technicianId) || e.primaryTechnicianId === technicianId)
+      .filter(e => Array.isArray(e.assignedTechnicianIds) && e.assignedTechnicianIds.includes(technicianId))
       .map(e => ({
         id: e.visitId ?? e.id,
         scheduledStart: e.startAt,

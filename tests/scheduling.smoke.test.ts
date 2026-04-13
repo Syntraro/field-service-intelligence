@@ -110,16 +110,17 @@ describe("Scheduling Smoke Tests", () => {
   // Test 1: Unscheduled job appears in backlog, not in calendar
   // ============================================================================
   it("Test 1: Unscheduled job -> backlog includes it, calendar excludes it", async () => {
-    // Create an unscheduled job with technician (required for backlog)
+    // 2026-04-12 (Option A): crew forwarded to seed visit. Backlog eligibility
+    // is now status='open' + scheduledStart IS NULL (no longer tech-dependent).
     const job = await jobRepository.createJob(testCompanyId, {
       companyId: testCompanyId,
       locationId: testLocationId,
       jobType: "PM",
       summary: `${TEST_PREFIX}unscheduled_job`,
       status: "open",
-      primaryTechnicianId: testUserId, // Required for backlog
+      assignedTechnicianIds: [testUserId],
       // No scheduledStart/scheduledEnd -> unscheduled
-    });
+    } as any);
     testJobId = job.id;
 
     expect(job.id).toBeDefined();

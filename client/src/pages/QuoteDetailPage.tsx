@@ -3,6 +3,10 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, useLocation, Link } from "wouter";
 import { format, isValid, parseISO, isPast } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+// Phase 12 (2026-04-12): Jobber-style send modal with backend-rendered preview.
+import { SendQuoteModal } from "@/components/communication/SendQuoteModal";
+// Phase 15 (2026-04-12): email delivery status card.
+import { DeliveryStatusCard } from "@/components/communication/DeliveryStatusCard";
 import { useToast } from "@/hooks/use-toast";
 import { getClientDisplayName } from "@shared/clientDisplayName";
 import {
@@ -129,10 +133,8 @@ export default function QuoteDetailPage() {
       }
     : null;
 
-  // Send quote modal state
-  const [sendRecipients, setSendRecipients] = useState("");
-  const [sendSubject, setSendSubject] = useState("");
-  const [sendMessage, setSendMessage] = useState("");
+  // Phase 13 (2026-04-12): legacy send-quote modal state removed. Send flow
+  // now lives in <SendQuoteModal>, driven by backend preview + overrides.
 
   const { data: details, isLoading } = useQuery<QuoteDetails>({
     queryKey: ["quote", quoteId, "details"],
@@ -144,35 +146,8 @@ export default function QuoteDetailPage() {
     enabled: !!quoteId,
   });
 
-  const sendMutation = useMutation({
-    mutationFn: () => {
-      const recipients = sendRecipients
-        .split(",")
-        .map((e) => e.trim())
-        .filter((e) => e.length > 0);
-      return apiRequest(`/api/quotes/${quoteId}/send`, {
-        method: "POST",
-        body: JSON.stringify({
-          recipients: recipients.length > 0 ? recipients : undefined,
-          subject: sendSubject || undefined,
-          message: sendMessage || undefined,
-        }),
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
-      setShowSendModal(false);
-      setSendRecipients("");
-      setSendSubject("");
-      setSendMessage("");
-      toast({ title: "Quote sent" });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to send quote", description: error.message, variant: "destructive" });
-    },
-  });
+  // Phase 13 (2026-04-12): legacy `sendMutation` removed. <SendQuoteModal>
+  // is the canonical send entry point and owns its own mutation.
 
   const approveMutation = useMutation({
     mutationFn: () => apiRequest(`/api/quotes/${quoteId}/approve`, { method: "POST" }),
@@ -539,6 +514,9 @@ export default function QuoteDetailPage() {
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             {/* Main Content */}
             <div className="lg:col-span-8 space-y-6">
+              {/* Phase 15 (2026-04-12): email delivery status. */}
+              <DeliveryStatusCard entityType="quote" entityId={quoteId} />
+
               {/* Line Items */}
               <Card>
                 <CardHeader className="pb-3">
@@ -760,89 +738,22 @@ export default function QuoteDetailPage() {
         </div>
       </div>
 
-      {/* Send Quote Modal */}
-      <Dialog
-        open={showSendModal}
-        onOpenChange={(open) => {
-          if (!sendMutation.isPending) {
-            setShowSendModal(open);
-            if (!open) {
-              setSendRecipients("");
-              setSendSubject("");
-              setSendMessage("");
-            }
-          }
+      {/* Phase 12 (2026-04-12): Jobber-style send modal. Recipients + subject
+          + body loaded from backend preview; Send submits with overrides.
+          Phase 13 (2026-04-12): legacy inline Dialog and its companion state
+          (sendMutation, sendRecipients, sendSubject, sendMessage) removed —
+          this modal is the only send path for quotes. */}
+      <SendQuoteModal
+        quoteId={quoteId}
+        isOpen={showSendModal}
+        onClose={() => setShowSendModal(false)}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
+          queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
+          toast({ title: "Quote sent" });
         }}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Send className="h-5 w-5" />
-              Send Quote
-            </DialogTitle>
-            <DialogDescription>
-              Send {quote.quoteNumber || "this quote"} to {clientName}. Optional: add recipients and a personalized message.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-2">
-            <div className="space-y-2">
-              <Label htmlFor="send-recipients">Recipients (optional)</Label>
-              <Input
-                id="send-recipients"
-                placeholder="email@example.com, another@example.com"
-                value={sendRecipients}
-                onChange={(e) => setSendRecipients(e.target.value)}
-                disabled={sendMutation.isPending}
-                data-testid="input-send-recipients"
-              />
-              <p className="text-xs text-muted-foreground">Separate multiple emails with commas</p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="send-subject">Subject (optional)</Label>
-              <Input
-                id="send-subject"
-                placeholder={`Quote ${quote.quoteNumber || ""} from Your Company`}
-                value={sendSubject}
-                onChange={(e) => setSendSubject(e.target.value)}
-                disabled={sendMutation.isPending}
-                data-testid="input-send-subject"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="send-message">Message (optional)</Label>
-              <Textarea
-                id="send-message"
-                placeholder="Please find attached our quote for your review..."
-                value={sendMessage}
-                onChange={(e) => setSendMessage(e.target.value)}
-                disabled={sendMutation.isPending}
-                rows={4}
-                data-testid="input-send-message"
-              />
-            </div>
-            <div className="p-3 bg-muted/50 rounded-md text-sm flex items-start gap-2">
-              <Info className="h-4 w-4 mt-0.5 flex-shrink-0 text-muted-foreground" />
-              <span className="text-muted-foreground">
-                A PDF copy of the quote will be attached when sending to recipients.
-              </span>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setShowSendModal(false)}
-              disabled={sendMutation.isPending}
-            >
-              Cancel
-            </Button>
-            <Button onClick={() => sendMutation.mutate()} disabled={sendMutation.isPending} data-testid="button-confirm-send">
-              {sendMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              <Send className="h-4 w-4 mr-2" />
-              Send Quote
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      />
 
       {/* Approve Confirmation */}
       <Dialog open={showApproveConfirm} onOpenChange={setShowApproveConfirm}>

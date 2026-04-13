@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from "react";
-import { useMutation } from "@tanstack/react-query";
 import {
   Dialog,
   DialogContent,
@@ -15,6 +14,11 @@ import { Loader2, Paperclip, X, FileText, Image as ImageIcon } from "lucide-reac
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useActivityStore } from "@/lib/activityStore";
+import {
+  SUPPORTED_MIME_TYPES,
+  useFileUpload,
+  validateFileClientSide,
+} from "@/hooks/useFileUpload";
 
 /** Staged file ready for upload */
 interface StagedFile {
@@ -28,8 +32,9 @@ interface AddJobNoteDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-const ACCEPTED_TYPES = "image/png,image/jpeg,image/gif,image/webp,application/pdf";
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+// 2026-04-12 R2 Phase 1: server enforces mime + size; client-side check is
+// a fast pre-flight before we pay a round-trip for the signed URL.
+const ACCEPTED_TYPES = SUPPORTED_MIME_TYPES.join(",");
 
 export function AddJobNoteDialog({
   jobId,
@@ -64,8 +69,9 @@ export function AddJobNoteDialog({
     const files = Array.from(e.target.files ?? []);
     const valid: StagedFile[] = [];
     for (const file of files) {
-      if (file.size > MAX_FILE_SIZE) {
-        toast({ title: "File too large", description: `${file.name} exceeds 10 MB.`, variant: "destructive" });
+      const err = validateFileClientSide(file);
+      if (err) {
+        toast({ title: "File rejected", description: err, variant: "destructive" });
         continue;
       }
       const previewUrl = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined;
@@ -84,49 +90,14 @@ export function AddJobNoteDialog({
     });
   };
 
-  /** Upload staged files via POST /api/uploads, return fileIds */
-  const uploadFiles = async (): Promise<string[]> => {
-    if (stagedFiles.length === 0) return [];
-    const formData = new FormData();
-    stagedFiles.forEach((sf) => formData.append("files", sf.file));
-
-    const res = await fetch("/api/uploads", {
-      method: "POST",
-      credentials: "include",
-      body: formData,
-    });
-    if (!res.ok) throw new Error("File upload failed");
-    const results: Array<{ fileId: string }> = await res.json();
-    return results.map((r) => r.fileId);
-  };
-
-  const createMutation = useMutation({
-    mutationFn: async (data: { noteText: string; attachmentFileIds: string[] }) => {
-      return await apiRequest(`/api/jobs/${jobId}/notes`, {
-        method: "POST",
-        body: JSON.stringify(data),
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "notes"] });
-      logActivity({
-        type: "created",
-        entityType: "job",
-        entityId: jobId,
-        label: "Added Note",
-        meta: noteText.slice(0, 60) || undefined,
-      });
-      toast({ title: "Note Added", description: "The note has been added to the job." });
-      onOpenChange(false);
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to add note.",
-        variant: "destructive",
-      });
-    },
-  });
+  // 2026-04-12 R2 Phase 1: safe note-first flow.
+  //   1. Create the note (text only) — we need a real noteId before any
+  //      file can be placed under tenants/.../notes/{noteId}/.
+  //   2. Upload each staged file via the R2 3-step lifecycle, which also
+  //      inserts the job_note_attachments row server-side.
+  //   3. Invalidate the notes query so the attachments appear.
+  const { upload, progress } = useFileUpload();
+  const [uploadIndex, setUploadIndex] = useState(0);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -139,16 +110,46 @@ export function AddJobNoteDialog({
 
     try {
       setUploading(true);
-      const attachmentFileIds = await uploadFiles();
-      createMutation.mutate({ noteText: trimmedNote, attachmentFileIds });
+
+      // Step 1 — create the note (no attachments).
+      const note = await apiRequest<{ id: string }>(`/api/jobs/${jobId}/notes`, {
+        method: "POST",
+        body: JSON.stringify({ noteText: trimmedNote }),
+      });
+
+      // Step 2 — upload attachments sequentially. Sequential keeps progress
+      // reporting simple and is easier on shaky connections; parallelism
+      // can be a later optimization.
+      for (let i = 0; i < stagedFiles.length; i++) {
+        setUploadIndex(i);
+        await upload(stagedFiles[i].file, {
+          entityType: "job_note",
+          entityId: note.id,
+        });
+      }
+
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "notes"] });
+      logActivity({
+        type: "created",
+        entityType: "job",
+        entityId: jobId,
+        label: "Added Note",
+        meta: trimmedNote.slice(0, 60) || undefined,
+      });
+      toast({ title: "Note Added", description: "The note has been added to the job." });
+      onOpenChange(false);
     } catch (err: any) {
-      toast({ title: "Upload Error", description: err.message || "File upload failed.", variant: "destructive" });
+      toast({
+        title: "Upload Error",
+        description: err?.message || "Failed to save note.",
+        variant: "destructive",
+      });
     } finally {
       setUploading(false);
     }
   };
 
-  const isSubmitting = uploading || createMutation.isPending;
+  const isSubmitting = uploading;
 
   /** Format file size for display */
   const formatSize = (bytes: number) => {
@@ -197,7 +198,7 @@ export function AddJobNoteDialog({
                   <Paperclip className="h-3.5 w-3.5" />
                   Attach Files
                 </Button>
-                <span className="text-[11px] text-muted-foreground">Images & PDFs, max 10 MB each</span>
+                <span className="text-[11px] text-muted-foreground">Images ≤10 MB, PDFs ≤20 MB</span>
               </div>
               <input
                 ref={fileInputRef}
@@ -242,6 +243,13 @@ export function AddJobNoteDialog({
               )}
             </div>
           </div>
+          {isSubmitting && stagedFiles.length > 0 && (
+            <div className="text-[11px] text-muted-foreground mb-2">
+              Uploading {Math.min(uploadIndex + 1, stagedFiles.length)} of {stagedFiles.length}
+              {" — "}
+              {Math.round(progress * 100)}%
+            </div>
+          )}
           <DialogFooter>
             <Button
               type="button"

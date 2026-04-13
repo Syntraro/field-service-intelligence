@@ -168,7 +168,7 @@ interface UpcomingQueueItem {
   technicianName: string | null;
   generatedJobId: string | null;
   job: { id: string; jobNumber: number; status: string; summary: string } | null;
-  visit: { visitId: string; visitStatus: string; scheduledDate: string | null; completedAt: string | null; assignedTechnicianId: string | null } | null;
+  visit: { visitId: string; visitStatus: string; scheduledDate: string | null; completedAt: string | null; assignedTechnicianIds: string[] } | null;
 }
 
 /** Phase 4B: A grouped collection of queue items */

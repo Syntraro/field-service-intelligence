@@ -20,11 +20,19 @@ export class NoteAttachmentRepository extends BaseRepository {
         originalName: files.originalName,
         mimeType: files.mimeType,
         size: files.size,
+        // 2026-04-12 Phase 2: expose provider + status so AttachmentView
+        // can branch on r2 vs legacy local reads. Excludes failed/deleted.
+        storageProvider: files.storageProvider,
+        status: files.status,
       })
       .from(noteAttachments)
       .innerJoin(files, eq(noteAttachments.fileId, files.id))
       .where(
-        and(eq(noteAttachments.noteId, noteId), eq(noteAttachments.companyId, companyId))
+        and(
+          eq(noteAttachments.noteId, noteId),
+          eq(noteAttachments.companyId, companyId),
+          eq(files.status, "uploaded"),
+        ),
       );
   }
 

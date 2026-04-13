@@ -23,6 +23,7 @@ import "./auth";  // Register passport strategies
 import { enforceSchemaOrExit } from "./utils/schemaGuard";
 import { validateEmailConfig } from "./resendClient";
 import { startPmAutoGeneration } from "./services/pmAutoGeneration";
+import { startOrphanSweeper } from "./services/fileUploadService";
 
 /**
  * Production security defaults.
@@ -89,9 +90,10 @@ const pool = new Pool({
   ssl: IS_PROD ? { rejectUnauthorized: false } : undefined,
 });
 
-// 2-hour idle timeout (rolling). Cookie resets on every request so active
-// users stay logged in; inactive users expire after 2 hours.
-const SESSION_IDLE_MS = Number(process.env.SESSION_MAX_AGE_MS ?? 1000 * 60 * 60 * 2); // 2 hours
+// 7-day idle timeout (rolling). Cookie resets on every request so active
+// users stay logged in; inactive users expire after 7 days of inactivity.
+// Field service technicians need sessions that survive overnight browser close.
+const SESSION_IDLE_MS = Number(process.env.SESSION_MAX_AGE_MS ?? 1000 * 60 * 60 * 24 * 7); // 7 days
 
 app.use(
   session({
@@ -204,6 +206,9 @@ const port = Number(process.env.PORT ?? 5000);
       console.log(`[QBO] READ_ONLY_MODE = ${JSON.stringify(process.env.QBO_READ_ONLY_MODE)} (writes ${process.env.QBO_READ_ONLY_MODE === "false" ? "ALLOWED" : "BLOCKED"})`);
       // PM Phase 2: Start automatic PM job generation (30s delay + 6h interval)
       startPmAutoGeneration();
+      // R2 file uploads: reap stale pending_upload rows on an interval so
+      // failed / abandoned client uploads do not linger in the DB or R2.
+      startOrphanSweeper();
     });
   } catch (error) {
     console.error("Failed to start server:", error);

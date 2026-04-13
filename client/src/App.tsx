@@ -20,6 +20,7 @@ import LeadsPage from "@/pages/LeadsPage";
 import LeadDetailPage from "@/pages/LeadDetailPage";
 import QuoteDetailPage from "@/pages/QuoteDetailPage";
 import Reports from "@/pages/Reports";
+import TimesheetReportPage from "@/pages/TimesheetReportPage";
 import AccountsReceivablePage from "@/pages/AccountsReceivablePage";
 // FinancialDashboard import removed 2026-04-10: page + route were dead (zero navigation entries)
 import Admin from "@/pages/Admin";
@@ -60,6 +61,8 @@ import NotificationsPage from "@/pages/NotificationsPage";
 import TimeBillingRulesPage from "@/pages/TimeBillingRulesPage";
 // RegionalSettingsPage — now embedded inline in Company section (2026-04-04)
 import BusinessHoursSettingsPage from "@/pages/BusinessHoursSettingsPage";
+// Phase 11 (2026-04-12): tenant-facing communication template editor.
+import CommunicationSettingsPage from "@/pages/CommunicationSettingsPage";
 const ClientImportPage = lazy(() => import("@/pages/ClientImportPage"));
 const JobImportPage = lazy(() => import("@/pages/JobImportPage"));
 const ProductImportPage = lazy(() => import("@/pages/ProductImportPage"));
@@ -235,6 +238,11 @@ function Router() {
           <Reports />
         </ProtectedRoute>
       </Route>
+      <Route path="/reports/timesheets">
+        <ProtectedRoute requireAdmin>
+          <TimesheetReportPage />
+        </ProtectedRoute>
+      </Route>
       <Route path="/reports/accounts-receivable">
         <ProtectedRoute requireAdmin>
           <AccountsReceivablePage />
@@ -302,6 +310,11 @@ function Router() {
       <Route path="/settings/tags">
         <ProtectedRoute requireAdmin>
           <TagsSettingsPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/settings/communication">
+        <ProtectedRoute requireAdmin>
+          <CommunicationSettingsPage />
         </ProtectedRoute>
       </Route>
       <Route path="/settings/products">

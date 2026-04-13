@@ -61,13 +61,14 @@ async function setup() {
 
 async function createJob(): Promise<string> {
   const now = new Date();
+  // 2026-04-12 (Option A): payload forwarded to seed visit's crew.
   const job = await jobRepository.createJob(companyId, {
     companyId, locationId, jobType: "PM", summary: "pred_test_job",
-    status: "open", primaryTechnicianId: userId,
+    status: "open", assignedTechnicianIds: [userId],
     scheduledStart: new Date(now.getTime() + 3600000),
     scheduledEnd: new Date(now.getTime() + 7200000),
     isAllDay: false,
-  });
+  } as any);
   createdJobIds.push(job.id);
   return job.id;
 }
@@ -85,7 +86,7 @@ async function createVisit(jobId: string, overrides: Record<string, unknown>): P
     visitNumber: visitNum,
     isActive: true,
     status: "scheduled",
-    assignedTechnicianId: userId,
+    assignedTechnicianIds: [userId],
     ...overrides,
   });
   createdVisitIds.push(id);

@@ -639,7 +639,7 @@ export class RecurringJobsRepository extends BaseRepository {
       scheduledStart: Date | null;
       scheduledDate: Date;
       completedAt: Date | null;
-      assignedTechId: string | null;
+      assignedTechnicianIds: string[] | null;
     }>();
 
     if (jobIds.length > 0) {
@@ -651,7 +651,7 @@ export class RecurringJobsRepository extends BaseRepository {
           scheduledStart: jobVisits.scheduledStart,
           scheduledDate: jobVisits.scheduledDate,
           completedAt: jobVisits.completedAt,
-          assignedTechId: jobVisits.assignedTechnicianId,
+          assignedTechnicianIds: jobVisits.assignedTechnicianIds,
         })
         .from(jobVisits)
         .where(and(
@@ -669,7 +669,7 @@ export class RecurringJobsRepository extends BaseRepository {
             scheduledStart: v.scheduledStart,
             scheduledDate: v.scheduledDate,
             completedAt: v.completedAt,
-            assignedTechId: v.assignedTechId,
+            assignedTechnicianIds: v.assignedTechnicianIds,
           });
         }
       }
@@ -780,7 +780,7 @@ export class RecurringJobsRepository extends BaseRepository {
           visitStatus: visit.visitStatus,
           scheduledDate: visitScheduledDate,
           completedAt: visit.completedAt?.toISOString() ?? null,
-          assignedTechnicianId: visit.assignedTechId,
+          assignedTechnicianIds: visit.assignedTechnicianIds ?? [],
         } : null,
       };
     });
@@ -832,7 +832,7 @@ export interface UpcomingQueueItem {
     visitStatus: string;
     scheduledDate: string | null;
     completedAt: string | null;
-    assignedTechnicianId: string | null;
+    assignedTechnicianIds: string[];
   } | null;
 }
 

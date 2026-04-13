@@ -15,7 +15,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { db } from "../server/db";
-import { jobs, companies, users, clientLocations, customerCompanies } from "@shared/schema";
+import { jobs, jobVisits, companies, users, clientLocations, customerCompanies } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { jobRepository } from "../server/storage/jobs";
 import { schedulingRepository } from "../server/storage/scheduling";
@@ -163,20 +163,25 @@ async function createTestJob(options: {
     }
   }
 
-  const job = await jobRepository.createJob(testCompanyId, {
+  // 2026-04-12 (Option A): tech on the create payload is forwarded by the
+  // server to the seed visit. The job row never persists assignment. We
+  // re-fetch via getJob so the returned shape carries the visit-derived
+  // `primaryTechnicianId` / `assignedTechnicianIds` used by callers.
+  const created = await jobRepository.createJob(testCompanyId, {
     companyId: testCompanyId,
     locationId: testLocationId,
     jobType: "PM",
     summary: options.summary || `${TEST_PREFIX}job_${Date.now()}`,
     status: "open",
-    primaryTechnicianId: options.technician ?? testTechnicianId,
+    assignedTechnicianIds: [options.technician ?? testTechnicianId],
     scheduledStart,
     scheduledEnd,
     isAllDay: options.allDay ?? false,
-  });
+  } as any);
 
-  testJobIds.push(job.id);
-  return job;
+  testJobIds.push(created.id);
+  const enriched = await jobRepository.getJob(testCompanyId, created.id);
+  return enriched as any;
 }
 
 describe("Calendar Drag & Drop Tests", () => {
@@ -316,42 +321,52 @@ describe("Calendar Drag & Drop Tests", () => {
   // ============================================================================
   // Test 3: Change technician (drag to different tech column)
   // ============================================================================
-  describe("Change Technician Assignment", () => {
-    it("should change technician when job dragged to different tech column", async () => {
-      // Create job assigned to technician 1
+  // 2026-04-12 (Option A): tech-change via job columns no longer exists.
+  // Drag-to-tech-column and drag-to-unassigned now mutate the visit crew
+  // directly through the canonical scheduling path.
+  describe("Change Technician Assignment (visit-level)", () => {
+    it("should change the visit crew when job dragged to different tech column", async () => {
       const job = await createTestJob({ scheduled: true, technician: testTechnicianId });
-      expect(job.primaryTechnicianId).toBe(testTechnicianId);
+      expect(job.assignedTechnicianIds).toContain(testTechnicianId);
 
-      // Reassign to technician 2 (simulates drag to tech 2's column)
-      const updated = await jobRepository.updateJob(
+      const [visit] = await db
+        .select()
+        .from(jobVisits)
+        .where(eq(jobVisits.jobId, job.id))
+        .limit(1);
+
+      await schedulingRepository.updateVisitCrew(
         testCompanyId,
-        job.id,
-        job.version,
-        { primaryTechnicianId: testTechnician2Id },
-        { isSchedulingUpdate: true }
+        visit.id,
+        [testTechnician2Id],
+        visit.version,
       );
 
-      expect(updated).toBeDefined();
-      expect(updated!.primaryTechnicianId).toBe(testTechnician2Id);
-      expect(updated!.version).toBe(job.version + 1);
+      const refetched = await jobRepository.getJob(testCompanyId, job.id);
+      expect(refetched!.assignedTechnicianIds).toEqual([testTechnician2Id]);
+      expect(refetched!.primaryTechnicianId).toBe(testTechnician2Id);
     });
 
-    it("should unassign technician when dragged to unassigned column", async () => {
-      // Create job assigned to technician
+    it("should unassign the visit crew when dragged to unassigned column", async () => {
       const job = await createTestJob({ scheduled: true, technician: testTechnicianId });
-      expect(job.primaryTechnicianId).toBe(testTechnicianId);
+      expect(job.assignedTechnicianIds).toContain(testTechnicianId);
 
-      // Unassign (simulates drag to unassigned column - sends null)
-      const updated = await jobRepository.updateJob(
+      const [visit] = await db
+        .select()
+        .from(jobVisits)
+        .where(eq(jobVisits.jobId, job.id))
+        .limit(1);
+
+      await schedulingRepository.updateVisitCrew(
         testCompanyId,
-        job.id,
-        job.version,
-        { primaryTechnicianId: null },
-        { isSchedulingUpdate: true }
+        visit.id,
+        [],
+        visit.version,
       );
 
-      expect(updated).toBeDefined();
-      expect(updated!.primaryTechnicianId).toBeNull();
+      const refetched = await jobRepository.getJob(testCompanyId, job.id);
+      expect(refetched!.assignedTechnicianIds).toEqual([]);
+      expect(refetched!.primaryTechnicianId).toBeNull();
     });
   });
 
@@ -545,33 +560,42 @@ describe("Calendar Drag & Drop Tests", () => {
   // ============================================================================
   // Test 7: Combined operations (reschedule + reassign)
   // ============================================================================
-  describe("Combined Operations", () => {
-    it("should handle reschedule and technician change in one update", async () => {
-      // Create job assigned to tech 1 at 10am
+  // 2026-04-12 (Option A): reschedule and crew change are now two separate
+  // writes against the visit. Reschedule keeps operating through the job-row
+  // scheduling fields (schedule is still job-level). Crew changes go through
+  // updateVisitCrew.
+  describe("Combined Operations (visit-level crew + job-level schedule)", () => {
+    it("should reschedule the job and update visit crew independently", async () => {
       const job = await createTestJob({ scheduled: true, technician: testTechnicianId });
 
-      // Move to 3pm and reassign to tech 2 (simulates drag across both dimensions)
       const newStart = new Date(job.scheduledStart!);
       newStart.setHours(15, 0, 0, 0);
       const newEnd = new Date(newStart);
       newEnd.setHours(16, 0, 0, 0);
 
-      const updated = await jobRepository.updateJob(
+      const rescheduled = await jobRepository.updateJob(
         testCompanyId,
         job.id,
         job.version,
-        {
-          scheduledStart: newStart,
-          scheduledEnd: newEnd,
-          primaryTechnicianId: testTechnician2Id,
-        },
+        { scheduledStart: newStart, scheduledEnd: newEnd },
         { isSchedulingUpdate: true }
       );
+      expect(rescheduled!.scheduledStart!.getHours()).toBe(15);
 
-      expect(updated).toBeDefined();
-      expect(updated!.scheduledStart!.getHours()).toBe(15);
-      expect(updated!.primaryTechnicianId).toBe(testTechnician2Id);
-      expect(updated!.version).toBe(job.version + 1); // Only 1 version increment
+      const [visit] = await db
+        .select()
+        .from(jobVisits)
+        .where(eq(jobVisits.jobId, job.id))
+        .limit(1);
+      await schedulingRepository.updateVisitCrew(
+        testCompanyId,
+        visit.id,
+        [testTechnician2Id],
+        visit.version,
+      );
+
+      const finalJob = await jobRepository.getJob(testCompanyId, job.id);
+      expect(finalJob!.assignedTechnicianIds).toEqual([testTechnician2Id]);
     });
   });
 });

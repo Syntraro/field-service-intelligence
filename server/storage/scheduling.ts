@@ -53,7 +53,6 @@ import {
   BACKLOG_STATUS,
   JOB_TERMINAL_STATUSES,
   deriveScheduleFields,
-  hasTechnicianAssigned,
   assertSchedulingInvariants,
   assertTerminalImmutable,
   assertBacklogQueryResults,
@@ -62,9 +61,8 @@ import {
   applyJobSchedulingPatch,
   normalizeScheduleTimes,
   type SchedulingWriteIntent,
-  // Technician assignment helpers
-  normalizeTechnicianAssignment,
-  assertTechnicianAssignmentInvariant,
+  // 2026-04-12 final cleanup: array-only visit-crew write helper.
+  normalizeVisitCrewWrite,
   // Error classes for optimized version checking
   VersionMismatchError,
   VersionNotInitializedError,
@@ -72,6 +70,8 @@ import {
 } from "../domain/scheduling";
 import { sanitizeAllDayTimestamps, parseTimestampAsUTC } from "../utils/allDaySanitizer";
 import { IS_DEV } from "../utils/devFlags";
+// 2026-04-12 (Option A): visit-derived crew resolver.
+import { getVisitCrewsForJobs } from "./visitCrew";
 
 // ============================================================================
 // CANONICAL SCHEDULING MODEL
@@ -141,7 +141,6 @@ export interface ScheduledJobWithDetails {
   /** Scheduled duration in minutes (canonical) */
   durationMinutes: number | null;
   assignedTechnicianIds: string[] | null;
-  primaryTechnicianId: string | null;
   technicians: Array<{
     id: string;
     name: string;
@@ -271,7 +270,7 @@ export class SchedulingRepository extends BaseRepository {
         jv.scheduled_start,
         jv.scheduled_end,
         jv.is_all_day,
-        jv.assigned_technician_id,
+        -- 2026-04-12 scalar removal: crew array only.
         jv.assigned_technician_ids,
         jv.estimated_duration_minutes,
         jv.status as visit_status,
@@ -325,7 +324,6 @@ export class SchedulingRepository extends BaseRepository {
       scheduled_start: Date | string;
       scheduled_end: Date | string | null;
       is_all_day: boolean;
-      assigned_technician_id: string | null;
       assigned_technician_ids: string[] | null;
       estimated_duration_minutes: number | null;
       visit_number: number | null;
@@ -375,9 +373,7 @@ export class SchedulingRepository extends BaseRepository {
     const customerCompanyIds = new Set<string>();
 
     for (const row of jobRows) {
-      if (row.assigned_technician_id) {
-        technicianIdSet.add(row.assigned_technician_id);
-      }
+      // 2026-04-12 scalar removal: crew ids source is the array.
       if (row.assigned_technician_ids) {
         for (const techId of row.assigned_technician_ids) {
           technicianIdSet.add(techId);
@@ -395,8 +391,9 @@ export class SchedulingRepository extends BaseRepository {
     // Build result with technician details
     // Phase 2: id = visitId (visit-centric identity)
     const results = jobRows.map((row) => {
-      const techIds = row.assigned_technician_ids ||
-        (row.assigned_technician_id ? [row.assigned_technician_id] : []);
+      const techIds = Array.isArray(row.assigned_technician_ids)
+        ? row.assigned_technician_ids
+        : [];
       const technicians = techIds
         .map((id) => technicianMap.get(id))
         .filter((t): t is { id: string; name: string; color: string | null } => t !== undefined);
@@ -435,7 +432,6 @@ export class SchedulingRepository extends BaseRepository {
         isAllDay: row.is_all_day ?? false,
         durationMinutes,
         assignedTechnicianIds: techIds.length > 0 ? techIds : null,
-        primaryTechnicianId: row.assigned_technician_id,
         technicians,
         // Use visit version for scheduled events — rescheduleVisit checks visit.version (2026-03-06)
         version: row.visit_version,
@@ -554,8 +550,7 @@ export class SchedulingRepository extends BaseRepository {
         scheduledEnd: jobs.scheduledEnd,
         isAllDay: jobs.isAllDay,
         durationMinutes: jobs.durationMinutes,
-        assignedTechnicianIds: jobs.assignedTechnicianIds,
-        primaryTechnicianId: jobs.primaryTechnicianId,
+        // 2026-04-12 (Option A): tech fields sourced from visits post-query.
         locationName: clientLocations.companyName,
         customerCompanyId: clientLocations.parentCompanyId,
         version: jobs.version,
@@ -608,31 +603,26 @@ export class SchedulingRepository extends BaseRepository {
       return [];
     }
 
-    // Collect all technician IDs to fetch in bulk
+    // 2026-04-12 (Option A): resolve crews from visits instead of job columns.
+    const crewMap = await getVisitCrewsForJobs(companyId, jobRows.map(j => j.id));
+
+    // Collect technician + customer IDs for bulk name resolution.
     const technicianIdSet = new Set<string>();
     const customerCompanyIds = new Set<string>();
-
     for (const job of jobRows) {
-      if (job.primaryTechnicianId) {
-        technicianIdSet.add(job.primaryTechnicianId);
+      const crew = crewMap.get(job.id);
+      if (crew) {
+        for (const id of crew.assignedTechnicianIds) technicianIdSet.add(id);
       }
-      if (job.assignedTechnicianIds) {
-        for (const techId of job.assignedTechnicianIds) {
-          technicianIdSet.add(techId);
-        }
-      }
-      if (job.customerCompanyId) {
-        customerCompanyIds.add(job.customerCompanyId);
-      }
+      if (job.customerCompanyId) customerCompanyIds.add(job.customerCompanyId);
     }
 
-    // Phase 5 Step C2: use shared query helpers for bulk resolution
     const technicianMap = await bulkResolveTechnicians(db, Array.from(technicianIdSet));
     const customerCompanyMap = await bulkResolveCustomerCompanies(db, Array.from(customerCompanyIds));
 
-    // Build result with technician details
     const results = jobRows.map((job) => {
-      const techIds = job.assignedTechnicianIds || [];
+      const crew = crewMap.get(job.id);
+      const techIds = crew?.assignedTechnicianIds ?? [];
       const technicians = techIds
         .map((id) => technicianMap.get(id))
         .filter((t): t is { id: string; name: string; color: string | null } => t !== undefined);
@@ -657,18 +647,15 @@ export class SchedulingRepository extends BaseRepository {
         scheduledEnd: job.scheduledEnd,
         isAllDay: job.isAllDay ?? false,
         durationMinutes: job.durationMinutes,
-        assignedTechnicianIds: job.assignedTechnicianIds,
-        primaryTechnicianId: job.primaryTechnicianId,
+        assignedTechnicianIds: techIds.length > 0 ? techIds : null,
         technicians,
         version: job.version,
         locationAddress: job.locationAddress,
         locationCity: job.locationCity,
         locationProvinceState: job.locationProvinceState,
         locationPostalCode: job.locationPostalCode,
-        // Fix: lat/lng were selected from DB but dropped in results mapping — unscheduled jobs never appeared on dispatch map
         lat: job.lat ?? null,
         lng: job.lng ?? null,
-        // 2026-03-22: Real visit ID for canonical EditVisitModal opening
         activeVisitId: job.activeVisitId ?? null,
       };
     });
@@ -710,8 +697,7 @@ export class SchedulingRepository extends BaseRepository {
         j.hold_reason,
         j.location_id,
         j.version,
-        j.assigned_technician_ids,
-        j.primary_technician_id,
+        -- 2026-04-12 (Option A): tech fields sourced from visits post-query.
         cl.company_name AS location_name,
         cl.parent_company_id AS customer_company_id,
         -- Last completed visit with follow-up needed
@@ -747,15 +733,17 @@ export class SchedulingRepository extends BaseRepository {
 
     if (!rows.rows || rows.rows.length === 0) return [];
 
-    // Bulk resolve technicians and customer companies
+    // 2026-04-12 (Option A): resolve crews via visits, not job columns.
+    const crewMap = await getVisitCrewsForJobs(
+      companyId,
+      (rows.rows as any[]).map((r) => r.id),
+    );
+
     const technicianIdSet = new Set<string>();
     const customerCompanyIds = new Set<string>();
-
     for (const row of rows.rows as any[]) {
-      if (row.primary_technician_id) technicianIdSet.add(row.primary_technician_id);
-      if (row.assigned_technician_ids) {
-        for (const techId of row.assigned_technician_ids) technicianIdSet.add(techId);
-      }
+      const crew = crewMap.get(row.id);
+      if (crew) for (const id of crew.assignedTechnicianIds) technicianIdSet.add(id);
       if (row.customer_company_id) customerCompanyIds.add(row.customer_company_id);
     }
 
@@ -763,7 +751,8 @@ export class SchedulingRepository extends BaseRepository {
     const customerCompanyMap = await bulkResolveCustomerCompanies(db, Array.from(customerCompanyIds));
 
     return (rows.rows as any[]).map((row) => {
-      const techIds = row.assigned_technician_ids || [];
+      const crew = crewMap.get(row.id);
+      const techIds = crew?.assignedTechnicianIds ?? [];
       const technicians = techIds
         .map((id: string) => technicianMap.get(id))
         .filter((t: any): t is { id: string; name: string; color: string | null } => t !== undefined);
@@ -788,8 +777,7 @@ export class SchedulingRepository extends BaseRepository {
         scheduledEnd: null,
         isAllDay: false,
         durationMinutes: null,
-        assignedTechnicianIds: row.assigned_technician_ids,
-        primaryTechnicianId: row.primary_technician_id,
+        assignedTechnicianIds: techIds.length > 0 ? techIds : null,
         technicians,
         version: row.version,
         // Follow-up specific fields
@@ -865,7 +853,9 @@ export class SchedulingRepository extends BaseRepository {
     companyId: string,
     data: {
       jobId: string;
-      technicianUserId?: string | null;
+      // 2026-04-12 final cleanup: canonical crew array only.
+      // `null` / `[]` = unassigned; `undefined` = no crew specified (= unassigned here).
+      assignedTechnicianIds?: string[] | null;
       startAt: Date;
       endAt: Date;
       notes?: string;
@@ -889,8 +879,8 @@ export class SchedulingRepository extends BaseRepository {
     let scheduledEnd = normalized.scheduledEnd;
     const isAllDay = normalized.isAllDay;
 
-    // Build technician assignment
-    const techAssignment = normalizeTechnicianAssignment(data.technicianUserId || null);
+    // 2026-04-12 final cleanup: single canonical normalizer, array-in.
+    const techAssignment = normalizeVisitCrewWrite(data.assignedTechnicianIds);
 
     if (IS_DEV) {
       console.log('[SCHEDULE-DEBUG] scheduleJob (PHASE 4 - job_visits) called:', {
@@ -953,7 +943,6 @@ export class SchedulingRepository extends BaseRepository {
         scheduledStart,
         scheduledEnd,
         isAllDay,
-        assignedTechnicianId: techAssignment.primaryTechnicianId,
         assignedTechnicianIds: techAssignment.assignedTechnicianIds,
         status: 'scheduled',
         visitNotes: data.notes,
@@ -970,7 +959,6 @@ export class SchedulingRepository extends BaseRepository {
           scheduledStart,
           scheduledEnd,
           isAllDay,
-          assignedTechnicianId: techAssignment.primaryTechnicianId,
           assignedTechnicianIds: techAssignment.assignedTechnicianIds,
           status: 'scheduled',
           visitNotes: data.notes ?? openVisit.visitNotes,
@@ -996,7 +984,6 @@ export class SchedulingRepository extends BaseRepository {
         scheduledStart,
         scheduledEnd,
         isAllDay,
-        assignedTechnicianId: techAssignment.primaryTechnicianId,
         assignedTechnicianIds: techAssignment.assignedTechnicianIds,
         status: 'scheduled',
         visitNotes: data.notes,
@@ -1139,7 +1126,6 @@ export class SchedulingRepository extends BaseRepository {
       scheduledEnd: null,
       scheduledDate: new Date(),
       isAllDay: false,
-      assignedTechnicianId: null,
       assignedTechnicianIds: [],
     });
 
@@ -1184,7 +1170,7 @@ export class SchedulingRepository extends BaseRepository {
 
   /**
    * Update visit crew roster (multi-tech assignment).
-   * Sets assignedTechnicianIds to the full array and primaryTechnicianId to the first.
+   * Sets assignedTechnicianIds to the full array. No lead technician concept.
    * Does NOT change schedule times.
    */
   async updateVisitCrew(
@@ -1203,7 +1189,6 @@ export class SchedulingRepository extends BaseRepository {
     }
 
     await jobVisitsRepository.updateJobVisit(companyId, visit.id, visit.version, {
-      assignedTechnicianId: technicianUserIds[0],
       assignedTechnicianIds: technicianUserIds,
     });
 
@@ -1460,7 +1445,6 @@ interface DaySummaryVisitRow {
   scheduledEnd: Date | null;
   estimatedDurationMinutes: number | null;
   status: string;
-  technicianId: string | null;
   technicianIds: string[] | null;
   locationLat: string | null;
   locationLng: string | null;
@@ -1475,7 +1459,6 @@ export async function getDaySummary(companyId: string, dateStr: string) {
       jv.scheduled_end AS "scheduledEnd",
       jv.estimated_duration_minutes AS "estimatedDurationMinutes",
       jv.status,
-      jv.assigned_technician_id AS "technicianId",
       jv.assigned_technician_ids AS "technicianIds",
       cl.lat AS "locationLat",
       cl.lng AS "locationLng"
@@ -1522,7 +1505,7 @@ export async function getDaySummary(companyId: string, dateStr: string) {
   // For visit-level rules, map visitId → technicianId via visits
   const visitTechMap = new Map<string, string>();
   for (const v of visits) {
-    const tid = v.technicianId || (v.technicianIds?.[0] ?? null);
+    const tid = v.technicianIds?.[0] ?? null;
     if (tid) visitTechMap.set(v.visitId, tid);
   }
 
@@ -1558,7 +1541,7 @@ export async function getDaySummary(companyId: string, dateStr: string) {
   // 5) Group visits by technician and compute stats
   const techVisitsMap = new Map<string, DaySummaryVisitRow[]>();
   for (const v of visits) {
-    const tids = v.technicianIds?.length ? v.technicianIds : v.technicianId ? [v.technicianId] : [];
+    const tids = v.technicianIds?.length ? v.technicianIds : [];
     for (const tid of tids) {
       if (!techVisitsMap.has(tid)) techVisitsMap.set(tid, []);
       techVisitsMap.get(tid)!.push(v);

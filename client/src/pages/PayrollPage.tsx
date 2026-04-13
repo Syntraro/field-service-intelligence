@@ -12,6 +12,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { format, addDays, subDays, startOfWeek, parseISO } from "date-fns";
 import { useAuth } from "@/lib/auth";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { getMemberDisplayName } from "@/lib/displayName";
 import { useToast } from "@/hooks/use-toast";
 import {
   ChevronLeft,
@@ -236,7 +237,13 @@ export default function PayrollPage() {
   const [, setLocation] = useLocation();
 
   // ── View mode ──
-  const [viewMode, setViewMode] = useState<"week" | "day">("week");
+  // Hydrate from URL (`?view=day&tech=<id>&date=<yyyy-mm-dd>`) so the
+  // Timesheet Report's date link can deep-link straight into the day view
+  // for a specific tech. Params are read once at mount; subsequent
+  // navigation inside the page uses local state (no URL sync).
+  const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+  const initialViewMode = (urlParams?.get("view") === "day" ? "day" : "week") as "week" | "day";
+  const [viewMode, setViewMode] = useState<"week" | "day">(initialViewMode);
 
   // ── Week view state ──
   const [weekStart, setWeekStart] = useState<string>(() => getMonday(new Date()));
@@ -245,8 +252,14 @@ export default function PayrollPage() {
   const [pendingEdits, setPendingEdits] = useState<Record<string, string>>({});
 
   // ── Day view state ──
-  const [dayViewTechId, setDayViewTechId] = useState<string>("");
-  const [dayViewDate, setDayViewDate] = useState<string>(() => format(new Date(), "yyyy-MM-dd"));
+  // Seed from URL params on mount; fall back to today / unset.
+  const initialDayTech = urlParams?.get("tech") ?? "";
+  const initialDayDate = (() => {
+    const raw = urlParams?.get("date");
+    return raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : format(new Date(), "yyyy-MM-dd");
+  })();
+  const [dayViewTechId, setDayViewTechId] = useState<string>(initialDayTech);
+  const [dayViewDate, setDayViewDate] = useState<string>(initialDayDate);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [weekCalendarOpen, setWeekCalendarOpen] = useState(false);
 
@@ -665,6 +678,13 @@ export default function PayrollPage() {
           <p className="text-muted-foreground text-sm">Weekly and daily time tracking</p>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            onClick={() => setLocation("/reports/timesheets")}
+            variant="outline"
+            size="sm"
+          >
+            Timesheet Reports
+          </Button>
           {viewMode === "week" && (
             <Button onClick={handleExportCsv} variant="outline" size="sm" disabled={summaries.length === 0}>
               <Download className="h-4 w-4 mr-2" />
@@ -745,7 +765,7 @@ export default function PayrollPage() {
                     <SelectContent>
                       {technicians.map((u) => (
                         <SelectItem key={u.id} value={u.id}>
-                          {u.fullName || `${u.firstName || ""} ${u.lastName || ""}`.trim() || u.id.slice(0, 8)}
+                          {getMemberDisplayName(u)}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -974,7 +994,7 @@ export default function PayrollPage() {
                     <SelectContent>
                       {technicians.map((u) => (
                         <SelectItem key={u.id} value={u.id}>
-                          {u.fullName || `${u.firstName || ""} ${u.lastName || ""}`.trim() || u.id.slice(0, 8)}
+                          {getMemberDisplayName(u)}
                         </SelectItem>
                       ))}
                     </SelectContent>

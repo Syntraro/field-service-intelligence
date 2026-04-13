@@ -62,12 +62,17 @@ export class JobNotesRepository extends BaseRepository {
             originalName: files.originalName,
             mimeType: files.mimeType,
             size: files.size,
+            storageProvider: files.storageProvider,
+            status: files.status,
           })
           .from(jobNoteAttachments)
           .innerJoin(files, eq(jobNoteAttachments.fileId, files.id))
           .where(and(
             eq(jobNoteAttachments.companyId, companyId),
             inArray(jobNoteAttachments.noteId, noteIds),
+            // Only surface fully-finalized files. `failed` / `deleted` /
+            // `pending_upload` rows never appear in attachment listings.
+            eq(files.status, "uploaded"),
           ))
       : [];
 

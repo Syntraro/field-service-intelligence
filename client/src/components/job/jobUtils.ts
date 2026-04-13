@@ -9,7 +9,8 @@
  *
  * DERIVED STATES (computed from fields, NOT status):
  * - isScheduled = scheduledStart IS NOT NULL (canonical - isAllDay is display flag only)
- * - isAssigned = assignedTechnicianIds.length > 0 OR primaryTechnicianId IS NOT NULL
+ * - isAssigned  = at least one visit on the job has a non-empty crew
+ *   (2026-04-12 Option A — jobs no longer own assignment; see isJobAssigned(visits)).
  *
  * WORKFLOW SUB-STATUS (openSubStatus, only when status = 'open'):
  * - null         - Default state
@@ -32,7 +33,7 @@ import {
   Clock,
   AlertTriangle,
 } from "lucide-react";
-import type { JobStatus, OpenSubStatus } from "@shared/schema";
+import type { JobStatus, OpenSubStatus, VisitCrewRef } from "@shared/schema";
 import { isJobScheduled, isJobAssigned, isJobOverdue } from "@shared/schema";
 
 // Valid lifecycle statuses - the ONLY allowed values for jobs.status
@@ -86,9 +87,12 @@ export function getJobStatusDisplay(
     scheduledEnd?: Date | string | null;
     durationMinutes?: number | null;
     isAllDay?: boolean | null;
-    primaryTechnicianId?: string | null;
-    assignedTechnicianIds?: string[] | null;
-  }
+  },
+  // 2026-04-12 (Option A): "Assigned" now derives from visits. Callers that
+  // have visits should pass them; callers that only know status (e.g. status
+  // timeline history events) can omit — the "Assigned" branch simply won't
+  // fire for them.
+  visits?: VisitCrewRef[] | null,
 ): JobStatusDisplay {
   const now = new Date();
   const status = job.status as JobStatus;
@@ -127,7 +131,7 @@ export function getJobStatusDisplay(
       return { label: "Scheduled", variant: "default", icon: Calendar, priority: 2 };
     }
 
-    const assigned = isJobAssigned(job);
+    const assigned = isJobAssigned(visits);
     if (assigned) {
       return { label: "Assigned", variant: "secondary", icon: Clock, priority: 2 };
     }

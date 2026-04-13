@@ -15,9 +15,10 @@ import { MobileShell } from "../components/MobileShell";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { useLocationSearch, useLocationById, type LocationResult } from "@/hooks/useLocationSearch";
+import { useTechniciansDirectory } from "@/hooks/useTechnicians";
+import { getMemberDisplayName } from "@/lib/displayName";
 
 type LocationItem = LocationResult;
-interface TechMember { id: string; fullName: string; }
 
 export function CreateJobPage() {
   const [, setLocation] = useLocation();
@@ -65,15 +66,8 @@ export function CreateJobPage() {
   // Location search — shared hook with canonical endpoint + snake_case mapping
   const { data: locations } = useLocationSearch(locationSearch);
 
-  // Team members for assignment
-  const { data: techMembers } = useQuery<TechMember[]>({
-    queryKey: ["/api/team/technicians"],
-    queryFn: async () => {
-      const resp = await apiRequest<any>("/api/team/technicians");
-      const list = Array.isArray(resp) ? resp : (resp?.data ?? resp?.schedulable ?? []);
-      return list.map((t: any) => ({ id: t.id, fullName: t.fullName || t.displayName || t.email || "Tech" }));
-    },
-  });
+  // Team members for assignment — canonical directory hook
+  const { teamMembers: techMembers } = useTechniciansDirectory();
 
   // Resolve selected location display from search results or pre-fill
   const selectedLocation = locationLabel ?? resolvedLocation ?? (locations ?? []).find(l => l.id === locationId) ?? null;
@@ -87,7 +81,7 @@ export function CreateJobPage() {
         locationId,
         summary: summary.trim(),
         description: description.trim() || null,
-        assignedTechnicianId: techId || null,
+        assignedTechnicianIds: techId ? [techId] : undefined,
       };
 
       // Schedule Now: build ISO start/end from date + time
@@ -217,8 +211,8 @@ export function CreateJobPage() {
           <label className="text-xs font-semibold text-slate-500 mb-1 block">Assigned To</label>
           <select value={techId} onChange={e => setTechId(e.target.value)}
             className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md bg-white">
-            {(techMembers ?? []).map(t => (
-              <option key={t.id} value={t.id}>{t.fullName}{t.id === user?.id ? " (me)" : ""}</option>
+            {techMembers.map(t => (
+              <option key={t.id} value={t.id}>{getMemberDisplayName(t)}{t.id === user?.id ? " (me)" : ""}</option>
             ))}
           </select>
         </div>

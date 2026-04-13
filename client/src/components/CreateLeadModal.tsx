@@ -3,7 +3,7 @@
  * Uses shared CreateOrSelectField for client/location selection + creation.
  */
 import { useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
@@ -18,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { TechnicianSelector } from "@/components/TechnicianSelector";
 import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
 import { useLocationSearch, type LocationResult } from "@/hooks/useLocationSearch";
 
@@ -52,16 +53,7 @@ export function CreateLeadModal({ open, onOpenChange }: CreateLeadModalProps) {
   const [estimatedValue, setEstimatedValue] = useState("");
   const [capturedByUserId, setCapturedByUserId] = useState(user?.id ?? "");
 
-  // Team members for "Captured By" selector
-  const { data: teamMembers } = useQuery<{ id: string; fullName: string }[]>({
-    queryKey: ["/api/team/technicians"],
-    queryFn: async () => {
-      const resp = await apiRequest<any>("/api/team/technicians");
-      const list = Array.isArray(resp) ? resp : (resp?.data ?? resp?.schedulable ?? []);
-      return list.map((t: any) => ({ id: t.id, fullName: t.fullName || t.displayName || t.email || "Team Member" }));
-    },
-    enabled: open,
-  });
+  // Team members for "Captured By" selector — uses canonical hook via TechnicianSelector
 
   // Create client mutation — canonical full-create
   const createClientMutation = useMutation({
@@ -193,14 +185,12 @@ export function CreateLeadModal({ open, onOpenChange }: CreateLeadModalProps) {
           {/* Captured By */}
           <div className="space-y-1.5">
             <Label>Captured By</Label>
-            <Select value={capturedByUserId} onValueChange={setCapturedByUserId}>
-              <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
-              <SelectContent>
-                {(teamMembers ?? []).map(t => (
-                  <SelectItem key={t.id} value={t.id}>{t.fullName}{t.id === user?.id ? " (me)" : ""}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <TechnicianSelector
+              mode="single"
+              value={capturedByUserId || null}
+              onChange={(id) => setCapturedByUserId(id ?? "")}
+              placeholder="Select..."
+            />
           </div>
 
           {/* Priority */}

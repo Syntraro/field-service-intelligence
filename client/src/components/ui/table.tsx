@@ -2,6 +2,16 @@ import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
+/**
+ * UI typography standard (see docs/UI_TYPOGRAPHY.md):
+ *   Default body font size for table rows = 12px (`text-xs`). Headers may
+ *   stay at `text-sm` if they're acting as a section title.
+ *
+ * Current runtime default is `text-sm` (14px) on the root <table>. Do not
+ * change this without sweeping every consumer — it shrinks every table in
+ * the app. Use `className="text-xs"` on the page-level <Table> first,
+ * then flip the default once everyone has caught up.
+ */
 const Table = React.forwardRef<
   HTMLTableElement,
   React.HTMLAttributes<HTMLTableElement>

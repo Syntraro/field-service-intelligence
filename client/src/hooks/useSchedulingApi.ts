@@ -196,7 +196,8 @@ export interface ScheduleJobPayload {
   date?: string;         // YYYY-MM-DD (required for all-day events)
   allDay?: boolean;      // True = all-day event
   durationMinutes?: number; // For timed events
-  technicianUserId?: string;
+  // 2026-04-12 final cleanup: canonical crew array — single-tech callers pass [id].
+  assignedTechnicianIds?: string[] | null;
   version: number;       // REQUIRED for optimistic locking
 }
 

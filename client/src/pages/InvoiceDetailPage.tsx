@@ -81,7 +81,11 @@ import {
   draftToInvoiceLinePayload,
 } from "@/lib/entities/lineItemMapper";
 import { InvoiceHeaderCard } from "@/components/InvoiceHeaderCard";
-import { ConfirmSendModal } from "@/components/invoice/ConfirmSendModal";
+// Phase 12 (2026-04-12): Jobber-style send modal with recipients + subject + body.
+// Legacy ConfirmSendModal import removed in Phase 13.
+import { SendInvoiceModal } from "@/components/communication/SendInvoiceModal";
+// Phase 15 (2026-04-12): email delivery status card.
+import { DeliveryStatusCard } from "@/components/communication/DeliveryStatusCard";
 import { ConfirmVoidModal } from "@/components/invoice/ConfirmVoidModal";
 import { QboSyncBanner, isQboSynced, isBillingLocked } from "@/components/invoice/QboSyncBanner";
 import { QboOverrideModal, useQboOverride } from "@/components/invoice/QboOverrideModal";
@@ -579,32 +583,11 @@ export default function InvoiceDetailPage() {
     return response;
   };
 
-  const sendMutation = useMutation({
-    mutationFn: (overrideReason?: string) =>
-      makeQboAwareRequest(`/api/invoices/${invoiceId}/send`, "POST", overrideReason),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
-      // Phase 5 Step A7: canonical family key (covers feed + stats + dashboard)
-      queryClient.invalidateQueries({ queryKey: ["invoices"] });
-      setShowSendConfirm(false);
-      qboOverride.closeModal();
-      setQboOverridePending(false);
-      toast({ title: "Invoice marked as sent" });
-    },
-    onError: (error: Error) => {
-      setShowSendConfirm(false);
-      setQboOverridePending(false);
-      // Check if this is a QBO lock error (409)
-      if (error.message?.includes("synced to QuickBooks") || error.message?.includes("billing is locked")) {
-        qboOverride.requestOverride("send this invoice", (reason) => {
-          setQboOverridePending(true);
-          sendMutation.mutate(reason);
-        });
-      } else {
-        toast({ title: "Failed to send invoice", description: error.message, variant: "destructive" });
-      }
-    },
-  });
+  // Phase 13 (2026-04-12): legacy `sendMutation` removed. The Send flow now
+  // runs entirely through <SendInvoiceModal> which hits the same backend
+  // endpoint with recipients + overrides. QBO-lock override for send-time
+  // is handled server-side by the same route; error surfaces inline in the
+  // modal rather than triggering a secondary override modal here.
 
   const voidMutation = useMutation({
     mutationFn: (overrideReason?: string) =>
@@ -1163,6 +1146,9 @@ export default function InvoiceDetailPage() {
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4 flex-1 min-h-0" data-testid="invoice-body-area">
             <div className="space-y-2.5 min-w-0 min-h-0 overflow-y-auto lg:pr-1 h-full">
 
+              {/* Phase 15 (2026-04-12): email delivery status + resend. */}
+              <DeliveryStatusCard entityType="invoice" entityId={invoiceId} />
+
               {/* Banners — inside left column so right rail starts at top */}
               <QboSyncBanner invoice={invoice} />
 
@@ -1219,7 +1205,7 @@ export default function InvoiceDetailPage() {
                 canEdit={canEdit}
                 isDraft={isDraft}
                 isEditing={isEditing}
-                sendPending={sendMutation.isPending}
+                sendPending={false}
                 statusLabel={statusInfo.label}
                 statusVariant={statusInfo.variant}
                 isPastDue={isPastDue}
@@ -1819,15 +1805,20 @@ export default function InvoiceDetailPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Send Confirmation Modal */}
-      <ConfirmSendModal
-        open={showSendConfirm}
-        onOpenChange={setShowSendConfirm}
-        invoiceNumber={invoice.invoiceNumber}
-        customerName={clientName}
-        total={invoice.total}
-        onConfirm={() => sendMutation.mutate(undefined)}
-        isPending={sendMutation.isPending}
+      {/* Phase 12 (2026-04-12): Jobber-style send modal. Loads recipients +
+          rendered preview from backend, lets user edit subject/body/recipients,
+          and submits with overrides. The legacy ConfirmSendModal path was
+          removed — it fired `sendMutation` directly without recipients, which
+          is no longer compatible with the backend send contract. */}
+      <SendInvoiceModal
+        invoiceId={invoiceId}
+        isOpen={showSendConfirm}
+        onClose={() => setShowSendConfirm(false)}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
+          queryClient.invalidateQueries({ queryKey: ["invoices"] });
+          toast({ title: "Invoice sent" });
+        }}
       />
 
       {/* Delete Draft Confirmation */}

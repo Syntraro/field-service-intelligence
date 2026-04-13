@@ -824,7 +824,8 @@ export async function generateFromInstances(
         description: template.description,
         jobType: (template.jobType ?? "maintenance") as JobType,
         priority: (template.priority ?? "medium") as JobPriority,
-        primaryTechnicianId: null, // PM jobs are unassigned — dispatchers assign after generation
+        // 2026-04-12 (Option A): PM jobs are unassigned — dispatchers assign
+        // crew to the visit after generation. No job-level tech field.
         status: "open" as JobStatus,
         openSubStatus: template.openSubStatusDefault ?? null,
         holdReason: (template.openSubStatusDefault === "on_hold" ? template.holdReason : null) as HoldReason | null,

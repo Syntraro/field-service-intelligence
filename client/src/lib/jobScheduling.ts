@@ -66,7 +66,8 @@ export function scheduleValueToPayload(
     startAt: startDate.toISOString(),
     endAt: endDate.toISOString(),
     durationMinutes: value.durationMinutes,
-    technicianUserId: value.primaryTechnicianId || undefined,
+    // 2026-04-12 final cleanup: canonical crew array only.
+    assignedTechnicianIds: value.assignedTechnicianIds ?? [],
     notes,
   };
 }
@@ -123,11 +124,13 @@ export async function applyJobSchedule(
       return { success: false, error: "Invalid schedule value" };
     }
 
-    // Conflict detection: check for overlap but do NOT change scheduled times
+    // Conflict detection: check for overlap but do NOT change scheduled times.
+    // Lead tech for conflict check = first in canonical crew (2026-04-12).
     let hasConflict = false;
-    if (payload.startAt && payload.endAt && payload.technicianUserId && value.date) {
+    const leadTech = payload.assignedTechnicianIds?.[0];
+    if (payload.startAt && payload.endAt && leadTech && value.date) {
       hasConflict = await detectScheduleConflict(
-        payload.technicianUserId, value.date,
+        leadTech, value.date,
         payload.startAt, payload.endAt,
         value.durationMinutes,
         options?.visitId,
@@ -151,6 +154,7 @@ export async function applyJobSchedule(
         const fresh = await getCurrentVisitForJob(jobId);
         visitVersion = fresh?.version;
       }
+      // 2026-04-12 final cleanup: canonical crew input on reschedule.
       const result = await apiRequest(
         `/api/calendar/visit/${visitId}/reschedule`,
         {
@@ -160,7 +164,7 @@ export async function applyJobSchedule(
             date: payload.date,
             startAt: payload.startAt,
             endAt: payload.endAt,
-            technicianUserId: payload.technicianUserId || null,
+            assignedTechnicianIds: payload.assignedTechnicianIds ?? [],
             notes: payload.notes,
             version: visitVersion,
           }),
@@ -239,12 +243,14 @@ export async function createJobWithSchedule(
     const status = "open";
     const hasSchedule = scheduleValue && !scheduleValue.unscheduled;
 
-    // Build job payload with scheduling fields if scheduled
+    // 2026-04-12 (Option A): crew is forwarded by the server to the seed
+    // visit — the job row no longer persists assignment. Send only the
+    // canonical array; no `primaryTechnicianId` (the storage layer strips
+    // legacy fields defensively but we avoid sending them).
     let jobPayload: any = {
       ...jobData,
       status,
-      primaryTechnicianId: scheduleValue?.primaryTechnicianId || null,
-      assignedTechnicianIds: scheduleValue?.assignedTechnicianIds || [],
+      assignedTechnicianIds: scheduleValue?.assignedTechnicianIds ?? [],
     };
 
     // If has schedule data, compute scheduling fields and detect conflict
@@ -258,8 +264,9 @@ export async function createJobWithSchedule(
       jobPayload.scheduledEnd = endDate.toISOString();
       jobPayload.isAllDay = false;
 
-      // Conflict detection: check but do NOT change scheduled times
-      const techId = scheduleValue.primaryTechnicianId || null;
+      // Conflict detection: check but do NOT change scheduled times.
+      // Lead tech for conflict check = first assigned (visit-centric model).
+      const techId = scheduleValue.assignedTechnicianIds[0] ?? null;
       if (techId && scheduleValue.date) {
         hasConflict = await detectScheduleConflict(
           techId, scheduleValue.date,

@@ -45,7 +45,7 @@ beforeAll(async () => {
   jobId = uuidv4();
   await db.insert(jobs).values({ id: jobId, companyId, locationId: locId, summary: `${TEST_PREFIX}job`, status: "open", jobType: "Repair", jobNumber: 4444 });
   visitId = uuidv4();
-  await db.insert(jobVisits).values({ id: visitId, companyId, jobId, visitNumber: 1, status: "scheduled", assignedTechnicianId: userId, scheduledDate: new Date() });
+  await db.insert(jobVisits).values({ id: visitId, companyId, jobId, visitNumber: 1, status: "scheduled", assignedTechnicianIds: [userId], scheduledDate: new Date() });
 });
 
 afterAll(async () => {

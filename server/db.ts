@@ -65,11 +65,25 @@ const connectionString = USE_POOLER
 // Neon uses connection pooling differently than standard PostgreSQL
 // With pooler enabled, Neon handles pooling at the proxy level
 
-// ── DB connection diagnostic (safe — no credentials logged) ──
+// ── DB connection identity banner (safe — no credentials logged) ──
+// Prints prominently at startup so local vs Render drift is immediately visible
+// in dev console and Render deploy logs.
 try {
   const u = new URL(connectionString);
-  console.log(`[DB] Host: ${u.hostname} | Database: ${u.pathname.replace("/", "")} | User: ${u.username} | Pooler: ${USE_POOLER}`);
-} catch { console.log("[DB] Could not parse connection URL for diagnostics"); }
+  const sslMode = new URLSearchParams(u.search).get("sslmode") ?? "(default)";
+  console.log("════════════════════════════════════════════════════════════════");
+  console.log("  DATABASE IDENTITY (app runtime)");
+  console.log("────────────────────────────────────────────────────────────────");
+  console.log(`  Host:       ${u.hostname}`);
+  console.log(`  Database:   ${u.pathname.replace("/", "")}`);
+  console.log(`  User:       ${u.username}`);
+  console.log(`  SSL mode:   ${sslMode}`);
+  console.log(`  Pooler:     ${USE_POOLER ? "enabled" : "disabled"}`);
+  console.log(`  NODE_ENV:   ${NODE_ENV}`);
+  console.log("════════════════════════════════════════════════════════════════");
+} catch {
+  console.log("[DB] Could not parse connection URL for diagnostics");
+}
 
 const pool = new Pool({
   connectionString,

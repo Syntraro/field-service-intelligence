@@ -13,14 +13,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Loader2 } from "lucide-react";
+// 2026-04-12 UI consistency: use the canonical visit team assignment pattern,
+// not the legacy single-select TechnicianSelector. Matches EditVisitModal.
+import { VisitTeamAssignment } from "@/components/visits/VisitTeamAssignment";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import {
@@ -34,9 +30,10 @@ interface AddVisitDialogProps {
   jobVersion: number;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  technicians: any[];
-  /** Optional default technician ID (e.g., from current visit for follow-up) */
+  /** Optional default technician crew (e.g., from current visit for follow-up).
+   *  2026-04-12: accepts either the legacy single ID or the canonical array. */
   defaultTechnicianId?: string | null;
+  defaultTechnicianIds?: string[] | null;
   /** Callback when visit is successfully created - receives new visit ID for highlighting */
   onVisitCreated?: (visitId: string) => void;
   /** Visit Reschedule Architecture: conflict resolution mode from parent */
@@ -50,8 +47,8 @@ export function AddVisitDialog({
   jobVersion,
   open,
   onOpenChange,
-  technicians,
   defaultTechnicianId,
+  defaultTechnicianIds,
   onVisitCreated,
   conflictMode,
   conflictVisitId,
@@ -61,24 +58,29 @@ export function AddVisitDialog({
   const [scheduledDate, setScheduledDate] = useState("");
   const [scheduledTime, setScheduledTime] = useState("09:00");
   const [estimatedDuration, setEstimatedDuration] = useState("60");
-  // Sentinel value for "no technician" — Radix Select rejects value=""
-  const UNASSIGNED = "__unassigned__";
-  const [assignedTechnicianId, setAssignedTechnicianId] = useState<string>(UNASSIGNED);
+  // 2026-04-12: multi-crew state — matches EditVisitModal's `assignedTechnicianIds`.
+  const [assignedTechnicianIds, setAssignedTechnicianIds] = useState<string[]>([]);
   const [visitNotes, setVisitNotes] = useState("");
 
   useEffect(() => {
     if (open) {
-      // Reset form when dialog opens
       const tomorrow = new Date();
       tomorrow.setDate(tomorrow.getDate() + 1);
       setScheduledDate(format(tomorrow, "yyyy-MM-dd"));
       setScheduledTime("09:00");
       setEstimatedDuration("60");
-      // Default technician from prop (e.g., follow-up inherits from current visit)
-      setAssignedTechnicianId(defaultTechnicianId || UNASSIGNED);
+      // Default crew resolution: prefer the canonical array, fall back to the
+      // legacy single-id prop for callers still passing the old shape.
+      const seed =
+        defaultTechnicianIds && defaultTechnicianIds.length > 0
+          ? defaultTechnicianIds
+          : defaultTechnicianId
+            ? [defaultTechnicianId]
+            : [];
+      setAssignedTechnicianIds(seed);
       setVisitNotes("");
     }
-  }, [open, defaultTechnicianId]);
+  }, [open, defaultTechnicianId, defaultTechnicianIds]);
 
   // Phase 4: Use canonical calendar schedule endpoint
   // POST /api/calendar/schedule creates a job_visit and syncs to jobs table
@@ -113,6 +115,9 @@ export function AddVisitDialog({
         }
       }
 
+      // 2026-04-12: full crew persists in a single atomic request. The
+      // schedule endpoint now accepts `assignedTechnicianIds[]` directly;
+      // no follow-up PATCH is needed.
       return await apiRequest(SCHEDULE_ENDPOINT, {
         method: SCHEDULE_METHOD,
         body: JSON.stringify(data),
@@ -153,14 +158,14 @@ export function AddVisitDialog({
     // then toISOString() converts to correct UTC (matches EditVisitModal pattern)
     const startAt = new Date(`${scheduledDate}T${scheduledTime}:00`).toISOString();
 
+    // 2026-04-12 final cleanup: canonical crew input only.
     createMutation.mutate({
       jobId,
       startAt,
       durationMinutes: parseInt(estimatedDuration, 10),
-      technicianUserId: assignedTechnicianId === UNASSIGNED ? null : assignedTechnicianId || null,
+      assignedTechnicianIds,
       notes: visitNotes.trim() || undefined,
       version: jobVersion,
-      // Visit Reschedule Architecture: pass conflict resolution to backend
       ...(conflictMode && { conflictMode }),
       ...(conflictVisitId && { conflictVisitId }),
     });
@@ -215,25 +220,12 @@ export function AddVisitDialog({
               />
             </div>
             <div>
-              <Label htmlFor="assignedTechnician">Assign Technician (Optional)</Label>
-              <Select
-                value={assignedTechnicianId}
-                onValueChange={setAssignedTechnicianId}
-              >
-                <SelectTrigger data-testid="select-visit-technician">
-                  <SelectValue placeholder="Select technician..." />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
-                  {technicians.map((tech: any) => (
-                    <SelectItem key={String(tech.id)} value={String(tech.id)}>
-                      {tech.firstName && tech.lastName
-                        ? `${tech.firstName} ${tech.lastName}`
-                        : tech.email}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {/* 2026-04-12 UI consistency: canonical visit team assignment —
+                  same popover + chip UX as EditVisitModal. Multi-select. */}
+              <VisitTeamAssignment
+                value={assignedTechnicianIds}
+                onChange={setAssignedTechnicianIds}
+              />
             </div>
             <div>
               <Label htmlFor="visitNotes">Notes (Optional)</Label>

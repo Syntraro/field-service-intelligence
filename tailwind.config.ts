@@ -14,6 +14,12 @@ export default {
       boxShadow: {
         card: "0 8px 18px rgba(15, 23, 42, 0.04)",
       },
+      // ──────────────────────────────────────────────────────────────────
+      // UI typography standard (see docs/UI_TYPOGRAPHY.md):
+      //   - Default body text = `text-xs` (12px target).
+      //   - `text-sm` is for headers / emphasis / titles, not row content.
+      //   - `text-base` is page-level prose; do not use for UI chrome.
+      // ──────────────────────────────────────────────────────────────────
       fontSize: {
         xs: ["0.8rem", "1.2rem"],      // ~12.8px - timestamps, tiny labels
         sm: ["0.9rem", "1.3rem"],      // ~14.4px - helper text, secondary labels

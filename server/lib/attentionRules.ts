@@ -95,8 +95,9 @@ const RULES: AttentionRule[] = [
   {
     ruleType: "job.unassigned",
     severity: "medium",
+    // 2026-04-12 (Option A): "unassigned" is now defined as "scheduled job
+    // with no active visit carrying a crew" — jobs no longer own assignment.
     async detect(tenantId) {
-      // Scheduled jobs with no technician assigned
       const rows = await db
         .select({
           id: jobs.id,
@@ -110,8 +111,15 @@ const RULES: AttentionRule[] = [
           eq(jobs.companyId, tenantId),
           eq(jobs.status, "open"),
           isNotNull(jobs.scheduledStart),
-          isNull(jobs.primaryTechnicianId),
           activeJobFilter(),
+          // No active visit on this job carries a non-empty crew.
+          sql`NOT EXISTS (
+            SELECT 1 FROM job_visits jv_u
+            WHERE jv_u.job_id = ${jobs.id}
+              AND jv_u.company_id = ${jobs.companyId}
+              AND jv_u.is_active = true
+              AND COALESCE(array_length(jv_u.assigned_technician_ids, 1), 0) > 0
+          )`,
         ));
       return rows.map(r => ({
         entityType: "job" as const,
@@ -126,7 +134,13 @@ const RULES: AttentionRule[] = [
           jobNumber: jobs.jobNumber,
           status: jobs.status,
           scheduledStart: jobs.scheduledStart,
-          primaryTechnicianId: jobs.primaryTechnicianId,
+          hasCrewVisit: sql<boolean>`EXISTS (
+            SELECT 1 FROM job_visits jv_u2
+            WHERE jv_u2.job_id = ${jobs.id}
+              AND jv_u2.company_id = ${jobs.companyId}
+              AND jv_u2.is_active = true
+              AND COALESCE(array_length(jv_u2.assigned_technician_ids, 1), 0) > 0
+          )`,
           companyName: sql<string>`COALESCE(${customerCompanies.name}, ${clients.companyName})`,
         })
         .from(jobs)
@@ -138,7 +152,7 @@ const RULES: AttentionRule[] = [
           activeJobFilter(),
         ))
         .limit(1);
-      if (!row || row.status !== "open" || !row.scheduledStart || row.primaryTechnicianId) return null;
+      if (!row || row.status !== "open" || !row.scheduledStart || row.hasCrewVisit) return null;
       return {
         entityType: "job" as const,
         entityId: row.id,

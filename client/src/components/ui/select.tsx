@@ -6,6 +6,14 @@ import { Check, ChevronDown, ChevronUp } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
+/**
+ * UI typography standard (see docs/UI_TYPOGRAPHY.md):
+ *   Default body font size for select triggers + items = 12px (`text-xs`).
+ *   SelectTrigger currently renders `text-sm`; SelectItem inherits the
+ *   content's text size. Do not flip the default here without sweeping
+ *   every form that depends on the current `text-sm` baseline.
+ */
+
 const Select = SelectPrimitive.Root
 
 const SelectGroup = SelectPrimitive.Group

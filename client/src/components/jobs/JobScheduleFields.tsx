@@ -53,9 +53,8 @@ export interface JobScheduleValue {
   time: string;
   /** Duration in minutes (default 60 for timed events) */
   durationMinutes: number;
-  /** Primary technician ID */
-  primaryTechnicianId: string;
-  /** All assigned technician IDs (for future multi-select) */
+  /** All assigned technician IDs — canonical crew (2026-04-12 final cleanup:
+   *  primaryTechnicianId form field removed, jobs/visits have no primary authority). */
   assignedTechnicianIds: string[];
 }
 
@@ -86,7 +85,8 @@ export function createDefaultScheduleValue(options?: {
   time?: string;
   isAllDay?: boolean;
   durationMinutes?: number;
-  primaryTechnicianId?: string;
+  /** 2026-04-12 (Option A): canonical crew input. `primaryTechnicianId` option
+   * removed — use a single-element array instead if you have exactly one tech. */
   assignedTechnicianIds?: string[];
 }): JobScheduleValue {
   const date = options?.date
@@ -95,9 +95,7 @@ export function createDefaultScheduleValue(options?: {
       : format(options.date, "yyyy-MM-dd")
     : "";
 
-  // assignedTechnicianIds takes precedence; fall back to singleton from primaryTechnicianId
-  const techIds = options?.assignedTechnicianIds
-    ?? (options?.primaryTechnicianId ? [options.primaryTechnicianId] : []);
+  const techIds = options?.assignedTechnicianIds ?? [];
 
   return {
     unscheduled: options?.unscheduled ?? true,
@@ -105,27 +103,28 @@ export function createDefaultScheduleValue(options?: {
     date,
     time: options?.time ?? (options?.unscheduled === false ? "09:00" : ""),
     durationMinutes: options?.durationMinutes ?? 60,
-    primaryTechnicianId: techIds[0] ?? "",
     assignedTechnicianIds: techIds,
   };
 }
 
 /**
- * Parse existing job data into JobScheduleValue
+ * Parse existing job data into JobScheduleValue.
+ * 2026-04-12 (Option A): `assignedTechnicianIds` on the incoming job is the
+ * visit-derived crew union (computed server-side). No job-level fallback.
  */
 export function parseJobToScheduleValue(job: {
   scheduledStart?: Date | string | null;
   scheduledEnd?: Date | string | null;
   isAllDay?: boolean;
-  primaryTechnicianId?: string | null;
   assignedTechnicianIds?: string[] | null;
 }): JobScheduleValue {
   const hasSchedule = !!job.scheduledStart;
+  const techIds = Array.isArray(job.assignedTechnicianIds) ? job.assignedTechnicianIds : [];
 
   if (!hasSchedule) {
     return createDefaultScheduleValue({
       unscheduled: true,
-      primaryTechnicianId: job.primaryTechnicianId || undefined,
+      assignedTechnicianIds: techIds,
     });
   }
 
@@ -136,7 +135,6 @@ export function parseJobToScheduleValue(job: {
 
   const isAllDay = job.isAllDay ?? false;
 
-  // Compute duration from start/end
   let durationMinutes = 60;
   if (job.scheduledEnd) {
     const end =
@@ -148,18 +146,12 @@ export function parseJobToScheduleValue(job: {
     );
   }
 
-  // Prefer assignedTechnicianIds; fall back to singleton from primaryTechnicianId
-  const techIds = (job.assignedTechnicianIds && job.assignedTechnicianIds.length > 0)
-    ? job.assignedTechnicianIds
-    : (job.primaryTechnicianId ? [job.primaryTechnicianId] : []);
-
   return {
     unscheduled: false,
     isAllDay,
     date: format(start, "yyyy-MM-dd"),
     time: isAllDay ? "" : format(start, "HH:mm"),
     durationMinutes: isAllDay ? 1440 : durationMinutes,
-    primaryTechnicianId: techIds[0] || "",
     assignedTechnicianIds: techIds,
   };
 }
@@ -211,17 +203,10 @@ export function JobScheduleFields({
   // Update handler helper
   const update = (partial: Partial<JobScheduleValue>) => {
     const newValue = { ...value, ...partial };
-
-    // Keep primaryTechnicianId = first assigned tech (backward compat)
-    if (partial.assignedTechnicianIds !== undefined) {
-      newValue.primaryTechnicianId = partial.assignedTechnicianIds[0] || "";
-    }
-
     // When switching to/from all-day, update isAllDay
     if (partial.time !== undefined) {
       newValue.isAllDay = !partial.time;
     }
-
     onChange(newValue);
   };
 

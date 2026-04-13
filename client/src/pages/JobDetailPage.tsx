@@ -45,6 +45,7 @@ import {
   MapPin,
   MessageSquare,
   RotateCcw,
+  Send,
   Wrench,
   X,
   Tag,
@@ -67,6 +68,10 @@ import { ActionRequiredModal, getHoldReasonLabel } from "@/components/ActionRequ
 import { JobStatusTimeline } from "@/components/job/JobStatusTimeline";
 import { StatusProgressBar, getJobStatusDisplay, getPriorityDisplay, SchedulingHistory } from "@/components/job";
 import { TimeEntryModal, type TimeEntryForModal } from "@/components/time";
+// Phase 12 (2026-04-12): customer-facing job email modal.
+import { SendJobModal } from "@/components/communication/SendJobModal";
+// Phase 15 (2026-04-12): email delivery status card.
+import { DeliveryStatusCard } from "@/components/communication/DeliveryStatusCard";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { StatusPill, statusToVariant } from "@/components/ui/status-pill";
@@ -515,6 +520,8 @@ export default function JobDetailPage() {
   const [showCompleteJobConfirm, setShowCompleteJobConfirm] = useState(false);
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [showActionRequiredModal, setShowActionRequiredModal] = useState(false);
+  // Phase 12 (2026-04-12): customer-facing job email modal.
+  const [showSendJobEmail, setShowSendJobEmail] = useState(false);
   const [showScheduleVisitDialog, setShowScheduleVisitDialog] = useState(false);
   // notesOpen removed — notes always visible, no vertical collapse
   const [activityOpen, setActivityOpen] = useState(false);
@@ -627,6 +634,21 @@ export default function JobDetailPage() {
     if (!techId) return "Unassigned";
     const tech = allTechnicians.find((t) => String(t.id) === techId);
     return tech ? getMemberDisplayName(tech) : "Unknown";
+  };
+
+  const getVisitCrewLabel = (visit: { assignedTechnicianIds?: string[] | null }): string => {
+    const ids = Array.isArray(visit.assignedTechnicianIds) ? visit.assignedTechnicianIds : [];
+    if (ids.length === 0) return "Unassigned";
+    const names = ids
+      .map((id) => {
+        const tech = allTechnicians.find((t) => String(t.id) === id);
+        return tech ? getMemberDisplayName(tech) : null;
+      })
+      .filter((n): n is string => !!n);
+    if (names.length === 0) return "Unknown";
+    if (names.length === 1) return names[0];
+    if (names.length === 2) return `${names[0]}, ${names[1]}`;
+    return `${names[0]} +${names.length - 1}`;
   };
 
   // Visit Reschedule Architecture: check for existing active visits before scheduling.
@@ -859,6 +881,9 @@ export default function JobDetailPage() {
             ════════════════════════════════════════════════════════════════ */}
         <div className="space-y-2.5 min-w-0 min-h-0 overflow-y-auto lg:pr-1 h-full">
 
+          {/* Phase 15 (2026-04-12): email delivery status + resend. */}
+          <DeliveryStatusCard entityType="job" entityId={job.id} />
+
           {/* ── Unified Header + Action Bar ────────────────────────────── */}
           <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="job-header-command">
             {/* Section A: Header content — title dominant, metadata right */}
@@ -1035,6 +1060,13 @@ export default function JobDetailPage() {
                     </DropdownMenuItem>
                   )}
                   <DropdownMenuSeparator />
+                  {/* Phase 12 (2026-04-12): dispatch a customer-facing job email. */}
+                  {isOfficeUser && (
+                    <DropdownMenuItem onClick={() => setShowSendJobEmail(true)} data-testid="menu-send-job-email">
+                      <Send className="h-4 w-4 mr-2" />
+                      Send Email
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuItem onClick={() => setLocation(`/jobs/new?cloneFrom=${job.id}`)} data-testid="menu-create-similar">
                     <Copy className="h-4 w-4 mr-2" />
                     Create Similar Job
@@ -1309,7 +1341,7 @@ export default function JobDetailPage() {
                           {formatVisitDate(visit)}
                         </span>
                         <span className="text-xs text-muted-foreground truncate max-w-[120px] shrink-0">
-                          {getVisitTechName(visit.assignedTechnicianId)}
+                          {getVisitCrewLabel(visit as any)}
                         </span>
                         {visit.status !== "scheduled" && (
                           <Badge className={cn("text-[9px] px-1.5 py-0 shrink-0 leading-tight", VISIT_STATUS_COLORS[visit.status] || "")}>
@@ -1597,7 +1629,6 @@ export default function JobDetailPage() {
             setConflictVisitId(undefined);
           }
         }}
-        technicians={allTechnicians}
         conflictMode={conflictMode}
         conflictVisitId={conflictVisitId}
       />
@@ -1713,8 +1744,20 @@ export default function JobDetailPage() {
         }}
         jobId={job.id}
         mode={timeEntryModal.mode}
-        assignedTechnicianIds={job.assignedTechnicianIds || []}
+        // 2026-04-12 (Option A): server-returned assignedTechnicianIds is the
+        // visit-derived crew union for this job. Safe display-only read.
+        assignedTechnicianIds={Array.isArray((job as any).assignedTechnicianIds) ? (job as any).assignedTechnicianIds : []}
         entry={timeEntryModal.entry}
+      />
+
+      {/* Phase 12 (2026-04-12): customer-facing job email modal. */}
+      <SendJobModal
+        jobId={job.id}
+        isOpen={showSendJobEmail}
+        onClose={() => setShowSendJobEmail(false)}
+        onSuccess={() => {
+          toast({ title: "Job email sent" });
+        }}
       />
     </div>
   );

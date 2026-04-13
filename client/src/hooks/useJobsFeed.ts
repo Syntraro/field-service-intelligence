@@ -31,7 +31,7 @@ export interface JobFeedItem {
   locationName: string | null;
   locationAddress: string | null;
   locationCity: string | null;
-  primaryTechnicianId: string | null;
+  // 2026-04-12 final cleanup: primaryTechnicianId dropped from feed response.
   assignedTechnicianIds: string[] | null;
   onHoldAt: string | null;
   // Fields below are only present in detail response, not in feed

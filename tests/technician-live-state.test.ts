@@ -104,7 +104,7 @@ async function createFixtures() {
   // Assign tech A as the primary, leave tech B unassigned by default.
   await db
     .update(jobVisits)
-    .set({ assignedTechnicianId: userId, assignedTechnicianIds: [userId] })
+    .set({ assignedTechnicianIds: [userId] })
     .where(eq(jobVisits.id, visitId));
 }
 
@@ -127,7 +127,7 @@ async function resetState() {
       status: "scheduled",
       checkedInAt: null,
       previousStatus: null,
-      assignedTechnicianId: userId,
+      assignedTechnicianIds: [userId],
       assignedTechnicianIds: [userId],
     })
     .where(eq(jobVisits.id, visitId));
@@ -293,7 +293,7 @@ describe("getTechnicianLiveStates — dispatcher live state projection", () => {
     await db
       .update(jobVisits)
       .set({
-        assignedTechnicianId: userId,
+        assignedTechnicianIds: [userId],
         assignedTechnicianIds: [userId, secondUserId],
         status: "in_progress",
       })

@@ -35,6 +35,8 @@ import {
 import type { QueryCtx } from "../lib/queryCtx";
 import { activeJobFilter } from "./jobFilters";
 import { effectiveEndExpr, locationDisplayNameExpr } from "../lib/queryHelpers";
+// 2026-04-12 (Option A): visit-derived crew resolver.
+import { getVisitCrewsForJobs, getVisitCrewForJob } from "./visitCrew";
 
 // ---------------------------------------------------------------------------
 // Step A1: JobFeedFilters — every WHERE clause across all 6 divergent queries
@@ -86,7 +88,7 @@ export interface JobFeedItem {
   locationName: string | null;
   locationAddress: string | null;
   locationCity: string | null;
-  primaryTechnicianId: string | null;
+  // 2026-04-12 final cleanup: primaryTechnicianId dropped.
   assignedTechnicianIds: string[] | null;
   // Hold / action-required fields (needed by Jobs list page and dashboard modal)
   onHoldAt: string | null;
@@ -171,8 +173,10 @@ const feedSelectFields = {
   locationName: clients.location,
   locationAddress: clients.address,
   locationCity: clients.city,
-  primaryTechnicianId: jobs.primaryTechnicianId,
-  assignedTechnicianIds: jobs.assignedTechnicianIds,
+  // 2026-04-12 (Option A): primaryTechnicianId / assignedTechnicianIds are
+  // NOT projected from the quiescent job columns. They are attached
+  // post-query from `job_visits` via getVisitCrewsForJobs() in the callers
+  // that materialize feed responses.
   onHoldAt: jobs.onHoldAt,
   holdReason: jobs.holdReason,
   holdNotes: jobs.holdNotes,
@@ -257,7 +261,8 @@ function mapFeedRow(row: any): JobFeedItem {
     locationName: row.locationName ?? null,
     locationAddress: row.locationAddress ?? null,
     locationCity: row.locationCity ?? null,
-    primaryTechnicianId: row.primaryTechnicianId ?? null,
+    // 2026-04-12 final cleanup: crew overlay attached post-mapping via
+    // getVisitCrewsForJobs(). primaryTechnicianId dropped.
     assignedTechnicianIds: row.assignedTechnicianIds ?? null,
     onHoldAt: toISOOrNull(row.onHoldAt),
     holdReason: row.holdReason ?? null,
@@ -381,9 +386,17 @@ export async function getJobsFeed(
   }
 
   // Technician filter
+  // 2026-04-12 (Option A): resolve via active visits, not the quiescent
+  // jobs.assigned_technician_ids column.
   if (filters.technicianId) {
     conditions.push(
-      sql`${filters.technicianId} = ANY(${jobs.assignedTechnicianIds})`
+      sql`EXISTS (
+        SELECT 1 FROM job_visits jv_tf
+        WHERE jv_tf.job_id = ${jobs.id}
+          AND jv_tf.company_id = ${jobs.companyId}
+          AND jv_tf.is_active = true
+          AND ${filters.technicianId} = ANY(jv_tf.assigned_technician_ids)
+      )`
     );
   }
 
@@ -502,10 +515,18 @@ export async function getJobsFeed(
     .limit(limit)
     .offset(offset);
 
-  return {
-    items: rows.map(mapFeedRow),
-    total: rows.length,
-  };
+  // 2026-04-12 (Option A): attach visit-derived crew per job.
+  const crewMap = await getVisitCrewsForJobs(
+    ctx.tenantId,
+    rows.map((r: any) => r.id),
+  );
+  const items = rows.map((r: any) => {
+    const item = mapFeedRow(r);
+    item.assignedTechnicianIds = crewMap.get(r.id)?.assignedTechnicianIds ?? [];
+    return item;
+  });
+
+  return { items, total: rows.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -599,5 +620,8 @@ export async function getJobHeader(
     .limit(1);
 
   if (rows.length === 0) return null;
-  return mapDetailRow(rows[0]);
+  const detail = mapDetailRow(rows[0]);
+  const crew = await getVisitCrewForJob(ctx.tenantId, detail.id);
+  detail.assignedTechnicianIds = crew.assignedTechnicianIds;
+  return detail;
 }

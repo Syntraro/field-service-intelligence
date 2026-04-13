@@ -66,7 +66,6 @@ interface ScheduledVisitRow {
   estimatedDurationMinutes: number | null;
   status: string;
   checkedInAt: Date | null;
-  technicianId: string | null;
   technicianIds: string[] | null;
   locationLat: string | null;
   locationLng: string | null;
@@ -115,7 +114,6 @@ async function fetchScheduledVisits(tenantId: string): Promise<ScheduledVisitRow
       jv.estimated_duration_minutes AS "estimatedDurationMinutes",
       jv.status,
       jv.checked_in_at AS "checkedInAt",
-      jv.assigned_technician_id AS "technicianId",
       jv.assigned_technician_ids AS "technicianIds",
       cl.lat           AS "locationLat",
       cl.lng           AS "locationLng",
@@ -166,11 +164,7 @@ function computeDownstreamImpact(
   allVisits: ScheduledVisitRow[],
   driftMinutes: number,
 ): DownstreamImpact[] {
-  const techIds = runningVisit.technicianIds?.length
-    ? runningVisit.technicianIds
-    : runningVisit.technicianId
-      ? [runningVisit.technicianId]
-      : [];
+  const techIds = runningVisit.technicianIds?.length ? runningVisit.technicianIds : [];
   if (techIds.length === 0) return [];
 
   // Get all visits for same tech(s), after the running visit, same day
@@ -179,7 +173,7 @@ function computeDownstreamImpact(
     .filter((v) => {
       if (v.visitId === runningVisit.visitId) return false;
       if (!v.scheduledStart) return false;
-      const vTechIds = v.technicianIds?.length ? v.technicianIds : v.technicianId ? [v.technicianId] : [];
+      const vTechIds = v.technicianIds?.length ? v.technicianIds : [];
       return techIds.some((t) => vTechIds.includes(t));
     })
     .filter((v) => new Date(v.scheduledStart!).getTime() > runningStart)
@@ -267,11 +261,7 @@ export async function computeVisitStatusSignals(
   // Build lookup: techId → assigned visitIds (to know who should be working)
   const techVisitMap = new Map<string, ScheduledVisitRow[]>();
   for (const v of visits) {
-    const techIds = v.technicianIds?.length
-      ? v.technicianIds
-      : v.technicianId
-        ? [v.technicianId]
-        : [];
+    const techIds = v.technicianIds?.length ? v.technicianIds : [];
     for (const tid of techIds) {
       if (!techVisitMap.has(tid)) techVisitMap.set(tid, []);
       techVisitMap.get(tid)!.push(v);
@@ -297,7 +287,7 @@ export async function computeVisitStatusSignals(
       const msg = `Visit for ${v.locationName || "unknown"} (Job #${v.jobNumber}) is late — not started 15+ min past scheduled time`;
       signals.push({
         visitId: v.visitId,
-        technicianId: v.technicianId || "",
+        technicianId: v.technicianIds?.[0] || "",
         type: "visit.late",
         message: msg,
         severity: "high",
@@ -318,7 +308,7 @@ export async function computeVisitStatusSignals(
       const msg = `Visit for ${v.locationName || "unknown"} (Job #${v.jobNumber}) is overdue — past scheduled end`;
       signals.push({
         visitId: v.visitId,
-        technicianId: v.technicianId || "",
+        technicianId: v.technicianIds?.[0] || "",
         type: "visit.overdue",
         message: msg,
         severity: "high",
@@ -348,7 +338,7 @@ export async function computeVisitStatusSignals(
         const meta: RunningLongMeta = {
           jobNumber: v.jobNumber,
           locationName: v.locationName,
-          technicianId: v.technicianId,
+          technicianId: v.technicianIds?.[0] ?? null,
           plannedStart: start.toISOString(),
           plannedEnd: effectiveEnd.toISOString(),
           elapsedMinutes,
@@ -360,7 +350,7 @@ export async function computeVisitStatusSignals(
         const msg = `Visit at ${v.locationName || "unknown"} (Job #${v.jobNumber}) running ${driftMinutes}m over — ${downstream.length} downstream visit(s) affected`;
         signals.push({
           visitId: v.visitId,
-          technicianId: v.technicianId || "",
+          technicianId: v.technicianIds?.[0] || "",
           type: "visit.running_long",
           message: msg,
           severity,
@@ -378,11 +368,7 @@ export async function computeVisitStatusSignals(
       const locLat = parseFloat(v.locationLat);
       const locLng = parseFloat(v.locationLng);
       if (!isNaN(locLat) && !isNaN(locLng)) {
-        const techIds = v.technicianIds?.length
-          ? v.technicianIds
-          : v.technicianId
-            ? [v.technicianId]
-            : [];
+        const techIds = v.technicianIds?.length ? v.technicianIds : [];
 
         for (const tid of techIds) {
           const tp = techPosMap.get(tid);
@@ -480,7 +466,6 @@ export async function fetchRemainderVisits(
       jv.scheduled_start AS "scheduledStart", jv.scheduled_end AS "scheduledEnd",
       jv.estimated_duration_minutes AS "estimatedDurationMinutes",
       jv.status, jv.checked_in_at AS "checkedInAt",
-      jv.assigned_technician_id AS "technicianId",
       jv.assigned_technician_ids AS "technicianIds",
       cl.lat AS "locationLat", cl.lng AS "locationLng",
       cl.company_name AS "locationName", j.job_number AS "jobNumber"
@@ -494,7 +479,7 @@ export async function fetchRemainderVisits(
   if (!sourceVisit) throw new Error("Visit not found");
   if (!sourceVisit.scheduledStart) throw new Error("Visit has no schedule");
 
-  const technicianId = sourceVisit.technicianId || (sourceVisit.technicianIds?.[0] ?? "");
+  const technicianId = sourceVisit.technicianIds?.[0] ?? "";
   if (!technicianId) throw new Error("Visit has no assigned technician");
 
   // Fetch remaining visits for the same tech, same day, after this visit
@@ -504,7 +489,6 @@ export async function fetchRemainderVisits(
       jv.scheduled_start AS "scheduledStart", jv.scheduled_end AS "scheduledEnd",
       jv.estimated_duration_minutes AS "estimatedDurationMinutes",
       jv.status, jv.checked_in_at AS "checkedInAt",
-      jv.assigned_technician_id AS "technicianId",
       jv.assigned_technician_ids AS "technicianIds",
       cl.lat AS "locationLat", cl.lng AS "locationLng",
       cl.company_name AS "locationName", j.job_number AS "jobNumber"
@@ -520,10 +504,7 @@ export async function fetchRemainderVisits(
       AND jv.scheduled_start > ${new Date(sourceVisit.scheduledStart)}
       AND jv.scheduled_start < ${new Date(sourceVisit.scheduledStart).toISOString().split("T")[0]}::date + INTERVAL '1 day'
       AND jv.id != ${visitId}
-      AND (
-        jv.assigned_technician_id = ${technicianId}
-        OR ${technicianId} = ANY(jv.assigned_technician_ids)
-      )
+      AND ${technicianId} = ANY(jv.assigned_technician_ids)
     ORDER BY jv.scheduled_start ASC
   `);
 

@@ -61,9 +61,9 @@ interface ScheduleParams {
   /** Real persisted visit UUID if one exists; undefined for backlog items
    *  without a pre-existing visit row. Never pass job.id here. */
   visitId?: string;
-  /** Technician to assign. Null = schedule without assignment (unassigned lane).
-   *  Server accepts nullable — aligned 2026-03-26. */
-  technicianUserId: string | null;
+  /** Canonical crew. `[]` / null = unassigned lane.
+   *  2026-04-12 final cleanup: replaced legacy `technicianUserId`. */
+  assignedTechnicianIds: string[] | null;
   startAt: string;
   endAt: string;
   /** When true, schedule as all-day/any-time visit (UTC midnight→23:59:59) */
@@ -75,12 +75,15 @@ interface ScheduleParams {
 interface RescheduleParams {
   visitId: string;
   jobId: string;
-  technicianUserId?: string | null;
+  /** Canonical crew.
+   *    undefined = crew unchanged,
+   *    null / [] = clear crew (unassigned lane),
+   *    [id, ...] = replace crew with this list. */
+  assignedTechnicianIds?: string[] | null;
   startAt: string;
   endAt: string;
   /** When true, reschedule as all-day/any-time visit (UTC midnight→23:59:59) */
   allDay?: boolean;
-  /** 2026-03-23: Visit notes — passed through to server so modal save doesn't need a separate PATCH */
   visitNotes?: string | null;
 }
 
@@ -229,7 +232,9 @@ function optimisticReschedule(
   visitId: string,
   startAt: string,
   endAt: string,
-  technicianUserId?: string | null,
+  // 2026-04-12 final cleanup: canonical crew input.
+  //   undefined = crew unchanged, null / [] = clear, [ids] = replace.
+  assignedTechnicianIds?: string[] | null,
   allDay?: boolean,
 ): void {
   const durationMinutes = Math.round(
@@ -250,24 +255,14 @@ function optimisticReschedule(
         endAt,
         date,
         durationMinutes,
-        // Patch allDay flag so visit immediately renders in correct surface (timeline vs any-time column)
         ...(allDay !== undefined && { allDay }),
       };
-      // Update technician assignment if changed (single-tech only).
-      // 2026-03-26: Also handles explicit null (unassign) for drop-to-Unassigned lane.
-      if (technicianUserId !== undefined) {
-        if (technicianUserId === null) {
-          // Unassign — clear technician fields so visit moves to Unassigned lane immediately
-          patched.primaryTechnicianId = null;
-          patched.assignedTechnicianIds = [];
-          patched.technicians = [];
-        } else {
-          patched.primaryTechnicianId = technicianUserId;
-          patched.assignedTechnicianIds = [technicianUserId];
-          patched.technicians = patched.technicians.length > 0
-            ? [{ ...patched.technicians[0], id: technicianUserId }]
-            : [{ id: technicianUserId, name: technicianUserId, color: null }];
-        }
+      if (assignedTechnicianIds !== undefined) {
+        const crew = Array.isArray(assignedTechnicianIds) ? assignedTechnicianIds : [];
+        patched.assignedTechnicianIds = crew;
+        patched.technicians = crew.length > 0
+          ? crew.map((id, i) => (patched.technicians[i] ? { ...patched.technicians[i], id } : { id, name: id, color: null }))
+          : [];
       }
       events[idx] = patched;
       return { ...old, events };
@@ -285,7 +280,8 @@ function optimisticSchedule(
   jobId: string,
   startAt: string,
   endAt: string,
-  technicianUserId: string | null,
+  // 2026-04-12 final cleanup: canonical crew; null / [] = unassigned.
+  assignedTechnicianIds: string[] | null,
 ): void {
   const durationMinutes = Math.round(
     (new Date(endAt).getTime() - new Date(startAt).getTime()) / 60000,
@@ -337,9 +333,10 @@ function optimisticSchedule(
       date,
       durationMinutes,
       version: jobData.version,
-      assignedTechnicianIds: technicianUserId ? [technicianUserId] : [],
-      primaryTechnicianId: technicianUserId,
-      technicians: technicianUserId ? [{ id: technicianUserId, name: technicianUserId, color: null }] : [],
+      assignedTechnicianIds: Array.isArray(assignedTechnicianIds) ? assignedTechnicianIds : [],
+      technicians: Array.isArray(assignedTechnicianIds)
+        ? assignedTechnicianIds.map(id => ({ id, name: id, color: null }))
+        : [],
       // 2026-03-23: Carry through location context for display
       locationAddress: jobData.locationAddress,
       locationCity: jobData.locationCity,
@@ -402,7 +399,6 @@ function optimisticUnschedule(
       customerCompanyId: eventData.customerCompanyId ?? null,
       customerCompanyName: eventData.customerCompanyName ?? null,
       version: eventData.version,
-      primaryTechnicianId: null,
       assignedTechnicianIds: [],
       technicians: [],
       durationMinutes: eventData.durationMinutes,
@@ -702,31 +698,30 @@ export function useDispatchPreviewMutations() {
 
   /** Schedule an unscheduled job (first visit). POST /api/calendar/schedule */
   const scheduleVisit = useCallback(async (params: ScheduleParams) => {
-    const { jobId, visitId, technicianUserId, startAt, endAt, allDay, visitNotes } = params;
+    const { jobId, visitId, assignedTechnicianIds, startAt, endAt, allDay, visitNotes } = params;
 
-    // 2026-03-26: Use real visitId for optimistic tracking when available.
-    // For backlog items without a persisted visit, use jobId as the optimistic
-    // tracking key. This is explicitly NOT a visit identity — it's a temporary
-    // key for cache lookup, concurrency chaining, and saving indicators.
-    // The success-path normalization replaces it with the real visit UUID.
     const optimisticKey = visitId ?? jobId;
-
-    // Snapshot before optimistic patch so rollback restores true pre-mutation state
     const snapshot = snapshotDispatchCache(queryClient);
 
-    // Optimistic: move from unscheduled → scheduled immediately (outside chain for instant feedback)
-    optimisticSchedule(queryClient, optimisticKey, jobId, startAt, endAt, technicianUserId);
+    optimisticSchedule(queryClient, optimisticKey, jobId, startAt, endAt, assignedTechnicianIds);
 
-    // Chain per-visit: version resolved after any prior mutation completes
     return chainForVisit(optimisticKey, async () => {
       const version = freshVersion(optimisticKey);
-
       markSaving(optimisticKey);
       inflightRef.current++;
       try {
+        // 2026-04-12 final cleanup: canonical crew input.
         const resp = await apiRequest<{ version?: number }>("/api/calendar/schedule", {
           method: "POST",
-          body: JSON.stringify({ jobId, technicianUserId, startAt, endAt, version, allDay: allDay ?? false, ...(visitNotes != null && { notes: visitNotes }) }),
+          body: JSON.stringify({
+            jobId,
+            assignedTechnicianIds: Array.isArray(assignedTechnicianIds) ? assignedTechnicianIds : [],
+            startAt,
+            endAt,
+            version,
+            allDay: allDay ?? false,
+            ...(visitNotes != null && { notes: visitNotes }),
+          }),
         });
         // Cancel pending refetches then patch version to prevent stale-refetch overwrites
         if (resp?.version != null) await cancelAndPatchVersion(optimisticKey, resp.version);
@@ -767,15 +762,14 @@ export function useDispatchPreviewMutations() {
     });
   }, [freshVersion, queryClient, backgroundInvalidate, handleMutationError, chainForVisit, markSaving, clearSaving, cancelAndPatchVersion]);
 
-  /** Reschedule an existing scheduled visit. Fallback routing: new then old. */
+  /** Reschedule an existing scheduled visit. */
   const rescheduleVisit = useCallback(async (params: RescheduleParams) => {
-    const { visitId, jobId, technicianUserId, startAt, endAt, allDay, visitNotes } = params;
+    const { visitId, jobId, assignedTechnicianIds, startAt, endAt, allDay, visitNotes } = params;
 
-    // Snapshot before optimistic patch so rollback restores true pre-mutation state
     const snapshot = snapshotDispatchCache(queryClient);
 
-    // Optimistic: update position/lane immediately (outside chain for instant feedback)
-    optimisticReschedule(queryClient, visitId, startAt, endAt, technicianUserId, allDay);
+    // Optimistic update: crew change semantics match server intent.
+    optimisticReschedule(queryClient, visitId, startAt, endAt, assignedTechnicianIds, allDay);
 
     // Chain per-visit: version resolved after any prior mutation completes
     return chainForVisit(visitId, async () => {
@@ -790,10 +784,22 @@ export function useDispatchPreviewMutations() {
       try {
         let resp: any;
         try {
-          // Pass allDay through; defaults to false for timed drag-reschedules
+          // 2026-04-12 final cleanup: only send assignedTechnicianIds when the
+          // caller explicitly wants to change the crew. `undefined` omits the
+          // field so the server leaves the crew unchanged.
+          const body: Record<string, unknown> = {
+            startAt,
+            endAt,
+            version,
+            allDay: allDay ?? false,
+            ...(visitNotes != null && { notes: visitNotes }),
+          };
+          if (assignedTechnicianIds !== undefined) {
+            body.assignedTechnicianIds = assignedTechnicianIds;
+          }
           resp = await apiRequest(`/api/calendar/visit/${visitId}/reschedule`, {
             method: "PATCH",
-            body: JSON.stringify({ technicianUserId, startAt, endAt, version, allDay: allDay ?? false, ...(visitNotes != null && { notes: visitNotes }) }),
+            body: JSON.stringify(body),
           });
         } catch (newErr: any) {
           // Graceful recovery: not-found means stale state — refetch instead of fallback cascade

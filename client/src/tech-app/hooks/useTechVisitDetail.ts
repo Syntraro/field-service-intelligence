@@ -62,7 +62,6 @@ interface BackendVisit {
   scheduledEnd: string | null;
   isAllDay: boolean;
   estimatedDurationMinutes: number | null;
-  assignedTechnicianId: string | null;
   assignedTechnicianIds: string[] | null;
   equipmentIds: string[] | null;
   status: string;
@@ -104,6 +103,17 @@ interface BackendLocation {
   phone: string | null;
 }
 
+export interface BackendNoteAttachment {
+  id: string;
+  noteId: string;
+  fileId: string;
+  originalName: string | null;
+  mimeType: string | null;
+  size: number | null;
+  storageProvider?: string | null;
+  status?: string | null;
+}
+
 export interface BackendNote {
   id: string;
   noteText: string;
@@ -113,6 +123,7 @@ export interface BackendNote {
   userId: string;
   userName: string | null;
   userFirstName: string | null;
+  attachments?: BackendNoteAttachment[];
 }
 
 // ── UI visit type (what VisitDetailPage renders) ──
@@ -166,6 +177,7 @@ export interface DetailNote {
   timestamp: string;
   author: string;
   equipmentId: string | null;
+  attachments: BackendNoteAttachment[];
 }
 
 export interface DetailPart {
@@ -218,6 +230,7 @@ function toDetailVisit(data: VisitDetailResponse): DetailVisit {
       timestamp: n.createdAt,
       author: n.userFirstName || n.userName || "Technician",
       equipmentId: n.equipmentId ?? null,
+      attachments: n.attachments ?? [],
     })),
     parts: (data.parts ?? []).map(p => ({
       id: p.id,

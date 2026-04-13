@@ -46,12 +46,11 @@ import {
 } from "lucide-react";
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
-import { useTechniciansDirectory } from "@/hooks/useTechnicians";
-import { getMemberDisplayName } from "@/lib/displayName";
 import { detectScheduleConflict } from "@/lib/scheduleOverlapCheck";
 import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import { AddEquipmentDialog } from "@/components/AddEquipmentDialog";
+import { VisitTeamAssignment } from "@/components/visits/VisitTeamAssignment";
 import type { JobVisit } from "@shared/schema";
 import type { LineItemDraft } from "@shared/lineItem";
 import { parseMoney } from "@shared/lineItem";
@@ -89,12 +88,13 @@ export interface EditVisitModalProps {
   locationPhone?: string;
   /** Location ID for equipment creation — enables "Add equipment to job" action */
   locationId?: string;
+  // 2026-04-12 final cleanup: canonical crew inputs for dispatch callbacks.
   onDispatchSchedule?: (params: {
-    jobId: string; visitId: string; technicianUserId: string;
+    jobId: string; visitId: string; assignedTechnicianIds: string[];
     startAt: string; endAt: string; visitNotes?: string | null;
   }) => void;
   onDispatchReschedule?: (params: {
-    visitId: string; jobId: string; technicianUserId?: string | null;
+    visitId: string; jobId: string; assignedTechnicianIds?: string[] | null;
     startAt: string; endAt: string; visitNotes?: string | null;
   }) => void;
   onDispatchUpdateCrew?: (params: {
@@ -123,7 +123,11 @@ function timeDiffMinutes(start: string, end: string): number {
 interface ScheduleFormState { date: string; startTime: string; endTime: string; assignedTechnicianIds: string[]; }
 
 function initScheduleForm(visit: JobVisit): ScheduleFormState {
-  const techIds = (visit as any).assignedTechnicianIds ?? (visit.assignedTechnicianId ? [visit.assignedTechnicianId] : []);
+  // 2026-04-12 revert-bug fix: canonical crew array only; no scalar fallback.
+  // The server's paired write guarantees the array is always authoritative.
+  const techIds: string[] = Array.isArray((visit as any).assignedTechnicianIds)
+    ? (visit as any).assignedTechnicianIds
+    : [];
   if (!visit.scheduledStart) return { date: "", startTime: "", endTime: "", assignedTechnicianIds: techIds };
   const start = typeof visit.scheduledStart === "string" ? parseISO(visit.scheduledStart) : visit.scheduledStart;
   const dateStr = format(start, "yyyy-MM-dd");
@@ -191,8 +195,8 @@ export function EditVisitModal({
   const [addingItem, setAddingItem] = useState(false);
   const [newDraft, setNewDraft] = useState<LineItemDraft | null>(null);
 
-  const { teamMembers: technicians } = useTechniciansDirectory();
-  const techOptions = technicians.map((t) => ({ id: t.id, displayName: getMemberDisplayName(t) }));
+  // 2026-04-12: team picker moved into VisitTeamAssignment; this hook is no
+  // longer needed here.
 
   // ── Queries ──
   const { data: visit, isLoading, isError, refetch } = useQuery<JobVisit>({
@@ -357,25 +361,21 @@ export function EditVisitModal({
       if (techId) { const dur = timeDiffMinutes(schedule.startTime, schedule.endTime || addMinutesToTime(schedule.startTime, 60)); if (await detectScheduleConflict(techId, schedule.date, startAt, endAt, dur, visit?.id)) pendingConflictRef.current = true; }
     }
     const wasUnscheduled = !visit?.scheduledStart;
-    const techId = schedule.assignedTechnicianIds[0] || null;
 
     // visitNotes flows through dispatch callbacks (visitNotes param → backend notes field).
     // Equipment mutations go through canonical job_equipment routes, NOT the visit PATCH.
     const visitPayload = { visitNotes: visitNotes || null };
 
     if (startAt && endAt) {
-      if (wasUnscheduled && onDispatchSchedule && techId) {
-        // Single write: dispatch schedule callback carries visitNotes — no separate editMutation
-        // (dual-mutation caused version race → false "Conflict" toast)
-        onDispatchSchedule({ jobId, visitId, technicianUserId: techId, startAt, endAt, visitNotes: visitNotes || null });
-        if (onDispatchUpdateCrew && schedule.assignedTechnicianIds.length > 1) onDispatchUpdateCrew({ visitId, technicianUserIds: schedule.assignedTechnicianIds });
+      // 2026-04-12 final cleanup: dispatch callbacks receive the full canonical crew.
+      const crew = schedule.assignedTechnicianIds;
+      if (wasUnscheduled && onDispatchSchedule && crew.length > 0) {
+        onDispatchSchedule({ jobId, visitId, assignedTechnicianIds: crew, startAt, endAt, visitNotes: visitNotes || null });
         if (!pendingConflictRef.current) onOpenChange(false); else { pendingConflictRef.current = false; setShowConflictAlert(true); }
         return;
       }
       if (!wasUnscheduled && onDispatchReschedule) {
-        // Single write: dispatch reschedule callback carries visitNotes — no separate editMutation
-        onDispatchReschedule({ visitId, jobId, technicianUserId: techId, startAt, endAt, visitNotes: visitNotes || null });
-        if (onDispatchUpdateCrew && schedule.assignedTechnicianIds.length > 1) onDispatchUpdateCrew({ visitId, technicianUserIds: schedule.assignedTechnicianIds });
+        onDispatchReschedule({ visitId, jobId, assignedTechnicianIds: crew, startAt, endAt, visitNotes: visitNotes || null });
         if (!pendingConflictRef.current) onOpenChange(false); else { pendingConflictRef.current = false; setShowConflictAlert(true); }
         return;
       }
@@ -383,15 +383,12 @@ export function EditVisitModal({
     const payload: Record<string, unknown> = { ...visitPayload };
     if (!isScheduled) { payload.scheduledStart = null; payload.scheduledEnd = null; payload.isAllDay = false; payload.estimatedDurationMinutes = null; }
     else if (startAt && endAt) { payload.scheduledStart = startAt; payload.scheduledEnd = endAt; payload.isAllDay = false; payload.estimatedDurationMinutes = timeDiffMinutes(schedule.startTime, schedule.endTime || addMinutesToTime(schedule.startTime, 60)); }
-    payload.assignedTechnicianId = techId;
-    if (schedule.assignedTechnicianIds.length > 0) payload.assignedTechnicianIds = schedule.assignedTechnicianIds;
+    payload.assignedTechnicianIds = schedule.assignedTechnicianIds;
     payload.visitNotes = visitNotes || null;
     editMutation.mutate(payload);
   };
 
   const handleUnschedule = () => editMutation.mutate({ scheduledStart: null, scheduledEnd: null });
-  const handleAddTech = (id: string) => { if (!schedule.assignedTechnicianIds.includes(id)) setSchedule((s) => ({ ...s, assignedTechnicianIds: [...s.assignedTechnicianIds, id] })); };
-  const handleRemoveTech = (id: string) => { setSchedule((s) => ({ ...s, assignedTechnicianIds: s.assignedTechnicianIds.filter((t) => t !== id) })); };
 
   const isPending = editMutation.isPending || completeMutation.isPending;
   const selectedDate = schedule.date ? parseISO(schedule.date) : undefined;
@@ -488,25 +485,13 @@ export function EditVisitModal({
                   </div>
                 </div>
 
-                {/* Row 1 Right — Team */}
-                <div className="rounded-lg border border-slate-200 bg-white px-4 py-2.5">
-                  <div className="flex items-center justify-between mb-1.5">
-                    <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Team</h3>
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <button className="text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-0.5"><Plus className="h-3 w-3" />Assign</button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-48 p-1" align="end">
-                        <div className="text-xs font-medium text-slate-400 px-2 py-1.5 border-b mb-1">Select Technician</div>
-                        {(() => { const avail = techOptions.filter((t) => !schedule.assignedTechnicianIds.includes(t.id)); if (!avail.length) return <div className="text-xs text-slate-400 px-2 py-2">No available</div>; return avail.map((t) => (<button key={t.id} onClick={() => handleAddTech(t.id)} className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-slate-100 flex items-center gap-2"><User className="h-3.5 w-3.5 text-slate-400" />{t.displayName}</button>)); })()}
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {schedule.assignedTechnicianIds.length === 0 && <span className="text-xs text-slate-400 italic">Unassigned</span>}
-                    {schedule.assignedTechnicianIds.map((tid) => { const tech = techOptions.find((t) => t.id === tid); if (!tech) return null; return (<span key={tid} className="inline-flex items-center gap-1 rounded-full bg-slate-100 pl-2.5 pr-1 py-0.5 text-[11px] font-medium text-slate-700">{tech.displayName}<button onClick={() => handleRemoveTech(tid)} className="h-3.5 w-3.5 rounded-full hover:bg-slate-300/50 flex items-center justify-center"><X className="h-2 w-2" /></button></span>); })}
-                  </div>
-                </div>
+                {/* Row 1 Right — Team
+                    2026-04-12: inline JSX replaced by canonical VisitTeamAssignment
+                    so this and the Schedule Visit modal share one UI. */}
+                <VisitTeamAssignment
+                  value={schedule.assignedTechnicianIds}
+                  onChange={(next) => setSchedule((s) => ({ ...s, assignedTechnicianIds: next }))}
+                />
 
                 {/* Row 2 Left — Equipment */}
                   <div className="rounded-lg border border-slate-200 bg-white">

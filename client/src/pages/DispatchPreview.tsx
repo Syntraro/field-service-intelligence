@@ -308,12 +308,10 @@ export default function DispatchPreview() {
   const dragGrabBlockXRef = useRef(0);
   // External drag lifecycle: tracks whether drag originates from Unscheduled panel (sidebar)
   const isExternalDragRef = useRef(false);
-  // Managed timer ref for crew-update delay — cleared on unmount to prevent orphaned mutations
-  const crewUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Cleanup: cancel crew-update timer and native pointer listener on unmount
+  // 2026-04-12 final cleanup: crewUpdateTimerRef removed — full crew now
+  // persists in a single scheduleVisit call (one canonical write path).
   useEffect(() => {
     return () => {
-      if (crewUpdateTimerRef.current) clearTimeout(crewUpdateTimerRef.current);
       if (nativePointerMoveRef.current) {
         window.removeEventListener("pointermove", nativePointerMoveRef.current);
         nativePointerMoveRef.current = null;
@@ -757,10 +755,11 @@ export default function DispatchPreview() {
           });
         } else if (dragData.type === "unscheduled-visit") {
           // visitId may be undefined for backlog items without a persisted visit
+          // 2026-04-12 final cleanup: canonical crew array.
           scheduleVisit({
             jobId: dragData.jobId,
             visitId: dragData.visitId,
-            technicianUserId: effectiveTechId ?? null,
+            assignedTechnicianIds: effectiveTechId ? [effectiveTechId] : [],
             startAt,
             endAt,
           });
@@ -783,10 +782,18 @@ export default function DispatchPreview() {
             rescheduleVisit({ visitId: vid, jobId: dragData.jobId, startAt, endAt });
           } else {
             const techChanged = hasExplicitTech ? (dragData.technicianId !== dropData.technicianId) : false;
+            // 2026-04-12 final cleanup: crew change → replace with [newTech];
+            // unassigned lane → null; otherwise undefined (crew unchanged).
+            const crewChange =
+              isDropOnUnassigned
+                ? null
+                : techChanged && dropData.technicianId
+                  ? [dropData.technicianId]
+                  : undefined;
             rescheduleVisit({
               visitId: vid,
               jobId: dragData.jobId,
-              technicianUserId: isDropOnUnassigned ? null : (techChanged ? dropData.technicianId : undefined),
+              assignedTechnicianIds: crewChange,
               startAt,
               endAt,
             });
@@ -849,7 +856,7 @@ export default function DispatchPreview() {
     const startAt = placement.startAt;
     const endAt = placement.endAt;
 
-    // 2026-03-26: Resolve effective technicianUserId — null for Unassigned lane
+    // 2026-04-12 final cleanup: effective lead-tech for day-view drop; null for Unassigned lane.
     const effectiveTechId = isDropOnUnassigned ? null : dayDropTechId;
 
     // Stabilization: version resolved internally by mutations from fresh cache
@@ -867,7 +874,7 @@ export default function DispatchPreview() {
         scheduleVisit({
           jobId: dragData.jobId,
           visitId: dragData.visitId,
-          technicianUserId: effectiveTechId,
+          assignedTechnicianIds: effectiveTechId ? [effectiveTechId] : [],
           startAt,
           endAt,
         });
@@ -893,10 +900,17 @@ export default function DispatchPreview() {
           });
         } else {
           const techChanged = dragData.technicianId !== dayDropTechId;
+          // 2026-04-12 final cleanup: canonical crew change semantics.
+          const crewChange =
+            isDropOnUnassigned
+              ? null
+              : techChanged
+                ? [dayDropTechId]
+                : undefined;
           rescheduleVisit({
             visitId: vid,
             jobId: dragData.jobId,
-            technicianUserId: isDropOnUnassigned ? null : (techChanged ? dayDropTechId : undefined),
+            assignedTechnicianIds: crewChange,
             startAt,
             endAt,
           });
@@ -926,30 +940,18 @@ export default function DispatchPreview() {
   // Item 2: Supports multi-tech — schedules with primary tech, then updates crew if additional techs
   // 2026-03-26: Pass real visit.visitId only (undefined for backlog items without a
   // persisted visit). Never fall back to visit.id which is the job UUID for backlog items.
+  // 2026-04-12 final cleanup: full crew in one schedule call — no split
+  // schedule-then-crew-patch sequence.
   const handleScheduleFromPanel = useCallback((visit: DispatchVisit, startAt: string, endAt: string, techId: string, additionalTechIds?: string[]) => {
+    const crew = [techId, ...(additionalTechIds ?? [])];
     scheduleVisit({
       jobId: visit.jobId,
       visitId: visit.visitId ?? undefined,
-      technicianUserId: techId,
+      assignedTechnicianIds: crew,
       startAt,
       endAt,
     });
-    // If additional technicians selected, update crew after a short delay to let schedule complete.
-    // Timer tracked in crewUpdateTimerRef so it can be cancelled on unmount.
-    // Note: crew update uses visit.visitId which must be the real persisted UUID.
-    // For backlog items without a visit, the crew update is deferred until after
-    // background invalidation provides the real visit identity.
-    if (additionalTechIds && additionalTechIds.length > 0 && visit.visitId) {
-      if (crewUpdateTimerRef.current) clearTimeout(crewUpdateTimerRef.current);
-      crewUpdateTimerRef.current = setTimeout(() => {
-        crewUpdateTimerRef.current = null;
-        updateVisitCrew({
-          visitId: visit.visitId!,
-          technicianUserIds: [techId, ...additionalTechIds],
-        });
-      }, 800);
-    }
-  }, [scheduleVisit, updateVisitCrew]);
+  }, [scheduleVisit]);
 
   // ── Visit status change handler (non-terminal transitions only) ──
   const handleUpdateStatus = useCallback((visit: DispatchVisit, status: string) => {
@@ -1044,10 +1046,11 @@ export default function DispatchPreview() {
   const handleRescheduleFromPanel = useCallback((visit: DispatchVisit, newStart: string, newEnd: string, techId?: string, allDay?: boolean) => {
     if (visit.kind !== "visit") return; // Guard: backlog items use scheduleVisit, not reschedule
     const executeMutation = () => {
+      // 2026-04-12 final cleanup: crew change only when techId provided.
       rescheduleVisit({
         visitId: visit.id,
         jobId: visit.jobId,
-        technicianUserId: techId ?? undefined,
+        assignedTechnicianIds: techId ? [techId] : undefined,
         startAt: newStart,
         endAt: newEnd,
         allDay,
@@ -1118,8 +1121,10 @@ export default function DispatchPreview() {
   // ── Item 6: Quick-create from empty slot click ──
   const [quickCreate, setQuickCreate] = useState<{ techId: string; minuteOfDay: number } | null>(null);
   const [quickCreateJobOpen, setQuickCreateJobOpen] = useState(false);
+  // 2026-04-12 (Option A): seed crew goes on `assignedTechnicianIds` (visit
+  // owns crew). `primaryTechnicianId` removed — no job-level primary concept.
   const [quickCreateJobSchedule, setQuickCreateJobSchedule] = useState<{
-    date?: Date; time?: string; durationMinutes?: number; primaryTechnicianId?: string;
+    date?: Date; time?: string; durationMinutes?: number; assignedTechnicianIds?: string[];
   } | undefined>(undefined);
   // Task quick-create via TaskDialog modal (replaces inline apiRequest)
   const [quickCreateTaskOpen, setQuickCreateTaskOpen] = useState(false);
@@ -1734,7 +1739,7 @@ export default function DispatchPreview() {
                       date: selectedDate,
                       time: timeStr,
                       durationMinutes: 60,
-                      primaryTechnicianId: quickCreate.techId,
+                      assignedTechnicianIds: [quickCreate.techId],
                     });
                     setQuickCreate(null);
                     setQuickCreateJobOpen(true);

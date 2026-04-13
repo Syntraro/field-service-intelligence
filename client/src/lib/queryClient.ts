@@ -134,9 +134,15 @@ export async function initCSRF(): Promise<void> {
 
   csrfInitPromise = (async () => {
     try {
+      // Abort after 8 seconds to prevent login hang on cold-start or network stall
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+
       const response = await fetch('/api/csrf-token', {
-        credentials: 'include'
+        credentials: 'include',
+        signal: controller.signal,
       });
+      clearTimeout(timeout);
 
       if (!response.ok) {
         throw new Error(`Failed to fetch CSRF token: ${response.status}`);

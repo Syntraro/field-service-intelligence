@@ -12,8 +12,13 @@ import { useQuery } from "@tanstack/react-query";
 import { format, isValid, parseISO } from "date-fns";
 import { useLocation, useSearch, Link } from "wouter";
 import {
-  Plus, FileText, DollarSign, AlertTriangle, MoreHorizontal, RefreshCw, Search,
+  Plus, FileText, DollarSign, AlertTriangle, MoreHorizontal, RefreshCw, Search, Send,
 } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+// Phase 14 (2026-04-12): bulk send for multiple invoices.
+import { BatchSendInvoicesModal } from "@/components/communication/BatchSendInvoicesModal";
+import { useToast } from "@/hooks/use-toast";
+import { useQueryClient } from "@tanstack/react-query";
 import { QboSyncBadge, isQboSynced } from "@/components/invoice/QboSyncBanner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -56,7 +61,8 @@ interface InvoiceStats {
  */
 type InvoiceStatusFilter = "all" | "draft" | "awaiting_payment" | "partial_paid" | "paid" | "voided" | "overdue" | "qbo_synced" | "qbo_out_of_sync";
 
-const INVOICES_GRID_COLS = "minmax(260px, 1.8fr) 1.2fr 0.8fr 0.8fr 0.9fr 0.7fr 0.7fr 50px";
+// Phase 14 (2026-04-12): added 40px column at start for selection checkbox.
+const INVOICES_GRID_COLS = "40px minmax(260px, 1.8fr) 1.2fr 0.8fr 0.8fr 0.9fr 0.7fr 0.7fr 50px";
 
 // Summary card with optional small icon accent — matches Jobs page hierarchy
 function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg }: {
@@ -82,6 +88,11 @@ export default function InvoicesListPage() {
   const search = useSearch();
   const [activeFilter, setActiveFilter] = useState<InvoiceStatusFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
+  // Phase 14 (2026-04-12): bulk selection + send.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [batchOpen, setBatchOpen] = useState(false);
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     const params = new URLSearchParams(search);
@@ -281,10 +292,54 @@ export default function InvoicesListPage() {
             />
           ) : (
             <>
+              {/* Phase 14 bulk-action bar — visible only when invoices are selected. */}
+              {selectedIds.size > 0 && (
+                <div
+                  className="flex items-center justify-between gap-3 px-4 py-2 border-b border-slate-200 bg-blue-50"
+                  data-testid="bulk-action-bar"
+                >
+                  <div className="text-sm text-slate-700">
+                    <span className="font-medium">{selectedIds.size}</span> selected
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setSelectedIds(new Set())}
+                      data-testid="button-bulk-clear"
+                    >
+                      Clear
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => setBatchOpen(true)}
+                      data-testid="button-bulk-send"
+                    >
+                      <Send className="h-3.5 w-3.5 mr-2" />
+                      Send {selectedIds.size} invoice{selectedIds.size === 1 ? "" : "s"}
+                    </Button>
+                  </div>
+                </div>
+              )}
               <div
                 className="grid items-center border-b border-[#e5e7eb] py-2 text-xs font-medium text-slate-600 bg-slate-50"
                 style={{ gridTemplateColumns: INVOICES_GRID_COLS }}
               >
+                <div className="px-4 flex items-center">
+                  {/* Select-all — toggles all filtered rows. */}
+                  <Checkbox
+                    checked={filteredInvoices.length > 0 && filteredInvoices.every((inv) => selectedIds.has(inv.id))}
+                    onCheckedChange={(v) => {
+                      if (v) {
+                        setSelectedIds(new Set(filteredInvoices.map((inv) => inv.id)));
+                      } else {
+                        setSelectedIds(new Set());
+                      }
+                    }}
+                    aria-label="Select all invoices"
+                    data-testid="checkbox-invoice-select-all"
+                  />
+                </div>
                 <div className="px-4">Client</div>
                 <div className="px-4">Description</div>
                 <div className="px-4">Invoice #</div>
@@ -302,6 +357,21 @@ export default function InvoicesListPage() {
                   onClick={() => setLocation(`/invoices/${invoice.id}`)}
                   data-testid={`row-invoice-${invoice.id}`}
                 >
+                  <div className="px-4 flex items-center" onClick={(e) => e.stopPropagation()}>
+                    <Checkbox
+                      checked={selectedIds.has(invoice.id)}
+                      onCheckedChange={(v) => {
+                        setSelectedIds((prev) => {
+                          const next = new Set(prev);
+                          if (v) next.add(invoice.id);
+                          else next.delete(invoice.id);
+                          return next;
+                        });
+                      }}
+                      aria-label={`Select invoice ${invoice.invoiceNumber ?? invoice.id}`}
+                      data-testid={`checkbox-invoice-${invoice.id}`}
+                    />
+                  </div>
                   <div className="px-4 min-w-0 py-2.5">
                     <p className="text-sm font-medium text-slate-800 truncate" data-testid={`text-invoice-client-${invoice.id}`}>
                       {invoice.locationDisplayName || invoice.locationName || "Unknown"}
@@ -359,6 +429,20 @@ export default function InvoicesListPage() {
           </div>
         )}
       </div>
+
+      {/* Phase 14 (2026-04-12): batch send modal. */}
+      <BatchSendInvoicesModal
+        invoiceIds={Array.from(selectedIds)}
+        isOpen={batchOpen}
+        onClose={() => setBatchOpen(false)}
+        onSuccess={(result) => {
+          toast({
+            title: `Batch send: ${result.successCount} sent / ${result.failureCount} failed`,
+          });
+          queryClient.invalidateQueries({ queryKey: ["invoices"] });
+          if (result.failureCount === 0) setSelectedIds(new Set());
+        }}
+      />
     </div>
   );
 }

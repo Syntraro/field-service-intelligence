@@ -94,7 +94,7 @@ async function createJobWithVisit(overrides?: {
     jobType: "PM",
     summary: "bp1_test_job",
     status: "open",
-    primaryTechnicianId: userId,
+    assignedTechnicianIds: [userId], // 2026-04-12 Option A: forwarded to seed visit
     scheduledStart,
     scheduledEnd,
     isAllDay: false,
@@ -115,7 +115,7 @@ async function createJobWithVisit(overrides?: {
     .set({
       status: "in_progress",
       checkedInAt: new Date(now.getTime() - 2400000), // checked in 40min ago
-      assignedTechnicianId: userId,
+      assignedTechnicianIds: [userId],
     })
     .where(eq(jobVisits.id, autoVisit.id));
 
@@ -347,7 +347,7 @@ describe("BP-1: Reconciliation canonical close (integration)", () => {
       jobType: "Repair",
       summary: "bp1_test_multi_visit",
       status: "open",
-      primaryTechnicianId: userId,
+      assignedTechnicianIds: [userId], // 2026-04-12 Option A: forwarded to seed visit
       scheduledStart,
       scheduledEnd,
       isAllDay: false,
@@ -362,7 +362,7 @@ describe("BP-1: Reconciliation canonical close (integration)", () => {
 
     await db
       .update(jobVisits)
-      .set({ status: "in_progress", checkedInAt: new Date(), assignedTechnicianId: userId })
+      .set({ status: "in_progress", checkedInAt: new Date(), assignedTechnicianIds: [userId] })
       .where(eq(jobVisits.id, visit1.id));
     createdVisitIds.push(visit1.id);
 
@@ -379,7 +379,7 @@ describe("BP-1: Reconciliation canonical close (integration)", () => {
       status: "scheduled",
       visitNumber: 2,
       isActive: true,
-      assignedTechnicianId: userId,
+      assignedTechnicianIds: [userId],
     });
     createdVisitIds.push(visit2Id);
 
@@ -475,7 +475,7 @@ describe("BP-1: Reconciliation canonical close (integration)", () => {
       jobType: "Repair",
       summary: "bp2_rule3_test",
       status: "open",
-      primaryTechnicianId: userId,
+      assignedTechnicianIds: [userId], // 2026-04-12 Option A: forwarded to seed visit
       scheduledStart,
       scheduledEnd,
       isAllDay: false,
@@ -490,7 +490,7 @@ describe("BP-1: Reconciliation canonical close (integration)", () => {
       .where(and(eq(jobVisits.jobId, job.id), eq(jobVisits.companyId, companyId)));
     await db
       .update(jobVisits)
-      .set({ status: "in_progress", checkedInAt: new Date(), assignedTechnicianId: userId })
+      .set({ status: "in_progress", checkedInAt: new Date(), assignedTechnicianIds: [userId] })
       .where(eq(jobVisits.id, visit1.id));
     createdVisitIds.push(visit1.id);
 
@@ -507,7 +507,7 @@ describe("BP-1: Reconciliation canonical close (integration)", () => {
       status: "scheduled",
       visitNumber: 2,
       isActive: true,
-      assignedTechnicianId: userId,
+      assignedTechnicianIds: [userId],
     });
     createdVisitIds.push(visit2Id);
 
@@ -567,7 +567,7 @@ describe("BP-1: Reconciliation canonical close (integration)", () => {
       jobType: "Repair",
       summary: "bp2_rule4_test",
       status: "open",
-      primaryTechnicianId: userId,
+      assignedTechnicianIds: [userId], // 2026-04-12 Option A: forwarded to seed visit
       scheduledStart,
       scheduledEnd,
       isAllDay: false,
@@ -581,7 +581,7 @@ describe("BP-1: Reconciliation canonical close (integration)", () => {
       .where(and(eq(jobVisits.jobId, job.id), eq(jobVisits.companyId, companyId)));
     await db
       .update(jobVisits)
-      .set({ status: "in_progress", checkedInAt: new Date(), assignedTechnicianId: userId })
+      .set({ status: "in_progress", checkedInAt: new Date(), assignedTechnicianIds: [userId] })
       .where(eq(jobVisits.id, visit1.id));
     createdVisitIds.push(visit1.id);
 
@@ -593,7 +593,7 @@ describe("BP-1: Reconciliation canonical close (integration)", () => {
       scheduledDate: futureStart,
       scheduledStart: futureStart,
       scheduledEnd: new Date(futureStart.getTime() + 3600000),
-      status: "scheduled", visitNumber: 2, isActive: true, assignedTechnicianId: userId,
+      status: "scheduled", visitNumber: 2, isActive: true, assignedTechnicianIds: [userId],
     });
     createdVisitIds.push(visit2Id);
 
@@ -603,7 +603,7 @@ describe("BP-1: Reconciliation canonical close (integration)", () => {
       scheduledDate: new Date(futureStart.getTime() + 172800000),
       scheduledStart: new Date(futureStart.getTime() + 172800000),
       scheduledEnd: new Date(futureStart.getTime() + 176400000),
-      status: "scheduled", visitNumber: 3, isActive: true, assignedTechnicianId: userId,
+      status: "scheduled", visitNumber: 3, isActive: true, assignedTechnicianIds: [userId],
     });
     createdVisitIds.push(visit3Id);
 

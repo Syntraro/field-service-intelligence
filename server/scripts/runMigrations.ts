@@ -35,11 +35,14 @@ if (!process.env.DATABASE_URL && fs.existsSync(envPath)) {
   }
 }
 
-const DATABASE_URL = process.env.DATABASE_URL;
-if (!DATABASE_URL) {
-  console.error("ERROR: DATABASE_URL is not set. Set it as an env var or add a .env file.");
-  process.exit(1);
-}
+const DATABASE_URL: string = (() => {
+  const v = process.env.DATABASE_URL;
+  if (!v) {
+    console.error("ERROR: DATABASE_URL is not set. Set it as an env var or add a .env file.");
+    process.exit(1);
+  }
+  return v;
+})();
 
 const MIGRATIONS_DIR = path.resolve(__dirname, "../../migrations");
 
@@ -120,12 +123,33 @@ async function sanityCheck(client: pg.Client): Promise<void> {
   console.log(`Public tables: ${tables[0].count}`);
 }
 
+// --- DB identity banner (safe — no credentials logged) ---
+function logDbIdentity(url: string): void {
+  try {
+    const u = new URL(url);
+    const sslMode = new URLSearchParams(u.search).get("sslmode") ?? "(default)";
+    console.log("════════════════════════════════════════════════════════════════");
+    console.log("  MIGRATION TARGET DATABASE");
+    console.log("────────────────────────────────────────────────────────────────");
+    console.log(`  Host:       ${u.hostname}`);
+    console.log(`  Database:   ${u.pathname.replace("/", "")}`);
+    console.log(`  User:       ${u.username}`);
+    console.log(`  SSL mode:   ${sslMode}`);
+    console.log(`  NODE_ENV:   ${process.env.NODE_ENV ?? "(unset)"}`);
+    console.log("════════════════════════════════════════════════════════════════");
+  } catch {
+    console.log("[Migrations] Could not parse DATABASE_URL for diagnostics");
+  }
+}
+
 // --- Main ---
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const isSanity = args.includes("--sanity");
   const fileIdx = args.indexOf("--file");
   const singleFile = fileIdx !== -1 ? args[fileIdx + 1] : undefined;
+
+  logDbIdentity(DATABASE_URL);
 
   const client = new pg.Client({ connectionString: DATABASE_URL });
   await client.connect();

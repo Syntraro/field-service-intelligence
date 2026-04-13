@@ -2,6 +2,16 @@ import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
+/**
+ * UI typography standard (see docs/UI_TYPOGRAPHY.md):
+ *   Default body font size for inputs = 12px (`text-xs`) on BOTH the typed
+ *   text and the placeholder. New forms should not override.
+ *
+ * Current runtime classes below still render `text-base md:text-sm` from
+ * the original shadcn baseline. Do not change this line without doing a
+ * sweep of every consumer — it retroactively resizes every input in the
+ * app. Migrate pages to local overrides first, then flip the default.
+ */
 const Input = React.forwardRef<HTMLInputElement, React.ComponentProps<"input">>(
   ({ className, type, ...props }, ref) => {
     // h-9 to match icon buttons and default buttons.

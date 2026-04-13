@@ -37,6 +37,7 @@ import {
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import LocationFormModal from "@/components/LocationFormModal";
 import NotesPanel, { type NotesPanelRef } from "@/components/NotesPanel";
+import { EntityDocumentsSection } from "@/components/attachments/EntityDocumentsSection";
 import PMScheduleCard from "@/components/PMScheduleCard";
 import { PartsSelectorModal } from "@/components/PartsSelectorModal";
 import EditTagsModal from "@/components/EditTagsModal";
@@ -1016,6 +1017,13 @@ export default function ClientDetailPage() {
                     <div className="px-4 pt-2.5 pb-2 border-b border-slate-100">
                       <h3 className="text-xs font-semibold text-slate-700 mb-1.5">Notes</h3>
                       <NotesPanel scope="location" companyId={client.companyId || ""} locationId={selectedLocationId} hideAddButton={false} />
+                    </div>
+                    <div className="px-4 pt-2.5 pb-2 border-b border-slate-100">
+                      <EntityDocumentsSection
+                        entityType="client_document"
+                        entityId={selectedLocationId}
+                        listUrl={`/api/clients/${selectedLocationId}/files`}
+                      />
                     </div>
                     {(selectedLoc.roofLadderCode || selectedLoc.notes) && (
                       <div className="px-4 pt-2.5 pb-2">

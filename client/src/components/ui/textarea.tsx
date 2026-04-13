@@ -2,6 +2,15 @@ import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
+/**
+ * UI typography standard (see docs/UI_TYPOGRAPHY.md):
+ *   Default body font size for textareas = 12px (`text-xs`). New forms
+ *   should not override.
+ *
+ * Current runtime classes below still carry `text-base md:text-sm` from
+ * the original shadcn baseline. Changing the default here retroactively
+ * shrinks every textarea — migrate pages first, then flip the default.
+ */
 const Textarea = React.forwardRef<
   HTMLTextAreaElement,
   React.ComponentProps<"textarea">

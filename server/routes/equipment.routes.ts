@@ -20,6 +20,9 @@ import { AuthedRequest } from "../auth/tenantIsolation";
 import { fetchEquipmentHistoryRows, groupHistoryByJob } from "../services/equipmentHistory";
 import { clientRepository } from "../storage/clients";
 import { equipmentCatalogRepository } from "../storage/equipmentCatalog";
+import { db } from "../db";
+import { users } from "../../shared/schema";
+import { and, eq, inArray } from "drizzle-orm";
 
 const router = Router();
 
@@ -175,6 +178,23 @@ router.get("/:equipmentId/timeline", asyncHandler(async (req: AuthedRequest, res
 
   const rows = await equipmentCatalogRepository.getTimeline(companyId, equipmentId);
 
+  // Resolve crew user names across all visits in one batched query.
+  const crewIds = new Set<string>();
+  for (const r of rows) {
+    for (const id of r.assignedTechnicianIds ?? []) if (id) crewIds.add(id);
+  }
+  const nameById = new Map<string, string>();
+  if (crewIds.size > 0) {
+    const userRows = await db
+      .select({ id: users.id, fullName: users.fullName, firstName: users.firstName, lastName: users.lastName })
+      .from(users)
+      .where(and(eq(users.companyId, companyId), inArray(users.id, Array.from(crewIds))));
+    for (const u of userRows) {
+      const name = u.fullName || [u.firstName, u.lastName].filter(Boolean).join(" ") || null;
+      if (name) nameById.set(u.id, name);
+    }
+  }
+
   // Map to display-ready shape
   const timeline = rows.map(r => {
     const date = r.visitDate || r.visitDateFallback;
@@ -186,9 +206,8 @@ router.get("/:equipmentId/timeline", asyncHandler(async (req: AuthedRequest, res
 
     const summary = r.visitNotes || r.outcomeNote || r.equipmentNotes || r.jobSummary || null;
 
-    const techName = r.techFullName
-      || (r.techFirstName && r.techLastName ? `${r.techFirstName} ${r.techLastName}` : null)
-      || r.techFirstName || null;
+    const crewNames = (r.assignedTechnicianIds ?? []).map(id => nameById.get(id)).filter(Boolean) as string[];
+    const techName = crewNames.length > 0 ? crewNames.join(", ") : null;
 
     return {
       id: r.visitId,

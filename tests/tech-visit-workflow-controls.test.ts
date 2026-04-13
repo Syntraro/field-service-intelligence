@@ -114,7 +114,7 @@ async function createFixtures() {
   await db
     .update(jobVisits)
     .set({
-      assignedTechnicianId: userId,
+      assignedTechnicianIds: [userId],
       assignedTechnicianIds: [userId],
       scheduledStart,
       scheduledEnd,
@@ -399,7 +399,7 @@ describe("Tech Visit Workflow Controls", () => {
           scheduledStart: secondStart,
           scheduledEnd: new Date(secondStart.getTime() + 60 * 60_000),
           status: "scheduled",
-          assignedTechnicianId: userId,
+          assignedTechnicianIds: [userId],
           assignedTechnicianIds: [userId],
         } as any)
         .returning();
@@ -674,6 +674,7 @@ describe("Tech Visit Workflow Controls", () => {
         type: "BULK_COMPLETE_VISITS",
         companyId,
         jobId,
+        changedByUserId: userId,
       });
 
       expect(result.completedCount).toBeGreaterThanOrEqual(1);

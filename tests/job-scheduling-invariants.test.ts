@@ -227,8 +227,6 @@ describe("Job Scheduling Invariants", () => {
       scheduledStart: null,
       scheduledEnd: null,
       isAllDay: false,
-      primaryTechnicianId: null,
-      assignedTechnicianIds: [],
     };
 
     const display = getJobStatusDisplay(unscheduledJob);
@@ -248,8 +246,6 @@ describe("Job Scheduling Invariants", () => {
       scheduledStart: new Date("2026-04-15T09:00:00Z"),
       scheduledEnd: new Date("2026-04-15T10:00:00Z"),
       isAllDay: false,
-      primaryTechnicianId: null,
-      assignedTechnicianIds: [],
     };
 
     const display = getJobStatusDisplay(scheduledJob);

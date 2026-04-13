@@ -120,7 +120,6 @@ export const jobCreateSchema = z.object({
   priority: z.enum(["low", "medium", "high", "urgent"]).default("medium"),
   scheduledStart: z.string().datetime().optional().nullable(),
   scheduledEnd: z.string().datetime().optional().nullable(),
-  assignedTechnicianId: z.string().uuid().optional().nullable(),
 });
 
 export type JobCreateInput = z.infer<typeof jobCreateSchema>;

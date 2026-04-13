@@ -32,7 +32,9 @@ interface JobScheduledParams {
   jobNumber: string;
   clientName: string;
   scheduledDate: string;
-  technicianUserId: string;
+  /** User ID to notify. 2026-04-12: renamed from `technicianUserId` — this is
+   *  a notification recipient, not a visit-assignment field. */
+  notifyUserId: string;
   isReschedule?: boolean;
 }
 
@@ -101,7 +103,7 @@ export async function emitQuoteStatusChange(params: QuoteNotificationParams): Pr
  * Emit notification when a job is scheduled or rescheduled
  */
 export async function emitJobScheduled(params: JobScheduledParams): Promise<void> {
-  const { companyId, jobId, jobNumber, clientName, scheduledDate, technicianUserId, isReschedule } = params;
+  const { companyId, jobId, jobNumber, clientName, scheduledDate, notifyUserId, isReschedule } = params;
 
   const type: NotificationType = isReschedule ? "job_rescheduled" : "job_scheduled";
   const title = isReschedule
@@ -125,7 +127,7 @@ export async function emitJobScheduled(params: JobScheduledParams): Promise<void
   // Notify the assigned technician
   await notificationRepository.createNotification({
     companyId,
-    userId: technicianUserId,
+    userId: notifyUserId,
     type,
     title,
     body,

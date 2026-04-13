@@ -171,18 +171,18 @@ async function createFixtures() {
   tomorrow.setHours(10, 0, 0, 0);
   const tomorrowEnd = new Date(tomorrow);
   tomorrowEnd.setHours(11, 0, 0, 0);
+  // 2026-04-12 (Option A): job row carries only schedule; crew lives on visit.
   await db.update(jobs).set({
     scheduledStart: tomorrow,
     scheduledEnd: tomorrowEnd,
-    primaryTechnicianId: userId,
   }).where(eq(jobs.id, jobWithVisitsId));
 
-  // Update the auto-created visit with schedule data
   await db.update(jobVisits).set({
     scheduledDate: tomorrow,
     scheduledStart: tomorrow,
     scheduledEnd: tomorrowEnd,
-    assignedTechnicianId: userId,
+    assignedTechnicianIds: [userId],
+    assignedTechnicianIds: [userId],
     estimatedDurationMinutes: 60,
     status: "scheduled",
   }).where(and(eq(jobVisits.jobId, jobWithVisitsId), eq(jobVisits.companyId, companyId)));

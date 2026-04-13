@@ -106,10 +106,9 @@ export interface CalendarEventDto {
   /** Job version for optimistic locking */
   version: number;
 
-  /** Array of assigned technician IDs */
+  /** Canonical crew — the visit's assignedTechnicianIds.
+   *  2026-04-12 final cleanup: primaryTechnicianId dropped; read crew[0] locally if a lead is needed. */
   assignedTechnicianIds: string[] | null;
-  /** Primary technician ID */
-  primaryTechnicianId: string | null;
   /** Technician details */
   technicians: CalendarTechnicianDto[];
 
@@ -179,10 +178,8 @@ export interface UnscheduledJobDto {
   customerCompanyId: string | null;
   /** Customer company name */
   customerCompanyName: string | null;
-  /** Assigned technician IDs */
+  /** Canonical crew array (2026-04-12 final cleanup: primaryTechnicianId removed). */
   assignedTechnicianIds: string[] | null;
-  /** Primary technician ID */
-  primaryTechnicianId: string | null;
   /** Technician details */
   technicians: CalendarTechnicianDto[];
   /** Job version for optimistic locking */

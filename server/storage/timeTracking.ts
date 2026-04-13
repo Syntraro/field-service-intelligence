@@ -3284,7 +3284,6 @@ export class TimeTrackingRepository extends BaseRepository {
         id: jobVisits.id,
         jobId: jobVisits.jobId,
         status: jobVisits.status,
-        assignedTechnicianId: jobVisits.assignedTechnicianId,
         assignedTechnicianIds: jobVisits.assignedTechnicianIds,
         updatedAt: jobVisits.updatedAt,
       })
@@ -3294,10 +3293,7 @@ export class TimeTrackingRepository extends BaseRepository {
           eq(jobVisits.companyId, companyId),
           eq(jobVisits.isActive, true),
           sql`${jobVisits.status} IN ('en_route', 'on_site', 'in_progress', 'paused')`,
-          or(
-            inArray(jobVisits.assignedTechnicianId, technicianIds),
-            sql`${jobVisits.assignedTechnicianIds} && ARRAY[${techIdsLiteral}]::varchar[]`,
-          ),
+          sql`${jobVisits.assignedTechnicianIds} && ARRAY[${techIdsLiteral}]::varchar[]`,
         ),
       );
 
@@ -3317,7 +3313,6 @@ export class TimeTrackingRepository extends BaseRepository {
     const visitByTech = new Map<string, ActiveVisitRow>();
     for (const v of activeVisits) {
       const owners = new Set<string>();
-      if (v.assignedTechnicianId) owners.add(v.assignedTechnicianId);
       if (Array.isArray(v.assignedTechnicianIds)) {
         for (const id of v.assignedTechnicianIds) {
           if (id) owners.add(id);

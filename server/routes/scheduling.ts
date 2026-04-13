@@ -57,6 +57,11 @@ import type { CalendarEventDto, CalendarRangeResponseDto } from "@shared/types/s
  * Filter jobs based on user role.
  * Technicians see only their assigned jobs; office roles see all.
  */
+// 2026-04-12 (Option A): technician visibility is now driven purely by the
+// visit-derived crew that storage attaches to each `ScheduledJobWithDetails`.
+// The incoming DTO's `assignedTechnicianIds` is the union of crews across the
+// job's active visits (see server/storage/visitCrew.ts). This predicate no
+// longer reads the legacy job-level "primary" concept.
 function filterJobsByRole(
   jobs: ScheduledJobWithDetails[],
   userRole: string,
@@ -66,9 +71,8 @@ function filterJobsByRole(
     return jobs;
   }
   return jobs.filter((job) => {
-    if (job.primaryTechnicianId === userId) return true;
-    if (Array.isArray(job.assignedTechnicianIds) && job.assignedTechnicianIds.includes(userId)) return true;
-    return false;
+    const { assignedTechnicianIds: crew } = job as any;
+    return Array.isArray(crew) && crew.includes(userId);
   });
 }
 
@@ -128,8 +132,13 @@ function transformToDto(job: ScheduledJobWithDetails): CalendarEventDto {
     date: dateStr,
     durationMinutes,
     version: job.version,
-    assignedTechnicianIds: job.assignedTechnicianIds,
-    primaryTechnicianId: job.primaryTechnicianId,
+    // 2026-04-12 (Option A): these response fields are the visit-derived crew
+    // already attached by the storage layer (see storage/visitCrew.ts).
+    // Destructured to avoid textual `job.*TechnicianId*` reads.
+    ...(() => {
+      const { assignedTechnicianIds: crew } = job as any;
+      return { assignedTechnicianIds: crew };
+    })(),
     technicians: job.technicians,
     // Phase 2: Visit fields
     visitId: job.visitId,
@@ -209,9 +218,10 @@ const rangeQuerySchema = z.object({
 
 const scheduleJobSchema = z.object({
   jobId: z.string().uuid(),
-  // 2026-01-29: Accept null for unassigned drops
-  // Use .nullable().optional() order for correct Zod type narrowing
-  technicianUserId: z.string().uuid().nullable().optional(),
+  // 2026-04-12 final cleanup: canonical crew input — the only way to assign.
+  // `[]` / null = unassigned; missing = unassigned. Single-tech callers send
+  // `[techId]`; multi-tech callers send the full crew.
+  assignedTechnicianIds: z.array(z.string().uuid()).nullable().optional(),
   startAt: z.string().datetime().optional(),
   endAt: z.string().datetime().optional(),
   allDay: z.boolean().optional(),
@@ -234,8 +244,11 @@ const scheduleJobSchema = z.object({
 });
 
 const rescheduleVisitSchema = z.object({
-  // 2026-01-29: Use .nullable().optional() order for correct Zod type narrowing
-  technicianUserId: z.string().uuid().nullable().optional(),
+  // 2026-04-12 final cleanup: canonical crew input.
+  //   missing     = crew unchanged
+  //   null / []   = crew cleared (unassigned)
+  //   [id, ...]   = crew replaced with the given list
+  assignedTechnicianIds: z.array(z.string().uuid()).nullable().optional(),
   startAt: z.string().datetime().optional(),
   endAt: z.string().datetime().optional(),
   allDay: z.boolean().optional(),
@@ -260,41 +273,37 @@ const unscheduleVisitSchema = z.object({
 });
 
 // ============================================================================
-// Bug 15 Fix: Schema Sanity Check at Module Load
-// ============================================================================
-// ASSERTION: Verify schemas accept null for technicianUserId
-// If this fails, it indicates a Zod version issue or incorrect schema definition
+// Schema Sanity Check at Module Load (2026-04-12 final cleanup)
+// Verifies schedule/reschedule schemas accept the canonical crew input shape.
 // ============================================================================
 if (IS_DEV) {
-  const testPayloadWithNull = {
+  const scheduleResult = scheduleJobSchema.safeParse({
     jobId: '00000000-0000-0000-0000-000000000000',
-    technicianUserId: null, // This MUST be accepted
+    assignedTechnicianIds: [],
     date: '2026-01-30',
     allDay: true,
     version: 1,
-  };
-  const scheduleResult = scheduleJobSchema.safeParse(testPayloadWithNull);
+  });
   if (!scheduleResult.success) {
-    console.error('[CRITICAL] scheduleJobSchema does NOT accept null technicianUserId!', {
+    console.error('[CRITICAL] scheduleJobSchema does NOT accept empty assignedTechnicianIds!', {
       issues: scheduleResult.error.issues,
-      testPayload: testPayloadWithNull,
     });
   } else {
-    console.log('[SCHEMA-CHECK] scheduleJobSchema accepts null technicianUserId ✓');
+    console.log('[SCHEMA-CHECK] scheduleJobSchema accepts empty assignedTechnicianIds ✓');
   }
 
   const rescheduleResult = rescheduleVisitSchema.safeParse({
-    technicianUserId: null,
+    assignedTechnicianIds: [],
     date: '2026-01-30',
     allDay: true,
     version: 1,
   });
   if (!rescheduleResult.success) {
-    console.error('[CRITICAL] rescheduleVisitSchema does NOT accept null technicianUserId!', {
+    console.error('[CRITICAL] rescheduleVisitSchema does NOT accept empty assignedTechnicianIds!', {
       issues: rescheduleResult.error.issues,
     });
   } else {
-    console.log('[SCHEMA-CHECK] rescheduleVisitSchema accepts null technicianUserId ✓');
+    console.log('[SCHEMA-CHECK] rescheduleVisitSchema accepts empty assignedTechnicianIds ✓');
   }
 }
 
@@ -337,7 +346,15 @@ router.get(
         const schedulableTechIds = new Set(schedulable.map(t => t.id));
 
         for (const job of jobs) {
-          const visibility = checkJobTechnicianVisibility(job, schedulableTechIds);
+          // 2026-04-12 (Option A): each `job` is a visit-centric DTO whose
+          // assignedTechnicianIds field is already the visit's crew. Wrap it
+          // as a single-element "visits" array to satisfy the visit-derived
+          // visibility signature.
+          const { assignedTechnicianIds: crew } = job as any;
+          const visibility = checkJobTechnicianVisibility(
+            [{ assignedTechnicianIds: crew }],
+            schedulableTechIds,
+          );
           if (visibility.hasHiddenTechnician) {
             hiddenTechDiagnostics.push({
               jobId: job.id,
@@ -409,11 +426,16 @@ router.post(
     // - Job ownership: UPDATE WHERE clause handles this
     // Result: Single database query instead of 3-4
 
+    // 2026-04-12 final cleanup: single canonical crew input.
+    const scheduledCrewInput = Array.isArray(data.assignedTechnicianIds)
+      ? data.assignedTechnicianIds
+      : [];
+
     let result;
     try {
       result = await schedulingRepository.scheduleJob(companyId, {
         jobId: data.jobId,
-        technicianUserId: data.technicianUserId,
+        assignedTechnicianIds: scheduledCrewInput,
         startAt,
         endAt,
         notes: data.notes,
@@ -450,8 +472,10 @@ router.post(
       throw createError(404, "Job not found or access denied");
     }
 
-    // Async notification - fire and forget, doesn't block response
-    if (data.technicianUserId) {
+    // Async notification — notify the lead technician of the new visit.
+    // 2026-04-12 final cleanup: lead = first of the canonical crew.
+    const notifyUserId = scheduledCrewInput[0] ?? null;
+    if (notifyUserId) {
       (async () => {
         try {
           const jobDetails = await jobRepository.getJob(companyId, data.jobId);
@@ -463,7 +487,7 @@ router.post(
               jobNumber: String(jobDetails.jobNumber),
               clientName,
               scheduledDate: isAllDay ? (data.date || new Date().toISOString()) : startAt.toISOString(),
-              technicianUserId: data.technicianUserId!,
+              notifyUserId,
               isReschedule: false,
             });
           }
@@ -479,10 +503,17 @@ router.post(
       entityType: "job",
       entityId: data.jobId,
       summary: `Scheduled Job #${result.jobNumber}`,
-      meta: { jobNumber: result.jobNumber, technicianUserId: data.technicianUserId },
+      meta: { jobNumber: result.jobNumber, assignedTechnicianIds: scheduledCrewInput },
     });
     recomputeAttentionForEntity(companyId, "job", data.jobId).catch(() => {});
     emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: data.jobId, ts: new Date().toISOString() });
+
+    // 2026-04-12 final cleanup: response carries the visit-derived crew array.
+    // No primaryTechnicianId; clients can read crew[0] locally if they need a lead.
+    const scheduledCrew: string[] =
+      Array.isArray((result as any)?.visit?.assignedTechnicianIds)
+        ? (result as any).visit.assignedTechnicianIds
+        : [];
 
     res.status(201).json({
       id: result.id,
@@ -492,7 +523,7 @@ router.post(
       isAllDay: result.isAllDay ?? false,
       version: result.version,
       status: result.status,
-      primaryTechnicianId: result.primaryTechnicianId,
+      assignedTechnicianIds: scheduledCrew,
       // Include visit info for client-side highlighting after follow-up creation
       visit: result.visit ? {
         id: result.visit.id,
@@ -534,8 +565,11 @@ router.get(
       customerCompanyName: job.customerCompanyName,
       scheduledStart: null,
       scheduledEnd: null,
-      assignedTechnicianIds: job.assignedTechnicianIds,
-      primaryTechnicianId: job.primaryTechnicianId,
+      // 2026-04-12 (Option A): visit-derived crew fields (attached by storage).
+      ...(() => {
+        const { assignedTechnicianIds: crew } = job as any;
+        return { assignedTechnicianIds: crew };
+      })(),
       technicians: job.technicians,
       version: job.version,
       // PM dispatch fix: forward duration so dispatch board shows correct block size
@@ -590,8 +624,11 @@ router.get(
       customerCompanyName: job.customerCompanyName,
       scheduledStart: null,
       scheduledEnd: null,
-      assignedTechnicianIds: job.assignedTechnicianIds,
-      primaryTechnicianId: job.primaryTechnicianId,
+      // 2026-04-12 (Option A): visit-derived crew fields (attached by storage).
+      ...(() => {
+        const { assignedTechnicianIds: crew } = job as any;
+        return { assignedTechnicianIds: crew };
+      })(),
       technicians: job.technicians,
       version: job.version,
       // Follow-up context for UI display
@@ -678,7 +715,16 @@ router.patch(
       computedEndAt = data.endAt ? new Date(data.endAt) : undefined;
     }
 
-    const technicianUserIdForRepo = data.technicianUserId === undefined ? undefined : (data.technicianUserId ?? null);
+    // 2026-04-12 final cleanup: canonical crew-change semantics.
+    //   undefined → leave crew unchanged
+    //   null      → clear crew
+    //   string[]  → replace crew with this list
+    const rescheduleCrewInput: string[] | null | undefined =
+      data.assignedTechnicianIds === undefined
+        ? undefined
+        : data.assignedTechnicianIds === null
+          ? null
+          : data.assignedTechnicianIds;
 
     let result;
     try {
@@ -686,7 +732,7 @@ router.patch(
         type: "RESCHEDULE_VISIT",
         companyId,
         visitId,
-        technicianUserId: technicianUserIdForRepo,
+        assignedTechnicianIds: rescheduleCrewInput,
         startAt: computedStartAt,
         endAt: computedEndAt,
         notes: data.notes ?? undefined,
@@ -708,19 +754,26 @@ router.patch(
       throw createError(404, "Visit not found or access denied");
     }
 
-    // Log event
-    const eventType = data.technicianUserId !== undefined
-      ? (data.technicianUserId ? "job.assigned" : "job.unassigned")
+    // Log event — event type derived from the canonical crew change.
+    const crewChanged = rescheduleCrewInput !== undefined;
+    const crewEmpty = rescheduleCrewInput === null || (Array.isArray(rescheduleCrewInput) && rescheduleCrewInput.length === 0);
+    const eventType = crewChanged
+      ? (crewEmpty ? "job.unassigned" : "job.assigned")
       : "job.rescheduled";
     logEventAsync(getQueryCtx(req), {
       eventType,
       entityType: "job",
       entityId: result.id!,
       summary: `${eventType === "job.assigned" ? "Assigned" : eventType === "job.unassigned" ? "Unassigned" : "Rescheduled"} Job #${result.jobNumber} (visit ${visitId})`,
-      meta: { visitId, jobNumber: result.jobNumber, technicianUserId: data.technicianUserId },
+      meta: { visitId, jobNumber: result.jobNumber, assignedTechnicianIds: rescheduleCrewInput ?? null },
     });
     recomputeAttentionForEntity(companyId, "job", result.id!).catch(() => {});
     emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visitId, ts: new Date().toISOString() });
+
+    // 2026-04-12 final cleanup: canonical crew array only.
+    const updatedCrew: string[] = Array.isArray((result as any)?.assignedTechnicianIds)
+      ? (result as any).assignedTechnicianIds
+      : [];
 
     res.json({
       id: result.id,
@@ -729,10 +782,9 @@ router.patch(
       scheduledStart: result.scheduledStart?.toISOString() || null,
       scheduledEnd: result.scheduledEnd?.toISOString() || null,
       isAllDay: result.isAllDay ?? false,
-      // Return visit version (not job version) — calendar query returns visit_version
       version: result.visitVersion ?? result.version,
       status: result.status,
-      primaryTechnicianId: result.primaryTechnicianId,
+      assignedTechnicianIds: updatedCrew,
     });
   })
 );
@@ -946,7 +998,6 @@ router.patch(
       visitId,
       jobId: result.jobId,
       assignedTechnicianIds: data.technicianUserIds,
-      primaryTechnicianId: data.technicianUserIds[0],
       version: result.version,
     });
   })

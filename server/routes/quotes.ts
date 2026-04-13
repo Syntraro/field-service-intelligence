@@ -18,6 +18,11 @@ import { leadRepository } from "../storage/leads";
 import { storage } from "../storage";
 import { generateQuotePdf } from "../services/quotePdfService";
 import { resolveCustomerCompanyForLocation } from "../services/customerCompanyResolver";
+// 2026-04-12 Phase 7: canonical email pipeline for quote sends.
+import { emailDispatchService } from "../services/emailDispatchService";
+import { templateDataBuilder } from "../services/templateDataBuilder";
+import { communicationTemplatesService } from "../services/communicationTemplatesService";
+import { recipientResolverService } from "../services/recipientResolverService";
 import type { QuoteStatus } from "@shared/schema";
 import { tasks } from "@shared/schema";
 import { eq, and, notInArray } from "drizzle-orm";
@@ -454,43 +459,119 @@ router.get("/:id/pdf/preview", asyncHandler(async (req: AuthedRequest, res: Resp
 // STATUS TRANSITION ROUTES
 // ========================================
 
+// 2026-04-12 Phase 7: canonical quote-send contract.
+// `subject` / `message` from the legacy shape are still accepted and map to
+// the new `subjectOverride` / `bodyOverride` for back-compat; new callers
+// should use the explicit override keys.
 const sendQuoteSchema = z.object({
-  recipients: z.array(z.string().email()).min(1).max(10).optional(),
-  subject: z.string().max(200).optional(),
-  message: z.string().max(2000).optional(),
-}).strict();
+  recipients: z.array(z.string().email()).min(1, "At least one recipient required"),
+  subjectOverride: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v.trim().length > 0, { message: "subjectOverride cannot be blank" }),
+  bodyOverride: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || v.trim().length > 0, { message: "bodyOverride cannot be blank" }),
+  // Legacy aliases (mapped to overrides below).
+  subject: z.string().max(1000).optional(),
+  message: z.string().max(20000).optional(),
+}).passthrough();
 
-// POST /api/quotes/:id/send - Send quote (draft -> sent)
+const renderQuoteEmailSchema = z.object({
+  recipients: z.array(z.string().email()).optional(),
+}).passthrough();
+
+// POST /api/quotes/:id/render-email — preview without sending.
+router.post(
+  "/:id/render-email",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const tenantId = req.companyId!;
+    const quoteId = req.params.id;
+    const { recipients } = validateSchema(renderQuoteEmailSchema, req.body ?? {});
+    const data = await templateDataBuilder.buildQuoteTemplateData(tenantId, quoteId);
+    const rendered = await communicationTemplatesService.renderTemplateForEntity(
+      tenantId, "quote", "email", data,
+    );
+    if (!rendered) throw createError(500, "No template or default available for quote email");
+    res.json({ subject: rendered.subject, body: rendered.body, recipients: recipients ?? [] });
+  }),
+);
+
+// GET /api/quotes/:id/email-recipients
+router.get(
+  "/:id/email-recipients",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    res.json(
+      await recipientResolverService.getDefaultRecipients({
+        tenantId: req.companyId!, entityType: "quote", entityId: req.params.id,
+      }),
+    );
+  }),
+);
+
+// POST /api/quotes/:id/send — Phase 7 canonical flow:
+//   1. validate, 2. dispatch email (PDF attached), 3. on success transition status.
 router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
   const quoteId = req.params.id;
-  const validated = validateSchema(sendQuoteSchema, req.body);
+  const validated = validateSchema(sendQuoteSchema, req.body ?? {});
+
+  // Legacy → canonical alias mapping.
+  const subjectOverride = validated.subjectOverride ?? validated.subject;
+  const bodyOverride = validated.bodyOverride ?? validated.message;
+
+  // Trim-check legacy aliases (Zod refines only cover the canonical keys).
+  if (typeof subjectOverride === "string" && subjectOverride.trim().length === 0) {
+    throw createError(400, "subject cannot be blank");
+  }
+  if (typeof bodyOverride === "string" && bodyOverride.trim().length === 0) {
+    throw createError(400, "message cannot be blank");
+  }
 
   const quote = await quoteRepository.getQuote(companyId, quoteId);
-  if (!quote) {
-    throw createError(404, "Quote not found");
-  }
+  if (!quote) throw createError(404, "Quote not found");
+  if (!isQuoteDraft(quote.status)) throw createError(400, "Only draft quotes can be sent");
 
-  if (!isQuoteDraft(quote.status)) {
-    throw createError(400, "Only draft quotes can be sent");
-  }
+  // 1. Dispatch email BEFORE flipping status.
+  const dispatch = await emailDispatchService.sendQuoteEmail({
+    tenantId: companyId,
+    quoteId,
+    recipients: validated.recipients,
+    subjectOverride,
+    bodyOverride,
+    createdByUserId: req.user?.id ?? null,
+  });
 
-  // Update quote status to sent
+  // 2. Only on success — transition status.
   const updated = await quoteRepository.updateQuote(companyId, quoteId, {
     status: "sent",
     sentAt: new Date(),
   });
 
-  // TODO: If recipients provided, send email with PDF attachment
-  // For now, we just record the metadata
-  const sendInfo = {
-    recipients: validated.recipients,
-    subject: validated.subject,
-    message: validated.message,
-    sentBy: req.user?.id,
-  };
+  logEventAsync(getQueryCtx(req), {
+    eventType: "quote.sent",
+    entityType: "quote",
+    entityId: quoteId,
+    summary: `Quote #${(quote as any).quoteNumber ?? quoteId} sent`,
+    meta: {
+      quoteNumber: (quote as any).quoteNumber,
+      recipients: dispatch.recipients,
+      resendId: dispatch.emailId,
+    },
+  });
 
-  res.json({ quote: updated, sendInfo });
+  res.json({
+    quote: updated,
+    dispatch: {
+      emailId: dispatch.emailId,
+      recipients: dispatch.recipients,
+      subject: dispatch.subject,
+      attachmentFilename: dispatch.attachmentFilename,
+    },
+  });
 }));
 
 // POST /api/quotes/:id/approve - Approve quote

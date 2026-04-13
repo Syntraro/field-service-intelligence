@@ -117,11 +117,12 @@ async function createScheduledJob(): Promise<string> {
     jobType: "PM",
     summary: `${TEST_PREFIX}scheduled_job`,
     status: "in_progress",
-    primaryTechnicianId: testUserId,
+    // 2026-04-12 (Option A): crew forwarded to seed visit.
+    assignedTechnicianIds: [testUserId],
     scheduledStart,
     scheduledEnd,
     isAllDay: false,
-  });
+  } as any);
 
   return job.id;
 }

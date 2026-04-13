@@ -36,7 +36,7 @@ import { LifecycleTransitionError } from "../domain/jobLifecycle";
 import {
   JOB_TERMINAL_STATUSES,
   normalizeScheduleTimes,
-  normalizeTechnicianAssignment,
+  normalizeVisitCrewWrite,
   TerminalJobImmutableError,
   VersionMismatchError,
 } from "../domain/scheduling";
@@ -45,6 +45,7 @@ import { jobVisitsRepository, isVisitActioned } from "../storage/jobVisits";
 import { schedulingRepository, DEFAULT_VISIT_DURATION_MINUTES } from "../storage/scheduling";
 import { reconciliationActionableVisitFilter } from "../lib/visitPredicates";
 import { timeTrackingRepository } from "../storage/timeTracking";
+import { logEventAsync } from "../lib/events";
 
 // ============================================================================
 // Intent Types
@@ -168,6 +169,8 @@ export interface BulkCompleteVisitsIntent {
   type: "BULK_COMPLETE_VISITS";
   companyId: string;
   jobId: string;
+  /** User id of the office/dispatcher/admin who initiated the force-close. */
+  changedByUserId: string;
 }
 
 /** Mark a visit as en_route (tech traveling to job site). */
@@ -270,7 +273,9 @@ export interface RescheduleVisitIntent {
   type: "RESCHEDULE_VISIT";
   companyId: string;
   visitId: string;
-  technicianUserId?: string | null;
+  // 2026-04-12 final cleanup: canonical crew input.
+  //   undefined = crew unchanged, null = clear crew, string[] = replace crew.
+  assignedTechnicianIds?: string[] | null;
   startAt?: Date;
   endAt?: Date;
   notes?: string;
@@ -510,23 +515,25 @@ export async function completeVisit(
   //      after step 1, stop it as well. This catches the rare orphan case
   //      where the running entry was for a different job (state divergence).
   //      The sweep also uses stopAndDiscardIfTrivial.
-  if (existing.assignedTechnicianId) {
+  // 2026-04-12 scalar removal: walk the visit's crew instead of the scalar.
+  // Each crew member is independently checked for a running entry on this
+  // job; the discard logic is identical to before.
+  const crewForCleanup = Array.isArray(existing.assignedTechnicianIds) ? existing.assignedTechnicianIds : [];
+  for (const techId of crewForCleanup) {
     try {
-      const running = await timeTrackingRepository.getRunningTimeEntry(companyId, existing.assignedTechnicianId);
+      const running = await timeTrackingRepository.getRunningTimeEntry(companyId, techId);
       if (running && running.jobId === jobId) {
         await timeTrackingRepository.stopAndDiscardIfTrivial(
           companyId,
-          existing.assignedTechnicianId,
+          techId,
           { timeEntryId: running.id, at: now },
         );
       }
-      // Sweep: any leftover running entry (different job, state divergence)
-      // gets stopped here. Normally a no-op.
-      const stillRunning = await timeTrackingRepository.getRunningTimeEntry(companyId, existing.assignedTechnicianId);
+      const stillRunning = await timeTrackingRepository.getRunningTimeEntry(companyId, techId);
       if (stillRunning) {
         await timeTrackingRepository.stopAndDiscardIfTrivial(
           companyId,
-          existing.assignedTechnicianId,
+          techId,
           { timeEntryId: stillRunning.id, at: now },
         );
       }
@@ -592,7 +599,7 @@ export async function forceCloseJob(
   // Step 1: Bulk-complete open visits if requested.
   // When running inside a shared transaction, version is consistent within tx.
   if (autoCompleteOpenVisits) {
-    const result = await bulkCompleteVisitsInternal(companyId, jobId, txHandle);
+    const result = await bulkCompleteVisitsInternal(companyId, jobId, txHandle, actor.userId);
     autoCompletedVisitCount = result.completedCount;
     if (result.completedCount > 0) {
       const freshJob = await jobRepository.getJob(companyId, jobId, txHandle);
@@ -1003,9 +1010,8 @@ const ACTIVE_VISIT_STATUSES = ["en_route", "on_site", "in_progress", "paused"] a
  * visit (excludeVisitId) is excluded from the check so an idempotent
  * re-trigger of the same action does not self-conflict.
  *
- * Matches the route-handler auth model: a tech is "the assigned tech" if
- * they are either the primary `assignedTechnicianId` OR appear in
- * `assignedTechnicianIds`.
+ * Matches the route-handler auth model: a tech is "assigned" iff they
+ * appear in `assignedTechnicianIds`. There is no lead-tech concept.
  *
  * No-op when actingUserId is undefined (legacy/office callers do not enforce).
  *
@@ -1031,7 +1037,7 @@ async function assertNoOtherActiveVisitForTech(
       eq(jobVisits.isActive, true),
       ne(jobVisits.id, excludeVisitId),
       sql`${jobVisits.status} IN ('en_route', 'on_site', 'in_progress', 'paused')`,
-      sql`(${jobVisits.assignedTechnicianId} = ${actingUserId} OR ${actingUserId} = ANY(${jobVisits.assignedTechnicianIds}))`,
+      sql`${actingUserId} = ANY(${jobVisits.assignedTechnicianIds})`,
     ))
     .limit(1);
 
@@ -1455,7 +1461,7 @@ export async function cancelVisit(
 export async function bulkCompleteVisits(
   intent: BulkCompleteVisitsIntent
 ): Promise<BulkCompleteVisitsResult> {
-  return bulkCompleteVisitsInternal(intent.companyId, intent.jobId);
+  return bulkCompleteVisitsInternal(intent.companyId, intent.jobId, undefined, intent.changedByUserId);
 }
 
 // ============================================================================
@@ -1672,7 +1678,8 @@ async function reconcileJobAfterVisitCompletion(input: {
 async function bulkCompleteVisitsInternal(
   companyId: string,
   jobId: string,
-  txHandle?: any
+  txHandle?: any,
+  changedByUserId?: string,
 ): Promise<BulkCompleteVisitsResult> {
   const uncompleted = await jobVisitsRepository.getUncompletedVisits(companyId, jobId);
   if (!uncompleted.length) {
@@ -1724,9 +1731,13 @@ async function bulkCompleteVisitsInternal(
   // 2026-04-05: Stop running time entries for all assigned technicians on completed visits.
   // Runs AFTER visit transaction commits so time entry reads are consistent.
   // Collected unique technician IDs to avoid duplicate stop attempts.
+  // 2026-04-12 scalar removal: collect from the crew array on each visit.
   const techIds = new Set<string>();
   for (const v of uncompleted) {
-    if (v.assignedTechnicianId) techIds.add(v.assignedTechnicianId);
+    const crew = Array.isArray((v as any).assignedTechnicianIds) ? (v as any).assignedTechnicianIds : [];
+    for (const id of crew) {
+      if (id) techIds.add(id);
+    }
   }
   for (const techId of Array.from(techIds)) {
     try {
@@ -1744,6 +1755,32 @@ async function bulkCompleteVisitsInternal(
 
   // Sync job schedule — pass txHandle so it participates in the outer transaction
   await jobVisitsRepository.syncJobToVisits(companyId, jobId, txHandle);
+
+  // 2026-04-12: Audit the force-close initiator. Actor attribution is the
+  // office/dispatcher/admin who triggered the bulk completion — it is
+  // explicitly NOT the assigned crew. Technician-side records remain
+  // attributed to the acting technician via time_entries.
+  if (changedByUserId && completedVisits.length > 0) {
+    try {
+      await logEventAsync(
+        { db, tenantId: companyId, userId: changedByUserId, role: "system" as any },
+        {
+          eventType: "visit.bulk_completed",
+          entityType: "job",
+          entityId: jobId,
+          summary: `Bulk-completed ${completedVisits.length} visit(s) during force close`,
+          meta: {
+            jobId,
+            completedCount: completedVisits.length,
+            changedByUserId,
+            visitIds: completedVisits.map((v) => v.id),
+          },
+        },
+      );
+    } catch {
+      // Non-fatal: event logging must never block job close
+    }
+  }
 
   return { completedCount: completedVisits.length, visits: completedVisits };
 }
@@ -1820,17 +1857,22 @@ export async function rescheduleVisit(
       });
     }
 
-    // Create new visit
+    // Create new visit. Canonical crew: intent's crew if provided, else carry
+    // over the current visit's crew.
     const normalized = normalizeScheduleTimes({ allDay: intent.allDay, startAt: intent.startAt, endAt: intent.endAt });
-    const techAssignment = intent.technicianUserId !== undefined
-      ? normalizeTechnicianAssignment(intent.technicianUserId || null)
-      : normalizeTechnicianAssignment(visit.assignedTechnicianId || null);
+    // 2026-04-12 scalar removal: crew-only. Fall back to the existing visit's
+    // crew array when the intent omits crew; no scalar fallback.
+    const incomingCrew: string[] | null | undefined = intent.assignedTechnicianIds;
+    const crewSource: string[] | null =
+      incomingCrew !== undefined
+        ? incomingCrew
+        : ((visit as any).assignedTechnicianIds ?? []);
+    const techAssignment = normalizeVisitCrewWrite(crewSource);
 
     await jobVisitsRepository.createJobVisit(companyId, visit.jobId, {
       scheduledStart: normalized.scheduledStart,
       scheduledEnd: normalized.scheduledEnd,
       isAllDay: normalized.isAllDay,
-      assignedTechnicianId: techAssignment.primaryTechnicianId,
       assignedTechnicianIds: techAssignment.assignedTechnicianIds,
       status: "scheduled",
       visitNotes: intent.notes,
@@ -1844,9 +1886,8 @@ export async function rescheduleVisit(
       visitUpdate.scheduledEnd = normalized.scheduledEnd;
       visitUpdate.isAllDay = normalized.isAllDay;
     }
-    if (intent.technicianUserId !== undefined) {
-      const techAssignment = normalizeTechnicianAssignment(intent.technicianUserId || null);
-      visitUpdate.assignedTechnicianId = techAssignment.primaryTechnicianId;
+    if (intent.assignedTechnicianIds !== undefined) {
+      const techAssignment = normalizeVisitCrewWrite(intent.assignedTechnicianIds);
       visitUpdate.assignedTechnicianIds = techAssignment.assignedTechnicianIds;
     }
     if (intent.notes !== undefined) visitUpdate.visitNotes = intent.notes;

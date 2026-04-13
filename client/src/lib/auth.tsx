@@ -85,6 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }),
     onSuccess: (userData) => {
       setUser(userData);
+      setUserInitialized(true);
       queryClient.setQueryData(["/api/auth/me"], userData);
       // 2026-04-10 Phase-2 Fix A/B: a real successful login re-arms the
       // session-expired one-shot guard so the next genuine expiration can
@@ -105,6 +106,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }),
     onSuccess: (userData) => {
       setUser(userData);
+      setUserInitialized(true);
       queryClient.setQueryData(["/api/auth/me"], userData);
       // 2026-04-10 Phase-2: signup is a successful auth — re-arm the guard.
       resetSessionExpiredGuard();

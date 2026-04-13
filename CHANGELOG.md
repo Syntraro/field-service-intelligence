@@ -6,6 +6,1076 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### Timesheet Report for payroll (2026-04-12)
+
+Canonical timesheet report built on the audited source of truth:
+**`work_sessions`** (daily clock-in / clock-out), not `time_entries`.
+Job labor attribution in `time_entries` is a separate concern and is
+never summed for payroll totals. Audit documented inline in
+`server/services/timesheetReportService.ts`.
+
+**Presets:**
+`this_week` · `this_month` · `last_30_days` · `this_year` ·
+`custom_range` · `current_pay_period` · `previous_pay_period` ·
+`next_pay_period`.
+
+**Pay-period math:** derived from a tenant-saved frequency + anchor
+date. Phase 1 implements **weekly** and **biweekly**; `semimonthly` /
+`monthly` are reserved in the enum and disabled in the UI until
+wired.
+
+**Schema (new):**
+- `payroll_settings (company_id PK, pay_frequency, pay_anchor_date,
+  created_at, updated_at)` — one row per tenant.
+- Migration `migrations/2026_04_12_payroll_settings.sql` — applied.
+- `shared/schema.ts` — `payrollSettings`, `payrollFrequencyEnum`,
+  `PayrollSettings`, `PayrollFrequency` exported.
+- No change to `work_sessions`, `time_entries`, `time_approvals`.
+
+**Service (new): `server/services/timesheetReportService.ts`**
+- `resolveDateRange(companyId, preset, customStart?, customEnd?)` —
+  converts any preset to `{ start, end, label, preset }` using tenant
+  timezone (via `companyRepository.getCompanyTimezone`).
+- `resolvePayPeriod(frequency, anchorDate, onDate, offset)` —
+  weekly/biweekly math; throws `501` for semimonthly/monthly.
+- `getTimesheetReport({ companyId, preset, customStart?, customEnd?,
+  technicianId? })` — queries `work_sessions` with tenant scope and
+  date-range filter; groups totals by employee; returns detail rows.
+  Open sessions are INCLUDED in rows (for visibility) but EXCLUDED
+  from totals via the canonical `sessionDurationMinutes` helper.
+- `getPayrollSettings` / `upsertPayrollSettings`.
+- Uses `resolveTechnicianName` for display names (no ad-hoc logic).
+- Custom-range span capped at 366 days.
+
+**Routes (new): `server/routes/timesheetReports.ts`** mounted at
+`/api/reports` (after existing `reportsRouter` so paths coexist):
+- `GET /api/reports/timesheets?preset=…&start=…&end=…&technicianId=…`
+  — returns the full report result.
+- `GET /api/reports/timesheets/payroll-settings` — returns the saved
+  settings or a null-shaped placeholder.
+- `PATCH /api/reports/timesheets/payroll-settings` — upserts.
+- All three are `requireRole(MANAGER_ROLES)`.
+
+**Response shape:**
+```ts
+{
+  appliedFilter: { preset, start, end, label, technicianId | null },
+  summary: [{ technicianId, technicianName, totalMinutes, sessionCount }],
+  rows:    [{ sessionId, technicianId, technicianName, date,
+              startTime, endTime | null, durationMinutes, isOpen,
+              source, notes }],
+  grandTotalMinutes: number,
+  openSessionCount:  number
+}
+```
+
+**Frontend (new page): `client/src/pages/TimesheetReportPage.tsx`**
+Single canonical report page — reached from two entry points, no
+duplicate UI:
+- `/payroll` (existing `PayrollPage`) gains a "Timesheet Reports"
+  button in the header.
+- `/reports` (existing `Reports.tsx`) gains a "Timesheets" tab that
+  navigates to the same page.
+- Router: `/reports/timesheets` → `TimesheetReportPage`
+  (requireAdmin).
+
+**Page features:**
+- Preset dropdown (disables pay-period options when no settings saved
+  and annotates "(set payroll first)").
+- Custom date pickers when `custom_range` is selected.
+- Payroll Settings dialog (frequency + anchor date). Save → invalidates
+  both the settings and report queries.
+- Applied-filter summary row (`label · start → end`) + open-session
+  badge that's clearly "excluded from totals".
+- Employee totals table with grand total.
+- Detail table with 7 columns (Name / Date / Start / End / Hours /
+  Type-Source / Note). Open rows are highlighted amber with an
+  "(open)" end-time indicator.
+- CSV export (8 columns: Name, Date, Start time, End time, Hours,
+  Type/Source, Note, Session ID). Filename includes the applied
+  date range. CSV respects the currently applied preset / custom
+  range / pay period filter.
+
+**Edge cases handled:**
+- Zero-hour employees absent from `summary` (no sessions in range).
+- Open sessions surfaced in `rows` but not counted in totals.
+- Non-job sessions inherently supported — the report never touches
+  `jobs` / `time_entries`.
+- Historical inactive employees: LEFT JOIN on `users`, falls back to
+  `resolveTechnicianName` (returns "Unknown" if all name fields are
+  null).
+- Cross-midnight sessions: `work_sessions.workDate` is the clock-in
+  date in tenant TZ; duration math is by UTC timestamp, so a session
+  that crosses midnight is attributed to the clock-in date with
+  correct total minutes — no special code path needed.
+- Timezone: `companies.timezone` used throughout for "today".
+- Custom-range validation: `end ≥ start`, ≤ 366 days.
+
+**Files changed:**
+- `shared/schema.ts`
+- `migrations/2026_04_12_payroll_settings.sql` (new)
+- `server/services/timesheetReportService.ts` (new)
+- `server/routes/timesheetReports.ts` (new)
+- `server/routes/index.ts`
+- `client/src/App.tsx`
+- `client/src/pages/PayrollPage.tsx`
+- `client/src/pages/Reports.tsx`
+- `client/src/pages/TimesheetReportPage.tsx` (new)
+
+**Verification:**
+- Audit phase: confirmed `work_sessions` is the payroll canonical
+  source via `server/storage/timeTracking.ts:~2446-2666`
+  (`getWeeklyPayrollSummary` comment: "Payroll source of truth:
+  work_sessions"). `time_entries` left untouched.
+- `npx tsc --noEmit` — clean.
+- Migration applied to dev DB; Schema Guard verifies the new columns
+  on boot.
+- Dev server listens on :5000, Schema Guard: `All required columns
+  verified ✓`.
+- Route probes: `/api/reports/timesheets` and
+  `/api/reports/timesheets/payroll-settings` both return 401
+  unauthenticated (mounted + auth-gated).
+
+**Architecture confirmations (explicit):**
+- Payroll source of truth: `work_sessions`. Confirmed.
+- Job labor attribution: `time_entries`. Not conflated with payroll.
+- No duplicate report page — both entry points route to
+  `/reports/timesheets` via the same `TimesheetReportPage`.
+- Pay-period filters derive from saved payroll settings
+  (`payroll_settings` table); missing settings disable those presets
+  in the UI with an explicit hint.
+
+**Deferred (out of scope for this pass):**
+- `semimonthly` / `monthly` frequency UI + math (enum + DB ready).
+- Manager-approval linkage in the report (approvals stay on
+  `PayrollPage`).
+- Pay date calculation.
+- Excel export (CSV only for now).
+
+#### File storage Phase 2 — multi-entity extension (2026-04-12)
+
+Extends the Phase 1 R2 pipeline to four new entity types via a
+discriminator + adapter pattern. One upload lifecycle, multiple entity
+adapters. Zero duplication of routes, services, or storage interfaces.
+
+**New entity types:**
+- `client_note` — reuses the existing `note_attachments` join (no
+  redundant `client_note_files` table created).
+- `client_document` — direct attachments on `client_locations`.
+- `contract_document` — attachments on `recurring_job_templates` (the
+  contracts entity in this codebase).
+- `technician_document` — attachments on `users` (role advisory,
+  enforced at the service boundary).
+
+**Object-key map:**
+```
+job_note:             tenants/{t}/jobs/{j}/notes/{n}/{fileId}/{file}
+client_note:          tenants/{t}/clients/{c}/notes/{n}/{fileId}/{file}
+client_document:      tenants/{t}/clients/{c}/documents/{fileId}/{file}
+contract_document:    tenants/{t}/contracts/{c}/{fileId}/{file}
+technician_document:  tenants/{t}/technicians/{u}/{fileId}/{file}
+```
+
+**Service refactor (non-breaking):**
+- `fileUploadService.ts` now carries an `ENTITY_ADAPTERS` map keyed by
+  `FileEntityType`. Each adapter owns `resolve` (tenant-scoped ownership
+  check), `buildObjectKey`, `ensureAttachment`, and `detachByFileId`.
+- `requestUpload`, `finalizeUpload`, and `deleteFile` pick the right
+  adapter by entityType — no inline branching.
+- `resolveCategory(entityType, mimeType)` replaces the mime-only version.
+  Notes categorize by mime (`note_image` / `note_pdf`); documents
+  categorize by entity type (`client_document`, etc.).
+- `deleteFile` now calls `detachByFileId` on every adapter so a file
+  can be safely deleted no matter which join table holds it.
+
+**New list endpoints (all require `requireAuth` + tenant scope, all
+return `status='uploaded'` only):**
+- `GET /api/notes/:noteId/files` — job notes (existing).
+- `GET /api/client-notes/:noteId/files` — new.
+- `GET /api/clients/:clientId/files` — new.
+- `GET /api/contracts/:contractId/files` — new.
+- `GET /api/technicians/:technicianId/files` — new.
+
+**Upload lifecycle — unchanged:**
+`POST /api/files/upload-request`, `POST /api/files/:fileId/finalize`,
+`POST /api/files/:fileId/access-url`, `DELETE /api/files/:fileId`.
+Only the `entityType` field widens; no new routes were added for uploads.
+
+**Schema + migration:**
+- `shared/schema.ts` — three new join tables:
+  - `client_files { companyId, clientId, fileId, … }`
+  - `contract_files { companyId, contractId, fileId, … }`
+  - `technician_files { companyId, technicianId, fileId, … }`
+  - `fileCategoryEnum` widened to include `client_document`,
+    `contract_document`, `technician_document`.
+- `migrations/2026_04_12_files_phase2_joins.sql` — creates the three
+  tables with FK cascades + indexes on `company_id`, the entity column,
+  and `file_id`. Applied.
+- **No change to `files` table** (Phase 1 shape is correct).
+- **No change to `note_attachments`** — kept as the client_note join
+  (pragmatic reuse, zero duplication).
+
+**UI updates (scope-limited per brief):**
+- `client/src/hooks/useFileUpload.ts` — `FileEntityType` widened.
+- `client/src/components/NotesPanel.tsx` — client notes dropped the
+  legacy multer path; now creates the note first, then uploads each
+  staged file via `useFileUpload({ entityType: 'client_note' })`;
+  attachments render through `AttachmentView`.
+- `client/src/components/attachments/EntityDocumentsSection.tsx` — new
+  reusable component for entity-level document attachments (not
+  note-scoped). Accepts `entityType`, `entityId`, `listUrl`. Ready for
+  contract / technician reuse — wired today only into clients.
+- `client/src/pages/ClientDetailPage.tsx` — adds a "Documents" section
+  under the Notes panel using the new component.
+- `server/storage/noteAttachments.ts` — `listByNote` now projects
+  `storageProvider` + `status` and filters for `status='uploaded'`, so
+  the client-note UI can branch on provider.
+
+**Access control:**
+- Every adapter `resolve()` re-asserts tenant ownership before the
+  pipeline even reaches R2.
+- `client_note` / `client_document`: tenant check on `client_locations`.
+- `contract_document`: tenant check on `recurring_job_templates`.
+- `technician_document`: tenant check on `users`.
+- Role checks (e.g. requiring a manager to upload contract documents)
+  live on the routes / UI, not in the adapter — the adapter only
+  validates entity membership.
+
+**Files changed:**
+- `shared/schema.ts`
+- `migrations/2026_04_12_files_phase2_joins.sql` (new)
+- `server/services/fileUploadService.ts`
+- `server/routes/fileUploads.ts`
+- `server/storage/noteAttachments.ts`
+- `client/src/hooks/useFileUpload.ts`
+- `client/src/components/attachments/EntityDocumentsSection.tsx` (new)
+- `client/src/components/NotesPanel.tsx`
+- `client/src/pages/ClientDetailPage.tsx`
+
+**Verification:**
+- `npx tsc --noEmit` — clean.
+- `migrations/2026_04_12_files_phase2_joins.sql` — applied; tables
+  created with indexes.
+- Dev server boots on :5000; Schema Guard passes all columns.
+- Route probes for the four new list endpoints return 401
+  (auth-gated, correctly mounted).
+- Logical coverage:
+  - Upload for job_note: unchanged path, still works.
+  - Upload for client_note: NotesPanel creates note, then per-file
+    3-step upload.
+  - Upload for client_document: ClientDetailPage "Documents" section
+    → EntityDocumentsSection → useFileUpload.
+  - Upload for contract_document / technician_document: backend ready,
+    UI deferred per brief.
+  - Access control: all four `resolve()` implementations look up the
+    target entity with `companyId` filter; cross-tenant requests get 404.
+  - Finalize: single code path for all entity types via adapter.
+  - Delete: soft-deletes file + runs detach across all adapters.
+
+**Deferred (explicitly out of scope):**
+- Contract and technician UI surfaces (backend is ready for both).
+- Removing legacy `POST /api/uploads` (multer) — still reads legacy
+  `storage_provider='local'` rows.
+
+### Changed
+
+#### File storage Phase 1 — reliability hardening (2026-04-12)
+
+Corrective pass on the R2 upload pipeline. No new features, no new surfaces.
+
+**1. `finalizeUpload` now always terminates in a known state:**
+- Entire finalize body wrapped in `try { … } catch`. Any unexpected error
+  flips the pending row to `failed` (via idempotent `markFailed`) and
+  rethrows. No more ghost `pending_upload` rows on network/DB errors.
+- Terminal/wrong-state rows (`uploaded`, `failed`, `deleted`, non-r2) are
+  rejected without being mutated.
+- `ensureJobNoteAttachment` is NEVER called unless the row is marked
+  `uploaded` in the same transaction.
+
+**2. Post-upload size validation:**
+- After `headObject`, the service compares `head.sizeBytes` against the
+  declared `file.size`. Any mismatch marks the row `failed` and returns
+  `400 "Uploaded size (N) does not match declared size (M)"`. When R2
+  does not return a size, the check is skipped (not failed).
+
+**3. Orphan sweeper (`sweepOrphanedUploads`):**
+- New exported function in `fileUploadService.ts`. Finds rows with
+  `status='pending_upload'` AND `created_at < now - 15 min` and flips
+  them to `failed` with a guard-conditioned UPDATE (prevents racing a
+  legitimate concurrent finalize). Fires best-effort `deleteObject` for
+  R2 rows.
+- `startOrphanSweeper()` schedules it on a 15-min `setInterval(...).unref()`.
+- Called once from `server/index.ts` bootstrap — no external cron.
+- Also exported so it can be wired into a future ops endpoint or invoked
+  manually.
+
+**4. Signed URL expiry enforced in one place:**
+- `R2StorageProvider` exports `MAX_UPLOAD_EXPIRY_SECONDS = 300` and
+  `MAX_DOWNLOAD_EXPIRY_SECONDS = 900`. A `clamp()` helper caps any
+  caller-supplied `expiresInSeconds`. Default download TTL is 10 min.
+- No other layer may set TTL; the SDK is only reachable through the
+  provider.
+
+**5. Delete consistency:**
+- `listJobNoteFiles` (and the two other join-hydrated attachment queries
+  in `storage/jobNotes.ts` and `storage/jobVisits.ts`) now require
+  `files.status = 'uploaded'`. `pending_upload`, `failed`, and `deleted`
+  rows are excluded from every user-facing list.
+- `getFileAccessUrl` already rejects non-`uploaded` rows with 409 —
+  retained.
+- `deleteFile` still soft-deletes DB state first (authoritative) and
+  fires best-effort `deleteObject` after.
+
+**6. `category` column on `files`:**
+- `shared/schema.ts` — new `category varchar NOT NULL DEFAULT 'other'`.
+- `fileCategoryEnum = ['note_image', 'note_pdf', 'other']` (open-ended
+  so future entity types extend without a migration).
+- `resolveCategory(mimeType)` assigns `note_image` / `note_pdf` / `other`
+  at upload-request time. Never sourced from the client.
+- `migrations/2026_04_12_files_category.sql` — adds the column and
+  backfills existing rows from their `mime_type`. Applied.
+
+**Validation hardening:** `validateMimeAndSize` already enforced the
+allow-list + size caps (image ≤10 MB, pdf ≤20 MB) BEFORE any DB insert
+or signed URL; no change needed, confirmed by code inspection.
+
+**Files modified:**
+- `shared/schema.ts` — `category` column + `fileCategoryEnum` + `FileCategory` type.
+- `migrations/2026_04_12_files_category.sql` — new, applied.
+- `server/services/storage/R2StorageProvider.ts` — expiry caps + `clamp`.
+- `server/services/fileUploadService.ts` — finalize try/catch, size
+  validation, `markFailed`, `sweepOrphanedUploads`, `startOrphanSweeper`,
+  `resolveCategory`, stricter `listJobNoteFiles` filter.
+- `server/storage/jobNotes.ts` — attachment query now filters
+  `status='uploaded'` (dropped unused `ne` import).
+- `server/storage/jobVisits.ts` — same filter in `getVisitDetailForUser`
+  (dropped unused `ne` import).
+- `server/index.ts` — wires `startOrphanSweeper()` into bootstrap.
+
+**Verification:**
+- `npx tsc --noEmit` — clean.
+- Migration `2026_04_12_files_category.sql` applied to dev DB; existing
+  rows backfilled.
+- Dev server boots on :5000; Schema Guard verifies all required columns
+  (including `category`). Sweeper scheduled via `.unref()` so it does
+  not keep the process alive on shutdown.
+- Logical test scenarios (not yet exercised against live R2 since the
+  test bucket is not provisioned here):
+  - Valid upload: unchanged happy path, `category` now populated.
+  - Failed finalize (headObject 404): row → `failed`; no attachment row
+    inserted; 400 returned.
+  - Size mismatch: row → `failed`; 400 with declared/actual sizes.
+  - Orphan cleanup: after ≥15 min, `sweepOrphanedUploads` flips pending
+    rows to `failed` + best-effort R2 deleteObject. Guard-conditioned
+    UPDATE prevents races.
+  - Delete: `deleteFile` soft-deletes; every list query now filters for
+    `status='uploaded'`; `access-url` returns 409 on non-uploaded rows.
+
+**Deferred:** none from this pass.
+
+### Added
+
+#### File storage Phase 1 — Cloudflare R2 for job note attachments (2026-04-12)
+
+**Decision:** Binary file storage moves off Render disk and onto Cloudflare
+R2. Phase 1 supports image + PDF attachments on **job notes** only. The
+architecture is entity-agnostic — the same pipeline will later power
+client notes, technician documents, contracts, service contracts, invoice
+PDFs, and quote PDFs without schema drift.
+
+**Non-negotiables enforced:**
+- No blobs in Postgres (metadata only).
+- No files on Render disk for new uploads.
+- All new files private; access via short-lived signed URLs.
+- AWS SDK usage confined to one module (`R2StorageProvider.ts`).
+- Server-side mime + size validation.
+- Tenant ownership verified before upload issuance, read, and delete.
+
+**Supported media + limits:**
+- Images (`image/jpeg`, `image/png`, `image/webp`) ≤ 10 MB.
+- PDFs (`application/pdf`) ≤ 20 MB.
+
+**3-step upload lifecycle:**
+1. `POST /api/files/upload-request` → server creates a `pending_upload`
+   metadata row and returns `{ fileId, uploadUrl, requiredHeaders }`.
+2. Client PUTs the file body directly to the signed R2 URL.
+3. `POST /api/files/:fileId/finalize` → server verifies the object via
+   `headObject`, marks `uploaded`, inserts `job_note_attachments`.
+
+**Dual-read:** legacy rows keep `storage_provider='local'`; the service's
+`getFileAccessUrl` branches — R2 rows get a signed GET URL, local rows
+get the existing `/api/files/:fileId` path. Clients treat both uniformly.
+
+**Object key shape:**
+`tenants/{tenantId}/jobs/{jobId}/notes/{noteId}/{fileId}/{sanitizedFilename}`
+
+**Migrations:**
+- `migrations/2026_04_12_files_r2_phase1.sql` — adds `storage_provider`,
+  `bucket`, `status`, `updated_at` columns; indexes `company_id`, `status`,
+  `(company_id, status, created_at DESC)`.
+
+**New files:**
+- `server/services/storage/StorageProvider.ts` — canonical interface.
+- `server/services/storage/R2StorageProvider.ts` — S3-SDK-backed R2
+  provider. The only module allowed to import `@aws-sdk/*`.
+- `server/services/fileUploadService.ts` — 3-step lifecycle, DTO mapping,
+  dual-provider read path, sanitized filenames, entity-type-keyed key
+  builders.
+- `server/routes/fileUploads.ts` — thin controllers for
+  `upload-request / finalize / access-url / delete / list`.
+- `client/src/hooks/useFileUpload.ts` — client-side 3-step driver with
+  XHR upload progress and `resolveFileAccessUrl()`.
+- `client/src/components/attachments/AttachmentView.tsx` — provider-aware
+  attachment row (pre-resolves signed URLs for images, lazy for others).
+
+**Modified files:**
+- `shared/schema.ts` — `files` table extended with provider/status columns.
+- `server/routes/index.ts` — mounts `/api/files/*` new routes BEFORE the
+  legacy `filesRouter` so new paths match first.
+- `server/storage/jobNotes.ts` — list query returns
+  `storageProvider` + `status` on attachments; filters soft-deleted rows.
+- `server/storage/jobVisits.ts` — `getVisitDetailForUser` now hydrates
+  attachments on each note for the tech-app visit detail payload.
+- `client/src/components/AddJobNoteDialog.tsx` — switched to note-first
+  + 3-step R2 upload; per-file progress; updated mime/size limits.
+- `client/src/components/JobNotesSection.tsx` — renders attachments via
+  `AttachmentView` (handles both providers).
+- `client/src/tech-app/hooks/useTechVisitDetail.ts` — `DetailNote` now
+  carries `attachments: BackendNoteAttachment[]`.
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — `NoteInput` gains a
+  Paperclip button + staged-file chips; `NoteCard` renders attachments;
+  `handleAddNote` creates the note then uploads each file via
+  `useFileUpload`.
+
+**Legacy:** `POST /api/uploads` (multer) + `GET /api/files/:fileId`
+(disk stream) are retained for backward compatibility with
+`storage_provider='local'` rows. They are no longer referenced by the
+client. They will be deleted in a follow-up once the disk is drained.
+
+**Env vars** (required; the operator populates):
+- `R2_ACCOUNT_ID`
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+- `R2_BUCKET`
+- `R2_PUBLIC_URL_BASE` — reserved for future CDN; unused in Phase 1.
+
+Missing env → `GET/POST /api/files/upload-request` returns `503 "File
+storage is not configured"`.
+
+**Dependencies added:**
+- `@aws-sdk/client-s3`
+- `@aws-sdk/s3-request-presigner`
+
+**Verification:**
+- `npx tsc --noEmit` — clean.
+- Migration applied to dev DB.
+- Dev server restarts cleanly on :5000; Schema Guard reports all
+  columns verified.
+- Route probes: `POST /api/files/upload-request`, `/finalize`,
+  `/access-url`, `GET /api/notes/:id/files` all respond 401/403 to
+  unauthenticated probes (gating working).
+
+**Deferred:**
+- Legacy `multer` route removal (pending full cutover of old rows).
+- Orphan sweeper for `pending_upload` rows that never finalize.
+- Generalizing object-key builders for client-note / technician-doc /
+  contract / invoice / quote entity types (trivial extension in
+  `fileUploadService.ts`).
+- Thumbnail caching / CDN front for signed downloads.
+
+### Changed
+
+#### Office check-in/out removed; centralized visit-assignment guards (2026-04-12)
+
+**Product decision:** Technicians are the only role that checks themselves
+in and out, and they do so only from the tech app. Office, dispatcher, and
+admin users manage labor exclusively through manual time entries — they do
+not impersonate technician activity.
+
+**Server — office check-in/out routes removed:**
+- `server/routes/jobVisits.routes.ts`
+  - `POST /:jobId/visits/:visitId/check-in` — **deleted**.
+  - `POST /:jobId/visits/:visitId/check-out` — **deleted**.
+  - Old handlers fell back to `crew[0]` for labor attribution when the
+    initiating manager was not on the crew; this silently mis-attributed
+    labor and has been removed.
+  - Unused `timeTrackingRepository` import dropped.
+- No client code calls the removed paths (grep confirmed). A request to
+  either URL now returns 404 by default — the intended signal.
+
+**New canonical guard module:**
+- `server/guards/visitAssignmentGuards.ts` (new):
+  - `isTechnicianAssignedToVisit(userId, visit)` — pure predicate.
+  - `assertTechnicianAssignedToVisit(companyId, userId, visitId)` — loads
+    visit and throws 404 if user is not in crew.
+  - `technicianAssignedToVisitFilter(userId)` — SQL fragment for WHERE
+    clauses.
+  - `assertTechnicianHasVisitOnJob(companyId, userId, jobId)` — 403 if the
+    tech has no crew membership on any active visit of the job.
+
+**Migrated callers:**
+- `server/routes/techField.ts` — dropped local `assertTechAssignedToVisit`
+  and `assertTechAssignedToJob`; now re-exports the canonical helpers.
+- `server/storage/jobVisits.ts` — `getAssignedVisit` now uses
+  `isTechnicianAssignedToVisit`.
+- `server/storage/visits.ts` — `assignedToUser` now aliases
+  `technicianAssignedToVisitFilter`.
+
+**Audit attribution — bulk complete:**
+- `server/services/jobLifecycleOrchestrator.ts`
+  - `BulkCompleteVisitsIntent` now requires `changedByUserId`.
+  - `bulkCompleteVisitsInternal` accepts it and emits a
+    `visit.bulk_completed` event logged against the initiating
+    office/dispatcher user. Actor attribution is explicitly separated from
+    crew identity — technician-side records still attribute to the acting
+    technician via `time_entries`.
+  - `forceCloseJob` forwards `actor.userId` as `changedByUserId`.
+- `tests/tech-visit-workflow-controls.test.ts` — updated `bulkCompleteVisits`
+  call site with new `changedByUserId` field.
+
+**Stale comments cleared:**
+- `server/storage/visitCrew.ts` — removed language that implied callers
+  could use `crew[0]` as a "lead". Explicitly documents: no lead technician.
+
+**Job-level assignment:**
+- `jobs.primary_technician_id` and `jobs.assigned_technician_ids` were
+  already dropped in `migrations/2026_04_12_drop_job_tech_assignment.sql`.
+  Verified: no live runtime code reads or writes them. Remaining references
+  are confined to backups, historical migration SQL, and documentation.
+
+**Files changed:**
+- `server/routes/jobVisits.routes.ts`
+- `server/routes/techField.ts`
+- `server/storage/jobVisits.ts`
+- `server/storage/visits.ts`
+- `server/storage/visitCrew.ts`
+- `server/services/jobLifecycleOrchestrator.ts`
+- `server/guards/visitAssignmentGuards.ts` (new)
+- `tests/tech-visit-workflow-controls.test.ts`
+
+**Breaking:** yes — `POST /api/jobs/:jobId/visits/:visitId/check-in` and
+`/check-out` no longer exist. Consumers must use tech-app check-in/out or
+the manual time-entry routes.
+
+#### Visit assignment — scalar `assigned_technician_id` fully removed (2026-04-12)
+
+**Decision:** No lead technician concept. `job_visits.assigned_technician_ids`
+(varchar[]) is the sole crew column. Actual work attribution continues through
+actor-specific fields (time_entries.technicianId, checked-in user, etc.).
+
+**DB:**
+- Migration `2026_04_12_drop_job_visits_assigned_technician_id.sql` drops the
+  `assigned_technician_id` column and its supporting indexes
+  (`idx_job_visits_technician`, `idx_job_visits_assigned_technician_id`).
+
+**Drizzle + Zod (`shared/schema.ts`):**
+- `jobVisits.assignedTechnicianId` removed from the table definition.
+- `insertJobVisitSchema` / `updateJobVisitSchema`: scalar field dropped; only
+  `assignedTechnicianIds: string[]` remains.
+
+**Domain helper:**
+- `server/domain/scheduling.ts` — `normalizeVisitCrewWrite` now returns
+  `{ assignedTechnicianIds }` only (no lead).
+
+**Storage / routes:**
+- `server/storage/jobVisits.ts` — list filter switched to
+  `assignedTechnicianIds?: string[]` with array-overlap SQL; visit-assigned
+  predicate uses crew membership only; `createJobVisit` / `updateJobVisit`
+  no longer write the scalar column.
+- `server/storage/scheduling.ts` — SELECTs, `DaySummaryVisitRow` type,
+  `unscheduleVisit`, `updateVisitCrew`, and the day-summary grouping all drop
+  the scalar.
+- `server/storage/timeTracking.ts` — active-visit lookup filters and buckets
+  on crew membership only.
+- `server/storage/equipmentCatalog.ts` + `server/routes/equipment.routes.ts` —
+  service timeline returns `assignedTechnicianIds`; tech names resolved via
+  one batched users query and rendered as a comma-joined crew label.
+- `server/storage/visits.ts` — `assignedToUser` SQL fragment and
+  `VisitFeedItem` / `toVisitFeedItem` drop the scalar field.
+- `server/storage/recurringJobs.ts` — upcoming-queue visit shape exposes
+  `assignedTechnicianIds: string[]`.
+- `server/storage/jobs.ts` — seed visit no longer computes a lead from
+  `assignedTechnicianIds[0]`.
+- `server/lib/visitIntelligence.ts` + `server/lib/autoGapScheduling.ts` —
+  raw SQL SELECTs, row types, and tech-membership filters drop the scalar.
+- `server/routes/jobVisits.routes.ts` — `createVisitSchema` /
+  `updateVisitSchema` accept only `assignedTechnicianIds`; legacy
+  `assignedTechnicianId` query param is adapted into the array filter.
+- `server/routes/techField.ts` — `assertTechAssignedToJob` and the tech
+  create-job endpoint use crew arrays only.
+- `server/schemas.ts` — `jobCreateSchema` drops `assignedTechnicianId`.
+
+**Client:**
+- `client/src/pages/PMWorkspacePage.tsx` — upcoming queue `visit` type now
+  carries `assignedTechnicianIds: string[]`.
+- `client/src/tech-app/hooks/useTechVisitDetail.ts` — BackendVisit shape
+  drops the scalar.
+- `client/src/tech-app/pages/CreateJobPage.tsx` — tech create-job payload
+  sends `assignedTechnicianIds: [techId]`.
+
+**Tests:** fixtures across `tests/*.test.ts` replaced
+`assignedTechnicianId: userId` with `assignedTechnicianIds: [userId]`.
+
+**Files affected:** migration SQL, `shared/schema.ts`, `server/domain/scheduling.ts`,
+`server/storage/{jobVisits,scheduling,timeTracking,equipmentCatalog,visits,recurringJobs,jobs}.ts`,
+`server/lib/{visitIntelligence,autoGapScheduling}.ts`,
+`server/routes/{jobVisits.routes,techField,equipment.routes}.ts`, `server/schemas.ts`,
+`client/src/pages/{PMWorkspacePage,JobDetailPage}.tsx`,
+`client/src/tech-app/{hooks/useTechVisitDetail,pages/CreateJobPage}.{ts,tsx}`,
+`client/src/components/visits/EditVisitModal.tsx`, `tests/*.test.ts`.
+
+**Breaking:** yes — any external caller still sending `assignedTechnicianId`
+to visit-create/update routes will be rejected by the strict schemas.
+
+#### Visit assignment — legacy `technicianUserId` fully removed (2026-04-12)
+
+**Decision:** `assignedTechnicianIds: string[]` is the sole visit-assignment
+contract, both inbound and outbound. `technicianUserId` was the last surviving
+single-tech compatibility input after the `primaryTechnicianId` cleanup; this
+pass eliminates it end-to-end.
+
+**Server — request schemas:**
+- `server/routes/scheduling.ts`:
+  - `scheduleJobSchema`: `technicianUserId` removed; `assignedTechnicianIds:
+    z.array(z.string().uuid()).nullable().optional()` is the only crew input.
+  - `rescheduleVisitSchema`: same change. Semantics:
+    `undefined` = crew unchanged, `null`/`[]` = unassigned, `[ids]` = replace.
+  - DEV schema sanity-check block rewritten to verify the canonical array
+    input instead of the legacy `null technicianUserId` shape.
+- `shared/schema.ts`: `scheduleJobSchema` + `updateJobScheduleSchema` exports
+  swapped `technicianUserId` for `assignedTechnicianIds`.
+
+**Server — services / storage:**
+- `server/storage/scheduling.ts` — `scheduleJob`: `technicianUserId` param
+  removed; accepts only `assignedTechnicianIds`. Internal `resolveVisitCrewInput`
+  call replaced with the new `normalizeVisitCrewWrite` helper.
+- `server/services/jobLifecycleOrchestrator.ts`:
+  - `RescheduleVisitIntent.technicianUserId` → `assignedTechnicianIds`.
+  - Both actioned (create-new-visit) and non-actioned (update-in-place)
+    branches rewritten to use the canonical crew through `normalizeVisitCrewWrite`.
+- `server/routes/techField.ts`: tech-app schedule call now passes
+  `assignedTechnicianIds: [techId]`; notification metadata uses `assignedTechnicianIds`.
+
+**Server — domain helpers consolidated:**
+- `server/domain/scheduling.ts`: deleted `resolveVisitCrewInput`,
+  `normalizeTechnicianAssignment`, and `assertTechnicianAssignmentInvariant`
+  (the last was dead — no runtime callers).
+- **Added `normalizeVisitCrewWrite(crew: string[] | null | undefined)`**:
+  single canonical visit-write normalizer. Returns
+  `{ assignedTechnicianId, assignedTechnicianIds }` — field names now match
+  the actual visit columns (no "primary" misnomer). Dedupes, strips falsy,
+  preserves order; lead = `crew[0] ?? null`.
+
+**Server — notification rename:**
+- `server/services/notificationService.ts`: `JobScheduledParams.technicianUserId`
+  → `notifyUserId`. This field was the notification *recipient*, never a
+  visit-assignment field — the rename makes the semantic explicit.
+- `server/routes/scheduling.ts` call-site updated: `notifyUserId = scheduledCrewInput[0] ?? null`.
+
+**Server — route handlers:**
+- `POST /api/calendar/schedule`: reads only `data.assignedTechnicianIds`; no
+  more fallback from single to array. Notification derives its recipient
+  from `crew[0]`. Log-event meta carries `assignedTechnicianIds` instead of
+  the deleted `technicianUserId`.
+- `PATCH /api/calendar/visit/:visitId/reschedule`: `technicianUserId` reads
+  replaced with canonical crew semantics. Event type derived from crew
+  change (`job.assigned` / `job.unassigned` / `job.rescheduled`).
+
+**Client:**
+- `client/src/hooks/useSchedulingApi.ts` — `ScheduleJobPayload.technicianUserId`
+  replaced with `assignedTechnicianIds?: string[] | null`.
+- `client/src/components/dispatch/useDispatchPreviewMutations.ts`:
+  - `ScheduleParams.technicianUserId` → `assignedTechnicianIds: string[] | null`.
+  - `RescheduleParams.technicianUserId` → `assignedTechnicianIds?: string[] | null`
+    (undefined = unchanged, null/[] = clear, [ids] = replace).
+  - `optimisticSchedule`, `optimisticReschedule` signatures + cache patches
+    rewritten to the canonical crew semantics.
+  - Schedule mutation POST body uses `assignedTechnicianIds`; reschedule
+    mutation PATCH body only includes the field when the caller specifies a
+    crew change (preserving `undefined` = crew unchanged semantics).
+- `client/src/components/visits/EditVisitModal.tsx`:
+  - `onDispatchSchedule` / `onDispatchReschedule` callback interfaces updated
+    to take `assignedTechnicianIds`. EditVisitModal now sends the full crew
+    in the initial schedule/reschedule callback — the separate
+    `onDispatchUpdateCrew` follow-up call for multi-tech is eliminated
+    (server persists the full crew atomically).
+  - Visit-edit PATCH payload no longer sets `assignedTechnicianId`; the
+    server derives the lead column from `assignedTechnicianIds[0]`.
+- `client/src/pages/DispatchPreview.tsx`:
+  - Every `scheduleVisit({...})` / `rescheduleVisit({...})` call-site
+    rewritten to use `assignedTechnicianIds`. Five sites: day-view drop,
+    week-view drop, schedule-from-panel, reschedule-from-panel,
+    multi-tech drag handling.
+  - `handleScheduleFromPanel` collapsed — no split schedule-then-crew-patch
+    sequence. Full crew goes in the first call.
+  - `crewUpdateTimerRef` removed (was only used for the split sequence).
+- `client/src/components/AddVisitDialog.tsx`: stops sending
+  `technicianUserId` alongside `assignedTechnicianIds`. Payload is array-only.
+- `client/src/lib/jobScheduling.ts`:
+  - `scheduleValueToPayload` emits `assignedTechnicianIds` instead of
+    `technicianUserId`.
+  - Conflict-detection "lead" derived inline from `crew[0]`.
+  - Reschedule PATCH body uses `assignedTechnicianIds`.
+
+**Tests:** no changes required — test fixtures and assertions never used
+`technicianUserId` (Wave 4 migrated them to the canonical array in fixtures).
+Grep `technicianUserId` in `tests/` returns zero.
+
+**Verification:**
+- `npx tsc --noEmit` — zero errors.
+- `grep -rn "technicianUserId\b" server/ client/ shared/ tests/ --include="*.ts" --include="*.tsx"`:
+  only 4 comments remain (2 in `server/domain/scheduling.ts` documenting the
+  deleted helper pair, 1 in `server/services/notificationService.ts`
+  documenting the rename, 1 in `useDispatchPreviewMutations.ts` noting the
+  replacement). **Zero runtime occurrences.**
+- Request shape changes:
+  - `POST /api/calendar/schedule`: no longer accepts `technicianUserId`.
+    Clients must send `assignedTechnicianIds`.
+  - `PATCH /api/calendar/visit/:visitId/reschedule`: same.
+- Response shape: unchanged (already array-only after the previous cleanup).
+- Behavior: unchanged from the user's perspective. All dispatch flows
+  (drag-drop, schedule-from-panel, edit modal) use the same canonical
+  crew contract; single-tech drag operations send `[techId]`; unassigned
+  lane drops send `[]`/`null`.
+
+#### Visit assignment — legacy `primaryTechnicianId` fully removed (2026-04-12)
+
+**Decision:** The canonical visit assignment model is
+`jobVisits.assigned_technician_ids: string[]`. Jobs do not own assignment.
+The `primaryTechnicianId` concept was reduced to a derived compatibility field
+over Waves 1–4; this pass removes it from every outward-facing surface.
+
+**What stays (semantic, not legacy):**
+- `jobVisits.assigned_technician_id` — single-tech "lead" column on visits.
+  Active dependency for time-tracking (`getRunningTimeEntry`), check-in /
+  check-out (`jobVisits.routes.ts` :390/:447), equipment-owner join, PM
+  workspace, tech-app visit detail. Always equal to `assigned_technician_ids[0]`
+  on every write. Not legacy — semantically distinct from the crew roster.
+- `technicianUserId` on route schemas — active single-tech input for dispatch
+  drag-drop (single-lane drop), notification service recipient, and
+  orchestrator single-tech intents. Kept.
+- `normalizeTechnicianAssignment` helper — internal visit-write shape helper.
+  Its local `primaryTechnicianId` field maps to `jobVisits.assigned_technician_id`.
+
+**What was removed (dead-weight compatibility):**
+
+*Server — response DTOs:*
+- `server/routes/scheduling.ts`:
+  - `transformToDto` no longer destructures/emits `primaryTechnicianId`.
+  - Unscheduled + follow-up mappers: same.
+  - Post-schedule response + visit-reschedule response: replaced
+    `primaryTechnicianId` with canonical `assignedTechnicianIds` array.
+  - Crew-update (`PATCH /:visitId/assign-crew`) response: dropped
+    `primaryTechnicianId`; returns `assignedTechnicianIds` only.
+- `server/storage/scheduling.ts`: `getScheduledJobsInRange`, `getUnscheduledJobs`,
+  `getJobsNeedingFollowUp` no longer include `primaryTechnicianId` in the
+  result mapping. The `ScheduledJobWithDetails` type field dropped.
+- `server/storage/jobs.ts`: `getJobs` + `getJob` + `getActionRequiredJobs`
+  enrichment no longer sets `primaryTechnicianId`.
+- `server/storage/jobsFeed.ts`: `JobFeedItem.primaryTechnicianId` removed;
+  `mapFeedRow`, `getJobsFeed`, `getJobHeader` no longer set it.
+- `server/storage/visitCrew.ts`: `JobCrewDerivation` type field removed; the
+  resolver returns only `{ assignedTechnicianIds, crewVaries }`.
+
+*Shared types:*
+- `shared/types/scheduling.ts`: `CalendarEventDto.primaryTechnicianId` and
+  `UnscheduledJobDto.primaryTechnicianId` removed.
+- `client/src/hooks/useJobsFeed.ts`: type field removed.
+
+*Client:*
+- `client/src/components/dispatch/useDispatchPreviewMutations.ts`: optimistic
+  cache patches no longer set `primaryTechnicianId`. Three sites cleaned
+  (single-tech assign, single-tech schedule, unschedule).
+- `client/src/components/jobs/JobScheduleFields.tsx`: dropped
+  `primaryTechnicianId` from `JobScheduleValue` form shape and from the
+  `update()` helper that kept it in lockstep with `assignedTechnicianIds[0]`.
+  Nothing consumed it downstream.
+- `client/src/components/QuickAddJobDialog.tsx`: same — `updateSchedule`
+  no longer synchronizes the dead field.
+- `server/routes/techField.ts`: tech-app job-create payload to `storage.createJob`
+  no longer includes `primaryTechnicianId` alongside `assignedTechnicianIds`.
+
+*Storage input contracts (defensive strip retained):*
+- `server/storage/jobs.ts` `createJob` / `updateJob` continue to strip
+  `primaryTechnicianId` defensively from incoming payloads so any stray
+  legacy caller is tolerated (not 400'd). This is a tiny guard, not an
+  authority.
+
+**Behavior changes:**
+- API response shape: `primaryTechnicianId` field removed from every
+  scheduling endpoint response (schedule, reschedule, crew-update, calendar
+  range, unscheduled, follow-up, jobs feed, job detail). Callers needing a
+  lead should read `assignedTechnicianIds[0] ?? null` client-side.
+- API request shape: unchanged. `POST /schedule` still accepts
+  `technicianUserId` as single-tech input. `PATCH /visit/:id/assign-crew`
+  still accepts `technicianUserIds[]`. `createJob` / `updateJob` tolerate
+  legacy payloads (strip silently).
+- Client behavior: unchanged. `dispatchPreviewMappers` already read from
+  `assignedTechnicianIds` only (`primaryTechnicianId` fallback chain was
+  removed in Wave 3). No UI surface depends on the now-removed field.
+- Migration effects: none. No schema changes, no column drops.
+
+**Verification:**
+- `npx tsc --noEmit` — zero errors.
+- Grep `primaryTechnicianId` in `server/ client/ shared/`: remaining hits
+  are strictly internal visit-write helpers (`normalizeTechnicianAssignment`
+  return shape + its consumers, which map to the semantic
+  `jobVisits.assigned_technician_id` lead column), defensive input strips,
+  and comments. Zero outward-facing response fields, zero client reads as
+  authority.
+
+### Changed
+
+#### Job-level assignment removed — visits are canonical (2026-04-12, Wave 1)
+
+**Decision (Option A):** Jobs are containers only. They no longer own technician
+assignment. All technician/crew assignment is owned by `job_visits`
+(`assignedTechnicianIds`). The columns `jobs.primary_technician_id` and
+`jobs.assigned_technician_ids` are not dropped in this pass, but they are
+**quiescent**: the codebase neither reads them as authoritative nor writes them.
+
+**Wave 1 (this change) — foundation + all write sites neutralized:**
+
+- `shared/schema.ts`:
+  - Rewrote `isJobAssigned(job)` → `isJobAssigned(visits)`: now purely
+    visit-derived. No fallback to job fields.
+  - Added `deriveJobCrew(visits)`: returns `{ uniqueTechnicianIds, varies }`,
+    deduped and lexicographically sorted for deterministic render output.
+  - Added `VisitCrewRef` type alias.
+- `server/domain/scheduling.ts`: deleted deprecated `hasTechnicianAssigned()`
+  wrapper (only import was dead in `server/storage/scheduling.ts`; also
+  removed). Updated canonical-model docstring to reflect the new definition.
+- `server/storage/jobVisits.ts` — `syncScheduleFromChosenVisit()`: stopped
+  mirroring `primaryTechnicianId`/`assignedTechnicianIds` from the chosen
+  visit onto the job row. Scheduling fields
+  (`scheduledStart`/`scheduledEnd`/`isAllDay`/`durationMinutes`) are still
+  mirrored. Also removed the tech-column clears in the no-eligible-visit
+  branch.
+- `server/storage/jobs.ts`:
+  - `createJob()`: job INSERT no longer persists technician fields. Any
+    technician in the incoming payload is forwarded exclusively to the seed
+    visit's crew.
+  - `updateJob()`: strips `primaryTechnicianId` / `assignedTechnicianIds`
+    from any update patch at the canonical choke point, so no caller can
+    persist them to the jobs row.
+- `client/src/components/job/jobUtils.ts` — `getJobStatusDisplay()`: now
+  takes an optional `visits` array; the "Assigned" branch calls the new
+  `isJobAssigned(visits)`. Callers that only know status (e.g. status
+  timeline history events) can omit `visits`; the "Assigned" label simply
+  won't fire for them.
+
+**Behavior notes:**
+- No schema changes. No column drops. No index drops.
+- Existing rows retain whatever value was last written to their job-level
+  tech columns, but nothing in the running system reads them.
+- Tasks are untouched (single-user `assignedToUserId` remains canonical).
+
+**Files changed:**
+- `shared/schema.ts`
+- `server/domain/scheduling.ts`
+- `server/storage/scheduling.ts`
+- `server/storage/jobs.ts`
+- `server/storage/jobVisits.ts`
+- `client/src/components/job/jobUtils.ts`
+
+**Wave 2 (2026-04-12) — all server read paths replaced with visit-derived logic:**
+
+- Added `server/storage/visitCrew.ts`: canonical `getVisitCrewsForJobs()` /
+  `getVisitCrewForJob()` + `jobHasTechnicianViaVisits()` SQL fragment.
+  Single batch query, no N+1.
+- `server/storage/jobs.ts`:
+  - `getJobs`: dropped `primaryTechnicianId` / `assignedTechnicianIds` from
+    projection; post-query enrichment via `getVisitCrewsForJobs()`. Technician
+    filter (`filters.technicianId`) rewritten to `EXISTS` against
+    `job_visits.assigned_technician_ids`.
+  - `getJob`: same — projection stripped, single-row crew resolver attached.
+  - `getActionRequiredJobs`: same.
+- `server/storage/jobsFeed.ts`:
+  - Stripped tech fields from `feedSelectFields`; `getJobsFeed` and
+    `getJobHeader` now overlay crew from `getVisitCrewsForJobs()` /
+    `getVisitCrewForJob()`.
+  - Technician filter rewritten to `EXISTS` against active visits.
+- `server/storage/scheduling.ts`:
+  - `getUnscheduledJobs`: dropped tech fields from job projection; crews
+    resolved via `getVisitCrewsForJobs()`.
+  - `getJobsNeedingFollowUp`: same (raw SQL variant).
+- `server/domain/scheduling.ts` — `checkJobTechnicianVisibility(visits, schedulableTechIds)`:
+  signature inverted to take visits; computes crew union internally. All
+  callers updated.
+- `server/routes/scheduling.ts`:
+  - `filterJobsByRole`: now a pure visit-derived crew-membership check.
+  - Response DTOs (`transformToDto` / unscheduled mapper / follow-up mapper):
+    `assignedTechnicianIds` and `primaryTechnicianId` fields preserved in
+    response shape but sourced entirely from the visit-derived values the
+    storage layer attaches.
+  - Scheduling mutation responses (`scheduleJob`, visit reschedule/assign):
+    `primaryTechnicianId` computed from the just-updated visit's crew, not
+    from any job-column read.
+- `server/lib/attentionRules.ts` — `"job.unassigned"` detector rewritten:
+  a scheduled job is now "unassigned" iff it has no active visit whose
+  `assigned_technician_ids` is non-empty. Both `detect()` and
+  `detectForEntity()` paths updated.
+- `shared/schema.ts` — `updateJobSchema`: dropped `primaryTechnicianId` and
+  `assignedTechnicianIds` from the accepted input contract. Storage still
+  strips them defensively (Wave 1) so stale callers don't fail hard.
+
+**Verification (Wave 2):**
+- `npx tsc --noEmit` — zero errors.
+- `grep -rn "job\.primaryTechnicianId\|job\.assignedTechnicianIds" server/` —
+  zero runtime hits (only doc comments + tests).
+- `grep -rn "jobs\.primaryTechnicianId\|jobs\.assignedTechnicianIds" server/` —
+  only a docstring in `storage/visitCrew.ts` describing the legacy pattern
+  it replaces.
+- All runtime reads of the two quiescent columns eliminated.
+- Performance: each list endpoint adds exactly one batched visit query
+  (`SELECT ... FROM job_visits WHERE job_id = ANY($ids)`), scoped to the
+  already-active visits. No per-job fetch; no N+1.
+
+**Wave 3 (2026-04-12) — client readers aligned to visit-derived data:**
+
+- `client/src/pages/Jobs.tsx` — `getDisplayStatus`: `primaryTechnicianId`
+  fallback removed from the signature and the "Assigned" check. Only
+  `assignedTechnicianIds` (the visit-derived crew union from the server)
+  is consulted.
+- `client/src/pages/JobDetailPage.tsx` — `TimeEntryModal` crew prop now
+  sources explicitly from the server-computed visit-derived crew.
+- `client/src/components/job/jobUtils.ts` — docstring updated to describe
+  the visit-derived "assigned" semantic.
+- `client/src/components/dispatch/dispatchPreviewMappers.ts` — removed
+  `?? primaryTechnicianId` fallback chains in both `mapEventToDispatchVisit`
+  and `mapUnscheduledToDispatchVisit`. `technicianId` / `technicianIds` are
+  now derived solely from the visit-derived `assignedTechnicianIds`.
+- `client/src/components/jobs/JobScheduleFields.tsx`:
+  - `createDefaultScheduleValue` option `primaryTechnicianId` removed;
+    single-tech seeds use a 1-element `assignedTechnicianIds` array.
+  - `parseJobToScheduleValue` takes only `assignedTechnicianIds` off the
+    job (visit-derived); no job-level fallback.
+- `client/src/components/QuickAddJobDialog.tsx` — `initialSchedule` prop:
+  `primaryTechnicianId` removed, replaced with `assignedTechnicianIds: string[]`.
+- `client/src/pages/DispatchPreview.tsx` — quick-create state uses
+  `assignedTechnicianIds: string[]` instead of `primaryTechnicianId`.
+- `client/src/lib/jobScheduling.ts`:
+  - Job-creation payload no longer sends `primaryTechnicianId`. Only
+    `assignedTechnicianIds` — server forwards to seed visit per Wave 1.
+  - Conflict-detection "lead tech" derives from `assignedTechnicianIds[0]`.
+  - `toSchedulingPayload` lead tech derived from `assignedTechnicianIds[0]`.
+- `client/src/lib/scheduleOverlapCheck.ts` — calendar event filter no
+  longer falls back to `event.primaryTechnicianId`; visit-derived crew
+  array is the sole source.
+
+**Verification (Wave 3):**
+- `npx tsc --noEmit` — zero errors.
+- `grep -rn "\.primaryTechnicianId\b" client/src --include="*.ts" --include="*.tsx"` —
+  remaining hits are either derived form-state (`newValue.primaryTechnicianId
+  = assignedTechnicianIds[0]`) or optimistic cache updates in
+  `useDispatchPreviewMutations.ts` that keep the legacy DTO field in sync
+  with the canonical array. No legacy *reads* as source of truth.
+- `grep -rn "\.assignedTechnicianIds\b" client/src` — remaining hits are
+  all reads of the visit-derived field or client-local form/cache state.
+- Response shape preserved; optimistic cache patches still emit
+  `primaryTechnicianId` = `assignedTechnicianIds[0]` for DTO compatibility.
+
+**Wave 4 (2026-04-12) — test suite aligned to Option A:**
+
+- Fixtures in the following files switched from `primaryTechnicianId: userId`
+  (which was a payload field the server forwarded to the seed visit anyway)
+  to the canonical `assignedTechnicianIds: [userId]` input. Functionally
+  identical for `createJob`; now it's the same shape the client sends:
+  - `tests/active-visibility-qa.test.ts`
+  - `tests/visit-predicates.test.ts`
+  - `tests/visit-write-softdelete-guard.test.ts`
+  - `tests/job-lifecycle.test.ts`
+  - `tests/bp3-bp4-visit-workflow-ownership.test.ts`
+  - `tests/bp1-reconciliation-canonical-close.test.ts` (×4)
+  - `tests/scheduling.smoke.test.ts`
+- `tests/active-visibility-qa.test.ts` — removed the `primaryTechnicianId`
+  write on `jobs` inside the fixture setup (kept the visit-level
+  assignment write).
+- `tests/calendar-drag-drop.test.ts`:
+  - `createTestJob` helper now re-fetches via `getJob` so the returned shape
+    carries visit-derived `primaryTechnicianId` / `assignedTechnicianIds`.
+  - "Change Technician Assignment" + "Unassign" + "Combined Operations"
+    tests rewritten: mutate via `schedulingRepository.updateVisitCrew` on
+    the visit instead of `updateJob({ primaryTechnicianId: ... })` (which
+    is now stripped silently by the storage layer per Wave 1).
+- `tests/recurring-jobs.test.ts` — removed `expect(job.primaryTechnicianId).toBe(userId)`
+  assertion that tested mirroring. Documented why.
+- `tests/job-scheduling-invariants.test.ts` — removed the now-unused
+  `primaryTechnicianId` / `assignedTechnicianIds` keys from inline
+  `getJobStatusDisplay` test objects (Wave 3 removed those fields from
+  the function signature).
+- **New file** `tests/job-assignment-visit-authority.test.ts` — Wave 4 guard
+  tests pinning the Option A invariants:
+  - `createJob` does not persist tech fields to the jobs row.
+  - Job create-payload crew is forwarded to the seed visit.
+  - `getJob` returns visit-derived `assignedTechnicianIds` / `primaryTechnicianId`.
+  - `updateJob` strips tech fields from patches; visit crew unchanged.
+  - `updateVisitCrew` is the canonical write path.
+  - Clearing a visit crew cleans the derived job state (no stale leak).
+  - **Stale job-column data test**: manually seed stale `primary_technician_id`
+    on a job row via raw SQL — the derived resolver ignores it and returns
+    the visit-derived crew. Proves safety if any legacy rows still carry
+    column values after schema cleanup is deferred.
+  - `isJobAssigned(visits)` coverage: 0 visits / no crew / single / multi.
+  - `deriveJobCrew` coverage: 1 visit / multi visits same crew / multi
+    visits different crews (`varies=true`) / overlapping crews with
+    deterministic ordering.
+  - Unscheduled visit retains its crew (per final decision).
+
+**Verification (Wave 4):**
+- `npx tsc --noEmit` — zero errors.
+- `grep -rn "job\.primaryTechnicianId\|jobs\.primaryTechnicianId" tests/` —
+  only hits are in the new guard file (asserting null/quiescent) and in
+  the refactored drag-drop tests (asserting the visit-derived value on
+  refetched jobs). No legacy authority reads.
+- The full test file count unchanged except for the +1 guard file.
+- Suite runnability requires a live test DB (Neon + `DATABASE_URL`);
+  `npm run test` in that environment will exercise the new scenarios.
+
+**System state after Wave 4 — ready for future schema cleanup:**
+
+- No server read depends on `jobs.primary_technician_id` / `jobs.assigned_technician_ids`.
+- No server write targets those columns.
+- No client read treats them as authority.
+- Tests enforce the above via DB-level + helper-level assertions.
+
+**Final cleanup (2026-04-12) — schema dead code removed:**
+
+- New migration `migrations/2026_04_12_drop_job_tech_assignment.sql`:
+  - `DROP INDEX IF EXISTS jobs_technician_schedule_idx`
+  - `ALTER TABLE jobs DROP COLUMN IF EXISTS primary_technician_id, DROP COLUMN IF EXISTS assigned_technician_ids` (Postgres cascades the FK constraint automatically).
+  - Wrapped in `BEGIN; ... COMMIT;` for atomicity.
+  - Rollback script included in the header comment.
+- `shared/schema.ts`:
+  - `jobs` table: removed `primaryTechnicianId` and `assignedTechnicianIds` field declarations.
+  - Removed the `technicianScheduleIdx` index declaration.
+  - Updated the "ASSIGNMENT is DERIVED" docstring at the top of the job-status model section to point to visits.
+- `server/domain/recurrence.ts:827` — removed the now-invalid `primaryTechnicianId: null` key from the PM-template `createJob` payload. PM jobs remain unassigned; dispatchers assign crew on the visit after generation (unchanged behavior).
+- `tests/job-assignment-visit-authority.test.ts`:
+  - "does NOT persist…" test adapted: asserts the columns simply don't exist on the raw row post-drop.
+  - "updateJob silently strips…" test: removed the raw-row inspection (nothing to inspect); preserved the visit-unchanged invariant.
+  - "stale job-row column data" test removed entirely — there is no longer a place for stale data to live. The resolver's correctness remains covered by the "updateVisitCrew is canonical" test.
+  - Pruned unused `sql` import.
+
+**Run instructions:**
+```
+npm run db:migrate:one -- migrations/2026_04_12_drop_job_tech_assignment.sql
+```
+
+**Verification:**
+- `npx tsc --noEmit` — zero errors.
+- `grep -rn "jobs\.primary_technician_id\|jobs\.primaryTechnicianId\|jobs\.assigned_technician_ids\|jobs\.assignedTechnicianIds" server/ client/ shared/ --include="*.ts" --include="*.tsx"` — **only doc comments describing the legacy pattern** remain; zero runtime references.
+- Dev server was running off the pre-drop schema and must be restarted after applying the migration — existing `SELECT` paths no longer project these columns so Postgres's "column does not exist" error cannot fire, but Drizzle caches schema metadata at startup.
+- Production deploy: apply the SQL migration, then deploy the new code. Drizzle's type inference will match the new DB shape post-migration. The removal is safe in either order because the code has not read or written these columns for the duration of Waves 1–4.
+
+**Final state:**
+- `jobs` table: no technician-assignment columns.
+- `job_visits.assigned_technician_ids`: canonical source of truth for tech crews.
+- `tasks.assigned_to_user_id`: untouched, single-user model preserved.
+- No dead schema remains.
+
 ### Fixed
 
 #### Migration dependency ordering fix (2026-04-11)

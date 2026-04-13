@@ -694,8 +694,9 @@ export const scheduleJobSchema = z.object({
   date: z.string().optional(),               // YYYY-MM-DD - required for all-day events
   isAllDay: z.boolean().optional(),          // True = all-day event
   durationMinutes: z.number().int().min(15).max(720).optional(), // For timed events
-  // 2026-01-29: Accept null for unassigned drops
-  technicianUserId: z.string().uuid().nullable().optional(), // Optional technician to assign (null = unassign)
+  // 2026-04-12 final cleanup: canonical crew input only.
+  // null / empty array = unassigned; missing field = leave crew unchanged.
+  assignedTechnicianIds: z.array(z.string().uuid()).nullable().optional(),
   version: z.number().int(),                 // Required for optimistic locking
 });
 
@@ -708,7 +709,7 @@ export const updateJobScheduleSchema = z.object({
   date: z.string().optional(),
   isAllDay: z.boolean().optional(),
   durationMinutes: z.number().int().min(15).max(720).optional(),
-  technicianUserId: z.string().uuid().nullable().optional(),
+  assignedTechnicianIds: z.array(z.string().uuid()).nullable().optional(),
   version: z.number().int(), // Required for optimistic locking
 });
 
@@ -1055,19 +1056,54 @@ export type InsertClientNote = z.infer<typeof insertClientNoteSchema>;
 export type UpdateClientNote = z.infer<typeof updateClientNoteSchema>;
 export type ClientNote = typeof clientNotes.$inferSelect;
 
-// Files table — tenant-scoped file metadata for local storage
+// Files table — tenant-scoped file metadata.
+// Phase 1 (2026-04-12): Cloudflare R2 is the canonical provider for new
+// uploads. Existing rows from the legacy local-disk pipeline are preserved
+// via storageProvider='local' and read through the same DTO. All blob data
+// lives in the provider — Postgres holds metadata only.
 export const files = pgTable("files", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  // 'r2' for new uploads, 'local' for legacy disk rows. Read path branches on this.
+  storageProvider: varchar("storage_provider").notNull().default("local"),
+  // R2 bucket name (null for legacy local rows).
+  bucket: varchar("bucket"),
+  // For R2: full object key (`tenants/{t}/jobs/{j}/notes/{n}/{fileId}/{filename}`).
+  // For local: relative path from project root. Same column, provider-specific meaning.
   storageKey: varchar("storage_key").notNull(),
   originalName: varchar("original_name"),
   mimeType: varchar("mime_type"),
   size: integer("size"),
+  // Lifecycle: pending_upload → uploaded | failed → deleted (soft delete).
+  status: varchar("status").notNull().default("uploaded"),
+  // Coarse-grained classification derived from mime type at upload-request
+  // time. Drives future filtering (gallery vs document) and analytics.
+  // Clients do not set this — the server assigns it.
+  category: varchar("category").notNull().default("other"),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   createdBy: varchar("created_by").references(() => users.id),
 });
 
 export type FileRecord = typeof files.$inferSelect;
+
+export const fileStatusEnum = ["pending_upload", "uploaded", "failed", "deleted"] as const;
+export type FileStatus = (typeof fileStatusEnum)[number];
+
+export const fileStorageProviderEnum = ["r2", "local"] as const;
+export type FileStorageProvider = (typeof fileStorageProviderEnum)[number];
+
+// Kept intentionally open — new entity types will add categories without
+// requiring an enum migration.
+export const fileCategoryEnum = [
+  "note_image",
+  "note_pdf",
+  "client_document",
+  "contract_document",
+  "technician_document",
+  "other",
+] as const;
+export type FileCategory = (typeof fileCategoryEnum)[number] | string;
 
 // Note attachments — join table linking notes to files
 export const noteAttachments = pgTable("note_attachments", {
@@ -1092,6 +1128,50 @@ export const jobNoteAttachments = pgTable("job_note_attachments", {
 });
 
 export type JobNoteAttachment = typeof jobNoteAttachments.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Phase 2 file joins (2026-04-12): entity-specific bindings for the same
+// canonical `files` table. Every row is tenant-scoped. Each join table is
+// thin — the file metadata lives in `files`, these tables only express
+// "which files are attached to which entity".
+//
+// NOTE: client_note uses the existing `note_attachments` table above. We do
+// NOT add a second `client_note_files` table — that would be duplication of
+// an already-working join.
+// ---------------------------------------------------------------------------
+
+/** Files attached directly to a client (location-level documents). */
+export const clientFiles = pgTable("client_files", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
+  fileId: varchar("file_id").notNull().references(() => files.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdBy: varchar("created_by").references(() => users.id),
+});
+export type ClientFile = typeof clientFiles.$inferSelect;
+
+/** Files attached to a contract (recurring_job_templates acts as the contract entity). */
+export const contractFiles = pgTable("contract_files", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  contractId: varchar("contract_id").notNull().references(() => recurringJobTemplates.id, { onDelete: "cascade" }),
+  fileId: varchar("file_id").notNull().references(() => files.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdBy: varchar("created_by").references(() => users.id),
+});
+export type ContractFile = typeof contractFiles.$inferSelect;
+
+/** Files attached to a technician (users.role='technician' is enforced at the service boundary). */
+export const technicianFiles = pgTable("technician_files", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  technicianId: varchar("technician_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  fileId: varchar("file_id").notNull().references(() => files.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdBy: varchar("created_by").references(() => users.id),
+});
+export type TechnicianFile = typeof technicianFiles.$inferSelect;
 
 // Invoice statuses — Canonical lifecycle: draft → awaiting_payment → partial_paid/paid (with void from any non-terminal)
 // "sent" is a legacy alias for "awaiting_payment" — kept for backward compatibility with existing persisted data.
@@ -1401,8 +1481,10 @@ export type Payment = typeof payments.$inferSelect;
 // - "scheduled" state is derived from: scheduledStart IS NOT NULL OR isAllDay = true
 // - "unscheduled" state is derived from: scheduledStart IS NULL AND isAllDay = false
 //
-// ASSIGNMENT is DERIVED (not stored in status):
-// - "assigned" state is derived from: assignedTechnicianIds.length > 0 OR primaryTechnicianId IS NOT NULL
+// ASSIGNMENT is DERIVED (not stored on the job):
+// - "assigned" state is derived from visits: any visit with a non-empty
+//   job_visits.assigned_technician_ids (2026-04-12 Option A — jobs no
+//   longer own technician assignment)
 //
 // WORKFLOW STATES (when status = 'open') use openSubStatus:
 // - null         - Default, no special workflow state
@@ -1470,17 +1552,68 @@ export function isJobScheduled(job: { scheduledStart?: Date | string | null }): 
 }
 
 /**
- * Check if a job is "assigned" (has technician(s) assigned).
- * This replaces the old status === 'assigned' check.
+ * Assignment shape carried by a visit. Jobs no longer own assignment;
+ * assignment is derived exclusively from their visits.
  */
-export function isJobAssigned(job: {
-  primaryTechnicianId?: string | null;
+export type VisitCrewRef = {
   assignedTechnicianIds?: string[] | null;
-}): boolean {
-  return (
-    job.primaryTechnicianId != null ||
-    (Array.isArray(job.assignedTechnicianIds) && job.assignedTechnicianIds.length > 0)
-  );
+};
+
+/**
+ * A job is "assigned" iff at least one of its visits has at least one
+ * technician in the crew. No fallback to job-level fields — those fields
+ * are quiescent and are not read anywhere.
+ *
+ * 2026-04-12 (Option A): rewritten from reading job.primaryTechnicianId /
+ * job.assignedTechnicianIds to reading visit crews. Jobs are containers only.
+ */
+export function isJobAssigned(visits: VisitCrewRef[] | null | undefined): boolean {
+  if (!visits) return false;
+  for (const v of visits) {
+    if (Array.isArray(v.assignedTechnicianIds) && v.assignedTechnicianIds.length > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Derive the technician crew for a job from its visits. Returns the
+ * deduplicated, stably-sorted set of all technician IDs that appear on any
+ * visit, and a `varies` flag indicating whether crews differ across visits
+ * that actually have crew members.
+ *
+ * Rules:
+ *  - dedupe by technician id
+ *  - stable lexicographic sort of ids (deterministic across renders)
+ *  - `varies` = true iff 2+ visits have crews and their crew sets differ
+ *  - visits with no crew are ignored for the `varies` computation
+ */
+export function deriveJobCrew(visits: VisitCrewRef[] | null | undefined): {
+  uniqueTechnicianIds: string[];
+  varies: boolean;
+} {
+  if (!visits || visits.length === 0) {
+    return { uniqueTechnicianIds: [], varies: false };
+  }
+  const union = new Set<string>();
+  const crewsSeen: string[] = [];
+  for (const v of visits) {
+    const crew = Array.isArray(v.assignedTechnicianIds) ? v.assignedTechnicianIds.filter(Boolean) : [];
+    if (crew.length === 0) continue;
+    for (const id of crew) union.add(id);
+    // canonical signature for this visit's crew (sorted, joined)
+    crewsSeen.push([...crew].sort().join(","));
+  }
+  let varies = false;
+  if (crewsSeen.length >= 2) {
+    const first = crewsSeen[0];
+    varies = crewsSeen.some((sig) => sig !== first);
+  }
+  return {
+    uniqueTechnicianIds: Array.from(union).sort(),
+    varies,
+  };
 }
 
 /**
@@ -1751,9 +1884,9 @@ export const jobs = pgTable("jobs", {
   locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if jobs exist
   // Job identification
   jobNumber: integer("job_number").notNull(),
-  // Assignment
-  primaryTechnicianId: varchar("primary_technician_id").references(() => users.id, { onDelete: "set null" }),
-  assignedTechnicianIds: varchar("assigned_technician_ids").array(),
+  // 2026-04-12 (Option A): jobs no longer own technician assignment.
+  // Canonical source is job_visits.assigned_technician_ids. See migration
+  // 2026_04_12_drop_job_tech_assignment.sql and CHANGELOG.
   // Status and classification (4-value lifecycle model)
   // See shared/schema.ts jobStatusEnum for valid values: open, completed, invoiced, archived
   status: text("status").notNull().default("open"),
@@ -1820,8 +1953,9 @@ export const jobs = pgTable("jobs", {
   jobNumberPerCompany: uniqueIndex("jobs_company_job_number_uq").on(table.companyId, table.jobNumber),
   // Performance: Calendar range queries filter by company + scheduled_start
   calendarRangeIdx: index("jobs_calendar_range_idx").on(table.companyId, table.scheduledStart),
-  // Performance: Technician-specific calendar queries
-  technicianScheduleIdx: index("jobs_technician_schedule_idx").on(table.companyId, table.primaryTechnicianId, table.scheduledStart),
+  // 2026-04-12 (Option A): jobs_technician_schedule_idx dropped along with
+  // primary_technician_id. Tech-filtered queries now JOIN job_visits and hit
+  // idx_job_visits_job_company_active.
   // CHECK: openSubStatus = 'on_hold' requires a holdReason
   holdReasonCheck: check(
     "jobs_hold_reason_check",
@@ -1884,8 +2018,10 @@ export const updateJobSchema = z.object({
   // Editable job number — integer, positive, no decimals
   jobNumber: z.number().int().positive().optional(),
   locationId: z.string().optional(),
-  primaryTechnicianId: z.string().nullable().optional(),
-  assignedTechnicianIds: z.array(z.string()).nullable().optional(),
+  // 2026-04-12 (Option A): job-level technician fields removed from the
+  // update contract. Assignment lives on visits. Legacy callers sending
+  // these fields are tolerated at the storage layer (stripped before write)
+  // but the schema no longer advertises them.
   // 2026-03-18: status and holdReason removed from generic update schema.
   // Lifecycle fields MUST be written through jobLifecycleOrchestrator only.
   // status: REMOVED — use lifecycle orchestrator intents
@@ -2292,9 +2428,8 @@ export const jobVisits = pgTable("job_visits", {
   // Duration
   estimatedDurationMinutes: integer("estimated_duration_minutes").default(60),
 
-  // Assignment
-  assignedTechnicianId: varchar("assigned_technician_id").references(() => users.id, { onDelete: "set null" }),
-  assignedTechnicianIds: varchar("assigned_technician_ids").array(), // DB has array
+  // Assignment — crew only (no lead technician concept)
+  assignedTechnicianIds: varchar("assigned_technician_ids").array(),
 
   // Equipment selection — which location equipment this visit addresses (2026-03-27)
   equipmentIds: varchar("equipment_ids").array(),
@@ -2356,7 +2491,6 @@ export const insertJobVisitSchema = createInsertSchema(jobVisits).omit({
   scheduledEnd: z.string().optional(),            // ISO timestamp string (nullable in DB)
   isAllDay: z.boolean().default(false),
   estimatedDurationMinutes: z.number().int().positive().default(60),
-  assignedTechnicianId: z.string().uuid().nullable().optional(),
   assignedTechnicianIds: z.array(z.string()).optional(),
   visitNumber: z.number().int().min(1).optional(), // computed by repository if not provided
   visitNotes: z.string().nullable().optional(),
@@ -2368,7 +2502,6 @@ export const updateJobVisitSchema = z.object({
   scheduledEnd: z.string().optional(),
   isAllDay: z.boolean().optional(),
   estimatedDurationMinutes: z.number().int().positive().optional(),
-  assignedTechnicianId: z.string().uuid().nullable().optional(),
   assignedTechnicianIds: z.array(z.string()).nullable().optional(),
   equipmentIds: z.array(z.string()).nullable().optional(),
   visitNumber: z.number().int().min(1).optional(),
@@ -3916,6 +4049,37 @@ export interface JobTimeSummary {
 }
 
 // ============================================================================
+// PAYROLL SETTINGS (2026-04-12)
+// ----------------------------------------------------------------------------
+// Per-tenant pay-period configuration. Drives pay-period preset resolution
+// (current / previous / next) in the Timesheet Report. Phase 1 wires
+// `weekly` + `biweekly`; `semimonthly` + `monthly` are reserved in the
+// enum but left un-implemented in the UI.
+// ============================================================================
+
+export const payrollFrequencyEnum = [
+  "weekly",
+  "biweekly",
+  "semimonthly",
+  "monthly",
+] as const;
+export type PayrollFrequency = (typeof payrollFrequencyEnum)[number];
+
+export const payrollSettings = pgTable("payroll_settings", {
+  // One row per tenant — companyId is the primary key, no duplicates.
+  companyId: varchar("company_id").primaryKey().references(() => companies.id, { onDelete: "cascade" }),
+  payFrequency: varchar("pay_frequency").notNull().default("biweekly"),
+  // Anchor date in tenant timezone, YYYY-MM-DD. Defines the start of one
+  // concrete pay period; all other periods are derived by adding/subtracting
+  // multiples of the frequency.
+  payAnchorDate: text("pay_anchor_date").notNull(),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+});
+
+export type PayrollSettings = typeof payrollSettings.$inferSelect;
+
+// ============================================================================
 // PHASE 4: TIME APPROVALS (Payroll Approval)
 // ============================================================================
 
@@ -5050,3 +5214,129 @@ export const upsertReferenceFieldValueSchema = z.object({
 
 export type ReferenceFieldValue = typeof referenceFieldValues.$inferSelect;
 export type UpsertReferenceFieldValue = z.infer<typeof upsertReferenceFieldValueSchema>;
+
+// ============================================================================
+// Communication Templates (Phase 1 — 2026-04-12)
+// ============================================================================
+// Tenant-scoped email/SMS templates for outbound invoice / quote / job
+// messaging. See migrations/2026_04_12_communication_templates.sql.
+//
+// Canonical rules:
+//   - one template per (tenant_id, entity_type, channel)
+//   - entity_type ∈ {invoice, quote, job}
+//   - channel     ∈ {email, sms}
+//   - email templates require a non-null subject; SMS may omit it
+
+export const communicationTemplateEntityTypeEnum = ["invoice", "quote", "job"] as const;
+export type CommunicationTemplateEntityType = (typeof communicationTemplateEntityTypeEnum)[number];
+
+export const communicationTemplateChannelEnum = ["email", "sms"] as const;
+export type CommunicationTemplateChannel = (typeof communicationTemplateChannelEnum)[number];
+
+export const communicationTemplates = pgTable(
+  "communication_templates",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    tenantId: varchar("tenant_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    entityType: text("entity_type").notNull(),
+    channel: text("channel").notNull(),
+    subjectTemplate: text("subject_template"),
+    bodyTemplate: text("body_template").notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => ({
+    tenantEntityChannelUq: uniqueIndex("comm_templates_tenant_entity_channel_uq").on(
+      table.tenantId,
+      table.entityType,
+      table.channel,
+    ),
+    tenantIdx: index("idx_comm_templates_tenant").on(table.tenantId),
+  }),
+);
+
+export const insertCommunicationTemplateSchema = createInsertSchema(communicationTemplates).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const upsertCommunicationTemplateSchema = z.object({
+  entityType: z.enum(communicationTemplateEntityTypeEnum),
+  channel: z.enum(communicationTemplateChannelEnum),
+  subjectTemplate: z.string().max(500).nullable().optional(),
+  bodyTemplate: z.string().min(1).max(20000),
+  isActive: z.boolean().optional(),
+}).refine(
+  (data) => data.channel !== "email" || (data.subjectTemplate != null && data.subjectTemplate.length > 0),
+  { message: "subjectTemplate is required for email channel", path: ["subjectTemplate"] },
+);
+
+export type CommunicationTemplate = typeof communicationTemplates.$inferSelect;
+export type InsertCommunicationTemplate = z.infer<typeof insertCommunicationTemplateSchema>;
+export type UpsertCommunicationTemplateInput = z.infer<typeof upsertCommunicationTemplateSchema>;
+
+// ============================================================================
+// Email Deliveries (Phase 10 — 2026-04-12)
+// ============================================================================
+// One row per outbound email dispatch. Tracks provider lifecycle (queued →
+// sent → optionally delivered / bounced / complained, or → failed).
+// See migrations/2026_04_12_email_deliveries.sql.
+
+export const emailDeliveryStatusEnum = [
+  "queued",
+  "sent",
+  "failed",
+  "delivered",
+  "bounced",
+  "complained",
+] as const;
+export type EmailDeliveryStatus = (typeof emailDeliveryStatusEnum)[number];
+
+export const emailDeliveryTemplateSourceEnum = [
+  "default",
+  "tenant_template",
+  "override",
+] as const;
+export type EmailDeliveryTemplateSource =
+  (typeof emailDeliveryTemplateSourceEnum)[number];
+
+export const emailDeliveries = pgTable(
+  "email_deliveries",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    tenantId: varchar("tenant_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    entityType: text("entity_type").notNull(),
+    entityId: varchar("entity_id").notNull(),
+    channel: text("channel").notNull().default("email"),
+    recipientCount: integer("recipient_count").notNull().default(0),
+    recipientsJson: jsonb("recipients_json").notNull().default(sql`'[]'::jsonb`),
+    subject: text("subject"),
+    bodySnapshot: text("body_snapshot"),
+    templateSource: text("template_source").notNull(),
+    provider: text("provider").notNull().default("resend"),
+    providerMessageId: text("provider_message_id"),
+    status: text("status").notNull(),
+    errorMessage: text("error_message"),
+    sentAt: timestamp("sent_at"),
+    deliveredAt: timestamp("delivered_at"),
+    failedAt: timestamp("failed_at"),
+    createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    // Phase 15/17: resend lineage.
+    resendCount: integer("resend_count").notNull().default(0),
+    retriedFromDeliveryId: varchar("retried_from_delivery_id"),
+  },
+  (table) => ({
+    tenantIdx: index("idx_email_deliveries_tenant").on(table.tenantId),
+    entityIdx: index("idx_email_deliveries_entity").on(table.entityType, table.entityId),
+    providerMsgIdx: index("idx_email_deliveries_provider_msg").on(table.providerMessageId),
+    statusIdx: index("idx_email_deliveries_status").on(table.status),
+    retriedFromIdx: index("idx_email_deliveries_retried_from").on(table.retriedFromDeliveryId),
+  }),
+);
+
+export type EmailDelivery = typeof emailDeliveries.$inferSelect;
+export type InsertEmailDelivery = typeof emailDeliveries.$inferInsert;

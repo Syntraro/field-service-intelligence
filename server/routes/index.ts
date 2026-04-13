@@ -13,6 +13,9 @@ import usersAdminRouter from "./users_admin";
 import itemsRouter from "./items";
 import clientPartsRouter from "./clientParts";
 import companySettingsRouter from "./companySettings";
+import communicationTemplatesRouter from "./communicationTemplates";
+// Phase 15 (2026-04-12): cross-entity delivery-history endpoint.
+import communicationsRouter from "./communications";
 import businessHoursRouter from "./businessHours";
 import maintenanceRouter from "./maintenance";
 import subscriptionsRouter from "./subscriptions";
@@ -36,8 +39,10 @@ import customerCompanyNotesRouter from "./customer-company-notes";
 import noteAttachmentsRouter from "./note-attachments";
 import uploadsRouter from "./uploads";
 import filesRouter from "./files";
+import { fileUploadsRouter, jobNoteFilesRouter } from "./fileUploads";
 import dashboardRouter from "./dashboard";
 import reportsRouter from "./reports";
+import { timesheetReportsRouter } from "./timesheetReports";
 import paymentsRouter from "./payments";
 import qboRouter from "./qbo";
 import quotesRouter from "./quotes";
@@ -207,6 +212,8 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/items", itemsRouter);
   app.use("/api/client-parts", clientPartsRouter);
   app.use("/api/company-settings", companySettingsRouter);
+  app.use("/api/communication-templates", communicationTemplatesRouter);
+  app.use("/api/communications", communicationsRouter);
   app.use("/api/company/business-hours", businessHoursRouter);
   app.use("/api/maintenance", maintenanceRouter);
   app.use("/api/subscriptions", subscriptionsRouter);
@@ -216,6 +223,8 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/suppliers", suppliersRouter);
   app.use("/api/dashboard", dashboardRouter);
   app.use("/api/reports", reportsRouter);
+  // Timesheet Report (2026-04-12): mounts /api/reports/timesheets + payroll-settings.
+  app.use("/api/reports", timesheetReportsRouter);
   app.use("/api/qbo", qboRouter);
   app.use("/api/quotes", quotesRouter);
   app.use("/api/quote-templates", quoteTemplatesRouter);
@@ -257,7 +266,12 @@ export function registerRoutes(app: Express): Server {
   // Notes endpoints
   app.use("/api/locations", locationNotesRouter);
   app.use("/api/notes", noteAttachmentsRouter);
-  // File uploads & secure streaming
+  // Phase 1 R2-backed file uploads: canonical upload-request / finalize /
+  // access-url / delete lifecycle. Mounted BEFORE the legacy disk streamer
+  // so /api/files/:fileId/access-url is matched by the new handler.
+  app.use("/api", fileUploadsRouter);
+  app.use("/api", jobNoteFilesRouter);
+  // Legacy disk pipeline — kept for dual-read of existing attachments.
   app.use("/api/uploads", uploadsRouter);
   app.use("/api/files", filesRouter);
 

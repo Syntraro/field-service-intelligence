@@ -1,6 +1,5 @@
 import { useMemo, useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { detectScheduleConflict } from "@/lib/scheduleOverlapCheck";
@@ -16,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
+import { TechnicianSelector } from "@/components/TechnicianSelector";
 import { QuickAddSupplierDialog } from "@/components/suppliers/QuickAddSupplierDialog";
 import type { Supplier, SupplierLocation, Job } from "@shared/schema";
 
@@ -114,8 +114,6 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
     enabled: isEditMode && open && type === "SUPPLIER_VISIT",
     staleTime: 0,
   });
-
-  const { teamMembers, isLoading: isLoadingTeam } = useTechniciansDirectory();
 
   // Job picker: load only active (open) jobs, capped at 100, sorted by most recent.
   // This is an optional "Link to Job" dropdown — full job history is not needed here.
@@ -419,36 +417,12 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="space-y-1">
                   <Label className="text-xs">Assigned To</Label>
-                  <div className="flex gap-1">
-                    <Select
-                      value={assignedToUserId || undefined}
-                      onValueChange={setAssignedToUserId}
-                    >
-                      <SelectTrigger className="h-9 text-sm flex-1">
-                        <SelectValue
-                          placeholder={isLoadingTeam ? "Loading..." : "Select..."}
-                        />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {teamMembers.map((m) => (
-                          <SelectItem key={m.id} value={m.id}>
-                            {m.fullName}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    {assignedToUserId && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setAssignedToUserId("")}
-                        className="h-9 px-2"
-                      >
-                        ×
-                      </Button>
-                    )}
-                  </div>
+                  <TechnicianSelector
+                    mode="single"
+                    value={assignedToUserId || null}
+                    onChange={(id) => setAssignedToUserId(id ?? "")}
+                    placeholder="Select..."
+                  />
                 </div>
 
                 <div className="space-y-1">

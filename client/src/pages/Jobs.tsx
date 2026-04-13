@@ -65,8 +65,11 @@ function formatJobNumber(jobNumber: number): string {
 }
 
 /** Single status display: overdue > requires invoicing > archived > invoiced > sub-status > derived > lifecycle.
- * Matches jobUtils.ts getJobStatusDisplay logic for consistency between list and detail views. */
-function getDisplayStatus(job: { status: string; openSubStatus: string | null; _overdue: boolean; scheduledStart?: string | null; primaryTechnicianId?: string | null; assignedTechnicianIds?: string[] | null }): { label: string; variant: "neutral" | "success" | "warning" | "danger" | "info"; icon?: React.ReactNode } {
+ * Matches jobUtils.ts getJobStatusDisplay logic for consistency between list and detail views.
+ * 2026-04-12 (Option A): `assignedTechnicianIds` on the job feed response is
+ * the visit-derived crew union (see server/storage/visitCrew.ts). It is the
+ * ONLY source checked here — no job-level fallback. */
+function getDisplayStatus(job: { status: string; openSubStatus: string | null; _overdue: boolean; scheduledStart?: string | null; assignedTechnicianIds?: string[] | null }): { label: string; variant: "neutral" | "success" | "warning" | "danger" | "info"; icon?: React.ReactNode } {
   if (job._overdue) return { label: "Overdue", variant: "danger" };
   if (job.status === "completed") return { label: "Requires invoicing", variant: "warning" };
   if (job.status === "archived") return { label: "Archived", variant: "neutral" };
@@ -76,10 +79,9 @@ function getDisplayStatus(job: { status: string; openSubStatus: string | null; _
     return { label: subLabels[job.openSubStatus] || job.openSubStatus, variant: statusToVariant(job.openSubStatus) };
   }
   if (job.status === "open") {
-    // Derived display states matching jobUtils.ts — Scheduled > Assigned > Open
     if (job.scheduledStart != null) return { label: "Scheduled", variant: "info" };
-    const assigned = job.primaryTechnicianId != null || (Array.isArray(job.assignedTechnicianIds) && job.assignedTechnicianIds.length > 0);
-    if (assigned) return { label: "Assigned", variant: "info" };
+    const crew = job.assignedTechnicianIds;
+    if (Array.isArray(crew) && crew.length > 0) return { label: "Assigned", variant: "info" };
     return { label: "Open", variant: statusToVariant(job.status) };
   }
   return { label: job.status, variant: statusToVariant(job.status) };

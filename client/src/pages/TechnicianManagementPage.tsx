@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
+import { getMemberDisplayName } from "@/lib/displayName";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -144,9 +145,9 @@ export default function TechnicianManagementPage() {
                       <div className="flex items-center justify-between">
                         <div className="flex-1">
                           <h3 className="font-semibold" data-testid={`text-technician-email-${tech.id}`}>
-                            {tech.firstName && tech.lastName ? `${tech.firstName} ${tech.lastName}` : tech.email}
+                            {getMemberDisplayName(tech)}
                           </h3>
-                          {(tech.firstName || tech.lastName) && (
+                          {tech.email && getMemberDisplayName(tech) !== tech.email && (
                             <p className="text-sm text-muted-foreground">{tech.email}</p>
                           )}
                           <p className="text-xs text-muted-foreground mt-2">

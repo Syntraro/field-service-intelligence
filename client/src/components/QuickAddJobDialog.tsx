@@ -73,136 +73,13 @@ import {
   createDefaultScheduleValue,
 } from "@/components/jobs/JobScheduleFields";
 import { createJobWithSchedule, applyJobSchedule } from "@/lib/jobScheduling";
-import { useTechniciansDirectory } from "@/hooks/useTechnicians";
-import { getMemberDisplayName } from "@/lib/displayName";
+import { TechnicianSelector } from "@/components/TechnicianSelector";
 
 // ============================================================================
 // Duration options (static) — time uses native input, no option list needed
 // ============================================================================
 
 import { DURATION_OPTIONS_SHORT as DURATION_OPTIONS, DAYS_OF_WEEK_SHORT as DAYS_OF_WEEK } from "@/lib/schedulingConstants";
-
-// ============================================================================
-// TechnicianMultiSelect — searchable popover with checkboxes
-// ============================================================================
-
-function TechnicianMultiSelect({
-  selectedIds,
-  onChange,
-  disabled,
-}: {
-  selectedIds: string[];
-  onChange: (ids: string[]) => void;
-  disabled?: boolean;
-}) {
-  const { teamMembers: technicians } = useTechniciansDirectory();
-  const [open, setOpen] = useState(false);
-  const [search, setSearch] = useState("");
-
-  const techOptions = useMemo(
-    () => technicians.map((t) => ({ id: t.id, name: getMemberDisplayName(t) })),
-    [technicians],
-  );
-
-  const filtered = useMemo(() => {
-    if (!search.trim()) return techOptions;
-    const q = search.toLowerCase();
-    return techOptions.filter((t) => t.name.toLowerCase().includes(q));
-  }, [techOptions, search]);
-
-  const toggle = useCallback(
-    (id: string) => {
-      onChange(
-        selectedIds.includes(id)
-          ? selectedIds.filter((x) => x !== id)
-          : [...selectedIds, id],
-      );
-    },
-    [selectedIds, onChange],
-  );
-
-  // Compact trigger label
-  const triggerLabel = useMemo(() => {
-    if (selectedIds.length === 0) return "Unassigned";
-    const firstName = techOptions.find((t) => t.id === selectedIds[0])?.name || "?";
-    if (selectedIds.length === 1) return firstName;
-    return `${firstName} +${selectedIds.length - 1}`;
-  }, [selectedIds, techOptions]);
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className={cn(
-            "h-9 text-xs gap-1.5 min-w-[120px] max-w-[200px] justify-between",
-            selectedIds.length === 0 && "text-muted-foreground",
-          )}
-          disabled={disabled}
-          data-testid="button-select-technicians"
-        >
-          <Users className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">{triggerLabel}</span>
-          <ChevronsUpDown className="h-3 w-3 shrink-0 opacity-50" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-56 p-0" align="start">
-        {/* Search input */}
-        <div className="flex items-center border-b px-2 py-1.5">
-          <Search className="h-3.5 w-3.5 text-muted-foreground mr-2 shrink-0" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search technicians..."
-            className="flex-1 text-xs bg-transparent outline-none placeholder:text-muted-foreground"
-            autoFocus
-          />
-        </div>
-        {/* Scrollable checkbox list */}
-        <div className="max-h-[240px] overflow-y-auto p-1" style={{ scrollbarWidth: "thin" }}>
-          {filtered.length === 0 ? (
-            <div className="text-xs text-muted-foreground text-center py-3">No technicians found</div>
-          ) : (
-            filtered.map((tech) => {
-              const isSelected = selectedIds.includes(tech.id);
-              return (
-                <button
-                  key={tech.id}
-                  type="button"
-                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent cursor-pointer"
-                  onClick={() => toggle(tech.id)}
-                  data-testid={`select-tech-${tech.id}`}
-                >
-                  <Checkbox
-                    checked={isSelected}
-                    className="pointer-events-none"
-                    tabIndex={-1}
-                  />
-                  <span className="truncate">{tech.name}</span>
-                </button>
-              );
-            })
-          )}
-        </div>
-        {/* Quick actions footer */}
-        {selectedIds.length > 0 && (
-          <div className="border-t px-2 py-1.5 flex items-center justify-between">
-            <span className="text-[10px] text-muted-foreground">{selectedIds.length} selected</span>
-            <button
-              type="button"
-              className="text-[10px] text-primary hover:underline"
-              onClick={() => onChange([])}
-            >
-              Clear all
-            </button>
-          </div>
-        )}
-      </PopoverContent>
-    </Popover>
-  );
-}
 
 // ============================================================================
 // Main Dialog
@@ -227,12 +104,14 @@ interface QuickAddJobDialogProps {
   preselectedLocationId?: string;
   editJob?: Job | null;
   onSuccess?: () => void;
-  /** Prefill schedule from dispatch board quick-create (tech + date + time) */
+  /** Prefill schedule from dispatch board quick-create (tech + date + time).
+   * 2026-04-12 (Option A): single-tech seed goes into `assignedTechnicianIds`
+   * as a 1-element array. No `primaryTechnicianId` — jobs don't own a primary. */
   initialSchedule?: {
     date?: Date | string;
     time?: string;
     durationMinutes?: number;
-    primaryTechnicianId?: string;
+    assignedTechnicianIds?: string[];
   };
   /** Mode control: "standard" = normal create with optional recurring toggle,
    *  "recurring" = opens with recurring ON by default, schedule row hidden */
@@ -282,13 +161,13 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
         description: editJob.description || "",
       });
     } else if (open && initialSchedule) {
-      // Dispatch board quick-create: prefill schedule with tech + date + time
+      // Dispatch board quick-create: prefill schedule with crew + date + time.
       setScheduleValue(createDefaultScheduleValue({
         unscheduled: false,
         date: initialSchedule.date,
         time: initialSchedule.time,
         durationMinutes: initialSchedule.durationMinutes ?? 60,
-        primaryTechnicianId: initialSchedule.primaryTechnicianId,
+        assignedTechnicianIds: initialSchedule.assignedTechnicianIds ?? [],
       }));
       if (preselectedLocationId) {
         setFormData(prev => ({ ...prev, locationId: preselectedLocationId }));
@@ -335,9 +214,6 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
   const updateSchedule = useCallback((partial: Partial<JobScheduleValue>) => {
     setScheduleValue(prev => {
       const next = { ...prev, ...partial };
-      if (partial.assignedTechnicianIds !== undefined) {
-        next.primaryTechnicianId = partial.assignedTechnicianIds[0] || "";
-      }
       if (partial.time !== undefined) {
         next.isAllDay = !partial.time;
       }
@@ -916,8 +792,9 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               )}
 
               {/* Technician multi-select */}
-              <TechnicianMultiSelect
-                selectedIds={scheduleValue.assignedTechnicianIds}
+              <TechnicianSelector
+                mode="multi"
+                value={scheduleValue.assignedTechnicianIds}
                 onChange={(ids) => updateSchedule({ assignedTechnicianIds: ids })}
                 disabled={isScheduleDisabled}
               />

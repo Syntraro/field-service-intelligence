@@ -3,12 +3,13 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { MessageSquare, Trash2, FileText, Download } from "lucide-react";
+import { MessageSquare, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { AddJobNoteDialog } from "./AddJobNoteDialog";
+import { AttachmentView } from "./attachments/AttachmentView";
 
-/** Attachment metadata returned from API */
+/** Attachment metadata returned from API. */
 interface NoteAttachment {
   id: string;
   noteId: string;
@@ -16,6 +17,9 @@ interface NoteAttachment {
   originalName: string | null;
   mimeType: string | null;
   size: number | null;
+  /** 'r2' for new R2-backed files, 'local' for legacy disk rows. Undefined on older responses. */
+  storageProvider?: string | null;
+  status?: string | null;
 }
 
 interface JobNote {
@@ -83,7 +87,6 @@ export default function JobNotesSection({ jobId, embedded = false, onCountChange
   });
 
   const getUserName = (note: JobNote) => note.userName;
-  const isImage = (mime: string | null) => mime?.startsWith("image/") ?? false;
 
   // Header bar: "Notes (X)" on left, "+ Add Note" on right
   // The sidebar collapse arrow is rendered by the parent (JobDetailPage), not here.
@@ -145,30 +148,11 @@ export default function JobNotesSection({ jobId, embedded = false, onCountChange
               </div>
               <p className="text-[14px] leading-5 whitespace-pre-wrap mt-0.5 text-slate-800">{note.noteText}</p>
 
-              {/* Attachments display */}
+              {/* Attachments — AttachmentView resolves provider-specific URLs on demand */}
               {note.attachments && note.attachments.length > 0 && (
                 <div className="mt-1.5 space-y-1">
                   {note.attachments.map((att) => (
-                    <a
-                      key={att.id}
-                      href={`/api/files/${att.fileId}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-2 rounded border border-border/50 px-2 py-1 bg-muted/20 hover:bg-muted/40 transition-colors group/att"
-                      data-testid={`attachment-${att.id}`}
-                    >
-                      {isImage(att.mimeType) ? (
-                        <img
-                          src={`/api/files/${att.fileId}`}
-                          alt={att.originalName ?? "attachment"}
-                          className="h-8 w-8 rounded object-cover shrink-0"
-                        />
-                      ) : (
-                        <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
-                      )}
-                      <span className="text-[11px] truncate flex-1">{att.originalName ?? "File"}</span>
-                      <Download className="h-3 w-3 text-muted-foreground opacity-0 group-hover/att:opacity-100 transition-opacity shrink-0" />
-                    </a>
+                    <AttachmentView key={att.id} attachment={att} />
                   ))}
                 </div>
               )}

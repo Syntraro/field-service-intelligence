@@ -48,8 +48,10 @@ export function mapEventToDispatchVisit(event: CalendarEventDto): DispatchVisit 
     jobOpenSubStatus: event.openSubStatus ?? null,
     locationName: event.locationName,
     customerName: event.customerCompanyName ?? event.locationName,
-    technicianId: event.primaryTechnicianId ?? event.assignedTechnicianIds?.[0] ?? null,
-    technicianIds: event.assignedTechnicianIds ?? (event.primaryTechnicianId ? [event.primaryTechnicianId] : []),
+    // 2026-04-12 (Option A): assignedTechnicianIds on the event DTO is the
+    // visit-derived crew (server-computed). No fallback to primaryTechnicianId.
+    technicianId: event.assignedTechnicianIds?.[0] ?? null,
+    technicianIds: Array.isArray(event.assignedTechnicianIds) ? event.assignedTechnicianIds : [],
     scheduledStart: event.startAt,
     scheduledEnd: event.endAt,
     durationMinutes: event.durationMinutes,
@@ -92,8 +94,9 @@ export function mapUnscheduledToDispatchVisit(job: UnscheduledJobDto): DispatchV
     jobOpenSubStatus: job.openSubStatus ?? null,
     locationName: job.locationName,
     customerName: job.customerCompanyName ?? job.locationName,
-    technicianId: job.primaryTechnicianId ?? job.assignedTechnicianIds?.[0] ?? null,
-    technicianIds: job.assignedTechnicianIds ?? (job.primaryTechnicianId ? [job.primaryTechnicianId] : []),
+    // 2026-04-12 (Option A): visit-derived crew from server.
+    technicianId: job.assignedTechnicianIds?.[0] ?? null,
+    technicianIds: Array.isArray(job.assignedTechnicianIds) ? job.assignedTechnicianIds : [],
     scheduledStart: null,
     scheduledEnd: null,
     // PM dispatch fix: use actual job duration from backend (falls back to 60 for legacy jobs)

@@ -68,7 +68,7 @@ beforeAll(async () => {
     jobId,
     visitNumber: 1,
     status: "in_progress",
-    assignedTechnicianId: userId,
+    assignedTechnicianIds: [userId],
     scheduledDate: new Date(),
   });
 });

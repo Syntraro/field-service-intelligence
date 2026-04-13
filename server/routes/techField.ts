@@ -94,37 +94,12 @@ const getTenantTimezone = (companyId: string): Promise<string> =>
 // ASSIGNMENT GUARDS — shared by all tech mutation routes
 // ============================================================================
 
-/** Assert tech is assigned to a visit. Throws 404 if not found or not assigned. */
-async function assertTechAssignedToVisit(companyId: string, userId: string, visitId: string) {
-  const visit = await jobVisitsRepository.getAssignedVisit(companyId, visitId, userId);
-  if (!visit) throw createError(404, "Visit not found or not assigned to you");
-  return visit;
-}
-
-/** Assert tech is assigned to at least one active visit on this job. Throws 403 if not. */
-async function assertTechAssignedToJob(companyId: string, userId: string, jobId: string) {
-  const visits = await db
-    .select({
-      assignedTechnicianId: jobVisits.assignedTechnicianId,
-      assignedTechnicianIds: jobVisits.assignedTechnicianIds,
-    })
-    .from(jobVisits)
-    .where(
-      and(
-        eq(jobVisits.companyId, companyId),
-        eq(jobVisits.jobId, jobId),
-        eq(jobVisits.isActive, true),
-        isNull(jobVisits.archivedAt),
-      )
-    );
-
-  const assigned = visits.some(v =>
-    v.assignedTechnicianId === userId ||
-    (v.assignedTechnicianIds && v.assignedTechnicianIds.includes(userId))
-  );
-
-  if (!assigned) throw createError(403, "Not assigned to this job");
-}
+// Assignment guards moved to server/guards/visitAssignmentGuards.ts. Local
+// re-aliases preserve the original tech-field naming.
+import {
+  assertTechnicianAssignedToVisit as assertTechAssignedToVisit,
+  assertTechnicianHasVisitOnJob as assertTechAssignedToJob,
+} from "../guards/visitAssignmentGuards";
 
 // ============================================================================
 // GET /api/tech/visits/today — Today's visits assigned to me
@@ -1117,8 +1092,8 @@ const techCreateJobSchema = z.object({
   summary: z.string().min(1).max(500),
   description: z.string().max(5000).nullable().optional(),
   priority: z.enum(["low", "medium", "high", "urgent"]).default("medium"),
-  // Optional technician override — defaults to creating user
-  assignedTechnicianId: z.string().uuid().nullable().optional(),
+  // Optional technician crew override — defaults to [creating user]
+  assignedTechnicianIds: z.array(z.string().uuid()).optional(),
   // Scheduling — omit for "schedule later", provide for "schedule now"
   scheduledStart: z.string().datetime().optional(),
   scheduledEnd: z.string().datetime().optional(),
@@ -1134,12 +1109,16 @@ router.post(
 
     const data = validateSchema(techCreateJobSchema, req.body);
 
-    // Default assignment to creating tech if not specified
-    const techId = data.assignedTechnicianId ?? userId;
+    // Default crew to creating tech if not specified
+    const crew = data.assignedTechnicianIds && data.assignedTechnicianIds.length > 0
+      ? data.assignedTechnicianIds
+      : [userId];
 
     // Step 1: Always create job UNSCHEDULED — scheduling ownership belongs
     // to schedulingRepository.scheduleJob(), not storage.createJob().
     const { storage } = await import("../storage/index");
+    // 2026-04-12 final cleanup: only send the canonical crew array. The
+    // createJob storage layer forwards it to the seed visit.
     const job = await storage.createJob(companyId, {
       locationId: data.locationId,
       jobType: data.jobType ?? null,
@@ -1147,9 +1126,7 @@ router.post(
       description: data.description ?? null,
       priority: data.priority ?? "medium",
       status: "open",
-      primaryTechnicianId: techId,
-      assignedTechnicianIds: [techId],
-      // No scheduledStart/scheduledEnd — visit created as unscheduled placeholder
+      assignedTechnicianIds: crew,
     } as any);
 
     let visitId: string | undefined;
@@ -1172,7 +1149,8 @@ router.post(
 
       const scheduleResult = await schedulingRepository.scheduleJob(companyId, {
         jobId: job.id,
-        technicianUserId: techId,
+        // 2026-04-12 final cleanup: canonical crew array input.
+        assignedTechnicianIds: crew,
         startAt: normalized.scheduledStart!,
         endAt: normalized.scheduledEnd!,
         allDay: false,
@@ -1181,13 +1159,12 @@ router.post(
 
       visitId = scheduleResult?.visit?.id;
 
-      // Canonical side effects: event logging, attention, dispatch
       logEventAsync(getQueryCtx(req), {
         eventType: "job.scheduled",
         entityType: "job",
         entityId: job.id,
         summary: `Scheduled Job #${job.jobNumber} (tech create)`,
-        meta: { jobNumber: job.jobNumber, technicianUserId: techId },
+        meta: { jobNumber: job.jobNumber, assignedTechnicianIds: crew },
       });
       recomputeAttentionForEntity(companyId, "job", job.id).catch(() => {});
     }
