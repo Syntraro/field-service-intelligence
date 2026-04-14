@@ -1,111 +1,62 @@
 /**
- * PWA update prompt — shows a banner when a new service worker is waiting.
+ * PWA registration + auto-reload on deploy (2026-04-14).
  *
- * Dynamically loads virtual:pwa-register at runtime so the import never blocks
- * the initial module graph. Renders nothing when:
- *   - service workers are not supported (desktop app, non-HTTPS)
- *   - the virtual module is unavailable (non-Vite runtime)
+ * Paired with `registerType: "autoUpdate"` + `skipWaiting` + `clientsClaim`
+ * in vite.config.ts. The flow is:
+ *
+ *   1. A new deploy ships a new SW. The browser discovers it on next page
+ *      load or during the hourly `registration.update()` poll.
+ *   2. The new SW installs, skips waiting, and claims the existing client.
+ *   3. `navigator.serviceWorker.controller` changes — we perform a single
+ *      hard reload so the tab re-bootstraps against the NEW index.html
+ *      and the NEW hashed chunks.
+ *
+ * Without step 3, the tab keeps running the old in-memory bundle. Any
+ * lazy-imported chunk it requests uses old hashes whose files were purged
+ * from the server by the new deploy, producing mixed-bundle runtime
+ * failures (React #310, blank screens).
+ *
+ * The `reloaded` session flag prevents reload loops if the SW keeps
+ * changing during the lifetime of the tab.
  */
-import { useState, useEffect } from "react";
-import { RefreshCw, X } from "lucide-react";
+import { useEffect } from "react";
 
-type SWRegistrationState = {
-  needRefresh: boolean;
-  offlineReady: boolean;
-  updateServiceWorker: () => Promise<void>;
-  dismiss: () => void;
-};
-
-// Opaque loader that Vite's static analysis cannot follow.
-// At runtime it performs a standard dynamic import; at build/serve time
-// Vite sees only `new Function(...)` and skips resolution.
 const loadModule = new Function("m", "return import(m)") as (id: string) => Promise<any>;
+const RELOAD_FLAG = "__syntraro_sw_reloaded__";
 
 export function PwaUpdatePrompt() {
-  const [state, setState] = useState<SWRegistrationState | null>(null);
-
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
 
     let cancelled = false;
 
-    // Load virtual:pwa-register at runtime only — Vite cannot resolve this
+    const onControllerChange = () => {
+      if (sessionStorage.getItem(RELOAD_FLAG) === "1") return;
+      sessionStorage.setItem(RELOAD_FLAG, "1");
+      window.location.reload();
+    };
+    navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
+
     loadModule("virtual:pwa-register")
       .then((mod: any) => {
         if (cancelled) return;
-
-        const updateSW = mod.registerSW({
+        mod.registerSW({
           immediate: true,
-          onNeedRefresh() {
-            if (!cancelled) {
-              setState((prev) => ({
-                ...(prev ?? { offlineReady: false, updateServiceWorker: () => updateSW(true), dismiss }),
-                needRefresh: true,
-              }));
-            }
-          },
-          onOfflineReady() {
-            if (!cancelled) {
-              setState((prev) => ({
-                ...(prev ?? { needRefresh: false, updateServiceWorker: () => updateSW(true), dismiss }),
-                offlineReady: true,
-              }));
-            }
-          },
           onRegisteredSW(_swUrl: string, registration: ServiceWorkerRegistration | undefined) {
-            if (registration) {
-              setInterval(() => { registration.update(); }, 60 * 60 * 1000);
-            }
+            if (!registration) return;
+            setInterval(() => { registration.update().catch(() => {}); }, 60 * 60 * 1000);
           },
         });
-
-        function dismiss() {
-          setState(null);
-        }
-
-        // Initialize state with dismiss and update functions
-        if (!cancelled) {
-          setState({
-            needRefresh: false,
-            offlineReady: false,
-            updateServiceWorker: () => updateSW(true),
-            dismiss,
-          });
-        }
       })
       .catch(() => {
-        // virtual:pwa-register not available — render nothing
+        // virtual:pwa-register not available (non-Vite runtime) — no-op.
       });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
+    };
   }, []);
 
-  if (!state || (!state.needRefresh && !state.offlineReady)) return null;
-
-  return (
-    <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-[9999] w-[calc(100%-2rem)] max-w-sm">
-      <div className="bg-slate-900 text-white rounded-lg shadow-xl border border-slate-700 p-3 flex items-center gap-3">
-        <div className="flex-1 text-sm">
-          {state.needRefresh
-            ? "A new version is available."
-            : "App ready for offline use."}
-        </div>
-        {state.needRefresh && (
-          <button
-            onClick={state.updateServiceWorker}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-md transition-colors"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            Update
-          </button>
-        )}
-        <button
-          onClick={state.dismiss}
-          className="p-1 rounded-md text-slate-400 hover:text-white transition-colors"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-    </div>
-  );
+  return null;
 }

@@ -596,6 +596,70 @@ router.post(
 );
 
 // ============================================================================
+// PUT /api/tech/visits/:visitId/notes/:noteId — Edit a note on the visit's job
+// DELETE /api/tech/visits/:visitId/notes/:noteId — Delete a note
+//
+// 2026-04-14: thin wrappers over the canonical jobNotesRepository methods.
+// Author-only enforcement + tenant isolation are already handled in the
+// repository layer. We only add assignment validation so a tech cannot
+// reach notes attached to jobs not assigned to them.
+// ============================================================================
+
+const updateNoteSchema = z.object({
+  text: z.string().min(1).max(2000),
+});
+
+router.put(
+  "/visits/:visitId/notes/:noteId",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+    const visit = await jobVisitsRepository.getAssignedVisit(companyId, req.params.visitId, userId);
+    if (!visit) throw createError(404, "Visit not found or not assigned to you");
+
+    const { text } = validateSchema(updateNoteSchema, req.body);
+    const note = await jobNotesRepository.updateJobNote(
+      companyId,
+      req.params.noteId,
+      userId,
+      text.trim(),
+    );
+
+    emitDispatch(companyId, {
+      scope: "calendar",
+      entityType: "visit",
+      entityId: req.params.visitId,
+      ts: new Date().toISOString(),
+    });
+
+    res.json(note);
+  }),
+);
+
+router.delete(
+  "/visits/:visitId/notes/:noteId",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+    const visit = await jobVisitsRepository.getAssignedVisit(companyId, req.params.visitId, userId);
+    if (!visit) throw createError(404, "Visit not found or not assigned to you");
+
+    await jobNotesRepository.deleteJobNote(companyId, req.params.noteId, userId);
+
+    emitDispatch(companyId, {
+      scope: "calendar",
+      entityType: "visit",
+      entityId: req.params.visitId,
+      ts: new Date().toISOString(),
+    });
+
+    res.json({ success: true });
+  }),
+);
+
+// ============================================================================
 // GET /api/tech/time/summary — Today + this week time summary
 // ============================================================================
 

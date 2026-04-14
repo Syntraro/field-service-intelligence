@@ -6,7 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-### Changed
+### Fixed
+
+#### PWA cache staleness causing post-deploy blank screens / React #310 (2026-04-14)
+
+Symptom: after a Render deploy, some technician tabs hit a blank screen
+on job-click. Console showed React minified error #310 ("Rendered more
+hooks than during the previous render"). Unregistering the service
+worker + hard reload cleared it. Hook-order audit on the visit detail
+path was clean — root cause was PWA cache staleness, not code shape.
+
+Root cause chain:
+- `registerType: "prompt"` left the new SW in "waiting" indefinitely.
+- The old SW kept serving its precached `index.html`, which references
+  hashed chunk filenames from the previous build.
+- Vite's `build.emptyOutDir: true` deletes those old chunks on each
+  deploy, so the old cached `index.html` pointed at 404s.
+- No `cleanupOutdatedCaches` meant orphaned precache entries from
+  earlier builds also persisted.
+- No `controllerchange` reload — even when the new SW eventually
+  activated, the tab kept running the old in-memory bundle.
+- Result: mixed-bundle runtime (old module graph requesting new/missing
+  chunks) surfaced as React #310 or a blank screen.
+
+Fix:
+- `registerType: "autoUpdate"` — no user prompt, SW takes effect on
+  next update cycle.
+- `workbox.skipWaiting: true` + `workbox.clientsClaim: true` — new SW
+  activates immediately and claims open clients.
+- `workbox.cleanupOutdatedCaches: true` — drops stale precache entries
+  from prior builds.
+- Rewrote `PwaUpdatePrompt.tsx` to register the SW and perform a
+  single-shot `window.location.reload()` on `controllerchange` so the
+  tab re-bootstraps against the new `index.html` + new chunks after
+  the SW transition. A `sessionStorage` flag prevents reload loops.
+
+Offline support and `NetworkOnly` handling for `/api/*` are unchanged.
+
+Files affected:
+- `vite.config.ts`
+- `client/src/components/PwaUpdatePrompt.tsx`
 
 #### Sidebar cleanup and width reduction (2026-04-14)
 

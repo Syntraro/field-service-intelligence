@@ -35,8 +35,9 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft, Navigation, MapPin, StickyNote, AlertCircle, Check,
   Loader2, RefreshCw, Send, Plus, Wrench, Package, Trash2, Paperclip, X as CloseIcon,
-  ChevronRight, Search, X, FileText, Clock, Pause,
+  ChevronRight, Search, X, FileText, Clock, Pause, Camera, File as FileIcon,
 } from "lucide-react";
+import { useAuth } from "@/lib/auth";
 import { MobileShell } from "../components/MobileShell";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
@@ -668,11 +669,14 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
   const [, setLocation] = useLocation();
   const {
     visit, isLoading, isError, refetch,
-    startTravel, startJob, complete, addNote, addPart, deletePart, removeEquipment, addEquipment,
+    startTravel, startJob, complete, addNote, updateNote, deleteNote,
+    addPart, deletePart, removeEquipment, addEquipment,
     updateVisitNotes, updateJob,
     // 2026-04-09: reversible workflow controls + pause/resume
     cancelRoute, cancelStart, pauseJob, resumeJob,
   } = useTechVisitDetail(visitId);
+  const { user } = useAuth();
+  const currentUserId = user?.id ?? null;
 
   // 2026-04-14 offline queue: pending + failed note rows for this visit,
   // plus retry/discard actions wired to the replay engine.
@@ -702,6 +706,8 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
   // Inline editing
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
+  // 2026-04-14 Fix E: tap-to-edit note sheet
+  const [editingNote, setEditingNote] = useState<DetailNote | null>(null);
 
   const onBack = () => setLocation("/tech/today");
 
@@ -793,6 +799,23 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
       setNoteEquipmentId(null);
     } catch (err: any) { showError(err); }
   };
+  // 2026-04-14 Fix E: update / delete note (author-only enforced server-side).
+  const handleUpdateNote = async (noteId: string, text: string) => {
+    setActionError(null);
+    try {
+      await updateNote.mutateAsync({ noteId, text });
+      setEditingNote(null);
+      showSuccess("Note updated");
+    } catch (err: any) { showError(err); }
+  };
+  const handleDeleteNote = async (noteId: string) => {
+    setActionError(null);
+    try {
+      await deleteNote.mutateAsync(noteId);
+      setEditingNote(null);
+      showSuccess("Note deleted");
+    } catch (err: any) { showError(err); }
+  };
   const handleRemoveEquipment = async (jobEquipmentId: string) => {
     setActionError(null);
     try { await removeEquipment.mutateAsync(jobEquipmentId); showSuccess("Equipment removed"); } catch (err: any) { showError(err); }
@@ -863,21 +886,28 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
           Pause/Resume sits on the on-site / paused strip. Sub-1-min segments
           are discarded server-side; the UI just calls the canonical actions. */}
       {isActive && !isTerminal && (
-        <div className={`px-3 py-1.5 flex items-center gap-2 ${isPaused ? "bg-amber-100" : "bg-[#22c55e]/10"}`}>
-          <span className={`h-2.5 w-2.5 rounded-full shrink-0 ${isPaused ? "bg-amber-500" : "bg-[#22c55e] animate-pulse"}`} />
-          <span className={`text-sm font-semibold ${isPaused ? "text-amber-700" : "text-[#22c55e]"}`}>
-            {STATUS_LABELS[visit.status] || visit.status}
-          </span>
-          <span className={`text-base font-bold tabular-nums ${isPaused ? "text-amber-700" : "text-[#22c55e]"}`}>
-            {visit.timerStartedAt && !isPaused ? <LiveTimer startedAt={visit.timerStartedAt} /> : "00:00:00"}
-          </span>
-          <div className="ml-auto flex items-center gap-1.5 flex-wrap justify-end">
+        // 2026-04-14 Fix A: status/timer on row 1, action buttons on row 2.
+        // On iPhone 15 width (~393px) the previous single-row layout forced
+        // the cluster of 2–3 buttons to wrap and visually overlap the timer.
+        // Vertical stacking of the two concerns (status info / actions)
+        // keeps buttons side-by-side within their row at any mobile width.
+        <div className={`px-3 py-1.5 space-y-1.5 ${isPaused ? "bg-amber-100" : "bg-[#22c55e]/10"}`}>
+          <div className="flex items-center gap-2">
+            <span className={`h-2.5 w-2.5 rounded-full shrink-0 ${isPaused ? "bg-amber-500" : "bg-[#22c55e] animate-pulse"}`} />
+            <span className={`text-sm font-semibold ${isPaused ? "text-amber-700" : "text-[#22c55e]"}`}>
+              {STATUS_LABELS[visit.status] || visit.status}
+            </span>
+            <span className={`text-base font-bold tabular-nums ml-auto ${isPaused ? "text-amber-700" : "text-[#22c55e]"}`}>
+              {visit.timerStartedAt && !isPaused ? <LiveTimer startedAt={visit.timerStartedAt} /> : "00:00:00"}
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5 flex-nowrap">
             {visit.status === "en_route" && (
               <>
                 <button
                   onClick={handleCancelRoute}
                   disabled={anyPending}
-                  className="h-8 px-3 rounded-md bg-white border border-slate-300 text-slate-700 text-sm font-semibold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  className="flex-1 h-8 px-2 rounded-md bg-white border border-slate-300 text-slate-700 text-xs font-semibold flex items-center justify-center gap-1 active:scale-[0.97] disabled:opacity-60"
                   data-testid="button-cancel-route"
                 >
                   {cancelRoute.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Cancel Route
@@ -885,7 +915,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 <button
                   onClick={handleStartJob}
                   disabled={anyPending}
-                  className="h-8 px-3 rounded-md bg-[#22c55e] text-white text-sm font-bold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  className="flex-1 h-8 px-2 rounded-md bg-[#22c55e] text-white text-xs font-bold flex items-center justify-center gap-1 active:scale-[0.97] disabled:opacity-60"
                   data-testid="button-start-job"
                 >
                   {startJob.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Start Job
@@ -897,7 +927,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 <button
                   onClick={handleCancelStart}
                   disabled={anyPending}
-                  className="h-8 w-8 rounded-md bg-white border border-slate-300 text-slate-500 flex items-center justify-center active:scale-[0.97] disabled:opacity-60"
+                  className="h-8 w-8 shrink-0 rounded-md bg-white border border-slate-300 text-slate-500 flex items-center justify-center active:scale-[0.97] disabled:opacity-60"
                   data-testid="button-cancel-start"
                   title="Cancel Start"
                   aria-label="Cancel Start"
@@ -907,7 +937,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 <button
                   onClick={handlePauseJob}
                   disabled={anyPending}
-                  className="h-8 w-8 rounded-md bg-amber-100 border border-amber-300 text-amber-600 flex items-center justify-center active:scale-[0.97] disabled:opacity-60"
+                  className="h-8 w-8 shrink-0 rounded-md bg-amber-100 border border-amber-300 text-amber-600 flex items-center justify-center active:scale-[0.97] disabled:opacity-60"
                   data-testid="button-pause-job"
                   title="Pause"
                   aria-label="Pause"
@@ -917,7 +947,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 <button
                   onClick={() => setShowOutcome(true)}
                   disabled={anyPending}
-                  className="h-8 px-3 rounded-md bg-[#22c55e] text-white text-sm font-bold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  className="flex-1 h-8 px-2 rounded-md bg-[#22c55e] text-white text-xs font-bold flex items-center justify-center gap-1 active:scale-[0.97] disabled:opacity-60"
                   data-testid="button-complete"
                 >
                   <Check className="h-3.5 w-3.5" />Complete
@@ -929,7 +959,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 <button
                   onClick={handleResumeJob}
                   disabled={anyPending}
-                  className="h-8 px-3 rounded-md bg-[#22c55e] text-white text-sm font-bold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  className="flex-1 h-8 px-2 rounded-md bg-[#22c55e] text-white text-xs font-bold flex items-center justify-center gap-1 active:scale-[0.97] disabled:opacity-60"
                   data-testid="button-resume-job"
                 >
                   {resumeJob.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Resume
@@ -937,7 +967,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 <button
                   onClick={() => setShowOutcome(true)}
                   disabled={anyPending}
-                  className="h-8 px-3 rounded-md bg-white border border-slate-300 text-slate-700 text-sm font-semibold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60"
+                  className="flex-1 h-8 px-2 rounded-md bg-white border border-slate-300 text-slate-700 text-xs font-semibold flex items-center justify-center gap-1 active:scale-[0.97] disabled:opacity-60"
                   data-testid="button-complete-paused"
                 >
                   <Check className="h-3.5 w-3.5" />Complete
@@ -1144,7 +1174,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center gap-1">
                     <Wrench className="h-2.5 w-2.5" />{eq.name}
                   </p>
-                  {eqNotes.map(n => <NoteCard key={n.id} note={n} />)}
+                  {eqNotes.map(n => <NoteCard key={n.id} note={n} currentUserId={currentUserId} onEdit={setEditingNote} />)}
                 </div>
               );
             })}
@@ -1154,7 +1184,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 {notesByEquipment.size > 0 && (
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">General</p>
                 )}
-                {generalNotes.map(n => <NoteCard key={n.id} note={n} />)}
+                {generalNotes.map(n => <NoteCard key={n.id} note={n} currentUserId={currentUserId} onEdit={setEditingNote} />)}
               </div>
             )}
             {visit.notes.length === 0 && (
@@ -1264,15 +1294,45 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
           onRemove={(jobEquipmentId) => { setHistoryEquipmentId(null); handleRemoveEquipment(jobEquipmentId); }}
         />
       )}
+      {editingNote && (
+        <NoteEditSheet
+          note={editingNote}
+          isUpdating={updateNote.isPending}
+          isDeleting={deleteNote.isPending}
+          onSave={handleUpdateNote}
+          onDelete={handleDeleteNote}
+          onClose={() => setEditingNote(null)}
+        />
+      )}
     </MobileShell>
   );
 }
 
 // ── Shared note components ──
 
-function NoteCard({ note }: { note: DetailNote }) {
+function NoteCard({
+  note,
+  currentUserId,
+  onEdit,
+}: {
+  note: DetailNote;
+  currentUserId: string | null;
+  onEdit: (note: DetailNote) => void;
+}) {
+  // 2026-04-14 Fix E: the author may tap their own note to open the edit
+  // sheet. Non-authors see a read-only card (server enforces author-only
+  // regardless, but we hide the affordance so the tap target is honest).
+  const canEdit = !!currentUserId && note.userId === currentUserId;
+  const interactive = canEdit
+    ? "cursor-pointer hover:bg-slate-50 active:bg-slate-100 transition-colors"
+    : "";
   return (
-    <div className="rounded-md border border-slate-200 bg-white p-3">
+    <div
+      className={`rounded-md border border-slate-200 bg-white p-3 ${interactive}`}
+      onClick={canEdit ? () => onEdit(note) : undefined}
+      role={canEdit ? "button" : undefined}
+      data-testid={`note-card-${note.id}`}
+    >
       <div className="flex items-center justify-between mb-1">
         <span className="text-xs font-semibold text-slate-500">{note.author}</span>
         <span className="text-xs text-slate-400">
@@ -1281,10 +1341,136 @@ function NoteCard({ note }: { note: DetailNote }) {
       </div>
       <p className="text-xs text-slate-700 leading-relaxed">{note.text}</p>
       {note.attachments && note.attachments.length > 0 && (
-        <div className="mt-2">
+        <div className="mt-2" onClick={(e) => e.stopPropagation()}>
           <NoteAttachmentStrip attachments={note.attachments} />
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * 2026-04-14 Fix E: lightweight mobile-native bottom sheet for editing a
+ * single note. Author-only (NoteCard only opens it for the author). Reuses
+ * the canonical tech mutations in useTechVisitDetail — no new endpoints.
+ * Delete uses a two-tap confirm inline (same pattern as equipment remove).
+ */
+function NoteEditSheet({
+  note,
+  isUpdating,
+  isDeleting,
+  onSave,
+  onDelete,
+  onClose,
+}: {
+  note: DetailNote;
+  isUpdating: boolean;
+  isDeleting: boolean;
+  onSave: (noteId: string, text: string) => Promise<void> | void;
+  onDelete: (noteId: string) => Promise<void> | void;
+  onClose: () => void;
+}) {
+  const [text, setText] = useState(note.text);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const dirty = text.trim().length > 0 && text !== note.text;
+  const busy = isUpdating || isDeleting;
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40">
+      {/* backdrop tap closes */}
+      <button
+        type="button"
+        aria-label="Close"
+        className="absolute inset-0 w-full h-full cursor-default"
+        onClick={busy ? undefined : onClose}
+      />
+      <div
+        className="relative w-full bg-white rounded-t-xl shadow-xl p-3 space-y-3 max-h-[85vh] overflow-y-auto"
+        data-testid="note-edit-sheet"
+      >
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-bold text-slate-800">Edit note</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="p-1 rounded-md text-slate-500 hover:text-slate-700 disabled:opacity-50"
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          disabled={busy}
+          rows={6}
+          className="w-full text-xs border border-slate-200 rounded-md px-3 py-2 resize-none disabled:bg-slate-50"
+          data-testid="input-note-edit-text"
+        />
+
+        {note.attachments && note.attachments.length > 0 && (
+          <div>
+            <p className="text-[11px] font-semibold text-slate-400 uppercase mb-1">Attachments</p>
+            <NoteAttachmentStrip attachments={note.attachments} />
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 pt-1">
+          {!confirmDelete ? (
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(true)}
+              disabled={busy}
+              className="h-9 px-3 rounded-md border border-red-200 text-red-600 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50"
+              data-testid="button-note-delete"
+            >
+              <Trash2 className="h-3.5 w-3.5" />Delete
+            </button>
+          ) : (
+            <>
+              <span className="text-xs text-red-600">Delete this note?</span>
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(false)}
+                disabled={busy}
+                className="h-9 px-2 rounded-md text-xs text-slate-600"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void onDelete(note.id)}
+                disabled={busy}
+                className="h-9 px-3 rounded-md bg-red-600 text-white text-xs font-bold flex items-center gap-1.5 disabled:opacity-60"
+                data-testid="button-note-delete-confirm"
+              >
+                {isDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                Delete
+              </button>
+            </>
+          )}
+          <div className="flex-1" />
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="h-9 px-3 rounded-md text-xs text-slate-600"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void onSave(note.id, text.trim())}
+            disabled={busy || !dirty}
+            className="h-9 px-4 rounded-md bg-emerald-600 text-white text-xs font-bold flex items-center gap-1.5 disabled:bg-slate-300"
+            data-testid="button-note-save"
+          >
+            {isUpdating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+            Save
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1315,12 +1501,15 @@ function NoteInput({ equipmentId, equipment, onEquipmentChange, onSubmit, isPend
   const [text, setText] = useState("");
   const [staged, setStaged] = useState<StagedAttachment[]>([]);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  // 2026-04-14 Fix C: open one of the staged images in a fullscreen preview.
+  const [previewIdx, setPreviewIdx] = useState<number | null>(null);
   // Tracks the full note+upload sequence so the spinner stays on until
   // attachments have finished uploading, not just the note POST.
   const [isSubmitting, setIsSubmitting] = useState(false);
   const cameraRef = useRef<HTMLInputElement>(null);
   const photoRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   // Revoke any still-live preview URLs on unmount.
   useEffect(() => {
@@ -1331,6 +1520,28 @@ function NoteInput({ equipmentId, equipment, onEquipmentChange, onSubmit, isPend
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 2026-04-14 Fix D: close the attach menu on outside tap or Escape.
+  // The menu previously only closed inside handlePick, so a cancelled
+  // native picker left the menu open ("stuck" state).
+  useEffect(() => {
+    if (!showAttachMenu) return;
+    const onPointer = (e: MouseEvent | TouchEvent) => {
+      const el = menuRef.current;
+      if (el && !el.contains(e.target as Node)) setShowAttachMenu(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setShowAttachMenu(false);
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("touchstart", onPointer, { passive: true });
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("touchstart", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [showAttachMenu]);
 
   const handlePick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const picked = Array.from(e.target.files ?? []);
@@ -1366,6 +1577,19 @@ function NoteInput({ equipmentId, equipment, onEquipmentChange, onSubmit, isPend
 
   const pending = isPending || isSubmitting;
 
+  // 2026-04-14 Fix D: whenever a picker button is tapped we close the
+  // attach menu immediately (before opening the native file dialog). If
+  // the user cancels the picker, the menu is already closed — no stuck
+  // state. Reopening the menu is a single tap.
+  const openPicker = (which: "camera" | "photo" | "file") => {
+    setShowAttachMenu(false);
+    const target =
+      which === "camera" ? cameraRef.current :
+      which === "photo" ? photoRef.current :
+      fileRef.current;
+    target?.click();
+  };
+
   const handleSubmit = async () => {
     // Backend requires a non-empty note body; attachments-only is not a
     // valid note. Also rejects rapid repeat taps while a submission is
@@ -1397,6 +1621,7 @@ function NoteInput({ equipmentId, equipment, onEquipmentChange, onSubmit, isPend
   };
   const selectedEq = equipment.find(e => e.id === equipmentId);
   const attachmentsDisabled = pending || !isOnline;
+  const previewStaged = previewIdx !== null ? staged[previewIdx] : null;
   return (
     <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
       {lockedEquipment && selectedEq ? (
@@ -1415,7 +1640,19 @@ function NoteInput({ equipmentId, equipment, onEquipmentChange, onSubmit, isPend
         <textarea value={text} onChange={e => setText(e.target.value)} disabled={pending}
           placeholder={lockedEquipment && selectedEq ? `Note for ${selectedEq.name}…` : "Add a note…"}
           className="flex-1 text-xs border border-slate-200 rounded-md px-3 py-2 resize-none h-16 disabled:bg-slate-50" />
-        <div className="flex flex-col gap-1 relative">
+        <div className="flex flex-col gap-1 relative" ref={menuRef}>
+          {/* 2026-04-14 Fix F: quick camera shortcut. Direct tap into the
+              same canonical compose+submit pipeline — no separate flow. */}
+          <button type="button"
+            onClick={() => openPicker("camera")}
+            disabled={attachmentsDisabled}
+            className="h-8 w-8 rounded-md bg-slate-100 text-slate-600 flex items-center justify-center disabled:opacity-50"
+            aria-label={isOnline ? "Take photo" : "Camera requires connection"}
+            title={isOnline ? "Take photo" : "Camera requires connection"}
+            data-testid="button-note-camera"
+          >
+            <Camera className="h-3.5 w-3.5" />
+          </button>
           <button type="button"
             onClick={() => setShowAttachMenu((v) => !v)}
             disabled={attachmentsDisabled}
@@ -1435,17 +1672,17 @@ function NoteInput({ equipmentId, equipment, onEquipmentChange, onSubmit, isPend
             <div className="absolute right-10 top-0 z-20 w-40 rounded-md border border-slate-200 bg-white shadow-md overflow-hidden">
               <button type="button"
                 className="w-full px-3 py-2 text-left text-xs hover:bg-slate-50"
-                onClick={() => cameraRef.current?.click()}
+                onClick={() => openPicker("camera")}
                 data-testid="option-take-photo"
               >Take photo</button>
               <button type="button"
                 className="w-full px-3 py-2 text-left text-xs hover:bg-slate-50"
-                onClick={() => photoRef.current?.click()}
+                onClick={() => openPicker("photo")}
                 data-testid="option-choose-photo"
               >Choose photo</button>
               <button type="button"
                 className="w-full px-3 py-2 text-left text-xs hover:bg-slate-50"
-                onClick={() => fileRef.current?.click()}
+                onClick={() => openPicker("file")}
                 data-testid="option-choose-file"
               >Choose file</button>
             </div>
@@ -1461,21 +1698,65 @@ function NoteInput({ equipmentId, equipment, onEquipmentChange, onSubmit, isPend
         className="hidden" onChange={handlePick} />
       <input ref={fileRef} type="file" multiple accept={SUPPORTED_MIME_TYPES.join(",")}
         className="hidden" onChange={handlePick} />
+      {/* 2026-04-14 Fix C: thumbnail grid for images, chip row for non-images. */}
       {staged.length > 0 && (
-        <div className="space-y-1">
-          {staged.map((s, i) => (
-            <div key={i} className="flex items-center gap-2 rounded border border-slate-200 px-2 py-1 bg-slate-50">
-              {s.previewUrl ? (
-                <img src={s.previewUrl} alt="" className="h-8 w-8 rounded object-cover shrink-0" />
-              ) : null}
-              <span className="text-[11px] truncate flex-1">{s.file.name}</span>
-              <button type="button" onClick={() => removeStaged(i)}
-                className="text-slate-500 hover:text-slate-700"
-                aria-label={`Remove ${s.file.name}`}>
-                <CloseIcon className="h-3 w-3" />
-              </button>
-            </div>
-          ))}
+        <div className="flex flex-wrap gap-2 pt-1">
+          {staged.map((s, i) => {
+            const isImage = !!s.previewUrl;
+            return (
+              <div key={i} className="relative">
+                {isImage ? (
+                  <button
+                    type="button"
+                    onClick={() => setPreviewIdx(i)}
+                    className="block h-16 w-16 rounded-md overflow-hidden border border-slate-200 bg-slate-50 active:opacity-80"
+                    aria-label={`Preview ${s.file.name}`}
+                    data-testid={`staged-preview-${i}`}
+                  >
+                    <img src={s.previewUrl!} alt="" className="h-full w-full object-cover" />
+                  </button>
+                ) : (
+                  <div className="h-16 w-16 rounded-md border border-slate-200 bg-slate-50 flex flex-col items-center justify-center px-1">
+                    <FileIcon className="h-4 w-4 text-slate-400" />
+                    <span className="text-[9px] text-slate-500 truncate w-full text-center leading-tight mt-0.5">
+                      {s.file.name}
+                    </span>
+                  </div>
+                )}
+                <button type="button" onClick={() => removeStaged(i)}
+                  className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full bg-slate-700 text-white flex items-center justify-center shadow"
+                  aria-label={`Remove ${s.file.name}`}
+                  data-testid={`staged-remove-${i}`}
+                >
+                  <CloseIcon className="h-3 w-3" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {/* 2026-04-14 Fix C: tap-to-preview fullscreen overlay. Uses the
+          local `previewUrl` only — no server URL resolution for
+          pre-submission staged files. */}
+      {previewStaged && previewStaged.previewUrl && (
+        <div
+          className="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center p-4"
+          onClick={() => setPreviewIdx(null)}
+          data-testid="staged-preview-modal"
+        >
+          <img
+            src={previewStaged.previewUrl}
+            alt={previewStaged.file.name}
+            className="max-h-full max-w-full object-contain"
+          />
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setPreviewIdx(null); }}
+            className="absolute top-4 right-4 h-9 w-9 rounded-full bg-white/10 text-white flex items-center justify-center"
+            aria-label="Close preview"
+          >
+            <X className="h-5 w-5" />
+          </button>
         </div>
       )}
     </div>

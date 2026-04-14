@@ -20,7 +20,14 @@ export default defineConfig({
         ]
       : []),
     VitePWA({
-      registerType: "prompt",
+      // 2026-04-14 cache-staleness fix: was "prompt", which left users on
+      // the old SW + old precached index.html indefinitely. After a deploy,
+      // the old hashed chunks referenced by the cached index.html are gone
+      // from the server (Vite emptyOutDir purges dist/public on rebuild),
+      // producing blank-screen / React #310 mixed-bundle failures. autoUpdate
+      // + skipWaiting + clientsClaim + cleanupOutdatedCaches guarantees each
+      // deploy takes over all clients atomically and drops stale precaches.
+      registerType: "autoUpdate",
       includeAssets: ["favicon.png", "apple-touch-icon.png"],
       manifest: {
         name: "Syntraro Field Service",
@@ -38,6 +45,17 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // 2026-04-14 cache-staleness fix:
+        //   skipWaiting + clientsClaim — the new SW activates immediately
+        //     instead of waiting for all tabs to close. Paired with the
+        //     controllerchange reload in PwaUpdatePrompt, this guarantees
+        //     every client runs the latest build after a deploy.
+        //   cleanupOutdatedCaches — drops precache entries from previous
+        //     builds so an orphaned index.html from an old SW can never
+        //     reference chunk hashes that no longer exist on the server.
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
         // Only precache built static assets + offline fallback
         maximumFileSizeToCacheInBytes: 3 * 1024 * 1024, // 3 MB — main bundle is ~2.2 MB
         globPatterns: ["**/*.{js,css,html,woff2,png,svg,ico}"],

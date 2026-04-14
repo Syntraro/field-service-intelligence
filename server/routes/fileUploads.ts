@@ -15,7 +15,7 @@
 
 import { Router, type Response } from "express";
 import { z } from "zod";
-import { asyncHandler } from "../middleware/errorHandler";
+import { asyncHandler, createError } from "../middleware/errorHandler";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { validateSchema } from "../utils/validationHelpers";
 import {
@@ -57,35 +57,94 @@ const finalizeSchema = z.object({
 
 export const fileUploadsRouter = Router();
 
+/**
+ * 2026-04-14 hardening: convert auth-missing crash paths from 500
+ * ("Internal server error" with no stack) into explicit 401/403 JSON
+ * responses so production visibility is clear, and surround the
+ * canonical upload service calls with structured logging so the next
+ * Render-only failure surfaces the exact entity + stage that threw.
+ *
+ * The non-null assertions on `req.companyId` / `req.user` were the
+ * single biggest hidden 500 vector — if the global auth binding failed
+ * for any reason (subdomain cookie issue, out-of-order middleware,
+ * impersonation edge case), the assertion would throw a TypeError
+ * deep in the service layer with no context.
+ */
+function requireAuthedTenant(req: AuthedRequest): { companyId: string; userId: string } {
+  const companyId = req.companyId;
+  const userId = req.user?.id;
+  if (!userId) throw createError(401, "Not authenticated");
+  if (!companyId) throw createError(403, "Tenant context missing");
+  return { companyId, userId };
+}
+
+function logUploadError(stage: string, ctx: Record<string, unknown>, err: unknown) {
+  const e = err as any;
+  console.error(
+    `[fileUploads] stage=${stage} failed`,
+    JSON.stringify({
+      ...ctx,
+      message: e?.message ?? String(err),
+      status: e?.statusCode ?? e?.status ?? null,
+      name: e?.name ?? null,
+    }),
+  );
+}
+
 fileUploadsRouter.post(
   "/files/upload-request",
   asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { companyId, userId } = requireAuthedTenant(req);
     const data = validateSchema(uploadRequestSchema, req.body);
-    const result = await requestUpload({
-      companyId: req.companyId!,
-      userId: req.user!.id,
-      entityType: data.entityType,
-      entityId: data.entityId,
-      filename: data.filename,
-      mimeType: data.mimeType,
-      sizeBytes: data.sizeBytes,
-    });
-    res.status(201).json(result);
+    try {
+      const result = await requestUpload({
+        companyId,
+        userId,
+        entityType: data.entityType,
+        entityId: data.entityId,
+        filename: data.filename,
+        mimeType: data.mimeType,
+        sizeBytes: data.sizeBytes,
+      });
+      res.status(201).json(result);
+    } catch (err) {
+      logUploadError("upload-request", {
+        companyId,
+        userId,
+        entityType: data.entityType,
+        entityId: data.entityId,
+        mimeType: data.mimeType,
+        sizeBytes: data.sizeBytes,
+      }, err);
+      throw err;
+    }
   }),
 );
 
 fileUploadsRouter.post(
   "/files/:fileId/finalize",
   asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { companyId, userId } = requireAuthedTenant(req);
     const data = validateSchema(finalizeSchema, req.body);
-    const dto = await finalizeUpload({
-      companyId: req.companyId!,
-      userId: req.user!.id,
-      fileId: req.params.fileId,
-      entityType: data.entityType,
-      entityId: data.entityId,
-    });
-    res.status(200).json(dto);
+    try {
+      const dto = await finalizeUpload({
+        companyId,
+        userId,
+        fileId: req.params.fileId,
+        entityType: data.entityType,
+        entityId: data.entityId,
+      });
+      res.status(200).json(dto);
+    } catch (err) {
+      logUploadError("finalize", {
+        companyId,
+        userId,
+        fileId: req.params.fileId,
+        entityType: data.entityType,
+        entityId: data.entityId,
+      }, err);
+      throw err;
+    }
   }),
 );
 

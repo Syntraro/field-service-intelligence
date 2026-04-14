@@ -176,6 +176,9 @@ export interface DetailNote {
   text: string;
   timestamp: string;
   author: string;
+  /** 2026-04-14: carried through so the tech UI can gate edit/delete
+   *  to the note's author without round-tripping the server. */
+  userId: string;
   equipmentId: string | null;
   attachments: BackendNoteAttachment[];
 }
@@ -229,6 +232,7 @@ function toDetailVisit(data: VisitDetailResponse): DetailVisit {
       text: n.noteText,
       timestamp: n.createdAt,
       author: n.userFirstName || n.userName || "Technician",
+      userId: n.userId,
       equipmentId: n.equipmentId ?? null,
       attachments: n.attachments ?? [],
     })),
@@ -375,6 +379,26 @@ export function useTechVisitDetail(visitId: string | undefined) {
     onError: handleMutationError,
   });
 
+  // 2026-04-14: Edit / delete note — thin wrappers over the canonical
+  // tech endpoints that delegate to jobNotesRepository. Author-only +
+  // tenant isolation are enforced server-side.
+  const updateNoteMutation = useMutation({
+    mutationFn: (params: { noteId: string; text: string }) =>
+      apiRequest(`/api/tech/visits/${visitId}/notes/${params.noteId}`, {
+        method: "PUT",
+        body: JSON.stringify({ text: params.text }),
+      }),
+    onSuccess: invalidateAfterAction,
+    onError: handleMutationError,
+  });
+
+  const deleteNoteMutation = useMutation({
+    mutationFn: (noteId: string) =>
+      apiRequest(`/api/tech/visits/${visitId}/notes/${noteId}`, { method: "DELETE" }),
+    onSuccess: invalidateAfterAction,
+    onError: handleMutationError,
+  });
+
   // Action: Add part to visit's job (with optional equipment linkage)
   const addPartMutation = useMutation({
     mutationFn: (params: { productId: string; quantity: string; equipmentId?: string | null }) =>
@@ -439,6 +463,8 @@ export function useTechVisitDetail(visitId: string | undefined) {
     resumeJob: resumeJobMutation,
     complete: completeMutation,
     addNote: addNoteMutation,
+    updateNote: updateNoteMutation,
+    deleteNote: deleteNoteMutation,
     addPart: addPartMutation,
     deletePart: deletePartMutation,
     removeEquipment: removeEquipmentMutation,
