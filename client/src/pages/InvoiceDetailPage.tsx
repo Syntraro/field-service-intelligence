@@ -84,8 +84,9 @@ import { InvoiceHeaderCard } from "@/components/InvoiceHeaderCard";
 // Phase 12 (2026-04-12): Jobber-style send modal with recipients + subject + body.
 // Legacy ConfirmSendModal import removed in Phase 13.
 import { SendInvoiceModal } from "@/components/communication/SendInvoiceModal";
-// Phase 15 (2026-04-12): email delivery status card.
-import { DeliveryStatusCard } from "@/components/communication/DeliveryStatusCard";
+// 2026-04-14: DeliveryStatusCard retired from this page; send/viewed
+// metadata now lives inline in `InvoiceHeaderCard`'s metadata table.
+import { ActivityCard } from "@/components/activity/ActivityCard";
 import { ConfirmVoidModal } from "@/components/invoice/ConfirmVoidModal";
 import { QboSyncBanner, isQboSynced, isBillingLocked } from "@/components/invoice/QboSyncBanner";
 import { QboOverrideModal, useQboOverride } from "@/components/invoice/QboOverrideModal";
@@ -506,6 +507,7 @@ export default function InvoiceDetailPage() {
     showUnitPrice: true,
     showLineTotals: true,
     showBalance: true,
+    showJobDescription: true,
   });
   const [showAddRow, setShowAddRow] = useState(false);
 
@@ -519,7 +521,6 @@ export default function InvoiceDetailPage() {
 
   // Notes editing state (synced from invoice data, saved explicitly)
   const [clientMessageDraft, setClientMessageDraft] = useState("");
-  const [internalNotesDraft, setInternalNotesDraft] = useState("");
 
   // Phase 10A: QBO override state
   const qboOverride = useQboOverride();
@@ -1003,9 +1004,8 @@ export default function InvoiceDetailPage() {
   useEffect(() => {
     if (details?.invoice) {
       setClientMessageDraft(details.invoice.clientMessage || "");
-      setInternalNotesDraft(details.invoice.notesInternal || "");
     }
-  }, [details?.invoice?.clientMessage, details?.invoice?.notesInternal]);
+  }, [details?.invoice?.clientMessage]);
 
   // Canonical server-side visibility values
   const serverVisibility = useMemo(() => ({
@@ -1014,14 +1014,16 @@ export default function InvoiceDetailPage() {
     showUnitPrice: details?.invoice?.showUnitPrice !== false,
     showLineTotals: details?.invoice?.showLineTotals !== false,
     showBalance: details?.invoice?.showBalance !== false,
-  }), [details?.invoice?.showLineItems, details?.invoice?.showQuantity, details?.invoice?.showUnitPrice, details?.invoice?.showLineTotals, details?.invoice?.showBalance]);
+    showJobDescription: (details?.invoice as any)?.showJobDescription !== false,
+  }), [details?.invoice?.showLineItems, details?.invoice?.showQuantity, details?.invoice?.showUnitPrice, details?.invoice?.showLineTotals, details?.invoice?.showBalance, (details?.invoice as any)?.showJobDescription]);
 
   const isVisibilityDirty =
     visibilityDraft.showLineItems !== serverVisibility.showLineItems ||
     visibilityDraft.showQuantity !== serverVisibility.showQuantity ||
     visibilityDraft.showUnitPrice !== serverVisibility.showUnitPrice ||
     visibilityDraft.showLineTotals !== serverVisibility.showLineTotals ||
-    visibilityDraft.showBalance !== serverVisibility.showBalance;
+    visibilityDraft.showBalance !== serverVisibility.showBalance ||
+    visibilityDraft.showJobDescription !== serverVisibility.showJobDescription;
 
   // Sync visibility draft from server — only when not dirty (protects unsaved changes)
   useEffect(() => {
@@ -1143,11 +1145,14 @@ export default function InvoiceDetailPage() {
   return (
     <div className="bg-[#f1f5f9] h-full flex flex-col" data-testid="invoice-detail-page">
       <div className="px-4 lg:px-6 py-4 flex-1 flex flex-col min-h-0">
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4 flex-1 min-h-0" data-testid="invoice-body-area">
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] gap-4 flex-1 min-h-0" data-testid="invoice-body-area">
             <div className="space-y-2.5 min-w-0 min-h-0 overflow-y-auto lg:pr-1 h-full">
 
-              {/* Phase 15 (2026-04-12): email delivery status + resend. */}
-              <DeliveryStatusCard entityType="invoice" entityId={invoiceId} />
+              {/* 2026-04-14: email send / viewed metadata now lives in
+                  `InvoiceHeaderCard`'s metadata block. The former
+                  standalone `DeliveryStatusCard` (top status + resend)
+                  and the amber "Invoice has been sent" banner were
+                  removed to avoid duplicate email-status surfaces. */}
 
               {/* Banners — inside left column so right rail starts at top */}
               <QboSyncBanner invoice={invoice} />
@@ -1161,18 +1166,6 @@ export default function InvoiceDetailPage() {
                       <p className="text-xs text-red-600 dark:text-red-400 mt-1">
                         Due date was {invoice.dueDate ? format(new Date(invoice.dueDate), "MMM d, yyyy") : "not set"}.
                       </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {(invoice.status === "awaiting_payment" || invoice.status === "sent" || invoice.status === "partial_paid") && !isBillingLocked(invoice) && !isPastDue && (
-                <div className="p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-md">
-                  <div className="flex items-start gap-2">
-                    <Send className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5" />
-                    <div>
-                      <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Invoice has been sent to client</p>
-                      <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">If you edit billing details, re-send an updated invoice.</p>
                     </div>
                   </div>
                 </div>
@@ -1605,52 +1598,12 @@ export default function InvoiceDetailPage() {
                 </Card>
               )}
 
-              {/* Internal Notes - office-only, not visible to client */}
-              {(invoice.notesInternal || isEditing) && (
-                <Card>
-                  <CardHeader className="pb-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <CardTitle className="text-sm font-medium flex items-center gap-2">
-                        <FileText className="h-4 w-4 text-muted-foreground" />
-                        Internal Notes
-                      </CardTitle>
-                      <span className="text-xs text-muted-foreground">Office only</span>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="pt-0">
-                    {isEditing ? (
-                      <div className="space-y-2">
-                        <Textarea
-                          placeholder="Add internal notes (not visible to client)..."
-                          value={internalNotesDraft}
-                          onChange={(e) => setInternalNotesDraft(e.target.value)}
-                          className="min-h-[80px] text-sm"
-                          data-testid="textarea-internal-notes"
-                        />
-                        {internalNotesDraft !== (invoice.notesInternal || "") && (
-                          <div className="flex justify-end gap-2">
-                            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setInternalNotesDraft(invoice.notesInternal || "")}>
-                              Cancel
-                            </Button>
-                            <Button
-                              variant="outline" size="sm" className="h-7 text-xs"
-                              disabled={updateInvoiceFieldsMutation.isPending}
-                              onClick={() => updateInvoiceFieldsMutation.mutate({ notesInternal: internalNotesDraft })}
-                              data-testid="button-save-internal-notes"
-                            >
-                              {updateInvoiceFieldsMutation.isPending ? "Saving..." : "Save"}
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <p className="text-sm text-muted-foreground whitespace-pre-wrap min-h-[40px]">
-                        {invoice.notesInternal || "No internal notes."}
-                      </p>
-                    )}
-                  </CardContent>
-                </Card>
-              )}
+              {/* 2026-04-14: Internal Notes card removed — the
+                  Notes section already covers the same internal-only
+                  use case; a duplicate "Internal Notes" surface was
+                  redundant. `notes_internal` column remains untouched
+                  in the schema and continues to round-trip through
+                  `updateInvoiceFieldsMutation` for any caller. */}
 
               {/* Client Visibility Settings — local draft + explicit Save */}
               <Collapsible open={visibilityOpen} onOpenChange={setVisibilityOpen}>
@@ -1699,6 +1652,12 @@ export default function InvoiceDetailPage() {
                           onCheckedChange={(checked) => setVisibilityDraft(d => ({ ...d, showBalance: checked }))}
                           data-testid="switch-show-balance" />
                       </div>
+                      <div className="flex items-center justify-between">
+                        <Label htmlFor="showJobDescription" className="text-sm">Show job description</Label>
+                        <Switch id="showJobDescription" checked={visibilityDraft.showJobDescription}
+                          onCheckedChange={(checked) => setVisibilityDraft(d => ({ ...d, showJobDescription: checked }))}
+                          data-testid="switch-show-job-description" />
+                      </div>
                       {/* Save/Reset — only visible when draft differs from server state */}
                       {isVisibilityDirty && (
                         <div className="flex justify-end gap-2 pt-2 border-t">
@@ -1728,6 +1687,9 @@ export default function InvoiceDetailPage() {
               ) : (
                 <ReferenceFieldsSection entityType="invoice" entityId={invoiceId!} />
               )}
+
+              {/* Activity — bottom of rail; reference history. */}
+              <ActivityCard entityType="invoice" entityId={invoiceId!} />
             </div>
           </div>
         </div>

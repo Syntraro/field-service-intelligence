@@ -579,8 +579,11 @@ function AppContent() {
     setAddClientModalOpen(true);
   };
 
+  // 2026-04-14: Expanded sidebar width — second-pass trim to 154px (9.625rem).
+  // This override is the authoritative value; the fallback in ui/sidebar.tsx only
+  // applies when no style prop is passed to SidebarProvider.
   const style = {
-    "--sidebar-width": "12rem",
+    "--sidebar-width": "9.625rem",
     "--sidebar-width-icon": "3rem",
   };
 

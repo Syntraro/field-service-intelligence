@@ -172,15 +172,15 @@ function JobRow({ job, locationLabel, onNavigate }: {
         <span className="text-slate-300 mx-1">—</span>
         <span className="font-medium text-slate-700">{job.summary}</span>
         {locationLabel && (
-          <p className="text-[10px] text-slate-400 truncate">{locationLabel}</p>
+          <p className="text-[11px] text-slate-400 truncate">{locationLabel}</p>
         )}
         {!locationLabel && job.scheduledStart && (
-          <p className="text-[10px] text-slate-400">{format(new Date(job.scheduledStart), "MMM dd, yyyy")}</p>
+          <p className="text-[11px] text-slate-400">{format(new Date(job.scheduledStart), "MMM dd, yyyy")}</p>
         )}
       </div>
       <Badge
         variant={overdue ? "destructive" : (display.variant as any)}
-        className="text-[10px] flex-shrink-0 ml-2"
+        className="text-[11px] flex-shrink-0 ml-2"
       >
         {overdue ? "Overdue" : display.label}
       </Badge>
@@ -213,7 +213,7 @@ function ActiveWorkSection({ jobs, locationMap, emptyLabel, onNavigate, limit = 
     <div>
       <div className="flex items-center justify-between mb-1.5">
         <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Active Work</h3>
-        <span className="text-[10px] text-slate-400">{sorted.length} jobs</span>
+        <span className="text-[11px] text-slate-400">{sorted.length} jobs</span>
       </div>
       {sorted.length === 0 ? (
         <p className="text-xs text-slate-400 py-4 text-center">{emptyLabel || "No active work"}</p>
@@ -713,10 +713,10 @@ export default function ClientDetailPage() {
             <div className="flex items-center gap-2.5">
               <h1 className="text-2xl font-bold text-slate-900 truncate">{companyName}</h1>
               {parentCompany?.isActive === false && (
-                <Badge className="bg-slate-100 text-slate-500 border border-slate-200 text-[10px] px-1.5 py-0">Inactive</Badge>
+                <Badge className="bg-slate-100 text-slate-500 border border-slate-200 text-[11px] px-1.5 py-0">Inactive</Badge>
               )}
               {companyTags.length > 0 && companyTags.map(tag => (
-                <span key={tag.id} className="inline-flex items-center rounded-full px-1.5 py-0 text-[10px] font-medium text-white" style={{ backgroundColor: tag.color }}>{tag.name}</span>
+                <span key={tag.id} className="inline-flex items-center rounded-full px-1.5 py-0 text-[11px] font-medium text-white" style={{ backgroundColor: tag.color }}>{tag.name}</span>
               ))}
             </div>
             <p className="text-xs text-slate-500 mt-0.5">{locations.length} location{locations.length !== 1 ? "s" : ""}</p>
@@ -773,8 +773,8 @@ export default function ClientDetailPage() {
               </div>
             ) : (
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-600">Locations</span>
-                <span className="text-[10px] text-slate-500 tabular-nums">{locations.length}</span>
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Locations</span>
+                <span className="text-[11px] text-slate-500 tabular-nums">{locations.length}</span>
               </div>
             )}
           </div>
@@ -816,13 +816,13 @@ export default function ClientDetailPage() {
                         {loc.isPrimary && <Star className="h-2.5 w-2.5 text-amber-500 fill-amber-500 flex-shrink-0" />}
                       </div>
                       {loc.address && (
-                        <p className="text-[10px] text-slate-500 truncate mt-0.5">
+                        <p className="text-[11px] text-slate-500 truncate mt-0.5">
                           {[loc.address, loc.city].filter(Boolean).join(", ")}
                         </p>
                       )}
                     </div>
                     {locActiveCount > 0 && (
-                      <span className={`text-[10px] font-medium px-1.5 py-0 rounded flex-shrink-0 ${
+                      <span className={`text-[11px] font-medium px-1.5 py-0 rounded flex-shrink-0 ${
                         isSelected ? "bg-[#C2E974] text-[#5F9442]" : "bg-slate-100 text-slate-500"
                       }`}>
                         {locActiveCount}
@@ -836,7 +836,7 @@ export default function ClientDetailPage() {
                 {locationSearch ? `No match for "${locationSearch}"` : (
                   <div className="space-y-2">
                     <p>No locations yet</p>
-                    <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => setAddLocationDialogOpen(true)}>
+                    <Button variant="outline" size="sm" className="h-6 text-[11px]" onClick={() => setAddLocationDialogOpen(true)}>
                       <Plus className="mr-1 h-3 w-3" />Add Location
                     </Button>
                   </div>
@@ -1511,7 +1511,7 @@ function ClientActivityCompact({ companyId }: { companyId?: string }) {
           <div className="h-1.5 w-1.5 rounded-full bg-slate-300 flex-shrink-0 mt-1.5" />
           <div className="flex-1 min-w-0">
             <p className="text-foreground truncate">{evt.description || evt.action || "Event"}</p>
-            <p className="text-muted-foreground text-[10px]">
+            <p className="text-muted-foreground text-[11px]">
               {evt.createdAt ? format(new Date(evt.createdAt), "MMM dd, h:mm a") : ""}
             </p>
           </div>
@@ -1567,7 +1567,7 @@ function LocOverviewTab({
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Equipment</h3>
-            <span className="text-[10px] text-slate-400">{equipment.length} units</span>
+            <span className="text-[11px] text-slate-400">{equipment.length} units</span>
           </div>
           <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
             {equipment.slice(0, 5).map(e => (
@@ -1577,7 +1577,7 @@ function LocOverviewTab({
               </div>
             ))}
             {equipment.length > 5 && (
-              <p className="text-[10px] text-slate-400 py-1.5 text-center">+{equipment.length - 5} more</p>
+              <p className="text-[11px] text-slate-400 py-1.5 text-center">+{equipment.length - 5} more</p>
             )}
           </div>
         </div>
@@ -1593,7 +1593,7 @@ function LocJobsTab({ jobs, onNavigate }: { jobs: Job[]; onNavigate: (p: string)
     <div>
       <div className="flex items-center justify-between mb-1.5">
         <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Jobs</h3>
-        <span className="text-[10px] text-slate-400">{jobs.length} total</span>
+        <span className="text-[11px] text-slate-400">{jobs.length} total</span>
       </div>
       <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
         {jobs.map(j => (
@@ -1619,7 +1619,7 @@ function LocInvoicesTab({ invoices, onNavigate }: { invoices: Invoice[]; onNavig
     <div>
       <div className="flex items-center justify-between mb-1.5">
         <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Invoices</h3>
-        <span className="text-[10px] text-slate-400">{invoices.length} total</span>
+        <span className="text-[11px] text-slate-400">{invoices.length} total</span>
       </div>
       <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
         {invoices.map(inv => (
@@ -1627,10 +1627,10 @@ function LocInvoicesTab({ invoices, onNavigate }: { invoices: Invoice[]; onNavig
             onClick={() => onNavigate(`/invoices/${inv.id}`)}>
             <div>
               <div className="font-medium text-slate-700">INV #{inv.invoiceNumber || inv.id.slice(0, 6)}</div>
-              <div className="text-slate-400 text-[10px]">{inv.issueDate ? format(new Date(inv.issueDate), "MMM dd, yyyy") : ""}</div>
+              <div className="text-slate-400 text-[11px]">{inv.issueDate ? format(new Date(inv.issueDate), "MMM dd, yyyy") : ""}</div>
             </div>
             <div className="text-right">
-              <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${statusCls(inv.status)}`}>{inv.status}</span>
+              <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium capitalize ${statusCls(inv.status)}`}>{inv.status}</span>
               <p className="text-slate-500 text-[11px]">{fmt.format(Number(inv.total ?? 0))}</p>
             </div>
           </div>
@@ -1656,7 +1656,7 @@ function LocQuotesTab({ quotes, onNavigate }: { quotes: EnrichedQuote[]; onNavig
     <div>
       <div className="flex items-center justify-between mb-1.5">
         <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Quotes</h3>
-        <span className="text-[10px] text-slate-400">{quotes.length} total</span>
+        <span className="text-[11px] text-slate-400">{quotes.length} total</span>
       </div>
       <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
         {quotes.map(q => (
@@ -1664,10 +1664,10 @@ function LocQuotesTab({ quotes, onNavigate }: { quotes: EnrichedQuote[]; onNavig
             onClick={() => onNavigate(`/quotes/${q.id}`)}>
             <div>
               <div className="font-medium text-slate-700">{(q as any).quoteNumber || `Q-${q.id.slice(0, 6)}`}{q.title ? ` — ${q.title}` : ""}</div>
-              <div className="text-slate-400 text-[10px]">{q.updatedAt ? format(new Date(q.updatedAt), "MMM dd, yyyy") : ""}</div>
+              <div className="text-slate-400 text-[11px]">{q.updatedAt ? format(new Date(q.updatedAt), "MMM dd, yyyy") : ""}</div>
             </div>
             <div className="text-right">
-              <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${statusCls(q.status)}`}>{q.status}</span>
+              <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium capitalize ${statusCls(q.status)}`}>{q.status}</span>
               <p className="text-slate-500 text-[11px]">{fmt.format(Number(q.total ?? 0))}</p>
             </div>
           </div>
@@ -1719,8 +1719,8 @@ function LocEquipmentTab({
       <div className="flex items-center justify-between mb-1.5">
         <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Equipment</h3>
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-slate-400">{equipment.length} units</span>
-          <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={onAdd}>
+          <span className="text-[11px] text-slate-400">{equipment.length} units</span>
+          <Button variant="outline" size="sm" className="h-6 text-[11px]" onClick={onAdd}>
             <Plus className="mr-1 h-3 w-3" />Add
           </Button>
         </div>
@@ -1735,14 +1735,14 @@ function LocEquipmentTab({
               <div className="flex items-center justify-between">
                 <div>
                   <div className="font-medium text-slate-700">{eq.name}</div>
-                  <div className="text-slate-400 text-[10px]">{eq.equipmentType || "—"}</div>
+                  <div className="text-slate-400 text-[11px]">{eq.equipmentType || "—"}</div>
                 </div>
                 <Button variant="ghost" size="icon" className="h-6 w-6 text-slate-400 hover:text-destructive"
                   onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(eq.id); }}>
                   <Trash2 className="h-3 w-3" />
                 </Button>
               </div>
-              <div className="mt-0.5 text-[10px] text-slate-400">
+              <div className="mt-0.5 text-[11px] text-slate-400">
                 {eq.manufacturer || ""} {eq.modelNumber || ""} {(eq.manufacturer || eq.modelNumber) && eq.serialNumber ? "•" : ""} S/N: {eq.serialNumber || "—"}
               </div>
             </div>
@@ -1752,7 +1752,7 @@ function LocEquipmentTab({
 
       {/* Show archived toggle */}
       <button onClick={() => setShowArchived(v => !v)}
-        className="mt-2 text-[10px] font-medium text-slate-400 hover:text-slate-600 transition-colors">
+        className="mt-2 text-[11px] font-medium text-slate-400 hover:text-slate-600 transition-colors">
         {showArchived ? "Hide archived" : "Show archived"}
       </button>
 
@@ -1764,11 +1764,11 @@ function LocEquipmentTab({
               <div className="flex items-center justify-between">
                 <div>
                   <div className="font-medium text-slate-500">{eq.name}</div>
-                  <div className="text-slate-400 text-[10px]">{eq.equipmentType || "—"}</div>
+                  <div className="text-slate-400 text-[11px]">{eq.equipmentType || "—"}</div>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Badge variant="secondary" className="text-[9px] px-1 py-0">Archived</Badge>
-                  <Button variant="outline" size="sm" className="h-5 text-[10px] px-2"
+                  <Button variant="outline" size="sm" className="h-5 text-[11px] px-2"
                     onClick={() => setConfirmRestoreId(eq.id)}>
                     Restore
                   </Button>
@@ -1779,7 +1779,7 @@ function LocEquipmentTab({
         </div>
       )}
       {showArchived && archivedList.length === 0 && !archivedQuery.isLoading && (
-        <p className="text-[10px] text-slate-400 mt-1">No archived equipment</p>
+        <p className="text-[11px] text-slate-400 mt-1">No archived equipment</p>
       )}
 
       {/* Delete confirmation dialog */}
@@ -1841,8 +1841,8 @@ function LocPartsTab({ pmParts, onAdd }: { pmParts: PMPartWithItem[]; onAdd: () 
       <div className="flex items-center justify-between mb-1.5">
         <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">PM Parts</h3>
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-slate-400">{pmParts.length} items</span>
-          <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={onAdd}>
+          <span className="text-[11px] text-slate-400">{pmParts.length} items</span>
+          <Button variant="outline" size="sm" className="h-6 text-[11px]" onClick={onAdd}>
             <Plus className="mr-1 h-3 w-3" />Add
           </Button>
         </div>
@@ -1855,7 +1855,7 @@ function LocPartsTab({ pmParts, onAdd }: { pmParts: PMPartWithItem[]; onAdd: () 
             <div key={p.id} className="flex items-center justify-between py-2 px-3 text-xs">
               <div>
                 <div className="font-medium text-slate-700">{p.itemName || "Unknown Part"}</div>
-                {p.itemSku && <div className="text-slate-400 text-[10px]">{p.itemSku}</div>}
+                {p.itemSku && <div className="text-slate-400 text-[11px]">{p.itemSku}</div>}
               </div>
               <span className="text-slate-500 font-medium text-[11px]">x{p.quantityPerVisit}</span>
             </div>
@@ -1882,7 +1882,7 @@ function ClientAllJobsTab({ jobs, locations, onNavigate }: { jobs: Job[]; locati
       <div>
         <div className="flex items-center justify-between mb-1.5">
           <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Active</h3>
-          <span className="text-[10px] text-slate-400">{activeJobs.length} jobs</span>
+          <span className="text-[11px] text-slate-400">{activeJobs.length} jobs</span>
         </div>
         {activeJobs.length === 0 ? (
           <p className="text-xs text-slate-400 py-4 text-center">No active jobs</p>
@@ -1898,7 +1898,7 @@ function ClientAllJobsTab({ jobs, locations, onNavigate }: { jobs: Job[]; locati
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Archived</h3>
-            <span className="text-[10px] text-slate-400">{archivedJobs.length} jobs</span>
+            <span className="text-[11px] text-slate-400">{archivedJobs.length} jobs</span>
           </div>
           <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
             {archivedJobs.map(j => (
@@ -1918,7 +1918,7 @@ function ClientAllInvoicesTab({ invoices, locations, onNavigate }: { invoices: I
     <div>
       <div className="flex items-center justify-between mb-1.5">
         <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Invoices</h3>
-        <span className="text-[10px] text-slate-400">{invoices.length} total</span>
+        <span className="text-[11px] text-slate-400">{invoices.length} total</span>
       </div>
       <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
         {invoices.map(inv => (
@@ -1927,11 +1927,11 @@ function ClientAllInvoicesTab({ invoices, locations, onNavigate }: { invoices: I
             <div>
               <span className="font-medium text-slate-700">INV #{inv.invoiceNumber || inv.id.slice(0, 6)}</span>
               <span className="text-slate-500 ml-2">{fmt.format(Number(inv.total ?? 0))}</span>
-              <p className="text-slate-400 text-[10px]">{locMap.get(inv.locationId) || ""}</p>
+              <p className="text-slate-400 text-[11px]">{locMap.get(inv.locationId) || ""}</p>
             </div>
             {(() => {
               const badge = getInvoiceStatusBadge(inv.status, false);
-              return <Badge variant={badge.variant} className="text-[10px] flex-shrink-0">{badge.label}</Badge>;
+              return <Badge variant={badge.variant} className="text-[11px] flex-shrink-0">{badge.label}</Badge>;
             })()}
           </div>
         ))}
@@ -1947,7 +1947,7 @@ function ClientAllQuotesTab({ quotes, locations, onNavigate }: { quotes: Enriche
     <div>
       <div className="flex items-center justify-between mb-1.5">
         <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Quotes</h3>
-        <span className="text-[10px] text-slate-400">{quotes.length} total</span>
+        <span className="text-[11px] text-slate-400">{quotes.length} total</span>
       </div>
       <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
         {quotes.map(q => (
@@ -1957,9 +1957,9 @@ function ClientAllQuotesTab({ quotes, locations, onNavigate }: { quotes: Enriche
               <span className="font-medium text-slate-700">{(q as any).quoteNumber || `Q-${q.id.slice(0, 6)}`}</span>
               {q.title && <span className="text-slate-500 ml-1">— {q.title}</span>}
               <span className="text-slate-500 ml-2">{fmt.format(Number(q.total ?? 0))}</span>
-              <p className="text-slate-400 text-[10px]">{q.locationId ? locMap.get(q.locationId) || "" : ""}</p>
+              <p className="text-slate-400 text-[11px]">{q.locationId ? locMap.get(q.locationId) || "" : ""}</p>
             </div>
-            <Badge variant="outline" className="text-[10px] capitalize flex-shrink-0">{q.status}</Badge>
+            <Badge variant="outline" className="text-[11px] capitalize flex-shrink-0">{q.status}</Badge>
           </div>
         ))}
       </div>

@@ -1432,6 +1432,22 @@ router.patch("/:jobId/notes/:noteId", requireRole(MANAGER_ROLES), asyncHandler(a
   res.json(note);
 }));
 
+// DELETE /api/jobs/:jobId/notes/:noteId/attachments/:attachmentId - Detach a single attachment
+// 2026-04-13: canonical per-attachment removal for the unified JobNoteDialog.
+// Cascade on note delete stays the only path to drop all attachments.
+router.delete(
+  "/:jobId/notes/:noteId/attachments/:attachmentId",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const { jobNoteAttachmentRepository } = await import("../storage/jobNoteAttachments");
+    const removed = await jobNoteAttachmentRepository.detach(companyId, req.params.attachmentId);
+    if (!removed) throw createError(404, "Attachment not found");
+    emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: req.params.jobId, ts: new Date().toISOString() });
+    res.json({ success: true });
+  })
+);
+
 // DELETE /api/jobs/:jobId/notes/:noteId - Delete job note
 router.delete("/:jobId/notes/:noteId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;

@@ -689,7 +689,7 @@ function QueueItemRow({ item, onClick, showCheckbox, isSelected, isEligible, onT
         </div>
       </TableCell>
       <TableCell>
-        <Badge variant="outline" className="text-[10px] px-1.5 py-0 whitespace-nowrap">{sourceType.short}</Badge>
+        <Badge variant="outline" className="text-[11px] px-1.5 py-0 whitespace-nowrap">{sourceType.short}</Badge>
       </TableCell>
       <TableCell className={listPrimaryClass}>{item.templateTitle}</TableCell>
       <TableCell className={`${listSecondaryClass} whitespace-nowrap`}>{item.windowStart} — {item.windowEnd}</TableCell>
@@ -739,9 +739,9 @@ function GroupSection({ group, onItemClick, selectedIds, onToggle, onToggleGroup
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-semibold text-sm truncate">{group.label}</span>
-              <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{group.items.length} item{group.items.length !== 1 ? "s" : ""}</Badge>
-              {group.overdue > 0 && <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700 text-[10px] px-1.5 py-0">{group.overdue} overdue</Badge>}
-              {group.dueSoon > 0 && <Badge variant="outline" className="border-orange-300 bg-orange-50 text-orange-700 text-[10px] px-1.5 py-0">{group.dueSoon} due soon</Badge>}
+              <Badge variant="secondary" className="text-[11px] px-1.5 py-0">{group.items.length} item{group.items.length !== 1 ? "s" : ""}</Badge>
+              {group.overdue > 0 && <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700 text-[11px] px-1.5 py-0">{group.overdue} overdue</Badge>}
+              {group.dueSoon > 0 && <Badge variant="outline" className="border-orange-300 bg-orange-50 text-orange-700 text-[11px] px-1.5 py-0">{group.dueSoon} due soon</Badge>}
             </div>
             {group.sublabel && <p className="text-xs text-muted-foreground mt-0.5 truncate">{group.sublabel}</p>}
           </div>
@@ -1015,7 +1015,7 @@ function UpcomingTab() {
           <Zap className="h-3.5 w-3.5" />
           Due Now
           {counts.needsGeneration > 0 && (
-            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 ml-1">{counts.needsGeneration}</Badge>
+            <Badge variant="secondary" className="text-[11px] px-1.5 py-0 ml-1">{counts.needsGeneration}</Badge>
           )}
         </button>
         <button
@@ -1027,7 +1027,7 @@ function UpcomingTab() {
           <Clock className="h-3.5 w-3.5" />
           Upcoming
           {upcomingPlanningItems.length > 0 && (
-            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 ml-1">{upcomingPlanningItems.length}</Badge>
+            <Badge variant="secondary" className="text-[11px] px-1.5 py-0 ml-1">{upcomingPlanningItems.length}</Badge>
           )}
         </button>
       </div>

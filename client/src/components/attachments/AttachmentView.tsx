@@ -99,7 +99,7 @@ export function AttachmentView({
       )}
       <span className="text-[11px] truncate flex-1">{filename}</span>
       <Download className="h-3 w-3 text-muted-foreground shrink-0" />
-      {err && <span className="text-[10px] text-red-500">{err}</span>}
+      {err && <span className="text-[11px] text-red-500">{err}</span>}
     </button>
   );
 }

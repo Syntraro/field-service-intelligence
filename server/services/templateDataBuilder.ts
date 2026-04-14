@@ -47,9 +47,11 @@ function formatMoney(amount: string | number | null | undefined): string {
   if (amount === null || amount === undefined) return "";
   const num = typeof amount === "string" ? parseFloat(amount) : amount;
   if (typeof num !== "number" || !Number.isFinite(num)) return "";
-  // Two-decimal, no currency symbol — the template owns the "$" prefix
-  // (matches the system-default invoice body: "$${{INVOICE_TOTAL}}").
-  return num.toFixed(2);
+  // Two-decimal with leading "$". The 2026-04-13 default-template refresh
+  // removed the literal "$" from every body, so money tokens now carry the
+  // currency symbol themselves and render as "$250.00" in both preview and
+  // real sends.
+  return "$" + num.toFixed(2);
 }
 
 function formatDate(value: Date | string | null | undefined): string {
@@ -57,6 +59,43 @@ function formatDate(value: Date | string | null | undefined): string {
   const d = value instanceof Date ? value : typeof value === "string" ? parseISO(value) : null;
   if (!d || !isValid(d)) return "";
   return format(d, "MMMM d, yyyy");
+}
+
+/**
+ * Preview-only sample data (2026-04-13). Used by the Settings page preview
+ * pane when no real entity is bound to the editor. Renders through the same
+ * canonical `templateRenderer` — never forks the render path, never touches
+ * real send flows. Keys mirror the catalog in `constants/templateVariables.ts`
+ * so every token that any system-default template references has a sample
+ * value.
+ */
+export function buildPreviewSampleData(
+  entityType: "invoice" | "quote" | "job",
+): Record<string, string> {
+  const shared = {
+    COMPANY_NAME: "Your Company",
+    CLIENT_COMPANY_NAME: "Acme Corp",
+  };
+  if (entityType === "invoice") {
+    return {
+      ...shared,
+      INVOICE_NUMBER: "1234",
+      INVOICE_TOTAL: "$250.00",
+      INVOICE_DUE_DATE: "January 15, 2026",
+    };
+  }
+  if (entityType === "quote") {
+    return {
+      ...shared,
+      QUOTE_NUMBER: "Q-1234",
+      QUOTE_TOTAL: "$250.00",
+    };
+  }
+  return {
+    ...shared,
+    JOB_NUMBER: "J-1234",
+    JOB_DATE: "January 15, 2026",
+  };
 }
 
 export const templateDataBuilder = {

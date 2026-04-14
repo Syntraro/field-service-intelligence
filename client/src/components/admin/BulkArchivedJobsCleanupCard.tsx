@@ -347,7 +347,7 @@ export function BulkArchivedJobsCleanupCard() {
                           </td>
                           <td className="px-2 py-1">
                             {row.invoiceLinked ? (
-                              <Badge variant="destructive" className="text-[10px] h-5">linked</Badge>
+                              <Badge variant="destructive" className="text-[11px] h-5">linked</Badge>
                             ) : (
                               <span className="text-muted-foreground">—</span>
                             )}

@@ -186,7 +186,7 @@ export function ReferenceFieldsSection({
                     className={!f.active ? "bg-muted" : ""}
                   />
                   {!f.active && (
-                    <p className="text-[10px] text-muted-foreground">This field is inactive (read-only)</p>
+                    <p className="text-[11px] text-muted-foreground">This field is inactive (read-only)</p>
                   )}
                 </div>
               ))

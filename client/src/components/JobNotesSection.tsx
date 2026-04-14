@@ -1,13 +1,10 @@
 import { useState, useEffect } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { MessageSquare, Trash2 } from "lucide-react";
-import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
-import { AddJobNoteDialog } from "./AddJobNoteDialog";
-import { AttachmentView } from "./attachments/AttachmentView";
+import { MessageSquare } from "lucide-react";
+import { JobNoteDialog, type ExistingJobNote } from "./JobNoteDialog";
+import { NoteAttachmentStrip } from "./attachments/NoteAttachmentStrip";
 
 /** Attachment metadata returned from API. */
 interface NoteAttachment {
@@ -54,8 +51,10 @@ interface JobNotesSectionProps {
 }
 
 export default function JobNotesSection({ jobId, embedded = false, onCountChange, hideAddButton = false, hideHeader = false, showCount = true }: JobNotesSectionProps) {
-  const { toast } = useToast();
-  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  // Canonical dialog: `editingNote === null` with `dialogOpen === true` → create mode;
+  // `editingNote` set → edit mode. Single modal instance handles both.
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingNote, setEditingNote] = useState<ExistingJobNote | null>(null);
 
   const { data: notes = [], isLoading } = useQuery<JobNote[]>({
     queryKey: ["/api/jobs", jobId, "notes"],
@@ -66,30 +65,33 @@ export default function JobNotesSection({ jobId, embedded = false, onCountChange
     },
   });
 
-  // Report count to parent when notes change
   useEffect(() => {
     onCountChange?.(notes.length);
   }, [notes.length, onCountChange]);
 
-  const deleteMutation = useMutation({
-    mutationFn: async (noteId: string) => {
-      await apiRequest(`/api/jobs/${jobId}/notes/${noteId}`, {
-        method: "DELETE",
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "notes"] });
-      toast({ title: "Note Deleted", description: "The note has been removed." });
-    },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to delete note.", variant: "destructive" });
-    },
-  });
+  const openCreate = () => {
+    setEditingNote(null);
+    setDialogOpen(true);
+  };
+
+  const openEdit = (note: JobNote) => {
+    setEditingNote({
+      id: note.id,
+      noteText: note.noteText,
+      attachments: (note.attachments ?? []).map((a) => ({
+        id: a.id,
+        noteId: a.noteId,
+        fileId: a.fileId,
+        originalName: a.originalName,
+        mimeType: a.mimeType,
+        size: a.size,
+      })),
+    });
+    setDialogOpen(true);
+  };
 
   const getUserName = (note: JobNote) => note.userName;
 
-  // Header bar: "Notes (X)" on left, "+ Add Note" on right
-  // The sidebar collapse arrow is rendered by the parent (JobDetailPage), not here.
   const header = (
     <div
       className="flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] border-b border-[#e2e8f0]"
@@ -102,7 +104,7 @@ export default function JobNotesSection({ jobId, embedded = false, onCountChange
       {!hideAddButton && (
         <button
           className="text-xs text-[#76B054] hover:text-[#5F9442] font-medium"
-          onClick={() => setIsAddDialogOpen(true)}
+          onClick={openCreate}
           data-testid="button-add-note"
         >
           + Add Note
@@ -111,7 +113,6 @@ export default function JobNotesSection({ jobId, embedded = false, onCountChange
     </div>
   );
 
-  // Notes list — always visible (no vertical collapse)
   const body = (
     <div className={embedded ? "px-3 pb-3 pt-1" : "border-t px-3 pb-3 pt-2"}>
       {isLoading ? (
@@ -126,7 +127,16 @@ export default function JobNotesSection({ jobId, embedded = false, onCountChange
           {notes.map((note, idx) => (
             <div
               key={note.id}
-              className={`group py-3 px-1 ${idx > 0 ? "border-t border-slate-200" : ""}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => openEdit(note)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  openEdit(note);
+                }
+              }}
+              className={`group py-3 px-1 cursor-pointer rounded hover:bg-slate-50 transition-colors ${idx > 0 ? "border-t border-slate-200" : ""}`}
               data-testid={`note-${note.id}`}
             >
               <div className="flex items-center justify-between gap-2">
@@ -134,26 +144,18 @@ export default function JobNotesSection({ jobId, embedded = false, onCountChange
                   <span className="font-semibold text-slate-700">{getUserName(note)}</span>
                   {" · "}
                   {format(new Date(note.createdAt), "MMM d, h:mm a")}
+                  {note.updatedAt && note.updatedAt !== note.createdAt && (
+                    <span className="ml-1 text-[11px] text-slate-400">(edited)</span>
+                  )}
                 </span>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
-                  onClick={() => deleteMutation.mutate(note.id)}
-                  disabled={deleteMutation.isPending}
-                  data-testid={`button-delete-note-${note.id}`}
-                >
-                  <Trash2 className="h-3 w-3" />
-                </Button>
               </div>
               <p className="text-[14px] leading-5 whitespace-pre-wrap mt-0.5 text-slate-800">{note.noteText}</p>
 
-              {/* Attachments — AttachmentView resolves provider-specific URLs on demand */}
               {note.attachments && note.attachments.length > 0 && (
-                <div className="mt-1.5 space-y-1">
-                  {note.attachments.map((att) => (
-                    <AttachmentView key={att.id} attachment={att} />
-                  ))}
+                // Stop clicks inside the attachment strip (thumbnail → lightbox,
+                // chip → file open) from bubbling up to the note-edit handler.
+                <div className="mt-1.5" onClick={(e) => e.stopPropagation()}>
+                  <NoteAttachmentStrip attachments={note.attachments} />
                 </div>
               )}
             </div>
@@ -177,10 +179,14 @@ export default function JobNotesSection({ jobId, embedded = false, onCountChange
         </Card>
       )}
 
-      <AddJobNoteDialog
+      <JobNoteDialog
         jobId={jobId}
-        open={isAddDialogOpen}
-        onOpenChange={setIsAddDialogOpen}
+        note={editingNote}
+        open={dialogOpen}
+        onOpenChange={(open) => {
+          setDialogOpen(open);
+          if (!open) setEditingNote(null);
+        }}
       />
     </>
   );

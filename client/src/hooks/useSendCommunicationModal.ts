@@ -17,6 +17,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 
+/**
+ * 2026-04-13 (Commit C): file picker descriptor for a staged image
+ * attachment. `fileId` is populated once the R2 upload finalizes.
+ */
+export interface SendModalAttachment {
+  id: string; // client-side uid for list keying
+  fileId: string;
+  filename: string;
+  sizeBytes: number;
+  mimeType: string;
+}
+
+export const MAX_SEND_IMAGE_ATTACHMENTS = 5;
+
 export type CommunicationEntityType = "invoice" | "quote" | "job";
 
 interface EntityEndpoints {
@@ -68,8 +82,11 @@ export interface UseSendCommunicationModalOptions {
 export interface UseSendCommunicationModalResult {
   // State
   recipients: string[];
+  cc: string[];
   subject: string;
   body: string;
+  attachPdf: boolean;
+  attachments: SendModalAttachment[];
   loading: boolean;
   sending: boolean;
   error: string | null;
@@ -80,6 +97,11 @@ export interface UseSendCommunicationModalResult {
   setBody: (next: string) => void;
   addRecipient: (email: string) => void;
   removeRecipient: (email: string) => void;
+  addCc: (email: string) => void;
+  removeCc: (email: string) => void;
+  setAttachPdf: (next: boolean) => void;
+  addAttachment: (attachment: SendModalAttachment) => void;
+  removeAttachment: (id: string) => void;
 
   // Actions
   send: () => Promise<{ success: boolean }>;
@@ -116,8 +138,11 @@ export function useSendCommunicationModal(
   const endpoints = resolveEndpoints(entityType, entityId);
 
   const [recipients, setRecipients] = useState<string[]>([]);
+  const [cc, setCc] = useState<string[]>([]);
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
+  const [attachPdf, setAttachPdf] = useState<boolean>(true);
+  const [attachments, setAttachments] = useState<SendModalAttachment[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastDispatch, setLastDispatch] =
@@ -134,8 +159,12 @@ export function useSendCommunicationModal(
     if (!isOpen) {
       loadedForRef.current = null;
       setError(null);
-      // Intentionally do NOT reset recipients/subject/body here — the parent
-      // unmounts the modal on close; the next mount will refetch.
+      // Reset transient per-send state so reopening never leaks the previous
+      // session's CC list or image attachments. Recipients/subject/body are
+      // refetched on open so they don't need explicit reset here.
+      setCc([]);
+      setAttachPdf(true);
+      setAttachments([]);
     }
   }, [isOpen]);
 
@@ -185,17 +214,50 @@ export function useSendCommunicationModal(
     setRecipients((prev) => prev.filter((e) => e !== email));
   }, []);
 
+  const addCc = useCallback((email: string) => {
+    const norm = normalizeEmail(email);
+    if (!norm) return;
+    setCc((prev) => (prev.includes(norm) ? prev : [...prev, norm]));
+  }, []);
+
+  const removeCc = useCallback((email: string) => {
+    setCc((prev) => prev.filter((e) => e !== email));
+  }, []);
+
+  const addAttachment = useCallback((a: SendModalAttachment) => {
+    setAttachments((prev) => {
+      if (prev.some((p) => p.fileId === a.fileId)) return prev;
+      return [...prev, a].slice(0, MAX_SEND_IMAGE_ATTACHMENTS);
+    });
+  }, []);
+
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
+  }, []);
+
   const sendMutation = useMutation({
     mutationFn: async () => {
+      // Invoice send flow carries CC + attach-PDF toggle + image attachment
+      // ids. Quote/Job endpoints ignore those fields today (the shared hook
+      // always forwards them; the server routes that don't accept them
+      // drop through `passthrough` or are simply unused).
+      const payload: Record<string, unknown> = {
+        recipients,
+        subjectOverride: subject,
+        bodyOverride: body,
+      };
+      if (cc.length > 0) payload.cc = cc;
+      if (entityType === "invoice") {
+        payload.attachPdf = attachPdf;
+        if (attachments.length > 0) {
+          payload.attachmentFileIds = attachments.map((a) => a.fileId);
+        }
+      }
       return await apiRequest<{
         dispatch?: { emailId?: string | null };
       }>(endpoints.sendPath, {
         method: "POST",
-        body: JSON.stringify({
-          recipients,
-          subjectOverride: subject,
-          bodyOverride: body,
-        }),
+        body: JSON.stringify(payload),
       });
     },
   });
@@ -235,8 +297,11 @@ export function useSendCommunicationModal(
 
   return {
     recipients,
+    cc,
     subject,
     body,
+    attachPdf,
+    attachments,
     loading,
     sending: sendMutation.isPending,
     error,
@@ -245,6 +310,11 @@ export function useSendCommunicationModal(
     setBody,
     addRecipient,
     removeRecipient,
+    addCc,
+    removeCc,
+    setAttachPdf,
+    addAttachment,
+    removeAttachment,
     send,
     lastDispatch,
   };

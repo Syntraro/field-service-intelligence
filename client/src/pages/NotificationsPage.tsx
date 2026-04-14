@@ -220,7 +220,7 @@ function NotificationItem({
               >
                 {notification.title}
               </h3>
-              <Badge variant={typeBadge.variant} className="text-[10px] h-5">
+              <Badge variant={typeBadge.variant} className="text-[11px] h-5">
                 {typeBadge.label}
               </Badge>
             </div>
@@ -480,7 +480,7 @@ export default function NotificationsPage() {
                 <TabsTrigger value="unread" className="gap-2">
                   Unread
                   {unreadCount > 0 && (
-                    <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+                    <Badge variant="secondary" className="h-5 px-1.5 text-[11px]">
                       {unreadCount}
                     </Badge>
                   )}

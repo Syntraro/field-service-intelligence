@@ -55,4 +55,11 @@ export interface StorageProvider {
   createPresignedDownload(input: CreatePresignedDownloadInput): Promise<PresignedDownload>;
   headObject(bucket: string, objectKey: string): Promise<HeadObjectResult>;
   deleteObject(bucket: string, objectKey: string): Promise<void>;
+  /**
+   * 2026-04-13 (Commit C): read an object's full body as a Buffer, for
+   * server-side attachment assembly (e.g. attaching an uploaded image to
+   * an outbound email). Callers are expected to enforce their own size
+   * caps before invoking this to avoid OOM on large blobs.
+   */
+  getObjectBuffer(bucket: string, objectKey: string): Promise<Buffer>;
 }

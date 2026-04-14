@@ -58,7 +58,13 @@ export class JobNoteAttachmentRepository extends BaseRepository {
     return row;
   }
 
-  /** Remove a single attachment link. */
+  /**
+   * Remove a single attachment link. Since files are 1:1 with attachments,
+   * detaching is also the trigger to soft-delete the underlying file row
+   * and best-effort remove the R2 blob (2026-04-13 — canonical cleanup).
+   * `deleteFile` is idempotent; a repeat call on a missing / already-
+   * deleted file is a no-op.
+   */
   async detach(companyId: string, attachmentId: string) {
     this.assertCompanyId(companyId);
     this.validateUUID(attachmentId, "attachmentId");
@@ -66,6 +72,12 @@ export class JobNoteAttachmentRepository extends BaseRepository {
       .delete(jobNoteAttachments)
       .where(and(eq(jobNoteAttachments.id, attachmentId), eq(jobNoteAttachments.companyId, companyId)))
       .returning();
+    if (row?.fileId) {
+      // Dynamic import avoids any import cycle between storage repos and
+      // the file service (the service already imports this repo's schema).
+      const { deleteFile } = await import("../services/fileUploadService");
+      await deleteFile(companyId, row.fileId).catch(() => {});
+    }
     return row ?? null;
   }
 }

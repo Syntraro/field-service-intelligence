@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/select";
 import {
   MoreHorizontal, Send, DollarSign, PenTool, RotateCw, Ban, Edit, FileText,
-  Printer, CheckCircle, Undo2, MapPin, Mail, Briefcase,
+  Printer, CheckCircle, MapPin, Mail, Briefcase,
   Check, X, Trash2,
 } from "lucide-react";
 import { Link } from "wouter";
@@ -211,14 +211,14 @@ export function InvoiceHeaderCard({
             <table className="text-left text-xs w-full">
               <tbody>
                 <tr>
-                  <td className="text-[11px] text-slate-400 pr-3 py-0.5 whitespace-nowrap">Invoice #</td>
+                  <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Invoice #</td>
                   <td className="font-semibold text-slate-700 py-0.5">
                     {editingNumber ? (
                       <div className="flex items-center gap-1">
                         <Input value={numberDraft} onChange={(e) => setNumberDraft(e.target.value)}
                           className="w-20 h-5 px-1 text-xs border rounded" autoFocus data-testid="input-invoice-number" />
-                        <button type="button" onClick={handleSaveInvoiceNumber} className="text-primary text-[10px] font-medium" disabled={invoiceNumberPending}>{invoiceNumberPending ? "…" : "✓"}</button>
-                        <button type="button" onClick={() => { setEditingNumber(false); setNumberDraft(invoice.invoiceNumber || ""); }} className="text-muted-foreground text-[10px]">✕</button>
+                        <button type="button" onClick={handleSaveInvoiceNumber} className="text-primary text-[11px] font-medium" disabled={invoiceNumberPending}>{invoiceNumberPending ? "…" : "✓"}</button>
+                        <button type="button" onClick={() => { setEditingNumber(false); setNumberDraft(invoice.invoiceNumber || ""); }} className="text-muted-foreground text-[11px]">✕</button>
                       </div>
                     ) : (
                       <button type="button" className="group cursor-text" onClick={() => { setEditingNumber(true); setNumberDraft(invoice.invoiceNumber || ""); }} data-testid="text-invoice-number">
@@ -230,22 +230,22 @@ export function InvoiceHeaderCard({
                 </tr>
                 {job && (
                   <tr>
-                    <td className="text-[11px] text-slate-400 pr-3 py-0.5 whitespace-nowrap">Job #</td>
+                    <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Job #</td>
                     <td className="py-0.5">
                       <Link href={`/jobs/${job.id}`} className="font-semibold text-primary hover:underline">{job.jobNumber}</Link>
                     </td>
                   </tr>
                 )}
                 <tr>
-                  <td className="text-[11px] text-slate-400 pr-3 py-0.5 whitespace-nowrap">Issued</td>
+                  <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Issued</td>
                   <td className="text-slate-600 py-0.5">
                     {isEditing && editingIssueDate ? (
                       <div className="flex items-center gap-1">
                         <Input type="date" value={issueDateDraft} onChange={(e) => setIssueDateDraft(e.target.value)}
                           className="w-28 h-5 px-1 text-xs border rounded" data-testid="input-issue-date" />
-                        <button type="button" className="text-primary text-[10px]" disabled={issueDatePending}
+                        <button type="button" className="text-primary text-[11px]" disabled={issueDatePending}
                           onClick={() => { if (issueDateDraft && onUpdateIssueDate) { onUpdateIssueDate(issueDateDraft); setEditingIssueDate(false); } }}>✓</button>
-                        <button type="button" className="text-muted-foreground text-[10px]" onClick={() => { setEditingIssueDate(false); setIssueDateDraft(issueDateForInput); }}>✕</button>
+                        <button type="button" className="text-muted-foreground text-[11px]" onClick={() => { setEditingIssueDate(false); setIssueDateDraft(issueDateForInput); }}>✕</button>
                       </div>
                     ) : (
                       <span className="group" onClick={isEditing ? () => setEditingIssueDate(true) : undefined} style={isEditing ? { cursor: "text" } : undefined}>
@@ -256,12 +256,35 @@ export function InvoiceHeaderCard({
                   </td>
                 </tr>
                 <tr>
-                  <td className="text-[11px] text-slate-400 pr-3 py-0.5 whitespace-nowrap">Due</td>
+                  <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Due</td>
                   <td className={`py-0.5 ${isPastDue ? "text-destructive font-medium" : "text-slate-600"}`}>
                     {invoice.dueDate ? format(new Date(invoice.dueDate), "MMM d, yyyy") : "—"}
-                    {isPastDue && <span className="text-[10px] ml-1">(Past due)</span>}
+                    {isPastDue && <span className="text-[11px] ml-1">(Past due)</span>}
                   </td>
                 </tr>
+                {/* 2026-04-14: single-row email metadata. `Email sent`
+                    carries either the real sent date or "Not sent".
+                    `Email viewed` renders only when a real viewed
+                    timestamp exists on the invoice — see follow-up
+                    audit: viewed/open tracking is not yet wired
+                    end-to-end, so this row will always be suppressed
+                    until the pipeline lands. */}
+                <tr>
+                  <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Email sent</td>
+                  <td className="text-slate-600 py-0.5" data-testid="invoice-email-sent-at">
+                    {(invoice as any).sentAt
+                      ? format(new Date((invoice as any).sentAt), "MMM d, yyyy")
+                      : "Not sent"}
+                  </td>
+                </tr>
+                {(invoice as any).viewedAt && (
+                  <tr>
+                    <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Email viewed</td>
+                    <td className="text-slate-600 py-0.5" data-testid="invoice-email-viewed-at">
+                      {format(new Date((invoice as any).viewedAt), "MMM d, yyyy")}
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
             {/* Payment terms selector (edit mode) */}
@@ -278,10 +301,10 @@ export function InvoiceHeaderCard({
                 {showCustomDate && (
                   <div className="flex items-center gap-1 mt-1">
                     <Input type="date" value={customDueDate} onChange={(e) => setCustomDueDate(e.target.value)} className="h-7 text-xs flex-1" data-testid="input-custom-due-date" />
-                    <button type="button" className="text-primary text-[10px]" onClick={handleCustomDateSave}>✓</button>
+                    <button type="button" className="text-primary text-[11px]" onClick={handleCustomDateSave}>✓</button>
                   </div>
                 )}
-                {paymentTermsPending && <span className="text-[10px] text-muted-foreground">Saving...</span>}
+                {paymentTermsPending && <span className="text-[11px] text-muted-foreground">Saving...</span>}
               </div>
             )}
           </div>
@@ -325,6 +348,15 @@ export function InvoiceHeaderCard({
             <Button variant="ghost" size="sm" className="h-7 w-7 p-0 shrink-0"><MoreHorizontal className="h-4 w-4" /></Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            {/* 2026-04-14: "Email invoice" reuses the canonical send
+                flow via `onSend` — same prop the primary "Send Invoice"
+                button uses on drafts. Available on any non-terminal
+                invoice so staff can re-email after the initial send. */}
+            {onSend && !isTerminal && (
+              <DropdownMenuItem onClick={onSend} disabled={sendPending} data-testid="menu-item-email-invoice">
+                <Send className="h-4 w-4 mr-2" />Email invoice
+              </DropdownMenuItem>
+            )}
             {onDownloadPdf && (
               <DropdownMenuItem onClick={onDownloadPdf} disabled={pdfPending}>
                 <FileText className="h-4 w-4 mr-2" />{pdfPending ? "Loading..." : "Download PDF"}
@@ -343,11 +375,15 @@ export function InvoiceHeaderCard({
                 </DropdownMenuItem>
               </>
             )}
-            {onToggleSent && (
+            {/* "Mark as sent" preserved for the case where staff sent an
+                invoice out-of-band (paper mail, external email) and want
+                to mark the record. The former "Undo sent" variant was
+                removed — it had no canonical semantics. */}
+            {onToggleSent && !invoice.sentAt && (
               <>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => onToggleSent(!invoice.sentAt)} disabled={toggleSentPending}>
-                  {invoice.sentAt ? <><Undo2 className="h-4 w-4 mr-2" />{toggleSentPending ? "Updating..." : "Undo sent"}</> : <><CheckCircle className="h-4 w-4 mr-2" />{toggleSentPending ? "Updating..." : "Mark as sent"}</>}
+                <DropdownMenuItem onClick={() => onToggleSent(true)} disabled={toggleSentPending}>
+                  <CheckCircle className="h-4 w-4 mr-2" />{toggleSentPending ? "Updating..." : "Mark as sent"}
                 </DropdownMenuItem>
               </>
             )}

@@ -536,7 +536,7 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
                       const typeResults = groupedResults[type];
                       return (
                         <div key={type}>
-                          <div className="px-3 py-1 text-[10px] font-medium text-muted-foreground/70 uppercase tracking-wider">
+                          <div className="px-3 py-1 text-[11px] font-medium text-muted-foreground/70 uppercase tracking-wider">
                             {TYPE_LABELS[type]}
                           </div>
                           {typeResults.map((sr) => {
@@ -569,9 +569,9 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
 
           {/* Footer with keyboard hints */}
           <div className="border-t px-3 py-1.5 text-[11px] text-muted-foreground flex items-center gap-3">
-            <span><kbd className="font-mono text-[10px] bg-muted px-1 py-0.5 rounded">↑↓</kbd> navigate</span>
-            <span><kbd className="font-mono text-[10px] bg-muted px-1 py-0.5 rounded">↵</kbd> select</span>
-            <span><kbd className="font-mono text-[10px] bg-muted px-1 py-0.5 rounded">esc</kbd> close</span>
+            <span><kbd className="font-mono text-[11px] bg-muted px-1 py-0.5 rounded">↑↓</kbd> navigate</span>
+            <span><kbd className="font-mono text-[11px] bg-muted px-1 py-0.5 rounded">↵</kbd> select</span>
+            <span><kbd className="font-mono text-[11px] bg-muted px-1 py-0.5 rounded">esc</kbd> close</span>
           </div>
         </div>
       )}

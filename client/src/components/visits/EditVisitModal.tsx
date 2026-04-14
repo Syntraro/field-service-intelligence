@@ -555,7 +555,7 @@ export function EditVisitModal({
                             <div key={eq.id} className="flex items-center justify-between gap-2 rounded bg-emerald-50/60 px-2.5 py-1.5 text-xs">
                               <div className="min-w-0">
                                 <span className="font-medium text-slate-700">{eq.name}</span>
-                                {eq.equipmentType && <span className="ml-1.5 text-[10px] text-slate-500 bg-slate-100 rounded px-1 py-0.5">{eq.equipmentType}</span>}
+                                {eq.equipmentType && <span className="ml-1.5 text-[11px] text-slate-500 bg-slate-100 rounded px-1 py-0.5">{eq.equipmentType}</span>}
                                 {(eq.manufacturer || eq.modelNumber) && (
                                   <span className="text-slate-400 ml-1">
                                     {[eq.manufacturer, eq.modelNumber].filter(Boolean).join(" ")}
@@ -580,7 +580,7 @@ export function EditVisitModal({
                   <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">Schedule</h3>
                   <div className="flex items-end gap-2">
                     <div style={{ width: 160, minWidth: 140, maxWidth: 180 }}>
-                      <label className="text-[10px] font-medium text-slate-500 mb-0.5 block">Date</label>
+                      <label className="text-[11px] font-medium text-slate-500 mb-0.5 block">Date</label>
                       <Popover>
                         <PopoverTrigger asChild>
                           <Button variant="outline" size="sm" className={cn("w-full justify-start h-8 text-xs gap-1.5 px-2.5", !schedule.date && "text-slate-400")}>
@@ -594,14 +594,14 @@ export function EditVisitModal({
                       </Popover>
                     </div>
                     <div style={{ width: 96 }}>
-                      <label className="text-[10px] font-medium text-slate-500 mb-0.5 block">Start</label>
+                      <label className="text-[11px] font-medium text-slate-500 mb-0.5 block">Start</label>
                       <Input type="time" value={schedule.startTime} placeholder="--:--"
                         onChange={(e) => { const v = e.target.value; setSchedule((s) => { const dur = s.startTime && s.endTime ? timeDiffMinutes(s.startTime, s.endTime) : 60; return { ...s, startTime: v, endTime: v ? addMinutesToTime(v, dur) : s.endTime }; }); }}
                         className="h-8 text-xs px-2" />
                     </div>
                     <span className="text-slate-400 text-xs pb-1.5">→</span>
                     <div style={{ width: 96 }}>
-                      <label className="text-[10px] font-medium text-slate-500 mb-0.5 block">End</label>
+                      <label className="text-[11px] font-medium text-slate-500 mb-0.5 block">End</label>
                       <Input type="time" value={schedule.endTime} placeholder="--:--"
                         onChange={(e) => setSchedule((s) => ({ ...s, endTime: e.target.value }))}
                         className="h-8 text-xs px-2" />

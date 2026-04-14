@@ -22,6 +22,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import type { ClientContact } from "@shared/schema";
+import {
+  INVALID_EMAIL_MESSAGE,
+  isValidOptionalEmail,
+} from "@shared/lib/emailValidation";
 
 /** Contact scope — used to determine auto-assignment on create */
 export type ContactScope = "company" | "location";
@@ -48,6 +52,7 @@ export function ContactFormDialog({
   const [form, setForm] = useState({
     firstName: "", lastName: "", phone: "", email: "", isPrimary: false,
   });
+  const [emailTouched, setEmailTouched] = useState(false);
 
   useEffect(() => {
     if (open && contact) {
@@ -61,7 +66,11 @@ export function ContactFormDialog({
     } else if (open) {
       setForm({ firstName: "", lastName: "", phone: "", email: "", isPrimary: false });
     }
+    setEmailTouched(false);
   }, [open, contact]);
+
+  const emailValid = isValidOptionalEmail(form.email);
+  const showEmailError = emailTouched && !emailValid;
 
   const mutation = useMutation({
     mutationFn: async (data: typeof form) => {
@@ -101,8 +110,9 @@ export function ContactFormDialog({
     },
   });
 
-  // Only firstName is required — all other fields optional
-  const canSave = form.firstName.trim().length > 0;
+  // Only firstName is required — all other fields optional. Email, when
+  // provided, must pass the canonical shape check.
+  const canSave = form.firstName.trim().length > 0 && emailValid;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -131,7 +141,20 @@ export function ContactFormDialog({
             </div>
             <div className="space-y-2">
               <Label>Email</Label>
-              <Input value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} />
+              <Input
+                type="email"
+                value={form.email}
+                onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                onBlur={() => setEmailTouched(true)}
+                aria-invalid={showEmailError || undefined}
+                className={showEmailError ? "border-destructive focus-visible:ring-destructive/30" : undefined}
+                data-testid="input-contact-email"
+              />
+              {showEmailError && (
+                <p className="text-[11px] text-destructive" data-testid="contact-email-error">
+                  {INVALID_EMAIL_MESSAGE}
+                </p>
+              )}
             </div>
           </div>
           <label className="flex items-center gap-2 cursor-pointer">

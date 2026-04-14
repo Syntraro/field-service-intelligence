@@ -1,7 +1,32 @@
 import { db } from "../db";
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
-import { clientNotes, clients, customerCompanies, users } from "@shared/schema";
+import { clientNotes, clients, customerCompanies, noteAttachments, users } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset } from "./base";
+
+/**
+ * 2026-04-13 — canonical cleanup helper shared by every client-note
+ * delete path. Files are 1:1 with attachments; we must drop the file
+ * rows + R2 blobs BEFORE the FK cascade wipes the join rows. Dynamic
+ * import keeps the storage ↔ service layering clean.
+ */
+async function deleteAttachedFilesForNote(companyId: string, noteId: string): Promise<void> {
+  const rows = await db
+    .select({ fileId: noteAttachments.fileId })
+    .from(noteAttachments)
+    .where(
+      and(
+        eq(noteAttachments.noteId, noteId),
+        eq(noteAttachments.companyId, companyId),
+      ),
+    );
+  if (rows.length === 0) return;
+  const { deleteFile } = await import("../services/fileUploadService");
+  for (const row of rows) {
+    if (row.fileId) {
+      await deleteFile(companyId, row.fileId).catch(() => {});
+    }
+  }
+}
 
 export interface ClientNotesListResult {
   items: any[];
@@ -349,6 +374,9 @@ export class ClientNotesRepository extends BaseRepository {
     this.validateUUID(clientId, "clientId");
     this.validateUUID(noteId, "noteId");
 
+    // 2026-04-13 — cascade file cleanup before FK drops the join rows.
+    await deleteAttachedFilesForNote(companyId, noteId);
+
     const [deleted] = await db
       .delete(clientNotes)
       .where(
@@ -375,6 +403,8 @@ export class ClientNotesRepository extends BaseRepository {
   ): Promise<typeof clientNotes.$inferSelect | null> {
     this.assertCompanyId(companyId);
     this.validateUUID(noteId, "noteId");
+
+    await deleteAttachedFilesForNote(companyId, noteId);
 
     const [deleted] = await db
       .delete(clientNotes)
@@ -546,6 +576,8 @@ export class ClientNotesRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(customerCompanyId, "customerCompanyId");
     this.validateUUID(noteId, "noteId");
+
+    await deleteAttachedFilesForNote(companyId, noteId);
 
     const [deleted] = await db
       .delete(clientNotes)

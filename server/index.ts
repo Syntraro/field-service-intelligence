@@ -17,6 +17,7 @@ import cookieParser from "cookie-parser";
 import path from "path";
 
 import { registerRoutes } from "./routes";
+import { buildResendWebhookRouter } from "./routes/resendWebhook";
 import { setupVite, serveStatic, log } from "./vite";
 import passport from "passport";
 import "./auth";  // Register passport strategies
@@ -37,6 +38,12 @@ const app = express();
 // If deployed behind a proxy (Render/Fly/Railway/Nginx), this is required for secure cookies + IPs.
 app.set("trust proxy", 1);
 
+// 2026-04-14: Resend webhook receiver MUST see the raw request body for
+// Svix signature verification, so it's mounted BEFORE the global JSON
+// body parser. The router applies `express.raw()` internally for its
+// own path only — all other routes still get JSON parsing below.
+app.use(buildResendWebhookRouter());
+
 // Body parsing limits
 app.use(express.json({ limit: process.env.JSON_LIMIT ?? "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: process.env.URLENCODED_LIMIT ?? "2mb" }));
@@ -54,7 +61,7 @@ app.use(
         scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"], // unsafe-eval needed for Vite in dev
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", "data:", "https:"],
-        connectSrc: ["'self'"],
+        connectSrc: ["'self'", "https://*.r2.cloudflarestorage.com"],
         fontSrc: ["'self'", "data:"],
         objectSrc: ["'none'"],
         mediaSrc: ["'self'"],

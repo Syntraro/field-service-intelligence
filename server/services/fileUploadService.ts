@@ -22,6 +22,7 @@ import { randomUUID } from "crypto";
 import { db } from "../db";
 import {
   files,
+  invoices,
   jobNotes,
   jobs,
   jobNoteAttachments,
@@ -85,6 +86,8 @@ function resolveCategory(entityType: FileEntityType, mimeType: string): FileCate
       return "contract_document";
     case "technician_document":
       return "technician_document";
+    case "invoice_email_attachment":
+      return "other";
     default: {
       const _exhaustive: never = entityType;
       return "other";
@@ -162,7 +165,11 @@ export type FileEntityType =
   | "client_note"
   | "client_document"
   | "contract_document"
-  | "technician_document";
+  | "technician_document"
+  // 2026-04-13 (Commit C): transient image attachments for invoice send flow.
+  // No persistent join table — the file is referenced by id from the send
+  // payload at send time only.
+  | "invoice_email_attachment";
 
 /** Context returned by a resolver. Carries whatever the key builder needs. */
 type EntityContext = Record<string, string> & { tenantId: string };
@@ -263,6 +270,16 @@ async function resolveContract(companyId: string, contractId: string): Promise<E
     .limit(1);
   if (!row) throw createError(404, "Contract not found");
   return { tenantId: companyId, contractId: row.id };
+}
+
+async function resolveInvoiceForEmail(companyId: string, invoiceId: string): Promise<EntityContext> {
+  const [row] = await db
+    .select({ id: invoices.id })
+    .from(invoices)
+    .where(and(eq(invoices.id, invoiceId), eq(invoices.companyId, companyId)))
+    .limit(1);
+  if (!row) throw createError(404, "Invoice not found");
+  return { tenantId: companyId, invoiceId: row.id };
 }
 
 async function resolveTechnician(companyId: string, technicianId: string): Promise<EntityContext> {
@@ -378,6 +395,16 @@ const ENTITY_ADAPTERS: Record<FileEntityType, EntityAdapter> = {
         .delete(contractFiles)
         .where(and(eq(contractFiles.companyId, companyId), eq(contractFiles.fileId, fileId)));
     },
+  },
+  invoice_email_attachment: {
+    resolve: resolveInvoiceForEmail,
+    buildObjectKey: (ctx, fileId, filename) =>
+      `tenants/${ctx.tenantId}/invoices/${ctx.invoiceId}/email-attachments/${fileId}/${sanitizeFilename(filename)}`,
+    // Transient attachments are not joined into a persistent table — the
+    // file row itself is the record of its existence, and the send payload
+    // references it by id. `ensureAttachment` is a no-op.
+    ensureAttachment: async () => {},
+    detachByFileId: async () => {},
   },
   technician_document: {
     resolve: resolveTechnician,
@@ -864,6 +891,39 @@ export async function deleteFile(companyId: string, fileId: string): Promise<voi
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * 2026-04-13 (Commit C): fetch an uploaded file's raw bytes from the backing
+ * provider. Tenant-scoped and status-gated. Used by the email dispatch
+ * service to attach user-selected images to outbound mail without
+ * round-tripping through a presigned URL.
+ *
+ * Returns `{ buffer, filename, mimeType }`. Throws:
+ *   - 404 if the file doesn't belong to the tenant,
+ *   - 409 if it's not in `uploaded` state,
+ *   - 500 on legacy-local rows (unsupported until local provider lands).
+ */
+export async function getFileBufferForTenant(
+  companyId: string,
+  fileId: string,
+): Promise<{ buffer: Buffer; filename: string; mimeType: string; sizeBytes: number | null }> {
+  const file = await loadFileForTenant(companyId, fileId);
+  if (file.status !== "uploaded") {
+    throw createError(409, `File is not ready (status=${file.status})`);
+  }
+  if (file.storageProvider !== "r2") {
+    throw createError(500, "Legacy local files cannot be attached to email");
+  }
+  if (!file.bucket) throw createError(500, "File row missing bucket");
+
+  const buffer = await getR2Provider().getObjectBuffer(file.bucket, file.storageKey);
+  return {
+    buffer,
+    filename: file.originalName ?? `attachment-${file.id.slice(0, 8)}`,
+    mimeType: file.mimeType ?? "application/octet-stream",
+    sizeBytes: file.size ?? null,
+  };
+}
 
 async function loadFileForTenant(companyId: string, fileId: string): Promise<FileRecord> {
   const [row] = await db

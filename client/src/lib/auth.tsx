@@ -123,6 +123,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     onSuccess: () => {
       queryClient.clear();
+      // 2026-04-14: drop the tech offline queue so the next user on this
+      // device doesn't inherit the previous session's pending notes.
+      // Fire-and-forget — an IDB error must not turn a successful server
+      // logout into a rejection. Only runs on confirmed 2xx logout.
+      void import("./offlineQueue")
+        .then((m) => m.clearAll())
+        .catch(() => {});
       // Pre-warm CSRF for the next login (non-blocking)
       initCSRF().catch(() => {});
     },

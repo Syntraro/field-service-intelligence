@@ -23,6 +23,8 @@ import { CreateLeadPage } from "../pages/CreateLeadPage";
 import { LocationDetailPage } from "../pages/LocationDetailPage";
 import { TaskDetailPage } from "../pages/TaskDetailPage";
 import { useTechRealtimeSync } from "../hooks/useTechRealtimeSync";
+import { useNoteSyncReplay } from "../hooks/useNoteSyncReplay";
+import { OfflineStatusBar } from "../components/OfflineStatusBar";
 
 /** Loading spinner shown during session restore */
 function AuthLoading() {
@@ -58,6 +60,8 @@ export default function TechApp() {
 
   // Real-time sync: SSE connection for dispatch + time events (only when authenticated)
   useTechRealtimeSync();
+  // 2026-04-14 Phase 2: single global offline-note replay engine.
+  useNoteSyncReplay();
 
   if (authLoading) return <AuthLoading />;
 
@@ -72,7 +76,9 @@ export default function TechApp() {
   }
 
   return (
-    <Switch>
+    <>
+      <OfflineStatusBar />
+      <Switch>
       <Route path="/tech/login">
         {() => { setLocation("/tech/today"); return null; }}
       </Route>
@@ -121,5 +127,6 @@ export default function TechApp() {
         {() => { setLocation("/tech/today"); return null; }}
       </Route>
     </Switch>
+    </>
   );
 }

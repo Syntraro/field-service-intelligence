@@ -346,10 +346,31 @@ export function useTechVisitDetail(visitId: string | undefined) {
     onError: handleMutationError,
   });
 
-  // Action: Add note to visit's job (with optional equipment linkage)
+  // Action: Add note to visit's job (with optional equipment linkage).
+  // 2026-04-14 offline branch: when `navigator.onLine === false`, enqueue
+  // the note to the IndexedDB offline queue instead of hitting the server.
+  // The pending row is rendered in the notes list via `useOfflineNotes`
+  // and drained by `useNoteSyncReplay`. Online behavior is unchanged.
   const addNoteMutation = useMutation({
-    mutationFn: (params: { text: string; equipmentId?: string | null }) =>
-      apiRequest(`/api/tech/visits/${visitId}/notes`, { method: "POST", body: JSON.stringify({ text: params.text, equipmentId: params.equipmentId ?? null }) }),
+    mutationFn: async (params: { text: string; equipmentId?: string | null }) => {
+      if (typeof navigator !== "undefined" && !navigator.onLine && visitId) {
+        const { enqueueJobNote } = await import("@/lib/offlineQueue");
+        const item = await enqueueJobNote({
+          visitId,
+          text: params.text,
+          equipmentId: params.equipmentId ?? null,
+        });
+        // Stub return so callers get a temp `id` for UI — marked pending.
+        return { id: item.id, pending: true } as { id: string; pending?: boolean };
+      }
+      return apiRequest(`/api/tech/visits/${visitId}/notes`, {
+        method: "POST",
+        body: JSON.stringify({
+          text: params.text,
+          equipmentId: params.equipmentId ?? null,
+        }),
+      });
+    },
     onSuccess: invalidateAfterAction,
     onError: handleMutationError,
   });

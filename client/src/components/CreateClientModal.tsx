@@ -19,6 +19,10 @@ import { useState, useCallback } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
+  INVALID_EMAIL_MESSAGE,
+  isValidOptionalEmail,
+} from "@shared/lib/emailValidation";
+import {
   Dialog,
   DialogContent,
   DialogFooter,
@@ -221,7 +225,10 @@ export function CreateClientModal({
   });
 
   // At least one of firstName or companyName required
-  const canSubmit = !!(clientFirstName.trim() || companyName.trim());
+  const [emailTouched, setEmailTouched] = useState(false);
+  const emailValid = isValidOptionalEmail(email);
+  const showEmailError = emailTouched && !emailValid;
+  const canSubmit = !!(clientFirstName.trim() || companyName.trim()) && emailValid;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -309,8 +316,16 @@ export function CreateClientModal({
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                onBlur={() => setEmailTouched(true)}
+                aria-invalid={showEmailError || undefined}
+                className={showEmailError ? "border-destructive focus-visible:ring-destructive/30" : undefined}
                 data-testid="input-contact-email"
               />
+              {showEmailError && (
+                <p className="text-[11px] text-destructive" data-testid="contact-email-error">
+                  {INVALID_EMAIL_MESSAGE}
+                </p>
+              )}
             </div>
           </div>
 

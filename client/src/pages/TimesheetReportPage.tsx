@@ -606,7 +606,7 @@ function SummaryStat({
 }) {
   return (
     <div className="flex flex-col leading-tight">
-      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+      <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
         {label}
       </span>
       <span

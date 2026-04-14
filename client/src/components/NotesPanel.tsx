@@ -17,7 +17,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
 import type { ClientNote } from "@shared/schema";
-import { AttachmentView } from "@/components/attachments/AttachmentView";
+import { NoteAttachmentStrip } from "@/components/attachments/NoteAttachmentStrip";
 import {
   SUPPORTED_MIME_TYPES,
   useFileUpload,
@@ -383,23 +383,21 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
                   {/* Visibility badges */}
                   {(note.showOnJobs || note.showOnInvoices || note.showOnQuotes) && (
                     <div className="flex gap-1.5 mt-2">
-                      {note.showOnJobs && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700">Jobs</span>}
-                      {note.showOnInvoices && <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-50 text-green-700">Invoices</span>}
-                      {note.showOnQuotes && <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-700">Quotes</span>}
+                      {note.showOnJobs && <span className="text-[11px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700">Jobs</span>}
+                      {note.showOnInvoices && <span className="text-[11px] px-1.5 py-0.5 rounded bg-green-50 text-green-700">Invoices</span>}
+                      {note.showOnQuotes && <span className="text-[11px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-700">Quotes</span>}
                     </div>
                   )}
 
-                  {/* Attachments — AttachmentView resolves signed URLs for r2 rows */}
+                  {/* Compact Jobber-style attachment strip — images as 56px thumbs + lightbox, non-images as chips */}
                   {note.attachments && note.attachments.length > 0 && (
-                    <div className="space-y-1 mt-2">
-                      {note.attachments.map((att) => (
-                        <AttachmentView key={att.id} attachment={att} />
-                      ))}
+                    <div className="mt-2">
+                      <NoteAttachmentStrip attachments={note.attachments} />
                     </div>
                   )}
 
                   {/* Compact metadata: "Author · Date, Time" + actions */}
-                  <div className="flex items-center justify-between mt-2 text-[10px] text-muted-foreground">
+                  <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
                     <span className="truncate mr-2">
                       {note.createdByName || "Unknown"} · {note.createdAt && format(new Date(note.createdAt), "MMM d, h:mm a")}
                     </span>

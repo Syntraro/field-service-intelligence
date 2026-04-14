@@ -842,7 +842,7 @@ function SortableLineItemRow(props: SortableLineItemRowProps) {
               {productDisplay || <span className="italic text-muted-foreground">No product</span>}
             </div>
             {props.item.isDraft && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 font-medium">
+              <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 font-medium">
                 Draft
               </span>
             )}

@@ -1232,6 +1232,9 @@ export const invoices = pgTable("invoices", {
   showLineTotals: boolean("show_line_totals").notNull().default(true),
   showLineItems: boolean("show_line_items").notNull().default(true), // If false, client sees only subtotal/total
   showBalance: boolean("show_balance").notNull().default(true),
+  // 2026-04-14: gate the work-description block on client-facing
+  // surfaces (PDF + portal). Default true preserves existing behavior.
+  showJobDescription: boolean("show_job_description").notNull().default(true),
   // QBO sync fields
   qboInvoiceId: text("qbo_invoice_id"), // QBO Invoice.Id
   qboSyncToken: text("qbo_sync_token"), // QBO Invoice.SyncToken (required for updates)
@@ -1314,6 +1317,7 @@ export const updateInvoiceSchema = z.object({
   showLineTotals: z.boolean().optional(),
   showLineItems: z.boolean().optional(),
   showBalance: z.boolean().optional(),
+  showJobDescription: z.boolean().optional(),
   qboInvoiceId: z.string().nullable().optional(),
   qboSyncToken: z.string().nullable().optional(),
   qboLastSyncedAt: z.date().nullable().optional(),
@@ -5291,6 +5295,9 @@ export const emailDeliveryStatusEnum = [
   "delivered",
   "bounced",
   "complained",
+  // 2026-04-14: Resend webhook `email.opened` events. Transitions from
+  // `delivered` (or `sent`) to `opened`; subsequent opens are idempotent.
+  "opened",
 ] as const;
 export type EmailDeliveryStatus = (typeof emailDeliveryStatusEnum)[number];
 
@@ -5312,6 +5319,15 @@ export const emailDeliveries = pgTable(
     channel: text("channel").notNull().default("email"),
     recipientCount: integer("recipient_count").notNull().default(0),
     recipientsJson: jsonb("recipients_json").notNull().default(sql`'[]'::jsonb`),
+    // 2026-04-13 (Commit C): CC recipients for this send. Parallel shape to
+    // `recipientsJson`. Stored as JSON so we preserve the exact normalized
+    // list without a join table.
+    ccJson: jsonb("cc_json").notNull().default(sql`'[]'::jsonb`),
+    // 2026-04-13 (Commit C follow-up): outbound attachment metadata — an
+    // array of `DeliveryAttachmentMetadata` objects (see type below). Never
+    // stores file bytes; filename/mime/size/source only. Empty array when
+    // the send carried no attachments.
+    attachmentsJson: jsonb("attachments_json").notNull().default(sql`'[]'::jsonb`),
     subject: text("subject"),
     bodySnapshot: text("body_snapshot"),
     templateSource: text("template_source").notNull(),
@@ -5340,3 +5356,22 @@ export const emailDeliveries = pgTable(
 
 export type EmailDelivery = typeof emailDeliveries.$inferSelect;
 export type InsertEmailDelivery = typeof emailDeliveries.$inferInsert;
+
+// 2026-04-13 (Commit C follow-up): canonical shape for per-attachment
+// metadata persisted on every delivery row. Never carries file bytes.
+export const emailDeliveryAttachmentSourceEnum = [
+  "invoice_pdf",
+  "quote_pdf",
+  "uploaded_image",
+] as const;
+export type EmailDeliveryAttachmentSource =
+  (typeof emailDeliveryAttachmentSourceEnum)[number];
+
+export interface DeliveryAttachmentMetadata {
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  sourceType: EmailDeliveryAttachmentSource;
+  /** Present only for `uploaded_image` attachments — references the file row. */
+  fileId?: string | null;
+}

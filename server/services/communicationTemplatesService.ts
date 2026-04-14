@@ -45,25 +45,28 @@ const SYSTEM_DEFAULTS: Record<string, TemplateInput> = {
     subjectTemplate: "Invoice #{{INVOICE_NUMBER}} from {{COMPANY_NAME}}",
     bodyTemplate:
       "Hi {{CLIENT_COMPANY_NAME}},\n\n" +
-      "Thank you for your recent business with us.\n\n" +
-      "The invoice total is ${{INVOICE_TOTAL}}.\n\n" +
+      "Thank you for your business with {{COMPANY_NAME}}.\n\n" +
+      "Your invoice #{{INVOICE_NUMBER}} is ready. The total amount is {{INVOICE_TOTAL}}.\n" +
+      "If payment is due by a specific date, please note the due date: {{INVOICE_DUE_DATE}}.\n\n" +
+      "Please contact us if you have any questions.\n\n" +
       "Sincerely,\n" +
       "{{COMPANY_NAME}}",
   },
   "quote:email": {
-    subjectTemplate: "Quote #{{QUOTE_NUMBER}} from {{COMPANY_NAME}}",
+    subjectTemplate: "Quote from {{COMPANY_NAME}}",
     bodyTemplate:
       "Hi {{CLIENT_COMPANY_NAME}},\n\n" +
-      "Here is your quote.\n\n" +
-      "Total: ${{QUOTE_TOTAL}}\n\n" +
+      "We\u2019ve prepared your quote from {{COMPANY_NAME}}.\n\n" +
+      "Please review it and let us know if you have any questions or would like to move forward.\n\n" +
       "Thank you,\n" +
       "{{COMPANY_NAME}}",
   },
   "job:email": {
-    subjectTemplate: "Job update from {{COMPANY_NAME}}",
+    subjectTemplate: "Update from {{COMPANY_NAME}}",
     bodyTemplate:
       "Hi {{CLIENT_COMPANY_NAME}},\n\n" +
-      "Your job is scheduled for {{JOB_DATE}}.\n\n" +
+      "This is an update regarding your job with {{COMPANY_NAME}}.\n\n" +
+      "Please review the details and contact us if you have any questions.\n\n" +
       "Thank you,\n" +
       "{{COMPANY_NAME}}",
   },

@@ -65,7 +65,11 @@ export class NoteAttachmentRepository extends BaseRepository {
     return row;
   }
 
-  /** Remove a single attachment link. */
+  /**
+   * Remove a single attachment link. 2026-04-13: since files are 1:1 with
+   * attachments in this codebase, detaching also soft-deletes the file row
+   * and best-effort removes the R2 blob via `deleteFile` (idempotent).
+   */
   async detach(companyId: string, attachmentId: string) {
     this.assertCompanyId(companyId);
     this.validateUUID(attachmentId, "attachmentId");
@@ -73,6 +77,10 @@ export class NoteAttachmentRepository extends BaseRepository {
       .delete(noteAttachments)
       .where(and(eq(noteAttachments.id, attachmentId), eq(noteAttachments.companyId, companyId)))
       .returning();
+    if (row?.fileId) {
+      const { deleteFile } = await import("../services/fileUploadService");
+      await deleteFile(companyId, row.fileId).catch(() => {});
+    }
     return row ?? null;
   }
 }

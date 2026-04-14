@@ -220,8 +220,9 @@ export default function PortalInvoiceDetail() {
         </CardContent>
       </Card>
 
-      {/* Notes / Terms */}
-      {(invoice.clientMessage || invoice.notesCustomer || invoice.workDescription) && (
+      {/* Notes / Terms — work description respects the canonical
+          `show_job_description` visibility flag (2026-04-14). */}
+      {(invoice.clientMessage || invoice.notesCustomer || (invoice.workDescription && (invoice as any).showJobDescription !== false)) && (
         <Card>
           <CardContent className="pt-6 space-y-3">
             {invoice.clientMessage && (
@@ -236,9 +237,9 @@ export default function PortalInvoiceDetail() {
                 <p className="text-sm whitespace-pre-wrap">{invoice.notesCustomer}</p>
               </div>
             )}
-            {invoice.workDescription && (
+            {invoice.workDescription && (invoice as any).showJobDescription !== false && (
               <div>
-                <p className="text-sm font-medium text-muted-foreground mb-1">Work Description</p>
+                <p className="text-sm font-medium text-muted-foreground mb-1">Scope of Work</p>
                 <p className="text-sm whitespace-pre-wrap">{invoice.workDescription}</p>
               </div>
             )}

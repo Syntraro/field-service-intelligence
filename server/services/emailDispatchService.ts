@@ -22,6 +22,8 @@ import { storage } from "../storage/index";
 import { createError } from "../middleware/errorHandler";
 import { generateInvoicePdf } from "./invoicePdfService";
 import { generateQuotePdf } from "./quotePdfService";
+import { getFileBufferForTenant } from "./fileUploadService";
+import { normalizeEmailList } from "./recipientResolverService";
 import { templateDataBuilder } from "./templateDataBuilder";
 import { communicationTemplatesService } from "./communicationTemplatesService";
 import { emailDeliveryTrackingService } from "./emailDeliveryTrackingService";
@@ -29,6 +31,7 @@ import { renderTemplate } from "./templateRenderer";
 import { quoteRepository } from "../storage/quotes";
 import type {
   CommunicationTemplateEntityType,
+  DeliveryAttachmentMetadata,
   EmailDeliveryTemplateSource,
 } from "@shared/schema";
 
@@ -36,16 +39,141 @@ export interface SendInvoiceEmailInput {
   tenantId: string;
   invoiceId: string;
   recipients: string[];
+  /** 2026-04-13 (Commit C): optional CC list. Same normalization as `recipients`. */
+  cc?: string[];
   /** One-time subject override for this send only. Never persisted. */
   subjectOverride?: string | null;
   /** One-time body override for this send only. Never persisted. */
   bodyOverride?: string | null;
+  /**
+   * 2026-04-13 (Commit C): whether to attach the invoice PDF. Default: true.
+   * When false, the invoice PDF is omitted from the outbound payload.
+   */
+  attachPdf?: boolean;
+  /**
+   * 2026-04-13 (Commit C): up to 5 uploaded image file ids to attach to the
+   * send. Each file must belong to the tenant, be an allowed image mime,
+   * and be in `uploaded` state.
+   */
+  attachmentFileIds?: string[];
   /** User who initiated the send. Persisted on the delivery row. */
   createdByUserId?: string | null;
   /** Phase 17: set when this send is a resend retry. Links child delivery
    *  to the original and marks the template_source as 'override' since the
    *  caller will typically be replaying snapshot subject/body. */
   parentDeliveryId?: string | null;
+}
+
+// 2026-04-13 (Commit C): caps for user-selected image attachments on the
+// invoice send flow. These are enforced server-side; the client enforces
+// the same values for UX feedback. Image mime allow-list is intentionally
+// narrower than the general file upload allow-list — only web-safe image
+// types should land in an outbound email.
+const MAX_EMAIL_IMAGE_ATTACHMENTS = 5;
+const MAX_EMAIL_IMAGE_BYTES = 10 * 1024 * 1024;
+/**
+ * 2026-04-13 (Commit C follow-up): hard cap on the sum of every attachment
+ * carried by a single send (invoice PDF + uploaded images). Sits above
+ * the per-file caps so a single worst-case message can't pin ~50 MB+ of
+ * buffered bytes in memory while Resend is being called. 25 MB was
+ * chosen to comfortably clear typical provider accept-limits (Resend's
+ * documented ~40 MB) while keeping a safety margin for base64 inflation
+ * over MIME transport.
+ */
+export const MAX_EMAIL_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const EMAIL_IMAGE_MIME_ALLOWLIST = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
+
+/**
+ * 2026-04-14 hardening: canonical error messages for attachment-related
+ * failures. Kept short and user-readable; client + server share the
+ * wording where practical.
+ */
+export const EMAIL_ATTACHMENT_ERRORS = {
+  INVALID_TYPE: "Invalid file type. Use JPG, PNG, or WebP.",
+  FILE_TOO_LARGE: "File exceeds the 10 MB limit.",
+  TOO_MANY_IMAGES: "You can attach up to 5 images.",
+  TOTAL_TOO_LARGE: "Total attachments exceed the 25 MB limit.",
+  NO_RECIPIENTS: "Add at least one recipient.",
+} as const;
+
+/**
+ * 2026-04-14 hardening: one canonical attachment-assembly helper used by
+ * both invoice and quote send paths. Centralizes per-file validation,
+ * per-count cap, metadata construction, and total-payload guard so the
+ * two paths cannot drift. Never fetches templates or touches Resend —
+ * strictly input → validated outputs.
+ */
+export interface AttachmentAssemblyInput {
+  tenantId: string;
+  /** Optional pre-generated PDF. Passed straight through; no size check
+   *  is duplicated here since PDF generators already enforce their own
+   *  shape. The total-payload guard still applies. */
+  pdf?: {
+    filename: string;
+    buffer: Buffer;
+    sourceType: "invoice_pdf" | "quote_pdf";
+  };
+  /** Uploaded image file ids. Max {@link MAX_EMAIL_IMAGE_ATTACHMENTS}. */
+  imageFileIds?: string[];
+}
+
+export interface AttachmentAssemblyResult {
+  outboundAttachments: { filename: string; content: Buffer }[];
+  attachmentMetadata: DeliveryAttachmentMetadata[];
+  totalBytes: number;
+}
+
+export async function assembleOutboundAttachments(
+  input: AttachmentAssemblyInput,
+): Promise<AttachmentAssemblyResult> {
+  const { tenantId, pdf, imageFileIds } = input;
+  const images = Array.isArray(imageFileIds) ? imageFileIds : [];
+  if (images.length > MAX_EMAIL_IMAGE_ATTACHMENTS) {
+    throw createError(400, EMAIL_ATTACHMENT_ERRORS.TOO_MANY_IMAGES);
+  }
+
+  const outboundAttachments: { filename: string; content: Buffer }[] = [];
+  const attachmentMetadata: DeliveryAttachmentMetadata[] = [];
+
+  if (pdf) {
+    outboundAttachments.push({ filename: pdf.filename, content: pdf.buffer });
+    attachmentMetadata.push({
+      filename: pdf.filename,
+      mimeType: "application/pdf",
+      sizeBytes: pdf.buffer.byteLength,
+      sourceType: pdf.sourceType,
+      fileId: null,
+    });
+  }
+
+  for (const fileId of images) {
+    const fetched = await getFileBufferForTenant(tenantId, fileId);
+    if (!EMAIL_IMAGE_MIME_ALLOWLIST.has(fetched.mimeType)) {
+      throw createError(400, EMAIL_ATTACHMENT_ERRORS.INVALID_TYPE);
+    }
+    if (fetched.buffer.byteLength > MAX_EMAIL_IMAGE_BYTES) {
+      throw createError(413, EMAIL_ATTACHMENT_ERRORS.FILE_TOO_LARGE);
+    }
+    outboundAttachments.push({ filename: fetched.filename, content: fetched.buffer });
+    attachmentMetadata.push({
+      filename: fetched.filename,
+      mimeType: fetched.mimeType,
+      sizeBytes: fetched.buffer.byteLength,
+      sourceType: "uploaded_image",
+      fileId,
+    });
+  }
+
+  const totalBytes = outboundAttachments.reduce((n, a) => n + a.content.byteLength, 0);
+  if (totalBytes > MAX_EMAIL_TOTAL_ATTACHMENT_BYTES) {
+    throw createError(413, EMAIL_ATTACHMENT_ERRORS.TOTAL_TOO_LARGE);
+  }
+
+  return { outboundAttachments, attachmentMetadata, totalBytes };
 }
 
 /**
@@ -146,12 +274,34 @@ export const emailDispatchService = {
    *   - 500: template render, PDF generation, or Resend-side failure
    */
   async sendInvoiceEmail(input: SendInvoiceEmailInput): Promise<SendInvoiceEmailResult> {
-    const { tenantId, invoiceId, recipients, subjectOverride, bodyOverride, createdByUserId, parentDeliveryId } = input;
+    const {
+      tenantId,
+      invoiceId,
+      recipients,
+      cc,
+      subjectOverride,
+      bodyOverride,
+      attachPdf: attachPdfInput,
+      attachmentFileIds,
+      createdByUserId,
+      parentDeliveryId,
+    } = input;
     if (!tenantId) throw createError(400, "tenantId is required");
     if (!invoiceId) throw createError(400, "invoiceId is required");
-    if (!Array.isArray(recipients) || recipients.length === 0) {
-      throw createError(400, "recipients must be a non-empty array");
+
+    // 2026-04-14 hardening: server-side normalization + dedupe of every
+    // recipient list. The client normalizes too, but the provider call
+    // must never trust the wire format.
+    const normalizedRecipients = normalizeEmailList(recipients);
+    // Cross-dedupe: CC must not contain any address already in To.
+    const toSet = new Set(normalizedRecipients);
+    const ccList = normalizeEmailList(cc).filter((e) => !toSet.has(e));
+    if (normalizedRecipients.length === 0) {
+      throw createError(400, EMAIL_ATTACHMENT_ERRORS.NO_RECIPIENTS);
     }
+
+    const attachImages = Array.isArray(attachmentFileIds) ? attachmentFileIds : [];
+    const attachPdf = attachPdfInput !== false; // default true
 
     // 1. Single invoice fetch (Phase 4 correction).
     const invoice = await storage.getInvoice(tenantId, invoiceId);
@@ -186,37 +336,51 @@ export const emailDispatchService = {
       customerCompany = cc ? { name: cc.name ?? "" } : null;
     }
 
-    let pdfBuffer: Buffer;
-    try {
-      pdfBuffer = await generateInvoicePdf({
-        invoice: invoice as any,
-        lines,
-        company,
-        location: {
-          companyName: location.companyName ?? "",
-          address: location.address,
-          address2: (location as any).address2,
-          city: location.city,
-          provinceState: location.province,
-          postalCode: location.postalCode,
-          phone: (location as any).phone,
-          email: (location as any).email,
-        },
-        customerCompany,
-      });
-    } catch (err: any) {
-      throw createError(500, `Invoice PDF generation failed: ${err?.message ?? "unknown error"}`);
+    // 6b. Assemble the outbound attachment list + audit metadata via the
+    // shared helper. Generates the invoice PDF only when requested.
+    const pdfFilename = `invoice-${invoice.invoiceNumber ?? invoice.id.slice(0, 8)}.pdf`;
+    let pdfForAssembly: AttachmentAssemblyInput["pdf"];
+    if (attachPdf) {
+      let pdfBuffer: Buffer;
+      try {
+        pdfBuffer = await generateInvoicePdf({
+          invoice: invoice as any,
+          lines,
+          company,
+          location: {
+            companyName: location.companyName ?? "",
+            address: location.address,
+            address2: (location as any).address2,
+            city: location.city,
+            provinceState: location.province,
+            postalCode: location.postalCode,
+            phone: (location as any).phone,
+            email: (location as any).email,
+          },
+          customerCompany,
+        });
+      } catch (err: any) {
+        throw createError(500, `Invoice PDF generation failed: ${err?.message ?? "unknown error"}`);
+      }
+      pdfForAssembly = { filename: pdfFilename, buffer: pdfBuffer, sourceType: "invoice_pdf" };
     }
 
-    const filename = `invoice-${invoice.invoiceNumber ?? invoice.id.slice(0, 8)}.pdf`;
+    const { outboundAttachments, attachmentMetadata } = await assembleOutboundAttachments({
+      tenantId,
+      pdf: pdfForAssembly,
+      imageFileIds: attachImages,
+    });
 
     // 7. Create the queued delivery row BEFORE calling Resend so failures
-    //    are still recorded. Phase 10.
+    //    are still recorded. Phase 10. CC + attachment metadata (Commit C
+    //    + follow-up) are persisted here.
     const delivery = await emailDeliveryTrackingService.createQueuedDelivery({
       tenantId,
       entityType: "invoice",
       entityId: invoiceId,
-      recipients,
+      recipients: normalizedRecipients,
+      cc: ccList,
+      attachments: attachmentMetadata,
       subject,
       bodySnapshot: body,
       templateSource,
@@ -230,10 +394,11 @@ export const emailDispatchService = {
     try {
       resendResult = await client.emails.send({
         from: fromEmail,
-        to: recipients,
+        to: normalizedRecipients,
+        cc: ccList.length > 0 ? ccList : undefined,
         subject,
         html: bodyToHtml(body),
-        attachments: [{ filename, content: pdfBuffer }],
+        attachments: outboundAttachments.length > 0 ? outboundAttachments : undefined,
       });
     } catch (err: any) {
       await emailDeliveryTrackingService.markFailed({
@@ -262,9 +427,9 @@ export const emailDispatchService = {
 
     return {
       emailId: resendResult.data?.id ?? null,
-      recipients,
+      recipients: normalizedRecipients,
       subject,
-      attachmentFilename: filename,
+      attachmentFilename: attachPdf ? pdfFilename : "",
     };
   },
 
@@ -276,16 +441,23 @@ export const emailDispatchService = {
     tenantId: string;
     quoteId: string;
     recipients: string[];
+    /** 2026-04-13 follow-up: quote CC parity with invoice send. */
+    cc?: string[];
     subjectOverride?: string | null;
     bodyOverride?: string | null;
     createdByUserId?: string | null;
     parentDeliveryId?: string | null;
   }): Promise<SendInvoiceEmailResult> {
-    const { tenantId, quoteId, recipients, subjectOverride, bodyOverride, createdByUserId, parentDeliveryId } = input;
+    const { tenantId, quoteId, recipients, cc, subjectOverride, bodyOverride, createdByUserId, parentDeliveryId } = input;
     if (!tenantId) throw createError(400, "tenantId is required");
     if (!quoteId) throw createError(400, "quoteId is required");
-    if (!Array.isArray(recipients) || recipients.length === 0) {
-      throw createError(400, "recipients must be a non-empty array");
+
+    // 2026-04-14 hardening: shared normalization + cross-dedupe for quote.
+    const normalizedRecipients = normalizeEmailList(recipients);
+    const quoteToSet = new Set(normalizedRecipients);
+    const quoteCcList = normalizeEmailList(cc).filter((e) => !quoteToSet.has(e));
+    if (normalizedRecipients.length === 0) {
+      throw createError(400, EMAIL_ATTACHMENT_ERRORS.NO_RECIPIENTS);
     }
 
     const quote = await quoteRepository.getQuote(tenantId, quoteId);
@@ -342,12 +514,23 @@ export const emailDispatchService = {
 
     const filename = `quote-${(quote as any).quoteNumber ?? quote.id.slice(0, 8)}.pdf`;
 
+    // 2026-04-14 hardening: route quote through the shared attachment
+    // assembler so per-file, per-count, and total caps live in one place.
+    const { outboundAttachments, attachmentMetadata: quoteAttachmentMetadata } =
+      await assembleOutboundAttachments({
+        tenantId,
+        pdf: { filename, buffer: pdfBuffer, sourceType: "quote_pdf" },
+      });
+
     // Phase 10: queued row BEFORE Resend call. Phase 17: parent link.
+    // Follow-up: quote CC parity + attachment metadata persistence.
     const delivery = await emailDeliveryTrackingService.createQueuedDelivery({
       tenantId,
       entityType: "quote",
       entityId: quoteId,
-      recipients,
+      recipients: normalizedRecipients,
+      cc: quoteCcList,
+      attachments: quoteAttachmentMetadata,
       subject,
       bodySnapshot: body,
       templateSource,
@@ -360,10 +543,11 @@ export const emailDispatchService = {
     try {
       resendResult = await client.emails.send({
         from: fromEmail,
-        to: recipients,
+        to: normalizedRecipients,
+        cc: quoteCcList.length > 0 ? quoteCcList : undefined,
         subject,
         html: bodyToHtml(body),
-        attachments: [{ filename, content: pdfBuffer }],
+        attachments: outboundAttachments,
       });
     } catch (err: any) {
       await emailDeliveryTrackingService.markFailed({
@@ -386,7 +570,7 @@ export const emailDispatchService = {
 
     return {
       emailId: resendResult.data?.id ?? null,
-      recipients,
+      recipients: normalizedRecipients,
       subject,
       attachmentFilename: filename,
     };
@@ -408,8 +592,9 @@ export const emailDispatchService = {
     const { tenantId, jobId, recipients, subjectOverride, bodyOverride, createdByUserId, parentDeliveryId } = input;
     if (!tenantId) throw createError(400, "tenantId is required");
     if (!jobId) throw createError(400, "jobId is required");
-    if (!Array.isArray(recipients) || recipients.length === 0) {
-      throw createError(400, "recipients must be a non-empty array");
+    const normalizedRecipients = normalizeEmailList(recipients);
+    if (normalizedRecipients.length === 0) {
+      throw createError(400, EMAIL_ATTACHMENT_ERRORS.NO_RECIPIENTS);
     }
 
     const job = await storage.getJob(tenantId, jobId);
@@ -429,7 +614,7 @@ export const emailDispatchService = {
       tenantId,
       entityType: "job",
       entityId: jobId,
-      recipients,
+      recipients: normalizedRecipients,
       subject,
       bodySnapshot: body,
       templateSource,
@@ -442,7 +627,7 @@ export const emailDispatchService = {
     try {
       resendResult = await client.emails.send({
         from: fromEmail,
-        to: recipients,
+        to: normalizedRecipients,
         subject,
         html: bodyToHtml(body),
         // v1: no PDF attachment for job emails.
@@ -468,7 +653,7 @@ export const emailDispatchService = {
 
     return {
       emailId: resendResult.data?.id ?? null,
-      recipients,
+      recipients: normalizedRecipients,
       subject,
       attachmentFilename: null,
     };

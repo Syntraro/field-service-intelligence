@@ -41,7 +41,9 @@ export type FileEntityType =
   | "client_note"
   | "client_document"
   | "contract_document"
-  | "technician_document";
+  | "technician_document"
+  // 2026-04-13 (Commit C): transient image attachments for invoice send.
+  | "invoice_email_attachment";
 
 export interface UploadTarget {
   entityType: FileEntityType;

@@ -30,51 +30,72 @@ function hasAnyRole(roles: string[] | null | undefined, want: readonly string[])
 }
 
 /**
- * Shared collector: billing contacts priority — used by invoice + quote
- * strategies because they share the exact same resolution order.
+ * Shared collector for invoice + quote default recipients (2026-04-14).
+ *
+ * Canonical order:
+ *   1. Every contact with the "billing" role — location first, then
+ *      parent customer-company. If at least one billing-role contact
+ *      has a valid email, we return ONLY billing contacts.
+ *   2. If no billing contacts exist, fall back to the first valid
+ *      location contact email.
+ *   3. If still nothing, fall back to the first valid company
+ *      contact email.
+ *
+ * Rules:
+ *   - No legacy `location.email` scalar fallback (deprecated — real
+ *     contact rows are now the only source).
+ *   - No "primary" heuristic — all billing contacts take precedence;
+ *     after that, first-occurrence order from the contact list wins.
+ *   - Normalization and dedupe are applied downstream in
+ *     `recipientResolverService`.
  */
 async function collectBillingFirstRecipients(params: {
   tenantId: string;
   locationId: string;
   customerCompanyId: string | null;
-  locationEmail: string | null;
 }): Promise<(string | null | undefined)[]> {
-  const { tenantId, locationId, customerCompanyId, locationEmail } = params;
-  const out: (string | null | undefined)[] = [];
+  const { tenantId, locationId, customerCompanyId } = params;
 
-  // 1. Location-level billing contacts.
+  let locationContacts: Awaited<ReturnType<typeof clientContactRepository.getLocationContacts>> = [];
   try {
-    const locationContacts = await clientContactRepository.getLocationContacts(tenantId, locationId);
-    for (const c of locationContacts) {
-      if (hasRole((c.assignment as any)?.roles, "billing")) out.push(c.email);
-    }
+    locationContacts = await clientContactRepository.getLocationContacts(tenantId, locationId);
   } catch {}
 
-  // 2. Customer-company-level billing contacts.
+  let companyDirectory: Awaited<ReturnType<typeof clientContactRepository.getCompanyDirectory>> = [];
   if (customerCompanyId) {
     try {
-      const directory = await clientContactRepository.getCompanyDirectory(tenantId, customerCompanyId);
-      for (const p of directory) {
-        const isBilling = (p.assignments ?? []).some((a: any) => hasRole(a.roles, "billing"));
-        if (isBilling) out.push(p.email);
-      }
+      companyDirectory = await clientContactRepository.getCompanyDirectory(tenantId, customerCompanyId);
     } catch {}
   }
 
-  // 3. Legacy location email.
-  out.push(locationEmail);
-
-  // 4. Customer-company primary contact fallback.
-  if (customerCompanyId) {
-    try {
-      const directory = await clientContactRepository.getCompanyDirectory(tenantId, customerCompanyId);
-      for (const p of directory) {
-        if (p.isPrimary) out.push(p.email);
-      }
-    } catch {}
+  // 1. Billing-role contacts (location first, then company).
+  const billing: (string | null | undefined)[] = [];
+  for (const c of locationContacts) {
+    if (hasRole((c.assignment as any)?.roles, "billing")) billing.push(c.email);
+  }
+  for (const p of companyDirectory) {
+    const isBilling = (p.assignments ?? []).some((a: any) => hasRole(a.roles, "billing"));
+    if (isBilling) billing.push(p.email);
+  }
+  if (billing.some((e) => typeof e === "string" && e.trim().length > 0)) {
+    return billing;
   }
 
-  return out;
+  // 2. First valid location contact.
+  for (const c of locationContacts) {
+    if (typeof c.email === "string" && c.email.trim().length > 0) {
+      return [c.email];
+    }
+  }
+
+  // 3. First valid company contact.
+  for (const p of companyDirectory) {
+    if (typeof p.email === "string" && p.email.trim().length > 0) {
+      return [p.email];
+    }
+  }
+
+  return [];
 }
 
 export const recipientResolverStrategies = {
@@ -92,7 +113,6 @@ export const recipientResolverStrategies = {
       tenantId,
       locationId: invoice.locationId,
       customerCompanyId,
-      locationEmail: (location as any).email ?? null,
     });
   },
 
@@ -110,7 +130,6 @@ export const recipientResolverStrategies = {
       tenantId,
       locationId: quote.locationId,
       customerCompanyId,
-      locationEmail: (location as any).email ?? null,
     });
   },
 

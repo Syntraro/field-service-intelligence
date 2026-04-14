@@ -21,6 +21,10 @@ import {
   upsertCommunicationTemplateSchema,
 } from "@shared/schema";
 import { communicationTemplatesService } from "../services/communicationTemplatesService";
+import {
+  buildPreviewSampleData,
+} from "../services/templateDataBuilder";
+import { renderTemplate } from "../services/templateRenderer";
 
 const router = Router();
 
@@ -33,7 +37,15 @@ const paramsSchema = z.object({
 
 /**
  * GET /api/communication-templates/:entityType/:channel
- * Returns the tenant's template or 404 if none exists.
+ *
+ * Always returns a template shape. If a tenant row exists, returns it with
+ * `isDefault: false`. Otherwise returns the canonical system default (from
+ * `communicationTemplatesService.getDefaultTemplate`) with `isDefault: true`
+ * — Settings UI is guaranteed a populated subject + body and never has to
+ * render an empty "No subject / No body" state.
+ *
+ * When no default exists for the tuple (e.g. any SMS channel today), returns
+ * 404 so callers can distinguish "fully unsupported" from "using default".
  */
 router.get(
   "/:entityType/:channel",
@@ -43,11 +55,63 @@ router.get(
     if (!tenantId) throw createError(401, "Unauthorized");
 
     const { entityType, channel } = validateSchema(paramsSchema, req.params);
-    const template = await communicationTemplatesService.getTemplate(tenantId, entityType, channel);
-    if (!template) {
-      throw createError(404, "Template not found");
+    const tenantRow = await communicationTemplatesService.getTemplate(tenantId, entityType, channel);
+    if (tenantRow) {
+      res.json({ ...tenantRow, isDefault: false });
+      return;
     }
-    res.json(template);
+
+    const fallback = communicationTemplatesService.getDefaultTemplate(entityType, channel);
+    if (!fallback) throw createError(404, "Template not found");
+
+    res.json({
+      id: null,
+      tenantId,
+      entityType,
+      channel,
+      subjectTemplate: fallback.subjectTemplate ?? null,
+      bodyTemplate: fallback.bodyTemplate,
+      isActive: true,
+      isDefault: true,
+      createdAt: null,
+      updatedAt: null,
+    });
+  }),
+);
+
+/**
+ * POST /api/communication-templates/preview/:entityType
+ *
+ * Preview-only renderer for the Settings editor. Accepts ad-hoc
+ * `{ subjectTemplate, bodyTemplate }` in the body and renders them through
+ * the canonical `templateRenderer` against a fixed sample-data dictionary.
+ * Never touches real entities or send flows. Used exclusively by the
+ * Settings UI's live preview pane.
+ */
+const previewParamsSchema = z.object({
+  entityType: z.enum(communicationTemplateEntityTypeEnum),
+});
+const previewBodySchema = z.object({
+  subjectTemplate: z.string().max(500).nullable().optional(),
+  bodyTemplate: z.string().max(20000),
+});
+
+router.post(
+  "/preview/:entityType",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const tenantId = req.companyId;
+    if (!tenantId) throw createError(401, "Unauthorized");
+
+    const { entityType } = validateSchema(previewParamsSchema, req.params);
+    const { subjectTemplate, bodyTemplate } = validateSchema(previewBodySchema, req.body ?? {});
+
+    const sample = buildPreviewSampleData(entityType);
+    const rendered = renderTemplate(
+      { subjectTemplate: subjectTemplate ?? null, bodyTemplate },
+      sample,
+    );
+    res.json({ subject: rendered.subject, body: rendered.body, sample });
   }),
 );
 

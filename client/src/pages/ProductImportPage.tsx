@@ -493,7 +493,7 @@ export default function ProductImportPage() {
               <div className="space-y-0.5">
                 {Object.entries(preview.warningLegend).map(([code, msg]) => (
                   <div key={code} className="text-xs text-muted-foreground">
-                    <Badge variant="outline" className="mr-1 text-[10px] px-1">W{code}</Badge>
+                    <Badge variant="outline" className="mr-1 text-[11px] px-1">W{code}</Badge>
                     {msg}
                   </div>
                 ))}
@@ -550,7 +550,7 @@ export default function ProductImportPage() {
                       <td className="p-2">{row.normalized.type}</td>
                       <td className="p-2">${row.normalized.unitPrice}</td>
                       <td className="p-2">
-                        <Badge variant={row.itemAction === "create" ? "default" : "secondary"} className="text-[10px]">
+                        <Badge variant={row.itemAction === "create" ? "default" : "secondary"} className="text-[11px]">
                           {row.itemAction === "create" ? "new" : "exists"}
                         </Badge>
                       </td>

@@ -13,6 +13,10 @@ import { AuthedRequest } from "../auth/tenantIsolation";
 import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
 import { normalizePostalCode } from "../lib/addressNormalize";
+import {
+  INVALID_EMAIL_MESSAGE,
+  isValidOptionalEmail,
+} from "@shared/lib/emailValidation";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -477,6 +481,12 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
   // Creates person record first, then assignment if locationIndex is specified
   let createdContacts: any[] = [];
   if (contacts.length > 0) {
+    // 2026-04-14: shape-validate every contact email at the API boundary.
+    for (const c of contacts) {
+      if (!isValidOptionalEmail(c.email ?? null)) {
+        throw createError(400, INVALID_EMAIL_MESSAGE);
+      }
+    }
     for (const c of contacts) {
       const person = await clientContactRepository.createPerson(companyId!, {
         customerCompanyId: customerCompany.id,

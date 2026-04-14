@@ -12,6 +12,10 @@ import { customerCompanyRepository } from "../storage/customerCompanies";
 import { clientContactRepository } from "../storage/clientContacts";
 import { db } from "../db";
 import { clientLocations } from "@shared/schema";
+import {
+  INVALID_EMAIL_MESSAGE,
+  isValidOptionalEmail,
+} from "@shared/lib/emailValidation";
 
 /**
  * Phase 3: Validate that all locationIds belong to the given customerCompany.
@@ -280,7 +284,13 @@ const contactFieldsSchema = z.object({
   firstName: z.string().optional().default(""),
   lastName: z.string().optional().default(""),
   phone: z.string().optional().nullable(),
-  email: z.string().optional().nullable(),
+  // 2026-04-14: shape-validate emails at the API boundary so bad data
+  // (e.g. "huda@huda") never lands in `contact_persons.email`.
+  email: z
+    .string()
+    .optional()
+    .nullable()
+    .refine(isValidOptionalEmail, { message: INVALID_EMAIL_MESSAGE }),
   roles: z.array(z.string()).optional().default([]),
   isPrimary: z.boolean().optional().default(false),
   association: z.object({
@@ -355,7 +365,11 @@ const updateContactSchema = z.object({
   firstName: z.string().optional(),
   lastName: z.string().optional(),
   phone: z.string().optional().nullable(),
-  email: z.string().optional().nullable(),
+  email: z
+    .string()
+    .optional()
+    .nullable()
+    .refine(isValidOptionalEmail, { message: INVALID_EMAIL_MESSAGE }),
   roles: z.array(z.string()).optional(),
   isPrimary: z.boolean().optional(),
   locationId: z.string().uuid().nullable().optional(),

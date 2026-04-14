@@ -260,6 +260,30 @@ export class JobNotesRepository extends BaseRepository {
       throw this.notFoundError("Note");
     }
 
+    // 2026-04-13 — canonical cleanup. Files are 1:1 with attachments; fetch
+    // each attached fileId BEFORE the FK cascade wipes the join rows, then
+    // delegate to `deleteFile` (soft-delete file row + best-effort R2
+    // deletion). `deleteFile` is idempotent, so repeated deletes don't
+    // crash. We tolerate individual-file failures — the note delete below
+    // is still authoritative.
+    const attachedFiles = await db
+      .select({ fileId: jobNoteAttachments.fileId })
+      .from(jobNoteAttachments)
+      .where(
+        and(
+          eq(jobNoteAttachments.noteId, noteId),
+          eq(jobNoteAttachments.companyId, companyId),
+        ),
+      );
+    if (attachedFiles.length > 0) {
+      const { deleteFile } = await import("../services/fileUploadService");
+      for (const row of attachedFiles) {
+        if (row.fileId) {
+          await deleteFile(companyId, row.fileId).catch(() => {});
+        }
+      }
+    }
+
     await db.delete(jobNotes).where(eq(jobNotes.id, noteId));
 
     return { success: true };

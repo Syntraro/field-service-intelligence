@@ -2126,8 +2126,8 @@ export default function QboConsolePage() {
                                       {item.name}
                                     </Link>
                                   </TableCell>
-                                  <TableCell><Badge variant="secondary" className="text-[10px]">{item.type}</Badge></TableCell>
-                                  <TableCell className="text-muted-foreground font-mono text-[10px]">{item.itemId.substring(0, 8)}</TableCell>
+                                  <TableCell><Badge variant="secondary" className="text-[11px]">{item.type}</Badge></TableCell>
+                                  <TableCell className="text-muted-foreground font-mono text-[11px]">{item.itemId.substring(0, 8)}</TableCell>
                                   <TableCell className="text-muted-foreground">{item.qboItemId || "—"}</TableCell>
                                   <TableCell className="text-destructive max-w-[250px] break-words">{item.error}</TableCell>
                                   <TableCell className="text-muted-foreground max-w-[200px]">{hint}</TableCell>
@@ -2560,7 +2560,7 @@ export default function QboConsolePage() {
                       <CardTitle className="text-base flex items-center gap-2">
                         <Download className="h-4 w-4" />
                         Import Tools (QBO → Local){onboardingComplete ? " — Reconciliation" : ""}
-                        {onboardingComplete && <Badge variant="outline" className="ml-1 border-amber-300 text-amber-700 text-[10px]">Advanced</Badge>}
+                        {onboardingComplete && <Badge variant="outline" className="ml-1 border-amber-300 text-amber-700 text-[11px]">Advanced</Badge>}
                       </CardTitle>
                       <CardDescription className="mt-1 font-normal">
                         {onboardingComplete
@@ -2633,9 +2633,9 @@ export default function QboConsolePage() {
                                 <TableRow key={i} className="text-xs">
                                   <TableCell>{item.name}</TableCell>
                                   <TableCell>{item.sku || "—"}</TableCell>
-                                  <TableCell><Badge variant="outline" className="text-[10px]">{item.type}</Badge></TableCell>
+                                  <TableCell><Badge variant="outline" className="text-[11px]">{item.type}</Badge></TableCell>
                                   <TableCell>
-                                    <Badge variant={item.action === "ERROR" ? "destructive" : item.action === "WIPE" ? "destructive" : item.action === "SKIP" ? "secondary" : "default"} className="text-[10px]">
+                                    <Badge variant={item.action === "ERROR" ? "destructive" : item.action === "WIPE" ? "destructive" : item.action === "SKIP" ? "secondary" : "default"} className="text-[11px]">
                                       {item.action}
                                     </Badge>
                                   </TableCell>
@@ -2665,18 +2665,18 @@ export default function QboConsolePage() {
                             {(() => {
                               const unresolvedCount = catalogImportResult.conflicts.filter((c: ImportConflict) => !catalogResolutions[c.qbo.id]).length;
                               return unresolvedCount > 0 ? (
-                                <p className="text-[10px] text-amber-600">{unresolvedCount} unresolved conflict{unresolvedCount > 1 ? "s" : ""} will be skipped on import.</p>
+                                <p className="text-[11px] text-amber-600">{unresolvedCount} unresolved conflict{unresolvedCount > 1 ? "s" : ""} will be skipped on import.</p>
                               ) : null;
                             })()}
                             {catalogImportResult.conflicts.map((conflict: ImportConflict, ci: number) => (
                               <div key={ci} className="border rounded p-2 bg-white dark:bg-gray-900 space-y-1">
                                 <div className="flex items-center gap-2 text-xs">
                                   <span className="font-medium">{conflict.qbo.name}</span>
-                                  {conflict.qbo.sku && <Badge variant="outline" className="text-[10px]">SKU: {conflict.qbo.sku}</Badge>}
-                                  <Badge variant="secondary" className="text-[10px]">{conflict.matchBasis}</Badge>
-                                  <span className="text-muted-foreground text-[10px]">QBO {conflict.qbo.id}</span>
+                                  {conflict.qbo.sku && <Badge variant="outline" className="text-[11px]">SKU: {conflict.qbo.sku}</Badge>}
+                                  <Badge variant="secondary" className="text-[11px]">{conflict.matchBasis}</Badge>
+                                  <span className="text-muted-foreground text-[11px]">QBO {conflict.qbo.id}</span>
                                 </div>
-                                <p className="text-[10px] text-muted-foreground">{conflict.message}</p>
+                                <p className="text-[11px] text-muted-foreground">{conflict.message}</p>
                                 <RadioGroup
                                   value={catalogResolutions[conflict.qbo.id]
                                     ? (catalogResolutions[conflict.qbo.id].action === "MAP" ? `map:${catalogResolutions[conflict.qbo.id].localId}` : catalogResolutions[conflict.qbo.id].action)
@@ -2734,7 +2734,7 @@ export default function QboConsolePage() {
                         </SelectContent>
                       </Select>
                       {customerImportAdvMode === "link_only" && (
-                        <span className="text-[10px] text-muted-foreground">Match QBO customers to existing local records only. Does not create new clients.</span>
+                        <span className="text-[11px] text-muted-foreground">Match QBO customers to existing local records only. Does not create new clients.</span>
                       )}
                     </div>
                     <div className="flex gap-2">
@@ -2783,9 +2783,9 @@ export default function QboConsolePage() {
                               {customerImportAdvResult.sample.map((item: any, i: number) => (
                                 <TableRow key={i} className="text-xs">
                                   <TableCell>{item.displayName}</TableCell>
-                                  <TableCell><Badge variant="outline" className="text-[10px]">{item.type}</Badge></TableCell>
+                                  <TableCell><Badge variant="outline" className="text-[11px]">{item.type}</Badge></TableCell>
                                   <TableCell>
-                                    <Badge variant={item.action === "create" ? "default" : item.action === "skip" ? "secondary" : "outline"} className="text-[10px]">
+                                    <Badge variant={item.action === "create" ? "default" : item.action === "skip" ? "secondary" : "outline"} className="text-[11px]">
                                       {item.action.toUpperCase()}
                                     </Badge>
                                     {item.matchBasis && item.action === "update" && (
@@ -2832,18 +2832,18 @@ export default function QboConsolePage() {
                             {(() => {
                               const unresolvedCount = customerImportAdvResult.conflicts.filter((c: ImportConflict) => !customerResolutions[c.qbo.id]).length;
                               return unresolvedCount > 0 ? (
-                                <p className="text-[10px] text-amber-600">{unresolvedCount} unresolved conflict{unresolvedCount > 1 ? "s" : ""} will be skipped on import.</p>
+                                <p className="text-[11px] text-amber-600">{unresolvedCount} unresolved conflict{unresolvedCount > 1 ? "s" : ""} will be skipped on import.</p>
                               ) : null;
                             })()}
                             {customerImportAdvResult.conflicts.map((conflict: ImportConflict, ci: number) => (
                               <div key={ci} className="border rounded p-2 bg-white dark:bg-gray-900 space-y-1">
                                 <div className="flex items-center gap-2 text-xs flex-wrap">
                                   <span className="font-medium">{conflict.qbo.name}</span>
-                                  {conflict.qbo.email && <Badge variant="outline" className="text-[10px]">{conflict.qbo.email}</Badge>}
-                                  <Badge variant="secondary" className="text-[10px]">{conflict.matchBasis}</Badge>
-                                  <span className="text-muted-foreground text-[10px]">QBO {conflict.qbo.id}</span>
+                                  {conflict.qbo.email && <Badge variant="outline" className="text-[11px]">{conflict.qbo.email}</Badge>}
+                                  <Badge variant="secondary" className="text-[11px]">{conflict.matchBasis}</Badge>
+                                  <span className="text-muted-foreground text-[11px]">QBO {conflict.qbo.id}</span>
                                 </div>
-                                <p className="text-[10px] text-muted-foreground">{conflict.message}</p>
+                                <p className="text-[11px] text-muted-foreground">{conflict.message}</p>
                                 <RadioGroup
                                   value={customerResolutions[conflict.qbo.id]
                                     ? (customerResolutions[conflict.qbo.id].action === "MAP" ? `map:${customerResolutions[conflict.qbo.id].localId}` : customerResolutions[conflict.qbo.id].action)

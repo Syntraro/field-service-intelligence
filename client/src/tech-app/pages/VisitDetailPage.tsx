@@ -47,7 +47,10 @@ import {
   STATUS_LABELS, OUTCOME_LABELS, OUTCOME_COLORS, DEFAULT_OUTCOME_COLOR,
 } from "../utils/visitDisplay";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { AttachmentView } from "@/components/attachments/AttachmentView";
+import { NoteAttachmentStrip } from "@/components/attachments/NoteAttachmentStrip";
+import { useOfflineNotes } from "@/hooks/useOfflineNoteQueue";
+import { useOnline } from "@/hooks/useOnline";
+import { useNoteSyncReplay } from "../hooks/useNoteSyncReplay";
 import {
   SUPPORTED_MIME_TYPES,
   useFileUpload,
@@ -671,6 +674,19 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
     cancelRoute, cancelStart, pauseJob, resumeJob,
   } = useTechVisitDetail(visitId);
 
+  // 2026-04-14 offline queue: pending + failed note rows for this visit,
+  // plus retry/discard actions wired to the replay engine.
+  const pendingNotes = useOfflineNotes(visitId);
+  const { retry: retryNote, discard: discardNote } = useNoteSyncReplay();
+
+  // 2026-04-14 hook-order fix: `useFileUpload` was previously called below
+  // the early `isLoading` / `isError` returns further down this component,
+  // which produced a "Rendered more hooks than during the previous render"
+  // runtime error on the loading → loaded transition. Hoisting it here so
+  // every render executes the same hook sequence.
+  const { upload: uploadAttachment } = useFileUpload();
+  const { isOnline } = useOnline();
+
   const [showOutcome, setShowOutcome] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>("Overview");
   const [actionError, setActionError] = useState<string | null>(null);
@@ -747,7 +763,6 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
     setActionError(null); setShowOutcome(false);
     try { await complete.mutateAsync({ outcome, outcomeNote }); showSuccess("Visit completed"); } catch (err: any) { showError(err); }
   };
-  const { upload: uploadAttachment } = useFileUpload();
   const handleAddNote = async (text: string, equipmentId: string | null, attachments: File[]) => {
     setActionError(null);
     try {
@@ -1061,7 +1076,65 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
               onSubmit={handleAddNote}
               isPending={addNote.isPending}
               lockedEquipment={!!noteEquipmentId}
+              isOnline={isOnline}
+              onBlocked={(msg) => setActionError(msg)}
             />
+
+            {/* Pending / failed offline notes — prepended above real notes */}
+            {pendingNotes.length > 0 && (
+              <div className="space-y-1.5">
+                {pendingNotes.map((q) => (
+                  <div
+                    key={q.id}
+                    className="rounded-md border border-slate-200 bg-white p-3"
+                    data-testid={`pending-note-${q.id}`}
+                  >
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      {q.syncStatus === "failed" ? (
+                        <span className="text-[10px] uppercase tracking-wider font-semibold text-red-600">
+                          Sync failed
+                        </span>
+                      ) : q.syncStatus === "syncing" ? (
+                        <span className="text-[10px] uppercase tracking-wider font-semibold text-slate-500">
+                          Syncing…
+                        </span>
+                      ) : (
+                        <span className="text-[10px] uppercase tracking-wider font-semibold text-amber-600">
+                          Pending sync
+                        </span>
+                      )}
+                      <span className="text-[10px] text-slate-400">
+                        {new Date(q.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                      </span>
+                    </div>
+                    <p className="text-sm text-slate-700 whitespace-pre-wrap leading-5">{q.payload.text}</p>
+                    {q.syncStatus === "failed" && (
+                      <div className="mt-2 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void retryNote(q.id)}
+                          className="h-6 px-2 text-[11px] rounded-md border border-red-200 text-red-700 hover:bg-red-50"
+                          data-testid={`retry-pending-note-${q.id}`}
+                        >
+                          Retry
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void discardNote(q.id)}
+                          className="h-6 px-2 text-[11px] rounded-md text-slate-500 hover:text-slate-700"
+                          data-testid={`discard-pending-note-${q.id}`}
+                        >
+                          Discard
+                        </button>
+                        {q.lastError && (
+                          <span className="text-[10px] text-red-500 truncate">{q.lastError}</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
             {/* Equipment-grouped notes */}
             {visit.equipment.map(eq => {
               const eqNotes = notesByEquipment.get(eq.id);
@@ -1208,48 +1281,122 @@ function NoteCard({ note }: { note: DetailNote }) {
       </div>
       <p className="text-xs text-slate-700 leading-relaxed">{note.text}</p>
       {note.attachments && note.attachments.length > 0 && (
-        <div className="mt-2 space-y-1">
-          {note.attachments.map(att => (
-            <AttachmentView key={att.id} attachment={att} />
-          ))}
+        <div className="mt-2">
+          <NoteAttachmentStrip attachments={note.attachments} />
         </div>
       )}
     </div>
   );
 }
 
-function NoteInput({ equipmentId, equipment, onEquipmentChange, onSubmit, isPending, lockedEquipment }: {
+/**
+ * Staged attachment descriptor. `previewUrl` is created once on pick
+ * (not during render) and revoked on removal / unmount to avoid
+ * leaking blob: URLs in the tab's allocation table.
+ */
+interface StagedAttachment {
+  file: File;
+  previewUrl?: string;
+}
+
+function NoteInput({ equipmentId, equipment, onEquipmentChange, onSubmit, isPending, lockedEquipment, isOnline, onBlocked }: {
   equipmentId: string | null;
   equipment: DetailEquipment[];
   onEquipmentChange: (id: string | null) => void;
   onSubmit: (text: string, equipmentId: string | null, files: File[]) => void | Promise<void>;
   isPending: boolean;
   lockedEquipment?: boolean;
+  /** 2026-04-14: attachments require a network — disabled offline. */
+  isOnline: boolean;
+  /** Surfaces a user-visible message when a submit is intentionally
+   *  rejected client-side (e.g. attachments staged while offline). */
+  onBlocked?: (message: string) => void;
 }) {
   const [text, setText] = useState("");
-  const [staged, setStaged] = useState<File[]>([]);
+  const [staged, setStaged] = useState<StagedAttachment[]>([]);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
+  // Tracks the full note+upload sequence so the spinner stays on until
+  // attachments have finished uploading, not just the note POST.
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const photoRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Revoke any still-live preview URLs on unmount.
+  useEffect(() => {
+    return () => {
+      staged.forEach((s) => {
+        if (s.previewUrl) URL.revokeObjectURL(s.previewUrl);
+      });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handlePick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const picked = Array.from(e.target.files ?? []);
-    const valid: File[] = [];
+    const valid: StagedAttachment[] = [];
     for (const f of picked) {
       const err = validateFileClientSide(f);
       if (err) continue; // silent skip; page-level toast is heavyweight for tech UI
-      valid.push(f);
+      valid.push({
+        file: f,
+        previewUrl: f.type.startsWith("image/") ? URL.createObjectURL(f) : undefined,
+      });
     }
-    setStaged(prev => [...prev, ...valid].slice(0, 5));
-    if (fileRef.current) fileRef.current.value = "";
+    setStaged((prev) => {
+      const next = [...prev, ...valid].slice(0, 5);
+      // If the 5-item cap dropped any newly picked item, revoke its URL.
+      const kept = new Set(next);
+      for (const s of valid) {
+        if (!kept.has(s) && s.previewUrl) URL.revokeObjectURL(s.previewUrl);
+      }
+      return next;
+    });
+    // Reset the input so selecting the same file twice in a row still
+    // fires `onChange` — browsers skip duplicate values otherwise.
+    if (e.target) e.target.value = "";
+    setShowAttachMenu(false);
   };
-  const removeStaged = (i: number) => setStaged(prev => prev.filter((_, idx) => idx !== i));
+  const removeStaged = (i: number) =>
+    setStaged((prev) => {
+      const removed = prev[i];
+      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+      return prev.filter((_, idx) => idx !== i);
+    });
 
-  const handleSubmit = () => {
-    if ((!text.trim() && staged.length === 0) || isPending) return;
-    onSubmit(text.trim(), equipmentId, staged);
+  const pending = isPending || isSubmitting;
+
+  const handleSubmit = async () => {
+    // Backend requires a non-empty note body; attachments-only is not a
+    // valid note. Also rejects rapid repeat taps while a submission is
+    // in flight.
+    if (!text.trim() || pending) return;
+    // 2026-04-14 guard: do not drop attachments into the offline text
+    // queue. Block the submit, keep the form intact, surface a clear
+    // message. Note: we do NOT clear text or staged here.
+    if (!isOnline && staged.length > 0) {
+      onBlocked?.("Reconnect to send attachments.");
+      return;
+    }
+    const snapshotText = text.trim();
+    const snapshotFiles = staged.map((s) => s.file);
+    const snapshotUrls = staged
+      .map((s) => s.previewUrl)
+      .filter((u): u is string => typeof u === "string");
     setText("");
     setStaged([]);
+    setIsSubmitting(true);
+    try {
+      await Promise.resolve(onSubmit(snapshotText, equipmentId, snapshotFiles));
+    } finally {
+      setIsSubmitting(false);
+      // Snapshot object URLs are no longer referenced by the component;
+      // uploader has the raw File objects.
+      snapshotUrls.forEach((u) => URL.revokeObjectURL(u));
+    }
   };
   const selectedEq = equipment.find(e => e.id === equipmentId);
+  const attachmentsDisabled = pending || !isOnline;
   return (
     <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
       {lockedEquipment && selectedEq ? (
@@ -1265,30 +1412,66 @@ function NoteInput({ equipmentId, equipment, onEquipmentChange, onSubmit, isPend
         </select>
       ) : null}
       <div className="flex gap-2">
-        <textarea value={text} onChange={e => setText(e.target.value)} disabled={isPending}
+        <textarea value={text} onChange={e => setText(e.target.value)} disabled={pending}
           placeholder={lockedEquipment && selectedEq ? `Note for ${selectedEq.name}…` : "Add a note…"}
           className="flex-1 text-xs border border-slate-200 rounded-md px-3 py-2 resize-none h-16 disabled:bg-slate-50" />
-        <div className="flex flex-col gap-1">
-          <button type="button" onClick={() => fileRef.current?.click()} disabled={isPending}
+        <div className="flex flex-col gap-1 relative">
+          <button type="button"
+            onClick={() => setShowAttachMenu((v) => !v)}
+            disabled={attachmentsDisabled}
             className="h-8 w-8 rounded-md bg-slate-100 text-slate-600 flex items-center justify-center disabled:opacity-50"
-            aria-label="Attach file">
+            aria-label={isOnline ? "Attach file" : "Attachments require connection"}
+            title={isOnline ? "Attach file" : "Attachments require connection"}
+            data-testid="button-note-attach"
+          >
             <Paperclip className="h-3.5 w-3.5" />
           </button>
-          <button onClick={handleSubmit} disabled={(!text.trim() && staged.length === 0) || isPending}
-            className="h-8 w-8 rounded-md bg-emerald-600 text-white flex items-center justify-center disabled:bg-slate-200">
-            {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+          <button onClick={handleSubmit} disabled={!text.trim() || pending}
+            className="h-8 w-8 rounded-md bg-emerald-600 text-white flex items-center justify-center disabled:bg-slate-200"
+            data-testid="button-note-submit">
+            {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
           </button>
+          {showAttachMenu && isOnline && (
+            <div className="absolute right-10 top-0 z-20 w-40 rounded-md border border-slate-200 bg-white shadow-md overflow-hidden">
+              <button type="button"
+                className="w-full px-3 py-2 text-left text-xs hover:bg-slate-50"
+                onClick={() => cameraRef.current?.click()}
+                data-testid="option-take-photo"
+              >Take photo</button>
+              <button type="button"
+                className="w-full px-3 py-2 text-left text-xs hover:bg-slate-50"
+                onClick={() => photoRef.current?.click()}
+                data-testid="option-choose-photo"
+              >Choose photo</button>
+              <button type="button"
+                className="w-full px-3 py-2 text-left text-xs hover:bg-slate-50"
+                onClick={() => fileRef.current?.click()}
+                data-testid="option-choose-file"
+              >Choose file</button>
+            </div>
+          )}
         </div>
       </div>
+      {!isOnline && (
+        <p className="text-[10px] text-slate-500 -mt-1">Attachments require connection.</p>
+      )}
+      <input ref={cameraRef} type="file" accept="image/*" capture="environment"
+        className="hidden" onChange={handlePick} />
+      <input ref={photoRef} type="file" accept="image/*"
+        className="hidden" onChange={handlePick} />
       <input ref={fileRef} type="file" multiple accept={SUPPORTED_MIME_TYPES.join(",")}
         className="hidden" onChange={handlePick} />
       {staged.length > 0 && (
         <div className="space-y-1">
-          {staged.map((f, i) => (
+          {staged.map((s, i) => (
             <div key={i} className="flex items-center gap-2 rounded border border-slate-200 px-2 py-1 bg-slate-50">
-              <span className="text-[11px] truncate flex-1">{f.name}</span>
+              {s.previewUrl ? (
+                <img src={s.previewUrl} alt="" className="h-8 w-8 rounded object-cover shrink-0" />
+              ) : null}
+              <span className="text-[11px] truncate flex-1">{s.file.name}</span>
               <button type="button" onClick={() => removeStaged(i)}
-                className="text-slate-500 hover:text-slate-700">
+                className="text-slate-500 hover:text-slate-700"
+                aria-label={`Remove ${s.file.name}`}>
                 <CloseIcon className="h-3 w-3" />
               </button>
             </div>

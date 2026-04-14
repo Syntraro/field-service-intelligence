@@ -62,7 +62,7 @@ import { JobExpensesCard } from "@/components/JobExpensesCard";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import { JobHeaderCard, type JobHeaderCardHandle } from "@/components/JobHeaderCard";
 import { CreateInvoiceFromJobDialog } from "@/components/CreateInvoiceFromJobDialog";
-import { AddJobNoteDialog } from "@/components/AddJobNoteDialog";
+import { JobNoteDialog } from "@/components/JobNoteDialog";
 // JobAssignmentsCard + JobMetaCard replaced by unified top-section layout
 import { ActionRequiredModal, getHoldReasonLabel } from "@/components/ActionRequiredModal";
 import { JobStatusTimeline } from "@/components/job/JobStatusTimeline";
@@ -71,7 +71,9 @@ import { TimeEntryModal, type TimeEntryForModal } from "@/components/time";
 // Phase 12 (2026-04-12): customer-facing job email modal.
 import { SendJobModal } from "@/components/communication/SendJobModal";
 // Phase 15 (2026-04-12): email delivery status card.
-import { DeliveryStatusCard } from "@/components/communication/DeliveryStatusCard";
+// 2026-04-14: DeliveryStatusCard retired from this page; right-rail
+// Activity card replaces the per-page email-delivery widget.
+import { ActivityCard } from "@/components/activity/ActivityCard";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { StatusPill, statusToVariant } from "@/components/ui/status-pill";
@@ -432,7 +434,7 @@ function LabourCardContent({
                         <span className="ml-0.5 text-slate-400">{format(new Date(entry.startAt), "h:mma")}–{format(new Date(entry.endAt), "h:mma")}</span>
                       )}
                     </span>
-                    <span className={cn("text-[10px] font-medium px-1.5 py-0.5 rounded-full shrink-0",
+                    <span className={cn("text-[11px] font-medium px-1.5 py-0.5 rounded-full shrink-0",
                       isTravel ? "bg-blue-50 text-blue-600" : entry.sourceType === "task" ? "bg-indigo-50 text-indigo-600" : "bg-emerald-50 text-emerald-600"
                     )}>
                       {isTravel ? "En Route" : entry.sourceType === "task" ? "Task" : entry.sourceType === "manual" ? "Manual" : "On Site"}
@@ -445,7 +447,7 @@ function LabourCardContent({
                           <span className="text-green-600 flex items-center gap-1"><Clock className="h-3 w-3 animate-pulse" />Running</span>
                         )}
                       </span>
-                      {cost && <span className="text-[11px] text-muted-foreground tabular-nums">${cost}</span>}
+                      {cost && <span className="text-xs text-muted-foreground tabular-nums">${cost}</span>}
                     </div>
                     {isLocked && <span title="Locked (invoiced)"><Lock className="h-3 w-3 text-amber-500 shrink-0" /></span>}
                   </div>
@@ -874,15 +876,17 @@ export default function JobDetailPage() {
             instead of sizing to content (the default auto). Without this, the auto row
             expands to content height, h-full on columns resolves to that expanded height,
             overflow-y-auto never activates, and <main overflow-auto> scrolls the whole page. */}
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] lg:grid-rows-[1fr] gap-4 flex-1 min-h-0" data-testid="job-body-area">
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] lg:grid-rows-[1fr] gap-4 flex-1 min-h-0" data-testid="job-body-area">
 
         {/* ════════════════════════════════════════════════════════════════
             LEFT COLUMN — independently scrollable primary content
             ════════════════════════════════════════════════════════════════ */}
         <div className="space-y-2.5 min-w-0 min-h-0 overflow-y-auto lg:pr-1 h-full">
 
-          {/* Phase 15 (2026-04-12): email delivery status + resend. */}
-          <DeliveryStatusCard entityType="job" entityId={job.id} />
+          {/* 2026-04-14: removed `DeliveryStatusCard` from the top of
+              Job Detail. Send/view info now lives in the right-rail
+              Activity card; the standalone empty-state banner was
+              redundant once Activity exists. */}
 
           {/* ── Unified Header + Action Bar ────────────────────────────── */}
           <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="job-header-command">
@@ -903,7 +907,7 @@ export default function JobDetailPage() {
                       {getJobStatusDisplay(job).label}
                     </StatusPill>
                     {job.openSubStatus === "on_hold" && job.holdReason && (
-                      <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-orange-300 text-orange-700 bg-orange-50" data-testid="hold-reason-badge">
+                      <Badge variant="outline" className="text-[11px] px-1.5 py-0 border-orange-300 text-orange-700 bg-orange-50" data-testid="hold-reason-badge">
                         {getHoldReasonLabel(job.holdReason)}
                       </Badge>
                     )}
@@ -931,7 +935,7 @@ export default function JobDetailPage() {
                   <table className="text-left text-xs w-full">
                     <tbody>
                       <tr>
-                        <td className="text-[11px] text-slate-400 pr-3 py-0.5 whitespace-nowrap">Job #</td>
+                        <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Job #</td>
                         <td className="font-semibold text-slate-700 py-0.5">
                           {editingJobNumber ? (
                             <div className="flex items-center gap-1">
@@ -941,8 +945,8 @@ export default function JobDetailPage() {
                                 onKeyDown={(e) => { if (e.key === "Enter") handleJobNumberSave(); if (e.key === "Escape") handleJobNumberCancel(); }}
                                 className="w-16 h-5 px-1 text-xs border rounded bg-background focus:outline-none focus:ring-1 focus:ring-primary"
                                 autoFocus data-testid="input-job-number" />
-                              <button type="button" onClick={handleJobNumberSave} className="text-primary text-[10px] font-medium" disabled={updateJobNumberMutation.isPending}>{updateJobNumberMutation.isPending ? "…" : "✓"}</button>
-                              <button type="button" onClick={handleJobNumberCancel} className="text-muted-foreground text-[10px]">✕</button>
+                              <button type="button" onClick={handleJobNumberSave} className="text-primary text-[11px] font-medium" disabled={updateJobNumberMutation.isPending}>{updateJobNumberMutation.isPending ? "…" : "✓"}</button>
+                              <button type="button" onClick={handleJobNumberCancel} className="text-muted-foreground text-[11px]">✕</button>
                             </div>
                           ) : (
                             <button type="button" onClick={() => { setJobNumberDraft(String(job.jobNumber)); setJobNumberError(null); setEditingJobNumber(true); }}
@@ -951,11 +955,11 @@ export default function JobDetailPage() {
                               <Pencil className="inline ml-0.5 h-2 w-2 opacity-0 group-hover:opacity-40 transition-opacity" />
                             </button>
                           )}
-                          {jobNumberError && <div className="text-[9px] text-destructive">{jobNumberError}</div>}
+                          {jobNumberError && <div className="text-[11px] text-destructive">{jobNumberError}</div>}
                         </td>
                       </tr>
                       <tr>
-                        <td className="text-[11px] text-slate-400 pr-3 py-0.5 whitespace-nowrap">Invoice #</td>
+                        <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Invoice #</td>
                         <td className="py-0.5">
                           {jobInvoice ? (
                             <Link href={`/invoices/${jobInvoice.id}`} className="font-semibold text-primary hover:underline" data-testid="link-invoice">
@@ -967,11 +971,11 @@ export default function JobDetailPage() {
                         </td>
                       </tr>
                       <tr>
-                        <td className="text-[11px] text-slate-400 pr-3 py-0.5 whitespace-nowrap">Created</td>
+                        <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Created</td>
                         <td className="text-slate-600 py-0.5">{job.createdAt ? format(new Date(job.createdAt), "MMM d, yyyy") : "—"}</td>
                       </tr>
                       <tr>
-                        <td className="text-[11px] text-slate-400 pr-3 py-0.5 whitespace-nowrap">Completed</td>
+                        <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Completed</td>
                         <td className="text-slate-600 py-0.5">{job.closedAt ? format(new Date(job.closedAt), "MMM d, yyyy") : "—"}</td>
                       </tr>
                     </tbody>
@@ -1575,6 +1579,9 @@ export default function JobDetailPage() {
             onExternalAddOpenChange={setShowAddEquipmentDialog}
           />
 
+          {/* 6. ACTIVITY — bottom of rail; reference history. */}
+          <ActivityCard entityType="job" entityId={job.id} />
+
         </aside>
         </div>
       </div>
@@ -1729,9 +1736,10 @@ export default function JobDetailPage() {
         }}
       />
 
-      {/* Header-level Add Note Dialog */}
-      <AddJobNoteDialog
+      {/* Header-level canonical note dialog (create mode from this entry point) */}
+      <JobNoteDialog
         jobId={job.id}
+        note={null}
         open={showAddNoteDialog}
         onOpenChange={setShowAddNoteDialog}
       />

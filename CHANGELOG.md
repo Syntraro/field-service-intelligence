@@ -6,7 +6,851 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### Sidebar cleanup and width reduction (2026-04-14)
+
+- Renamed "Technician Preview" → "Technician".
+- Renamed "PM & Recurring Jobs" → "Recurring Jobs", with an expanded-state
+  hover tooltip "Preventive Maintenance & Recurring Jobs" (via native
+  `title` attribute on the nav link).
+- Reduced canonical sidebar width from 12.5rem (200px) to 9.625rem
+  (154px) in `client/src/components/ui/sidebar.tsx` (`SIDEBAR_WIDTH`) —
+  second-pass trim after initial 180px proved too loose.
+- Tightened horizontal padding (`px-1.5`) and icon/text gap (`gap-1`) on
+  sidebar menu buttons in `AppSidebar.tsx` to keep single-line labels
+  with right-side breathing room. Colors, row height (`h-10`), vertical
+  spacing, and routing are unchanged.
+
+**Files affected:**
+- `client/src/components/ui/sidebar.tsx`
+- `client/src/components/AppSidebar.tsx`
+
+#### Send Invoice: CC, attach-PDF toggle, image attachments (2026-04-13, Commit C)
+
+Expanded the shared send modal to support per-send CC and, for invoices,
+an optional invoice-PDF attachment toggle plus up to five image
+attachments. Template save / reset / settings behaviour is unchanged.
+
+**Recipient resolution:** the existing billing-first strategy
+(`recipientResolverStrategies.collectBillingFirstRecipients`) is reused
+as-is. All contacts with `billing` role on the location or parent
+customer-company are prefilled as `To`; no "primary billing" heuristic
+is added. When no billing-role contacts exist the field is left empty.
+Dedup / email normalization stays with the shared resolver + hook.
+
+**CC:** the shared hook + modal now carry a CC chip input with the same
+UX as `To`. CC flows to the invoice send route, the dispatch service,
+and Resend. Persisted on the `email_deliveries` row via a new `cc_json`
+JSONB column so delivery history + resend tooling can reconstruct the
+full envelope.
+
+**Attach-PDF toggle:** the invoice PDF is attached by default; a
+checkbox in the modal lets the user omit it for this send only. When
+off, `generateInvoicePdf` is skipped. No duplicate PDF rendering path.
+
+**Image attachments:** up to 5 images, JPG/PNG/WEBP, ≤10 MB each.
+Enforced in both places (client picker caps + server-side
+`MAX_EMAIL_IMAGE_ATTACHMENTS` + mime allow-list + size guard). Files
+upload through the canonical 3-step R2 pipeline under a new transient
+`invoice_email_attachment` entity type — no persistent join table; the
+send payload references files by id. `getFileBufferForTenant` fetches
+buffers from R2 at send time and merges them with the PDF before the
+Resend call. Abandoned uploads are swept by the existing orphan
+sweeper.
+
+**Schema:**
+- New migration `migrations/2026_04_13_email_deliveries_cc.sql` adds
+  `cc_json jsonb NOT NULL DEFAULT '[]'` to `email_deliveries`.
+- `shared/schema.ts` `emailDeliveries` updated to expose `ccJson`.
+
+**Reuse vs. new:**
+- **Reused:** shared modal, shared hook, recipient resolver, template
+  renderer, invoice PDF generator, R2 upload lifecycle, delivery
+  tracking service.
+- **New (minimal):**
+  - `invoice_email_attachment` entity adapter in `fileUploadService`
+    (no join table — resolve + key builder only).
+  - `StorageProvider.getObjectBuffer` + R2 implementation.
+  - `getFileBufferForTenant` helper.
+  - CC column + plumbing through storage / tracking / dispatch.
+
+**Files:**
+- `migrations/2026_04_13_email_deliveries_cc.sql` — new.
+- `shared/schema.ts` — `ccJson` on `emailDeliveries`.
+- `server/services/storage/StorageProvider.ts` — `getObjectBuffer`.
+- `server/services/storage/R2StorageProvider.ts` — `getObjectBuffer`.
+- `server/services/fileUploadService.ts` — new `invoice_email_attachment` entity + `getFileBufferForTenant`.
+- `server/services/emailDispatchService.ts` — `cc`, `attachPdf`, `attachmentFileIds` on `SendInvoiceEmailInput`; server-side caps; conditional PDF + image merge.
+- `server/storage/emailDeliveriesStorage.ts` — persists `cc`.
+- `server/routes/invoices.ts` — schema + route wiring.
+- `client/src/hooks/useFileUpload.ts` — new client entityType.
+- `client/src/hooks/useSendCommunicationModal.ts` — cc/attachPdf/attachments state + payload.
+- `client/src/components/communication/SendCommunicationModal.tsx` — CC chip input, PDF toggle, image picker (invoice only).
+
+**Edge cases covered:**
+- No contacts / no billing contacts → empty To, user must add manually (Send disabled until non-empty).
+- Multiple billing contacts → all prefilled; dedup preserved.
+- Dup emails across contacts → deduped by shared hook's normalizer.
+- >5 images → picker caps client-side; server returns 400.
+- Unsupported mime → picker skips with toast; server enforces allow-list.
+- Oversize → picker client-validates; server enforces `MAX_EMAIL_IMAGE_BYTES`.
+- Remove before send → `removeAttachment` in hook.
+- Modal close → transient state (cc / attachPdf / attachments) reset in hook `useEffect`.
+
+**Deployment:** run `npm run db:migrate` to apply the new `cc_json`
+column before the new server code is deployed (column default makes
+insertion safe for old clients in the interim).
+
+### Added
+
+#### Technician PWA — offline notes (Phase 2, 2026-04-14)
+
+Narrow offline support for the one mutation that's safe to queue without
+server changes: technician note creation (`POST /api/tech/visits/:id/notes`).
+No timers, no visit-lifecycle, no file uploads. Everything else still
+behaves the same.
+
+**Queue.** `client/src/lib/offlineQueue.ts` is a plain `indexedDB` store
+(no external dep, DB `syntraro_offline_queue` / store `actions`, keyed
+by UUID). Each row carries `{ id, type, visitId, payload, createdAt,
+syncStatus: pending|syncing|failed, retryCount, lastError? }`. A tiny
+pub/sub channel lets React hooks re-read on every write.
+
+**Connectivity.** `useOnline` exposes `isOnline` + `lastReconnectedAt`,
+wired to `online`/`offline` events and `visibilitychange` (resume also
+re-asserts connectivity).
+
+**Offline branch.** `useTechVisitDetail.addNoteMutation` now checks
+`navigator.onLine` — if offline, the note is enqueued to IDB and the
+mutation returns a stub `{ id, pending: true }` so the caller's UI
+flow is unchanged. Online path is untouched.
+
+**Rendering.** `VisitDetailPage` calls `useOfflineNotes(visitId)` and
+prepends pending rows to the Notes tab with a `Pending sync` pill
+(amber), `Syncing…` (slate), or `Sync failed` (red) + inline **Retry**
+and **Discard** buttons. No fake "Saved" wording. On replay success
+the IDB row disappears and the canonical server note appears via
+`invalidateQueries(["/api/tech/visits", visitId])`.
+
+**Status bar.** `OfflineStatusBar` mounts once in `TechApp`. Hidden
+when online + empty queue. Otherwise a compact strip under the header:
+*Offline — changes will sync when connection returns*, *Syncing N…*,
+*N changes pending sync*, or *N changes failed to sync*.
+
+**Replay engine.** `useNoteSyncReplay` is mounted once in `TechApp`.
+Module-level `DRAINING` flag enforces single-flight. FIFO over
+`createdAt`. On boot, any row stuck as `syncing` from an earlier
+session is reset to `pending`. Drains on initial online mount, on
+every `online` event, on every `lastReconnectedAt` change, and when
+the user taps Retry. Retryable (5xx / network / 408 / 429) halts this
+drain cycle and waits for the next connectivity event; 4xx hard-fails
+the row and keeps draining the next one.
+
+**Scope guards.** Timers and visit-lifecycle transitions are
+deliberately NOT queued here — they need server-side idempotency and
+no-op-on-same-state semantics before replay is safe. See the next
+follow-up prompt for the required server work.
+
+**Files:**
+- `client/src/lib/offlineQueue.ts` — new IDB-backed queue.
+- `client/src/hooks/useOnline.ts` — new connectivity hook.
+- `client/src/hooks/useOfflineNoteQueue.ts` — new reactive views (per-visit + global summary).
+- `client/src/tech-app/hooks/useNoteSyncReplay.ts` — new replay engine + retry/discard API.
+- `client/src/tech-app/components/OfflineStatusBar.tsx` — new status strip.
+- `client/src/tech-app/hooks/useTechVisitDetail.ts` — offline branch in `addNoteMutation`.
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — pending/failed note rows + Retry/Discard.
+- `client/src/tech-app/app/TechApp.tsx` — mount `OfflineStatusBar` + `useNoteSyncReplay`.
+
+### Changed
+
+#### Dev script — server watch mode (2026-04-14)
+
+`npm run dev` now runs `tsx watch` so backend edits reload the Express
+server automatically. Previously every `server/**` change needed a
+manual restart (and earlier bug-fix passes repeatedly called that out
+as a footgun). Production `start` and `build` are unchanged.
+
+**Script changed (`package.json`):**
+- **Old:** `cross-env TZ=UTC NODE_ENV=development tsx --env-file=.env server/index.ts`
+- **New:** `cross-env TZ=UTC NODE_ENV=development tsx watch --env-file=.env server/index.ts`
+
+Run locally with `npm run dev` as usual — tsx prints `[watch] restart` when
+a server file changes.
+
+#### Email open-tracking — end-to-end (2026-04-14)
+
+Wires the `Email viewed` row in `InvoiceHeaderCard` to real provider
+data. No new domain concepts, no extra columns — uses the existing
+canonical `invoices.viewed_at` column and the canonical
+`email_deliveries` row as the source of truth mapping between a
+provider message id and a tenant.
+
+**What landed**
+1. `emailDeliveryStatusEnum` gained `"opened"` (shared schema).
+2. `emailDeliveryTrackingService.WEBHOOK_STATUSES` now accepts
+   `"opened"`. When the event is for an invoice delivery,
+   `markWebhookStatus` additionally runs a guarded
+   `UPDATE invoices SET viewed_at = COALESCE(viewed_at, now())
+    WHERE id = ? AND company_id = ? AND viewed_at IS NULL`
+   so only the FIRST open ever stamps the column. Subsequent
+   `email.opened` events are idempotent no-ops.
+3. New storage helper
+   `emailDeliveriesStorage.getDeliveryByProviderMessageIdAnyTenant` —
+   the webhook payload carries no tenant id, so we resolve it via the
+   provider message id (globally unique per Resend). Tenant scope is
+   re-asserted downstream: `markWebhookStatus` writes exclusively
+   against the `tenantId` that came off the delivery row.
+4. New route `POST /api/webhooks/resend` in
+   `server/routes/resendWebhook.ts`. Mounted in `server/index.ts`
+   BEFORE `express.json()` because Svix signature verification must
+   see the exact raw bytes of the body. The router applies
+   `express.raw({ type: "application/json" })` to its own path only —
+   all other routes continue to receive parsed JSON.
+5. Svix signature verification implemented with Node's stdlib `crypto`
+   (no new dep). Verifies `svix-id`, `svix-timestamp` (±5 min replay
+   tolerance), and HMAC-SHA256 over
+   `${svixId}.${svixTimestamp}.${rawBody}` using the secret's
+   base64-decoded form. Unknown/untrusted signatures are rejected with
+   400; unknown event types ACK with 204 so Resend doesn't retry.
+6. Event mapping: `email.delivered → delivered`,
+   `email.opened → opened`, `email.bounced → bounced`,
+   `email.complained → complained`. Anything else is ignored.
+
+**No changes to:**
+- Existing send flow (`emailDispatchService.sendInvoiceEmail`).
+  Resend's open-tracking pixel is controlled at the domain/project
+  level in the Resend dashboard — not per-send — so no SDK argument
+  was added. Dispatch signatures and call paths are untouched.
+- `InvoiceHeaderCard` — it already reads `invoices.viewedAt`; the row
+  will now light up automatically for any invoice whose recipient
+  opens the email after this change deploys.
+
+**Provider configuration required (operator steps)**
+- **Enable open tracking** in the Resend dashboard on the verified
+  sending domain (`Domains → <domain> → Open tracking = on`).
+- **Create a webhook** at `Webhooks → Add endpoint`:
+  - URL: `https://<your-host>/api/webhooks/resend`
+  - Events: `email.delivered`, `email.opened`, `email.bounced`,
+    `email.complained`.
+  - Copy the signing secret (starts with `whsec_…`) and set it as
+    `RESEND_WEBHOOK_SECRET` in the server environment.
+- Redeploy.
+
+**Env:**
+```
+RESEND_WEBHOOK_SECRET=whsec_…   # required for the webhook route
+```
+
+Without the secret, the route returns 500 immediately — the webhook
+cannot be silently bypassed.
+
+**No migration.** `invoices.viewed_at` was already in the schema.
+`email_deliveries.status` is a `text` column; the enum lives in
+TypeScript and a `"opened"` value is accepted at the DB layer without
+a schema change.
+
+**Files:**
+- `shared/schema.ts` — `"opened"` added to `emailDeliveryStatusEnum`.
+- `server/services/emailDeliveryTrackingService.ts` — accept
+  `"opened"` + guarded `invoices.viewedAt` stamp on first open.
+- `server/storage/emailDeliveriesStorage.ts` — new
+  `getDeliveryByProviderMessageIdAnyTenant` global lookup.
+- `server/routes/resendWebhook.ts` — new webhook receiver + Svix
+  signature verification + event mapping.
+- `server/index.ts` — mount webhook router before `express.json()`.
+
+#### Invoice detail — post-send UI cleanup (2026-04-14)
+
+Surgical post-send simplification on `InvoiceDetailPage`:
+
+- Removed the top `DeliveryStatusCard` (standalone email status +
+  subject + recipients + sent-at + resend) that rendered above the
+  invoice header when an invoice had ever been sent.
+- Removed the amber "Invoice has been sent to client — if you edit
+  billing details, re-send an updated invoice." banner.
+- `DeliveryStatusCard` import dropped from the page.
+
+Email status is now surfaced exclusively in the existing metadata
+table inside `InvoiceHeaderCard`, under Due, reusing the same
+label/value styling as Invoice # / Issued / Due so it reads as
+native invoice metadata instead of a bolt-on module:
+
+- `Email: Not sent` when `invoices.sent_at` is null.
+- `Email: Sent` + `Email sent: <date>` after send.
+- `Email viewed: <date>` only when `invoices.viewed_at` is non-null
+  (no "—" placeholder — the row is simply omitted until a real
+  timestamp exists).
+
+**Canonical data source:** `invoices.sent_at` (written by
+`POST /api/invoices/:id/send` after a successful Resend dispatch) and
+`invoices.viewed_at` (existing column in `shared/schema.ts:1219-1221`;
+populated by recipient-open tracking when available). No new
+client-derived state; no new fields.
+
+**Files:**
+- `client/src/components/InvoiceHeaderCard.tsx` — added three
+  metadata rows under Due.
+- `client/src/pages/InvoiceDetailPage.tsx` — removed
+  `DeliveryStatusCard`, amber banner, and the now-dead import.
+- `server/scripts/auditContactEmails.ts` — wrapped top-level `await`
+  in an async IIFE (unrelated typecheck fix surfaced by this pass).
+
+#### Contact email — validate at entry (2026-04-14)
+
+Single shared email-shape validator for the whole app
+(`shared/lib/emailValidation.ts`): `EMAIL_SHAPE_REGEX`,
+`isValidOptionalEmail`, and the canonical user-facing string
+`"Enter a valid email address"`. Every historical ad-hoc regex
+(`useSendCommunicationModal`, `BatchSendInvoicesModal`,
+`recipientResolverService`, `invoiceBatchSendService`,
+`clientImport`, `invoices.ts /email-contacts`) already uses the exact
+same pattern — this module makes it the one source of truth going
+forward.
+
+**Server-side validation** added on the Zod schemas for contact
+create/update:
+- `contactFieldsSchema` (`POST /api/customer-companies/:companyId/contacts`)
+- `updateContactSchema` (`PATCH /api/customer-companies/:companyId/contacts/:contactId`)
+- `POST /api/clients` inline-contact array (`server/routes/clients.ts`)
+
+Each rejects with `400 Enter a valid email address` when a populated
+email fails the canonical shape. Blank / null email remains allowed
+(the field is optional).
+
+**Client-side UX** on `ContactFormDialog` and `CreateClientModal`:
+- Email input flips to `border-destructive` after blur (or any time
+  the field is touched) if invalid.
+- Inline helper `Enter a valid email address` appears under the
+  input.
+- Save button is disabled while email is invalid.
+- Error clears live as the user fixes the value.
+
+**Data audit:** read-only script `server/scripts/auditContactEmails.ts`
+ran against the production Neon DB. Result: 6 `contact_persons` rows
+with populated emails, 1 fails the shape check (`huda@huda` — the
+same row that surfaced earlier in the Send-Invoice contact-picker
+audit). No auto-fix performed.
+
+**Files:**
+- `shared/lib/emailValidation.ts` — new shared validator.
+- `server/routes/customer-companies.ts` — contact schemas refine on email.
+- `server/routes/clients.ts` — bulk create path validates contact emails.
+- `server/scripts/auditContactEmails.ts` — new read-only audit.
+- `client/src/components/ContactFormDialog.tsx` — inline error + disabled save.
+- `client/src/components/CreateClientModal.tsx` — inline error + disabled save.
+
+#### Send Invoice picker audit pass — contact click + image list confirmation (2026-04-14)
+
+1. **Contact click does nothing — fixed.** Some tenant contact rows have
+   invalid-shape emails in the DB (e.g. `huda@huda`, no dotted domain).
+   The `/api/invoices/:id/email-contacts` route returned them unfiltered;
+   the picker rendered them, but the client's `normalizeEmail`
+   (shared with the server resolver) silently rejects anything that
+   fails `[^\s@]+@[^\s@]+\.[^\s@]+`, so `addRecipient` no-oped. Fix:
+   apply the same shape filter on the server so only selectable
+   contacts surface. Rows with a valid email continue to select via
+   the existing `onMouseDown` + `preventDefault` path (already correct
+   — no client change needed).
+2. **Missing 5th image — not a bug.** DB inspection confirmed the job
+   has exactly 4 images (JPEGs) and 1 PDF attachment. The picker is
+   image-only and correctly showed all 4 images.
+3. **Non-image "file" — correctly excluded.** That file is the
+   `application/pdf` attachment. The "Add images" picker intentionally
+   restricts to `image/*` mimes and should continue to. Confirmed
+   intentional — no code change required.
+
+**Files:**
+- `server/routes/invoices.ts` — contacts endpoint filters rows whose
+  email fails the canonical RFC-shape regex used by the resolver.
+
+#### Send Invoice bug fixes — picker empty-state, stale resolver, fresh data (2026-04-14)
+
+Targeted fixes on the Send Invoice modal:
+
+1. **Server resolver was stale in the running process.** The
+   2026-04-14 rewrite of `collectBillingFirstRecipients` (removed
+   `location.email` + "primary" fallbacks) had been saved but the dev
+   server was started before that rewrite — the process was still
+   running the old code, so a primary-only company contact like
+   "Fady" was still being prefilled alongside billing contacts. Fix:
+   restart the dev server so every route reloads the current file.
+   `tsx` isn't watched in this repo's `dev` script, so server code
+   changes always require a restart.
+
+2. **Popover showed red "Not found" on a benign 404.** If
+   `/api/invoices/:id/email-contacts` returned 404 (e.g. transient
+   route mismatch during the restart window), the popover rendered
+   the raw `ApiError.message = "Not found"` in `text-destructive`.
+   Fixed by classifying `err.status === 404` as an empty-list case and
+   rendering the neutral "No contacts with email addresses for this
+   customer." message; only genuine non-404 failures now render as a
+   red error.
+
+3. **Staleness confirmed clean.** Default recipients (`/email-recipients`)
+   and contact options (`/email-contacts`) both use plain `apiRequest`
+   and the popover remounts on every focus, so each modal open + each
+   focus re-fetches fresh data. No React Query cache is involved on
+   this path — a newly added billing contact appears on the next open
+   as soon as the server is running the current resolver.
+
+**Files:**
+- `client/src/components/communication/ContactPickerPopover.tsx` —
+  404 is no longer shown as a red error; clears prior contacts on new
+  fetch; dropped unused `Input` import.
+
+**Operational note:** after editing any `server/**` file, restart the
+dev server (`npm run dev`). There's no file-watch on the server
+process today.
+
+#### Send flow — final hardening cleanup (2026-04-14)
+
+Three focused fixes.
+
+**1. Default invoice recipient fallback.** `collectBillingFirstRecipients`
+was rewritten to an explicit three-tier order:
+- Every billing-role contact (location first, then parent
+  customer-company). If any produce a valid email, we return only
+  those.
+- Otherwise, the first valid location-contact email.
+- Otherwise, the first valid company-contact email.
+
+Removed the legacy `location.email` scalar fallback and the
+customer-company "primary" heuristic — real contact rows are the only
+source now. Applies to both invoice and quote strategies (they share
+the collector). Ordering is deterministic and free of hidden rules.
+
+**2. Cross-dedupe To vs CC.** `sendInvoiceEmail` and `sendQuoteEmail`
+now build a `Set` from the normalized `to` list and filter the
+normalized CC list to remove any overlap. CC ordering is preserved
+minus the dropped entries. Applied server-side only; client dedup
+cannot be trusted.
+
+**3. Legacy Resend env vars dropped.** `PORTAL_FROM_EMAIL` and
+`PORTAL_FROM_NAME` are no longer read. `resendClient.ts` requires
+`RESEND_API_KEY` + `RESEND_FROM_EMAIL` (and reads the optional
+`RESEND_FROM_NAME`). Startup validation messages and error strings now
+reference only the canonical names. Grepped `server/` and `client/` —
+no runtime references to `PORTAL_FROM_*` remain (two are left in
+`resendClient.ts` as a single deprecation comment).
+
+**Final required env:**
+```
+RESEND_API_KEY
+RESEND_FROM_EMAIL
+RESEND_FROM_NAME    # optional
+```
+
+**Files:**
+- `server/services/recipientResolverStrategies.ts` — rewritten
+  `collectBillingFirstRecipients`, removed `locationEmail` parameter.
+- `server/services/emailDispatchService.ts` — CC cross-dedupe in
+  invoice + quote paths.
+- `server/resendClient.ts` — rewritten to read canonical vars only.
+
+#### Send Invoice — contact picker, system-image picker, Resend env unification (2026-04-14)
+
+Three focused follow-ups on the Send Invoice flow.
+
+**1. Contact picker for To / CC.** New route
+`GET /api/invoices/:id/email-contacts` returns a rich list
+(`{name, email, roles, source}`) by reusing
+`clientContactRepository.getLocationContacts` +
+`getCompanyDirectory` and deduping by email. The modal now shows a
+`ContactPickerPopover` under the To/CC field whenever it has focus:
+searchable, shows name + email + a `Billing` pill when the contact
+carries that role, hides already-selected emails. Clicking a row adds
+the chip; free-form typing still works as a fallback. The original
+`/email-recipients` endpoint (used for default prefill) is unchanged
+and still returns the flat billing-first list.
+
+**2. System-image picker replacing the local file explorer.** New
+route `GET /api/invoices/:id/available-images` returns image files
+already in the platform: job-note image attachments for the invoice's
+linked job (`invoices.job_id`) unioned with client-document images for
+the invoice's location. Image mime only, `uploaded` status only, deduped
+by fileId. The "Add images" button now opens
+`SystemImagePickerDialog` — a multi-select grid of thumbnails sourced
+from this endpoint. Selecting items references their existing `fileId`s
+(no re-upload; `getFileBufferForTenant` pulls them at send time). The
+5-image cap and server-side mime/size checks still apply. Local-disk
+upload is gone.
+
+**3. Resend env unification.** `resendClient.ts` now accepts both
+`RESEND_FROM_EMAIL` (canonical, preferred) and `PORTAL_FROM_EMAIL`
+(legacy alias, back-compat). Same pattern for `RESEND_FROM_NAME` /
+`PORTAL_FROM_NAME`. Startup validation message updated to reflect that
+these vars power *all* outbound email, not just portal links.
+
+**Env:**
+- `RESEND_API_KEY` — required.
+- `RESEND_FROM_EMAIL` — preferred (falls back to `PORTAL_FROM_EMAIL`).
+- `RESEND_FROM_NAME` — optional (falls back to `PORTAL_FROM_NAME`, then "Notifications").
+
+**Files:**
+- `server/resendClient.ts` — accepts canonical + legacy sender env vars.
+- `server/routes/invoices.ts` — `GET /:id/email-contacts`, `GET /:id/available-images`.
+- `client/src/components/communication/ContactPickerPopover.tsx` — new.
+- `client/src/components/communication/SystemImagePickerDialog.tsx` — new.
+- `client/src/components/communication/SendCommunicationModal.tsx` — wires pickers, removes local-file upload flow, drops dead `useFileUpload` / `useToast` imports.
+
+#### Send modal — compact Jobber-style layout (2026-04-14)
+
+UI polish pass on `SendCommunicationModal`. No logic changes.
+
+- Container grew from `sm:max-w-2xl` (672 px) to `sm:max-w-[820px]`
+  with `max-h-[85vh]`, `flex flex-col`, and a split
+  header/scroll-body/sticky-footer structure so the Send button stays
+  visible on 1366×768 laptops even with long text.
+- Section gap tightened from `space-y-4 py-2` → `space-y-3 py-3`.
+  Each field uses `space-y-1` instead of `space-y-2`.
+- To / CC chip containers: `min-h-[40px] py-1.5` → `min-h-[32px] py-1`;
+  chips height-clamped to `h-5`; input row uses `h-6` + smaller font.
+- Subject input is now `h-8 text-sm`. Message textarea shrunk from
+  `rows={10}` to `rows={7}` (~7 visible lines).
+- Attachments card: compacted controls onto one wrap-friendly row
+  (`attach-pdf checkbox · Add images · counter · spinner`), attachment
+  rows collapsed to single-line (filename + size + `×` on the same
+  row). Card uses `px-3 py-2` instead of a fat `p-3` block.
+- Header and footer border-separated; footer uses
+  `bg-background border-t` so it reads as a sticky action bar when
+  content scrolls.
+- Kept fully intact: recipient chips, CC field, template prefill,
+  attachment upload + PDF toggle, validation, keyboard UX.
+
+**Files:**
+- `client/src/components/communication/SendCommunicationModal.tsx` — layout + density refinements.
+
+#### Edit note dialog — thumbnail grid for saved image attachments (2026-04-14)
+
+Saved image attachments in `JobNoteDialog` edit mode now render as an
+80 px thumbnail grid (3 per row, 4 on ≥640 px) so users can identify
+screenshots/photos at a glance. Non-image files continue to render as
+the existing compact file chips. Click a thumbnail opens the full
+image in a new tab; the top-right `×` remove button stops click
+propagation so removal never triggers preview.
+
+Thumbnails use the canonical `resolveFileAccessUrl` from
+`useFileUpload` (same access-URL resolver the note card strip uses).
+No new API, no duplicated access-URL logic, no backend change. The
+existing per-item detach + cascade cleanup paths remain the only
+mechanism for removal.
+
+**Files:**
+- `client/src/components/JobNoteDialog.tsx` — new inline
+  `SavedImageThumb` subcomponent, saved-attachments section split into
+  image grid + file-chip list.
+
+#### Send flow hardening — shared normalization, shared attachment assembler, canonical error copy (2026-04-14)
+
+Three focused hardening changes on the communication send pipeline. No
+new features, no UI redesign.
+
+1. **Server-side email normalization.** New exported
+   `normalizeEmailList` helper in `recipientResolverService.ts` (reuses
+   the existing `cleanEmail`). Every dispatch method
+   (`sendInvoiceEmail`, `sendQuoteEmail`, `sendJobEmail`) now runs both
+   `recipients` and `cc` through it before persisting the delivery
+   row, before the Resend call, and in the return value. Trim →
+   lowercase → drop empty / invalid → dedupe. Server never trusts the
+   wire format, even when the client already normalized.
+
+2. **Shared attachment assembler.** New `assembleOutboundAttachments`
+   function (`emailDispatchService.ts`) replaces the inlined
+   validation/metadata/cap logic in both invoice and quote paths.
+   Signature:
+   ```ts
+   assembleOutboundAttachments({
+     tenantId,
+     pdf?: { filename, buffer, sourceType: "invoice_pdf" | "quote_pdf" },
+     imageFileIds?: string[],
+   }): Promise<{ outboundAttachments, attachmentMetadata, totalBytes }>
+   ```
+   Centralizes: image count cap (5), image mime allow-list, per-image
+   size cap (10 MB), PDF + image metadata construction, and the 25 MB
+   total-payload guard. Invoice path uses the full shape; quote path
+   passes only `pdf`. No feature expansion — behavior is byte-for-byte
+   what both paths did previously, just in one place.
+
+3. **Canonical error copy.** New exported `EMAIL_ATTACHMENT_ERRORS`
+   constants used by the server and echoed verbatim by the client's
+   attachment toasts / footer note:
+   - `"Invalid file type. Use JPG, PNG, or WebP."`
+   - `"File exceeds the 10 MB limit."`
+   - `"You can attach up to 5 images."`
+   - `"Total attachments exceed the 25 MB limit."`
+   - `"Add at least one recipient."`
+
+**Files:**
+- `server/services/recipientResolverService.ts` — exports `normalizeEmailList`.
+- `server/services/emailDispatchService.ts` — shared assembler, canonical error constants, normalization on invoice / quote / job paths, removed dead `humanBytes` helper.
+- `client/src/components/communication/SendCommunicationModal.tsx` — toast + total-size copy aligned with canonical wording.
+
+#### Send flow follow-up — quote CC parity, attachment metadata, total-payload cap (2026-04-13)
+
+Four cleanup/hardening fixes on top of Commit C:
+
+1. **Quote CC parity.** `sendQuoteSchema` (`server/routes/quotes.ts`)
+   now accepts `cc: string[]`. `sendQuoteEmail` in
+   `emailDispatchService` takes a `cc` field, passes it to Resend, and
+   persists it to `email_deliveries.ccJson` exactly like invoice sends.
+   No more UI-only ambiguity.
+2. **Attachment metadata persistence.** New `attachments_json jsonb
+   NOT NULL DEFAULT '[]'` column on `email_deliveries` (migration
+   `2026_04_13_email_deliveries_attachments.sql`). A new
+   `DeliveryAttachmentMetadata` type is exported from `shared/schema`
+   with a typed `sourceType` enum (`invoice_pdf`, `quote_pdf`,
+   `uploaded_image`). Both `sendInvoiceEmail` and `sendQuoteEmail`
+   build the metadata array while assembling outbound attachments and
+   persist it through `createQueuedDelivery` → storage. Never stores
+   bytes.
+3. **Total attachment payload cap.** New constant
+   `MAX_EMAIL_TOTAL_ATTACHMENT_BYTES = 25 MB` (exported from
+   `emailDispatchService`). Enforced server-side AFTER per-file caps
+   and the 5-image count cap, so the caller sees a clear aggregate
+   413 instead of a provider-side reject. Applied to both invoice and
+   quote paths. The send modal mirrors the cap client-side: running
+   image total is shown under the attachment list; exceeding it turns
+   the line red and disables Send. Server remains authoritative.
+4. **Deploy order documented.** See "Deployment" block at the bottom
+   of this unreleased section.
+
+**Files:**
+- `migrations/2026_04_13_email_deliveries_attachments.sql` — new (idempotent).
+- `shared/schema.ts` — `attachmentsJson` column + typed metadata shape + source enum.
+- `server/services/emailDispatchService.ts` — `MAX_EMAIL_TOTAL_ATTACHMENT_BYTES`, metadata build on both paths, total-payload guard, quote `cc` input.
+- `server/storage/emailDeliveriesStorage.ts` — persists `attachments` on `createDeliveryAttempt`.
+- `server/routes/quotes.ts` — `cc` in schema + route wiring.
+- `client/src/components/communication/SendCommunicationModal.tsx` — running total + soft cap feedback.
+
+**Deployment order (mandatory):**
+1. Apply migrations: `npm run db:migrate` — runs
+   `2026_04_13_email_deliveries_cc.sql` and
+   `2026_04_13_email_deliveries_attachments.sql`. Both are
+   `ADD COLUMN IF NOT EXISTS … NOT NULL DEFAULT '[]'`, transactional,
+   safe to re-run.
+2. Deploy server. Old server code is unaffected by the new columns
+   (DEFAULT backfills writes) so ordering between steps 1 and 2 is
+   forgiving, but do migrations first to avoid a brief window where a
+   new server writes to a missing column.
+3. Deploy client. Client is backward compatible — it simply stops
+   showing the total-size helper if the server is older, no runtime
+   breakage.
+
+#### Canonical note-attachment file cleanup (2026-04-13)
+
+Closed the R2 blob leak on note-attachment removal. Files are 1:1 with
+attachments in this codebase, so detaching an attachment or deleting a
+note is now the single lifecycle trigger for the underlying file row +
+R2 blob. `deleteFile` in `fileUploadService` remains the single owner:
+every path delegates to it.
+
+**Detach paths:**
+- `jobNoteAttachmentRepository.detach` and `noteAttachmentRepository.detach`
+  now call `deleteFile(companyId, row.fileId)` after the join row is
+  removed. `deleteFile` is idempotent; cleanup failures are swallowed
+  so the detach itself remains authoritative.
+
+**Delete-note paths:**
+- `jobNotesRepository.deleteJobNote` now fetches `fileId`s from
+  `jobNoteAttachments` BEFORE deleting the note row, then delegates to
+  `deleteFile` for each. The FK cascade handles the now-empty join
+  rows.
+- Three client-note delete paths (`deleteNote`, `deleteCompanyNote`,
+  `deleteCustomerCompanyNote` in `clientNotes.ts`) share a private
+  `deleteAttachedFilesForNote(companyId, noteId)` helper that performs
+  the same fetch → `deleteFile` loop against `noteAttachments`.
+
+Dynamic import of `../services/fileUploadService` keeps the
+storage↔service layering one-way (the service already imports storage
+schemas; we avoid a circular import at load time).
+
+No schema, route, or UI changes. `deleteFile` continues to be the only
+writer for `files.status = "deleted"` and the only caller of R2
+`deleteObject` for note assets.
+
+**Files:**
+- `server/storage/jobNoteAttachments.ts` — `detach` cascades.
+- `server/storage/noteAttachments.ts` — `detach` cascades.
+- `server/storage/jobNotes.ts` — `deleteJobNote` pre-cleans files.
+- `server/storage/clientNotes.ts` — new `deleteAttachedFilesForNote`
+  helper wired into all three delete paths.
+
+#### Job note dialog — attachment-section clarity refinements (2026-04-13)
+
+Refined `JobNoteDialog` in edit mode to make the two attachment lists
+visually distinct and cleanup actions explicit:
+
+- Saved attachments get a labeled header with a count badge; each row
+  keeps its per-item `×` remove (now tinted destructive on hover).
+- "Remove all" is promoted to a destructive bulk action guarded by a
+  confirmation `AlertDialog`, and is only shown when there are ≥2
+  saved attachments (single-item cases still use the per-row `×`).
+- New attachments get their own labeled section with a green "N staged"
+  pill and green-tinted rows, so staged-but-unsaved items are
+  immediately distinguishable from already-persisted ones.
+- Footer gains a top border and the Delete-note button moves from
+  ghost to a `border-destructive/30` outline, giving destructive
+  actions a clear visual separation from `Save changes`.
+
+No changes to upload/storage architecture; this is a presentation +
+UX-confirmation pass.
+
+**Files:**
+- `client/src/components/JobNoteDialog.tsx` — section headers, staged
+  badge, row tinting, remove-all confirm dialog, footer separation.
+
+#### Canonical job note dialog — unified Add + Edit, per-attachment management (2026-04-13)
+
+Collapsed the previous create-only `AddJobNoteDialog` and the missing
+edit path into a single canonical component, `JobNoteDialog`. Behaviour
+is driven by the `note` prop — `null` → Create mode, populated → Edit
+mode. Create mode is unchanged (note-first + sequential R2 upload via
+`useFileUpload`); Edit mode preloads existing text + attachments,
+supports text edits, adds new attachments via the same upload hook,
+removes individual attachments, "Remove all" iterates the detach API,
+and exposes "Delete note" with an `AlertDialog` confirmation.
+
+`JobNotesSection` is now the click-through entry point to Edit mode:
+clicking a note card opens the dialog with that note preloaded. The
+attachment strip stops click bubbling so thumbnail/lightbox and PDF
+chip clicks behave as before. Removed the hover-only trash icon
+(delete lives inside the dialog now, with confirmation).
+
+**Server:** added `DELETE /api/jobs/:jobId/notes/:noteId/attachments/:attachmentId`
+(jobs.ts) using the existing `jobNoteAttachmentRepository.detach`.
+Cascade-on-note-delete behaviour is unchanged and remains the mechanism
+for wiping all attachments when the note itself is removed. No schema
+changes.
+
+Scope note: `NotesPanel` already has a working inline Add+Edit flow
+with visibility flags specific to client notes; unifying it with the
+job-note modal would require carrying those flags into the shared
+component and was left as follow-up. Tech-app `VisitDetailPage` still
+has no edit UI for notes — out of scope for this unification pass (the
+user's spec was "where editing exists").
+
+**Files:**
+- `client/src/components/JobNoteDialog.tsx` — new canonical dialog (create + edit).
+- `client/src/components/AddJobNoteDialog.tsx` — removed.
+- `client/src/components/JobNotesSection.tsx` — card clickable → edit mode; strip stops bubbling.
+- `client/src/pages/JobDetailPage.tsx` — header-level "Add Note" now mounts `JobNoteDialog` in create mode.
+- `server/routes/jobs.ts` — new per-attachment `DELETE` route.
+
+#### Client Communication settings — full-width side-by-side editor + live preview (2026-04-13, Commit B)
+
+Redesigned `Settings → Client Communication` into a full-width,
+two-column layout — editor left, live preview right — and removed the
+max-width container so the page uses the full settings content area.
+Added a "Back to Settings" button that routes to `/settings` via wouter.
+
+The preview now renders through the canonical
+`POST /api/communication-templates/preview/:entityType` endpoint (Commit
+A). It debounces keystrokes at 300 ms, reruns on tab switch and after
+reset, and displays the server-rendered subject + body. No client-side
+token substitution is performed. Editor fields still auto-populate from
+the server's default fallback (Commit A), so the preview is never empty.
+
+Variable insertion stays focus-aware (Subject vs Body) with cursor
+preservation. Reset and Save continue to use the Phase 1 REST
+endpoints; no new persistence paths were introduced.
+
+**Files:**
+- `client/src/pages/CommunicationSettingsPage.tsx` — full-width shell + Back button.
+- `client/src/components/settings/TemplateEditor.tsx` — 2-column grid, live-preview card, debounced preview fetch.
+
+#### Communication templates — canonical defaults, always-populated fetch, preview renderer (2026-04-13, Commit A)
+
+Refreshed the three `SYSTEM_DEFAULTS` bodies (invoice / quote / job) to the
+approved field-service-neutral copy. Defaults continue to live only in
+`server/services/communicationTemplatesService.ts` and are never written
+to the database — the tenant row is the only persistence path, so "Reset
+to default" is still `DELETE` + transparent service fallback.
+
+The invoice default now embeds full payment language using the existing
+`{{INVOICE_TOTAL}}` and `{{INVOICE_DUE_DATE}}` tokens. Money tokens now
+carry their own `$` prefix (`formatMoney` updated in
+`server/services/templateDataBuilder.ts`) — the old template's literal
+`$` prefix was removed, and preview + real sends now both render
+`$250.00`.
+
+`GET /api/communication-templates/:entityType/:channel` no longer
+returns 404 when a tenant has not saved a custom template; it returns
+the canonical system default with `isDefault: true` so the Settings
+editor is always populated and never shows "No subject / No body". A
+genuine 404 is still returned for tuples without any default (e.g. SMS
+today).
+
+Added `POST /api/communication-templates/preview/:entityType` — a
+preview-only endpoint that renders an ad-hoc `{subjectTemplate,
+bodyTemplate}` payload through the canonical `templateRenderer` against
+fixed sample data (`buildPreviewSampleData` in
+`templateDataBuilder.ts`). Sample data is used **only** for preview;
+real send flows continue to use `templateDataBuilder.buildInvoice/Quote/
+JobTemplateData` against real entities.
+
+`TemplateEditor` now drives its "Using default template" badge from the
+explicit `isDefault` flag instead of a 404 probe, so the editor's
+subject/body fields populate with the default text on first load.
+
+**Files:**
+- `server/services/communicationTemplatesService.ts` — refreshed `SYSTEM_DEFAULTS`.
+- `server/services/templateDataBuilder.ts` — added `buildPreviewSampleData`; `formatMoney` now emits `$` prefix.
+- `server/routes/communicationTemplates.ts` — GET falls back to default; new `POST /preview/:entityType`.
+- `client/src/components/settings/TemplateEditor.tsx` — reads `isDefault`, populates fields from default.
+
+#### Compact Jobber-style note attachment strip (2026-04-13)
+
+Replaced the vertically stacked `AttachmentView` rows inside note cards
+with a compact inline attachment strip that keeps note height bounded
+regardless of attachment count.
+
+**Behaviour:**
+- Images render as fixed 56px square thumbnails (object-cover, rounded,
+  subtle border, 8px gap).
+- Max 4 image thumbnails visible inline; any remainder collapses into a
+  `+N` overlay on the 4th thumb.
+- Clicking any thumbnail (or the `+N` overlay) opens a lightbox that
+  browses every image attachment on that note — keyboard navigable
+  (←/→/Esc) with a position counter and filename.
+- PDFs and other non-image files render as compact chips (file icon +
+  truncated filename) and open in a new tab via the existing
+  `resolveFileAccessUrl` signed-URL flow — no upload/storage/route
+  changes.
+
+**One canonical strip** (`client/src/components/attachments/NoteAttachmentStrip.tsx`)
+is reused across all note surfaces. `AttachmentView` is retained and
+still used by `EntityDocumentsSection` (client/contract/technician
+documents) — that surface was untouched because it has its own
+hover-to-delete affordance that doesn't fit the note strip.
+
+**Files:**
+- `client/src/components/attachments/NoteAttachmentStrip.tsx` — new shared component.
+- `client/src/components/NotesPanel.tsx` — swap stacked rows → strip.
+- `client/src/components/JobNotesSection.tsx` — swap stacked rows → strip.
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — swap stacked rows → strip.
+
 ### Fixed
+
+#### CSP blocks direct R2 browser uploads (2026-04-13)
+
+Browser console: *"Refused to connect to
+`https://syntraro-files.<account>.r2.cloudflarestorage.com/...` because
+it violates the Content Security Policy directive: `connect-src 'self'`."*
+
+**Root cause:** File uploads use the canonical 3-step R2 lifecycle —
+`/api/files/request` (sign) → **PUT directly from the browser to R2** →
+`/api/files/:id/finalize`. Step 2 is a cross-origin XHR, so the browser
+enforces `connect-src`. The helmet CSP only allowed `'self'`.
+
+**Change:** Added `https://*.r2.cloudflarestorage.com` to `connectSrc`
+in the single canonical CSP definition (`server/index.ts`, helmet
+middleware, lines 49–65). No other CSP source exists in the app;
+dev and prod both flow through this same middleware, so one change
+covers both. No other directives touched.
+
+**Files:**
+- `server/index.ts` — `connectSrc: ["'self'", "https://*.r2.cloudflarestorage.com"]`.
 
 #### communication_templates migration FK type mismatch (2026-04-13)
 

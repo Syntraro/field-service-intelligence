@@ -7,6 +7,9 @@
  * are allowed — stay in one place.
  */
 
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { db } from "../db";
+import { invoices } from "@shared/schema";
 import { createError } from "../middleware/errorHandler";
 import {
   emailDeliveriesStorage,
@@ -55,6 +58,10 @@ const WEBHOOK_STATUSES: ReadonlySet<EmailDeliveryStatus> = new Set<EmailDelivery
   "delivered",
   "bounced",
   "complained",
+  // 2026-04-14: Resend `email.opened` events flow through the same
+  // webhook pipeline; downstream writes set `invoices.viewedAt` when
+  // the delivery is invoice-scoped.
+  "opened",
 ]);
 
 /**
@@ -174,6 +181,32 @@ export const emailDeliveryTrackingService = {
       existing.id,
       patch,
     );
+    // 2026-04-14: on the first `opened` event for an invoice delivery,
+    // stamp `invoices.viewed_at`. `COALESCE(viewed_at, now())` + the
+    // `WHERE viewed_at IS NULL` guard make repeated opens a no-op, so
+    // the column always carries the FIRST open time per the product
+    // spec.
+    if (updated && input.status === "opened" && existing.entityType === "invoice") {
+      try {
+        await db
+          .update(invoices)
+          .set({ viewedAt: sql`COALESCE(${invoices.viewedAt}, now())` })
+          .where(
+            and(
+              eq(invoices.id, existing.entityId),
+              eq(invoices.companyId, input.tenantId),
+              isNull(invoices.viewedAt),
+            ),
+          );
+      } catch (err: any) {
+        // Webhook success is the priority; log and keep going so we
+        // don't bounce a retry storm against Resend on DB hiccups.
+        console.error(
+          `[email-tracking] failed to stamp invoices.viewedAt for ${existing.entityId}:`,
+          err?.message ?? err,
+        );
+      }
+    }
     // Phase 16: failure/bounce/complaint → notify office users (dedupe in storage).
     if (
       updated &&

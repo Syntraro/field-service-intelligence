@@ -34,6 +34,28 @@ function cleanEmail(raw: string | null | undefined): string | null {
   return trimmed;
 }
 
+/**
+ * 2026-04-14 hardening: canonical normalization for any outbound
+ * recipient list (To / CC). Trims, lowercases, drops invalid + empty
+ * entries, and dedupes first-occurrence. The server never trusts the
+ * client's already-normalized payload — every send path runs through
+ * this helper before the provider call.
+ */
+export function normalizeEmailList(
+  input: readonly (string | null | undefined)[] | null | undefined,
+): string[] {
+  if (!input || input.length === 0) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of input) {
+    const e = cleanEmail(raw);
+    if (!e || seen.has(e)) continue;
+    seen.add(e);
+    out.push(e);
+  }
+  return out;
+}
+
 export const recipientResolverService = {
   async getDefaultRecipients(input: {
     tenantId: string;

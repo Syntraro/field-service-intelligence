@@ -241,8 +241,8 @@ export default function LeadDetailPage() {
                   <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wide ${statusColor.bg} ${statusColor.text}`}>
                     {lead.status}
                   </span>
-                  {lead.priority && <Badge variant="outline" className="text-[10px] px-1.5 py-0 capitalize">{lead.priority}</Badge>}
-                  <span className="text-[10px] text-slate-400 uppercase tracking-wide">{lead.sourceType}</span>
+                  {lead.priority && <Badge variant="outline" className="text-[11px] px-1.5 py-0 capitalize">{lead.priority}</Badge>}
+                  <span className="text-[11px] text-slate-400 uppercase tracking-wide">{lead.sourceType}</span>
                 </div>
                 {/* Client / Location */}
                 <div className="mt-2 pt-1.5 border-t border-slate-100">
@@ -361,7 +361,7 @@ export default function LeadDetailPage() {
                               {n.author}
                             </span>
                             <div className="flex items-center gap-2">
-                              <span className="text-[10px] text-slate-400">{n.createdAt ? fmtDateTime(n.createdAt) : ""}</span>
+                              <span className="text-[11px] text-slate-400">{n.createdAt ? fmtDateTime(n.createdAt) : ""}</span>
                               {canEdit && !isEditing && !isConfirmingDelete && (
                                 <div className="flex gap-0.5">
                                   <button
@@ -502,7 +502,7 @@ export default function LeadDetailPage() {
 
                 {/* Quote section */}
                 <div className="border-t border-slate-100 pt-2 mt-1">
-                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Quote</p>
+                  <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Quote</p>
                   {lead.convertedQuoteId ? (
                     <div className="space-y-1">
                       <p className="text-xs font-medium text-emerald-700">Converted {lead.convertedAt ? fmtDate(lead.convertedAt) : ""}</p>

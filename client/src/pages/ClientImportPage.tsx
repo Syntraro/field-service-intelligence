@@ -88,9 +88,9 @@ const GROUP_LABELS: Record<string, string> = {
 // ============================================================================
 
 function ActionBadge({ action }: { action?: ImportEntityAction }) {
-  if (action === "create") return <Badge variant="outline" className="border-green-300 bg-green-50 text-green-700 text-[10px] px-1">new</Badge>;
-  if (action === "match") return <Badge variant="outline" className="border-blue-300 bg-blue-50 text-blue-700 text-[10px] px-1">exists</Badge>;
-  if (action === "skip") return <Badge variant="outline" className="border-gray-300 bg-gray-50 text-gray-500 text-[10px] px-1">skip</Badge>;
+  if (action === "create") return <Badge variant="outline" className="border-green-300 bg-green-50 text-green-700 text-[11px] px-1">new</Badge>;
+  if (action === "match") return <Badge variant="outline" className="border-blue-300 bg-blue-50 text-blue-700 text-[11px] px-1">exists</Badge>;
+  if (action === "skip") return <Badge variant="outline" className="border-gray-300 bg-gray-50 text-gray-500 text-[11px] px-1">skip</Badge>;
   return null; // undefined action — don't render badge
 }
 
@@ -371,7 +371,7 @@ function PreviewStep({ preview }: { preview: ImportPreviewResponse }) {
                 <button
                   key={f.key}
                   onClick={() => setFilter(f.key)}
-                  className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                  className={`px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
                     filter === f.key
                       ? "bg-primary text-primary-foreground"
                       : "bg-muted text-muted-foreground hover:bg-muted/80"
@@ -385,16 +385,16 @@ function PreviewStep({ preview }: { preview: ImportPreviewResponse }) {
           {/* Export buttons */}
           <div className="flex items-center gap-1.5">
             {errorRows.length > 0 && (
-              <Button variant="outline" size="sm" className="h-7 text-[10px]" onClick={() => exportCSV("import-errors.csv", errorRows)}>
+              <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={() => exportCSV("import-errors.csv", errorRows)}>
                 <Download className="h-3 w-3 mr-1" />Errors
               </Button>
             )}
             {warningRows.length > 0 && (
-              <Button variant="outline" size="sm" className="h-7 text-[10px]" onClick={() => exportCSV("import-warnings.csv", warningRows)}>
+              <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={() => exportCSV("import-warnings.csv", warningRows)}>
                 <Download className="h-3 w-3 mr-1" />Warnings
               </Button>
             )}
-            <Button variant="outline" size="sm" className="h-7 text-[10px]" onClick={() => exportCSV("import-preview.csv", rows)}>
+            <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={() => exportCSV("import-preview.csv", rows)}>
               <Download className="h-3 w-3 mr-1" />All
             </Button>
           </div>
@@ -415,7 +415,7 @@ function PreviewStep({ preview }: { preview: ImportPreviewResponse }) {
               <TableBody>
                 {filteredRows.map((row) => (
                   <TableRow key={row.rowIndex} className={row.status === "blocked" ? "bg-destructive/5" : ""}>
-                    <TableCell className="text-[10px] text-muted-foreground py-1.5">{row.rowIndex + 1}</TableCell>
+                    <TableCell className="text-[11px] text-muted-foreground py-1.5">{row.rowIndex + 1}</TableCell>
                     <TableCell className="py-1.5"><StatusBadge status={row.status} /></TableCell>
                     <TableCell className="text-xs py-1.5">
                       <div className="flex items-center gap-1">
@@ -435,7 +435,7 @@ function PreviewStep({ preview }: { preview: ImportPreviewResponse }) {
                         <ActionBadge action={row.contactAction} />
                       </div>
                     </TableCell>
-                    <TableCell className="text-[10px] py-1.5">
+                    <TableCell className="text-[11px] py-1.5">
                       {(row.errors?.length ?? 0) > 0 && (
                         <div className="text-destructive">{(row.errors ?? []).map((e) => e.message).join("; ")}</div>
                       )}
@@ -474,9 +474,9 @@ function SummaryCard({ label, value, variant }: { label: string; value: number; 
 }
 
 function StatusBadge({ status }: { status: string }) {
-  if (status === "valid") return <Badge variant="outline" className="border-green-300 bg-green-50 text-green-700 text-[10px]"><CheckCircle2 className="h-3 w-3 mr-0.5" />Valid</Badge>;
-  if (status === "warning") return <Badge variant="outline" className="border-yellow-300 bg-yellow-50 text-yellow-700 text-[10px]"><AlertTriangle className="h-3 w-3 mr-0.5" />Warn</Badge>;
-  return <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700 text-[10px]"><XCircle className="h-3 w-3 mr-0.5" />Blocked</Badge>;
+  if (status === "valid") return <Badge variant="outline" className="border-green-300 bg-green-50 text-green-700 text-[11px]"><CheckCircle2 className="h-3 w-3 mr-0.5" />Valid</Badge>;
+  if (status === "warning") return <Badge variant="outline" className="border-yellow-300 bg-yellow-50 text-yellow-700 text-[11px]"><AlertTriangle className="h-3 w-3 mr-0.5" />Warn</Badge>;
+  return <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700 text-[11px]"><XCircle className="h-3 w-3 mr-0.5" />Blocked</Badge>;
 }
 
 // ============================================================================

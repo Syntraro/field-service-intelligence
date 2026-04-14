@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { eq, and, desc, inArray, isNull, isNotNull, sql } from "drizzle-orm";
+import { eq, and, desc, ilike, inArray, isNull, isNotNull, sql } from "drizzle-orm";
 import { customerCompanies, clients, jobs, invoices, quotes, contactPersons, clientParts, clientNotes } from "@shared/schema";
 import type { Client } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset } from "./base";
@@ -420,7 +420,14 @@ export class CustomerCompanyRepository extends BaseRepository {
   }
 
   /**
-   * Get unlinked locations by company name (parentCompanyId IS NULL)
+   * Get unlinked locations by company name (parentCompanyId IS NULL).
+   *
+   * 2026-04-14: case-insensitive match on `companyName`. Previously used
+   * `eq()` which is case-sensitive in Postgres; tenants whose legacy
+   * rows had variant casing (e.g. "Basil HVAC" and "basil hvac") failed
+   * to auto-link, leaving Client Detail empty. Matches the existing
+   * project convention — `ilike()` is already used across
+   * `server/storage/clients.ts` for name comparisons.
    */
   async getUnlinkedLocationsByCompanyName(
     companyId: string,
@@ -438,7 +445,8 @@ export class CustomerCompanyRepository extends BaseRepository {
       .where(
         and(
           eq(clients.companyId, companyId),
-          eq(clients.companyName, companyName),
+          // Case-insensitive exact match — no wildcards.
+          ilike(clients.companyName, companyName),
           // CRITICAL: Must use isNull() for NULL comparison, not eq(col, null)
           isNull(clients.parentCompanyId),
           notDeletedClientFilter()

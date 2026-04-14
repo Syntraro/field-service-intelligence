@@ -128,6 +128,26 @@ export class R2StorageProvider implements StorageProvider {
     await this.client.send(new DeleteObjectCommand({ Bucket: bucket, Key: objectKey }));
   }
 
+  async getObjectBuffer(bucket: string, objectKey: string): Promise<Buffer> {
+    const res = await this.client.send(
+      new GetObjectCommand({ Bucket: bucket, Key: objectKey }),
+    );
+    const body = res.Body as any;
+    if (!body) {
+      throw new Error(`R2 object ${objectKey} returned empty body`);
+    }
+    // AWS SDK v3 returns a Node.js Readable for S3 — collect it into a Buffer.
+    if (typeof body.transformToByteArray === "function") {
+      const bytes = await body.transformToByteArray();
+      return Buffer.from(bytes);
+    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of body as AsyncIterable<Buffer | Uint8Array>) {
+      chunks.push(chunk instanceof Buffer ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
+  }
+
   get defaultBucket(): string {
     return this.config.defaultBucket;
   }

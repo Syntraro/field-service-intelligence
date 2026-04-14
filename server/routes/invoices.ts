@@ -851,6 +851,8 @@ router.patch("/:id", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async
 // to the template row; applied only to this single dispatch call.
 const sendInvoiceBodySchema = z.object({
   recipients: z.array(z.string().email()).min(1, "At least one recipient required"),
+  // 2026-04-13 (Commit C): optional CC list. Deduped server-side.
+  cc: z.array(z.string().email()).max(20).optional(),
   subjectOverride: z
     .string()
     .optional()
@@ -863,6 +865,10 @@ const sendInvoiceBodySchema = z.object({
     .refine((v) => v === undefined || v.trim().length > 0, {
       message: "bodyOverride cannot be blank",
     }),
+  // 2026-04-13 (Commit C): attach-invoice-PDF toggle (defaults to true
+  // when omitted) and up to 5 uploaded image file ids.
+  attachPdf: z.boolean().optional(),
+  attachmentFileIds: z.array(z.string().min(1)).max(5).optional(),
   overrideQboLock: z.boolean().optional(),
   overrideReason: z.string().optional(),
 }).passthrough();
@@ -916,6 +922,189 @@ router.get(
       tenantId, entityType: "invoice", entityId: invoiceId,
     });
     res.json(result);
+  }),
+);
+
+// GET /api/invoices/:id/email-contacts — Rich contact list for the To/CC
+// picker: every person with an email address that belongs to this
+// invoice's location or parent customer-company. 2026-04-14.
+// Returns `{ contacts: [{name, email, roles, source}] }` deduped by email.
+router.get(
+  "/:id/email-contacts",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const tenantId = req.companyId!;
+    const invoiceId = req.params.id;
+
+    const { clientContactRepository } = await import("../storage/clientContacts");
+    const invoice = await storage.getInvoice(tenantId, invoiceId);
+    if (!invoice) throw createError(404, "Invoice not found");
+
+    const location = await storage.getClient(tenantId, invoice.locationId);
+    const customerCompanyId =
+      (invoice as any).customerCompanyId || (location as any)?.parentCompanyId || null;
+
+    type ContactOption = {
+      name: string;
+      email: string;
+      roles: string[];
+      source: "location" | "company";
+    };
+    const seen = new Set<string>();
+    const contacts: ContactOption[] = [];
+
+    // 2026-04-14 bug fix: only surface contacts whose email passes a basic
+    // RFC-shape check. The client-side chip normalizer rejects anything
+    // without a dotted domain (e.g. "huda@huda"), so unfiltered rows
+    // looked selectable but silently no-op'd on click. Matches the
+    // pattern used in `useSendCommunicationModal.normalizeEmail` and
+    // `recipientResolverService.cleanEmail`.
+    const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    const pushIf = (
+      raw: { firstName?: string | null; lastName?: string | null; email?: string | null },
+      roles: string[],
+      source: "location" | "company",
+    ) => {
+      const email = (raw.email ?? "").trim().toLowerCase();
+      if (!email) return;
+      if (!EMAIL_SHAPE.test(email)) return;
+      if (seen.has(email)) return;
+      seen.add(email);
+      const name = `${raw.firstName ?? ""} ${raw.lastName ?? ""}`.trim() || email;
+      contacts.push({ name, email, roles, source });
+    };
+
+    try {
+      const locationContacts = await clientContactRepository.getLocationContacts(
+        tenantId,
+        invoice.locationId,
+      );
+      for (const c of locationContacts) {
+        const roles = Array.isArray((c.assignment as any)?.roles)
+          ? ((c.assignment as any).roles as string[])
+          : [];
+        pushIf(c, roles, "location");
+      }
+    } catch { /* best-effort */ }
+
+    if (customerCompanyId) {
+      try {
+        const companyDir = await clientContactRepository.getCompanyDirectory(
+          tenantId,
+          customerCompanyId,
+        );
+        for (const p of companyDir) {
+          const roles = Array.from(
+            new Set(
+              (p.assignments ?? []).flatMap((a: any) =>
+                Array.isArray(a?.roles) ? (a.roles as string[]) : [],
+              ),
+            ),
+          );
+          pushIf(p, roles, "company");
+        }
+      } catch { /* best-effort */ }
+    }
+
+    res.json({ contacts });
+  }),
+);
+
+// GET /api/invoices/:id/available-images — System-image picker source for
+// the Send Invoice attachment flow. 2026-04-14. Returns image files already
+// stored in the platform that are contextually related to this invoice:
+//   1. job-note image attachments for the invoice's linked job (if any)
+//   2. client-document image files for the invoice's location
+// Deduped by fileId, uploaded-status only, `image/*` mime-types only.
+router.get(
+  "/:id/available-images",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const tenantId = req.companyId!;
+    const invoiceId = req.params.id;
+
+    const invoice = await storage.getInvoice(tenantId, invoiceId);
+    if (!invoice) throw createError(404, "Invoice not found");
+
+    const { db } = await import("../db");
+    const { and, eq, inArray, like } = await import("drizzle-orm");
+    const schema = await import("@shared/schema");
+
+    type Row = {
+      id: string;
+      filename: string | null;
+      mimeType: string | null;
+      sizeBytes: number | null;
+      source: "job_note" | "client_document";
+    };
+    const seen = new Set<string>();
+    const images: Row[] = [];
+
+    // 1. Job-note images for the invoice's linked job.
+    const linkedJobId = (invoice as any).jobId as string | null | undefined;
+    if (linkedJobId) {
+      const jobNotes = await db
+        .select({ id: schema.jobNotes.id })
+        .from(schema.jobNotes)
+        .where(
+          and(
+            eq(schema.jobNotes.jobId, linkedJobId),
+            eq(schema.jobNotes.companyId, tenantId),
+          ),
+        );
+      if (jobNotes.length > 0) {
+        const noteIds = jobNotes.map((n) => n.id);
+        const rows = await db
+          .select({
+            id: schema.files.id,
+            filename: schema.files.originalName,
+            mimeType: schema.files.mimeType,
+            sizeBytes: schema.files.size,
+          })
+          .from(schema.jobNoteAttachments)
+          .innerJoin(schema.files, eq(schema.jobNoteAttachments.fileId, schema.files.id))
+          .where(
+            and(
+              inArray(schema.jobNoteAttachments.noteId, noteIds),
+              eq(schema.jobNoteAttachments.companyId, tenantId),
+              eq(schema.files.status, "uploaded"),
+              like(schema.files.mimeType, "image/%"),
+            ),
+          );
+        for (const r of rows) {
+          if (seen.has(r.id)) continue;
+          seen.add(r.id);
+          images.push({ ...r, source: "job_note" });
+        }
+      }
+    }
+
+    // 2. Client-document images for the invoice's location.
+    const rows = await db
+      .select({
+        id: schema.files.id,
+        filename: schema.files.originalName,
+        mimeType: schema.files.mimeType,
+        sizeBytes: schema.files.size,
+      })
+      .from(schema.clientFiles)
+      .innerJoin(schema.files, eq(schema.clientFiles.fileId, schema.files.id))
+      .where(
+        and(
+          eq(schema.clientFiles.clientId, invoice.locationId),
+          eq(schema.clientFiles.companyId, tenantId),
+          eq(schema.files.status, "uploaded"),
+          like(schema.files.mimeType, "image/%"),
+        ),
+      );
+    for (const r of rows) {
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      images.push({ ...r, source: "client_document" });
+    }
+
+    res.json({ images });
   }),
 );
 
@@ -993,10 +1182,14 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
   const invoiceId = req.params.id;
 
   // ── 1. Validate request body ─────────────────────────────────────────────
-  const { recipients, subjectOverride, bodyOverride } = validateSchema(
-    sendInvoiceBodySchema,
-    req.body ?? {},
-  );
+  const {
+    recipients,
+    cc,
+    subjectOverride,
+    bodyOverride,
+    attachPdf,
+    attachmentFileIds,
+  } = validateSchema(sendInvoiceBodySchema, req.body ?? {});
 
   // Parse QBO override from body
   const overrideQboLock = req.body?.overrideQboLock === true;
@@ -1011,10 +1204,26 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
     throw createError(404, "Invoice not found");
   }
 
-  try {
-    assertInvoiceStatusTransition(invoice.status as InvoiceStatus, "awaiting_payment");
-  } catch (error: any) {
-    throw createError(400, error.message);
+  // 2026-04-14: a re-send on an already-billable invoice is a
+  // communication action, not a lifecycle transition. Statuses that are
+  // already past "draft" and not terminal (paid / voided) skip the
+  // transition assertion AND skip the post-dispatch status mutation —
+  // we still stamp `sentAt` so the UI's "Email sent" row tracks the
+  // most recent send. Terminal states are blocked by retaining the
+  // assertion in the else branch.
+  const RESENDABLE_STATES = new Set<InvoiceStatus>([
+    "awaiting_payment",
+    "partial_paid",
+    "sent", // legacy status alias for awaiting_payment
+  ]);
+  const isResend = RESENDABLE_STATES.has(invoice.status as InvoiceStatus);
+
+  if (!isResend) {
+    try {
+      assertInvoiceStatusTransition(invoice.status as InvoiceStatus, "awaiting_payment");
+    } catch (error: any) {
+      throw createError(400, error.message);
+    }
   }
 
   const errors = validateSendRequirements(invoice);
@@ -1033,18 +1242,30 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
     tenantId,
     invoiceId,
     recipients,
+    cc,
     subjectOverride,
     bodyOverride,
+    attachPdf,
+    attachmentFileIds,
     createdByUserId: req.user?.id ?? null,
   });
 
-  // ── 4. Email succeeded → now persist the status transition ───────────────
+  // ── 4. Email succeeded → persist sent metadata.
+  // For a first send (draft → awaiting_payment) we set status + sentAt +
+  // sentByUserId. For a re-send on an already-billable invoice we ONLY
+  // stamp the latest sentAt + sentByUserId; status stays as-is so we
+  // don't trip lifecycle invariants on a no-op transition.
   const now = new Date();
-  let updatePayload: Record<string, unknown> = {
-    status: "awaiting_payment",
-    sentAt: now,
-    sentByUserId: req.user?.id,
-  };
+  let updatePayload: Record<string, unknown> = isResend
+    ? {
+        sentAt: now,
+        sentByUserId: req.user?.id,
+      }
+    : {
+        status: "awaiting_payment",
+        sentAt: now,
+        sentByUserId: req.user?.id,
+      };
 
   if (!invoice.issuedAt) {
     updatePayload.issuedAt = now;

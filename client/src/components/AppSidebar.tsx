@@ -62,7 +62,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
     });
     // Temporary preview link — remove when tech PWA is production-ready
     menuItems.push({
-      title: "Technician Preview",
+      title: "Technician",
       icon: Smartphone,
       href: "/tech/login",
       isActive: location.startsWith("/tech"),
@@ -84,13 +84,13 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       testId: "nav-jobs",
       isDivider: true
     });
-    // Recurring Jobs: Section renamed from "PM" to "PM & Recurring Jobs" to surface recurring job management
     menuItems.push({
-      title: "PM & Recurring Jobs",
+      title: "Recurring Jobs",
       icon: Wrench,
       href: "/pm",
       isActive: location === "/pm" || location.startsWith("/pm/"),
-      testId: "nav-pm"
+      testId: "nav-pm",
+      hoverText: "Preventive Maintenance & Recurring Jobs"
     });
     menuItems.push({
       title: "Invoices",
@@ -192,9 +192,9 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
                       isActive={item.isActive}
                       tooltip={item.title}
                       data-testid={item.testId}
-                      className="h-10 text-white/70 hover:text-white hover:bg-white/[0.08] data-[active=true]:bg-white/[0.16] data-[active=true]:text-white data-[active=true]:font-semibold data-[active=true]:border-l-[3px] data-[active=true]:border-l-[#76B054]"
+                      className="h-10 gap-1 px-1.5 text-white/70 hover:text-white hover:bg-white/[0.08] data-[active=true]:bg-white/[0.16] data-[active=true]:text-white data-[active=true]:font-semibold data-[active=true]:border-l-[3px] data-[active=true]:border-l-[#76B054]"
                     >
-                      <Link href={item.href}>
+                      <Link href={item.href} title={(item as any).hoverText}>
                         <item.icon className={`h-4 w-4 ${item.isActive ? "text-[#C2E974]" : "text-white/50"}`} />
                         <span>{item.title}</span>
                       </Link>
@@ -204,8 +204,9 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
                       isActive={item.isActive}
                       onClick={item.onClick}
                       tooltip={item.title}
+                      title={(item as any).hoverText}
                       data-testid={item.testId}
-                      className="h-10 text-white/70 hover:text-white hover:bg-white/[0.08] data-[active=true]:bg-white/[0.16] data-[active=true]:text-white data-[active=true]:font-semibold data-[active=true]:border-l-[3px] data-[active=true]:border-l-[#76B054]"
+                      className="h-10 gap-1 px-1.5 text-white/70 hover:text-white hover:bg-white/[0.08] data-[active=true]:bg-white/[0.16] data-[active=true]:text-white data-[active=true]:font-semibold data-[active=true]:border-l-[3px] data-[active=true]:border-l-[#76B054]"
                     >
                       <item.icon className={`h-4 w-4 ${item.isActive ? "text-[#C2E974]" : "text-white/50"}`} />
                       <span>{item.title}</span>

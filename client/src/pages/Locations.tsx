@@ -284,7 +284,7 @@ export default function Locations() {
                     {(locationTagsList.get(loc.id) ?? []).map((t) => (
                       <span
                         key={t.tagId}
-                        className="inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-medium text-white"
+                        className="inline-flex rounded-full px-1.5 py-0.5 text-[11px] font-medium text-white"
                         style={{ backgroundColor: t.tagColor }}
                       >
                         {t.tagName}

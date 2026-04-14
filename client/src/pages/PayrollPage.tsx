@@ -649,7 +649,7 @@ export default function PayrollPage() {
                     <span className="text-sm font-mono font-bold">
                       {entry.durationMinutes != null ? formatMinutes(entry.durationMinutes) : <span className="text-green-600 animate-pulse text-[13px]">Live</span>}
                     </span>
-                    {!entry.billable && <span className="text-[10px] text-muted-foreground ml-1">non-bill</span>}
+                    {!entry.billable && <span className="text-[11px] text-muted-foreground ml-1">non-bill</span>}
                   </div>
                   {/* Actions */}
                   <div className="flex items-center ml-1.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">

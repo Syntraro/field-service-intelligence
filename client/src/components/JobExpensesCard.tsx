@@ -311,20 +311,20 @@ export function JobExpensesCard({ jobId, onTotalsChange }: JobExpensesCardProps)
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="font-medium">{formatCurrency(parseFloat(expense.amount))}</span>
-                      <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                      <Badge variant="outline" className="text-[11px] px-1.5 py-0">
                         {categoryLabel(expense.category)}
                       </Badge>
                       {expense.isBillable ? (
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-blue-200 text-blue-600">
+                        <Badge variant="outline" className="text-[11px] px-1.5 py-0 border-blue-200 text-blue-600">
                           Billable
                         </Badge>
                       ) : (
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-slate-200 text-slate-400">
+                        <Badge variant="outline" className="text-[11px] px-1.5 py-0 border-slate-200 text-slate-400">
                           Internal
                         </Badge>
                       )}
                       {isInvoiced && (
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-green-200 text-green-600">
+                        <Badge variant="outline" className="text-[11px] px-1.5 py-0 border-green-200 text-green-600">
                           Invoiced
                         </Badge>
                       )}

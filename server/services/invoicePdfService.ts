@@ -211,8 +211,21 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       const showQty = invoice.showQuantity !== false;
       const showUnitPrice = invoice.showUnitPrice !== false;
       const showLineTotals = invoice.showLineTotals !== false;
+      // 2026-04-14: client-visibility toggle for the work-description block.
+      const showJobDescription = (invoice as any).showJobDescription !== false;
 
-      const tableTop = Math.max(clientInfoY + 30, detailsY + 50);
+      let descriptionTop = Math.max(clientInfoY + 30, detailsY + 50);
+      const workDesc = (invoice as any).workDescription as string | null | undefined;
+      if (showJobDescription && workDesc && workDesc.trim().length > 0) {
+        doc.fontSize(10).fillColor("#666666").font("Helvetica-Bold");
+        doc.text("Scope of Work", leftCol, descriptionTop);
+        doc.font("Helvetica").fillColor("#333333");
+        const descHeight = doc.heightOfString(workDesc, { width: pageWidth });
+        doc.text(workDesc, leftCol, descriptionTop + 14, { width: pageWidth });
+        descriptionTop = descriptionTop + 14 + descHeight + 12;
+      }
+
+      const tableTop = descriptionTop;
       let rowY: number;
 
       if (showLineItems) {

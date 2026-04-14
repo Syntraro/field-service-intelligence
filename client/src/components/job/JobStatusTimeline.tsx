@@ -232,7 +232,7 @@ function StatusBadge({ label, variant }: { label: string; variant: string }) {
   const classes = variantClasses[variant] || variantClasses.default;
 
   return (
-    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${classes}`}>
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium ${classes}`}>
       {label}
     </span>
   );

@@ -708,7 +708,7 @@ export default function QuoteDetailPage() {
                         </Button>
                       ) : (quote as any).assessmentStatus === "required" ? (
                         <div className="flex items-center gap-1">
-                          <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-700">Needed</Badge>
+                          <Badge variant="outline" className="text-[11px] border-amber-300 text-amber-700">Needed</Badge>
                           <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => setShowScheduleAssessment(true)}>
                             Schedule
                           </Button>
@@ -718,7 +718,7 @@ export default function QuoteDetailPage() {
                         </div>
                       ) : (quote as any).assessmentStatus === "scheduled" ? (
                         <div className="flex items-center gap-1">
-                          <Badge variant="outline" className="text-[10px] border-amber-400 text-amber-800 bg-amber-50">Scheduled</Badge>
+                          <Badge variant="outline" className="text-[11px] border-amber-400 text-amber-800 bg-amber-50">Scheduled</Badge>
                           <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => completeAssessmentMutation.mutate()}>
                             Complete
                           </Button>
@@ -727,7 +727,7 @@ export default function QuoteDetailPage() {
                           </Button>
                         </div>
                       ) : (quote as any).assessmentStatus === "completed" ? (
-                        <Badge variant="outline" className="text-[10px] border-emerald-300 text-emerald-700">Completed</Badge>
+                        <Badge variant="outline" className="text-[11px] border-emerald-300 text-emerald-700">Completed</Badge>
                       ) : null}
                     </div>
                   </div>

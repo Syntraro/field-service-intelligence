@@ -465,6 +465,8 @@ router.get("/:id/pdf/preview", asyncHandler(async (req: AuthedRequest, res: Resp
 // should use the explicit override keys.
 const sendQuoteSchema = z.object({
   recipients: z.array(z.string().email()).min(1, "At least one recipient required"),
+  // 2026-04-13 follow-up: explicit CC parity with invoice send.
+  cc: z.array(z.string().email()).max(20).optional(),
   subjectOverride: z
     .string()
     .optional()
@@ -540,6 +542,7 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
     tenantId: companyId,
     quoteId,
     recipients: validated.recipients,
+    cc: validated.cc,
     subjectOverride,
     bodyOverride,
     createdByUserId: req.user?.id ?? null,

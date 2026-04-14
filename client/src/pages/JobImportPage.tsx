@@ -420,26 +420,26 @@ function PreviewStep({ preview }: { preview: JobPreviewResponse }) {
                     <TableCell className="text-xs max-w-[150px] truncate">{r.row.clientName || "--"}</TableCell>
                     <TableCell>
                       {r.companyAction === "match" ? (
-                        <Badge variant="outline" className="border-blue-300 bg-blue-50 text-blue-700 text-[10px] px-1">matched</Badge>
+                        <Badge variant="outline" className="border-blue-300 bg-blue-50 text-blue-700 text-[11px] px-1">matched</Badge>
                       ) : (
-                        <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700 text-[10px] px-1">not found</Badge>
+                        <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700 text-[11px] px-1">not found</Badge>
                       )}
                     </TableCell>
                     <TableCell>
                       {r.locationAction === "match" ? (
-                        <Badge variant="outline" className="border-blue-300 bg-blue-50 text-blue-700 text-[10px] px-1">matched</Badge>
+                        <Badge variant="outline" className="border-blue-300 bg-blue-50 text-blue-700 text-[11px] px-1">matched</Badge>
                       ) : r.locationAction === "create" ? (
-                        <Badge variant="outline" className="border-green-300 bg-green-50 text-green-700 text-[10px] px-1">new</Badge>
+                        <Badge variant="outline" className="border-green-300 bg-green-50 text-green-700 text-[11px] px-1">new</Badge>
                       ) : (
-                        <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700 text-[10px] px-1">blocked</Badge>
+                        <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700 text-[11px] px-1">blocked</Badge>
                       )}
                     </TableCell>
                     <TableCell>
-                      {r.status === "valid" && <Badge className="bg-green-100 text-green-700 text-[10px] px-1">OK</Badge>}
-                      {r.status === "warning" && <Badge className="bg-amber-100 text-amber-700 text-[10px] px-1">Warning</Badge>}
-                      {r.status === "blocked" && <Badge className="bg-red-100 text-red-700 text-[10px] px-1">Blocked</Badge>}
+                      {r.status === "valid" && <Badge className="bg-green-100 text-green-700 text-[11px] px-1">OK</Badge>}
+                      {r.status === "warning" && <Badge className="bg-amber-100 text-amber-700 text-[11px] px-1">Warning</Badge>}
+                      {r.status === "blocked" && <Badge className="bg-red-100 text-red-700 text-[11px] px-1">Blocked</Badge>}
                     </TableCell>
-                    <TableCell className="text-[10px] text-muted-foreground max-w-[250px]">
+                    <TableCell className="text-[11px] text-muted-foreground max-w-[250px]">
                       {r.errors.length > 0 && <span className="text-red-600">{r.errors.join("; ")}</span>}
                       {r.warnings.length > 0 && <span className="text-amber-600">{r.warnings.join("; ")}</span>}
                       {r.errors.length === 0 && r.warnings.length === 0 && r.locationLabel && (
@@ -509,12 +509,12 @@ function ResultsStep({ results }: { results: JobExecuteResponse }) {
                       <TableCell className="text-xs font-mono">{r.jobNumber || "--"}</TableCell>
                       <TableCell>
                         {r.success ? (
-                          <Badge className="bg-green-100 text-green-700 text-[10px] px-1">Imported</Badge>
+                          <Badge className="bg-green-100 text-green-700 text-[11px] px-1">Imported</Badge>
                         ) : (
-                          <Badge className="bg-red-100 text-red-700 text-[10px] px-1">Failed</Badge>
+                          <Badge className="bg-red-100 text-red-700 text-[11px] px-1">Failed</Badge>
                         )}
                       </TableCell>
-                      <TableCell className="text-[10px] text-muted-foreground">
+                      <TableCell className="text-[11px] text-muted-foreground">
                         {r.success ? (
                           <>
                             {r.locationCreated && <Badge variant="outline" className="text-[9px] mr-1 border-green-200">new location</Badge>}

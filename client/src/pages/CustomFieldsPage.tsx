@@ -148,9 +148,9 @@ export default function CustomFieldsPage() {
                       <td className="px-4 py-2.5 font-medium">{d.label}</td>
                       <td className="px-4 py-2.5">
                         <div className="flex gap-1 flex-wrap">
-                          {d.appliesToJobs && <Badge variant="secondary" className="text-[10px]">Jobs</Badge>}
-                          {d.appliesToQuotes && <Badge variant="secondary" className="text-[10px]">Quotes</Badge>}
-                          {d.appliesToInvoices && <Badge variant="secondary" className="text-[10px]">Invoices</Badge>}
+                          {d.appliesToJobs && <Badge variant="secondary" className="text-[11px]">Jobs</Badge>}
+                          {d.appliesToQuotes && <Badge variant="secondary" className="text-[11px]">Quotes</Badge>}
+                          {d.appliesToInvoices && <Badge variant="secondary" className="text-[11px]">Invoices</Badge>}
                         </div>
                       </td>
                       <td className="px-4 py-2.5">
@@ -161,7 +161,7 @@ export default function CustomFieldsPage() {
                         )}
                       </td>
                       <td className="px-4 py-2.5">
-                        <Badge variant={d.active ? "default" : "outline"} className="text-[10px]">
+                        <Badge variant={d.active ? "default" : "outline"} className="text-[11px]">
                           {d.active ? "Active" : "Inactive"}
                         </Badge>
                       </td>
