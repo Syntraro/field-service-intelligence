@@ -163,7 +163,7 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
             <Label className="text-xs">To</Label>
             <div className="flex flex-wrap items-center gap-1 rounded-md border bg-background px-2 py-1 min-h-[32px]">
               {recipients.map((email) => (
-                <Badge key={email} variant="secondary" className="gap-1 font-normal h-5 text-[11px]" data-testid={`chip-recipient-${email}`}>
+                <Badge key={email} variant="secondary" className="gap-1 font-normal h-5 text-xs" data-testid={`chip-recipient-${email}`}>
                   {email}
                   <button
                     type="button"
@@ -209,7 +209,7 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
             <Label className="text-xs">CC</Label>
             <div className="flex flex-wrap items-center gap-1 rounded-md border bg-background px-2 py-1 min-h-[32px]">
               {cc.map((email) => (
-                <Badge key={email} variant="outline" className="gap-1 font-normal h-5 text-[11px]" data-testid={`chip-cc-${email}`}>
+                <Badge key={email} variant="outline" className="gap-1 font-normal h-5 text-xs" data-testid={`chip-cc-${email}`}>
                   {email}
                   <button
                     type="button"
@@ -302,7 +302,7 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
                   <Paperclip className="h-3.5 w-3.5" />
                   Add images
                 </Button>
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-xs text-muted-foreground">
                   {attachments.length}/{MAX_SEND_IMAGE_ATTACHMENTS} · from system
                 </span>
               </div>
@@ -317,7 +317,7 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
                     >
                       <FileText className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                       <span className="flex-1 min-w-0 text-xs truncate">{a.filename}</span>
-                      <span className="text-[11px] text-muted-foreground shrink-0">
+                      <span className="text-xs text-muted-foreground shrink-0">
                         {formatSize(a.sizeBytes)}
                       </span>
                       <Button
@@ -333,7 +333,7 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
                       </Button>
                     </div>
                   ))}
-                  <p className={`text-[11px] ${imageTotalExceeded ? "text-destructive" : "text-muted-foreground"}`}>
+                  <p className={`text-xs ${imageTotalExceeded ? "text-destructive" : "text-muted-foreground"}`}>
                     Total images: {formatSize(imageTotalBytes)}
                     {imageTotalExceeded
                       ? " — total attachments exceed the 25 MB limit."

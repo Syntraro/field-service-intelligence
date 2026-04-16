@@ -5,7 +5,7 @@
  * service owns orchestration + status-transition choices.
  */
 
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, lt, sql } from "drizzle-orm";
 import { db as defaultDb } from "../db";
 import {
   emailDeliveries,
@@ -136,6 +136,13 @@ export const emailDeliveriesStorage = {
   /**
    * Transition a delivery row from 'queued' → 'sent'. Updates provider
    * message id + sent_at + updated_at.
+   *
+   * 2026-04-14 Phase B hardening: state-guarded UPDATE (`WHERE status =
+   * 'queued'`) so a webhook-driven transition (e.g. `email.delivered`)
+   * that landed first cannot be regressed to `sent` by this call. When
+   * the row is no longer `queued`, the UPDATE matches 0 rows and returns
+   * null — callers already tolerate that (`.catch(() => {})` on the
+   * tracking-service wrapper; see emailDispatchService).
    */
   async markDeliverySent(
     tenantId: string,
@@ -156,6 +163,7 @@ export const emailDeliveriesStorage = {
         and(
           eq(emailDeliveries.id, deliveryId),
           eq(emailDeliveries.tenantId, tenantId),
+          eq(emailDeliveries.status, "queued"),
         ),
       )
       .returning();
@@ -250,6 +258,35 @@ export const emailDeliveriesStorage = {
   },
 
   /**
+   * Phase A hardening (2026-04-14): return the single `queued` delivery
+   * for a (tenant, entity) pair if one exists. Backs the service-level
+   * pre-check that prevents concurrent duplicate sends.
+   *
+   * Uses the `email_deliveries_queued_active_uq` partial unique index
+   * (at most one matching row by DB-level guarantee).
+   */
+  async findActiveQueuedDelivery(
+    tenantId: string,
+    entityType: CommunicationTemplateEntityType,
+    entityId: string,
+    queryDb: typeof defaultDb = defaultDb,
+  ): Promise<EmailDelivery | null> {
+    const [row] = await queryDb
+      .select()
+      .from(emailDeliveries)
+      .where(
+        and(
+          eq(emailDeliveries.tenantId, tenantId),
+          eq(emailDeliveries.entityType, entityType),
+          eq(emailDeliveries.entityId, entityId),
+          eq(emailDeliveries.status, "queued"),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  },
+
+  /**
    * Lookup by provider message id — tenant-scoped to prevent cross-tenant
    * collisions in the (rare) case provider ids aren't globally unique.
    */
@@ -269,6 +306,41 @@ export const emailDeliveriesStorage = {
       )
       .limit(1);
     return row ?? null;
+  },
+
+  /**
+   * Phase C hardening (2026-04-14): atomically fail any delivery row that
+   * has been in `queued` status since before `cutoff`. Returns the rows
+   * that were actually transitioned so the caller can emit follow-up
+   * notifications.
+   *
+   * Single UPDATE with `WHERE status = 'queued' AND created_at < cutoff`
+   * eliminates the SELECT-then-UPDATE race: any row that transitioned
+   * concurrently (markSent / webhook / existing markFailed) is excluded
+   * by the WHERE clause and will not be touched.
+   */
+  async failStaleQueuedDeliveries(
+    cutoff: Date,
+    queryDb: typeof defaultDb = defaultDb,
+  ): Promise<EmailDelivery[]> {
+    const now = new Date();
+    const rows = await queryDb
+      .update(emailDeliveries)
+      .set({
+        status: "failed",
+        errorMessage:
+          "Timed out in queued state — no provider response received within threshold.",
+        failedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(emailDeliveries.status, "queued"),
+          lt(emailDeliveries.createdAt, cutoff),
+        ),
+      )
+      .returning();
+    return rows;
   },
 
   /**

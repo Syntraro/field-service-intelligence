@@ -191,10 +191,21 @@ const timestampSchema = z.object({
 function maybeMapActiveVisitConflict(err: unknown): never {
   if (err instanceof Error) {
     if (err.message.startsWith("RUNNING_TIME_ENTRY_EXISTS:")) {
-      throw createError(409, err.message.replace(/^RUNNING_TIME_ENTRY_EXISTS:\s*/, ""));
+      throw createError(
+        409,
+        err.message.replace(/^RUNNING_TIME_ENTRY_EXISTS:\s*/, ""),
+        "RUNNING_TIME_ENTRY_EXISTS",
+      );
     }
     if (err.message.startsWith("ACTIVE_VISIT_CONFLICT:")) {
-      throw createError(409, err.message.replace(/^ACTIVE_VISIT_CONFLICT:\s*/, ""));
+      // 2026-04-14: emit a stable, canonical message so the tech app
+      // surfaces the business rule directly rather than the orchestrator's
+      // diagnostic prose. The typed `code` is what the client switches on.
+      throw createError(
+        409,
+        "Complete or pause the other active visit before starting this one.",
+        "ACTIVE_VISIT_CONFLICT",
+      );
     }
   }
   throw err;

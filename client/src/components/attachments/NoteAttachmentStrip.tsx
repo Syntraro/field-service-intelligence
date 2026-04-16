@@ -110,7 +110,7 @@ function FileChip({ attachment }: { attachment: AttachmentInfo }) {
     >
       <FileText className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
       <span className="text-xs truncate">{filename}</span>
-      {err && <span className="text-[11px] text-red-500 shrink-0">!</span>}
+      {err && <span className="text-xs text-red-500 shrink-0">!</span>}
     </button>
   );
 }

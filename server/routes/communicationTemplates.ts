@@ -28,8 +28,6 @@ import { renderTemplate } from "../services/templateRenderer";
 
 const router = Router();
 
-const MANAGER_ROLES = RESTRICTED_MANAGER_ROLES;
-
 const paramsSchema = z.object({
   entityType: z.enum(communicationTemplateEntityTypeEnum),
   channel: z.enum(communicationTemplateChannelEnum),
@@ -49,7 +47,7 @@ const paramsSchema = z.object({
  */
 router.get(
   "/:entityType/:channel",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const tenantId = req.companyId;
     if (!tenantId) throw createError(401, "Unauthorized");
@@ -98,7 +96,7 @@ const previewBodySchema = z.object({
 
 router.post(
   "/preview/:entityType",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const tenantId = req.companyId;
     if (!tenantId) throw createError(401, "Unauthorized");
@@ -133,7 +131,7 @@ router.post(
  */
 router.post(
   "/",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const tenantId = req.companyId;
     if (!tenantId) throw createError(401, "Unauthorized");
@@ -167,7 +165,7 @@ router.post(
 // lists it as "POST/PUT". Upsert semantics are identical.
 router.put(
   "/",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const tenantId = req.companyId;
     if (!tenantId) throw createError(401, "Unauthorized");
@@ -201,7 +199,7 @@ router.put(
  */
 router.delete(
   "/:entityType/:channel",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const tenantId = req.companyId;
     if (!tenantId) throw createError(401, "Unauthorized");

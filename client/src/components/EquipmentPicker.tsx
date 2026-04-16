@@ -140,7 +140,7 @@ export function EquipmentPicker({ locationId, selectedEquipmentIds, onChange }: 
           {selected.map(eq => (
             <span
               key={eq.id}
-              className="inline-flex items-center gap-1 rounded-full bg-slate-100 pl-2 pr-1 py-0.5 text-[11px] font-medium text-slate-700"
+              className="inline-flex items-center gap-1 rounded-full bg-slate-100 pl-2 pr-1 py-0.5 text-xs font-medium text-slate-700"
               title={formatEquipmentLabel(eq)}
             >
               <Wrench className="h-2.5 w-2.5 text-slate-400" />
@@ -224,7 +224,7 @@ export function EquipmentPicker({ locationId, selectedEquipmentIds, onChange }: 
 
       {/* Fetch error state */}
       {isError && (
-        <p className="text-[11px] text-destructive">Failed to load equipment</p>
+        <p className="text-xs text-destructive">Failed to load equipment</p>
       )}
 
       {/* Shared Add Equipment Dialog — uses canonical POST /api/clients/:locationId/equipment */}

@@ -610,7 +610,7 @@ export default function PayrollPage() {
                 <div key={entry.id} className={cn("flex items-center py-2 px-1 group", locked && "opacity-70")}>
                   {/* Group 1: Type + Job # + Client */}
                   <div className="flex items-center gap-1.5 shrink-0 mr-3">
-                    <Badge variant="outline" className={cn("text-[11px] shrink-0 whitespace-nowrap px-1.5 py-0", typeInfo.color)}>{typeInfo.label}</Badge>
+                    <Badge variant="outline" className={cn("text-xs shrink-0 whitespace-nowrap px-1.5 py-0", typeInfo.color)}>{typeInfo.label}</Badge>
                     {entry.jobId ? (
                       <>
                         <button
@@ -649,7 +649,7 @@ export default function PayrollPage() {
                     <span className="text-sm font-mono font-bold">
                       {entry.durationMinutes != null ? formatMinutes(entry.durationMinutes) : <span className="text-green-600 animate-pulse text-[13px]">Live</span>}
                     </span>
-                    {!entry.billable && <span className="text-[11px] text-muted-foreground ml-1">non-bill</span>}
+                    {!entry.billable && <span className="text-xs text-muted-foreground ml-1">non-bill</span>}
                   </div>
                   {/* Actions */}
                   <div className="flex items-center ml-1.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">

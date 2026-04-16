@@ -730,11 +730,24 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
 
   const showSuccess = (msg: string) => { setActionSuccess(msg); setTimeout(() => setActionSuccess(null), 3000); };
   const showError = (err: any) => {
-    if (err?.code === "VERSION_MISMATCH" || err?.status === 409) {
-      setActionError("This record was updated elsewhere. Refresh and try again.");
-    } else {
-      setActionError(err?.message || "Failed");
+    // 2026-04-14: typed-code mapping. The server attaches a stable `code`
+    // on every business 409 (see server/routes/techField.ts mapper).
+    // Switch on the code, not on the status — multiple business rules
+    // share status 409 and must surface different messages.
+    const code = err?.code;
+    if (code === "ACTIVE_VISIT_CONFLICT") {
+      setActionError(err?.message || "Complete or pause the other active visit before starting this one.");
+      return;
     }
+    if (code === "RUNNING_TIME_ENTRY_EXISTS") {
+      setActionError(err?.message || "A timer is already running. Pause it before continuing.");
+      return;
+    }
+    if (code === "VERSION_MISMATCH") {
+      setActionError("This record was updated elsewhere. Refresh and try again.");
+      return;
+    }
+    setActionError(err?.message || "Failed");
   };
 
   const handleStartTravel = async () => {

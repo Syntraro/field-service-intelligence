@@ -301,7 +301,9 @@ export type AuditLog = typeof auditLogs.$inferSelect;
 export const impersonationSessions = pgTable("impersonation_sessions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   ownerUserId: varchar("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  targetUserId: varchar("target_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  // Nullable since Phase 4: read-only support sessions do not have an
+  // impersonation target user.
+  targetUserId: varchar("target_user_id").references(() => users.id, { onDelete: "cascade" }),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   reason: text("reason"),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -309,6 +311,16 @@ export const impersonationSessions = pgTable("impersonation_sessions", {
   lastSeenAt: timestamp("last_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   endedAt: timestamp("ended_at"),
   endedReason: text("ended_reason"), // "manual", "expired", "idle", "logout"
+  // Phase 4 (Support Sessions)
+  accessMode: text("access_mode").notNull().default("impersonation"), // "read_only" | "impersonation"
+  approvedByUserId: varchar("approved_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  status: text("status").notNull().default("active"), // "pending" | "active" | "expired" | "revoked" | "closed"
+  startedAt: timestamp("started_at"),
+  revokedAt: timestamp("revoked_at"),
+  // Phase 7 (Production Readiness): stable canonical source for the
+  // originally-requested duration. Backfilled from (expires_at - created_at)
+  // for pre-existing rows.
+  requestedDurationMinutes: integer("requested_duration_minutes"),
 });
 
 export const insertImpersonationSessionSchema = createInsertSchema(impersonationSessions).omit({
@@ -946,6 +958,14 @@ export const feedback = pgTable("feedback", {
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   status: text("status").notNull().default("new"),
   archived: boolean("archived").notNull().default(false),
+  // Phase 3 (Ops Portal): platform-triage fields. All nullable so the
+  // existing tenant submit path is unchanged.
+  title: text("title"),
+  route: text("route"),
+  featureArea: text("feature_area"),
+  priority: text("priority"),
+  assignedTo: varchar("assigned_to").references(() => users.id, { onDelete: "set null" }),
+  updatedAt: timestamp("updated_at"),
 });
 
 export const insertFeedbackSchema = createInsertSchema(feedback).omit({
@@ -959,6 +979,55 @@ export const insertFeedbackSchema = createInsertSchema(feedback).omit({
 
 export type InsertFeedback = z.infer<typeof insertFeedbackSchema>;
 export type Feedback = typeof feedback.$inferSelect;
+
+// ──────────────────────────────────────────────────────────────
+// Phase 3 (Ops Portal): Internal bug tracker + support notes
+// ──────────────────────────────────────────────────────────────
+
+export const issueReports = pgTable("issue_reports", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => companies.id, { onDelete: "set null" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }),
+  source: text("source").notNull().default("platform"),
+  title: text("title").notNull(),
+  description: text("description"),
+  severity: text("severity").notNull().default("medium"),
+  priority: text("priority"),
+  status: text("status").notNull().default("open"),
+  route: text("route"),
+  featureArea: text("feature_area"),
+  reproSteps: text("repro_steps"),
+  assignedTo: varchar("assigned_to").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+});
+
+export const insertIssueReportSchema = createInsertSchema(issueReports).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertIssueReport = z.infer<typeof insertIssueReportSchema>;
+export type IssueReport = typeof issueReports.$inferSelect;
+
+export const internalSupportNotes = pgTable("internal_support_notes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => companies.id, { onDelete: "set null" }),
+  relatedEntityType: text("related_entity_type").notNull(),
+  relatedEntityId: varchar("related_entity_id").notNull(),
+  note: text("note").notNull(),
+  createdBy: varchar("created_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const insertInternalSupportNoteSchema = createInsertSchema(internalSupportNotes).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertInternalSupportNote = z.infer<typeof insertInternalSupportNoteSchema>;
+export type InternalSupportNote = typeof internalSupportNotes.$inferSelect;
 
 export const subscriptionPlans = pgTable("subscription_plans", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -1101,6 +1170,9 @@ export const fileCategoryEnum = [
   "client_document",
   "contract_document",
   "technician_document",
+  // 2026-04-14 Phase 1 cleanup: receipts attached to job_expenses migrated
+  // off the legacy /api/uploads disk pipeline onto the canonical R2 flow.
+  "job_expense_receipt",
   "other",
 ] as const;
 export type FileCategory = (typeof fileCategoryEnum)[number] | string;
@@ -1412,6 +1484,15 @@ export type InsertInvoiceLine = z.infer<typeof insertInvoiceLineSchema>;
 export type UpdateInvoiceLine = z.infer<typeof updateInvoiceLineSchema>;
 export type InvoiceLine = typeof invoiceLines.$inferSelect;
 
+// 2026-04-14 Payments ledger foundation (Phase 1): paymentType enum +
+// parent-payment self-reference so future refund/reversal rows can attach
+// to the payment they offset. Stripe-compatible: Stripe Charge/Refund
+// objects map 1:1 to paymentType='payment'/'refund' rows with
+// reference=ch_.../re_... and parentPaymentId linking a refund to its
+// charge. No Stripe code in this phase — schema foundation only.
+export const paymentTypeEnum = ["payment", "refund", "reversal"] as const;
+export type PaymentType = (typeof paymentTypeEnum)[number];
+
 // Payments table - tracks payments against invoices
 export const payments = pgTable("payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -1423,6 +1504,33 @@ export const payments = pgTable("payments", {
   receivedAt: timestamp("received_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   notes: text("notes"),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  // 2026-04-14 Ledger foundation. System-managed, never user-input:
+  //   paymentType='payment' = money in (positive amount, no parent)
+  //   paymentType='refund'  = money back (negative amount, parentPaymentId set)
+  //   paymentType='reversal' = valid payment that didn't happen (NSF, bounced) — negative amount, parent set
+  // CHECK constraints enforcing these shapes arrive in Phase 2 alongside
+  // the refund/reversal creation path; for now all existing rows default
+  // to paymentType='payment' with parentPaymentId=NULL.
+  paymentType: text("payment_type").notNull().default("payment"),
+  parentPaymentId: varchar("parent_payment_id").references((): any => payments.id, { onDelete: "restrict" }),
+  // 2026-04-14 Payments Phase 3: provider-linked immutability + Stripe
+  // readiness. Both fields are system-managed and must never be set
+  // from user input (see `insertPaymentSchema.omit({...})` below).
+  //
+  //   providerSource='manual' — default. No external provider; fully
+  //                             editable via the route.
+  //   providerSource='qbo'    — row is owned by QuickBooks Online.
+  //                             `qboPaymentId` carries the QBO object id.
+  //   providerSource='stripe' — row mirrors a Stripe Charge or Refund.
+  //                             `reference` carries the Stripe id
+  //                             (`ch_...` or `re_...`); `providerEventId`
+  //                             carries the webhook event id for dedupe.
+  //
+  // The canonical predicate `isProviderLinked` in
+  // `server/lib/paymentPredicates.ts` recognizes both legacy
+  // `qboPaymentId`-only rows and new `providerSource`-tagged rows.
+  providerSource: text("provider_source").notNull().default("manual"),
+  providerEventId: text("provider_event_id"),
   // 2026-04-09: Outbound QBO payment sync fields. Mirror the convention used
   // on customer_companies / items / invoices. None of these are mutated by the
   // canonical local payment writer (paymentRepository.recalculateInvoiceBalance);
@@ -1434,7 +1542,50 @@ export const payments = pgTable("payments", {
   qboSyncStatus: text("qbo_sync_status").notNull().default("NOT_SYNCED"), // NOT_SYNCED | SYNCED | PENDING | ERROR
   qboSyncError: text("qbo_sync_error"), // Last sync error message, cleared on next successful sync
   qboLastSyncedAt: timestamp("qbo_last_synced_at"), // Last successful sync timestamp
-});
+}, (table) => ({
+  // 2026-04-14 Phase 1 next-frontier: duplicate-payment guard. When a user
+  // provides a reference (cheque number, txn id, receipt id), two rows
+  // with the same (tenant, invoice, reference) are rejected at the DB.
+  // Cash/other entries without a reference are NOT constrained — those
+  // are typically entered in-person and a rare double-submit is handled
+  // manually. Partial index so null/blank references do not collide.
+  referenceDedupeUq: uniqueIndex("payments_company_invoice_reference_uq")
+    .on(table.companyId, table.invoiceId, table.reference)
+    .where(sql`reference IS NOT NULL AND reference <> ''`),
+  // 2026-04-14 Payments Phase 2: refund/reversal dedupe scoped to the
+  // parent payment. Catches webhook-replay or double-submit on a
+  // provider-issued refund id. Pairs with the existing invoice-wide
+  // constraint above; both must hold. Only applies to rows that
+  // actually carry a parent id and a non-empty reference.
+  parentReferenceDedupeUq: uniqueIndex("payments_company_parent_reference_uq")
+    .on(table.companyId, table.parentPaymentId, table.reference)
+    .where(sql`parent_payment_id IS NOT NULL AND reference IS NOT NULL AND reference <> ''`),
+  // 2026-04-14 Payments Phase 2: ledger shape invariant. Every row is
+  // EITHER a payment (positive amount, no parent) OR a refund/reversal
+  // (negative amount, parent set). Enforces single-source-of-truth on
+  // the paymentType enum + amount sign + parent presence in one rule.
+  ledgerShapeChk: check(
+    "payments_ledger_shape_chk",
+    sql`(payment_type = 'payment' AND amount > 0 AND parent_payment_id IS NULL)
+        OR
+        (payment_type IN ('refund', 'reversal') AND amount < 0 AND parent_payment_id IS NOT NULL)`,
+  ),
+  // 2026-04-14 Payments Phase 3: provider-source enum enforcement.
+  providerSourceChk: check(
+    "payments_provider_source_chk",
+    sql`provider_source IN ('manual', 'qbo', 'stripe')`,
+  ),
+  // 2026-04-14 Payments Phase 3: future-facing webhook-replay guard.
+  // Blocks duplicate Stripe (or future QBO) webhook events at the DB
+  // when `provider_event_id` is populated. No-op for today's rows
+  // (provider_event_id defaults to NULL).
+  providerEventIdUq: uniqueIndex("payments_provider_event_id_uq")
+    .on(table.companyId, table.providerSource, table.providerEventId)
+    .where(sql`provider_event_id IS NOT NULL`),
+}));
+
+export const paymentProviderSourceEnum = ["manual", "qbo", "stripe"] as const;
+export type PaymentProviderSource = (typeof paymentProviderSourceEnum)[number];
 
 export const insertPaymentSchema = createInsertSchema(payments).omit({
   id: true,
@@ -1447,6 +1598,20 @@ export const insertPaymentSchema = createInsertSchema(payments).omit({
   qboSyncStatus: true,
   qboSyncError: true,
   qboLastSyncedAt: true,
+  // 2026-04-14 Ledger foundation: paymentType + parentPaymentId are
+  // system-managed. The canonical createPayment writer always inserts
+  // paymentType='payment' via the DB default; Phase 2 refund/reversal
+  // methods write the other values from server-side logic only.
+  paymentType: true,
+  parentPaymentId: true,
+  // 2026-04-14 Payments Phase 3: providerSource + providerEventId are
+  // system-managed. `providerSource` defaults to 'manual' via the DB;
+  // QBO sync service sets 'qbo'; future Stripe writer will set
+  // 'stripe' along with the webhook event id. Never accepted from user
+  // input — that's how the canonical writer/provider separation is
+  // enforced at the validation layer.
+  providerSource: true,
+  providerEventId: true,
 }).extend({
   method: z.enum(paymentMethodEnum).default("other"),
   receivedAt: z.string().optional(), // Accept string for date input
@@ -1787,7 +1952,7 @@ export type HoldReason = typeof holdReasonEnum[number];
 
 /** Canonical hold reason labels — single source of truth for UI display */
 export const HOLD_REASON_LABELS: Record<HoldReason, string> = {
-  parts:    "Waiting for Parts",
+  parts:    "Needs Parts",
   customer: "Customer Approval",
   access:   "Access Issue",
   approval: "Internal Approval",
@@ -3388,6 +3553,29 @@ export type QuoteLine = typeof quoteLines.$inferSelect;
 // QUOTE TEMPLATES
 // ============================================================================
 
+// 2026-04-14 Phase 3D — canonical quote notes. Mirror of jobNotes so Quote
+// Detail can surface the same interactive notes UX as Job Detail. No
+// attachments in this phase; attachment parity with jobNoteAttachments is
+// a separate, additive follow-up.
+export const quoteNotes = pgTable("quote_notes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  quoteId: varchar("quote_id").notNull().references(() => quotes.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "set null" }),
+  noteText: text("note_text").notNull(),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+});
+
+export const insertQuoteNoteSchema = createInsertSchema(quoteNotes).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type QuoteNote = typeof quoteNotes.$inferSelect;
+export type InsertQuoteNote = z.infer<typeof insertQuoteNoteSchema>;
+
 export const quoteTemplates = pgTable("quote_templates", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
@@ -4980,8 +5168,14 @@ export const jobExpenses = pgTable("job_expenses", {
   companyCreatedAtIdx: index("job_expenses_company_created_at_idx").on(table.companyId, table.createdAt),
 }));
 
+// 2026-04-14 Phase 1 cleanup: `receiptFileId` is not an API-accepted field.
+// It is written exclusively by the `job_expense_receipt` EntityAdapter on
+// file finalize and cleared by the same adapter on file delete. These
+// schemas intentionally omit it so they stay consistent with the runtime
+// expense API contract.
 export const insertJobExpenseSchema = createInsertSchema(jobExpenses).omit({
   id: true,
+  receiptFileId: true,
   createdAt: true,
   updatedAt: true,
 }).extend({
@@ -4996,7 +5190,6 @@ export const updateJobExpenseSchema = z.object({
   category: z.enum(expenseCategoryEnum).optional(),
   date: z.string().or(z.date()).optional(),
   notes: z.string().nullable().optional(),
-  receiptFileId: z.string().nullable().optional(),
   isBillable: z.boolean().optional(),
   reimbursableToUserId: z.string().nullable().optional(),
 });
@@ -5351,6 +5544,13 @@ export const emailDeliveries = pgTable(
     providerMsgIdx: index("idx_email_deliveries_provider_msg").on(table.providerMessageId),
     statusIdx: index("idx_email_deliveries_status").on(table.status),
     retriedFromIdx: index("idx_email_deliveries_retried_from").on(table.retriedFromDeliveryId),
+    // 2026-04-14 Phase A hardening: partial unique index prevents a
+    // concurrent duplicate `queued` row for the same (tenant, entity).
+    // Transitioned rows (sent/failed/delivered/etc) are outside the
+    // predicate, so legitimate resends and new sends remain possible.
+    queuedActiveUq: uniqueIndex("email_deliveries_queued_active_uq")
+      .on(table.tenantId, table.entityType, table.entityId)
+      .where(sql`status = 'queued'`),
   }),
 );
 

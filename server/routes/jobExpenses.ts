@@ -19,12 +19,15 @@ const router = Router();
 
 // ── Validation schemas ──
 
+// 2026-04-14 Phase 1 cleanup: `receiptFileId` is no longer accepted on
+// create/update. It is written by the canonical file upload pipeline
+// (job_expense_receipt adapter) on finalize, and cleared by the canonical
+// DELETE /api/files/:fileId flow. This keeps receipts on a single write path.
 const createExpenseSchema = z.object({
   amount: z.string().or(z.number()),
   category: z.enum(expenseCategoryEnum),
   date: z.string(),
   notes: z.string().nullable().optional(),
-  receiptFileId: z.string().nullable().optional(),
   isBillable: z.boolean().optional(),
   reimbursableToUserId: z.string().nullable().optional(),
 });
@@ -34,7 +37,6 @@ const updateExpenseSchema = z.object({
   category: z.enum(expenseCategoryEnum).optional(),
   date: z.string().optional(),
   notes: z.string().nullable().optional(),
-  receiptFileId: z.string().nullable().optional(),
   isBillable: z.boolean().optional(),
   reimbursableToUserId: z.string().nullable().optional(),
 });
@@ -61,7 +63,6 @@ router.post("/:jobId/expenses", requireRole(MANAGER_ROLES), asyncHandler(async (
     date: validated.date,
     notes: validated.notes,
     createdByUserId: req.user!.id,
-    receiptFileId: validated.receiptFileId,
     isBillable: validated.isBillable,
     reimbursableToUserId: validated.reimbursableToUserId,
   });

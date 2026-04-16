@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { tenantFeaturesRepository } from "../storage/tenantFeatures";
 import type { FeatureKey } from "@shared/schema";
+import { isPlatformRole } from "./roles";
 
 /**
  * Feature gate middleware.
@@ -15,9 +16,10 @@ import type { FeatureKey } from "@shared/schema";
  */
 export function requireFeature(featureKey: FeatureKey) {
   return async (req: Request, res: Response, next: NextFunction) => {
-    // Platform admins bypass feature gates (for support/debugging)
+    // Platform roles bypass feature gates (for support/debugging). Uses the
+    // REAL actor during impersonation to match requireRole / requirePlatformRole.
     const effectiveUser = (req as any).isImpersonating ? (req as any).realUser : req.user;
-    if (effectiveUser?.role === "platform_admin") {
+    if (isPlatformRole(effectiveUser?.role)) {
       return next();
     }
 

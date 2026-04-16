@@ -109,12 +109,12 @@ export default function DispatchUnscheduledPanel({
         >
           <PanelRightOpen className="h-4 w-4 text-muted-foreground" />
           {visits.length > 0 && (
-            <span className="rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-700 leading-none">
+            <span className="rounded-full bg-blue-100 px-1.5 py-0.5 text-xs font-bold text-blue-700 leading-none">
               {visits.length}
             </span>
           )}
         </button>
-        <span className="text-[9px] font-medium text-muted-foreground uppercase tracking-widest"
+        <span className="text-xs font-medium text-muted-foreground uppercase tracking-widest"
           style={{ writingMode: "vertical-lr", textOrientation: "mixed" }}>
           Unscheduled
         </span>
@@ -160,7 +160,7 @@ export default function DispatchUnscheduledPanel({
                 {filtered.length > 0 && (
                   <button
                     onClick={handleSelectAllFiltered}
-                    className="text-[11px] text-blue-600 hover:text-blue-800 px-1 font-medium"
+                    className="text-xs text-blue-600 hover:text-blue-800 px-1 font-medium"
                   >
                     {filtered.every(v => selectedVisitIdsForFocus?.has(v.id)) ? "Deselect all" : "Select all"}
                   </button>
@@ -168,7 +168,7 @@ export default function DispatchUnscheduledPanel({
                 {selectionCount > 0 && (
                   <button
                     onClick={onClearSelection}
-                    className="text-[11px] text-slate-500 hover:text-slate-700 px-1 font-medium"
+                    className="text-xs text-slate-500 hover:text-slate-700 px-1 font-medium"
                   >
                     Clear
                   </button>

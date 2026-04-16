@@ -485,7 +485,7 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
               onDragEnd={handleDragEnd}
             >
               <table className="min-w-full text-xs">
-                <thead className="border-b text-[11px] uppercase tracking-wide text-muted-foreground">
+                <thead className="border-b text-xs uppercase tracking-wide text-muted-foreground">
                   <tr>
                     <th className="py-2 pr-2 w-8"></th>
                     <th className="py-2 pr-3 text-left font-medium">Product / Service</th>
@@ -842,7 +842,7 @@ function SortableLineItemRow(props: SortableLineItemRowProps) {
               {productDisplay || <span className="italic text-muted-foreground">No product</span>}
             </div>
             {props.item.isDraft && (
-              <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 font-medium">
+              <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 font-medium">
                 Draft
               </span>
             )}

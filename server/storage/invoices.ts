@@ -1213,30 +1213,55 @@ export class InvoiceRepository extends BaseRepository {
         lineIdByNumber.set(row.lineNumber, row.id);
       }
 
-      // P3-02 Phase 2: Per-entry UPDATEs for included entries (unchanged semantics)
-      // Each entry has unique billedMinutesSnapshot + billedRateSnapshot
+      // 2026-04-14 Phase 1 next-frontier: batched single UPDATE for
+      // included entries. The only per-row distinct values are
+      // `invoiceLineId`, `billedMinutesSnapshot`, and `billedRateSnapshot`
+      // — everything else is uniform — so we join the rows against a
+      // VALUES expression and fire one statement instead of N. Preserves
+      // tenant scoping via `t.company_id = ${companyId}`. Semantics are
+      // identical to the prior per-snapshot loop.
       const now = new Date();
+      const updateRows: Array<{
+        id: string;
+        invoiceLineId: string;
+        billedMinutes: number;
+        billedRate: string;
+      }> = [];
       for (const [assignedLineNumber, group] of Array.from(groupsByLineNumber.entries())) {
         const lineId = lineIdByNumber.get(assignedLineNumber);
         if (!lineId) continue; // Should not happen — defensive guard
         for (const snapshot of group.entrySnapshots) {
-          await tx
-            .update(timeEntries)
-            .set({
-              invoiceId,
-              invoiceLineId: lineId,
-              invoicedAt: now,
-              billedMinutesSnapshot: snapshot.billedMinutes,
-              billedRateSnapshot: String(snapshot.billedRate.toFixed(2)),
-              billingRulesHash: rulesResult.rulesHash,
-              // Phase 9: Lock entries to prevent edits
-              lockedAt: now,
-              lockedByInvoiceId: invoiceId,
-              lockReason: "INVOICED",
-              updatedAt: now,
-            })
-            .where(eq(timeEntries.id, snapshot.id));
+          updateRows.push({
+            id: snapshot.id,
+            invoiceLineId: lineId,
+            billedMinutes: snapshot.billedMinutes,
+            billedRate: snapshot.billedRate.toFixed(2),
+          });
         }
+      }
+      if (updateRows.length > 0) {
+        const valuesSql = sql.join(
+          updateRows.map(
+            (r) =>
+              sql`(${r.id}, ${r.invoiceLineId}, ${r.billedMinutes}, ${r.billedRate})`,
+          ),
+          sql`, `,
+        );
+        await tx.execute(sql`
+          UPDATE time_entries AS t
+          SET invoice_id = ${invoiceId},
+              invoice_line_id = v.invoice_line_id,
+              invoiced_at = ${now},
+              billed_minutes_snapshot = v.billed_minutes::int,
+              billed_rate_snapshot = v.billed_rate::numeric,
+              billing_rules_hash = ${rulesResult.rulesHash},
+              locked_at = ${now},
+              locked_by_invoice_id = ${invoiceId},
+              lock_reason = 'INVOICED',
+              updated_at = ${now}
+          FROM (VALUES ${valuesSql}) AS v(id, invoice_line_id, billed_minutes, billed_rate)
+          WHERE t.id = v.id AND t.company_id = ${companyId}
+        `);
       }
     }
 

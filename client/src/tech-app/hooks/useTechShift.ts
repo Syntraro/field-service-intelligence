@@ -32,9 +32,13 @@ export function useTechShift() {
   const queryClient = useQueryClient();
 
   // Read shift state from the canonical tech time summary (shared query key with Timesheet)
+  // 2026-04-14 Phase 3 clean-surfaces: SSE (useTechRealtimeSync) invalidates
+  // ["/api/tech/time/summary"] on every relevant mutation, so the primary
+  // freshness path is server-driven. Polling is retained ONLY as an
+  // SSE-disconnect safety net; interval lengthened from 30s to 5min.
   const { data, isLoading } = useQuery<TodaySummaryResponse>({
     queryKey: ["/api/tech/time/summary"],
-    refetchInterval: 30_000,
+    refetchInterval: 5 * 60_000,
     refetchIntervalInBackground: false,
   });
 

@@ -20,6 +20,7 @@ import { db } from "../db";
 import { sql, eq, and, isNull, count, max, desc } from "drizzle-orm";
 import {
   companies,
+  companySettings,
   users,
   qboSyncQueue,
   qboSyncEvents,
@@ -33,8 +34,11 @@ export interface TenantAccountSummary {
   company: {
     id: string;
     name: string;
+    /** User-configured display name from company_settings; null if never set. */
+    displayName: string | null;
     createdAt: Date;
     subscriptionStatus: string;
+    subscriptionPlan: string | null;
     qboEnabled: boolean;
     qboEnvironment: string;
   };
@@ -42,6 +46,8 @@ export interface TenantAccountSummary {
     id: string;
     email: string;
     fullName: string | null;
+    firstName: string | null;
+    lastName: string | null;
   } | null;
   users: {
     total: number;
@@ -190,8 +196,10 @@ export async function getTenantHealthList(): Promise<TenantAccountSummary[]> {
       company: {
         id: company.id,
         name: company.name,
+        displayName: null, // Phase 7: list view doesn't join company_settings; detail does.
         createdAt: company.createdAt,
         subscriptionStatus: company.subscriptionStatus,
+        subscriptionPlan: null,
         qboEnabled: company.qboEnabled,
         qboEnvironment: company.qboEnvironment,
       },
@@ -200,6 +208,8 @@ export async function getTenantHealthList(): Promise<TenantAccountSummary[]> {
             id: owner.id,
             email: owner.email,
             fullName: owner.full_name,
+            firstName: null,
+            lastName: null,
           }
         : null,
       users: {
@@ -227,13 +237,18 @@ export async function getTenantDetail(companyId: string): Promise<TenantAccountD
     .select({
       id: companies.id,
       name: companies.name,
+      // Phase 7 identity fix: user-configured name from company_settings.
+      // Prefer this when present; fall back to the signup-time companies.name.
+      displayName: companySettings.companyName,
       createdAt: companies.createdAt,
       subscriptionStatus: companies.subscriptionStatus,
+      subscriptionPlan: companies.subscriptionPlan,
       qboEnabled: companies.qboEnabled,
       qboEnvironment: companies.qboEnvironment,
       qboRealmId: companies.qboRealmId,
     })
     .from(companies)
+    .leftJoin(companySettings, eq(companySettings.companyId, companies.id))
     .where(eq(companies.id, companyId))
     .limit(1);
 
@@ -243,12 +258,15 @@ export async function getTenantDetail(companyId: string): Promise<TenantAccountD
 
   const company = companyResult[0];
 
-  // Owner (most recently active)
+  // Owner (most recently active). Phase 7: also carry firstName/lastName so
+  // the Platform Ops detail page can render a human-readable primary contact.
   const ownerUser = await db
     .select({
       id: users.id,
       email: users.email,
       fullName: users.fullName,
+      firstName: users.firstName,
+      lastName: users.lastName,
     })
     .from(users)
     .where(and(
@@ -333,8 +351,10 @@ export async function getTenantDetail(companyId: string): Promise<TenantAccountD
     company: {
       id: company.id,
       name: company.name,
+      displayName: company.displayName ?? null,
       createdAt: company.createdAt,
       subscriptionStatus: company.subscriptionStatus,
+      subscriptionPlan: company.subscriptionPlan ?? null,
       qboEnabled: company.qboEnabled,
       qboEnvironment: company.qboEnvironment,
     },
@@ -343,6 +363,8 @@ export async function getTenantDetail(companyId: string): Promise<TenantAccountD
           id: ownerUser[0].id,
           email: ownerUser[0].email,
           fullName: ownerUser[0].fullName,
+          firstName: ownerUser[0].firstName ?? null,
+          lastName: ownerUser[0].lastName ?? null,
         }
       : null,
     users: {

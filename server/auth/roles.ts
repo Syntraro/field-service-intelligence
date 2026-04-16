@@ -31,14 +31,37 @@ export const TECH_ROLES = ["owner", "admin", "manager", "dispatcher", "technicia
 // requireSchedulable (same as every other tech route) instead of a role-restricted
 // gate. Self-assignment is enforced for ALL mobile users regardless of role.
 
-/** All valid roles in the system */
+/** All valid tenant roles in the system */
 export const ALL_ROLES = ["owner", "admin", "manager", "dispatcher", "technician"] as const;
 
-/** Type for role strings */
+/** Type for tenant role strings */
 export type Role = typeof ALL_ROLES[number];
 
 /** Type for role groups */
 export type RoleGroup = readonly Role[];
+
+/**
+ * Platform-level roles (staff of the SaaS vendor, not tenant users).
+ *
+ * Platform roles exist to grant access to the internal Ops Portal and
+ * (in a later phase) to initiate support sessions into tenants.
+ *
+ * Phase 1 rule: holding a platform role does NOT grant tenant data access.
+ * Tenant access still requires an active impersonation / support session.
+ */
+export const PLATFORM_ROLES = [
+  "platform_admin",
+  "platform_support",
+  "platform_billing",
+  "platform_readonly_audit",
+] as const;
+
+export type PlatformRole = typeof PLATFORM_ROLES[number];
+
+/** True if the given role string is a platform (non-tenant) role. */
+export function isPlatformRole(role: string | undefined | null): role is PlatformRole {
+  return !!role && (PLATFORM_ROLES as readonly string[]).includes(role);
+}
 
 /**
  * Role Hierarchy for Authorization

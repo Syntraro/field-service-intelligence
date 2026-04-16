@@ -18,13 +18,18 @@ import path from "path";
 
 import { registerRoutes } from "./routes";
 import { buildResendWebhookRouter } from "./routes/resendWebhook";
+import { buildStripeWebhookRouter } from "./routes/stripeWebhook";
 import { setupVite, serveStatic, log } from "./vite";
 import passport from "passport";
 import "./auth";  // Register passport strategies
 import { enforceSchemaOrExit } from "./utils/schemaGuard";
 import { validateEmailConfig } from "./resendClient";
+import { validateStripeConfig } from "./services/stripeClient";
 import { startPmAutoGeneration } from "./services/pmAutoGeneration";
 import { startOrphanSweeper } from "./services/fileUploadService";
+import { startQueuedEmailSweeper } from "./services/emailDeliveryTrackingService";
+import { startSubscriptionWorker, stopSubscriptionWorker } from "./services/subscriptionWorker";
+import { stopPmAutoGeneration } from "./services/pmAutoGeneration";
 
 /**
  * Production security defaults.
@@ -43,6 +48,11 @@ app.set("trust proxy", 1);
 // body parser. The router applies `express.raw()` internally for its
 // own path only — all other routes still get JSON parsing below.
 app.use(buildResendWebhookRouter());
+
+// 2026-04-14 Stripe Phase 1: Stripe webhook receiver has the same
+// constraint — signature is computed over raw body bytes, so the
+// router must run before `express.json()`.
+app.use(buildStripeWebhookRouter());
 
 // Body parsing limits
 app.use(express.json({ limit: process.env.JSON_LIMIT ?? "2mb" }));
@@ -154,6 +164,11 @@ app.use((req, _res, next) => {
 // Validate email config at startup (warns if portal emails won't work)
 validateEmailConfig();
 
+// 2026-04-14 Stripe Phase 1: validate Stripe config. Warns loudly if
+// missing; the server boots regardless. In-app card payments fail
+// closed with 503 at request time until the env is set.
+validateStripeConfig();
+
 // Register API routes and create server
 const server = registerRoutes(app);
 
@@ -203,6 +218,12 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 // Start listening when run directly (Replit/Node entry)
 const port = Number(process.env.PORT ?? 5000);
 
+// Handles to the two sweepers that return their NodeJS.Timeout so the
+// SIGTERM/SIGINT handler can clear them cleanly. The other workers expose
+// explicit stop*() helpers.
+let orphanSweeperHandle: NodeJS.Timeout | null = null;
+let queuedEmailSweeperHandle: NodeJS.Timeout | null = null;
+
 // Validate schema before accepting requests
 (async () => {
   try {
@@ -215,10 +236,40 @@ const port = Number(process.env.PORT ?? 5000);
       startPmAutoGeneration();
       // R2 file uploads: reap stale pending_upload rows on an interval so
       // failed / abandoned client uploads do not linger in the DB or R2.
-      startOrphanSweeper();
+      orphanSweeperHandle = startOrphanSweeper();
+      // Phase C email hardening: reap stale `queued` email deliveries so
+      // dispatches whose process was killed mid-send don't block the
+      // per-entity UNIQUE index and never surface to the user.
+      queuedEmailSweeperHandle = startQueuedEmailSweeper();
+      // Phase 1 next-frontier (2026-04-14): daily subscription worker —
+      // renewal notices (30/7 day), auto-renew, revert-to-monthly. All
+      // operations are idempotent via subscriptionEvents unique key.
+      startSubscriptionWorker();
     });
   } catch (error) {
     console.error("Failed to start server:", error);
     process.exit(1);
   }
 })();
+
+// 2026-04-14 Phase 2 hygiene: graceful shutdown for background intervals.
+// Runs alongside the existing db.ts / cache.ts handlers — Node invokes
+// every registered listener for SIGTERM/SIGINT. Idempotent via the handle
+// null-checks inside each stop helper.
+let workerShutdownRan = false;
+function shutdownBackgroundWorkers() {
+  if (workerShutdownRan) return;
+  workerShutdownRan = true;
+  try { stopPmAutoGeneration(); } catch (err) { console.error("[shutdown] stopPmAutoGeneration failed:", err); }
+  try { stopSubscriptionWorker(); } catch (err) { console.error("[shutdown] stopSubscriptionWorker failed:", err); }
+  if (orphanSweeperHandle) {
+    clearInterval(orphanSweeperHandle);
+    orphanSweeperHandle = null;
+  }
+  if (queuedEmailSweeperHandle) {
+    clearInterval(queuedEmailSweeperHandle);
+    queuedEmailSweeperHandle = null;
+  }
+}
+process.on("SIGTERM", shutdownBackgroundWorkers);
+process.on("SIGINT", shutdownBackgroundWorkers);

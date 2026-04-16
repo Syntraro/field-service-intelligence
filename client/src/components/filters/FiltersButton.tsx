@@ -51,7 +51,7 @@ export function FiltersButton({
           <Filter className="h-3.5 w-3.5" />
           {label}
           {activeCount > 0 && (
-            <Badge variant="secondary" className="h-5 px-1.5 text-[11px] ml-0.5">
+            <Badge variant="secondary" className="h-5 px-1.5 text-xs ml-0.5">
               {activeCount}
             </Badge>
           )}

@@ -130,7 +130,7 @@ export function EntityDocumentsSection({ entityType, entityId, listUrl, title = 
               key={i}
               className="flex items-center gap-2 rounded border border-slate-200 px-2 py-1 bg-slate-50"
             >
-              <span className="text-[11px] truncate flex-1">{f.name}</span>
+              <span className="text-xs truncate flex-1">{f.name}</span>
               <button
                 type="button"
                 onClick={() => setStaged((prev) => prev.filter((_, idx) => idx !== i))}

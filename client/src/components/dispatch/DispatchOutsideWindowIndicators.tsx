@@ -53,7 +53,7 @@ export function EarlyIndicator({ count, onClick }: { count: number; onClick?: ()
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-0.5 rounded-r bg-amber-100 border border-l-0 border-amber-300 px-1.5 py-1 text-[10px] font-semibold text-amber-700 hover:bg-amber-200 transition-colors shadow-md"
+      className="flex items-center gap-0.5 rounded-r bg-amber-100 border border-l-0 border-amber-300 px-1.5 py-1 text-xs font-semibold text-amber-700 hover:bg-amber-200 transition-colors shadow-md"
       title={`${count} item(s) before ${TIMELINE_START_HOUR}:00 AM`}
     >
       <ChevronLeft className="h-3 w-3" />
@@ -71,7 +71,7 @@ export function LateIndicator({ count, onClick }: { count: number; onClick?: () 
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-0.5 rounded-l bg-amber-100 border border-r-0 border-amber-300 px-1.5 py-1 text-[10px] font-semibold text-amber-700 hover:bg-amber-200 transition-colors shadow-md"
+      className="flex items-center gap-0.5 rounded-l bg-amber-100 border border-r-0 border-amber-300 px-1.5 py-1 text-xs font-semibold text-amber-700 hover:bg-amber-200 transition-colors shadow-md"
       title={`${count} item(s) after ${lateHourLabel}`}
     >
       {count}

@@ -425,7 +425,7 @@ export function JobNoteDialog({ jobId, note, open, onOpenChange }: JobNoteDialog
                     <div className="flex items-center justify-between">
                       <Label className="text-xs flex items-center gap-2">
                         Saved attachments
-                        <span className="inline-flex items-center rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600">
+                        <span className="inline-flex items-center rounded bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-600">
                           {existingAttachments.length}
                         </span>
                       </Label>
@@ -434,7 +434,7 @@ export function JobNoteDialog({ jobId, note, open, onOpenChange }: JobNoteDialog
                           type="button"
                           variant="ghost"
                           size="sm"
-                          className="h-6 px-2 text-[11px] text-muted-foreground hover:text-destructive"
+                          className="h-6 px-2 text-xs text-muted-foreground hover:text-destructive"
                           onClick={() => setConfirmRemoveAll(true)}
                           disabled={busy}
                           data-testid="button-remove-all-attachments"
@@ -468,7 +468,7 @@ export function JobNoteDialog({ jobId, note, open, onOpenChange }: JobNoteDialog
                             <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
                             <div className="flex-1 min-w-0">
                               <p className="text-xs truncate">{a.originalName ?? "Attachment"}</p>
-                              <p className="text-[11px] text-muted-foreground">{formatSize(a.size)}</p>
+                              <p className="text-xs text-muted-foreground">{formatSize(a.size)}</p>
                             </div>
                             <Button
                               type="button"
@@ -495,7 +495,7 @@ export function JobNoteDialog({ jobId, note, open, onOpenChange }: JobNoteDialog
                 <Label className="text-xs flex items-center gap-2">
                   New attachments
                   {stagedFiles.length > 0 && (
-                    <span className="inline-flex items-center rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700">
+                    <span className="inline-flex items-center rounded bg-emerald-50 px-1.5 py-0.5 text-xs font-medium text-emerald-700">
                       {stagedFiles.length} staged
                     </span>
                   )}
@@ -513,7 +513,7 @@ export function JobNoteDialog({ jobId, note, open, onOpenChange }: JobNoteDialog
                     <Paperclip className="h-3.5 w-3.5" />
                     Attach files
                   </Button>
-                  <span className="text-[11px] text-muted-foreground">
+                  <span className="text-xs text-muted-foreground">
                     Images ≤10 MB, PDFs ≤20 MB
                   </span>
                 </div>
@@ -540,7 +540,7 @@ export function JobNoteDialog({ jobId, note, open, onOpenChange }: JobNoteDialog
                         )}
                         <div className="flex-1 min-w-0">
                           <p className="text-xs truncate">{sf.file.name}</p>
-                          <p className="text-[11px] text-muted-foreground">{formatSize(sf.file.size)}</p>
+                          <p className="text-xs text-muted-foreground">{formatSize(sf.file.size)}</p>
                         </div>
                         <Button
                           type="button"
@@ -562,7 +562,7 @@ export function JobNoteDialog({ jobId, note, open, onOpenChange }: JobNoteDialog
             </div>
 
             {busy && stagedFiles.length > 0 && (
-              <div className="text-[11px] text-muted-foreground mb-2">
+              <div className="text-xs text-muted-foreground mb-2">
                 Uploading {Math.min(uploadIndex + 1, stagedFiles.length)} of {stagedFiles.length}
                 {" — "}
                 {Math.round(progress * 100)}%

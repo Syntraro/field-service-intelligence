@@ -64,6 +64,69 @@ const WEBHOOK_STATUSES: ReadonlySet<EmailDeliveryStatus> = new Set<EmailDelivery
   "opened",
 ]);
 
+// ---------------------------------------------------------------------------
+// Phase C orphan sweeper (2026-04-14)
+// ---------------------------------------------------------------------------
+//
+// Mirrors `fileUploadService.sweepOrphanedUploads` / `startOrphanSweeper`.
+// A delivery row stays `queued` only when the dispatch process was killed
+// between the insert and the Resend-result handler, OR when the outbound
+// HTTPS call hung past the SDK timeout. Either way, a row older than
+// `QUEUED_ORPHAN_THRESHOLD_MINUTES` is unrecoverable via normal flow and
+// should be surfaced to the user as `failed`.
+//
+// 15 min matches the canonical file-sweeper cadence — comfortably past any
+// legitimate Resend retry/backoff window while surfacing failures
+// promptly. The Phase A partial UNIQUE index already blocks further
+// attempts on the same entity while the stale row sits.
+
+/** Safe threshold. See block comment above. */
+export const QUEUED_ORPHAN_THRESHOLD_MINUTES = 15;
+
+export interface SweepQueuedEmailResult {
+  failed: number;
+}
+
+/**
+ * Atomically flip stale `queued` deliveries to `failed` and fire
+ * delivery-problem notifications for each. Returns a summary.
+ *
+ * Race-safe: the storage-layer UPDATE carries `WHERE status = 'queued'
+ * AND created_at < cutoff` so any row that transitioned concurrently
+ * (markSent / markFailed / webhook) is excluded.
+ */
+export async function sweepQueuedEmailDeliveries(): Promise<SweepQueuedEmailResult> {
+  const cutoff = new Date(
+    Date.now() - QUEUED_ORPHAN_THRESHOLD_MINUTES * 60 * 1000,
+  );
+  const rows = await emailDeliveriesStorage.failStaleQueuedDeliveries(cutoff);
+  // Phase 16 parity: same notification surface as any other failed
+  // delivery. Fire-and-forget so one bad row does not abort the sweep.
+  for (const row of rows) {
+    void notifyDeliveryProblem(row, "failed");
+  }
+  return { failed: rows.length };
+}
+
+/**
+ * Start the queued-orphan sweeper on an interval. Returns the interval
+ * handle so callers can clear it on shutdown. Safe to call once from
+ * bootstrap. Mirrors `fileUploadService.startOrphanSweeper`.
+ */
+export function startQueuedEmailSweeper(): NodeJS.Timeout {
+  const intervalMs = QUEUED_ORPHAN_THRESHOLD_MINUTES * 60 * 1000;
+  return setInterval(() => {
+    sweepQueuedEmailDeliveries().catch((err) => {
+      // Log and keep going — one bad tick must not stop the sweeper.
+      // eslint-disable-next-line no-console
+      console.error(
+        "[email-tracking] queued sweep failed:",
+        err?.message ?? err,
+      );
+    });
+  }, intervalMs).unref();
+}
+
 /**
  * Phase 15: decide whether the UI should offer a one-time Resend.
  * Policy: only `failed` or `bounced` rows, and only when they have not
@@ -75,6 +138,7 @@ export function canResendDelivery(d: EmailDelivery): boolean {
   if ((d.resendCount ?? 0) >= 1) return false;
   return true;
 }
+
 
 export interface DeliverySummary {
   id: string;
@@ -118,6 +182,36 @@ function toSummary(d: EmailDelivery): DeliverySummary {
 }
 
 export const emailDeliveryTrackingService = {
+  /**
+   * Phase A hardening (2026-04-14): throw 409 if a queued delivery
+   * already exists for this (tenant, entity). Called by the dispatch
+   * service BEFORE creating a new queued row so a concurrent/
+   * double-click request fails fast with a clear error instead of
+   * racing on the Resend API.
+   *
+   * The DB-level partial unique index
+   * (`email_deliveries_queued_active_uq`) is the authoritative guard —
+   * this pre-check is a friendlier surface for the same rule so the
+   * user sees 409 instead of a UNIQUE-violation 500.
+   */
+  async assertNoActiveQueuedDelivery(
+    tenantId: string,
+    entityType: CommunicationTemplateEntityType,
+    entityId: string,
+  ): Promise<void> {
+    const existing = await emailDeliveriesStorage.findActiveQueuedDelivery(
+      tenantId,
+      entityType,
+      entityId,
+    );
+    if (existing) {
+      throw createError(
+        409,
+        "A send is already in progress for this item. Wait for it to complete or fail before retrying.",
+      );
+    }
+  },
+
   /** Create a 'queued' row. Called right before the provider send. */
   async createQueuedDelivery(input: CreateQueuedDeliveryInput): Promise<EmailDelivery> {
     if (!input.tenantId) throw createError(400, "tenantId is required");
@@ -131,12 +225,46 @@ export const emailDeliveryTrackingService = {
     });
   },
 
-  /** Flip to 'sent' + persist provider message id. */
-  async markSent(input: MarkSentInput): Promise<EmailDelivery | null> {
+  /**
+   * Flip to 'sent' + persist provider message id.
+   *
+   * 2026-04-14 Phase D atomicity: optional `afterMarkSent(tx)` runs inside
+   * the same DB transaction as `markDeliverySent`. Callers use this to
+   * atomically transition the owning entity (e.g. invoice → awaiting_payment,
+   * quote → sent) alongside the delivery row. Either both writes commit or
+   * neither does; a rollback leaves the delivery in `queued`, where the
+   * Phase C sweeper will recover it at +15 min.
+   *
+   * The HTTPS call to Resend remains OUTSIDE this transaction — no DB
+   * connection is held across a network call.
+   */
+  async markSent(
+    input: MarkSentInput,
+    afterMarkSent?: (tx: any) => Promise<void>,
+  ): Promise<EmailDelivery | null> {
     if (!input.tenantId) throw createError(400, "tenantId is required");
     if (!input.deliveryId) throw createError(400, "deliveryId is required");
-    return emailDeliveriesStorage.markDeliverySent(input.tenantId, input.deliveryId, {
-      providerMessageId: input.providerMessageId,
+    if (!afterMarkSent) {
+      return emailDeliveriesStorage.markDeliverySent(input.tenantId, input.deliveryId, {
+        providerMessageId: input.providerMessageId,
+      });
+    }
+    return db.transaction(async (tx) => {
+      const row = await emailDeliveriesStorage.markDeliverySent(
+        input.tenantId,
+        input.deliveryId,
+        { providerMessageId: input.providerMessageId },
+        tx as any,
+      );
+      // Only run the entity callback when the delivery actually flipped.
+      // If `markDeliverySent` matched 0 rows (Phase B state guard — e.g.
+      // a webhook already moved status off `queued`), we skip the entity
+      // update: the delivery has already reached a more-advanced state
+      // via another path, and the tx simply returns that null row.
+      if (row && afterMarkSent) {
+        await afterMarkSent(tx);
+      }
+      return row;
     });
   },
 

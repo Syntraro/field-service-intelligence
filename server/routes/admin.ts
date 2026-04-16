@@ -17,7 +17,7 @@ import { tenantFeaturesRepository } from "../storage/tenantFeatures";
 import { customerCompanyRepository } from "../storage/customerCompanies";
 import { impersonationService } from "../impersonationService";
 import { userRepository } from "../storage/users";
-import { auditService } from "../auditService";
+import { platformAuditService } from "../services/platformAuditService";
 import { updateTenantFeaturesSchema } from "@shared/schema";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 import { invalidateCompanyCache } from "../services/cache";
@@ -292,8 +292,10 @@ router.get(
       return;
     }
 
-    // Get target user details
-    const targetUser = await userRepository.getUser(session.targetUserId);
+    // Get target user details (null for Phase 4 read-only sessions).
+    const targetUser = session.targetUserId
+      ? await userRepository.getUser(session.targetUserId)
+      : null;
     const company = await userRepository.getCompanyById(session.companyId);
 
     res.json({
@@ -461,7 +463,7 @@ router.post(
     }
 
     // Audit log the replay action
-    await auditService.logQboReplayOne(
+    await platformAuditService.logQboReplayOne(
       owner.id,
       owner.email || "unknown",
       id,
@@ -500,7 +502,7 @@ router.post(
     const result = await adminQboRepository.resetAllFailedForReplay(companyId);
 
     // Audit log the bulk replay action
-    await auditService.logQboReplayAllFailed(
+    await platformAuditService.logQboReplayAllFailed(
       owner.id,
       owner.email || "unknown",
       result.count,
@@ -587,7 +589,7 @@ router.patch(
     const updated = await tenantFeaturesRepository.updateFeatures(companyId, updates);
 
     // Audit log the change
-    await auditService.log({
+    await platformAuditService.log({
       platformAdminId: owner.id,
       platformAdminEmail: owner.email || "unknown",
       action: "company_status_change",
@@ -664,7 +666,7 @@ router.patch(
 
     // Audit log the change (special handling for trial adjustments)
     if (data.trialEndsAt !== undefined || data.subscriptionStatus === "trial") {
-      await auditService.logTrialAdjustment(
+      await platformAuditService.logTrialAdjustment(
         owner.id,
         owner.email || "unknown",
         companyId,
@@ -676,7 +678,7 @@ router.patch(
         req
       );
     } else {
-      await auditService.logBillingAdjustment(
+      await platformAuditService.logBillingAdjustment(
         owner.id,
         owner.email || "unknown",
         companyId,
@@ -724,7 +726,7 @@ router.post(
     }
 
     // Audit log the trigger
-    await auditService.log({
+    await platformAuditService.log({
       platformAdminId: owner.id,
       platformAdminEmail: owner.email || "unknown",
       action: "time_alerts_worker_triggered" as any,
@@ -769,7 +771,7 @@ router.post(
     const owner = (req as any).isImpersonating ? (req as any).realUser : req.user!;
 
     // Audit log the trigger
-    await auditService.log({
+    await platformAuditService.log({
       platformAdminId: owner.id,
       platformAdminEmail: owner.email || "unknown",
       action: "weekly_digest_worker_triggered" as any,

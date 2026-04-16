@@ -21,6 +21,7 @@
 import { useEffect, useRef } from "react";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth";
+import { markCalendarInvalidated } from "@/lib/dispatchInvalidationSync";
 
 /** Matches DispatchSignal from server/lib/dispatchBus.ts */
 interface DispatchSignal {
@@ -152,6 +153,10 @@ function flushFlags(flags: number, qc: QueryClient) {
     for (let i = 0; i < VISIT_JOB_KEYS.length; i++) {
       qc.invalidateQueries({ queryKey: VISIT_JOB_KEYS[i] as string[] });
     }
+    // 2026-04-14 Phase 2 hygiene: SSE is the authoritative calendar
+    // invalidation path. Mark the timestamp so mutation-side
+    // `backgroundInvalidate` can skip the redundant calendar refetch.
+    markCalendarInvalidated();
   }
   if (flags & FLAG_TASK) {
     // Predicate-based: catches both prefix-style dispatch keys and URL-style dashboard keys

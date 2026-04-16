@@ -6,9 +6,18 @@ interface ProtectedRouteProps {
   children: React.ReactNode;
   requireAdmin?: boolean;
   requirePlatformAdmin?: boolean;
+  /** Phase 6: allows any platform role (admin, support, billing, readonly_audit). */
+  requirePlatformRole?: boolean;
 }
 
-export default function ProtectedRoute({ children, requireAdmin = false, requirePlatformAdmin = false }: ProtectedRouteProps) {
+const PLATFORM_ROLES = [
+  "platform_admin",
+  "platform_support",
+  "platform_billing",
+  "platform_readonly_audit",
+];
+
+export default function ProtectedRoute({ children, requireAdmin = false, requirePlatformAdmin = false, requirePlatformRole = false }: ProtectedRouteProps) {
   const { user, isLoading } = useAuth();
   const [location, setLocation] = useLocation();
   const hasCheckedAuth = useRef(false);
@@ -37,12 +46,18 @@ export default function ProtectedRoute({ children, requireAdmin = false, require
       return;
     }
 
-    // Regular admin check
-    if (requireAdmin && user.role !== "owner" && user.role !== "admin" && user.role !== "platform_admin") {
+    // Phase 6: any platform role
+    if (requirePlatformRole && !PLATFORM_ROLES.includes(user.role as string)) {
       setLocation("/login");
       return;
     }
-  }, [user, isLoading, requireAdmin, requirePlatformAdmin, setLocation]);
+
+    // Regular admin check
+    if (requireAdmin && user.role !== "owner" && user.role !== "admin" && !PLATFORM_ROLES.includes(user.role as string)) {
+      setLocation("/login");
+      return;
+    }
+  }, [user, isLoading, requireAdmin, requirePlatformAdmin, requirePlatformRole, setLocation]);
 
   if (isLoading) {
     return (
@@ -61,8 +76,13 @@ export default function ProtectedRoute({ children, requireAdmin = false, require
     return null;
   }
 
-  // Regular admin check (platform admins also pass this check)
-  if (requireAdmin && user.role !== "owner" && user.role !== "admin" && user.role !== "platform_admin") {
+  // Phase 6: any platform role
+  if (requirePlatformRole && !PLATFORM_ROLES.includes(user.role as string)) {
+    return null;
+  }
+
+  // Regular admin check (platform roles also pass this check)
+  if (requireAdmin && user.role !== "owner" && user.role !== "admin" && !PLATFORM_ROLES.includes(user.role as string)) {
     return null;
   }
 

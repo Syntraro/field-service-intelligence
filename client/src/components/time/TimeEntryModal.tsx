@@ -595,7 +595,7 @@ export function TimeEntryModal({
                   data-testid="input-notes"
                 />
                 {type === "break" && (
-                  <p className="text-[11px] text-muted-foreground">Breaks are never billable.</p>
+                  <p className="text-xs text-muted-foreground">Breaks are never billable.</p>
                 )}
               </div>
 
@@ -627,7 +627,7 @@ export function TimeEntryModal({
                       data-testid="input-override-reason"
                     />
                     {overrideReason.length > 0 && overrideReason.length < 10 && (
-                      <p className="text-[11px] text-destructive">{10 - overrideReason.length} more characters needed</p>
+                      <p className="text-xs text-destructive">{10 - overrideReason.length} more characters needed</p>
                     )}
                   </div>
                 </div>

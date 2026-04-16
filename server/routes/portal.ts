@@ -181,6 +181,29 @@ router.post(
       .where(eq(companies.id, contact.companyId))
       .limit(1);
 
+    // 2026-04-14 Phase B hardening — JUSTIFIED EXCEPTION to the canonical
+    // `emailDispatchService` send path.
+    //
+    // This route does NOT route through emailDispatchService by design:
+    //   - The email is a one-off transactional magic-link (not
+    //     entity-scoped; not invoice/quote/job).
+    //   - There is no CommunicationTemplateEntityType that fits; adding one
+    //     plus template/default/data-builder/recipient-strategy entries
+    //     would be redesign scope for a single fixed email body.
+    //   - Delivery tracking is not required — the magic-link token row in
+    //     `portalMagicTokens` is the authoritative audit record (unique
+    //     per request, 15-min TTL, single-use).
+    //   - The canonical `getResendClient()` is still used, so sender
+    //     config (from name/address, API key) stays unified.
+    //   - Failure is surfaced fail-closed via `emailSent = false` below.
+    //
+    // Residual risk (accepted): no Resend idempotency key on this call, so
+    // an HTTPS retry could produce a duplicate magic-link email — both
+    // references the same token (single-use), so this is benign.
+    //
+    // If portal delivery history becomes a product requirement, promote
+    // this to emailDispatchService with a new entity type at that time.
+    //
     // Send email — Resend SDK returns { data, error } and does NOT throw on
     // API failures (403, 422, etc.), so we must check result.error explicitly.
     let emailSent = true;

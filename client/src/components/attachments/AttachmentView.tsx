@@ -97,9 +97,9 @@ export function AttachmentView({
       ) : (
         <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
       )}
-      <span className="text-[11px] truncate flex-1">{filename}</span>
+      <span className="text-xs truncate flex-1">{filename}</span>
       <Download className="h-3 w-3 text-muted-foreground shrink-0" />
-      {err && <span className="text-[11px] text-red-500">{err}</span>}
+      {err && <span className="text-xs text-red-500">{err}</span>}
     </button>
   );
 }

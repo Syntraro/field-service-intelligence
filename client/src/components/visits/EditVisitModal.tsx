@@ -410,15 +410,15 @@ export function EditVisitModal({
             <div className="min-w-0">
               <div className="flex items-baseline gap-2">
                 {customerName && customerCompanyId ? (
-                  <Link href={`/clients/${customerCompanyId}`} className="text-[15px] font-bold text-slate-900 hover:text-emerald-700 hover:underline truncate" onClick={(e) => { e.stopPropagation(); onOpenChange(false); }}>{customerName}</Link>
+                  <Link href={`/clients/${customerCompanyId}`} className="text-[18px] font-semibold text-slate-900 hover:text-emerald-700 hover:underline truncate" onClick={(e) => { e.stopPropagation(); onOpenChange(false); }}>{customerName}</Link>
                 ) : (
-                  <span className="text-[15px] font-bold text-slate-900 truncate">{customerName || jobSummary || `Job #${jobNumber || ""}`}</span>
+                  <span className="text-[18px] font-semibold text-slate-900 truncate">{customerName || jobSummary || `Job #${jobNumber || ""}`}</span>
                 )}
                 {jobNumber && (
-                  <Link href={`/jobs/${jobId}`} className="text-[13px] font-semibold text-slate-600 hover:text-[#76B054] hover:underline whitespace-nowrap" onClick={(e) => { e.stopPropagation(); onOpenChange(false); }}>Job #{jobNumber}</Link>
+                  <Link href={`/jobs/${jobId}`} className="text-sm font-medium text-slate-500 hover:text-[#76B054] hover:underline whitespace-nowrap" onClick={(e) => { e.stopPropagation(); onOpenChange(false); }}>Job #{jobNumber}</Link>
                 )}
               </div>
-              <p className="text-[13px] text-slate-600 truncate mt-0.5">
+              <p className="text-[13px] font-normal text-slate-600 truncate mt-0.5">
                 {[locationPhone, [locationName, locationAddress].filter(Boolean).join(" — ")].filter(Boolean).join(" · ")}
               </p>
             </div>
@@ -447,7 +447,7 @@ export function EditVisitModal({
                       <Button size="sm" variant="outline" disabled={isPending} className="h-8 px-3 text-xs border-amber-300 text-amber-700 hover:bg-amber-50 font-semibold">Follow-up</Button>
                     </PopoverTrigger>
                     <PopoverContent className="w-52 p-1" align="end">
-                      <div className="text-[11px] font-semibold text-slate-500 px-2 py-1.5 border-b mb-1 uppercase tracking-wider">Follow-up reason</div>
+                      <div className="text-[13px] font-semibold text-slate-500 px-2 py-1.5 border-b mb-1 uppercase tracking-wider">Follow-up reason</div>
                       {FOLLOWUP_REASONS.map(r => (
                         <button key={r.holdReason} onClick={() => completeMutation.mutate({ outcome: r.outcome, holdReason: r.holdReason })}
                           className="w-full text-left text-sm px-3 py-1.5 rounded hover:bg-amber-50 text-slate-700">{r.label}</button>
@@ -500,7 +500,7 @@ export function EditVisitModal({
                         <Wrench className="h-3 w-3" />Equipment
                       </h3>
                       {effectiveLocationId && (
-                        <button onClick={() => setShowAddEquipmentDialog(true)} className="text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-0.5">
+                        <button onClick={() => setShowAddEquipmentDialog(true)} className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-0.5">
                           <Plus className="h-3 w-3" />New Equipment
                         </button>
                       )}
@@ -555,7 +555,7 @@ export function EditVisitModal({
                             <div key={eq.id} className="flex items-center justify-between gap-2 rounded bg-emerald-50/60 px-2.5 py-1.5 text-xs">
                               <div className="min-w-0">
                                 <span className="font-medium text-slate-700">{eq.name}</span>
-                                {eq.equipmentType && <span className="ml-1.5 text-[11px] text-slate-500 bg-slate-100 rounded px-1 py-0.5">{eq.equipmentType}</span>}
+                                {eq.equipmentType && <span className="ml-1.5 text-xs text-slate-500 bg-slate-100 rounded px-1 py-0.5">{eq.equipmentType}</span>}
                                 {(eq.manufacturer || eq.modelNumber) && (
                                   <span className="text-slate-400 ml-1">
                                     {[eq.manufacturer, eq.modelNumber].filter(Boolean).join(" ")}
@@ -580,7 +580,7 @@ export function EditVisitModal({
                   <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">Schedule</h3>
                   <div className="flex items-end gap-2">
                     <div style={{ width: 160, minWidth: 140, maxWidth: 180 }}>
-                      <label className="text-[11px] font-medium text-slate-500 mb-0.5 block">Date</label>
+                      <label className="text-xs font-medium text-slate-500 mb-0.5 block">Date</label>
                       <Popover>
                         <PopoverTrigger asChild>
                           <Button variant="outline" size="sm" className={cn("w-full justify-start h-8 text-xs gap-1.5 px-2.5", !schedule.date && "text-slate-400")}>
@@ -594,14 +594,14 @@ export function EditVisitModal({
                       </Popover>
                     </div>
                     <div style={{ width: 96 }}>
-                      <label className="text-[11px] font-medium text-slate-500 mb-0.5 block">Start</label>
+                      <label className="text-xs font-medium text-slate-500 mb-0.5 block">Start</label>
                       <Input type="time" value={schedule.startTime} placeholder="--:--"
                         onChange={(e) => { const v = e.target.value; setSchedule((s) => { const dur = s.startTime && s.endTime ? timeDiffMinutes(s.startTime, s.endTime) : 60; return { ...s, startTime: v, endTime: v ? addMinutesToTime(v, dur) : s.endTime }; }); }}
                         className="h-8 text-xs px-2" />
                     </div>
                     <span className="text-slate-400 text-xs pb-1.5">→</span>
                     <div style={{ width: 96 }}>
-                      <label className="text-[11px] font-medium text-slate-500 mb-0.5 block">End</label>
+                      <label className="text-xs font-medium text-slate-500 mb-0.5 block">End</label>
                       <Input type="time" value={schedule.endTime} placeholder="--:--"
                         onChange={(e) => setSchedule((s) => ({ ...s, endTime: e.target.value }))}
                         className="h-8 text-xs px-2" />
@@ -618,11 +618,11 @@ export function EditVisitModal({
                     <button onClick={() => setLineItemsExpanded(e => !e)} className="flex items-center gap-1.5 group">
                       <ChevronDown className={cn("h-3.5 w-3.5 text-slate-400 transition-transform", !lineItemsExpanded && "-rotate-90")} />
                       <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Parts & Work Logged (Job)</h3>
-                      <span className="text-[11px] text-slate-400 font-medium">
+                      <span className="text-xs text-slate-400 font-medium">
                         {lineItems.length > 0 ? `${lineItems.length} item${lineItems.length !== 1 ? "s" : ""} · $${lineItemsTotal.toFixed(2)}` : "0 items"}
                       </span>
                     </button>
-                    <button onClick={(e) => { e.stopPropagation(); startAddRow(); }} className="text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-0.5"><Plus className="h-3 w-3" />Quick Add</button>
+                    <button onClick={(e) => { e.stopPropagation(); startAddRow(); }} className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-0.5"><Plus className="h-3 w-3" />Quick Add</button>
                   </div>
 
                   {/* Expandable body */}

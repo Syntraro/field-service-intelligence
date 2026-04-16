@@ -311,6 +311,60 @@ async function processEndOfTerm(result: WorkerResult): Promise<void> {
 // Public API
 // ============================================================================
 
+// ============================================================================
+// Scheduler (2026-04-14 Phase 1 next-frontier wire-up)
+// ============================================================================
+//
+// The worker is internally idempotent — every action records a row in
+// `subscriptionEvents` with a UNIQUE constraint on
+// `(subscriptionId, type, termEndDate)` — so a double-fire is safe. We
+// therefore schedule the simplest viable cadence: one run ~30 s after
+// bootstrap (catches anything queued while the server was down) and once
+// every 24 h thereafter. Mirrors the `startPmAutoGeneration` pattern.
+
+const SUBSCRIPTION_WORKER_STARTUP_DELAY_MS = 30 * 1000;
+const SUBSCRIPTION_WORKER_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+let subscriptionWorkerStartupTimeout: NodeJS.Timeout | null = null;
+let subscriptionWorkerIntervalHandle: NodeJS.Timeout | null = null;
+
+/**
+ * Start the daily subscription worker. Safe to call once at bootstrap.
+ * Uses `.unref()` so the interval does not block process exit.
+ */
+export function startSubscriptionWorker(): void {
+  console.log(
+    `[SubscriptionWorker] Scheduler active: startup in ${SUBSCRIPTION_WORKER_STARTUP_DELAY_MS / 1000}s, ` +
+    `interval every ${SUBSCRIPTION_WORKER_INTERVAL_MS / 3600000}h`,
+  );
+
+  subscriptionWorkerStartupTimeout = setTimeout(() => {
+    runSubscriptionWorker().catch((err) =>
+      console.error("[SubscriptionWorker] Startup run failed:", err),
+    );
+  }, SUBSCRIPTION_WORKER_STARTUP_DELAY_MS);
+  subscriptionWorkerStartupTimeout.unref();
+
+  subscriptionWorkerIntervalHandle = setInterval(() => {
+    runSubscriptionWorker().catch((err) =>
+      console.error("[SubscriptionWorker] Scheduled run failed:", err),
+    );
+  }, SUBSCRIPTION_WORKER_INTERVAL_MS);
+  subscriptionWorkerIntervalHandle.unref();
+}
+
+/** Stop the scheduler. Called from graceful-shutdown paths. */
+export function stopSubscriptionWorker(): void {
+  if (subscriptionWorkerStartupTimeout) {
+    clearTimeout(subscriptionWorkerStartupTimeout);
+    subscriptionWorkerStartupTimeout = null;
+  }
+  if (subscriptionWorkerIntervalHandle) {
+    clearInterval(subscriptionWorkerIntervalHandle);
+    subscriptionWorkerIntervalHandle = null;
+  }
+}
+
 /**
  * Run the complete subscription worker
  * Call this daily via cron job

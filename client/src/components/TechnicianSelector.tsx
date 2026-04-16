@@ -189,7 +189,7 @@ export function TechnicianSelector(props: TechnicianSelectorProps) {
                   )}
                   {showAvatar && (
                     <div
-                      className="h-5 w-5 rounded-full flex items-center justify-center text-white text-[9px] font-bold shrink-0"
+                      className="h-5 w-5 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0"
                       style={{ backgroundColor: tech.color ?? "#6B7280" }}
                     >
                       {tech.initials}
@@ -197,7 +197,7 @@ export function TechnicianSelector(props: TechnicianSelectorProps) {
                   )}
                   <span className="truncate">{tech.displayName}</span>
                   {mode === "single" && selected && (
-                    <span className="ml-auto text-primary text-[11px]">✓</span>
+                    <span className="ml-auto text-primary text-xs">✓</span>
                   )}
                 </button>
               );
@@ -208,10 +208,10 @@ export function TechnicianSelector(props: TechnicianSelectorProps) {
         {/* Footer (multi mode) */}
         {mode === "multi" && selectedIds.length > 0 && (
           <div className="border-t px-2 py-1.5 flex items-center justify-between">
-            <span className="text-[11px] text-muted-foreground">{selectedIds.length} selected</span>
+            <span className="text-xs text-muted-foreground">{selectedIds.length} selected</span>
             <button
               type="button"
-              className="text-[11px] text-primary hover:underline"
+              className="text-xs text-primary hover:underline"
               onClick={handleClear}
             >
               Clear all

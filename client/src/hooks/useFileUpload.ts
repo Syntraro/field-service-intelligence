@@ -43,7 +43,9 @@ export type FileEntityType =
   | "contract_document"
   | "technician_document"
   // 2026-04-13 (Commit C): transient image attachments for invoice send.
-  | "invoice_email_attachment";
+  | "invoice_email_attachment"
+  // 2026-04-14 Phase 1 cleanup: receipts attached to a job expense row.
+  | "job_expense_receipt";
 
 export interface UploadTarget {
   entityType: FileEntityType;

@@ -54,10 +54,17 @@ export const handleApiError = (err: any, res: Response, defaultMessage = "Operat
 };
 
 /**
- * Creates a standardized error object
+ * Creates a standardized error object.
+ *
+ * 2026-04-14: optional `code` is propagated to the JSON response body
+ * (see handleApiError above). Lets the client switch on a stable
+ * server-emitted code instead of string-matching messages — required
+ * for typed conflict handling (e.g. ACTIVE_VISIT_CONFLICT vs
+ * VERSION_MISMATCH, both 409).
  */
-export const createError = (status: number, message: string) => {
+export const createError = (status: number, message: string, code?: string) => {
   const error = new Error(message) as any;
   error.status = status;
+  if (code) error.code = code;
   return error;
 };

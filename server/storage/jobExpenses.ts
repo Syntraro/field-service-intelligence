@@ -73,10 +73,13 @@ export class JobExpensesRepository extends BaseRepository {
     date: Date;
     notes?: string | null;
     createdByUserId: string;
-    receiptFileId?: string | null;
     isBillable?: boolean;
     reimbursableToUserId?: string | null;
   }) {
+    // receiptFileId is intentionally NOT accepted here — the canonical
+    // file upload pipeline owns writing that column via the
+    // `job_expense_receipt` EntityAdapter. Expenses are always created
+    // without a receipt; the receipt is attached post-create.
     this.assertCompanyId(companyId);
     this.validateUUID(data.jobId, "jobId");
     this.validateUUID(data.createdByUserId, "createdByUserId");
@@ -91,7 +94,6 @@ export class JobExpensesRepository extends BaseRepository {
         date: data.date,
         notes: data.notes ?? null,
         createdByUserId: data.createdByUserId,
-        receiptFileId: data.receiptFileId ?? null,
         isBillable: data.isBillable ?? false,
         reimbursableToUserId: data.reimbursableToUserId ?? null,
       })
@@ -108,11 +110,12 @@ export class JobExpensesRepository extends BaseRepository {
     category?: string;
     date?: Date;
     notes?: string | null;
-    receiptFileId?: string | null;
     isBillable?: boolean;
     billingStatus?: string;
     reimbursableToUserId?: string | null;
   }) {
+    // receiptFileId intentionally absent — see createExpense note. The
+    // canonical file pipeline writes/clears that column exclusively.
     this.assertCompanyId(companyId);
     this.validateUUID(expenseId, "expenseId");
 
@@ -121,7 +124,6 @@ export class JobExpensesRepository extends BaseRepository {
     if (data.category !== undefined) setValues.category = data.category;
     if (data.date !== undefined) setValues.date = data.date;
     if (data.notes !== undefined) setValues.notes = data.notes;
-    if (data.receiptFileId !== undefined) setValues.receiptFileId = data.receiptFileId;
     if (data.isBillable !== undefined) setValues.isBillable = data.isBillable;
     if (data.billingStatus !== undefined) setValues.billingStatus = data.billingStatus;
     if (data.reimbursableToUserId !== undefined) setValues.reimbursableToUserId = data.reimbursableToUserId;

@@ -32,7 +32,10 @@ export function useTechTasks() {
       return res.json();
     },
     staleTime: 30_000,
-    refetchInterval: 60_000,
+    // 2026-04-14 Phase 3 clean-surfaces: SSE invalidates
+    // ["/api/tech/tasks/mine"] on every task mutation. Polling is
+    // retained ONLY as an SSE-disconnect safety net; 60s → 5min.
+    refetchInterval: 5 * 60_000,
     refetchIntervalInBackground: false,
   });
 

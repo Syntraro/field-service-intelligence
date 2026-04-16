@@ -9,7 +9,7 @@
  */
 
 import type { Request, Response } from "express";
-import { auditService } from "./auditService";
+import { platformAuditService } from "./services/platformAuditService";
 import { impersonationRepository, type EndedReason } from "./storage/impersonation";
 import type { ImpersonationSession } from "@shared/schema";
 
@@ -68,7 +68,7 @@ class ImpersonationService {
     res.cookie(IMPERSONATION_COOKIE_NAME, session.id, COOKIE_OPTIONS);
 
     // Log the impersonation start
-    await auditService.logImpersonationStart(
+    await platformAuditService.logImpersonationStart(
       ownerUserId,
       ownerEmail,
       targetUserId,
@@ -119,6 +119,14 @@ class ImpersonationService {
 
     const session = await impersonationRepository.getActiveSessionById(sessionId);
     if (!session) {
+      this.clearCookie(res);
+      return null;
+    }
+
+    // Hotfix (post-Phase-7): only `status='active'` sessions authorize access.
+    // Pending sessions await tenant approval; revoked/closed/expired must never
+    // auth even if a stale cookie is on the wire.
+    if (session.status !== "active") {
       this.clearCookie(res);
       return null;
     }
@@ -222,15 +230,20 @@ class ImpersonationService {
 
     await impersonationRepository.endSession(sessionId, reason);
 
-    const duration = Date.now() - session.createdAt.getTime();
-    await auditService.logImpersonationStop(
-      ownerUserId,
-      ownerEmail,
-      session.targetUserId,
-      session.companyId,
-      req,
-      duration
-    );
+    // Phase 4: only the impersonation mode had an impersonation_stop
+    // audit before this phase. Read-only sessions emit support_session_*
+    // events via supportSessionService, not here.
+    if (session.accessMode === "impersonation" && session.targetUserId) {
+      const duration = Date.now() - session.createdAt.getTime();
+      await platformAuditService.logImpersonationStop(
+        ownerUserId,
+        ownerEmail,
+        session.targetUserId,
+        session.companyId,
+        req,
+        duration,
+      );
+    }
   }
 
   private async endSessionWithTimeout(
@@ -241,15 +254,28 @@ class ImpersonationService {
     const reason: EndedReason = timeoutType === "expiry" ? "expired" : "idle";
     await impersonationRepository.endSession(session.id, reason);
 
-    // We need to look up the owner's email for audit logging
-    // For now, use a placeholder - the audit log already has the context
-    await auditService.logImpersonationTimeout(
+    // Phase 4: emit the new support-session lifecycle event alongside the
+    // legacy impersonation timeout audit so dashboards on either action key
+    // remain consistent.
+    await platformAuditService.logSupportSessionExpired(
       session.ownerUserId,
-      "owner", // Email will be in the audit context
-      session.targetUserId,
+      session.id,
       session.companyId,
-      timeoutType
+      timeoutType,
     );
+
+    // Keep the pre-Phase-4 impersonation timeout audit for continuity, but
+    // only when the session was actually an impersonation. Read-only
+    // sessions never had an impersonation_auto_timeout event.
+    if (session.accessMode === "impersonation" && session.targetUserId) {
+      await platformAuditService.logImpersonationTimeout(
+        session.ownerUserId,
+        "owner", // Email will be in the audit context
+        session.targetUserId,
+        session.companyId,
+        timeoutType
+      );
+    }
   }
 }
 

@@ -181,7 +181,7 @@ export function InvoiceHeaderCard({
 
               {/* Billing address */}
               {billingText && (
-                <span className="flex items-center gap-0.5 text-[11px] text-slate-400 mt-0.5">
+                <span className="flex items-center gap-0.5 text-xs text-slate-400 mt-0.5">
                   <MapPin className="h-2.5 w-2.5 shrink-0" />
                   {billingText}
                 </span>
@@ -189,7 +189,7 @@ export function InvoiceHeaderCard({
 
               {/* Service address (if different from billing) */}
               {serviceText && serviceText !== billingText && (
-                <span className="flex items-center gap-0.5 text-[11px] text-slate-400 mt-0.5">
+                <span className="flex items-center gap-0.5 text-xs text-slate-400 mt-0.5">
                   <MapPin className="h-2.5 w-2.5 shrink-0" />
                   {serviceAddress?.locationName && <span className="font-medium text-slate-500 mr-1">{serviceAddress.locationName}</span>}
                   {serviceText}
@@ -198,7 +198,7 @@ export function InvoiceHeaderCard({
 
               {/* Contact email */}
               {primaryContact?.email && (
-                <span className="flex items-center gap-0.5 text-[11px] text-slate-400 mt-0.5">
+                <span className="flex items-center gap-0.5 text-xs text-slate-400 mt-0.5">
                   <Mail className="h-2.5 w-2.5 shrink-0" />
                   <a href={`mailto:${primaryContact.email}`} className="hover:text-primary truncate">{primaryContact.email}</a>
                 </span>
@@ -217,8 +217,8 @@ export function InvoiceHeaderCard({
                       <div className="flex items-center gap-1">
                         <Input value={numberDraft} onChange={(e) => setNumberDraft(e.target.value)}
                           className="w-20 h-5 px-1 text-xs border rounded" autoFocus data-testid="input-invoice-number" />
-                        <button type="button" onClick={handleSaveInvoiceNumber} className="text-primary text-[11px] font-medium" disabled={invoiceNumberPending}>{invoiceNumberPending ? "…" : "✓"}</button>
-                        <button type="button" onClick={() => { setEditingNumber(false); setNumberDraft(invoice.invoiceNumber || ""); }} className="text-muted-foreground text-[11px]">✕</button>
+                        <button type="button" onClick={handleSaveInvoiceNumber} className="text-primary text-xs font-medium" disabled={invoiceNumberPending}>{invoiceNumberPending ? "…" : "✓"}</button>
+                        <button type="button" onClick={() => { setEditingNumber(false); setNumberDraft(invoice.invoiceNumber || ""); }} className="text-muted-foreground text-xs">✕</button>
                       </div>
                     ) : (
                       <button type="button" className="group cursor-text" onClick={() => { setEditingNumber(true); setNumberDraft(invoice.invoiceNumber || ""); }} data-testid="text-invoice-number">
@@ -243,9 +243,9 @@ export function InvoiceHeaderCard({
                       <div className="flex items-center gap-1">
                         <Input type="date" value={issueDateDraft} onChange={(e) => setIssueDateDraft(e.target.value)}
                           className="w-28 h-5 px-1 text-xs border rounded" data-testid="input-issue-date" />
-                        <button type="button" className="text-primary text-[11px]" disabled={issueDatePending}
+                        <button type="button" className="text-primary text-xs" disabled={issueDatePending}
                           onClick={() => { if (issueDateDraft && onUpdateIssueDate) { onUpdateIssueDate(issueDateDraft); setEditingIssueDate(false); } }}>✓</button>
-                        <button type="button" className="text-muted-foreground text-[11px]" onClick={() => { setEditingIssueDate(false); setIssueDateDraft(issueDateForInput); }}>✕</button>
+                        <button type="button" className="text-muted-foreground text-xs" onClick={() => { setEditingIssueDate(false); setIssueDateDraft(issueDateForInput); }}>✕</button>
                       </div>
                     ) : (
                       <span className="group" onClick={isEditing ? () => setEditingIssueDate(true) : undefined} style={isEditing ? { cursor: "text" } : undefined}>
@@ -259,7 +259,7 @@ export function InvoiceHeaderCard({
                   <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Due</td>
                   <td className={`py-0.5 ${isPastDue ? "text-destructive font-medium" : "text-slate-600"}`}>
                     {invoice.dueDate ? format(new Date(invoice.dueDate), "MMM d, yyyy") : "—"}
-                    {isPastDue && <span className="text-[11px] ml-1">(Past due)</span>}
+                    {isPastDue && <span className="text-xs ml-1">(Past due)</span>}
                   </td>
                 </tr>
                 {/* 2026-04-14: single-row email metadata. `Email sent`
@@ -301,10 +301,10 @@ export function InvoiceHeaderCard({
                 {showCustomDate && (
                   <div className="flex items-center gap-1 mt-1">
                     <Input type="date" value={customDueDate} onChange={(e) => setCustomDueDate(e.target.value)} className="h-7 text-xs flex-1" data-testid="input-custom-due-date" />
-                    <button type="button" className="text-primary text-[11px]" onClick={handleCustomDateSave}>✓</button>
+                    <button type="button" className="text-primary text-xs" onClick={handleCustomDateSave}>✓</button>
                   </div>
                 )}
-                {paymentTermsPending && <span className="text-[11px] text-muted-foreground">Saving...</span>}
+                {paymentTermsPending && <span className="text-xs text-muted-foreground">Saving...</span>}
               </div>
             )}
           </div>

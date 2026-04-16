@@ -203,7 +203,7 @@ export default function EquipmentCatalogItemsSection({ equipmentId, readOnly = f
           <Package className="h-4 w-4 text-muted-foreground" />
           <span className="text-sm font-medium">Associated Catalog Items</span>
           {associations.length > 0 && (
-            <Badge variant="secondary" className="text-[11px]">{associations.length}</Badge>
+            <Badge variant="secondary" className="text-xs">{associations.length}</Badge>
           )}
         </div>
         {!readOnly && (

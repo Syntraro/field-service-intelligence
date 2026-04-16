@@ -194,10 +194,28 @@ export function buildResendWebhookRouter(): Router {
       } catch (err: any) {
         // Swallow downstream DB hiccups — returning non-2xx would cause
         // Resend to retry and pile duplicates. The handler logs and ACKs.
+        //
+        // 2026-04-14 Phase B hardening: structured JSON log so operator
+        // monitoring can alert on webhook DB failures and tie each failure
+        // to the exact delivery/entity/tenant. Without this, silent data
+        // loss in the webhook pipeline is undetectable.
         // eslint-disable-next-line no-console
         console.error(
-          "[resend-webhook] markWebhookStatus failed:",
-          err?.message ?? err,
+          "[resend-webhook] markWebhookStatus failed",
+          JSON.stringify({
+            deliveryId: delivery.id,
+            tenantId: delivery.tenantId,
+            entityType: delivery.entityType,
+            entityId: delivery.entityId,
+            providerMessageId,
+            attemptedStatus: status,
+            deliveredAt: input.deliveredAt instanceof Date
+              ? input.deliveredAt.toISOString()
+              : input.deliveredAt ?? null,
+            message: err?.message ?? String(err),
+            name: err?.name ?? null,
+            stack: err?.stack ?? null,
+          }),
         );
       }
 

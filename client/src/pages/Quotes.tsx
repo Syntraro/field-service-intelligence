@@ -68,6 +68,9 @@ export default function Quotes() {
 
   const [activeFilter, setActiveFilter] = useState<QuoteStatusFilter>(initialStatus);
   const [searchQuery, setSearchQuery] = useState("");
+  // 2026-04-15: the list-page "New Quote" button opens the unified
+  // NewQuoteModal directly. Template selection is inline inside that
+  // modal — the prior two-step chooser → modal flow was collapsed.
   const [newQuoteModalOpen, setNewQuoteModalOpen] = useState(false);
 
   useEffect(() => {
@@ -322,7 +325,10 @@ export default function Quotes() {
         )}
       </div>
 
-      <NewQuoteModal open={newQuoteModalOpen} onOpenChange={setNewQuoteModalOpen} />
+      <NewQuoteModal
+        open={newQuoteModalOpen}
+        onOpenChange={setNewQuoteModalOpen}
+      />
     </div>
   );
 }

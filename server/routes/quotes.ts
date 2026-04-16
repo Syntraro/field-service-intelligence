@@ -15,6 +15,7 @@ import { jobRepository } from "../storage/jobs";
 import { clientRepository } from "../storage/clients";
 import { customerCompanyRepository } from "../storage/customerCompanies";
 import { leadRepository } from "../storage/leads";
+import { jobNotesRepository } from "../storage/jobNotes";
 import { storage } from "../storage";
 import { generateQuotePdf } from "../services/quotePdfService";
 import { resolveCustomerCompanyForLocation } from "../services/customerCompanyResolver";
@@ -28,6 +29,7 @@ import { tasks } from "@shared/schema";
 import { eq, and, notInArray } from "drizzle-orm";
 import { db } from "../db";
 import { taskRepository } from "../storage/tasks";
+import { quoteNotes, users, quotes, insertQuoteNoteSchema } from "@shared/schema";
 import { isQuoteDraft, isQuoteSent, isQuoteApproved } from "../lib/quotePredicates";
 // Phase 1 Architecture: Event Log
 import { logEventAsync } from "../lib/events";
@@ -356,6 +358,126 @@ function isQuoteExpired(quote: { expiryDate?: string | Date | null; status: stri
 }
 
 // ========================================
+// QUOTE NOTES (Phase 3D — canonical interactive notes)
+// ========================================
+// Mirrors the jobNotes shape (server/storage/jobNotes.ts). Tenant-scoped;
+// only the quote's company can read/write. Author-only edit/delete is
+// enforced by matching `userId` on the note.
+
+const createNoteSchema = z.object({ text: z.string().min(1).max(4000) }).strict();
+const updateNoteSchema = z.object({ text: z.string().min(1).max(4000) }).strict();
+
+async function assertQuoteExists(companyId: string, quoteId: string) {
+  const [q] = await db
+    .select({ id: quotes.id })
+    .from(quotes)
+    .where(and(eq(quotes.id, quoteId), eq(quotes.companyId, companyId)))
+    .limit(1);
+  if (!q) throw createError(404, "Quote not found");
+}
+
+// GET /api/quotes/:id/notes — list notes for a quote
+router.get("/:id/notes", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const quoteId = req.params.id;
+  await assertQuoteExists(companyId, quoteId);
+
+  const rows = await db
+    .select({
+      id: quoteNotes.id,
+      quoteId: quoteNotes.quoteId,
+      noteText: quoteNotes.noteText,
+      createdAt: quoteNotes.createdAt,
+      updatedAt: quoteNotes.updatedAt,
+      user: {
+        id: users.id,
+        email: users.email,
+        fullName: users.fullName,
+        firstName: users.firstName,
+        lastName: users.lastName,
+      },
+    })
+    .from(quoteNotes)
+    .leftJoin(users, eq(quoteNotes.userId, users.id))
+    .where(and(eq(quoteNotes.quoteId, quoteId), eq(quoteNotes.companyId, companyId)))
+    .orderBy(quoteNotes.createdAt);
+
+  // Same shape JobNotesSection consumes — so the reused component works.
+  const withDisplayName = rows.map(r => ({
+    ...r,
+    userName: r.user?.fullName
+      ?? [r.user?.firstName, r.user?.lastName].filter(Boolean).join(" ")
+      ?? r.user?.email
+      ?? "Unknown",
+  }));
+  res.json(withDisplayName);
+}));
+
+// POST /api/quotes/:id/notes — create a note
+router.post("/:id/notes", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const userId = req.user!.id;
+  const quoteId = req.params.id;
+  const { text } = validateSchema(createNoteSchema, req.body);
+  await assertQuoteExists(companyId, quoteId);
+
+  const [note] = await db
+    .insert(quoteNotes)
+    .values({ companyId, quoteId, userId, noteText: text.trim() })
+    .returning();
+  res.status(201).json(note);
+}));
+
+// PUT /api/quotes/:id/notes/:noteId — edit own note
+router.put("/:id/notes/:noteId", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const userId = req.user!.id;
+  const { id: quoteId, noteId } = req.params;
+  const { text } = validateSchema(updateNoteSchema, req.body);
+
+  const [existing] = await db
+    .select({ id: quoteNotes.id })
+    .from(quoteNotes)
+    .where(and(
+      eq(quoteNotes.id, noteId),
+      eq(quoteNotes.quoteId, quoteId),
+      eq(quoteNotes.companyId, companyId),
+      eq(quoteNotes.userId, userId),
+    ))
+    .limit(1);
+  if (!existing) throw createError(404, "Note not found");
+
+  const [updated] = await db
+    .update(quoteNotes)
+    .set({ noteText: text.trim(), updatedAt: new Date() })
+    .where(eq(quoteNotes.id, noteId))
+    .returning();
+  res.json(updated);
+}));
+
+// DELETE /api/quotes/:id/notes/:noteId — delete own note
+router.delete("/:id/notes/:noteId", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const userId = req.user!.id;
+  const { id: quoteId, noteId } = req.params;
+
+  const [existing] = await db
+    .select({ id: quoteNotes.id })
+    .from(quoteNotes)
+    .where(and(
+      eq(quoteNotes.id, noteId),
+      eq(quoteNotes.quoteId, quoteId),
+      eq(quoteNotes.companyId, companyId),
+      eq(quoteNotes.userId, userId),
+    ))
+    .limit(1);
+  if (!existing) throw createError(404, "Note not found");
+
+  await db.delete(quoteNotes).where(eq(quoteNotes.id, noteId));
+  res.json({ success: true });
+}));
+
+// ========================================
 // PDF ROUTES
 // ========================================
 
@@ -537,7 +659,12 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
   if (!quote) throw createError(404, "Quote not found");
   if (!isQuoteDraft(quote.status)) throw createError(400, "Only draft quotes can be sent");
 
-  // 1. Dispatch email BEFORE flipping status.
+  // 1. Dispatch email + atomically flip quote status.
+  // 2026-04-14 Phase D atomicity: the updateQuote runs inside the same
+  // DB transaction as markSent via the afterMarkSent callback. Either
+  // both writes commit or neither does — no more orphan state where
+  // the delivery was `sent` but the quote was still `draft`.
+  let updated: Awaited<ReturnType<typeof quoteRepository.updateQuote>> = null;
   const dispatch = await emailDispatchService.sendQuoteEmail({
     tenantId: companyId,
     quoteId,
@@ -546,12 +673,14 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
     subjectOverride,
     bodyOverride,
     createdByUserId: req.user?.id ?? null,
-  });
-
-  // 2. Only on success — transition status.
-  const updated = await quoteRepository.updateQuote(companyId, quoteId, {
-    status: "sent",
-    sentAt: new Date(),
+    afterMarkSent: async (tx) => {
+      updated = await quoteRepository.updateQuote(
+        companyId,
+        quoteId,
+        { status: "sent", sentAt: new Date() },
+        tx,
+      );
+    },
   });
 
   logEventAsync(getQueryCtx(req), {
@@ -669,6 +798,7 @@ const convertToJobSchema = z.object({
 // POST /api/quotes/:id/convert-to-job - Convert approved quote to job
 router.post("/:id/convert-to-job", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
+  const userId = req.user!.id;
   const quoteId = req.params.id;
   const validated = validateSchema(convertToJobSchema, req.body);
 
@@ -695,6 +825,16 @@ router.post("/:id/convert-to-job", requireRole(MANAGER_ROLES), asyncHandler(asyn
   // but the DB column exists — access via index signature.
   const quoteLeadId: string | null = (quote as Record<string, unknown>).leadId as string | null ?? null;
 
+  // 2026-04-14 note carryover: the customer-facing Quote Description
+  // (`notesCustomer`, same column repurposed by Phase 1) maps onto the
+  // job's customer-facing scope column (`jobs.description`) when the
+  // request body doesn't already override it. Internal notes are carried
+  // over via the canonical `jobNotes` system below — this keeps Quote
+  // Description feeding the single semantic job field it belongs in and
+  // routes free-text internal content through the note system where it
+  // gets author attribution + timestamps on Job Detail.
+  const carryoverDescription = validated.notes || quote.notesCustomer || null;
+
   // Create the job (status is "open" - scheduling is derived from scheduledStart)
   const job = await jobRepository.createJob(companyId, {
     locationId: quote.locationId,
@@ -703,7 +843,7 @@ router.post("/:id/convert-to-job", requireRole(MANAGER_ROLES), asyncHandler(asyn
     priority: "medium",
     scheduledStart: validated.scheduledDate || null,
     summary: `Created from Quote ${quote.quoteNumber}`,
-    description: validated.notes || null,
+    description: carryoverDescription,
     // Lead attribution: propagate leadId from quote to job for downstream reporting
     leadId: quoteLeadId,
   });
@@ -719,6 +859,32 @@ router.post("/:id/convert-to-job", requireRole(MANAGER_ROLES), asyncHandler(asyn
       productId: line.productId || null,
       sortOrder: line.lineNumber || 0,
     });
+  }
+
+  // 2026-04-14 note carryover: internal quote notes → canonical jobNotes row.
+  // Author is the converting user; createdAt is now (there are no per-entry
+  // timestamps on the quote's free-text note column to preserve). Retry
+  // protection is inherited from the isQuoteApproved status guard above —
+  // once the quote flips to "converted" below, a second POST 400s before
+  // reaching this point. Failure to create the note is non-fatal so the
+  // conversion itself remains authoritative.
+  const internalNoteText = quote.notesInternal?.trim();
+  if (internalNoteText) {
+    try {
+      await jobNotesRepository.createJobNote(
+        companyId,
+        job.id,
+        userId,
+        `From Quote ${quote.quoteNumber}:\n${internalNoteText}`,
+        null,
+      );
+    } catch (err) {
+      console.error("[quotes/convert-to-job] internal note carryover failed", {
+        quoteId,
+        jobId: job.id,
+        message: (err as any)?.message ?? String(err),
+      });
+    }
   }
 
   // Update quote status to converted + clear assessment state

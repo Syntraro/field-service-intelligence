@@ -131,10 +131,13 @@ export function useTimesheetState() {
   // ── Data fetching ──
 
   // Today: use the summary endpoint (includes session, entries, totals, running entry)
+  // 2026-04-14 Phase 3 clean-surfaces: SSE invalidates
+  // ["/api/tech/time/summary"] on every time mutation. Polling is
+  // retained ONLY as an SSE-disconnect safety net; 30s → 5min.
   const todayQuery = useQuery<TodaySummaryResponse>({
     queryKey: ["/api/tech/time/summary"],
     enabled: todaySelected,
-    refetchInterval: 30_000,
+    refetchInterval: 5 * 60_000,
     refetchIntervalInBackground: false,
   });
 

@@ -154,7 +154,7 @@ export function EquipmentDetailModal({ open, onOpenChange, equipment }: Equipmen
               <div className="grid grid-cols-3 gap-4">
                 {infoItems.map(([label, value]) => (
                   <div key={label}>
-                    <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide mb-0.5">{label}</p>
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-0.5">{label}</p>
                     <p className="text-sm font-medium text-foreground">{value}</p>
                   </div>
                 ))}
@@ -272,7 +272,7 @@ export function EquipmentDetailModal({ open, onOpenChange, equipment }: Equipmen
                                   <div className="flex-1 min-w-0">
                                     <p className="text-sm leading-relaxed">
                                       {n.text}
-                                      <span className="text-[11px] text-muted-foreground ml-1.5">
+                                      <span className="text-xs text-muted-foreground ml-1.5">
                                         — {n.author || "Unknown technician"}
                                       </span>
                                     </p>

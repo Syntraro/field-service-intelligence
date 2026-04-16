@@ -6,6 +6,1274 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### Password reset system (self-service + admin-triggered) (2026-04-15)
+
+Wires up real end-to-end password reset. Previously the
+`RequestReset` and `ResetPassword` pages were static placeholders
+and the Admin "reset password" button pointed at a nonexistent
+endpoint. The `password_reset_tokens` table in `shared/schema.ts`
+existed but was never used.
+
+**Backend**
+- `server/auth/passwordUtils.ts` — new shared module: `hashPassword`
+  (bcrypt, cost 10), `generateResetToken` (32 random bytes,
+  base64url), `hashResetToken` (SHA-256 hex), `RESET_TOKEN_TTL_MS`
+  (60 minutes). Raw tokens are never persisted — only the hash.
+- `server/storage/passwordResetTokens.ts` — new repository:
+  `insertToken`, `findActiveByHash` (enforces `usedAt IS NULL` +
+  `expiresAt > now`), `markUsed`, `invalidateActiveForUser`.
+- `server/services/passwordResetService.ts` — new service.
+  `requestPasswordReset` always resolves success (anti-enumeration),
+  invalidates prior unused tokens for the user before issuing a new
+  one, stores only the hash, and sends the email via the existing
+  Resend client. `confirmPasswordReset` verifies the token is
+  active, hashes the new password via `hashPassword`, writes it
+  through the canonical `storage.setEmailPassword` (same column
+  login reads), marks the token consumed, and bumps the session
+  token version (`incrementTokenVersion`) so every existing session
+  for the user is invalidated.
+- `server/routes/auth.ts` — new public endpoints
+  `POST /api/auth/password-reset-request` (rate-limited 5/15min per
+  IP, always returns the generic "if that email exists…" response)
+  and `POST /api/auth/password-reset/confirm` (rate-limited 10/15min
+  per IP). Invalid / expired tokens collapse to a single error so
+  the endpoint is not a probing oracle.
+- `server/routes/team.ts` — new admin endpoint
+  `POST /api/team/:userId/send-password-reset` (role-gated via
+  `RESTRICTED_MANAGER_ROLES`). Resolves the user's primary email via
+  `identityRepository.getPrimaryEmailForUser` and delegates to
+  `requestPasswordReset`, so admin-initiated resets route through
+  the same email flow — the admin no longer sees or sets the
+  password. Emits the existing `logPasswordReset` audit event.
+
+**Frontend**
+- `client/src/pages/RequestReset.tsx` — replaced the static info
+  page with a real email-entry form that posts to
+  `/api/auth/password-reset-request`. Success state always says
+  "If an account exists for that email…" regardless of outcome, so
+  the UI cannot be used to enumerate accounts. Back-to-login link
+  present in both states.
+- `client/src/pages/ResetPassword.tsx` — replaced the static page
+  with a token-backed new-password form. Reads `?token=` from the
+  URL, posts to `/api/auth/password-reset/confirm`, redirects to
+  `/login` on success. Handles missing / invalid / expired token
+  states with a clear terminal message and a "request new reset
+  link" button. Enforces 8-char minimum client-side (matches server
+  validation).
+- `client/src/pages/Admin.tsx` — replaced the manual
+  new-password / confirm-password dialog (which posted to a
+  nonexistent `/api/admin/users/:id/reset-password`) with a simple
+  "Send reset email" confirmation that posts to the new
+  `/api/team/:userId/send-password-reset` endpoint. No more manual
+  password shortcut in the admin UI.
+
+**Config**
+- `APP_BASE_URL` is read by the reset service to build the emailed
+  reset link (`${APP_BASE_URL}/reset-password?token=...`). When
+  unset, the service falls back to the request's `Origin` header so
+  local dev keeps working; if neither is available it throws with a
+  clear operator message rather than silently emailing a broken
+  link.
+
+**Security invariants**
+- raw tokens are never stored — only SHA-256 hex digests.
+- tokens are single-use (`usedAt` flag) and expire in 60 minutes.
+- issuing a new token invalidates all prior active tokens for the
+  user.
+- request endpoint always returns the same generic 200 response,
+  regardless of whether the email is on file.
+- confirm endpoint collapses invalid / expired / missing tokens to
+  one 400 error.
+- successful reset bumps the user's session token version so every
+  existing session is invalidated.
+- both endpoints are rate-limited per IP via the same
+  `express-rate-limit` pattern the login endpoint already uses.
+
+#### Production Readiness — Phase 7 (2026-04-15)
+
+Navigation polish, support-session hardening, tenant visibility
+upgrades, and dashboard clarity. No new auth domains. No new portals.
+No rewrites.
+
+**Navigation / accessibility**
+- **`client/src/App.tsx`** — "More" dropdown (top-right) now shows a
+  **Platform Ops** entry that links to `/platform/tenants`. Rendered
+  only when the signed-in user's role is one of the four platform
+  roles; tenant users never see it. Tenant `AppSidebar` remains
+  untouched.
+- **`client/src/pages/SettingsPage.tsx`** — added a **Support Access**
+  card under the Team Management group linking to
+  `/settings/support-access`.
+
+**Support session hardening**
+- **`migrations/2026_04_15_phase7_support_session_polish.sql`** — NEW
+  (applied). Adds `impersonation_sessions.requested_duration_minutes`
+  and backfills from `(expires_at - created_at)` with a 15-minute
+  minimum.
+- **`shared/schema.ts`** — extended Drizzle definition with
+  `requestedDurationMinutes`.
+- **`server/storage/impersonation.ts`** —
+  `createSupportSession(...)` now writes `requestedDurationMinutes`
+  on insert. New **`sweepExpiredPending()`** helper converts any
+  `status='pending'` row whose `expires_at` is past into
+  `status='expired'` (plus `endedAt`, `endedReason='expired'`) so
+  stale pending requests never appear on the tenant approval
+  surface. The sweep runs automatically at the head of `listSessions`
+  (platform portal) and `listForTenant` (tenant approval surface).
+- **`server/routes/supportAccess.ts`** — `approve` now prefers the
+  new canonical `requestedDurationMinutes` column over the pre-Phase-7
+  derivation. Both `/pending` and `/active` responses are now
+  enriched with `requestingUser` (email, fullName, id) and, for
+  impersonation mode, `targetUser`.
+
+**UI upgrades**
+- **`client/src/pages/platform/PlatformSupportSessionsPage.tsx`** —
+  now distinguishes **Pending approval / Active / Recently ended**
+  in separate cards with counts; mode chips read "read-only" /
+  "impersonation" with distinct variants; ended-section hides
+  action buttons; empty-state messages and loading states added.
+- **`client/src/pages/SupportAccessPage.tsx`** — pending / active
+  cards now show the internal user (name + email), mode, duration
+  badge, impersonation target (when applicable), and human-readable
+  timestamps.
+
+No new audit surface. Stale-expiry conversion uses the existing
+`endedReason='expired'` flag, already surfaced by prior-phase
+dashboards.
+
+#### Ops Portal Frontend + Customer Approval — Phase 6 (2026-04-15)
+
+**Part A — Internal Ops frontend** (lazy-loaded, isolated from tenant shell).
+- **`client/src/pages/platform/PlatformLayout.tsx`** — NEW. Minimal
+  shell with top-nav for platform users. Does not touch the tenant
+  `AppSidebar`, so tenant users have zero chance of nav leakage.
+- **`client/src/pages/platform/PlatformTenantsList.tsx`** — NEW. Search
+  + table, click-through to detail. Backed by `GET /api/platform/tenants`.
+- **`client/src/pages/platform/PlatformTenantDetail.tsx`** — NEW.
+  Overview panel, feature-flag toggles (PATCH-audited), "New support
+  session" dialog supporting read-only / impersonation, 15/30/60 min,
+  and pending-vs-active initial status.
+- **`client/src/pages/platform/PlatformFeedbackPage.tsx`** — NEW.
+  List + status/category/q filters, row-click detail dialog for
+  status / priority / assignee updates.
+- **`client/src/pages/platform/PlatformIssuesPage.tsx`** — NEW. List
+  with severity badges, create-issue dialog, detail dialog patching
+  status / severity / assignee.
+- **`client/src/pages/platform/PlatformSupportSessionsPage.tsx`** —
+  NEW. Active & pending sessions up top, recent 50 below, per-row
+  activate / close / revoke actions.
+- **`client/src/components/ProtectedRoute.tsx`** — extended with
+  `requirePlatformRole` prop that accepts any of the four platform
+  role keys.
+- **`client/src/App.tsx`** — 6 new lazy-loaded routes under
+  `/platform/*` + `/settings/support-access`. Zero nav entries added
+  to tenant `AppSidebar` — isolation is total.
+
+**Part B — Customer approval backend.**
+- **`server/routes/supportAccess.ts`** — NEW. Tenant-facing endpoints
+  at `/api/support-access`:
+  - `GET /pending` — pending requests for this tenant
+  - `GET /active` — active sessions for this tenant
+  - `POST /:id/approve` — approve + activate + **reset `expires_at`** so
+    customer deliberation time doesn't count against the duration
+  - `POST /:id/deny` — deny (pending → revoked)
+  - `POST /:id/revoke` — tenant kills an already-active session
+  All gated by `requireRole(ADMIN_ROLES)`. Every endpoint asserts
+  `session.companyId === req.companyId` to prevent cross-tenant
+  manipulation.
+- **`server/storage/impersonation.ts`** — added `approvePendingSession`,
+  `denyPendingSession`, `listForTenant` storage helpers. Approve
+  re-stamps `startedAt`, `expiresAt`, `lastSeenAt`, and
+  `approvedByUserId`.
+- **`server/services/platformAuditService.ts`** — added 3 tenant-side
+  action keys + helpers: `support_session_tenant_approved`,
+  `support_session_tenant_denied`, `support_session_tenant_revoked`.
+  `details.tenantActor = true` distinguishes tenant audit rows from
+  platform-initiated ones.
+- **`server/routes/index.ts`** — mounts `/api/support-access` after
+  standard auth / tenant-isolation middleware.
+
+**Part C — Expiry hardening.**
+- `approvePendingSession` resets `expires_at = now + originalDurationMs`
+  so customer approval time does not consume the support window.
+
+**Part D — Tenant UI.**
+- **`client/src/pages/SupportAccessPage.tsx`** — NEW. Settings page at
+  `/settings/support-access` for tenant owners/admins. Two cards:
+  pending requests (approve / deny) and active sessions (revoke).
+
+No new tables. No new cookies. All new lifecycle events write to the
+existing `audit_logs` table via `platformAuditService`.
+
+#### Support Session Hardening + True Enforcement — Phase 5 (2026-04-15)
+
+Promotes read-only enforcement from HTTP-method middleware to a true
+service-layer guard, narrows the platform role matrix, and lays the
+backend foundation for customer-approval workflows. No new session
+system, no new audit table, no new cookies.
+
+**Canonical write guard (service-layer enforcement):**
+- **`server/auth/supportContext.ts`** — NEW. `AsyncLocalStorage`-backed
+  request-scoped context with:
+  - `runWithSupportContext(ctx, fn)` — wraps request handling
+  - `getSupportContext()` / `isReadOnlySupport()` — ambient accessors
+  - `assertWritableSupportContext(scope?)` — throws
+    `ReadOnlySupportSessionError` (HTTP 403, `code: READ_ONLY_SUPPORT_SESSION`)
+    when ambient context is read-only; no-op for tenant users,
+    impersonation-mode, or out-of-request callers (workers).
+  - `ReadOnlySupportSessionError` class — propagates through the
+    existing `handleApiError` / error middleware (uses `status` + `code`).
+- **`server/impersonationMiddleware.ts`** — wraps downstream handlers
+  via `runWithSupportContext(...)` when a support session is active,
+  so the ambient context is available to every service invoked during
+  the request without needing `req` passed explicitly.
+- **`server/services/platformAuditService.ts`** —
+  `logReadOnlyMutationBlocked(...)` now accepts an optional `req`
+  (service-layer calls may lack one).
+
+**Service-layer chokepoints patched** — canonical owners only:
+- **`server/services/jobLifecycleOrchestrator.ts`** — the "single
+  canonical authority for all job/visit lifecycle mutations."
+  `assertWritableSupportContext(<scope>)` injected at the top of all
+  19 exported mutation functions: `completeVisit`, `forceCloseJob`,
+  `reopenJob`, `reopenVisit`, `undoCloseJob`, `markInvoiced`,
+  `placeJobOnHold`, `resumeJob`, `updateHoldMetadata`, `setJobSubstatus`,
+  `setVisitEnRoute`, `startVisit`, `cancelVisitRoute`, `cancelVisitStart`,
+  `pauseVisit`, `resumeVisit`, `cancelVisit`, `bulkCompleteVisits`,
+  `rescheduleVisit`.
+- **`server/services/invoiceCreationService.ts`** — `createInvoiceFromJob`,
+  `applyTaxGroupToInvoice`.
+- **`server/services/jobExpenseService.ts`** — `createExpense`,
+  `updateExpense`, `deleteExpense`, `markExpensesAsInvoiced`.
+
+**Defense-in-depth model:**
+```
+HTTP middleware  (enforceReadOnlySupport)  → fast-rejects POST/PATCH/PUT/DELETE
+Service layer    (assertWritableSupportContext) → true business-rule guard
+```
+Both paths audit to the same `read_only_mutation_blocked` action. A
+mutation cannot succeed under a read-only session via any code path
+that reaches these chokepoints.
+
+**Role matrix hardening:**
+- `server/routes/platformFeedback.ts` — `WRITE_ROLES` narrowed from
+  `[platform_admin, platform_support, platform_billing]` to
+  `[platform_admin, platform_support]`. `platform_billing` may still
+  read feedback; mutations denied.
+- `server/routes/platformIssues.ts` — same narrowing.
+- `/api/platform/tenants/:id/features` PATCH retains
+  `[platform_admin, platform_support, platform_billing]` — features
+  are partially plan-adjacent; see risks for rationale.
+- `/api/platform/support-sessions` mutations remain
+  `[platform_admin, platform_support]` (Phase 4).
+- `platform_readonly_audit` remains read-only across every platform
+  surface by route-level gating.
+
+**Customer-approval foundation (backend only):**
+- `server/services/supportSessionService.ts` — `create(...)` now
+  accepts `initialStatus: 'pending' | 'active'` for read-only mode.
+  When `'pending'`, the DB row is inserted with `status='pending'`
+  and NO cookie is set; the session is not yet usable.
+- `activate(id, actor, req, res?)` transitions pending → active, and
+  when the caller is the original `ownerUserId`, sets the session
+  cookie with the remaining lifetime. Tenant-side approval UI is not
+  built this phase.
+- `server/routes/supportSessions.ts` — POST schema now accepts an
+  optional `initialStatus`; activate endpoint forwards `res` to
+  support cookie binding.
+
+#### Support Session System — Phase 4 (2026-04-15)
+
+Controlled, tenant-scoped, expiring platform-staff access. Introduces
+two access modes on a single canonical session domain:
+- `impersonation` — existing flow (swaps `req.user` to target tenant user)
+- `read_only`    — new, no user swap; platform admin remains themselves;
+  all HTTP mutations on tenant routes are server-side blocked.
+
+No new session table, no new cookie, no parallel domain. Extends
+`impersonation_sessions` in place.
+
+- **`migrations/2026_04_15_phase4_support_sessions.sql`** — NEW.
+  Adds `access_mode`, `status`, `approved_by_user_id`, `started_at`,
+  `revoked_at`; makes `target_user_id` nullable; backfills existing
+  rows as `access_mode='impersonation'` with `status` derived from
+  `ended_at`/`ended_reason`; adds 4 indexes. Applied.
+- **`shared/schema.ts`** — extended `impersonationSessions` Drizzle
+  definition. `targetUserId` is now nullable.
+- **`server/storage/impersonation.ts`** — added `SupportAccessMode` /
+  `SupportSessionStatus` types and the mode-aware methods:
+  `createSupportSession(...)`, `listSessions(...)`, `activateSession(...)`,
+  `revokeSession(...)`, `closeSession(...)`. Legacy `createSession(...)`
+  now delegates to `createSupportSession` for the
+  `access_mode='impersonation'` path. `endSession` now also flips the
+  new `status` field so the two stay consistent.
+- **`server/impersonationMiddleware.ts`** — mode-aware. Read-only
+  sessions attach `req.supportSession` + `req.isReadOnlySupport = true`
+  and deliberately do NOT swap `req.user`. Impersonation mode is
+  unchanged. `req.supportSession` is populated for both modes.
+- **`server/auth/tenantIsolation.ts`** — read-only support sessions
+  now permit platform users onto tenant-scoped routes and populate
+  `req.companyId` from the session record (not from `user.companyId`).
+  Platform users without any support session remain blocked (Phase 1).
+- **`server/middleware/enforceReadOnlySupport.ts`** — NEW canonical
+  server-side guard. When a read-only support session is active,
+  rejects every POST/PATCH/PUT/DELETE on `/api/*` (except `/api/platform/*`)
+  with `{ code: "READ_ONLY_SUPPORT_SESSION" }` and audits the attempt
+  to `audit_logs` with action `read_only_mutation_blocked`. UI
+  restrictions are not relied upon.
+- **`server/services/supportSessionService.ts`** — NEW orchestrator.
+  `create(...)` routes to `impersonationService.startImpersonation` for
+  impersonation mode (reusing the existing cookie path + audit) and to
+  storage for read-only mode. `activate / revoke / close` manage the
+  lifecycle and clear the cookie on revoke/close.
+- **`server/routes/supportSessions.ts`** — NEW. Mounted at
+  `/api/platform/support-sessions`:
+  - `POST   /`              — create (read_only or impersonation)
+  - `GET    /`              — list; filters: `activeOnly, tenantId, ownerUserId, accessMode, status`
+  - `POST   /:id/activate`  — pending → active
+  - `POST   /:id/revoke`    — immediate revoke + cookie clear
+  - `POST   /:id/close`     — manual close + cookie clear
+  Writes gated to `[platform_admin, platform_support]`.
+- **`server/routes/platform.ts`** — mounts the support-sessions router.
+- **`server/routes/index.ts`** — mounts `enforceReadOnlySupport`
+  immediately after the impersonation middleware so no route handler
+  ever sees a read-only mutation that slipped past.
+- **`server/impersonationService.ts`** — `endSessionInternal` and
+  `endSessionWithTimeout` are mode-aware: only emit the legacy
+  `impersonation_stop` / `impersonation_auto_timeout` audits for
+  impersonation-mode sessions. Both paths now also emit the new
+  `support_session_expired` audit for unified dashboards.
+- **`server/services/platformAuditService.ts`** — added 6 action keys
+  (`support_session_{created,activated,revoked,closed,expired}`,
+  `read_only_mutation_blocked`) with matching helpers. All writes go
+  to the existing `audit_logs` table — no new audit surface.
+- **`server/routes/admin.ts`** — null-safe lookup for
+  `session.targetUserId` (now nullable for read-only sessions).
+
+**Canonical error code:** `READ_ONLY_SUPPORT_SESSION` (HTTP 403).
+**Canonical cookie name:** `imp_session` (shared across both modes).
+
+#### Ops Portal Feedback + Issue System — Phase 3 (2026-04-15)
+
+Internal Ops Portal surfaces for feedback triage and the new
+platform-side bug tracker. Extends the existing `feedback` table
+(rather than creating a duplicate `customer_feedback` table) and
+introduces two genuinely new tables: `issue_reports` and
+`internal_support_notes`.
+
+- **`migrations/2026_04_15_phase3_feedback_issues.sql`** — NEW
+  migration. Adds `feedback.{title, route, feature_area, priority,
+  assigned_to, updated_at}` (all nullable), creates `issue_reports`
+  and `internal_support_notes` with indexes. Existing tenant feedback
+  submit path (`POST /api/feedback`) is unchanged — new columns are
+  all nullable and ignored on the tenant side.
+- **`shared/schema.ts`** — extended `feedback` Drizzle definition;
+  added `issueReports` and `internalSupportNotes` tables with
+  `insert*Schema` and exported types.
+- **`server/storage/platformFeedbackStorage.ts`** — NEW. Cross-tenant
+  list/get/update against `feedback` for the platform path. Does NOT
+  duplicate the tenant-scoped `feedbackRepository`, which still owns
+  `/api/feedback` with companyId isolation.
+- **`server/storage/platformIssuesStorage.ts`** — NEW. Owns CRUD on
+  `issue_reports`.
+- **`server/storage/internalSupportNotesStorage.ts`** — NEW. Append-
+  only notes attached to arbitrary entities (feedback / issue_report
+  / tenant).
+- **`server/services/platformFeedbackService.ts`** — NEW. List, detail
+  (with notes), audited `status`/`assignedTo` update, and
+  `addNote` via `internalSupportNotesStorage`.
+- **`server/services/platformIssuesService.ts`** — NEW. List, detail
+  (with notes), create (audited), update (audits severity change +
+  closure), and `addNote`.
+- **`server/routes/platformFeedback.ts`** — NEW. Mounted at
+  `/api/platform/feedback`:
+  - `GET /`              — filters: `status`, `category`, `tenantId`, `assignedTo`, `q`
+  - `GET /:id`           — detail + notes
+  - `PATCH /:id`         — status / priority / assignedTo (audited)
+  - `POST /:id/note`     — append note
+- **`server/routes/platformIssues.ts`** — NEW. Mounted at
+  `/api/platform/issues`:
+  - `GET /`              — filters: `status`, `severity`, `assignedTo`, `tenantId`, `q`
+  - `POST /`             — create (audited)
+  - `GET /:id`           — detail + notes
+  - `PATCH /:id`         — status / severity / priority / assignment / content (audits severity + closure)
+  - `POST /:id/note`     — append note
+- **`server/routes/platform.ts`** — mounts the two new sub-routers.
+- **`server/routes/platformTenants.ts`** — Phase 2 carryover fix:
+  `PATCH /api/platform/tenants/:tenantId/features` now restricted to
+  `platform_admin`, `platform_support`, `platform_billing`.
+  `platform_readonly_audit` is explicitly denied (closes Phase 2 risk #6).
+- **`server/services/platformAuditService.ts`** — added action keys
+  `feedback_status_changed`, `feedback_assigned`, `issue_created`,
+  `issue_severity_changed`, `issue_closed` and matching helpers.
+  All writes go to the existing `audit_logs` table — no new audit surface.
+
+Write routes (`PATCH`, `POST /:id/note`, issue `POST /`) are gated at
+the route layer to `[platform_admin, platform_support, platform_billing]`,
+so `platform_readonly_audit` can read but cannot mutate.
+
+#### Ops Portal Core — Phase 2 (2026-04-15)
+
+Platform Ops Portal tenant management surface. Adds
+`/api/platform/tenants` with search, detail, feature-flag read, and
+audited feature-flag update. No new tables, no duplicate tenant model
+— reads from canonical `companies` and delegates feature R/W to the
+pre-existing `tenantFeaturesRepository`.
+
+- **`server/storage/platformTenantsStorage.ts`** — NEW. Thin search
+  query against `companies`, filterable by `q` / `status` / `plan`
+  with pagination. Returns lightweight rows
+  `{ id, name, plan, status, createdAt, recentSupportAt }`.
+  `recentSupportAt` is a nullable placeholder until Phase 4 support
+  sessions land.
+- **`server/services/platformTenantsService.ts`** — NEW. Normalizes
+  inputs, composes tenant detail from `adminRepository.getTenantDetail`
+  + `tenantFeaturesRepository.getFeatures`, diffs flag updates, and
+  writes an audit row via `platformAuditService.logTenantFeaturesUpdated`
+  on mutation. No direct DB access.
+- **`server/routes/platformTenants.ts`** — NEW. Routes:
+  - `GET    /api/platform/tenants`                — search/list
+  - `GET    /api/platform/tenants/:tenantId`      — detail
+  - `GET    /api/platform/tenants/:tenantId/features`   — features read
+  - `PATCH  /api/platform/tenants/:tenantId/features`   — audited update
+  Gated by `requirePlatformRole()` at both parent and sub-router.
+- **`server/routes/platform.ts`** — mounts the new sub-router under
+  `/tenants`.
+- **`server/services/platformAuditService.ts`** — added
+  `tenant_features_updated` action key and `logTenantFeaturesUpdated(...)`
+  helper. Writes to the existing `audit_logs` table (no new surface).
+- **`server/permissions.ts`** + **`server/auth/requireFeature.ts`** —
+  replaced hardcoded `role === "platform_admin"` bypass with
+  `isPlatformRole(...)` so `platform_support`, `platform_billing`, and
+  `platform_readonly_audit` receive the same bypass as `platform_admin`.
+
+No migrations. No schema extensions. The `tenant_key` and
+`onboarding_state` columns are deliberately NOT added this phase —
+they are not required by any Phase 2 endpoint, and the spec explicitly
+defers them unless truly needed.
+
+#### Platform Admin Foundation — Phase 1 (2026-04-15)
+
+Foundation for the internal Ops Portal. Extends the existing role
+system with three new platform role keys (`platform_support`,
+`platform_billing`, `platform_readonly_audit`) alongside the
+pre-existing `platform_admin`. No new auth tables, no new RBAC
+database structure, no new audit surface — reuses `users.role`,
+`audit_logs`, and `platformAuditService`.
+
+- **`server/auth/roles.ts`** — added `PLATFORM_ROLES` constant,
+  `PlatformRole` type, and `isPlatformRole()` helper. Tenant-role
+  constants unchanged.
+- **`server/auth/requirePlatformRole.ts`** — NEW canonical middleware
+  for `/api/platform/*`. Preserves the real actor via `req.realUser`
+  when impersonation is active (mirrors `requireRole`). Denials are
+  logged via `platformAuditService.logPlatformRoleDenied`.
+- **`server/auth/tenantIsolation.ts`** — `ensureTenantContext` now
+  (a) skips `/api/platform` (platform routes operate outside tenant
+  scope) and (b) blocks platform-role users from tenant routes unless
+  an active impersonation/support session is present. Denials logged
+  via `platformAuditService.logPlatformTenantAccessDenied`.
+- **`server/services/platformAuditService.ts`** — added two audit
+  action keys (`platform_role_denied`, `platform_tenant_access_denied`)
+  and matching helpers. No new table.
+- **`server/routes/platform.ts`** — NEW router. Ships one route,
+  `GET /api/platform/health → { ok: true }`, for RBAC verification.
+- **`server/routes/index.ts`** — mounts `/api/platform` after the
+  global auth + impersonation middleware chain.
+
+No migrations. No schema changes. `users.role` remains a text column
+and already accepts platform role strings.
+
+### Changed
+
+#### Create Quote modal: template combobox + conditional fields (2026-04-15)
+
+Second-pass UX refinement to the unified `NewQuoteModal`. The
+inline template *list* (with a visible "Blank (no template)" row)
+is replaced with a proper optional searchable combobox built on
+the existing shadcn `Popover` + `Command` primitives. The empty
+state is now implicit — when nothing is selected, the trigger
+simply shows a "Search templates..." placeholder, and there is no
+pseudo-option row for "Blank".
+
+- **Template selector** — `Popover` trigger rendered as an
+  outline `Button` styled as a combobox (trigger width drives
+  popover width via `--radix-popover-trigger-width`). Popover
+  content hosts `Command` + `CommandInput` + `CommandList` for
+  search-as-you-type. Selecting a template closes the popover.
+  A compact `X` button inside the trigger clears the selection
+  when one is set.
+- **Conditional fields** — Title and Quote Description are only
+  rendered when no template is selected. When a template is
+  chosen, they're hidden and the submit payload drops them
+  (`title` / `notesCustomer` omitted from the POST body) so
+  nothing leaks through from a brief pre-selection edit.
+- **Submit logic** — unchanged: POST `/api/quotes` → if a template
+  is selected, POST `/api/quote-templates/:id/apply` → navigate
+  to `/quotes/{id}`. Still one modal, one submit path.
+
+#### Quote entry collapsed to one modal (2026-04-15)
+
+Collapsed the two-step quote entry flow into a single unified
+`NewQuoteModal`. The `QuoteTemplateChooserModal` intermediate
+step has been removed — template selection is now inline inside
+`NewQuoteModal`, above the blank-quote fields. Both branches
+previously funneled into the same `POST /api/quotes` path anyway,
+so the chooser was pure UX friction.
+
+- **`client/src/components/NewQuoteModal.tsx`** — added inline
+  template selector (search input + scrollable list + "Blank (no
+  template)" option), backed by the same
+  `/api/quote-templates/list?activeOnly=true` query the chooser
+  used. Submit path is unchanged: POST `/api/quotes`, then if a
+  template is selected, POST `/api/quote-templates/:id/apply`.
+  Template section auto-hides when the tenant has zero templates
+  so the modal stays compact. Title changed from "New Quote" to
+  "Create Quote". The `templateId` prop is retained (now optional,
+  acts as an initial seed) so any future external caller remains
+  compatible; current callers pass nothing.
+- **`client/src/App.tsx`** — removed `QuoteTemplateChooserModal`
+  import + mount, dropped `quoteChooserOpen` and
+  `selectedQuoteTemplateId` state. Header "New Quote" and
+  Universal Search `onCreateQuote` now open `NewQuoteModal`
+  directly.
+- **`client/src/pages/Quotes.tsx`** — removed the list page's
+  chooser step for the same reason; the "New Quote" button and
+  the `?create=true` URL entry point now open `NewQuoteModal`
+  directly.
+- **`client/src/components/QuoteTemplateChooserModal.tsx`** —
+  deleted (no remaining callers after the refactor).
+
+### Added
+
+#### Invoice entry modal + Quote chooser wiring fix (2026-04-15)
+
+Replaces the standalone `/invoices/new` page step with a modal for
+the primary entry points (header "New" dropdown + Universal Search
+"Create Invoice"), and repairs the "New Quote" wiring so the
+template chooser is no longer skipped.
+
+- **`client/src/components/NewInvoiceModal.tsx`** — new. Collects
+  Client/Location (required) and Job Description (optional), posts
+  to the same canonical endpoint `POST /api/invoices` the old
+  `NewInvoicePage` uses, then navigates to `/invoices/{id}` for the
+  full detail editor. No duplicate business logic: same endpoint,
+  same draft-then-redirect pattern, same `CreateOrSelectField` +
+  `locationEntity` primitives, same inline `CreateClientModal`
+  pattern for new-client UX. Visual language mirrors
+  `CreateClientModal` (shadcn `Dialog`, `sm:max-w-lg`, DialogHeader/
+  DialogFooter rhythm, destructive error banner, Loader2 submit).
+  The server-side `createStandaloneInvoiceSchema` already accepts
+  optional `workDescription`, so Job Description rides the create
+  request — no secondary PATCH.
+- **`client/src/App.tsx`** — mounted `NewInvoiceModal`, added
+  `newInvoiceModalOpen` state. Header "New Invoice" now opens the
+  modal (was `setLocation("/invoices/new")`). Header "New Quote"
+  now opens `QuoteTemplateChooserModal` (was
+  `setNewQuoteModalOpen(true)`, which bypassed the chooser and
+  left the template ignored). Universal Search `onCreateInvoice`
+  and `onCreateQuote` updated to the same canonical paths.
+- **`/invoices/new` route preserved** — `NewInvoicePage` remains
+  mounted because `InvoicesListPage` still links to it; this is
+  deliberately out of scope for this change.
+
+### Fixed
+
+#### Command palette: strict New-button parity (2026-04-15)
+
+Second-pass correction to make Universal Search Quick Actions an
+exact mirror of the header "New" dropdown. Each Quick Action now
+invokes the same setter/route the corresponding "New" menu item
+uses — no substitutions, no list-page fallbacks, no omissions.
+
+- **Create Invoice** was routing to `/invoices` (list page). "New
+  Invoice" routes to `/invoices/new`. Fixed to match exactly.
+- **Create Quote** had been dropped in the prior pass. Restored;
+  `onCreateQuote` prop wired to `setNewQuoteModalOpen(true)` — the
+  same setter "New Quote" uses. Icon in the "New" dropdown is
+  `FileText` but Quick Actions rows use a shared `Plus` icon by
+  design, matching the other create entries.
+- **Create Client** now calls `setAddClientModalOpen(true)` directly
+  at the call site (equivalent to the prior `handleAddClient`
+  wrapper, which only forwarded to the same setter). This matches
+  the "New Client" onClick verbatim.
+- **Order** aligned to the "New" dropdown verbatim: Create Job →
+  Create Client → Create Invoice → Create Quote → Create Task →
+  Create PM Contract.
+- **Placeholder** changed from `Create jobs, clients, invoices...`
+  to `Search or create jobs, clients, invoices...` (keeps search
+  affordance visible alongside the create hint).
+
+Search UX (debounced /api/search, grouped results, keyboard nav,
+Cmd+K, click-outside, focus handling) is untouched.
+
+#### Command palette: Create Task routing + missing Create Client + placeholder (2026-04-15)
+
+Surgical correction to `client/src/components/UniversalSearch.tsx`
+and the call site in `client/src/App.tsx`.
+
+- **Create Task was wrong.** The `create-task` quick action routed to
+  `/dispatch?newTask=1`, dropping the user on the Dispatch board
+  instead of opening the canonical task modal. Now accepts an
+  `onCreateTask` callback and is wired in `App.tsx` to the same
+  `setNewTaskOpen(true)` that the header "New" dropdown uses
+  (canonical `TaskDialog`). No new create path introduced.
+- **Create Client was missing.** Added `create-client` quick action
+  using a new `onCreateClient` callback; `App.tsx` passes
+  `handleAddClient`, the same handler the "New" dropdown uses to
+  open the canonical `CreateClientModal`.
+- **PM Contract route aligned.** `create-pm-contract` was routing to
+  `/pm?newContract=1` (divergent entry point). Now routes to
+  `/pm/new`, matching the "New" dropdown exactly.
+- **Quick Actions order standardized** to mirror the header "New"
+  dropdown system: Create Job → Create Client → Create Invoice →
+  Create Task → Create PM Contract. Create Quote was removed from
+  Quick Actions (still available in the "New" dropdown); the
+  now-unused `onCreateQuote` prop was dropped from
+  `UniversalSearchProps` and the call site.
+- **Placeholder** changed from `Search or run command…` to
+  `Create jobs, clients, invoices...` to match the palette's
+  primary purpose.
+
+No backend changes, no new modals, no palette UI redesign.
+
+### Added
+
+#### Global Help header popover (2026-04-15)
+
+Adds a new Help utility control to the office app header, sitting
+between the Quick Create ("New") dropdown and the More menu. Icon-
+only below the `md` breakpoint, icon + label above. Opens a 380px
+dropdown panel that mirrors the TasksPanel geometry (rounded-md,
+1px border, soft shadow, `max-h: 70vh`, internal scroll).
+
+Panel contents: Help title row with close button, stubbed search
+input (client-side filter over the static list only — no backend
+article search), a Quick help section (Set up maintenance, Dispatch
+settings, Scheduling jobs, Creating invoices, Managing technicians,
+Quotes and approvals), and two footer actions (Email support,
+Provide feedback) that both funnel into the existing
+`FeedbackDialog` since the audit confirmed it is the canonical
+support channel in this app.
+
+Reuses existing primitives: Radix `Popover`, shadcn `Button` /
+`Input`, lucide-react icons, the header's tonal utility-button
+style, and the same route-change-close pattern as the Tasks
+popover (`useEffect` on wouter `location`). No new backend routes,
+no new overlay system, no changes to Search / Tasks / New /
+Settings behavior.
+
+- **Files affected:**
+  - `client/src/App.tsx` — added `HelpCircle` import, `HelpPanel`
+    import, `helpPopoverOpen` state + route-close effect, Help
+    `Popover` trigger and content block in the header utility
+    cluster.
+  - `client/src/components/help/HelpPanel.tsx` — new file.
+
+### Changed
+
+#### Stripe Integration Phase 1: canonical ledger wiring, staff-initiated only (2026-04-14)
+
+Activates the Phase 3 ledger foundation with real Stripe wiring. No UI
+work. No portal customer-pay surface. No Stripe Customer objects. No
+multi-currency logic. Every successful Stripe charge or refund flows
+through the existing canonical writers; no parallel write path exists.
+
+- **Stripe SDK.** Added `stripe@22.0.1` dependency. New
+  `server/services/stripeClient.ts` provides:
+  - `getStripeClient()` — lazy SDK factory, API version pinned.
+  - `validateStripeConfig()` — startup validator, mirrors
+    `validateEmailConfig()` (warn-loudly, fail-closed at request time).
+  - `getStripeWebhookSecret()` — throws with guidance if
+    `STRIPE_WEBHOOK_SECRET` is unset.
+- **Staff-initiated PaymentIntent creation.**
+  `POST /api/invoices/:invoiceId/stripe/payment-intent` in
+  `server/routes/stripePayments.ts`, gated by
+  `requireRole(MANAGER_ROLES)`. Validates invoice is in a payable state
+  via `canAcceptInvoicePayment`, rejects amounts exceeding outstanding
+  balance, pre-generates a UUID as `prospectivePaymentId` that doubles
+  as the Stripe `Idempotency-Key` AND the eventual `payments.id` on
+  webhook success. Metadata carries `{companyId, invoiceId,
+  prospectivePaymentId, invoiceNumber}`.
+- **Webhook ingest.** New `server/routes/stripeWebhook.ts` mounted
+  BEFORE `express.json()` in `server/index.ts` (raw body needed for
+  signature verification). Handles:
+  - `payment_intent.succeeded` → `paymentRepository.createPayment` with
+    `providerSource='stripe'`, `providerEventId=<evt_...>`,
+    `id=<prospectivePaymentId from metadata>`, `reference=<ch_...>`,
+    `method='credit'`.
+  - `charge.refunded` → for each refund on the charge,
+    `paymentRepository.createRefund` against the matching parent
+    (looked up by `reference=<ch_...>` + `providerSource='stripe'`),
+    with `providerEventId=<re_...>` (per-refund, so a multi-refund
+    event produces N unique rows).
+  - `payment_intent.payment_failed` → info-log only, no ledger write.
+  - anything else → 204 + low-noise info log.
+- **Trust boundary (webhook).**
+  1. Stripe signature verified via `stripe.webhooks.constructEvent`.
+  2. `metadata.companyId` / `metadata.invoiceId` /
+     `metadata.prospectivePaymentId` required; absence → structured
+     anomaly log + 200 ACK, no write.
+  3. Canonical writers still validate invoice exists, is payable, and
+     refund total doesn't overshoot parent.
+  4. Amounts converted from Stripe cents to numeric(12,2) dollars at
+     the webhook boundary only.
+- **Idempotency.**
+  - Outbound: `Idempotency-Key = prospectivePaymentId` on
+    `paymentIntents.create`.
+  - Inbound: Phase 3 partial UNIQUE
+    `payments_provider_event_id_uq` is authoritative. Replay events
+    surface as Postgres SQLSTATE 23505 — the handler catches it,
+    logs `replay_already_ingested`, and ACKs 200.
+- **Canonical writer extension.**
+  `paymentRepository.createPayment` and `createRefund` (via
+  `createLedgerAdjustment` + the `AdjustmentInput` interface) now
+  accept optional `{ id?, providerSource?, providerEventId? }`. Every
+  existing caller's behavior is unchanged — the manual-entry route
+  passes none of these and the row lands with schema defaults.
+- **No Stripe-specific writer.** All financial writes from webhooks
+  route through the existing `createPayment` / `createRefund`
+  functions. All invariants (payable invoice, non-voided, overshoot
+  guard, reference dedupe, ledger-shape CHECK, provider-linked
+  immutability) still apply.
+
+**Files new:**
+- `server/services/stripeClient.ts`
+- `server/routes/stripePayments.ts`
+- `server/routes/stripeWebhook.ts`
+
+**Files edited:**
+- `server/storage/payments.ts` — optional `{id, providerSource,
+  providerEventId}` on `createPayment` + `AdjustmentInput`; conditional
+  insert-value spreads so manual-entry path is unchanged.
+- `server/index.ts` — imports, `buildStripeWebhookRouter()` mounted
+  before `express.json()`, `validateStripeConfig()` in startup.
+- `server/routes/index.ts` — mount `stripePaymentsRouter`.
+- `package.json` / `package-lock.json` — `stripe@22.0.1` dep.
+
+**No schema change. No migration.** Phase 3 already shaped the ledger
+for Stripe (providerSource enum, providerEventId column, partial
+UNIQUE for webhook dedupe). Rerun `npm run db:check` to confirm
+Drizzle ↔ live DB parity before enabling the webhook in the Stripe
+dashboard.
+
+**Env vars required before enabling:** `STRIPE_SECRET_KEY`,
+`STRIPE_WEBHOOK_SECRET`. Startup warns if missing; request-time
+endpoints fail closed with 503.
+
+#### Payments Phase 3: provider-linked immutability + Stripe readiness (2026-04-14)
+
+Makes the payments ledger Stripe-shaped at the schema level and locks
+financial-field edits on any row owned by an external provider.
+**No Stripe SDK code. No webhook route. No UI change. No new payment
+model.** Every change is additive on top of Phase 1 + Phase 2.
+
+- **Provider-linked immutability.** `updatePayment` now rejects with
+  400 if the row satisfies `isProviderLinked(...)` AND the patch
+  attempts to change `amount`, `method`, or `receivedAt`. `reference`
+  and `notes` remain editable (metadata). Canonical message points
+  the caller at `createRefund` / `createReversal` as the right
+  canonical path for any financial change to a provider-linked row.
+- **Provider-source columns.** Two new system-managed fields on
+  `payments`:
+  - `providerSource TEXT NOT NULL DEFAULT 'manual'` — enum
+    `manual | qbo | stripe`, enforced by new CHECK
+    `payments_provider_source_chk`.
+  - `providerEventId TEXT` — nullable. Future webhook event id for
+    inbound dedupe. Partial UNIQUE
+    `payments_provider_event_id_uq` on
+    `(company_id, provider_source, provider_event_id) WHERE
+    provider_event_id IS NOT NULL` blocks duplicate Stripe (or future
+    QBO) webhook-replay inserts at the DB.
+  Both fields omitted from `insertPaymentSchema` so they cannot be
+  set from user input.
+- **Idempotent QBO backfill.** Migration includes
+  `UPDATE payments SET provider_source='qbo' WHERE qbo_payment_id
+  IS NOT NULL AND provider_source='manual'` so existing QBO-synced
+  rows land on the canonical state. Replay-safe — WHERE clause
+  makes a second run a no-op.
+- **Canonical predicate.** New `server/lib/paymentPredicates.ts` with
+  `isProviderLinked(row)`. Mirrors the `invoicePredicates.ts`
+  pattern. Recognizes BOTH the legacy `qboPaymentId` signal and the
+  new `providerSource` enum, so every existing and future provider
+  check has one source of truth.
+- **Stripe outbound idempotency contract documented.** New
+  `docs/PAYMENTS_STRIPE_CONTRACT.md` — explains how Stripe charge /
+  refund events map to the existing row shape, the
+  `Idempotency-Key = payments.id` outbound rule, the
+  `providerEventId` inbound dedupe rule, and what the Stripe phase
+  must NOT do (no parallel writer, no second refund table, no new
+  columns).
+
+**Files affected:**
+- `shared/schema.ts` — enum export, two columns, CHECK,
+  partial UNIQUE, `insertPaymentSchema.omit({...})` extension
+- `server/lib/paymentPredicates.ts` (new)
+- `server/storage/payments.ts` — import + guard in `updatePayment`
+- `migrations/2026_04_14_payments_phase3_provider_linking.sql` (new)
+- `docs/PAYMENTS_STRIPE_CONTRACT.md` (new)
+
+No route change. No new service. No new worker. No change to the
+existing create / refund / reversal / delete flows.
+
+#### Payments Phase 2: first non-payment ledger writers — refund, reversal, narrowed delete (2026-04-14)
+
+Activates the Phase 1 foundation. Adds the first two paths that write
+`paymentType='refund'` and `paymentType='reversal'` rows, enforces the
+DB-level ledger shape invariant, and narrows `deletePayment` to its
+canonical "data entry error" case. No Stripe code. No QBO refund sync.
+No UI overhaul. No dispute/chargeback modeling.
+
+- **Refund writer.** New `paymentRepository.createRefund(companyId, parentId, data)`.
+  Inside a single tx it validates the parent is `paymentType='payment'`,
+  the invoice is not voided, and the requested absolute amount is
+  positive; calls the Phase 1 `assertRefundAmountWithinParent` to block
+  overshoot; pre-checks reference duplicates for a friendlier 409;
+  inserts a signed-negative row with `paymentType='refund'` and
+  `parentPaymentId` set; recalculates invoice balance via the existing
+  signed-sum-safe path.
+- **Reversal writer.** New `paymentRepository.createReversal(...)`.
+  Same tx shape as refund, `paymentType='reversal'`. Both writers
+  share a private `createLedgerAdjustment` helper — single enforcement
+  point for every invariant.
+- **Routes.** `POST /api/payments/:id/refund` and
+  `POST /api/payments/:id/reversal` added in `server/routes/payments.ts`.
+  `requireRole(MANAGER_ROLES)` on both (parity with payment create).
+  Zod-validated. Each emits an event (`invoice.refunded` /
+  `invoice.payment_reversed`) via the existing `logEventAsync` path.
+  No QBO sync fired — refund/reversal rows sit at the default
+  `qboSyncStatus='NOT_SYNCED'` until the QBO `RefundReceipt` sync
+  lands in a follow-up.
+- **Narrowed delete.** `deletePayment` now rejects with 400 when:
+  (a) row is not `paymentType='payment'`,
+  (b) row has refund/reversal children (pre-empts the FK RESTRICT with
+  a clean message),
+  (c) row has `qboPaymentId` set (provider-linked),
+  (d) row is older than `DELETE_WINDOW_DAYS = 30`,
+  (e) pre-existing: invoice is voided.
+  Every rejection message points the caller at
+  `createRefund` / `createReversal` as the right canonical action.
+- **Schema invariants.** Compound CHECK constraint
+  `payments_ledger_shape_chk` at the DB:
+  `(payment_type='payment' AND amount>0 AND parent_payment_id IS NULL)`
+  OR
+  `(payment_type IN ('refund','reversal') AND amount<0 AND parent_payment_id IS NOT NULL)`.
+  Plus partial UNIQUE `payments_company_parent_reference_uq` on
+  `(company_id, parent_payment_id, reference)` where both are
+  non-empty — pairs with the existing invoice-wide partial UNIQUE to
+  defeat refund webhook replays when Stripe lands.
+- **Migration.** `migrations/2026_04_14_payments_phase2_checks.sql`.
+  Replay-safe: `DO $$ … EXCEPTION WHEN duplicate_object THEN NULL` for
+  the CHECK, `CREATE UNIQUE INDEX IF NOT EXISTS` for the partial UNIQUE.
+  No backfill — every Phase 1 row already satisfies the CHECK.
+
+**Files affected:**
+- `shared/schema.ts` (CHECK + partial UNIQUE additions)
+- `migrations/2026_04_14_payments_phase2_checks.sql` (new)
+- `server/storage/payments.ts` (`DELETE_WINDOW_DAYS`, `AdjustmentInput`,
+  `createRefund`, `createReversal`, `createLedgerAdjustment` private
+  helper, narrowed `deletePayment`)
+- `server/routes/payments.ts` (two new endpoints, shared Zod schema)
+
+Route → service (repo) → storage layering preserved. Backend owns all
+financial rules. Existing payment create / update / delete route surfaces
+preserved except for the narrowed delete semantics.
+
+#### Payments ledger foundation (Phase 1): paymentType + parent self-reference + signed-sum safety (2026-04-14)
+
+Schema-and-invariant-only foundation for the future refund/reversal
+flow and for Stripe integration. No Stripe code. No refund endpoint.
+No reversal endpoint. No UI change. No behavior change to existing
+payment create / update / delete flows.
+
+- **Schema.** New `paymentTypeEnum = ["payment","refund","reversal"]`
+  exported from `shared/schema.ts`. Two new columns on the `payments`
+  table — `payment_type TEXT NOT NULL DEFAULT 'payment'` and
+  `parent_payment_id VARCHAR REFERENCES payments(id) ON DELETE RESTRICT`
+  — both system-managed. `insertPaymentSchema.omit({...})` extended to
+  reject user-supplied values on both, matching the convention already
+  used for QBO sync fields. Existing rows default to
+  `paymentType='payment'` / `parentPaymentId=NULL`; no backfill needed.
+- **Signed-sum safety in recalc.**
+  `PaymentRepository.recalculateInvoiceBalance` now clamps the stored
+  `invoices.amountPaid` to `Math.max(0, amountPaid)`, mirroring the
+  existing clamp on `balance`. Once refund/reversal rows land in
+  Phase 2 the underlying `SUM(amount)` can transiently go negative
+  across bookkeeping edges; the clamp preserves the natural
+  non-negative invariant on the column without altering the status
+  transition logic.
+- **Overshoot invariant (service-layer).**
+  `PaymentRepository.assertRefundAmountWithinParent(companyId, parentPaymentId, requestedAbsAmount, tx?)`
+  added. Every Phase 2+ method that inserts a refund/reversal row
+  MUST call this first. Throws `400` if cumulative offset would
+  exceed the parent's amount. Not called from any Phase 1 path —
+  purely a canonical enforcement hook ready for the refund flow.
+  Tenant-scoped; tx-capable via an optional `txHandle`.
+- **Migration.** `migrations/2026_04_14_payments_ledger_foundation.sql`
+  — replay-safe (`ADD COLUMN IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`).
+  Partial index on `parent_payment_id` (where not null) for Phase 2
+  child-sum queries.
+
+**Files affected:**
+- `shared/schema.ts`
+- `server/storage/payments.ts`
+- `migrations/2026_04_14_payments_ledger_foundation.sql` (new)
+
+No route changes. No controller rewrite. No recalculation-logic
+redesign — only the minimum clamp required to keep the column
+invariant honest under signed totals. No Stripe code. No speculative
+chargeback / dispute modeling.
+
+#### Phase 3 next-frontier cleanup: audit service consolidation + polling lengthen + controller split roadmap (2026-04-14)
+
+Three independent clean-surface items. No redesign. No behavior
+change. No schema change.
+
+- **Dual auditService resolved.** Correction to the prior audit: the
+  two files write to DIFFERENT tables, so they cannot be merged —
+  `server/auditService.ts` → `auditLogs` (platform admin actions),
+  `server/services/auditService.ts` → `auditEvents` (team/company
+  actions). The drift was purely naming. Moved the platform file into
+  `server/services/` alongside the team one, renamed class
+  `AuditService` → `PlatformAuditService` and singleton
+  `auditService` → `platformAuditService`. Updated the two importers
+  (`server/impersonationService.ts`, `server/routes/admin.ts`).
+  Deleted `server/auditService.ts`. Same tables, same methods, same
+  behavior; the only change is the import path and symbol name.
+- **Tech-app polling lengthened to SSE-fallback cadence.** Four hooks
+  whose query keys are already invalidated by `useTechRealtimeSync`
+  (SSE) had `refetchInterval` raised from 30s/60s to 5 min. SSE is
+  now the primary freshness path; polling is retained only as an
+  SSE-disconnect safety net. `JobDetailPage.tsx:323` intentionally
+  left alone — its 60s conditional polling while `isRunning=true`
+  provides continuous "elapsed time" updates that SSE cannot.
+  Affected hooks: `useTechShift.ts:37`, `useTodayVisits.ts:99`,
+  `useTimesheetState.ts:137`, `useTechTasks.ts:35`.
+- **Controller-split roadmap documented.** New file
+  `docs/CONTROLLER_SPLIT_ROADMAP.md` maps per-concern split plans for
+  the four oversized route files (`qbo.ts`, `jobs.ts`, `techField.ts`,
+  `invoices.ts`) with migration order, risk notes, and global
+  invariants. No code in those files changes as part of this phase;
+  splits happen opportunistically during future feature work.
+
+**Files affected:**
+- `server/services/platformAuditService.ts` (new)
+- `server/auditService.ts` (deleted)
+- `server/impersonationService.ts` (import + 3 call sites)
+- `server/routes/admin.ts` (import + 7 call sites)
+- `client/src/tech-app/hooks/useTechShift.ts`
+- `client/src/tech-app/hooks/useTodayVisits.ts`
+- `client/src/tech-app/hooks/useTimesheetState.ts`
+- `client/src/tech-app/hooks/useTechTasks.ts`
+- `docs/CONTROLLER_SPLIT_ROADMAP.md` (new)
+
+No schema change, no migration, no new route, no new service, no new
+framework. Route → service → storage layering preserved. Audit table
+behavior preserved. SSE fallback safety preserved (polling retained
+at safety-net cadence).
+
+#### Phase 2 next-frontier cleanup: timer hygiene + graceful shutdown + SSE/mutation coalescing + role-alias rename (2026-04-14)
+
+Four independent low-risk, high-leverage items from the next-frontier
+audit. No redesign. No auth-policy changes. No new frameworks.
+
+- **`.unref()` on three timers:**
+  `server/services/pmAutoGeneration.ts:114,121` (startup timeout +
+  recurring interval), `server/auth/tenantIsolation.ts:103` (rate-limit
+  bucket cleanup), `server/routes/dispatch-stream.ts:53` (per-SSE-connection
+  heartbeat). None of these timers should block SIGTERM.
+- **Graceful shutdown for background intervals.**
+  `server/index.ts` now captures handles from `startOrphanSweeper()` and
+  `startQueuedEmailSweeper()`, and registers a single
+  SIGTERM+SIGINT listener (`shutdownBackgroundWorkers`) that calls
+  `stopPmAutoGeneration()` + `stopSubscriptionWorker()` + clears both
+  sweeper handles. Runs alongside existing `db.ts` / `cache.ts`
+  shutdown listeners (Node fires all registered listeners).
+  Idempotent via a `workerShutdownRan` flag.
+- **SSE/mutation calendar-invalidation coalescing (asymmetric).**
+  New module `client/src/lib/dispatchInvalidationSync.ts` exposes
+  `markCalendarInvalidated()` / `isCalendarRecentlyInvalidated()`.
+  `useDispatchStream.flushFlags` marks after flushing `FLAG_VISIT_JOB`;
+  `useDispatchPreviewMutations.backgroundInvalidate` skips ONLY the
+  two calendar keys (`/api/calendar`, `/api/calendar/unscheduled`)
+  when SSE marked them in the last 700 ms. Every other key the
+  mutation invalidates (`visit-detail`, `/api/tasks`, working-hours,
+  `jobs`, `dashboard`, `attention`, `dashboard-action`, `visits`)
+  keeps firing. SSE is authoritative; when SSE is disconnected, no
+  mark ever happens, check always returns false, and the mutation
+  path invalidates calendar keys exactly as before — zero risk to
+  the disconnected-SSE fallback.
+- **Role-alias shadowing removed** in 6 route files:
+  `communications.ts`, `businessHours.ts`, `communicationTemplates.ts`,
+  `companySettings.ts`, `team.ts`, `technicians.ts`. Each previously
+  defined `const MANAGER_ROLES = RESTRICTED_MANAGER_ROLES;` and then
+  gated routes with `requireRole(MANAGER_ROLES)`, which was
+  misleading — `MANAGER_ROLES` in the canonical module is a broader
+  set than `RESTRICTED_MANAGER_ROLES`. Rename-only change: delete the
+  local alias, call `requireRole(RESTRICTED_MANAGER_ROLES)` directly.
+  **No permission changes** — the role set each route enforces is
+  identical to before.
+
+**Files affected:**
+- `server/services/pmAutoGeneration.ts`
+- `server/auth/tenantIsolation.ts`
+- `server/routes/dispatch-stream.ts`
+- `server/index.ts`
+- `client/src/lib/dispatchInvalidationSync.ts` (new)
+- `client/src/hooks/useDispatchStream.ts`
+- `client/src/components/dispatch/useDispatchPreviewMutations.ts`
+- `server/routes/communications.ts`
+- `server/routes/businessHours.ts`
+- `server/routes/communicationTemplates.ts`
+- `server/routes/companySettings.ts`
+- `server/routes/team.ts`
+- `server/routes/technicians.ts`
+
+No schema change, no migration, no new route, no new send service, no
+new worker framework.
+
+#### Phase 1 next-frontier cleanup: payments dedupe + subscription worker wired + time-entry N+1 fix (2026-04-14)
+
+Three independent gaps from the next-frontier audit, grouped for
+release. No redesign. Every change extends an existing canonical
+system.
+
+- **Duplicate payment guard.** New partial unique index
+  `payments_company_invoice_reference_uq ON (company_id, invoice_id, reference)
+  WHERE reference IS NOT NULL AND reference <> ''` blocks two payment
+  rows sharing the same tenant/invoice/reference at the database.
+  `paymentRepository.createPayment` now does a matching pre-check
+  inside the transaction and throws 409 so the user sees a clean
+  message instead of a UNIQUE-violation 500. Reference is trimmed
+  before both the check and the insert so leading/trailing whitespace
+  doesn't defeat the guard. Cash / other payments submitted without
+  a reference are intentionally unconstrained.
+- **Subscription worker wired.** `runSubscriptionWorker()` is now
+  scheduled from bootstrap via new exports
+  `startSubscriptionWorker()` / `stopSubscriptionWorker()` — 30 s
+  startup delay + 24 h interval, `.unref()`'d. The worker is
+  internally idempotent (every action is event-keyed on
+  `subscriptionEvents(subscriptionId, type, termEndDate)` UNIQUE), so
+  overlapping runs are safe. Renewal notices (30/7 day), auto-renew,
+  and revert-to-monthly now fire as designed.
+- **Invoice creation N+1.** The per-snapshot time-entry UPDATE loop in
+  `InvoiceRepository.createInvoiceFromJob` (previously ~N round-trips
+  per invoice) is replaced by a single Postgres
+  `UPDATE time_entries … FROM (VALUES …)` statement. Semantics
+  preserved; tenant scoping retained (`t.company_id = :companyId`).
+
+**Files affected:**
+- `shared/schema.ts` — partial unique index on `payments`
+- `migrations/2026_04_14_payments_dedupe_uq.sql` — new, replay-safe
+- `server/storage/payments.ts` — pre-check + 409; reference trim
+- `server/services/subscriptionWorker.ts` — start/stop scheduler exports
+- `server/index.ts` — bootstrap call
+- `server/storage/invoices.ts` — batched UPDATE via VALUES
+
+**Migration:** run
+`npm run db:migrate:one -- migrations/2026_04_14_payments_dedupe_uq.sql`.
+`CREATE UNIQUE INDEX IF NOT EXISTS` — replay-safe; no data changes.
+
+#### Phase D email hardening: send/state atomicity (2026-04-14)
+
+Closes the final atomicity gap: the invoice/quote status update
+following a successful email dispatch now runs inside the same DB
+transaction as the delivery-row `markSent` flip. No more orphan
+state where `emailDeliveries` is `sent` but the owning invoice/quote
+is still `draft`.
+
+- **Tracking service:** `emailDeliveryTrackingService.markSent` now
+  accepts an optional `afterMarkSent(tx) => Promise<void>` callback.
+  When provided, `markDeliverySent` and the callback run inside a
+  single `db.transaction(...)`. HTTPS to Resend stays OUTSIDE the
+  transaction — no connection held across the network call.
+- **Dispatch service:** `sendInvoiceEmail` + `sendQuoteEmail` input
+  types gained an optional `afterMarkSent` that forwards to
+  `markSent`. `sendJobEmail` unchanged (no post-send job entity
+  update in current code).
+- **Routes:** `invoices.ts POST /:id/send` and
+  `quotes.ts POST /:id/send` moved their post-dispatch
+  `storage.updateInvoice` / `quoteRepository.updateQuote` into the
+  `afterMarkSent` callback. All pre-existing logic (isResend
+  branch, issuedAt/dueDate defaults, QBO override) is preserved
+  inside the callback closure.
+- **Storage:** `quoteRepository.updateQuote` now accepts an optional
+  `txHandle`, matching the pattern already in
+  `storage.updateInvoice:353`.
+- **Rollback semantics:** if the callback throws, both the delivery
+  flip and the entity update are rolled back. The delivery stays in
+  `queued`; the Phase C sweeper flips it to `failed` at +15 min.
+  User retries via normal path.
+
+**Files affected:** `server/storage/quotes.ts`,
+`server/services/emailDeliveryTrackingService.ts`,
+`server/services/emailDispatchService.ts`,
+`server/routes/invoices.ts`, `server/routes/quotes.ts`.
+No schema change, no migration, no new route, no queue, no new
+send service.
+
+#### Phase C email hardening: queued-orphan sweeper (2026-04-14)
+
+Closes the final open gap from the email integrity audit. Mirrors the
+existing `fileUploadService.startOrphanSweeper` pattern — no new
+infrastructure, no queue framework.
+
+- **Storage:** `emailDeliveriesStorage.failStaleQueuedDeliveries(cutoff)`
+  — single atomic UPDATE with
+  `WHERE status = 'queued' AND created_at < cutoff` RETURNING. Race-safe:
+  any row that transitioned concurrently (markSent / webhook /
+  markFailed) is excluded by the WHERE clause.
+- **Service:** `emailDeliveryTrackingService.ts` now exports
+  `QUEUED_ORPHAN_THRESHOLD_MINUTES = 15`, `sweepQueuedEmailDeliveries()`,
+  and `startQueuedEmailSweeper()`. Each swept row fires the existing
+  `notifyDeliveryProblem(row, "failed")` — same surface office users
+  already see for delivery problems; no new notification channel.
+- **Bootstrap:** `server/index.ts` now calls `startQueuedEmailSweeper()`
+  alongside `startOrphanSweeper()` after `server.listen`.
+  `setInterval(..., 15*60_000).unref()` — identical cadence to the file
+  sweeper; does not block process exit.
+
+**Threshold reasoning:** dispatch is synchronous — a delivery row is
+only `queued` while `createQueuedDelivery → client.emails.send →
+markSent|markFailed` runs (seconds). Any row `queued` past 15 min
+implies either a process kill (SIGKILL / OOM / container replacement)
+between the insert and outcome handling, or an HTTPS hang beyond the
+SDK timeout. Either way it is unrecoverable via normal flow and
+should be surfaced to the user as `failed`. The Phase A UNIQUE index
+otherwise blocks further sends on the same entity while the stale row
+sits.
+
+**Files affected:** `server/storage/emailDeliveriesStorage.ts`,
+`server/services/emailDeliveryTrackingService.ts`, `server/index.ts`.
+No schema change, no migration, no new route, no duplicate
+reconciliation path.
+
+#### Phase B email hardening: webhook DB-failure visibility + portal exception documented (2026-04-14)
+
+Follow-up to the markSent state guard (same phase).
+
+- **Webhook DB failure logging (resendWebhook.ts):** the catch block
+  around `markWebhookStatus` now emits a single structured JSON line
+  instead of a plain string, carrying `deliveryId, tenantId,
+  entityType, entityId, providerMessageId, attemptedStatus,
+  deliveredAt, message, name, stack`. Operator log aggregators can
+  alert on `[resend-webhook] markWebhookStatus failed` and tie each
+  failure to the exact delivery. Closes the silent-data-loss gap
+  flagged in the post-implementation audit.
+- **Portal magic-link send (portal.ts:188):** audited and documented
+  as a **justified exception** to routing through
+  `emailDispatchService`. Rationale is inline above the
+  `client.emails.send()` call: (1) not entity-scoped — magic-link
+  isn't invoice/quote/job; (2) no
+  `CommunicationTemplateEntityType` fits without redesign;
+  (3) `portalMagicTokens` already provides the audit record;
+  (4) canonical `getResendClient()` still used for sender config;
+  (5) fail-closed on error. Residual: no Resend idempotency key —
+  benign because retried duplicates reference the same
+  single-use token. Promote to dispatch only if portal delivery
+  history becomes a product requirement.
+
+**Files affected:** `server/routes/resendWebhook.ts`,
+`server/routes/portal.ts`. No schema change, no migration, no service
+or storage change.
+
+#### Phase B email hardening: markSent state-guarded (2026-04-14)
+
+`emailDeliveriesStorage.markDeliverySent` now includes
+`WHERE status = 'queued'` in its UPDATE predicate. A webhook-driven
+transition (e.g. `email.delivered`) that landed first can no longer be
+regressed to `sent` by a late `markSent` call — the UPDATE matches 0
+rows and returns null, which existing callers already tolerate.
+
+**Files affected:** `server/storage/emailDeliveriesStorage.ts` only.
+No schema change, no migration, no API change.
+
+#### Phase A email hardening: idempotency key + duplicate-send guard (2026-04-14)
+
+Closes three gaps surfaced by the email integrity audit. No redesign —
+extends the existing canonical dispatch/tracking/storage layering.
+
+- **DB guard:** new partial UNIQUE index
+  `email_deliveries_queued_active_uq ON (tenant_id, entity_type, entity_id) WHERE status = 'queued'`.
+  Blocks concurrent duplicate queued rows at the database level. Does
+  not constrain transitioned rows (sent/failed/delivered/etc.), so
+  legitimate resends and post-transition new sends remain possible.
+- **Service pre-check:** `emailDeliveryTrackingService.assertNoActiveQueuedDelivery(tenantId, entityType, entityId)`
+  throws `createError(409, …)` when a queued row already exists.
+  Called from all three dispatch methods (`sendInvoiceEmail`,
+  `sendQuoteEmail`, `sendJobEmail`) before `createQueuedDelivery`.
+  Friendly 409 surface for the same rule the DB index enforces.
+- **Resend idempotency key:** every `client.emails.send()` call now
+  passes `{ idempotencyKey: delivery.id }`. Protects against retries
+  of the outbound HTTPS call (network retries, proxy retries,
+  runtime retries) producing duplicate emails at Resend's edge.
+- **Storage helper:** `emailDeliveriesStorage.findActiveQueuedDelivery`
+  — LIMIT 1 query backing the service pre-check, hits the new index.
+
+**Files affected:**
+- `shared/schema.ts` — partial unique index on `emailDeliveries`
+- `migrations/2026_04_14_email_deliveries_queued_uq.sql` — new, replay-safe
+- `server/storage/emailDeliveriesStorage.ts` — `findActiveQueuedDelivery`
+- `server/services/emailDeliveryTrackingService.ts` — `assertNoActiveQueuedDelivery`
+- `server/services/emailDispatchService.ts` — pre-check + idempotency key in 3 send methods
+
+**Migration:** run
+`npm run db:migrate:one -- migrations/2026_04_14_email_deliveries_queued_uq.sql`.
+`CREATE UNIQUE INDEX IF NOT EXISTS` — replay-safe; no data changes.
+
+**No breaking API changes.** Concurrent double-clicks now receive HTTP
+409 with a clear message; existing error-handling UI surfaces it as a
+toast via `apiRequest`.
+
+#### Phase 1 canonical cleanup: receipts migrated to R2, dead invitation email deleted (2026-04-14)
+
+Two drift points identified by the forensic audit (`AUDIT_*`) were
+collapsed onto the canonical flows. No parallel paths remain.
+
+**Receipts upload — migrated off legacy `/api/uploads` (multer disk) onto
+the canonical `fileUploadService` (R2, 3-step).**
+- Added `job_expense_receipt` to `FileEntityType` and `ENTITY_ADAPTERS`
+  in `server/services/fileUploadService.ts`. The adapter writes back to
+  the existing `jobExpenses.receiptFileId` column (1:1 ownership) and
+  clears it on `deleteFile`. No new join table.
+- Object key: `tenants/{tenantId}/jobs/{jobId}/expenses/{expenseId}/{fileId}/{filename}`.
+- Category `job_expense_receipt` added to `fileCategoryEnum`.
+- `POST|PATCH /api/jobs/:jobId/expenses` no longer accept `receiptFileId`.
+  The canonical file pipeline is the sole writer of that column.
+- `client/src/components/JobExpensesCard.tsx` switched to `useFileUpload`
+  + `resolveFileAccessUrl`. Receipts are attached after the expense is
+  saved (required by the entityId-first contract shared by every other
+  file-owning entity). Replace deletes the prior fileId first.
+- Legacy local-disk receipts (existing `storageProvider='local'` rows)
+  remain viewable via `getFileAccessUrl` → `GET /api/files/:fileId`. No
+  data migration required.
+
+**Removed:**
+- `server/routes/uploads.ts` (legacy `POST /api/uploads` multer disk route).
+- `server/emailService.ts` (dead `sendInvitationEmail` — zero callers).
+- `uploadsRouter` import and `app.use("/api/uploads", …)` mount from
+  `server/routes/index.ts`.
+- `receiptFileId` input field from expense create/update route schemas,
+  service params, and repository params.
+
+**Files affected:**
+- `shared/schema.ts`
+- `server/services/fileUploadService.ts`
+- `server/routes/fileUploads.ts`
+- `server/routes/jobExpenses.ts`
+- `server/services/jobExpenseService.ts`
+- `server/storage/jobExpenses.ts`
+- `server/routes/index.ts`
+- `client/src/hooks/useFileUpload.ts`
+- `client/src/components/JobExpensesCard.tsx`
+- Deleted: `server/routes/uploads.ts`, `server/emailService.ts`
+
+**Migrations:** none. `fileCategoryEnum` is an advisory list — the DB
+`files.category` column is a plain `varchar`, so no SQL migration is
+required for the new value.
+
 ### Fixed
 
 #### PWA cache staleness causing post-deploy blank screens / React #310 (2026-04-14)

@@ -15,7 +15,6 @@ import { asyncHandler, createError } from "../middleware/errorHandler";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 
 const router = Router();
-const MANAGER_ROLES = RESTRICTED_MANAGER_ROLES;
 
 // ============================================================================
 // VALIDATION SCHEMAS
@@ -93,7 +92,7 @@ router.get(
  */
 router.put(
   "/",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     if (!companyId) throw createError(401, "Unauthorized");

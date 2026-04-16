@@ -29,6 +29,7 @@ import healthRouter from "./health";
 import { requireAuth } from "../auth/requireAuth";
 import { ensureTenantContext, rateLimitPerTenant } from "../auth/tenantIsolation";
 import { impersonationMiddleware, trackActivity } from "../impersonationMiddleware";
+import { enforceReadOnlySupport } from "../middleware/enforceReadOnlySupport";
 import { storage } from "../storage/index";
 import tasksRoutes from "./tasks.routes";
 import suppliersRouter from "./suppliers";
@@ -37,13 +38,13 @@ import jobExpensesRouter from "./jobExpenses";
 import locationNotesRouter from "./location-notes";
 import customerCompanyNotesRouter from "./customer-company-notes";
 import noteAttachmentsRouter from "./note-attachments";
-import uploadsRouter from "./uploads";
 import filesRouter from "./files";
 import { fileUploadsRouter, jobNoteFilesRouter } from "./fileUploads";
 import dashboardRouter from "./dashboard";
 import reportsRouter from "./reports";
 import { timesheetReportsRouter } from "./timesheetReports";
 import paymentsRouter from "./payments";
+import stripePaymentsRouter from "./stripePayments";
 import qboRouter from "./qbo";
 import quotesRouter from "./quotes";
 import quoteTemplatesRouter from "./quoteTemplates";
@@ -88,6 +89,10 @@ import feedbackRouter from "./feedback";
 // PM Templates: reusable job content templates for maintenance plans
 import pmTemplatesRouter from "./pmTemplates";
 import pmBillingRouter from "./pmBilling";
+// Phase 1 (Platform Admin Foundation): Ops Portal API surface.
+import platformRouter from "./platform";
+// Phase 6 (Customer Approval): tenant-side approval endpoints.
+import supportAccessRouter from "./supportAccess";
 
 /**
  * Register all API routes in a single place.
@@ -190,6 +195,11 @@ export function registerRoutes(app: Express): Server {
   app.use(impersonationMiddleware(storage as any));
   app.use(trackActivity);
 
+  // 5) Phase 4: Read-only support session enforcement.
+  //    Runs AFTER impersonation middleware so req.isReadOnlySupport is set;
+  //    blocks all mutating HTTP methods on /api except /api/platform/*.
+  app.use(enforceReadOnlySupport);
+
   // ========================================
   // PROTECTED ROUTES (after middleware)
   // ========================================
@@ -200,6 +210,10 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/jobs", jobExpensesRouter); // Job expenses: CRUD + approval
   app.use("/api/invoices", invoicesRouter);
   app.use("/api", paymentsRouter); // Payment routes: /api/invoices/:id/payments, /api/payments/:id
+  // 2026-04-14 Stripe Phase 1: in-app Stripe PaymentIntent creation.
+  // Staff-only. Webhook lives in server/routes/stripeWebhook.ts mounted
+  // BEFORE express.json() at the app level.
+  app.use("/api", stripePaymentsRouter);
   app.use("/api/team", teamRouter);
   console.log("[ROUTES] ✓ Mounted /api/team (canonical team router)");
   app.use("/api/calendar", calendarRouter);
@@ -266,13 +280,14 @@ export function registerRoutes(app: Express): Server {
   // Notes endpoints
   app.use("/api/locations", locationNotesRouter);
   app.use("/api/notes", noteAttachmentsRouter);
-  // Phase 1 R2-backed file uploads: canonical upload-request / finalize /
-  // access-url / delete lifecycle. Mounted BEFORE the legacy disk streamer
-  // so /api/files/:fileId/access-url is matched by the new handler.
+  // Canonical R2-backed file pipeline (upload-request / finalize /
+  // access-url / delete). Mounted BEFORE the disk streamer so
+  // /api/files/:fileId/access-url resolves to the canonical handler.
   app.use("/api", fileUploadsRouter);
   app.use("/api", jobNoteFilesRouter);
-  // Legacy disk pipeline — kept for dual-read of existing attachments.
-  app.use("/api/uploads", uploadsRouter);
+  // GET /api/files/:fileId — read path for legacy `storageProvider='local'`
+  // rows written before R2 cutover. Canonical `getFileAccessUrl` routes new
+  // rows through R2 and returns this URL only for legacy rows.
   app.use("/api/files", filesRouter);
 
   // Canonical visit feed: GET /api/visits with RBAC + filters (Phase 3)
@@ -312,6 +327,21 @@ export function registerRoutes(app: Express): Server {
   // ADMIN ROUTES (owner-only)
   // ========================================
   app.use("/api/admin", adminRouter);
+
+  // ========================================
+  // PLATFORM OPS PORTAL (platform-role only)
+  //
+  // Phase 1 (Platform Admin Foundation): /api/platform/* is gated by
+  // requirePlatformRole at the router level. ensureTenantContext skips
+  // this prefix so platform staff operate outside any tenant scope until
+  // a support session is explicitly started (future phase).
+  // ========================================
+  app.use("/api/platform", platformRouter);
+
+  // ========================================
+  // CUSTOMER-SIDE SUPPORT ACCESS (tenant admin/owner only)
+  // ========================================
+  app.use("/api/support-access", supportAccessRouter);
 
   // Create and return HTTP server
   const httpServer = createServer(app);

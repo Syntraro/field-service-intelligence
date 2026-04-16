@@ -1321,7 +1321,7 @@ export default function InvoiceDetailPage() {
                       }}
                     >
                       <table className="min-w-full text-xs">
-                        <thead className="border-b text-[11px] uppercase tracking-wide text-muted-foreground">
+                        <thead className="border-b text-xs uppercase tracking-wide text-muted-foreground">
                           <tr>
                             <th className="py-2 pr-2 w-8"></th>
                             <th className="py-2 pr-3 text-left font-medium">Description</th>

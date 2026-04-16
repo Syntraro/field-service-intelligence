@@ -96,7 +96,10 @@ export function useTodayVisits(dateStr?: string) {
       if (!res.ok) throw new Error("Failed to fetch");
       return res.json();
     },
-    refetchInterval: 60_000,
+    // 2026-04-14 Phase 3 clean-surfaces: SSE invalidates
+    // ["/api/tech/visits/today"] on every visit/job mutation. Polling is
+    // retained ONLY as an SSE-disconnect safety net; 60s → 5min.
+    refetchInterval: 5 * 60_000,
     refetchIntervalInBackground: false,
   });
 

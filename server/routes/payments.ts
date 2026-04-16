@@ -150,6 +150,94 @@ router.patch(
   })
 );
 
+// =============================================================================
+// 2026-04-14 Payments Phase 2: refund + reversal writers.
+//
+// POST /api/payments/:id/refund   — money returned to customer
+// POST /api/payments/:id/reversal — valid payment that didn't actually
+//                                   happen (NSF, bounced cheque, stopped ACH)
+//
+// Both create a new ledger row attached to the parent payment via
+// `parentPaymentId`. Same role gate as payment create. No QBO sync yet
+// (Phase 2 rule 7 — QBO RefundReceipt sync lands in a follow-up).
+// =============================================================================
+
+const adjustmentSchema = z
+  .object({
+    amount: z.string().regex(/^\d+(\.\d{1,2})?$/, "Invalid amount format"),
+    method: z.enum(paymentMethodEnum).optional(),
+    reference: z.string().max(100).nullable().optional(),
+    notes: z.string().max(500).nullable().optional(),
+    receivedAt: z.string().datetime().optional(),
+  })
+  .strict();
+
+// POST /api/payments/:id/refund - Create a refund attached to a parent payment
+router.post(
+  "/payments/:id/refund",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const validated = validateSchema(adjustmentSchema, req.body);
+    try {
+      const refund = await paymentRepository.createRefund(
+        req.companyId!,
+        req.params.id,
+        validated,
+      );
+      logEventAsync(getQueryCtx(req), {
+        eventType: "invoice.refunded",
+        entityType: "invoice",
+        entityId: refund.invoiceId,
+        summary: `Refund recorded on invoice`,
+        meta: {
+          refundId: refund.id,
+          parentPaymentId: refund.parentPaymentId,
+          amount: refund.amount,
+          method: refund.method,
+          reference: refund.reference,
+        },
+      });
+      res.status(201).json(refund);
+    } catch (error: any) {
+      if (error.statusCode) throw error;
+      throw error;
+    }
+  }),
+);
+
+// POST /api/payments/:id/reversal - Create a reversal attached to a parent payment
+router.post(
+  "/payments/:id/reversal",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const validated = validateSchema(adjustmentSchema, req.body);
+    try {
+      const reversal = await paymentRepository.createReversal(
+        req.companyId!,
+        req.params.id,
+        validated,
+      );
+      logEventAsync(getQueryCtx(req), {
+        eventType: "invoice.payment_reversed",
+        entityType: "invoice",
+        entityId: reversal.invoiceId,
+        summary: `Payment reversed on invoice`,
+        meta: {
+          reversalId: reversal.id,
+          parentPaymentId: reversal.parentPaymentId,
+          amount: reversal.amount,
+          method: reversal.method,
+          reference: reversal.reference,
+        },
+      });
+      res.status(201).json(reversal);
+    } catch (error: any) {
+      if (error.statusCode) throw error;
+      throw error;
+    }
+  }),
+);
+
 // DELETE /api/payments/:id - Delete payment
 router.delete(
   "/payments/:id",

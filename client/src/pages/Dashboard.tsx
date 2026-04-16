@@ -14,24 +14,19 @@
  * Worklist-style phrasing: every row reads as "object + condition + implied action"
  */
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useMemo } from "react";
 import { useLocation } from "wouter";
 import {
   FileText, DollarSign, Briefcase, ChevronRight,
-  PanelRightClose, PanelRightOpen, Plus, ClipboardList, CheckSquare, Square,
   Clock, Calendar, Activity, CheckCircle2,
   Wrench, ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
-import { useAuth } from "@/lib/auth";
+import { useQuery } from "@tanstack/react-query";
+import { apiRequest } from "@/lib/queryClient";
 import { resolveDashboardNav, type DashboardAction } from "@/lib/dashboardNavigation";
-import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { Skeleton } from "@/components/ui/skeleton";
-import { TaskDialog } from "@/components/TaskDialog";
 import { DashboardActionModal, type DashboardActionMode } from "@/components/DashboardActionModal";
 import type { Job as SchemaJob, Invoice as SchemaInvoice } from "@shared/schema";
 
@@ -60,15 +55,9 @@ interface WorkflowSummary {
   fourth: null;
 }
 
-type Task = {
-  id: string;
-  title: string;
-  status: "pending" | "in_progress" | "completed" | "cancelled";
-  type?: "GENERAL" | "SUPPLIER_VISIT";
-  assignedToUserId?: string | null;
-  assignedUser?: { id: string; fullName: string; firstName?: string; lastName?: string } | null;
-  scheduledStartAt?: string | null;
-};
+// 2026-04-15: Task type + TasksPanel moved to
+// `client/src/components/tasks/TasksPanel.tsx` when the panel relocated
+// to the global header. No local references remain on this page.
 
 interface TodayVisitSummary {
   scheduled: number;
@@ -229,189 +218,11 @@ function WorklistCard({ title, icon: Icon, color, bg, headerStrength, rows, isLo
   );
 }
 
-// ============================================================================
-// Tasks Panel
-// ============================================================================
+// 2026-04-15: The in-file `TasksPanel` + `getInitials` + `formatTaskDate`
+// block (previously here, ~180 LOC) moved to
+// `client/src/components/tasks/TasksPanel.tsx` when the panel relocated
+// to the global header dropdown.
 
-function getInitials(fullName?: string, firstName?: string, lastName?: string): string {
-  if (fullName) {
-    const parts = fullName.trim().split(/\s+/);
-    if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-    return fullName.slice(0, 2).toUpperCase();
-  }
-  if (firstName && lastName) return (firstName[0] + lastName[0]).toUpperCase();
-  if (firstName) return firstName.slice(0, 2).toUpperCase();
-  return "?";
-}
-
-function formatTaskDate(dateString?: string | null): string {
-  if (!dateString) return "";
-  const date = new Date(dateString);
-  const today = new Date();
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  if (date.toDateString() === today.toDateString()) return "Today";
-  if (date.toDateString() === tomorrow.toDateString()) return "Tomorrow";
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
-
-function TasksPanel({ collapsed, onToggleCollapsed }: { collapsed: boolean; onToggleCollapsed: () => void }) {
-  const { user } = useAuth();
-  const currentUserId = user?.id;
-  const { teamMembers } = useTechniciansDirectory();
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>(undefined);
-  const [tab, setTab] = useState<"active" | "completed">("active");
-  const [techFilter, setTechFilter] = useState<string>("all");
-  const [typeFilter, setTypeFilter] = useState<string>("all");
-
-  const tasksUrl = `/api/tasks?offset=0&limit=50`;
-  const { data, isLoading, error } = useQuery({
-    queryKey: [tasksUrl],
-    enabled: !collapsed,
-    // 2026-04-08 freshness tier B: short cache, no polling, focus refetch
-    // (SSE invalidation is the primary refresh path; staleTime is fallback).
-    staleTime: 30_000,
-    refetchOnWindowFocus: true,
-  });
-
-  const allTasks: Task[] = useMemo(() => {
-    if (!data) return [];
-    const items = Array.isArray(data) ? data : (data as any).items || (data as any).data || [];
-    return items;
-  }, [data]);
-
-  const filteredTasks: Task[] = useMemo(() => {
-    return allTasks.filter((t: Task) => {
-      if (tab === "active" && (t.status === "completed" || t.status === "cancelled")) return false;
-      if (tab === "completed" && t.status !== "completed") return false;
-      if (techFilter !== "all" && t.assignedToUserId !== techFilter) return false;
-      if (typeFilter !== "all" && t.type !== typeFilter) return false;
-      return true;
-    });
-  }, [allTasks, tab, techFilter, typeFilter]);
-
-  const closeTask = useMutation({
-    mutationFn: async (id: string) => {
-      if (!currentUserId) throw new Error("Missing currentUserId");
-      return apiRequest(`/api/tasks/${id}/close`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: currentUserId }),
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('/api/tasks') });
-    },
-  });
-
-  const handleTaskClick = (taskId: string) => { setSelectedTaskId(taskId); setDialogOpen(true); };
-  const handleNewTask = () => { setSelectedTaskId(undefined); setDialogOpen(true); };
-
-  if (collapsed) {
-    return (
-      <div className="h-full w-14 bg-[#ffffff] dark:bg-gray-900 rounded-md border border-[#e2e8f0] shadow-sm flex flex-col items-center py-3 gap-2">
-        <Button variant="ghost" size="icon" onClick={onToggleCollapsed} title="Expand tasks" className="rounded-md">
-          <PanelRightOpen className="h-5 w-5" />
-        </Button>
-        <div className="mt-2 flex flex-col items-center gap-2">
-          <ClipboardList className="h-5 w-5 opacity-70" />
-          <Button variant="ghost" size="icon" onClick={() => { onToggleCollapsed(); handleNewTask(); }} title="New task" className="rounded-md">
-            <Plus className="h-5 w-5" />
-          </Button>
-        </div>
-        <TaskDialog open={dialogOpen} onOpenChange={setDialogOpen} taskId={selectedTaskId} onChanged={() => queryClient.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('/api/tasks') })} />
-      </div>
-    );
-  }
-
-  return (
-    <div className="w-[380px] bg-[#ffffff] dark:bg-gray-900 rounded-md border border-[#e2e8f0] flex flex-col" style={{ maxHeight: 'calc(100vh - 8rem)', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
-      <div className="px-4 py-2.5 border-b border-[#e2e8f0] dark:border-gray-600 rounded-t-lg">
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-2">
-            <ClipboardList className="h-4 w-4 text-[#4b5563] dark:text-gray-300" />
-            <span className="text-sm font-semibold text-[#111827] dark:text-gray-100">Tasks</span>
-            <Badge variant="secondary" className="text-xs rounded-full bg-[#ffffff] text-[#4b5563] dark:bg-gray-700 dark:text-gray-200">{filteredTasks.length}</Badge>
-          </div>
-          <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" onClick={handleNewTask} title="New task" className="h-8 w-8 rounded-md text-[#4b5563] hover:text-[#111827] hover:bg-[#F0F5F0]">
-              <Plus className="h-4 w-4" />
-            </Button>
-            <Button variant="ghost" size="icon" onClick={onToggleCollapsed} title="Collapse tasks" className="h-8 w-8 rounded-md text-[#4b5563] hover:text-[#111827] hover:bg-[#F0F5F0]">
-              <PanelRightClose className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-        <div className="space-y-2">
-          <div className="flex items-center gap-1">
-            <Button size="sm" variant={tab === "active" ? "default" : "ghost"} onClick={() => setTab("active")}
-              className={`rounded-full h-7 text-xs px-3 ${tab === "active" ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent" : "text-[#4b5563] hover:text-[#111827] hover:bg-[#F0F5F0]"}`}>
-              Active
-            </Button>
-            <Button size="sm" variant={tab === "completed" ? "default" : "ghost"} onClick={() => setTab("completed")}
-              className={`rounded-full h-7 text-xs px-3 ${tab === "completed" ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent" : "text-[#4b5563] hover:text-[#111827] hover:bg-[#F0F5F0]"}`}>
-              Completed
-            </Button>
-          </div>
-          <div className="flex items-center gap-2">
-            <Select value={techFilter} onValueChange={setTechFilter}>
-              <SelectTrigger className="h-7 text-xs flex-1 bg-[#ffffff] border-[#e2e8f0] text-[#4b5563] dark:bg-gray-700 dark:border-gray-600"><SelectValue placeholder="All Technicians" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Technicians</SelectItem>
-                {teamMembers.map((tech) => (<SelectItem key={tech.id} value={String(tech.id)}>{tech.fullName}</SelectItem>))}
-              </SelectContent>
-            </Select>
-            <Select value={typeFilter} onValueChange={setTypeFilter}>
-              <SelectTrigger className="h-7 text-xs w-[120px] bg-[#ffffff] border-[#e2e8f0] text-[#4b5563] dark:bg-gray-700 dark:border-gray-600"><SelectValue placeholder="All Types" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Types</SelectItem>
-                <SelectItem value="GENERAL">General</SelectItem>
-                <SelectItem value="SUPPLIER_VISIT">Supplier Visit</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-      </div>
-      <div className="flex-1 overflow-y-auto min-h-0">
-        {isLoading ? (
-          <div className="p-4 text-sm text-muted-foreground">Loading tasks…</div>
-        ) : error && (error as any)?.status !== 401 ? (
-          <div className="p-4 text-sm text-muted-foreground">Unable to load tasks</div>
-        ) : filteredTasks.length === 0 ? (
-          <div className="text-center py-8 text-sm text-muted-foreground">No tasks</div>
-        ) : (
-          <div>
-            {filteredTasks.map((t, index) => {
-              const isDone = t.status === "completed" || t.status === "cancelled";
-              const initials = t.assignedUser ? getInitials(t.assignedUser.fullName, t.assignedUser.firstName, t.assignedUser.lastName) : null;
-              const taskDate = formatTaskDate(t.scheduledStartAt);
-              const isLast = index === filteredTasks.length - 1;
-              return (
-                <div key={t.id} className={`px-4 py-2.5 flex items-start gap-2 cursor-pointer hover:bg-[#F0F5F0] transition-colors relative ${!isLast ? "border-b border-[#e2e8f0]" : ""}`} onClick={() => handleTaskClick(t.id)}>
-                  <Button variant="ghost" size="icon" className="mt-0.5 h-6 w-6 flex-shrink-0 rounded-md"
-                    onClick={(e) => { e.stopPropagation(); if (!isDone) closeTask.mutate(t.id); }} title={isDone ? "Completed" : "Complete"}>
-                    {isDone ? <CheckSquare className="h-4 w-4" /> : <Square className="h-4 w-4" />}
-                  </Button>
-                  <div className="min-w-0 flex-1 pr-8">
-                    <div className={`text-xs ${isDone ? "line-through text-[#4b5563]/50" : "text-[#111827]"}`}>{t.title}</div>
-                    {taskDate && <div className="text-[11px] text-[#4b5563] mt-0.5">{taskDate}</div>}
-                  </div>
-                  {initials && (
-                    <div className="absolute top-2.5 right-4 h-6 w-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-medium" title={t.assignedUser?.fullName}>
-                      {initials}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-      <TaskDialog open={dialogOpen} onOpenChange={setDialogOpen} taskId={selectedTaskId} onChanged={() => queryClient.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('/api/tasks') })} />
-    </div>
-  );
-}
 
 // ============================================================================
 // Main Dashboard
@@ -419,20 +230,16 @@ function TasksPanel({ collapsed, onToggleCollapsed }: { collapsed: boolean; onTo
 
 export default function Dashboard() {
   // 2026-04-08: useDispatchStream() now mounted once at App.tsx root for all office surfaces.
-
-  const TASKS_COLLAPSE_KEY = "dashboardTasksCollapsed";
-  const [tasksCollapsed, setTasksCollapsed] = useState<boolean>(() => {
-    try { return localStorage.getItem(TASKS_COLLAPSE_KEY) === "1"; } catch { return false; }
-  });
+  // 2026-04-15: Tasks panel relocated from this page to the global header
+  // (client/src/components/tasks/TasksPanel.tsx + App.tsx header trigger).
+  // The dashboard-only `tasksCollapsed` localStorage key became moot and
+  // has been dropped; the panel is now opened from the header popover
+  // with transient open/close state.
 
   // Dashboard action modal state
   const [actionModalOpen, setActionModalOpen] = useState(false);
   const [actionModalMode, setActionModalMode] = useState<DashboardActionMode>("unscheduled");
   const openActionModal = (mode: DashboardActionMode) => { setActionModalMode(mode); setActionModalOpen(true); };
-
-  useEffect(() => {
-    try { localStorage.setItem(TASKS_COLLAPSE_KEY, tasksCollapsed ? "1" : "0"); } catch {}
-  }, [tasksCollapsed]);
 
   // 2026-04-08 freshness tier:
   // Workflow now carries the live overdueCount alongside on-hold/unscheduled/
@@ -481,11 +288,13 @@ export default function Dashboard() {
     <div className="min-h-screen bg-[#F4F8F4]">
       <main className="mx-auto px-4 sm:px-5 lg:px-6 py-4">
         {/* 2026-04-08: CSS Grid 2-col × 2-row.
-            - Row 1 (col 1 only): "Today's Operations" heading
-            - Row 2 col 1: KPI cards + dashboard cards
-            - Row 2 col 2: Tasks panel — naturally aligns with KPI row
-            On <lg the grid collapses to a single column and Tasks stacks below. */}
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_auto] lg:grid-rows-[auto_1fr] gap-x-4 gap-y-2">
+            - Row 1: "Today's Operations" heading
+            - Row 2: KPI cards + dashboard cards (full width)
+            2026-04-15: Tasks panel moved to global header; the second
+            grid column is no longer needed. Grid collapsed to single
+            column at every breakpoint — KPI/worklist cards now use the
+            full content width. */}
+        <div className="grid grid-cols-1 gap-y-2">
           {/* Row 1, col 1: heading */}
           <div className="lg:col-start-1 lg:row-start-1">
             <TodaysOperationsHeader />
@@ -557,14 +366,9 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Row 2, col 2: Tasks panel — top edge aligns with KPI cards (NOT the heading)
-              because it lives in row 2 of the grid, same as the cards. No margin hacks. */}
-          <div
-            className="lg:col-start-2 lg:row-start-2 lg:sticky lg:top-16 self-start"
-            style={{ maxHeight: 'calc(100vh - 8rem)' }}
-          >
-            <TasksPanel collapsed={tasksCollapsed} onToggleCollapsed={() => setTasksCollapsed((v) => !v)} />
-          </div>
+          {/* 2026-04-15: Tasks panel moved to the global header. The
+              right-sidebar grid column previously held by the panel is
+              now empty on this dashboard and the grid auto-collapses. */}
         </div>
       </main>
       <DashboardActionModal

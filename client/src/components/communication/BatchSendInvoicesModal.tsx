@@ -270,15 +270,15 @@ export function BatchSendInvoicesModal(props: BatchSendInvoicesModalProps) {
                     <XCircle className="h-3.5 w-3.5 text-destructive mt-0.5 shrink-0" />
                   )}
                   <div className="flex-1 min-w-0">
-                    <div className="font-mono text-[11px] text-muted-foreground truncate">
+                    <div className="font-mono text-xs text-muted-foreground truncate">
                       {r.invoiceId.slice(0, 8)}…
                     </div>
                     {r.ok ? (
-                      <div className="text-[11px] text-muted-foreground truncate">
+                      <div className="text-xs text-muted-foreground truncate">
                         Sent to {(r.recipients ?? []).join(", ")}
                       </div>
                     ) : (
-                      <div className="text-[11px] text-destructive truncate">{r.error}</div>
+                      <div className="text-xs text-destructive truncate">{r.error}</div>
                     )}
                   </div>
                 </div>

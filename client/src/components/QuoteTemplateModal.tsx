@@ -24,6 +24,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Plus, Trash2, Loader2, GripVertical } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { QuoteTemplate } from "@shared/schema";
 import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
 import {
@@ -74,6 +81,14 @@ function templateLineFromDraft(draft: LineItemDraft, sortOrder: number) {
   };
 }
 
+interface QuickAddPartData {
+  name: string;
+  type: "product" | "service";
+  sku: string;
+  description: string;
+  unitPrice: string;
+}
+
 export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateModalProps) {
   const { toast } = useToast();
   const isEditing = !!template;
@@ -83,6 +98,18 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
   const [isDefault, setIsDefault] = useState(false);
   const [isActive, setIsActive] = useState(true);
   const [lineItems, setLineItems] = useState<LineItemDraft[]>([]);
+  // 2026-04-14: Inline "create new part/service" from a template line.
+  // Mirrors the canonical QuickAdd pattern in JobTemplateModal — same
+  // `POST /api/items` endpoint, same catalog→draft projection, same UX.
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [quickAddForLineId, setQuickAddForLineId] = useState<string | null>(null);
+  const [quickAddData, setQuickAddData] = useState<QuickAddPartData>({
+    name: "",
+    type: "product",
+    sku: "",
+    description: "",
+    unitPrice: "",
+  });
 
   const { data: templateDetails, isLoading: isLoadingDetails } = useQuery<
     QuoteTemplate & { lines: any[] }
@@ -138,6 +165,62 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
       setIsFormReady(false);
     }
   }, [open, template, templateDetails]);
+
+  // 2026-04-14: canonical QuickAdd mutation — same POST /api/items the
+  // office Parts catalog uses, so the freshly-created item is immediately
+  // available to every other catalog-driven surface (invoices, jobs, tech).
+  const quickAddPartMutation = useMutation({
+    mutationFn: async (data: QuickAddPartData) => {
+      const priceStr = data.unitPrice.trim();
+      const unitPrice = priceStr === "" ? null : priceStr;
+      return await apiRequest("/api/items", {
+        method: "POST",
+        body: JSON.stringify({
+          type: data.type,
+          name: data.name,
+          sku: data.sku || null,
+          description: data.description || null,
+          unitPrice,
+          isActive: true,
+        }),
+      });
+    },
+    onSuccess: (newPart: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
+      toast({ title: "Part created", description: `"${newPart.name}" has been added to your catalog.` });
+      if (quickAddForLineId) {
+        setLineItems((prev) =>
+          prev.map((li) => {
+            if (li.id !== quickAddForLineId) return li;
+            const productOption: ProductOption = {
+              id: newPart.id,
+              name: newPart.name ?? newPart.description ?? "Untitled",
+              type: (newPart.type as string) ?? "product",
+              unitPrice: newPart.unitPrice ?? null,
+              cost: newPart.cost ?? null,
+            };
+            const fresh = catalogItemToDraft(
+              productOptionToCatalogItem(productOption),
+              { source: "template", quantity: li.quantity, sortOrder: li.sortOrder },
+            );
+            return { ...fresh, id: li.id };
+          }),
+        );
+      }
+      setQuickAddOpen(false);
+      setQuickAddForLineId(null);
+      setQuickAddData({ name: "", type: "product", sku: "", description: "", unitPrice: "" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message || "Failed to create part.", variant: "destructive" });
+    },
+  });
+
+  const openQuickAddDialog = (lineItemId: string, searchValue: string) => {
+    setQuickAddForLineId(lineItemId);
+    setQuickAddData({ name: searchValue, type: "product", sku: "", description: "", unitPrice: "" });
+    setQuickAddOpen(true);
+  };
 
   const saveMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -240,8 +323,18 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
       .toFixed(2);
   };
 
+  // 2026-04-14: guard close paths on `isPending` so a mid-flight save can't
+  // silently complete after the user dismisses the modal. Without this guard,
+  // clicking Save then closing (outside-click / Escape / Cancel) looked like
+  // "it saved when I closed it" — because TanStack Query does not cancel the
+  // mutation when the modal unmounts, and `onSuccess` still invalidates the
+  // list. Mirrors NewQuoteModal.handleClose.
+  const handleAttemptClose = () => {
+    if (!saveMutation.isPending) onClose();
+  };
+
   return (
-    <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
+    <Dialog open={open} onOpenChange={(isOpen) => !isOpen && handleAttemptClose()}>
       <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle data-testid="text-modal-title">
@@ -348,6 +441,7 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
                           <TableCell>
                             <LineItemProductCell
                               item={item}
+                              onRequestAddProduct={(searchText) => openQuickAddDialog(item.id, searchText)}
                               onSelect={(product) => {
                                 // Phase A: replace inline catalog→draft mapping with the
                                 // canonical mapper. Preserve the existing row id, sortOrder,
@@ -430,7 +524,7 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
         )}
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose} data-testid="button-cancel">
+          <Button variant="outline" onClick={handleAttemptClose} disabled={saveMutation.isPending} data-testid="button-cancel">
             Cancel
           </Button>
           <Button
@@ -445,6 +539,97 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      {/* 2026-04-14: QuickAdd part/service dialog — mirrors JobTemplateModal's
+          canonical pattern. Posts to /api/items so the new catalog entry is
+          immediately available to every other catalog-driven surface. */}
+      <Dialog open={quickAddOpen} onOpenChange={setQuickAddOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Add New Product/Service</DialogTitle>
+            <DialogDescription>
+              Create a new item to add to your catalog and this template.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Type *</Label>
+                <Select
+                  value={quickAddData.type}
+                  onValueChange={(v: "product" | "service") =>
+                    setQuickAddData((prev) => ({ ...prev, type: v }))
+                  }
+                >
+                  <SelectTrigger data-testid="quick-add-type"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="product">Product</SelectItem>
+                    <SelectItem value="service">Service</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>SKU</Label>
+                <Input
+                  value={quickAddData.sku}
+                  onChange={(e) => setQuickAddData((prev) => ({ ...prev, sku: e.target.value }))}
+                  placeholder="Optional"
+                  data-testid="quick-add-sku"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Name *</Label>
+              <Input
+                value={quickAddData.name}
+                onChange={(e) => setQuickAddData((prev) => ({ ...prev, name: e.target.value }))}
+                placeholder="Product or service name"
+                data-testid="quick-add-name"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Description</Label>
+              <Input
+                value={quickAddData.description}
+                onChange={(e) => setQuickAddData((prev) => ({ ...prev, description: e.target.value }))}
+                placeholder="Optional description"
+                data-testid="quick-add-description"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Unit Price</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={quickAddData.unitPrice}
+                onChange={(e) => setQuickAddData((prev) => ({ ...prev, unitPrice: e.target.value }))}
+                placeholder="0.00"
+                data-testid="quick-add-price"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setQuickAddOpen(false)} data-testid="quick-add-cancel">
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (!quickAddData.name.trim()) {
+                  toast({ title: "Validation error", description: "Name is required.", variant: "destructive" });
+                  return;
+                }
+                quickAddPartMutation.mutate(quickAddData);
+              }}
+              disabled={quickAddPartMutation.isPending}
+              data-testid="quick-add-save"
+            >
+              {quickAddPartMutation.isPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+              Add to Catalog
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 }
@@ -455,11 +640,15 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
 // draft's catalog-bound fields (productId, description, productType, unitPrice,
 // unitCost) so the selector renders the correct chip without a parallel
 // `selectedProduct` state.
-function LineItemProductCell({ item, onSelect, onClear, onDescriptionChange }: {
+function LineItemProductCell({ item, onSelect, onClear, onDescriptionChange, onRequestAddProduct }: {
   item: LineItemDraft;
   onSelect: (product: ProductOption) => void;
   onClear: () => void;
   onDescriptionChange: (value: string) => void;
+  /** 2026-04-14: called when the user chooses the inline "Add new" affordance
+   *  in the CreateOrSelectField search popover. Opens the QuickAdd dialog
+   *  rather than creating quote-template-specific logic. */
+  onRequestAddProduct: (searchText: string) => void;
 }) {
   const [searchText, setSearchText] = useState("");
   const { data: results = [], isLoading } = useProductSearch(searchText);
@@ -501,6 +690,8 @@ function LineItemProductCell({ item, onSelect, onClear, onDescriptionChange }: {
       getKey={getProductKey}
       getLabel={getProductLabel}
       getDescription={getProductDescription}
+      createLabel={`Add "${searchText || "new part/service"}"`}
+      onCreateNew={(text) => onRequestAddProduct(text)}
       placeholder="Search products or type description"
     />
   );

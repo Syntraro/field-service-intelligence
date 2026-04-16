@@ -340,7 +340,7 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
         {notes.length === 0 && !isAdding ? (
           <div className="flex items-center justify-center gap-1.5 py-2 text-muted-foreground">
             <StickyNote className="h-3.5 w-3.5 opacity-30" />
-            <p className="text-[11px]">No notes yet.</p>
+            <p className="text-xs">No notes yet.</p>
           </div>
         ) : (
           notes.map((note) => (
@@ -383,9 +383,9 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
                   {/* Visibility badges */}
                   {(note.showOnJobs || note.showOnInvoices || note.showOnQuotes) && (
                     <div className="flex gap-1.5 mt-2">
-                      {note.showOnJobs && <span className="text-[11px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700">Jobs</span>}
-                      {note.showOnInvoices && <span className="text-[11px] px-1.5 py-0.5 rounded bg-green-50 text-green-700">Invoices</span>}
-                      {note.showOnQuotes && <span className="text-[11px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-700">Quotes</span>}
+                      {note.showOnJobs && <span className="text-xs px-1.5 py-0.5 rounded bg-blue-50 text-blue-700">Jobs</span>}
+                      {note.showOnInvoices && <span className="text-xs px-1.5 py-0.5 rounded bg-green-50 text-green-700">Invoices</span>}
+                      {note.showOnQuotes && <span className="text-xs px-1.5 py-0.5 rounded bg-purple-50 text-purple-700">Quotes</span>}
                     </div>
                   )}
 

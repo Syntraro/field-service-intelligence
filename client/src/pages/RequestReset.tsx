@@ -1,137 +1,129 @@
+/**
+ * RequestReset — self-service password reset request (2026-04-15).
+ *
+ * Posts the user's email to `POST /api/auth/password-reset-request`. The
+ * backend always responds success regardless of whether the email is on
+ * file (anti-enumeration), so this page's success copy is intentionally
+ * generic: "If an account exists for that email, a reset link has been
+ * sent." A back-to-login link is present on both the form and the
+ * success state.
+ */
+
 import { useState } from "react";
 import { useLocation } from "wouter";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
-import { useToast } from "@/hooks/use-toast";
+import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-
-const requestResetSchema = z.object({
-  email: z.string().email("Please enter a valid email address"),
-});
-
-type RequestResetFormData = z.infer<typeof requestResetSchema>;
+import { Button } from "@/components/ui/button";
+import {
+  Card, CardContent, CardDescription, CardHeader, CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Loader2, ArrowLeft, CheckCircle2 } from "lucide-react";
 
 export default function RequestReset() {
   const [, setLocation] = useLocation();
-  const { toast } = useToast();
-  const [isLoading, setIsLoading] = useState(false);
-  const [isSuccess, setIsSuccess] = useState(false);
+  const [email, setEmail] = useState("");
+  const [submitted, setSubmitted] = useState(false);
 
-  const form = useForm<RequestResetFormData>({
-    resolver: zodResolver(requestResetSchema),
-    defaultValues: {
-      email: "",
+  const mutation = useMutation({
+    mutationFn: async (submittedEmail: string) => {
+      return apiRequest<{ message: string }>("/api/auth/password-reset-request", {
+        method: "POST",
+        body: JSON.stringify({ email: submittedEmail }),
+      });
+    },
+    onSuccess: () => {
+      setSubmitted(true);
     },
   });
 
-  const onSubmit = async (data: RequestResetFormData) => {
-    setIsLoading(true);
-    try {
-      const result = await apiRequest("/api/auth/password-reset-request", { method: "POST", body: JSON.stringify(data) });
-      
-      setIsSuccess(true);
-      toast({
-        title: "Request sent",
-        description: result.message || "Check your email for a password reset link",
-      });
-    } catch (error: any) {
-      toast({
-        variant: "destructive",
-        title: "Request failed",
-        description: error.message || "Could not send reset request",
-      });
-    } finally {
-      setIsLoading(false);
-    }
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = email.trim();
+    if (!trimmed) return;
+    mutation.mutate(trimmed);
   };
-
-  if (isSuccess) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-muted/30 p-4">
-        <Card className="w-full max-w-md">
-          <CardHeader>
-            <CardTitle>Check Your Email</CardTitle>
-            <CardDescription>
-              If an account exists with the email you provided, you will receive a password reset link.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {import.meta.env.DEV && (
-              <div className="p-3 bg-muted rounded-md text-sm">
-                <p className="font-medium mb-1">Development Mode</p>
-                <p className="text-muted-foreground text-xs">
-                  In development mode, the password reset link is logged to the server console. 
-                  Check the server logs to find your reset link.
-                </p>
-              </div>
-            )}
-            <Button
-              data-testid="button-back-to-login"
-              onClick={() => setLocation("/login")}
-              className="w-full"
-            >
-              Back to Login
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-muted/30 p-4">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Reset Password</CardTitle>
-          <CardDescription>Enter your email to receive a password reset link</CardDescription>
+          <CardTitle>Reset your password</CardTitle>
+          <CardDescription>
+            {submitted
+              ? "Check your inbox for the next step."
+              : "Enter the email address associated with your account."}
+          </CardDescription>
         </CardHeader>
-        <CardContent>
-          <Form {...form}>
-            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-              <FormField
-                control={form.control}
-                name="email"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Email</FormLabel>
-                    <FormControl>
-                      <Input
-                        data-testid="input-email"
-                        type="email"
-                        placeholder="Enter your email"
-                        {...field}
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+        <CardContent className="space-y-4">
+          {submitted ? (
+            <>
+              <div
+                className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800"
+                data-testid="request-reset-success"
+              >
+                <div className="flex items-start gap-2">
+                  <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0" />
+                  <div>
+                    If an account exists for <strong>{email.trim()}</strong>, a
+                    reset link has been sent. The link expires in 60 minutes.
+                  </div>
+                </div>
+              </div>
               <Button
-                data-testid="button-request-reset"
+                variant="outline"
+                className="w-full"
+                onClick={() => setLocation("/login")}
+                data-testid="button-back-to-login"
+              >
+                <ArrowLeft className="h-4 w-4 mr-1.5" />
+                Back to login
+              </Button>
+            </>
+          ) : (
+            <form onSubmit={handleSubmit} className="space-y-4">
+              {mutation.isError && (
+                <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  Something went wrong. Please try again.
+                </div>
+              )}
+              <div className="space-y-1.5">
+                <Label htmlFor="request-reset-email">Email</Label>
+                <Input
+                  id="request-reset-email"
+                  type="email"
+                  autoComplete="email"
+                  autoFocus
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  disabled={mutation.isPending}
+                  data-testid="input-request-reset-email"
+                  required
+                />
+              </div>
+              <Button
                 type="submit"
                 className="w-full"
-                disabled={isLoading}
+                disabled={!email.trim() || mutation.isPending}
+                data-testid="button-send-reset-link"
               >
-                {isLoading ? "Sending..." : "Send Reset Link"}
+                {mutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+                Send reset link
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className="w-full"
+                onClick={() => setLocation("/login")}
+                data-testid="button-back-to-login"
+              >
+                <ArrowLeft className="h-4 w-4 mr-1.5" />
+                Back to login
               </Button>
             </form>
-          </Form>
-          <div className="mt-4 text-center text-sm">
-            Remember your password?{" "}
-            <button
-              data-testid="link-back-to-login"
-              type="button"
-              className="text-primary underline-offset-4 hover:underline"
-              onClick={() => setLocation("/login")}
-            >
-              Back to Login
-            </button>
-          </div>
+          )}
         </CardContent>
       </Card>
     </div>

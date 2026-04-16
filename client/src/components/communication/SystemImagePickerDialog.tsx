@@ -110,7 +110,7 @@ function ImageTile({
       )}
       <div className="px-2 py-1.5">
         <p className="text-xs truncate">{image.filename ?? "image"}</p>
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {image.source === "job_note" ? "Job note" : "Client document"} · {formatSize(image.sizeBytes)}
         </p>
       </div>

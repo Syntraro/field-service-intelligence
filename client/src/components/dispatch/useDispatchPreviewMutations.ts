@@ -17,6 +17,7 @@
 import { useState, useCallback, useRef } from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import { isCalendarRecentlyInvalidated } from "@/lib/dispatchInvalidationSync";
 import { useToast } from "@/hooks/use-toast";
 import type { CalendarRangeResponseDto, CalendarEventDto, UnscheduledJobDto } from "@shared/types/scheduling";
 
@@ -579,11 +580,20 @@ export function useDispatchPreviewMutations() {
       // Skip if mutations in-flight AND last invalidation was recent (< 10s)
       if (inflightRef.current > 0 && elapsed < 10000) return;
       lastInvalidateRef.current = Date.now();
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      // 2026-04-14 Phase 2 hygiene: when SSE has already invalidated the
+      // calendar keys for this event (the server emits an SSE signal on
+      // every schedule mutation), skip the duplicate refetch. Other keys
+      // below still fire — only the two calendar keys are coalesced.
+      const sseCoveredCalendar = isCalendarRecentlyInvalidated();
+      if (!sseCoveredCalendar) {
+        queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      }
       // 2026-03-23: Invalidate visit-detail so EditVisitModal shows fresh data after board mutations
       queryClient.invalidateQueries({ queryKey: ["visit-detail"] });
       if (options?.calendarOnly) return;
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+      if (!sseCoveredCalendar) {
+        queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+      }
       queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
       queryClient.invalidateQueries({ queryKey: ["/api/team/technicians/working-hours"] });
       // 2026-03-18: Visit completion reconciles parent job — refresh job lists, dashboard, attention

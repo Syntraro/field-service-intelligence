@@ -34,7 +34,7 @@ export function VariablePicker({
           size="sm"
           disabled={disabled}
           onClick={() => onInsert(`{{${v}}}`)}
-          className="h-7 text-[11px] font-mono"
+          className="h-7 text-xs font-mono"
           data-testid={`variable-token-${v}`}
         >
           {`{{${v}}}`}

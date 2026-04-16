@@ -347,7 +347,7 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
                 {pmTemplate && (
                   <Badge
                     variant={pmTemplate.isActive ? "default" : "secondary"}
-                    className={pmTemplate.isActive ? "bg-green-50 text-green-700 hover:bg-green-50 text-[11px] px-1.5 py-0" : "text-[11px] px-1.5 py-0"}
+                    className={pmTemplate.isActive ? "bg-green-50 text-green-700 hover:bg-green-50 text-xs px-1.5 py-0" : "text-xs px-1.5 py-0"}
                   >
                     {pmTemplate.isActive ? "Active" : "Paused"}
                   </Badge>
@@ -464,7 +464,7 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
                   <div className="pt-0.5">
                     <button
                       type="button"
-                      className="text-[11px] text-primary hover:underline transition-colors"
+                      className="text-xs text-primary hover:underline transition-colors"
                       onClick={() => navigate(`/pm/${pmTemplate.id}`)}
                       data-testid="pm-view-detail-link"
                     >
@@ -477,7 +477,7 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
                     <div className="pt-0.5">
                       <button
                         type="button"
-                        className="text-[11px] text-muted-foreground hover:text-destructive transition-colors"
+                        className="text-xs text-muted-foreground hover:text-destructive transition-colors"
                         onClick={() => setHardDeleteDialogOpen(true)}
                         data-testid="pm-hard-delete-btn"
                       >

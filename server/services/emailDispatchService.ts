@@ -41,6 +41,14 @@ export interface SendInvoiceEmailInput {
   recipients: string[];
   /** 2026-04-13 (Commit C): optional CC list. Same normalization as `recipients`. */
   cc?: string[];
+  /**
+   * 2026-04-14 Phase D atomicity: optional callback run in the SAME DB
+   * transaction as `markSent`. Use this to transition the owning entity
+   * (e.g. invoice → awaiting_payment) atomically with the delivery row
+   * flip. Only called on successful send; rollback leaves delivery in
+   * `queued` for the Phase C sweeper to recover.
+   */
+  afterMarkSent?: (tx: any) => Promise<void>;
   /** One-time subject override for this send only. Never persisted. */
   subjectOverride?: string | null;
   /** One-time body override for this send only. Never persisted. */
@@ -285,6 +293,7 @@ export const emailDispatchService = {
       attachmentFileIds,
       createdByUserId,
       parentDeliveryId,
+      afterMarkSent,
     } = input;
     if (!tenantId) throw createError(400, "tenantId is required");
     if (!invoiceId) throw createError(400, "invoiceId is required");
@@ -371,7 +380,16 @@ export const emailDispatchService = {
       imageFileIds: attachImages,
     });
 
-    // 7. Create the queued delivery row BEFORE calling Resend so failures
+    // 7. Pre-check: fail fast with 409 if a queued send is already in
+    //    flight for this invoice (Phase A hardening, 2026-04-14). The DB
+    //    partial unique index enforces the same rule authoritatively.
+    await emailDeliveryTrackingService.assertNoActiveQueuedDelivery(
+      tenantId,
+      "invoice",
+      invoiceId,
+    );
+
+    // 7b. Create the queued delivery row BEFORE calling Resend so failures
     //    are still recorded. Phase 10. CC + attachment metadata (Commit C
     //    + follow-up) are persisted here.
     const delivery = await emailDeliveryTrackingService.createQueuedDelivery({
@@ -392,14 +410,21 @@ export const emailDispatchService = {
     const { client, fromEmail } = await getResendClient();
     let resendResult: Awaited<ReturnType<typeof client.emails.send>>;
     try {
-      resendResult = await client.emails.send({
-        from: fromEmail,
-        to: normalizedRecipients,
-        cc: ccList.length > 0 ? ccList : undefined,
-        subject,
-        html: bodyToHtml(body),
-        attachments: outboundAttachments.length > 0 ? outboundAttachments : undefined,
-      });
+      // Phase A hardening: pass the delivery row id as the Resend
+      // idempotency key. If the outbound HTTPS call is retried (by us,
+      // the runtime, or a proxy) with the same key, Resend returns the
+      // original result instead of sending a second email.
+      resendResult = await client.emails.send(
+        {
+          from: fromEmail,
+          to: normalizedRecipients,
+          cc: ccList.length > 0 ? ccList : undefined,
+          subject,
+          html: bodyToHtml(body),
+          attachments: outboundAttachments.length > 0 ? outboundAttachments : undefined,
+        },
+        { idempotencyKey: delivery.id },
+      );
     } catch (err: any) {
       await emailDeliveryTrackingService.markFailed({
         tenantId,
@@ -419,11 +444,27 @@ export const emailDispatchService = {
       throw createError(500, `Invoice email send failed: ${msg}`);
     }
 
-    await emailDeliveryTrackingService.markSent({
-      tenantId,
-      deliveryId: delivery.id,
-      providerMessageId: resendResult.data?.id ?? null,
-    }).catch(() => {});
+    // Phase D atomicity: when an afterMarkSent callback is provided, both
+    // the delivery flip and the entity update run in the same tx. Errors
+    // propagate so the route sees a 500 and the DB state remains
+    // consistent (delivery stays `queued`, entity unchanged, Phase C
+    // sweeper recovers at +15 min).
+    if (afterMarkSent) {
+      await emailDeliveryTrackingService.markSent(
+        {
+          tenantId,
+          deliveryId: delivery.id,
+          providerMessageId: resendResult.data?.id ?? null,
+        },
+        afterMarkSent,
+      );
+    } else {
+      await emailDeliveryTrackingService.markSent({
+        tenantId,
+        deliveryId: delivery.id,
+        providerMessageId: resendResult.data?.id ?? null,
+      }).catch(() => {});
+    }
 
     return {
       emailId: resendResult.data?.id ?? null,
@@ -447,8 +488,10 @@ export const emailDispatchService = {
     bodyOverride?: string | null;
     createdByUserId?: string | null;
     parentDeliveryId?: string | null;
+    /** Phase D atomicity — see SendInvoiceEmailInput.afterMarkSent. */
+    afterMarkSent?: (tx: any) => Promise<void>;
   }): Promise<SendInvoiceEmailResult> {
-    const { tenantId, quoteId, recipients, cc, subjectOverride, bodyOverride, createdByUserId, parentDeliveryId } = input;
+    const { tenantId, quoteId, recipients, cc, subjectOverride, bodyOverride, createdByUserId, parentDeliveryId, afterMarkSent } = input;
     if (!tenantId) throw createError(400, "tenantId is required");
     if (!quoteId) throw createError(400, "quoteId is required");
 
@@ -522,6 +565,13 @@ export const emailDispatchService = {
         pdf: { filename, buffer: pdfBuffer, sourceType: "quote_pdf" },
       });
 
+    // Phase A hardening (2026-04-14): 409 pre-check.
+    await emailDeliveryTrackingService.assertNoActiveQueuedDelivery(
+      tenantId,
+      "quote",
+      quoteId,
+    );
+
     // Phase 10: queued row BEFORE Resend call. Phase 17: parent link.
     // Follow-up: quote CC parity + attachment metadata persistence.
     const delivery = await emailDeliveryTrackingService.createQueuedDelivery({
@@ -541,14 +591,18 @@ export const emailDispatchService = {
     const { client, fromEmail } = await getResendClient();
     let resendResult: Awaited<ReturnType<typeof client.emails.send>>;
     try {
-      resendResult = await client.emails.send({
-        from: fromEmail,
-        to: normalizedRecipients,
-        cc: quoteCcList.length > 0 ? quoteCcList : undefined,
-        subject,
-        html: bodyToHtml(body),
-        attachments: outboundAttachments,
-      });
+      // Phase A hardening: delivery.id as Resend idempotency key.
+      resendResult = await client.emails.send(
+        {
+          from: fromEmail,
+          to: normalizedRecipients,
+          cc: quoteCcList.length > 0 ? quoteCcList : undefined,
+          subject,
+          html: bodyToHtml(body),
+          attachments: outboundAttachments,
+        },
+        { idempotencyKey: delivery.id },
+      );
     } catch (err: any) {
       await emailDeliveryTrackingService.markFailed({
         tenantId, deliveryId: delivery.id,
@@ -563,10 +617,22 @@ export const emailDispatchService = {
       }).catch(() => {});
       throw createError(500, `Quote email send failed: ${msg}`);
     }
-    await emailDeliveryTrackingService.markSent({
-      tenantId, deliveryId: delivery.id,
-      providerMessageId: resendResult.data?.id ?? null,
-    }).catch(() => {});
+    // Phase D atomicity — same contract as sendInvoiceEmail.
+    if (afterMarkSent) {
+      await emailDeliveryTrackingService.markSent(
+        {
+          tenantId,
+          deliveryId: delivery.id,
+          providerMessageId: resendResult.data?.id ?? null,
+        },
+        afterMarkSent,
+      );
+    } else {
+      await emailDeliveryTrackingService.markSent({
+        tenantId, deliveryId: delivery.id,
+        providerMessageId: resendResult.data?.id ?? null,
+      }).catch(() => {});
+    }
 
     return {
       emailId: resendResult.data?.id ?? null,
@@ -610,6 +676,13 @@ export const emailDispatchService = {
       bodyOverride,
     });
 
+    // Phase A hardening (2026-04-14): 409 pre-check.
+    await emailDeliveryTrackingService.assertNoActiveQueuedDelivery(
+      tenantId,
+      "job",
+      jobId,
+    );
+
     const delivery = await emailDeliveryTrackingService.createQueuedDelivery({
       tenantId,
       entityType: "job",
@@ -625,13 +698,17 @@ export const emailDispatchService = {
     const { client, fromEmail } = await getResendClient();
     let resendResult: Awaited<ReturnType<typeof client.emails.send>>;
     try {
-      resendResult = await client.emails.send({
-        from: fromEmail,
-        to: normalizedRecipients,
-        subject,
-        html: bodyToHtml(body),
-        // v1: no PDF attachment for job emails.
-      });
+      // Phase A hardening: delivery.id as Resend idempotency key.
+      resendResult = await client.emails.send(
+        {
+          from: fromEmail,
+          to: normalizedRecipients,
+          subject,
+          html: bodyToHtml(body),
+          // v1: no PDF attachment for job emails.
+        },
+        { idempotencyKey: delivery.id },
+      );
     } catch (err: any) {
       await emailDeliveryTrackingService.markFailed({
         tenantId, deliveryId: delivery.id,

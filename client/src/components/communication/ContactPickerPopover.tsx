@@ -127,11 +127,11 @@ export function ContactPickerPopover({
                   <div className="text-xs text-muted-foreground truncate">{c.email}</div>
                 </div>
                 {isBilling && (
-                  <span className="text-[11px] rounded bg-emerald-50 text-emerald-700 px-1.5 py-0.5 font-medium">
+                  <span className="text-xs rounded bg-emerald-50 text-emerald-700 px-1.5 py-0.5 font-medium">
                     Billing
                   </span>
                 )}
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-xs text-muted-foreground">
                   {c.source === "location" ? "Location" : "Company"}
                 </span>
               </button>

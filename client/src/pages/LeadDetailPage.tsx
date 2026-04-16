@@ -231,18 +231,18 @@ export default function LeadDetailPage() {
             <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
               <div className="px-4 py-3">
                 <div className="flex items-center gap-2 mb-1">
-                  <button onClick={() => setLocation("/leads")} className="text-[11px] text-slate-400 hover:text-slate-600 flex items-center gap-1">
+                  <button onClick={() => setLocation("/leads")} className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1">
                     <ArrowLeft className="h-3 w-3" />
                   </button>
                   <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Lead</span>
                 </div>
                 <h1 className="text-lg font-bold text-slate-900 leading-tight truncate">{lead.title}</h1>
                 <div className="flex items-center gap-2 mt-1 flex-wrap">
-                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wide ${statusColor.bg} ${statusColor.text}`}>
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold uppercase tracking-wide ${statusColor.bg} ${statusColor.text}`}>
                     {lead.status}
                   </span>
-                  {lead.priority && <Badge variant="outline" className="text-[11px] px-1.5 py-0 capitalize">{lead.priority}</Badge>}
-                  <span className="text-[11px] text-slate-400 uppercase tracking-wide">{lead.sourceType}</span>
+                  {lead.priority && <Badge variant="outline" className="text-xs px-1.5 py-0 capitalize">{lead.priority}</Badge>}
+                  <span className="text-xs text-slate-400 uppercase tracking-wide">{lead.sourceType}</span>
                 </div>
                 {/* Client / Location */}
                 <div className="mt-2 pt-1.5 border-t border-slate-100">
@@ -361,7 +361,7 @@ export default function LeadDetailPage() {
                               {n.author}
                             </span>
                             <div className="flex items-center gap-2">
-                              <span className="text-[11px] text-slate-400">{n.createdAt ? fmtDateTime(n.createdAt) : ""}</span>
+                              <span className="text-xs text-slate-400">{n.createdAt ? fmtDateTime(n.createdAt) : ""}</span>
                               {canEdit && !isEditing && !isConfirmingDelete && (
                                 <div className="flex gap-0.5">
                                   <button
@@ -502,7 +502,7 @@ export default function LeadDetailPage() {
 
                 {/* Quote section */}
                 <div className="border-t border-slate-100 pt-2 mt-1">
-                  <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Quote</p>
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Quote</p>
                   {lead.convertedQuoteId ? (
                     <div className="space-y-1">
                       <p className="text-xs font-medium text-emerald-700">Converted {lead.convertedAt ? fmtDate(lead.convertedAt) : ""}</p>

@@ -11,8 +11,6 @@ import { AuthedRequest } from "../auth/tenantIsolation";
 // Note: requireAuth and ensureTenantContext middleware already applied globally in routes/index.ts
 const router = Router();
 
-const MANAGER_ROLES = RESTRICTED_MANAGER_ROLES;
-
 // ========================================
 // VALIDATION SCHEMAS
 // ========================================
@@ -88,7 +86,7 @@ const handleUpsertSettings = asyncHandler(async (req: AuthedRequest, res: Respon
   });
 });
 
-router.put("/", requireRole(MANAGER_ROLES), handleUpsertSettings);
-router.post("/", requireRole(MANAGER_ROLES), handleUpsertSettings);
+router.put("/", requireRole(RESTRICTED_MANAGER_ROLES), handleUpsertSettings);
+router.post("/", requireRole(RESTRICTED_MANAGER_ROLES), handleUpsertSettings);
 
 export default router;

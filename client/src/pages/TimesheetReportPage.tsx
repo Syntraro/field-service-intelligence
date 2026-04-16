@@ -369,7 +369,7 @@ export default function TimesheetReportPage() {
                 <div className="text-sm font-semibold text-foreground">
                   {formatAppliedLabel(data.appliedFilter.preset, data.appliedFilter.label)}
                 </div>
-                <div className="text-[11px] text-muted-foreground">
+                <div className="text-xs text-muted-foreground">
                   {formatDateHuman(data.appliedFilter.start)} – {formatDateHuman(data.appliedFilter.end)}
                 </div>
               </div>
@@ -606,7 +606,7 @@ function SummaryStat({
 }) {
   return (
     <div className="flex flex-col leading-tight">
-      <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
+      <span className="text-xs uppercase tracking-wide text-muted-foreground">
         {label}
       </span>
       <span
@@ -737,7 +737,7 @@ function PayrollSettingsDialog({
               value={anchor}
               onChange={(e) => setAnchor(e.target.value)}
             />
-            <p className="text-[11px] text-muted-foreground mt-1">
+            <p className="text-xs text-muted-foreground mt-1">
               Any date that was the first day of one concrete pay period. All other periods are
               derived by multiples of the frequency.
             </p>

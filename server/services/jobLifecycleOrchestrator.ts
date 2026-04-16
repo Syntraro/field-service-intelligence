@@ -42,6 +42,7 @@ import {
 } from "../domain/scheduling";
 import { jobRepository } from "../storage/jobs";
 import { jobVisitsRepository, isVisitActioned } from "../storage/jobVisits";
+import { assertWritableSupportContext } from "../auth/supportContext";
 import { schedulingRepository, DEFAULT_VISIT_DURATION_MINUTES } from "../storage/scheduling";
 import { reconciliationActionableVisitFilter } from "../lib/visitPredicates";
 import { timeTrackingRepository } from "../storage/timeTracking";
@@ -416,6 +417,7 @@ export type RescheduleVisitResult = Record<string, any> & {
 export async function completeVisit(
   intent: CompleteVisitIntent
 ): Promise<CompleteVisitResult> {
+  assertWritableSupportContext("job.completeVisit");
   const {
     companyId,
     visitId,
@@ -583,6 +585,7 @@ export async function forceCloseJob(
   intent: ForceCloseJobIntent,
   txHandle?: any
 ): Promise<ForceCloseJobResult> {
+  assertWritableSupportContext("job.forceClose");
   const {
     companyId,
     jobId,
@@ -635,6 +638,7 @@ export async function forceCloseJob(
 export async function reopenJob(
   intent: ReopenJobIntent
 ): Promise<ReopenJobResult> {
+  assertWritableSupportContext("job.reopen");
   const { companyId, jobId, version, actor, targetOpenSubStatus } = intent;
 
   const lifecycleIntent: LifecycleIntent = {
@@ -670,6 +674,7 @@ export async function reopenJob(
 export async function reopenVisit(
   intent: ReopenVisitIntent
 ): Promise<ReopenVisitResult> {
+  assertWritableSupportContext("visit.reopen");
   const { companyId, visitId, jobId, actor } = intent;
 
   // Step 1: Load and validate visit
@@ -757,6 +762,7 @@ export async function reopenVisit(
 export async function undoCloseJob(
   intent: UndoCloseJobIntent
 ): Promise<UndoCloseJobResult> {
+  assertWritableSupportContext("job.undoClose");
   const { companyId, jobId, version, actor } = intent;
 
   const lifecycleIntent: LifecycleIntent = { type: "UNDO_CLOSE" };
@@ -785,6 +791,7 @@ export async function markInvoiced(
   intent: MarkInvoicedIntent,
   txHandle?: any
 ): Promise<MarkInvoicedResult> {
+  assertWritableSupportContext("job.markInvoiced");
   const { companyId, jobId, version, actor, invoiceId } = intent;
 
   const lifecycleIntent: LifecycleIntent = {
@@ -815,6 +822,7 @@ export async function markInvoiced(
 export async function placeJobOnHold(
   intent: PlaceJobOnHoldIntent
 ): Promise<PlaceJobOnHoldResult> {
+  assertWritableSupportContext("job.placeOnHold");
   const { companyId, jobId, holdReason, holdNotes, nextActionDate, changedBy } = intent;
 
   // Load job to validate current state
@@ -862,6 +870,7 @@ export async function placeJobOnHold(
 export async function resumeJob(
   intent: ResumeJobIntent
 ): Promise<ResumeJobResult> {
+  assertWritableSupportContext("job.resume");
   const { companyId, jobId, targetSubStatus, changedBy } = intent;
 
   // Load job to validate current state
@@ -914,6 +923,7 @@ export async function resumeJob(
 export async function updateHoldMetadata(
   intent: UpdateHoldMetadataIntent
 ): Promise<UpdateHoldMetadataResult> {
+  assertWritableSupportContext("job.updateHoldMetadata");
   const { companyId, jobId, holdReason, holdNotes, nextActionDate, changedBy } = intent;
 
   // Load job to validate current state
@@ -961,6 +971,7 @@ export async function updateHoldMetadata(
 export async function setJobSubstatus(
   intent: SetJobSubstatusIntent
 ): Promise<SetJobSubstatusResult> {
+  assertWritableSupportContext("job.setSubstatus");
   const { companyId, jobId, openSubStatus, additionalUpdates, changedBy } = intent;
 
   // Load job to validate current state
@@ -1097,6 +1108,7 @@ function assertVisitIsScheduled(
 export async function setVisitEnRoute(
   intent: SetVisitEnRouteIntent
 ): Promise<SetVisitEnRouteResult> {
+  assertWritableSupportContext("visit.setEnRoute");
   const { companyId, visitId, jobId, at, actingUserId } = intent;
   const now = at ?? new Date();
 
@@ -1145,6 +1157,7 @@ export async function setVisitEnRoute(
 export async function startVisit(
   intent: StartVisitIntent
 ): Promise<StartVisitResult> {
+  assertWritableSupportContext("visit.start");
   const { companyId, visitId, jobId, at, actingUserId } = intent;
   const now = at ?? new Date();
 
@@ -1203,6 +1216,7 @@ export async function startVisit(
 export async function cancelVisitRoute(
   intent: CancelVisitRouteIntent
 ): Promise<CancelVisitRouteResult> {
+  assertWritableSupportContext("visit.cancelRoute");
   const { companyId, visitId, jobId, at } = intent;
   const now = at ?? new Date();
 
@@ -1262,6 +1276,7 @@ export async function cancelVisitRoute(
 export async function cancelVisitStart(
   intent: CancelVisitStartIntent
 ): Promise<CancelVisitStartResult> {
+  assertWritableSupportContext("visit.cancelStart");
   const { companyId, visitId, jobId, at } = intent;
   const now = at ?? new Date();
 
@@ -1320,6 +1335,7 @@ export async function cancelVisitStart(
 export async function pauseVisit(
   intent: PauseVisitIntent
 ): Promise<PauseVisitResult> {
+  assertWritableSupportContext("visit.pause");
   const { companyId, visitId, jobId, at } = intent;
   const now = at ?? new Date();
 
@@ -1368,6 +1384,7 @@ export async function pauseVisit(
 export async function resumeVisit(
   intent: ResumeVisitIntent
 ): Promise<ResumeVisitResult> {
+  assertWritableSupportContext("visit.resume");
   const { companyId, visitId, jobId, at, actingUserId } = intent;
   const now = at ?? new Date();
 
@@ -1431,6 +1448,7 @@ export async function resumeVisit(
 export async function cancelVisit(
   intent: CancelVisitIntent
 ): Promise<CancelVisitResult> {
+  assertWritableSupportContext("visit.cancel");
   const { companyId, visitId, jobId } = intent;
 
   // Use updateJobVisitStatus with skipSync so we control sync ordering
@@ -1461,6 +1479,7 @@ export async function cancelVisit(
 export async function bulkCompleteVisits(
   intent: BulkCompleteVisitsIntent
 ): Promise<BulkCompleteVisitsResult> {
+  assertWritableSupportContext("visit.bulkComplete");
   return bulkCompleteVisitsInternal(intent.companyId, intent.jobId, undefined, intent.changedByUserId);
 }
 
@@ -1801,6 +1820,7 @@ async function bulkCompleteVisitsInternal(
 export async function rescheduleVisit(
   intent: RescheduleVisitIntent
 ): Promise<RescheduleVisitResult> {
+  assertWritableSupportContext("visit.reschedule");
   const { companyId, visitId } = intent;
 
   // Step 1: Load visit

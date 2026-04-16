@@ -26,10 +26,10 @@ import { getRolesWithPermissions } from "../permissions";
 import { ensureRolesAndPermissionsSeeded } from "./roles";
 import { filterSchedulableTechnicians } from "../domain/scheduling";
 import { timeTrackingRepository } from "../storage/timeTracking";
+import { identityRepository } from "../storage/identities";
+import { requestPasswordReset } from "../services/passwordResetService";
 
 const router = Router();
-
-const MANAGER_ROLES = RESTRICTED_MANAGER_ROLES;
 
 // ========================================
 // VALIDATION SCHEMAS
@@ -160,7 +160,7 @@ const ROLE_DISPLAY_NAMES: Record<string, string> = {
  */
 router.get(
   "/roles",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     // Ensure roles and permissions are seeded
     await ensureRolesAndPermissionsSeeded();
@@ -189,7 +189,7 @@ router.get(
  */
 router.post(
   "/",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
     const actorUserId = req.user!.id;
@@ -414,7 +414,7 @@ router.get(
 // PATCH /api/team/:userId - Update team member basic info
 router.patch(
   "/:userId",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
     const companyId = req.companyId!;
@@ -461,7 +461,7 @@ router.patch(
 // POST /api/team/:userId/deactivate - Deactivate team member
 router.post(
   "/:userId/deactivate",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
     const companyId = req.companyId!;
@@ -500,7 +500,7 @@ router.post(
 // POST /api/team/:userId/activate - Activate team member
 router.post(
   "/:userId/activate",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
     const companyId = req.companyId!;
@@ -618,7 +618,7 @@ router.patch(
 // PUT /api/team/:userId/profile - Update technician profile
 router.put(
   "/:userId/profile",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
 
@@ -643,7 +643,7 @@ router.put(
 // PUT /api/team/:userId/working-hours - Set working hours
 router.put(
   "/:userId/working-hours",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
 
@@ -662,7 +662,7 @@ router.put(
 // PUT /api/team/:userId/permissions - Set permission overrides
 router.put(
   "/:userId/permissions",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
 
@@ -718,7 +718,7 @@ const updatePasswordSchema = z.object({
  */
 router.put(
   "/:userId/email",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
     const companyId = req.companyId!;
@@ -779,7 +779,7 @@ router.put(
  */
 router.put(
   "/:userId/password",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
     const companyId = req.companyId!;
@@ -817,12 +817,63 @@ router.put(
 );
 
 /**
+ * POST /api/team/:userId/send-password-reset (2026-04-15)
+ *
+ * Admin-triggered password reset that routes through the canonical
+ * self-service reset flow: we resolve the member's primary email and
+ * delegate to `requestPasswordReset`, which issues a one-shot token and
+ * emails the reset link. The admin does not see or set the password;
+ * the user chooses it via the emailed link, same as the public flow.
+ *
+ * This replaces the legacy "admin sets password directly" UX that the
+ * Admin page's reset button was pointing at a nonexistent endpoint.
+ */
+router.post(
+  "/:userId/send-password-reset",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId } = req.params;
+    const companyId = req.companyId!;
+    const actorUserId = req.user!.id;
+
+    const member = await storage.getTeamMember(companyId, userId);
+    if (!member) {
+      throw createError(404, "Team member not found");
+    }
+
+    const email = await identityRepository.getPrimaryEmailForUser(companyId, userId);
+    if (!email) {
+      throw createError(400, "This user has no email identity on file — a reset link cannot be sent.");
+    }
+
+    const ip =
+      (Array.isArray(req.headers["x-forwarded-for"])
+        ? req.headers["x-forwarded-for"][0]
+        : req.headers["x-forwarded-for"]?.split(",")[0]?.trim()) ||
+      req.ip ||
+      null;
+    const origin = req.get("origin") || null;
+
+    await requestPasswordReset({ email, requestIp: ip, requestOrigin: origin });
+
+    // Reuse the existing password-reset audit event so there is a single
+    // record type for "a reset happened" across the manual and email flows.
+    await logPasswordReset(req, companyId, actorUserId, userId);
+
+    res.json({
+      success: true,
+      message: "A password reset email has been sent to the user.",
+    });
+  }),
+);
+
+/**
  * GET /api/team/:userId/identities
  * Get all login identities for a user
  */
 router.get(
   "/:userId/identities",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
     const companyId = req.companyId!;

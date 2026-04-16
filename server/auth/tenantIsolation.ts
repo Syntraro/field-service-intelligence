@@ -1,4 +1,6 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
+import { isPlatformRole } from "./roles";
+import { platformAuditService } from "../services/platformAuditService";
 
 /**
  * CRITICAL SECURITY MIDDLEWARE
@@ -68,8 +70,47 @@ export const ensureTenantContext: RequestHandler = (req: Request, res: Response,
     return next();
   }
 
+  // Platform Ops routes manage their own RBAC via requirePlatformRole and
+  // deliberately operate outside tenant context. Phase 1 (Platform Admin
+  // Foundation): tenant scoping does not apply here.
+  if (req.path.startsWith("/api/platform")) {
+    return next();
+  }
+
   const user = req.user as any;
+
+  // Phase 4: Read-only support sessions allow platform actors onto tenant
+  // routes WITHOUT swapping req.user. Tenant scoping is derived from the
+  // support session's companyId rather than user.companyId. The read-only
+  // mutation block (enforceReadOnlySupport middleware) prevents writes.
+  if (req.isReadOnlySupport && req.supportSession) {
+    req.companyId = req.supportSession.companyId;
+    return next();
+  }
+
   const companyId = user?.companyId;
+
+  // Phase 1 (Platform Admin Foundation): platform-role users are NOT
+  // permitted on tenant-scoped routes unless a support session is active
+  // (impersonation = req.isImpersonating, read-only = req.isReadOnlySupport,
+  // handled above). This is the canonical enforcement point. UI /
+  // route-layer checks are not a substitute.
+  if (!req.isImpersonating && !req.isReadOnlySupport && isPlatformRole(user?.role)) {
+    platformAuditService
+      .logPlatformTenantAccessDenied(
+        user?.id ?? "unknown",
+        user?.email ?? "unknown",
+        req.originalUrl || req.path,
+        req,
+      )
+      .catch((err) => {
+        console.error("[tenant-isolation] audit write failed:", err);
+      });
+    return res.status(403).json({
+      error: "Forbidden",
+      message: "Platform users cannot access tenant data without an active support session",
+    });
+  }
 
   if (!companyId || typeof companyId !== "string") {
     return res.status(401).json({ error: "Unauthorized" });
@@ -99,7 +140,10 @@ function makeKey(req: Request, scope: string) {
   return `${scope}:${companyId}:${ip}`;
 }
 
-// Cleanup expired buckets every 5 minutes to prevent memory leak
+// Cleanup expired buckets every 5 minutes to prevent memory leak.
+// 2026-04-14 Phase 2 hygiene: `.unref()` so this in-process timer never
+// blocks SIGTERM. Bucket cleanup is a memory-hygiene concern only; losing
+// the tick during shutdown is fine.
 setInterval(() => {
   const now = nowMs();
   buckets.forEach((bucket, key) => {
@@ -107,7 +151,7 @@ setInterval(() => {
       buckets.delete(key);
     }
   });
-}, 5 * 60 * 1000);
+}, 5 * 60 * 1000).unref();
 
 export function rateLimitPerTenant(options?: {
   windowMs?: number;

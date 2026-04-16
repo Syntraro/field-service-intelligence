@@ -151,7 +151,7 @@ export function ContactFormDialog({
                 data-testid="input-contact-email"
               />
               {showEmailError && (
-                <p className="text-[11px] text-destructive" data-testid="contact-email-error">
+                <p className="text-xs text-destructive" data-testid="contact-email-error">
                   {INVALID_EMAIL_MESSAGE}
                 </p>
               )}

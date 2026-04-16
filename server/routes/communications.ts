@@ -18,7 +18,6 @@ import { emailDeliveryTrackingService } from "../services/emailDeliveryTrackingS
 import { communicationTemplateEntityTypeEnum } from "@shared/schema";
 
 const router = Router();
-const MANAGER_ROLES = RESTRICTED_MANAGER_ROLES;
 
 const listQuerySchema = z.object({
   entityType: z.enum(communicationTemplateEntityTypeEnum),
@@ -32,7 +31,7 @@ const listQuerySchema = z.object({
  */
 router.get(
   "/deliveries",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const tenantId = req.companyId;
     if (!tenantId) throw createError(401, "Unauthorized");
@@ -56,7 +55,7 @@ router.get(
  */
 router.post(
   "/deliveries/:deliveryId/resend",
-  requireRole(MANAGER_ROLES),
+  requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const tenantId = req.companyId;
     if (!tenantId) throw createError(401, "Unauthorized");

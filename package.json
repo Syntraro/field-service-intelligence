@@ -95,6 +95,7 @@
     "react-window": "^1.8.11",
     "recharts": "^3.8.0",
     "resend": "^6.5.2",
+    "stripe": "^22.0.1",
     "tailwind-merge": "^2.6.0",
     "tailwindcss-animate": "^1.0.7",
     "uuid": "^13.0.0",

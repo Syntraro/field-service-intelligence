@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { permissionRepository, clearPermissionCache } from "./storage/permissions";
+import { isPlatformRole } from "./auth/roles";
 
 // Re-export cache clearing function
 export { clearPermissionCache };
@@ -26,8 +27,10 @@ export function requirePermission(permissionKey: string) {
       });
     }
 
-    // Platform admins bypass permission checks
-    if (user.role === "platform_admin") {
+    // Platform roles bypass tenant permission checks (canonical helper).
+    // Tenant access itself is gated upstream in ensureTenantContext, so this
+    // bypass only fires during an active support/impersonation session.
+    if (isPlatformRole(user.role)) {
       return next();
     }
 

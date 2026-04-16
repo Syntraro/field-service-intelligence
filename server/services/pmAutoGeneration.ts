@@ -110,19 +110,23 @@ export function startPmAutoGeneration(): void {
     `startup in ${STARTUP_DELAY_MS / 1000}s, interval every ${GENERATION_INTERVAL_MS / 3600000}h`
   );
 
-  // Initial run after startup delay
+  // Initial run after startup delay. `.unref()` so a pending startup
+  // timeout never blocks SIGTERM.
   startupTimeout = setTimeout(() => {
     runGenerationForAllTenants().catch((err) =>
       console.error("[PM-AutoGen] Startup run failed:", err)
     );
   }, STARTUP_DELAY_MS);
+  startupTimeout.unref();
 
-  // Recurring interval
+  // Recurring interval. `.unref()` so the daily interval never blocks
+  // SIGTERM either (graceful shutdown also calls stopPmAutoGeneration).
   intervalHandle = setInterval(() => {
     runGenerationForAllTenants().catch((err) =>
       console.error("[PM-AutoGen] Scheduled run failed:", err)
     );
   }, GENERATION_INTERVAL_MS);
+  intervalHandle.unref();
 }
 
 /**

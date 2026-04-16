@@ -21,7 +21,7 @@ export const listPrimaryClass = "text-sm font-medium truncate"
 /** Secondary cell text (contact, sublocation, description) */
 export const listSecondaryClass = "text-xs text-muted-foreground truncate"
 /** Status/tag badge sizing */
-export const listBadgeClass = "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
+export const listBadgeClass = "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
 /** Results count footer text */
 export const listResultsClass = "text-xs text-muted-foreground mt-2"
 

@@ -265,7 +265,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
           <DialogTitle className="text-base font-semibold text-[#111827] flex items-center gap-2">
             {config.title}
             {!isLoading && (
-              <span className="inline-flex items-center justify-center h-5 min-w-5 px-1.5 rounded-full bg-[#f8fafc] text-[11px] font-bold text-[#4b5563] tabular-nums">
+              <span className="inline-flex items-center justify-center h-5 min-w-5 px-1.5 rounded-full bg-[#f8fafc] text-xs font-bold text-[#4b5563] tabular-nums">
                 {jobs.length}
               </span>
             )}

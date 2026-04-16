@@ -40,6 +40,8 @@ const ENTITY_TYPES = [
   "client_document",
   "contract_document",
   "technician_document",
+  // 2026-04-14 Phase 1 cleanup: receipts migrated off legacy /api/uploads.
+  "job_expense_receipt",
 ] as const;
 
 const uploadRequestSchema = z.object({

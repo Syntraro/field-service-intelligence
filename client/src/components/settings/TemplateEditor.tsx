@@ -247,11 +247,11 @@ export function TemplateEditor({ entityType }: TemplateEditorProps) {
               </p>
             </div>
             {isLoading ? (
-              <Badge variant="outline" className="text-[11px]">Loading…</Badge>
+              <Badge variant="outline" className="text-xs">Loading…</Badge>
             ) : hasTenantRow ? (
-              <Badge className="text-[11px]" data-testid={`badge-template-custom-${entityType}`}>Custom template</Badge>
+              <Badge className="text-xs" data-testid={`badge-template-custom-${entityType}`}>Custom template</Badge>
             ) : (
-              <Badge variant="outline" className="text-[11px]" data-testid={`badge-template-default-${entityType}`}>
+              <Badge variant="outline" className="text-xs" data-testid={`badge-template-default-${entityType}`}>
                 Using default template
               </Badge>
             )}
@@ -292,7 +292,7 @@ export function TemplateEditor({ entityType }: TemplateEditorProps) {
           </div>
 
           <div className="space-y-2">
-            <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">
+            <Label className="text-[13px] uppercase tracking-wider text-muted-foreground">
               Insert variable
             </Label>
             <VariablePicker
@@ -301,7 +301,7 @@ export function TemplateEditor({ entityType }: TemplateEditorProps) {
               disabled={isLoading}
               label=""
             />
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               Click a chip to insert the token at your cursor. Focus the Subject field first to insert there.
             </p>
           </div>
@@ -361,7 +361,7 @@ export function TemplateEditor({ entityType }: TemplateEditorProps) {
           )}
 
           <div>
-            <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">
+            <div className="text-[13px] uppercase tracking-wider text-muted-foreground mb-1">
               Subject
             </div>
             <div className="rounded-md border bg-background px-3 py-2 text-sm font-medium break-words min-h-[38px]" data-testid={`preview-subject-${entityType}`}>
@@ -372,7 +372,7 @@ export function TemplateEditor({ entityType }: TemplateEditorProps) {
           </div>
 
           <div>
-            <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">
+            <div className="text-[13px] uppercase tracking-wider text-muted-foreground mb-1">
               Body
             </div>
             <div

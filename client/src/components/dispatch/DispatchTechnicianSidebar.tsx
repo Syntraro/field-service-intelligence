@@ -47,7 +47,7 @@ function OffShiftDivider() {
   return (
     <div className="flex items-center gap-2 px-3 border-b bg-slate-50/80" style={{ height: DIVIDER_HEIGHT_PX }}>
       <div className="flex-1 h-px bg-slate-200" />
-      <span className="text-[9px] font-medium text-slate-400 uppercase tracking-wider whitespace-nowrap">Off shift</span>
+      <span className="text-xs font-medium text-slate-400 uppercase tracking-wider whitespace-nowrap">Off shift</span>
       <div className="flex-1 h-px bg-slate-200" />
     </div>
   );
@@ -72,7 +72,7 @@ export default function DispatchTechnicianSidebar({ technicians }: Props) {
     <div className="flex-shrink-0 border-r bg-white">
       {/* Header spacer — aligns with hour header row */}
       <div className="flex h-8 items-center border-b px-3">
-        <span className="text-[11px] font-medium text-muted-foreground">Technicians</span>
+        <span className="text-xs font-medium text-muted-foreground">Technicians</span>
       </div>
 
       {/* Working technicians — Unassigned row gets double-divider bottom */}
@@ -97,16 +97,16 @@ export default function DispatchTechnicianSidebar({ technicians }: Props) {
                 style={{ background: "linear-gradient(to bottom, rgba(100,116,139,0.25) 0px, rgba(100,116,139,0.25) 1px, transparent 1px, transparent 2px, rgba(100,116,139,0.18) 2px, rgba(100,116,139,0.18) 3px)" }} />
             )}
             <div
-              className={`flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white ${isUnassigned ? "opacity-60" : ""}`}
+              className={`flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white ${isUnassigned ? "opacity-60" : ""}`}
               style={{ backgroundColor: t.color }}
             >
               {t.initials}
             </div>
             <div className="min-w-0 flex-1">
-              <p className={`truncate text-[13px] font-medium leading-tight ${isUnassigned ? "text-slate-500 italic" : "text-foreground"}`}>{t.name}</p>
+              <p className={`truncate text-xs font-medium leading-tight ${isUnassigned ? "text-slate-500 italic" : "text-slate-900"}`}>{t.name}</p>
               {!isUnassigned && liveState && (
                 <span
-                  className={`mt-0.5 inline-block rounded-full border px-1.5 py-px text-[9px] font-medium leading-none ${liveStateChipClasses(liveState)}`}
+                  className={`mt-0.5 inline-block rounded-full border px-1.5 py-px text-[11px] font-medium leading-none ${liveStateChipClasses(liveState)}`}
                   data-testid={`tech-live-state-${t.id}`}
                   data-state={liveState.activityStatus === "idle" ? liveState.attendanceStatus : liveState.activityStatus}
                   title={liveState.label}
@@ -130,12 +130,12 @@ export default function DispatchTechnicianSidebar({ technicians }: Props) {
               style={{ height: LANE_HEIGHT_PX }}
             >
               <div
-                className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white opacity-50"
+                className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white opacity-50"
                 style={{ backgroundColor: t.color }}
               >
                 {t.initials}
               </div>
-              <p className="truncate text-[13px] font-medium leading-tight text-slate-400">{t.name}</p>
+              <p className="truncate text-xs font-medium leading-tight text-slate-400">{t.name}</p>
             </div>
           ))}
         </>

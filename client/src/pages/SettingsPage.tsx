@@ -109,6 +109,8 @@ const SECTIONS: SettingsSection[] = [
     cards: [
       { title: "Team Management", description: "Manage technicians and staff", href: "/manage-team", icon: Users },
       { title: "Roles & Permissions", description: "Configure access levels", href: "/manage-roles", icon: Shield },
+      // Phase 7 (Production Readiness): tenant-side approval surface.
+      { title: "Support Access", description: "Approve internal support requests and revoke active sessions", href: "/settings/support-access", icon: Shield },
     ],
   },
   {

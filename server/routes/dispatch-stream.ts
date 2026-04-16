@@ -49,7 +49,10 @@ router.get("/stream", (req: Request, res: Response) => {
   };
   const unsubscribe = subscribeDispatch(tenantId, onSignal);
 
-  // Heartbeat to prevent proxy timeouts
+  // Heartbeat to prevent proxy timeouts. 2026-04-14 Phase 2 hygiene:
+  // `.unref()` so N open SSE connections don't collectively block SIGTERM.
+  // The `close` / `error` handlers below clear the interval normally;
+  // unref is a safety net for abrupt shutdowns.
   const heartbeat = setInterval(() => {
     try {
       res.write(": heartbeat\n\n");
@@ -57,6 +60,7 @@ router.get("/stream", (req: Request, res: Response) => {
       // Connection closed
     }
   }, HEARTBEAT_MS);
+  heartbeat.unref();
 
   // Cleanup on disconnect (idempotent guard prevents double-cleanup)
   let cleanedUp = false;

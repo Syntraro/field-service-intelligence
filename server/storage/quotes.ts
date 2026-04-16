@@ -262,12 +262,14 @@ export class QuoteRepository extends BaseRepository {
   async updateQuote(
     companyId: string,
     quoteId: string,
-    data: Partial<InsertQuote>
+    data: Partial<InsertQuote>,
+    txHandle?: any,
   ): Promise<Quote | null> {
     this.assertCompanyId(companyId);
     this.validateUUID(quoteId, "quoteId");
 
-    const [updated] = await db
+    const queryDb = txHandle ?? db;
+    const [updated] = await queryDb
       .update(quotes)
       .set({
         ...data,

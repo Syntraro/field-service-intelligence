@@ -66,15 +66,38 @@ type PaletteItem =
 // STATIC COMMANDS
 // ========================================
 
-/** Build static commands — create actions use runtime callbacks when provided */
-function buildCommands(callbacks: { onCreateJob?: () => void; onCreateQuote?: () => void; onCreateInvoice?: () => void }): CommandItem[] {
+/** Build static commands — create actions use runtime callbacks when provided
+ *
+ * 2026-04-15 — Quick Actions are an exact mirror of the header "New"
+ * dropdown (App.tsx). Each action here must invoke the same code path
+ * the corresponding "New" menu item uses. Order matches the "New"
+ * dropdown verbatim.
+ *
+ *   New Job          → setAddJobModalOpen(true)        → onCreateJob
+ *   New Client       → setAddClientModalOpen(true)     → onCreateClient
+ *   New Invoice      → setNewInvoiceModalOpen(true)    → onCreateInvoice
+ *   New Quote        → setQuoteChooserOpen(true)       → onCreateQuote
+ *   New Task         → setNewTaskOpen(true)            → onCreateTask
+ *   New PM Contract  → setLocation("/pm/new")          → route
+ *
+ * PM Contract stays as a `route` entry because the "New" dropdown
+ * itself uses `setLocation` — reusing the route is the canonical path.
+ */
+function buildCommands(callbacks: {
+  onCreateJob?: () => void;
+  onCreateClient?: () => void;
+  onCreateInvoice?: () => void;
+  onCreateQuote?: () => void;
+  onCreateTask?: () => void;
+}): CommandItem[] {
   return [
     // Quick Actions — true create commands only (navigation lives in sidebar)
     { id: "create-job",         label: "Create Job",         keywords: ["new job", "add job", "create work order"], icon: Plus, section: "action", action: callbacks.onCreateJob },
-    { id: "create-quote",       label: "Create Quote",       keywords: ["new quote", "add quote"], icon: Plus, section: "action", action: callbacks.onCreateQuote },
+    { id: "create-client",      label: "Create Client",      keywords: ["new client", "add client", "new customer", "add customer"], icon: Plus, section: "action", action: callbacks.onCreateClient },
     { id: "create-invoice",     label: "Create Invoice",     keywords: ["new invoice", "add invoice", "bill"], icon: Plus, section: "action", action: callbacks.onCreateInvoice },
-    { id: "create-task",        label: "Create Task",        keywords: ["new task", "add task", "supplier visit"], icon: Plus, section: "action", route: "/dispatch?newTask=1" },
-    { id: "create-pm-contract", label: "Create PM Contract", keywords: ["new contract", "add contract", "pm contract", "preventive maintenance contract"], icon: Plus, section: "action", route: "/pm?newContract=1" },
+    { id: "create-quote",       label: "Create Quote",       keywords: ["new quote", "add quote", "estimate"], icon: Plus, section: "action", action: callbacks.onCreateQuote },
+    { id: "create-task",        label: "Create Task",        keywords: ["new task", "add task", "supplier visit"], icon: Plus, section: "action", action: callbacks.onCreateTask },
+    { id: "create-pm-contract", label: "Create PM Contract", keywords: ["new contract", "add contract", "pm contract", "preventive maintenance contract"], icon: Plus, section: "action", route: "/pm/new" },
     // Navigation — these appear only when the user searches for them
     { id: "open-dispatch",  label: "Open Dispatch",  keywords: ["dispatch", "calendar", "schedule"], icon: LayoutGrid, section: "navigation", route: "/dispatch" },
     { id: "open-pm",        label: "Open PM",        keywords: ["pm", "preventive maintenance"], icon: Wrench, section: "navigation", route: "/pm" },
@@ -169,15 +192,19 @@ function scoreCommand(cmd: CommandItem, q: string): number {
 // ========================================
 
 interface UniversalSearchProps {
-  /** Callback to open the create-job flow from the command palette */
+  /** Callback to open the create-job flow — mirrors "New Job" */
   onCreateJob?: () => void;
-  /** Callback to open the create-quote flow */
-  onCreateQuote?: () => void;
-  /** Callback to open the create-invoice flow */
+  /** Callback to open the create-client flow — mirrors "New Client" */
+  onCreateClient?: () => void;
+  /** Callback to open the create-invoice flow — mirrors "New Invoice" */
   onCreateInvoice?: () => void;
+  /** Callback to open the create-quote flow — mirrors "New Quote" */
+  onCreateQuote?: () => void;
+  /** Callback to open the create-task flow — mirrors "New Task" */
+  onCreateTask?: () => void;
 }
 
-export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateInvoice }: UniversalSearchProps = {}) {
+export default function UniversalSearch({ onCreateJob, onCreateClient, onCreateInvoice, onCreateQuote, onCreateTask }: UniversalSearchProps = {}) {
   const [, setLocation] = useLocation();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -193,8 +220,8 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
 
   // Build commands with create callbacks
   const commands = useMemo(
-    () => buildCommands({ onCreateJob, onCreateQuote, onCreateInvoice }),
-    [onCreateJob, onCreateQuote, onCreateInvoice],
+    () => buildCommands({ onCreateJob, onCreateClient, onCreateInvoice, onCreateQuote, onCreateTask }),
+    [onCreateJob, onCreateClient, onCreateInvoice, onCreateQuote, onCreateTask],
   );
 
   // ------ Command filtering ------
@@ -465,7 +492,7 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
 
   // ------ Section header ------
   const sectionHeader = (label: string) => (
-    <div className="px-3 py-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider select-none">
+    <div className="px-3 py-1.5 text-[13px] font-medium text-muted-foreground uppercase tracking-wider select-none">
       {label}
     </div>
   );
@@ -484,7 +511,7 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
         <input
           ref={inputRef}
           type="text"
-          placeholder="Search or run command…"
+          placeholder="Search or create jobs, clients, invoices..."
           value={query}
           onChange={handleInputChange}
           onKeyDown={handleKeyDown}
@@ -536,7 +563,7 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
                       const typeResults = groupedResults[type];
                       return (
                         <div key={type}>
-                          <div className="px-3 py-1 text-[11px] font-medium text-muted-foreground/70 uppercase tracking-wider">
+                          <div className="px-3 py-1 text-[13px] font-medium text-muted-foreground/70 uppercase tracking-wider">
                             {TYPE_LABELS[type]}
                           </div>
                           {typeResults.map((sr) => {
@@ -568,10 +595,10 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
           </div>
 
           {/* Footer with keyboard hints */}
-          <div className="border-t px-3 py-1.5 text-[11px] text-muted-foreground flex items-center gap-3">
-            <span><kbd className="font-mono text-[11px] bg-muted px-1 py-0.5 rounded">↑↓</kbd> navigate</span>
-            <span><kbd className="font-mono text-[11px] bg-muted px-1 py-0.5 rounded">↵</kbd> select</span>
-            <span><kbd className="font-mono text-[11px] bg-muted px-1 py-0.5 rounded">esc</kbd> close</span>
+          <div className="border-t px-3 py-1.5 text-xs text-muted-foreground flex items-center gap-3">
+            <span><kbd className="font-mono text-xs bg-muted px-1 py-0.5 rounded">↑↓</kbd> navigate</span>
+            <span><kbd className="font-mono text-xs bg-muted px-1 py-0.5 rounded">↵</kbd> select</span>
+            <span><kbd className="font-mono text-xs bg-muted px-1 py-0.5 rounded">esc</kbd> close</span>
           </div>
         </div>
       )}

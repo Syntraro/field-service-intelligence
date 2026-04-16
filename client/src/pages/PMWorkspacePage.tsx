@@ -25,6 +25,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -1004,32 +1005,54 @@ function UpcomingTab() {
   // List stability: single return path — loading/error/empty render inside content area
   return (
     <div className="space-y-4">
-      {/* Sub-view selector: Due Now / Upcoming — always mounted */}
-      <div className="flex items-center gap-1 border rounded-md p-0.5 bg-muted/30 w-fit">
-        <button
-          onClick={() => handleSubViewChange("due_now")}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-            isDueNow ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <Zap className="h-3.5 w-3.5" />
-          Due Now
-          {counts.needsGeneration > 0 && (
-            <Badge variant="secondary" className="text-[11px] px-1.5 py-0 ml-1">{counts.needsGeneration}</Badge>
-          )}
-        </button>
-        <button
-          onClick={() => handleSubViewChange("upcoming_planning")}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-            !isDueNow ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <Clock className="h-3.5 w-3.5" />
-          Upcoming
-          {upcomingPlanningItems.length > 0 && (
-            <Badge variant="secondary" className="text-[11px] px-1.5 py-0 ml-1">{upcomingPlanningItems.length}</Badge>
-          )}
-        </button>
+      {/* Sub-view selector + Group-by — single toolbar row.
+          2026-04-14: the Group-by control was previously a separate pill
+          row below, rendered icon-only on narrow viewports and lacking a
+          label. Moved onto this toolbar row as a labeled Select for clarity.
+          Behavior is unchanged — groupMode still feeds the same pure
+          client-side grouping functions. */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-1 border rounded-md p-0.5 bg-muted/30 w-fit">
+          <button
+            onClick={() => handleSubViewChange("due_now")}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+              isDueNow ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Zap className="h-3.5 w-3.5" />
+            Due Now
+            {counts.needsGeneration > 0 && (
+              <Badge variant="secondary" className="text-xs px-1.5 py-0 ml-1">{counts.needsGeneration}</Badge>
+            )}
+          </button>
+          <button
+            onClick={() => handleSubViewChange("upcoming_planning")}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+              !isDueNow ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Clock className="h-3.5 w-3.5" />
+            Upcoming
+            {upcomingPlanningItems.length > 0 && (
+              <Badge variant="secondary" className="text-xs px-1.5 py-0 ml-1">{upcomingPlanningItems.length}</Badge>
+            )}
+          </button>
+        </div>
+        <div className="flex items-center gap-2 ml-auto">
+          <span className="text-sm font-medium text-slate-500">Group by</span>
+          <Select value={groupMode} onValueChange={(v) => setGroupMode(v as GroupMode)}>
+            <SelectTrigger className="h-9 w-[160px] rounded-md" data-testid="select-group-by">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {GROUP_MODE_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  <span className="flex items-center gap-2">{opt.icon}{opt.label}</span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {/* Summary badges — only in Due Now view, reflects actionable counts */}
@@ -1057,7 +1080,9 @@ function UpcomingTab() {
         </div>
       )}
 
-      {/* Controls: Group By + Bulk Generate */}
+      {/* Bulk actions row — Group-by was moved up onto the Due Now / Upcoming
+          toolbar row (2026-04-14) for clarity, so this row now holds bulk
+          generation actions only. Hidden when there is nothing to act on. */}
       <div className="flex flex-wrap items-center gap-3">
         {/* Bulk actions: only in Due Now view */}
         {isDueNow && selectedEligible.length > 0 ? (
@@ -1096,24 +1121,6 @@ function UpcomingTab() {
             Generate All Filtered ({eligibleIds.size})
           </Button>
         ) : null}
-
-        {/* Group-by segmented control */}
-        <div className="flex items-center gap-1 ml-auto border rounded-md p-0.5 bg-muted/30">
-          {GROUP_MODE_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => setGroupMode(opt.value)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                groupMode === opt.value
-                  ? "bg-background text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {opt.icon}
-              <span className="hidden sm:inline">{opt.label}</span>
-            </button>
-          ))}
-        </div>
       </div>
 
       {/* Phase 4C: Confirmation modal (Due Now only) */}
@@ -1137,7 +1144,7 @@ function UpcomingTab() {
       ) : items.length === 0 ? (
         <Card><CardContent className="flex flex-col items-center gap-4 py-16 text-center">
           <Clock className="h-12 w-12 text-muted-foreground/50" />
-          <div><p className="text-lg font-medium">No work due</p><p className="text-sm text-muted-foreground max-w-md">PM contracts and recurring jobs with upcoming due dates will appear here.</p></div>
+          <div><p className="text-lg font-medium">No work due</p><p className="text-sm text-muted-foreground max-w-md">Preventative maintenance contracts and recurring jobs with upcoming due dates will appear here.</p></div>
         </CardContent></Card>
       ) : groupMode !== "none" ? (
         <div>
@@ -1859,20 +1866,26 @@ export default function PMWorkspacePage() {
   };
 
   return (
-    <div className="flex flex-col gap-6 p-4 md:p-6 lg:p-8 max-w-7xl mx-auto">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">PM & Recurring Jobs</h1>
-          <p className="text-sm text-muted-foreground">Manage PM contracts, recurring jobs, and generate work from due schedules</p>
+    // 2026-04-14: align with canonical list-page shell used by Jobs / Invoices.
+    // Previously used max-w-7xl mx-auto + responsive lg:p-8 which framed the
+    // page as a centered document instead of a full-width list surface.
+    <div className="min-h-screen bg-[#F4F8F4]" data-testid="pm-workspace-page">
+      <div className="p-6 space-y-5">
+        <div className="flex items-start justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-slate-900">Preventative Maintenance & Recurring Jobs</h1>
+            <p className="text-sm text-slate-500 mt-0.5">Manage PM contracts, recurring jobs, and generate work from due schedules.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* Both header actions visible on all tabs — single canonical entry points */}
+            <Button size="sm" variant="outline" className="gap-1.5 h-9 rounded-md" onClick={() => setShowRecurringJobDialog(true)}>
+              <Repeat className="h-4 w-4" />New Recurring Job
+            </Button>
+            <Button size="sm" className="gap-1.5 h-9 rounded-md" onClick={() => setLocation("/pm/new")}>
+              <Plus className="h-4 w-4" />New PM Contract
+            </Button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {/* Both header actions visible on all tabs — single canonical entry points */}
-          <Button variant="outline" onClick={() => setShowRecurringJobDialog(true)}>
-            <Repeat className="mr-2 h-4 w-4" />New Recurring Job
-          </Button>
-          <Button onClick={() => setLocation("/pm/new")}><Plus className="mr-2 h-4 w-4" />New PM Contract</Button>
-        </div>
-      </div>
 
       {/* Tab labels: Dashboard, Maintenance, Billing, Recurring Job, History, Templates */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -1914,12 +1927,13 @@ export default function PMWorkspacePage() {
         </TabsContent>
       </Tabs>
 
-      {/* Shared QuickAddJobDialog in recurring mode — canonical entry point for New Recurring Job */}
-      <QuickAddJobDialog
-        open={showRecurringJobDialog}
-        onOpenChange={setShowRecurringJobDialog}
-        mode="recurring"
-      />
+        {/* Shared QuickAddJobDialog in recurring mode — canonical entry point for New Recurring Job */}
+        <QuickAddJobDialog
+          open={showRecurringJobDialog}
+          onOpenChange={setShowRecurringJobDialog}
+          mode="recurring"
+        />
+      </div>
     </div>
   );
 }

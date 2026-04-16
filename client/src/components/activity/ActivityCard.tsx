@@ -41,7 +41,12 @@ interface ActivityFeedResponse {
 }
 
 interface ActivityCardProps {
-  entityType: "invoice" | "job";
+  // 2026-04-14: `quote` added — backend already accepts it via
+  // `eventEntityTypeEnum` in shared/schema.ts and the generic
+  // /api/activity/:entityType/:entityId endpoint. Added to front-end
+  // union + title dictionary so Quote Detail can render the same
+  // canonical activity surface as Job/Invoice Detail.
+  entityType: "invoice" | "job" | "quote";
   entityId: string;
   /** Initial visible count. Default 8. */
   initial?: number;
@@ -52,6 +57,7 @@ interface ActivityCardProps {
 const TITLE_BY_ENTITY: Record<ActivityCardProps["entityType"], string> = {
   invoice: "Activity",
   job: "Activity",
+  quote: "Activity",
 };
 
 /** Canonical exact-time format for activity rows. */
@@ -81,6 +87,15 @@ const TITLE_DICTIONARY: Record<string, string> = {
   "tech.departed": "Technician departed",
   "note.created": "Note added",
   "task.completed": "Task completed",
+  // 2026-04-14 quote events
+  "quote.created": "Quote created",
+  "quote.sent": "Quote emailed",
+  "quote.viewed": "Quote viewed",
+  "quote.approved": "Quote approved",
+  "quote.declined": "Quote declined",
+  "quote.converted": "Converted to job",
+  "quote.expired": "Quote expired",
+  "quote.template_applied": "Template applied",
 };
 
 function humanizeTitle(eventType: string): string {
@@ -183,7 +198,7 @@ export function ActivityCard({
                       <span className="text-xs font-medium text-slate-700 truncate">
                         {humanizeTitle(it.eventType)}
                       </span>
-                      <span className="text-[11px] text-slate-500">
+                      <span className="text-xs text-slate-500">
                         {format(dt, EXACT_DATETIME_FORMAT)}
                         {detail ? ` · ${detail}` : ""}
                       </span>

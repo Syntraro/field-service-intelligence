@@ -63,7 +63,7 @@ export function VisitTeamAssignment({
           <PopoverTrigger asChild>
             <button
               type="button"
-              className="text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-0.5"
+              className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-0.5"
               data-testid="button-assign-technician"
             >
               <Plus className="h-3 w-3" />
@@ -103,7 +103,7 @@ export function VisitTeamAssignment({
           return (
             <span
               key={tid}
-              className="inline-flex items-center gap-1 rounded-full bg-slate-100 pl-2.5 pr-1 py-0.5 text-[11px] font-medium text-slate-700"
+              className="inline-flex items-center gap-1 rounded-full bg-slate-100 pl-2.5 pr-1 py-0.5 text-xs font-medium text-slate-700"
               data-testid={`chip-technician-${tid}`}
             >
               {tech.displayName}

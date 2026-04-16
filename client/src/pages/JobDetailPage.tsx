@@ -428,13 +428,13 @@ function LabourCardContent({
                 >
                   <div className="flex items-center gap-1.5 min-w-0">
                     {showTech && <span className="font-medium text-slate-700 dark:text-slate-200 truncate shrink-0">{entry.technicianName || "Unknown"}</span>}
-                    <span className="text-[11px] text-muted-foreground shrink-0">
+                    <span className="text-xs text-muted-foreground shrink-0">
                       {format(new Date(entry.startAt), "MMM d")}
                       {entry.startAt && entry.endAt && (
                         <span className="ml-0.5 text-slate-400">{format(new Date(entry.startAt), "h:mma")}–{format(new Date(entry.endAt), "h:mma")}</span>
                       )}
                     </span>
-                    <span className={cn("text-[11px] font-medium px-1.5 py-0.5 rounded-full shrink-0",
+                    <span className={cn("text-xs font-medium px-1.5 py-0.5 rounded-full shrink-0",
                       isTravel ? "bg-blue-50 text-blue-600" : entry.sourceType === "task" ? "bg-indigo-50 text-indigo-600" : "bg-emerald-50 text-emerald-600"
                     )}>
                       {isTravel ? "En Route" : entry.sourceType === "task" ? "Task" : entry.sourceType === "manual" ? "Manual" : "On Site"}
@@ -907,7 +907,7 @@ export default function JobDetailPage() {
                       {getJobStatusDisplay(job).label}
                     </StatusPill>
                     {job.openSubStatus === "on_hold" && job.holdReason && (
-                      <Badge variant="outline" className="text-[11px] px-1.5 py-0 border-orange-300 text-orange-700 bg-orange-50" data-testid="hold-reason-badge">
+                      <Badge variant="outline" className="text-xs px-1.5 py-0 border-orange-300 text-orange-700 bg-orange-50" data-testid="hold-reason-badge">
                         {getHoldReasonLabel(job.holdReason)}
                       </Badge>
                     )}
@@ -923,7 +923,7 @@ export default function JobDetailPage() {
                       {clientName}
                     </button>
                     {fullAddress && (
-                      <span className="flex items-center gap-0.5 text-[11px] text-slate-400 mt-0.5">
+                      <span className="flex items-center gap-0.5 text-xs text-slate-400 mt-0.5">
                         <MapPin className="h-2.5 w-2.5 shrink-0" />
                         {fullAddress}
                       </span>
@@ -945,8 +945,8 @@ export default function JobDetailPage() {
                                 onKeyDown={(e) => { if (e.key === "Enter") handleJobNumberSave(); if (e.key === "Escape") handleJobNumberCancel(); }}
                                 className="w-16 h-5 px-1 text-xs border rounded bg-background focus:outline-none focus:ring-1 focus:ring-primary"
                                 autoFocus data-testid="input-job-number" />
-                              <button type="button" onClick={handleJobNumberSave} className="text-primary text-[11px] font-medium" disabled={updateJobNumberMutation.isPending}>{updateJobNumberMutation.isPending ? "…" : "✓"}</button>
-                              <button type="button" onClick={handleJobNumberCancel} className="text-muted-foreground text-[11px]">✕</button>
+                              <button type="button" onClick={handleJobNumberSave} className="text-primary text-xs font-medium" disabled={updateJobNumberMutation.isPending}>{updateJobNumberMutation.isPending ? "…" : "✓"}</button>
+                              <button type="button" onClick={handleJobNumberCancel} className="text-muted-foreground text-xs">✕</button>
                             </div>
                           ) : (
                             <button type="button" onClick={() => { setJobNumberDraft(String(job.jobNumber)); setJobNumberError(null); setEditingJobNumber(true); }}
@@ -955,7 +955,7 @@ export default function JobDetailPage() {
                               <Pencil className="inline ml-0.5 h-2 w-2 opacity-0 group-hover:opacity-40 transition-opacity" />
                             </button>
                           )}
-                          {jobNumberError && <div className="text-[11px] text-destructive">{jobNumberError}</div>}
+                          {jobNumberError && <div className="text-xs text-destructive">{jobNumberError}</div>}
                         </td>
                       </tr>
                       <tr>
@@ -1150,7 +1150,7 @@ export default function JobDetailPage() {
                           className="inline-flex items-center gap-0.5 text-xs text-muted-foreground hover:text-muted-foreground/80" data-testid="button-description-cancel">
                           <X className="h-3 w-3" /> Cancel
                         </button>
-                        <span className="text-[9px] text-muted-foreground/40 ml-auto">Cmd+Enter to save</span>
+                        <span className="text-xs text-muted-foreground/40 ml-auto">Cmd+Enter to save</span>
                       </div>
                     </div>
                   ) : (
@@ -1320,7 +1320,7 @@ export default function JobDetailPage() {
                   <Calendar className="h-4 w-4 text-slate-900" />
                   Visits
                 </span>
-                <span className="text-[11px] text-slate-400 font-medium">{allVisits.length} total</span>
+                <span className="text-xs text-slate-400 font-medium">{allVisits.length} total</span>
               </div>
               <div className="px-3 pb-3">
                 {visitsLoading ? (
@@ -1330,7 +1330,7 @@ export default function JobDetailPage() {
                 ) : sortedVisits.length === 0 ? (
                   <div className="text-center py-4 text-muted-foreground">
                     <Calendar className="h-4 w-4 mx-auto mb-1 opacity-50" />
-                    <p className="text-[11px]">No visits yet</p>
+                    <p className="text-xs">No visits yet</p>
                   </div>
                 ) : (
                   <>
@@ -1348,7 +1348,7 @@ export default function JobDetailPage() {
                           {getVisitCrewLabel(visit as any)}
                         </span>
                         {visit.status !== "scheduled" && (
-                          <Badge className={cn("text-[9px] px-1.5 py-0 shrink-0 leading-tight", VISIT_STATUS_COLORS[visit.status] || "")}>
+                          <Badge className={cn("text-xs px-1.5 py-0 shrink-0 leading-tight", VISIT_STATUS_COLORS[visit.status] || "")}>
                             {visitStatusLabel(visit.status)}
                           </Badge>
                         )}

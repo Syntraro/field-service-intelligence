@@ -145,7 +145,7 @@ export default function JobNotesSection({ jobId, embedded = false, onCountChange
                   {" · "}
                   {format(new Date(note.createdAt), "MMM d, h:mm a")}
                   {note.updatedAt && note.updatedAt !== note.createdAt && (
-                    <span className="ml-1 text-[11px] text-slate-400">(edited)</span>
+                    <span className="ml-1 text-xs text-slate-400">(edited)</span>
                   )}
                 </span>
               </div>

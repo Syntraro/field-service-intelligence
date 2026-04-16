@@ -61,7 +61,7 @@ function MultiSelectDropdown({
     <div ref={ref} className="relative">
       <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={() => setOpen(o => !o)}>
         {label}
-        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">{badge}</span>
+        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-semibold text-slate-600">{badge}</span>
         <ChevronDown className={`h-3 w-3 transition-transform ${open ? "rotate-180" : ""}`} />
       </Button>
       {open && (
@@ -91,9 +91,9 @@ export default function DispatchFiltersBar({
       <MultiSelectDropdown label="Technicians" count={selectedTechIds.size} total={totalFilterable}>
         <div className="p-2">
           <div className="mb-2 flex gap-1">
-            <button onClick={onTechSelectAll} className="text-[11px] text-primary hover:underline">Select All</button>
-            <span className="text-[11px] text-muted-foreground">|</span>
-            <button onClick={onTechClearAll} className="text-[11px] text-primary hover:underline">Clear All</button>
+            <button onClick={onTechSelectAll} className="text-xs text-primary hover:underline">Select All</button>
+            <span className="text-xs text-muted-foreground">|</span>
+            <button onClick={onTechClearAll} className="text-xs text-primary hover:underline">Clear All</button>
           </div>
           {technicians.map(t => (
             <button key={t.id} onClick={() => onTechToggle(t.id)}

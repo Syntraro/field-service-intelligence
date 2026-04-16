@@ -11,8 +11,6 @@ import { sql } from "drizzle-orm";
 
 const router = express.Router();
 
-const MANAGER_ROLES = RESTRICTED_MANAGER_ROLES;
-
 // ========================================
 // VALIDATION SCHEMAS
 // ========================================
@@ -22,7 +20,7 @@ const createTechnicianSchema = z.object({
   userId: z.string().uuid().optional(),
 });
 
-router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+router.post("/", requireRole(RESTRICTED_MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const validation = createTechnicianSchema.safeParse(req.body);
   if (!validation.success) {
     throw createError(400, "Validation failed");

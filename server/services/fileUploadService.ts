@@ -25,6 +25,7 @@ import {
   invoices,
   jobNotes,
   jobs,
+  jobExpenses,
   jobNoteAttachments,
   clientNotes,
   clientLocations,
@@ -88,6 +89,8 @@ function resolveCategory(entityType: FileEntityType, mimeType: string): FileCate
       return "technician_document";
     case "invoice_email_attachment":
       return "other";
+    case "job_expense_receipt":
+      return "job_expense_receipt";
     default: {
       const _exhaustive: never = entityType;
       return "other";
@@ -169,7 +172,11 @@ export type FileEntityType =
   // 2026-04-13 (Commit C): transient image attachments for invoice send flow.
   // No persistent join table — the file is referenced by id from the send
   // payload at send time only.
-  | "invoice_email_attachment";
+  | "invoice_email_attachment"
+  // 2026-04-14 Phase 1 cleanup: receipts owned 1:1 by a job_expense row.
+  // No join table — the adapter writes back to jobExpenses.receiptFileId
+  // (same ownership pattern as invoice_email_attachment, but persistent).
+  | "job_expense_receipt";
 
 /** Context returned by a resolver. Carries whatever the key builder needs. */
 type EntityContext = Record<string, string> & { tenantId: string };
@@ -280,6 +287,16 @@ async function resolveInvoiceForEmail(companyId: string, invoiceId: string): Pro
     .limit(1);
   if (!row) throw createError(404, "Invoice not found");
   return { tenantId: companyId, invoiceId: row.id };
+}
+
+async function resolveJobExpense(companyId: string, expenseId: string): Promise<EntityContext> {
+  const [row] = await db
+    .select({ id: jobExpenses.id, jobId: jobExpenses.jobId })
+    .from(jobExpenses)
+    .where(and(eq(jobExpenses.id, expenseId), eq(jobExpenses.companyId, companyId)))
+    .limit(1);
+  if (!row) throw createError(404, "Job expense not found");
+  return { tenantId: companyId, jobId: row.jobId, expenseId: row.id };
 }
 
 async function resolveTechnician(companyId: string, technicianId: string): Promise<EntityContext> {
@@ -405,6 +422,24 @@ const ENTITY_ADAPTERS: Record<FileEntityType, EntityAdapter> = {
     // references it by id. `ensureAttachment` is a no-op.
     ensureAttachment: async () => {},
     detachByFileId: async () => {},
+  },
+  job_expense_receipt: {
+    resolve: resolveJobExpense,
+    buildObjectKey: (ctx, fileId, filename) =>
+      `tenants/${ctx.tenantId}/jobs/${ctx.jobId}/expenses/${ctx.expenseId}/${fileId}/${sanitizeFilename(filename)}`,
+    ensureAttachment: async (companyId, _userId, expenseId, fileId) => {
+      // 1:1 link lives on the owning row — write-back the canonical FK.
+      await db
+        .update(jobExpenses)
+        .set({ receiptFileId: fileId, updatedAt: new Date() })
+        .where(and(eq(jobExpenses.id, expenseId), eq(jobExpenses.companyId, companyId)));
+    },
+    detachByFileId: async (companyId, fileId) => {
+      await db
+        .update(jobExpenses)
+        .set({ receiptFileId: null, updatedAt: new Date() })
+        .where(and(eq(jobExpenses.receiptFileId, fileId), eq(jobExpenses.companyId, companyId)));
+    },
   },
   technician_document: {
     resolve: resolveTechnician,

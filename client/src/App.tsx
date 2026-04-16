@@ -6,6 +6,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { PwaUpdatePrompt } from "@/components/PwaUpdatePrompt";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider, useAuth } from "@/lib/auth";
+import { isPlatformRole } from "@/lib/platformRoles";
 import { useToast } from "@/hooks/use-toast";
 import { useDispatchStream } from "@/hooks/useDispatchStream";
 import ProtectedRoute from "@/components/ProtectedRoute";
@@ -33,6 +34,13 @@ const AdminQboRuns = lazy(() => import("@/pages/AdminQboRuns"));
 const AdminQboRunDetail = lazy(() => import("@/pages/AdminQboRunDetail"));
 const AdminQboQueue = lazy(() => import("@/pages/AdminQboQueue"));
 const SupportConsole = lazy(() => import("@/pages/SupportConsole"));
+// Phase 6 (Ops Portal UI) — lazy-load platform surfaces.
+const PlatformTenantsList = lazy(() => import("@/pages/platform/PlatformTenantsList"));
+const PlatformTenantDetail = lazy(() => import("@/pages/platform/PlatformTenantDetail"));
+const PlatformFeedbackPage = lazy(() => import("@/pages/platform/PlatformFeedbackPage"));
+const PlatformIssuesPage = lazy(() => import("@/pages/platform/PlatformIssuesPage"));
+const PlatformSupportSessionsPage = lazy(() => import("@/pages/platform/PlatformSupportSessionsPage"));
+const SupportAccessPage = lazy(() => import("@/pages/SupportAccessPage"));
 // 2026-03-21: AddClientPage and NewClientPage removed — replaced by canonical CreateClientModal
 import Clients from "@/pages/Clients";
 import ClientDetailPage from "@/pages/ClientDetailPage";
@@ -94,10 +102,14 @@ import { ImpersonationBanner } from "@/components/ImpersonationBanner";
 import { CreateClientModal } from "@/components/CreateClientModal";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import UniversalSearch from "@/components/UniversalSearch";
-import { QuoteTemplateChooserModal } from "@/components/QuoteTemplateChooserModal";
 import { NewQuoteModal } from "@/components/NewQuoteModal";
-import { useState } from "react";
-import { Plus, MoreHorizontal, Settings, MessageCircle, LogOut, ClipboardList, Users, Receipt, FileText, CheckSquare, Wrench } from "lucide-react";
+import { NewInvoiceModal } from "@/components/NewInvoiceModal";
+import { TasksPanel, useActiveTaskCount } from "@/components/tasks/TasksPanel";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Badge } from "@/components/ui/badge";
+import { useState, useEffect } from "react";
+import { Plus, MoreHorizontal, Settings, MessageCircle, LogOut, ClipboardList, Users, Receipt, FileText, CheckSquare, Wrench, HelpCircle, Shield } from "lucide-react";
+import { HelpPanel } from "@/components/help/HelpPanel";
 import { TaskDialog } from "@/components/TaskDialog";
 import syntaroLogo from "@/assets/Syntraro Logo Transparent.png";
 import { Button } from "@/components/ui/button";
@@ -287,6 +299,45 @@ function Router() {
       <Route path="/support-console">
         <ProtectedRoute requirePlatformAdmin>
           <SupportConsole />
+        </ProtectedRoute>
+      </Route>
+
+      {/* Phase 6: Platform Ops Portal (any platform role). */}
+      <Route path="/platform">
+        <ProtectedRoute requirePlatformRole>
+          <PlatformTenantsList />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/platform/tenants">
+        <ProtectedRoute requirePlatformRole>
+          <PlatformTenantsList />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/platform/tenants/:id">
+        <ProtectedRoute requirePlatformRole>
+          <PlatformTenantDetail />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/platform/feedback">
+        <ProtectedRoute requirePlatformRole>
+          <PlatformFeedbackPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/platform/issues">
+        <ProtectedRoute requirePlatformRole>
+          <PlatformIssuesPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/platform/support-sessions">
+        <ProtectedRoute requirePlatformRole>
+          <PlatformSupportSessionsPage />
+        </ProtectedRoute>
+      </Route>
+
+      {/* Phase 6: Tenant-side support access management (owner/admin). */}
+      <Route path="/settings/support-access">
+        <ProtectedRoute requireAdmin>
+          <SupportAccessPage />
         </ProtectedRoute>
       </Route>
       {/* 2026-03-21: /add-client and /clients/new routes removed — client creation
@@ -520,10 +571,31 @@ function AppContent() {
   const [addClientModalOpen, setAddClientModalOpen] = useState(false);
   const [addJobModalOpen, setAddJobModalOpen] = useState(false);
   const [newTaskOpen, setNewTaskOpen] = useState(false);
+  // 2026-04-15: Tasks header popover. Auto-closes on route change so the
+  // panel never outlives its context. Count badge below reads the same
+  // query the panel uses, so open/close has no extra network cost.
+  const [tasksPopoverOpen, setTasksPopoverOpen] = useState(false);
+  useEffect(() => { setTasksPopoverOpen(false); }, [location]);
+  // 2026-04-15: Help header popover. Same route-change-close pattern
+  // as Tasks; both popovers are independent Radix instances so they
+  // do not interfere with one another. No backend/query dependency.
+  const [helpPopoverOpen, setHelpPopoverOpen] = useState(false);
+  useEffect(() => { setHelpPopoverOpen(false); }, [location]);
+  // Security/isolation fix: platform users have no tenant task context.
+  // Pass `enabled: false` so no /api/tasks query fires for them.
+  const activeTaskCount = useActiveTaskCount({ enabled: !isPlatformRole(user?.role) });
   const [feedbackOpen, setFeedbackOpen] = useState(false);
-  const [quoteChooserOpen, setQuoteChooserOpen] = useState(false);
   const [newQuoteModalOpen, setNewQuoteModalOpen] = useState(false);
-  const [selectedQuoteTemplateId, setSelectedQuoteTemplateId] = useState<string | null>(null);
+  // 2026-04-15: New invoice entry modal. Replaces the initial
+  // client-selection page step for the header "New" + Universal
+  // Search entry flows. The /invoices/new route is preserved for
+  // the InvoicesListPage link and any direct URL entry.
+  const [newInvoiceModalOpen, setNewInvoiceModalOpen] = useState(false);
+
+  const isAuthPage = ['/login', '/signup', '/request-reset', '/reset-password'].includes(location);
+  const isPortalPage = location.startsWith('/portal');
+  const isTechnicianPage = location.startsWith('/tech'); // Restored 2026-04-03 for technician preview
+  const isPlatformUser = isPlatformRole(user?.role);
 
   // Realtime: single SSE subscription for the entire authenticated office app.
   // Internally guarded on user state — won't connect on portal/auth/tech routes.
@@ -533,16 +605,33 @@ function AppContent() {
 
   // Company settings for header display — shared query key, TanStack deduplicates
   // Architecture rule: app shell must NOT fetch dispatch/calendar/scheduling data.
+  // Security/isolation fix: gated off for platform-role users so no
+  // tenant-scoped shell query fires for them.
   const { data: companySettings } = useQuery<{ companyName?: string }>({
     queryKey: ["/api/company-settings"],
-    enabled: Boolean(user?.id),
+    enabled: Boolean(user?.id) && !isPlatformUser,
     staleTime: 5 * 60 * 1000,
   });
   const companyDisplayName = companySettings?.companyName || "";
 
-  const isAuthPage = ['/login', '/signup', '/request-reset', '/reset-password'].includes(location);
-  const isPortalPage = location.startsWith('/portal');
-  const isTechnicianPage = location.startsWith('/tech'); // Restored 2026-04-03 for technician preview
+  // Security/isolation fix: platform-role users must NEVER mount the tenant
+  // shell (tenant header, AppSidebar, Tasks badge, UniversalSearch). They
+  // are redirected into the canonical Ops Portal and render a minimal shell.
+  // This conditional return comes AFTER all hooks above so React's
+  // rules-of-hooks stay intact.
+  if (isPlatformUser && !isAuthPage && !isPortalPage && !isTechnicianPage) {
+    if (!location.startsWith("/platform")) {
+      setLocation("/platform/tenants");
+      return null;
+    }
+    return (
+      <>
+        <ImpersonationBanner />
+        <Router />
+      </>
+    );
+  }
+
   // Portal pages use a completely separate layout and auth
   if (isPortalPage) {
     return (
@@ -611,15 +700,76 @@ function AppContent() {
           <div className="flex-1" />
 
           {/* Search — right-aligned, before action controls */}
+          {/* 2026-04-15: Quick Actions in UniversalSearch are an exact
+              mirror of the header "New" dropdown below. Each callback
+              here MUST match the corresponding DropdownMenuItem's
+              onClick verbatim — not a similar route, not a list page,
+              the same setter/route the "New" menu uses. */}
           <UniversalSearch
             onCreateJob={() => setAddJobModalOpen(true)}
-            onCreateQuote={() => setQuoteChooserOpen(true)}
-            onCreateInvoice={() => setLocation("/invoices")}
+            onCreateClient={() => setAddClientModalOpen(true)}
+            onCreateInvoice={() => setNewInvoiceModalOpen(true)}
+            // Quote entry opens the unified NewQuoteModal directly.
+            // Template selection is inline inside that modal; there
+            // is no longer a separate chooser step.
+            onCreateQuote={() => setNewQuoteModalOpen(true)}
+            onCreateTask={() => setNewTaskOpen(true)}
           />
 
-          {/* Right: Quick Create dropdown + More menu */}
+          {/* Right: Tasks popover + Quick Create dropdown + More menu */}
           {!isTechnicianPage && (
             <div className="flex items-center gap-3 shrink-0">
+              {/* 2026-04-15 — Tasks global popover. Relocated from the
+                  Dashboard right-sidebar card; accessible from every
+                  office surface. Trigger mirrors the compact height/
+                  rhythm of the New button next to it; the popover
+                  itself is a 380px card sized to max-h-[70vh] with an
+                  internal scroll region. aria-expanded is wired by
+                  PopoverTrigger so screen readers announce state. */}
+              <Popover open={tasksPopoverOpen} onOpenChange={setTasksPopoverOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    data-testid="button-tasks-header"
+                    // 2026-04-15 visibility fix: the prior `border-slate-200
+                    // text-slate-700` pair was a light-background control
+                    // dropped into a dark #222b36 header — icon/label were
+                    // effectively invisible at rest. Switched to a subtle
+                    // dark-tonal utility button that sits beside the header
+                    // hue without competing with the primary (green) New
+                    // button. Tonal family matches the header.
+                    className="relative gap-1.5 h-8 px-3 text-sm font-medium bg-slate-800/60 border-slate-700 text-slate-100 hover:bg-slate-700 hover:text-white"
+                    aria-label={`Tasks${activeTaskCount > 0 ? ` (${activeTaskCount} active)` : ""}`}
+                  >
+                    <ClipboardList className="h-4 w-4" />
+                    <span className="hidden sm:inline">Tasks</span>
+                    {activeTaskCount > 0 && (
+                      <Badge
+                        variant="secondary"
+                        className="h-5 min-w-5 px-1.5 text-xs rounded-full bg-[#76B054] text-white border-transparent"
+                        data-testid="badge-tasks-count"
+                      >
+                        {/* Presentation cap only — underlying count is
+                            unchanged. >20 renders as "20+" so the badge
+                            stays compact and precision beyond 20 isn't
+                            implied when it isn't needed. */}
+                        {activeTaskCount > 20 ? "20+" : activeTaskCount}
+                      </Badge>
+                    )}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent
+                  align="end"
+                  sideOffset={8}
+                  // 0 padding so the inner TasksPanel card renders edge-to-edge.
+                  // Width is driven by the panel itself (380px).
+                  className="p-0 w-auto border-0 bg-transparent shadow-none"
+                >
+                  <TasksPanel onRequestClose={() => setTasksPopoverOpen(false)} />
+                </PopoverContent>
+              </Popover>
+
               {/* Quick Create dropdown — replaces slide-over drawer for top-level menu */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -644,7 +794,7 @@ function AppContent() {
                     <Users className="h-4 w-4 mr-2" />
                     New Client
                   </DropdownMenuItem>
-                  <DropdownMenuItem data-testid="quick-new-invoice" onClick={() => setLocation("/invoices/new")}>
+                  <DropdownMenuItem data-testid="quick-new-invoice" onClick={() => setNewInvoiceModalOpen(true)}>
                     <Receipt className="h-4 w-4 mr-2" />
                     New Invoice
                   </DropdownMenuItem>
@@ -663,6 +813,52 @@ function AppContent() {
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
+
+              {/* 2026-04-15 — Help global popover. Sits between the New
+                  dropdown and the More menu so it reads as a utility
+                  control, not a primary action. Trigger mirrors the
+                  Tasks button's tonal style for header consistency;
+                  the panel itself is the same 380px card geometry. */}
+              <Popover open={helpPopoverOpen} onOpenChange={setHelpPopoverOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    data-testid="button-help-header"
+                    // 2026-04-15 polish: icon-only trigger. The ? glyph
+                    // is a universal help affordance, so the label was
+                    // removed to tighten the header rhythm. aria-label
+                    // preserves the name for assistive tech.
+                    className="h-8 w-8 bg-slate-800/60 border-slate-700 text-slate-100 hover:bg-slate-700 hover:text-white"
+                    aria-label="Help"
+                    title="Help"
+                  >
+                    <HelpCircle className="h-4 w-4" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent
+                  align="end"
+                  sideOffset={8}
+                  className="p-0 w-auto border-0 bg-transparent shadow-none"
+                >
+                  <HelpPanel
+                    onRequestClose={() => setHelpPopoverOpen(false)}
+                    // Both footer actions route to the canonical
+                    // FeedbackDialog (audit: no mailto/support email
+                    // wired elsewhere in the app — FeedbackDialog is
+                    // the existing support channel).
+                    onEmailSupport={() => {
+                      setHelpPopoverOpen(false);
+                      setFeedbackOpen(true);
+                    }}
+                    onProvideFeedback={() => {
+                      setHelpPopoverOpen(false);
+                      setFeedbackOpen(true);
+                    }}
+                  />
+                </PopoverContent>
+              </Popover>
+
               {/* More menu — Settings, Feedback, Logout */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -679,6 +875,17 @@ function AppContent() {
                     <MessageCircle className="h-4 w-4 mr-2" />
                     Feedback
                   </DropdownMenuItem>
+                  {/* Phase 7 (Production Readiness): platform ops entry. */}
+                  {/* Rendered ONLY when the signed-in user holds a platform role. */}
+                  {user && ["platform_admin", "platform_support", "platform_billing", "platform_readonly_audit"].includes(user.role as string) && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={() => setLocation("/platform/tenants")} data-testid="menu-platform-ops">
+                        <Shield className="h-4 w-4 mr-2" />
+                        Platform Ops
+                      </DropdownMenuItem>
+                    </>
+                  )}
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={handleLogout} data-testid="menu-logout">
                     <LogOut className="h-4 w-4 mr-2" />
@@ -716,18 +923,13 @@ function AppContent() {
         onOpenChange={setNewTaskOpen}
         onChanged={() => {}}
       />
-      <QuoteTemplateChooserModal
-        open={quoteChooserOpen}
-        onOpenChange={setQuoteChooserOpen}
-        onSelect={(templateId) => {
-          setSelectedQuoteTemplateId(templateId);
-          setNewQuoteModalOpen(true);
-        }}
-      />
       <NewQuoteModal
         open={newQuoteModalOpen}
         onOpenChange={setNewQuoteModalOpen}
-        templateId={selectedQuoteTemplateId}
+      />
+      <NewInvoiceModal
+        open={newInvoiceModalOpen}
+        onOpenChange={setNewInvoiceModalOpen}
       />
       <TimezoneSetupDialog />
       <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} />

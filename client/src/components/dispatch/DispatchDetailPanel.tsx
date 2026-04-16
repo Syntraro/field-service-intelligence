@@ -104,7 +104,7 @@ import { DURATION_MINUTES as DURATION_OPTIONS } from "@/lib/schedulingConstants"
 function Section({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="border-b pb-2 mb-2 last:border-b-0">
-      <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-1">{title}</p>
+      <p className="text-xs uppercase tracking-wider text-muted-foreground font-semibold mb-1">{title}</p>
       {children}
     </div>
   );
@@ -177,7 +177,7 @@ function CrewPicker({
         <button className="flex w-full items-center gap-2 rounded border px-2 py-1.5 text-xs hover:bg-slate-50 transition-colors">
           <Users className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
           <span className="flex-1 text-left truncate">{summary}</span>
-          <span className="text-[10px] text-blue-600 font-medium flex-shrink-0">{currentIds.length}</span>
+          <span className="text-xs text-blue-600 font-medium flex-shrink-0">{currentIds.length}</span>
           <ChevronDown className="h-3 w-3 text-muted-foreground flex-shrink-0" />
         </button>
       </PopoverTrigger>
@@ -239,7 +239,7 @@ function CrewPicker({
         </div>
         {/* Footer */}
         {currentIds.length > 1 && (
-          <p className="px-2 py-1.5 text-[10px] text-blue-600 leading-tight border-t">
+          <p className="px-2 py-1.5 text-xs text-blue-600 leading-tight border-t">
             Schedule changes apply to all {currentIds.length} assigned technicians.
           </p>
         )}
@@ -366,7 +366,7 @@ function UnscheduledScheduleForm({
               <Users className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
               <span className="flex-1 text-left truncate">{techSummary}</span>
               {selectedTechIds.length > 0 && (
-                <span className="text-[10px] text-blue-600 font-medium flex-shrink-0">{selectedTechIds.length}</span>
+                <span className="text-xs text-blue-600 font-medium flex-shrink-0">{selectedTechIds.length}</span>
               )}
               <ChevronDown className="h-3 w-3 text-muted-foreground flex-shrink-0" />
             </button>
@@ -620,31 +620,31 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
             </p>
             {/* 2. Location name — directly under client (if distinct) */}
             {visit.locationName && visit.locationName !== visit.customerName && (
-              <p className="text-[11px] text-muted-foreground truncate mt-0.5 flex items-center gap-1">
+              <p className="text-xs text-muted-foreground truncate mt-0.5 flex items-center gap-1">
                 <MapPin className="h-2.5 w-2.5 flex-shrink-0" />{visit.locationName}
               </p>
             )}
             {/* 2b. Service address — formatted street, city, province */}
             {visit.locationAddress && (
-              <p className="text-[10px] text-muted-foreground/70 truncate mt-0.5 pl-3.5">
+              <p className="text-xs text-muted-foreground/70 truncate mt-0.5 pl-3.5">
                 {[visit.locationAddress, visit.locationCity, visit.locationProvinceState, visit.locationPostalCode].filter(Boolean).join(", ")}
               </p>
             )}
             {/* 3. Summary / description */}
             {visit.summary && (
-              <p className="text-[11px] text-muted-foreground truncate mt-0.5">{visit.summary}</p>
+              <p className="text-xs text-muted-foreground truncate mt-0.5">{visit.summary}</p>
             )}
             {/* 4. Job reference — clickable link */}
             <div className="flex items-center gap-2 mt-1">
               <Link
                 href={`/jobs/${visit.jobId}`}
-                className="text-[10px] text-blue-600 hover:underline font-medium"
+                className="text-xs text-blue-600 hover:underline font-medium"
               >
                 Job #{visit.jobNumber}
               </Link>
               {/* Visit ordinal de-emphasized — job status is primary dispatch context */}
               {visit.technicianIds.length > 1 && (
-                <span className="flex items-center gap-0.5 rounded bg-blue-100 px-1 py-px text-[9px] font-semibold text-blue-700">
+                <span className="flex items-center gap-0.5 rounded bg-blue-100 px-1 py-px text-xs font-semibold text-blue-700">
                   <Users className="h-2.5 w-2.5" />{visit.technicianIds.length}
                 </span>
               )}
@@ -664,20 +664,20 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
         {/* 4. Compact status row — no Section wrapper */}
         <div className="flex items-center gap-2 mb-2 pb-2 border-b">
           {/* Job-status-first: badge matches card color for dispatch consistency */}
-          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium border ${jobStateColor(visit.jobStatus, visit.jobOpenSubStatus ?? null)}`}>
+          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium border ${jobStateColor(visit.jobStatus, visit.jobOpenSubStatus ?? null)}`}>
             {isCompleted && <CheckCircle2 className="h-3 w-3 mr-1" />}
             {jobStateLabel(visit.jobStatus, visit.jobOpenSubStatus ?? null)}
           </span>
           {visit.priority !== "normal" && (
-            <span className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
-              visit.priority === "urgent" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
-            }`}>
+            <span className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs font-semibold uppercase ${
+ visit.priority === "urgent" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
+ }`}>
               <AlertTriangle className="h-2.5 w-2.5" />
               {visit.priority}
             </span>
           )}
           {visit.jobType && (
-            <span className="text-[10px] text-muted-foreground">{visit.jobType}</span>
+            <span className="text-xs text-muted-foreground">{visit.jobType}</span>
           )}
         </div>
 
@@ -830,7 +830,7 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
           <div className="mt-1">
             <div className="flex items-center gap-1.5 mb-1">
               <FileText className="h-3 w-3 text-muted-foreground shrink-0" />
-              <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Visit Notes</span>
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Visit Notes</span>
               {onUpdateVisitNotes && !editingNotes && (
                 <button
                   type="button"
@@ -867,14 +867,14 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
                   <button
                     type="button"
                     onClick={() => setEditingNotes(false)}
-                    className="px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground rounded"
+                    className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground rounded"
                   >
                     Cancel
                   </button>
                   <button
                     type="button"
                     onClick={handleSaveNotes}
-                    className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded"
+                    className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded"
                   >
                     <Save className="h-2.5 w-2.5" /> Save
                   </button>
@@ -1009,7 +1009,7 @@ function TaskDetail({ task, onClose, technicians, laneVisits = [], laneTasks = [
               {isTaskCompleted && <CheckCircle2 className="h-3.5 w-3.5 text-slate-400 inline mr-1 -mt-0.5" />}
               {task.title}
             </p>
-            <p className="text-[11px] text-muted-foreground">{typeLabel}</p>
+            <p className="text-xs text-muted-foreground">{typeLabel}</p>
           </div>
         </div>
         <button
@@ -1022,7 +1022,7 @@ function TaskDetail({ task, onClose, technicians, laneVisits = [], laneTasks = [
 
       <div className={mode === "popover" ? "px-3 py-2 overflow-y-auto" : "flex-1 overflow-y-auto px-3 py-2"}>
         <div className="flex items-center gap-2 mb-2 pb-2 border-b">
-          <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 capitalize">
+          <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 capitalize">
             {task.status.replace("_", " ")}
           </span>
         </div>

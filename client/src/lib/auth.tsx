@@ -84,6 +84,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ email, password }),
       }),
     onSuccess: (userData) => {
+      // Security/isolation fix: wipe any cached tenant data from a prior
+      // session BEFORE seeding the new identity. Without this, a user who
+      // signs in after a different tenant user in the same tab inherits
+      // stale data (/api/company-settings, tasks, etc.) until refetch.
+      queryClient.cancelQueries();
+      queryClient.clear();
       setUser(userData);
       setUserInitialized(true);
       queryClient.setQueryData(["/api/auth/me"], userData);
@@ -105,6 +111,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ email, password }),
       }),
     onSuccess: (userData) => {
+      // Same rationale as loginMutation onSuccess — isolation between sessions.
+      queryClient.cancelQueries();
+      queryClient.clear();
       setUser(userData);
       setUserInitialized(true);
       queryClient.setQueryData(["/api/auth/me"], userData);

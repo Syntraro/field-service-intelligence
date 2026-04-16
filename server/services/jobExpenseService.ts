@@ -10,6 +10,7 @@
 import { jobExpensesRepository } from "../storage/jobExpenses";
 import { storage } from "../storage/index";
 import type { ExpenseCategory } from "@shared/schema";
+import { assertWritableSupportContext } from "../auth/supportContext";
 
 // ============================================================================
 // Create
@@ -23,10 +24,10 @@ export async function createExpense(params: {
   date: string | Date;
   notes?: string | null;
   createdByUserId: string;
-  receiptFileId?: string | null;
   isBillable?: boolean;
   reimbursableToUserId?: string | null;
 }) {
+  assertWritableSupportContext("jobExpense.create");
   const job = await storage.getJob(params.companyId, params.jobId);
   if (!job) {
     const err = new Error("Job not found");
@@ -41,7 +42,6 @@ export async function createExpense(params: {
     date: typeof params.date === "string" ? new Date(params.date) : params.date,
     notes: params.notes,
     createdByUserId: params.createdByUserId,
-    receiptFileId: params.receiptFileId,
     isBillable: params.isBillable,
     reimbursableToUserId: params.reimbursableToUserId,
   });
@@ -58,10 +58,10 @@ export async function updateExpense(params: {
   category?: ExpenseCategory;
   date?: string | Date;
   notes?: string | null;
-  receiptFileId?: string | null;
   isBillable?: boolean;
   reimbursableToUserId?: string | null;
 }) {
+  assertWritableSupportContext("jobExpense.update");
   const existing = await jobExpensesRepository.getExpenseById(params.companyId, params.expenseId);
   if (!existing) {
     const err = new Error("Expense not found");
@@ -83,7 +83,6 @@ export async function updateExpense(params: {
       ? (typeof params.date === "string" ? new Date(params.date) : params.date)
       : undefined,
     notes: params.notes,
-    receiptFileId: params.receiptFileId,
     isBillable: params.isBillable,
     reimbursableToUserId: params.reimbursableToUserId,
   });
@@ -94,6 +93,7 @@ export async function updateExpense(params: {
 // ============================================================================
 
 export async function deleteExpense(companyId: string, expenseId: string) {
+  assertWritableSupportContext("jobExpense.delete");
   const existing = await jobExpensesRepository.getExpenseById(companyId, expenseId);
   if (!existing) {
     const err = new Error("Expense not found");
@@ -127,5 +127,6 @@ export async function getBillableExpensesForInvoice(companyId: string, jobId: st
  * Mark expenses as invoiced after they've been added to an invoice.
  */
 export async function markExpensesAsInvoiced(companyId: string, expenseIds: string[]) {
+  assertWritableSupportContext("jobExpense.markInvoiced");
   return jobExpensesRepository.markExpensesAsInvoiced(companyId, expenseIds);
 }

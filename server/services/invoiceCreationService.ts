@@ -16,6 +16,7 @@ import { db } from "../db";
 import { and, eq } from "drizzle-orm";
 import { invoiceTaxLines } from "@shared/schema";
 import type { InvoiceCreationSource } from "../storage/invoices";
+import { assertWritableSupportContext } from "../auth/supportContext";
 
 // ============================================================================
 // Due Date Calculation (F-06: single source of truth)
@@ -66,6 +67,7 @@ export async function createInvoiceFromJob(
   creationSource: InvoiceCreationSource = "INVOICE_ROUTE",
   txHandle?: any
 ): Promise<CreateFromJobResult> {
+  assertWritableSupportContext("invoice.createFromJob");
   // Step 1: Create invoice shell (uses txHandle if provided for atomic close+invoice flow)
   const result = await storage.createInvoiceFromJob(
     companyId,
@@ -200,6 +202,7 @@ export async function applyTaxGroupToInvoice(
   taxGroupId: string | null,
   txHandle?: any
 ): Promise<void> {
+  assertWritableSupportContext("invoice.applyTaxGroup");
   if (txHandle) {
     return applyTaxGroupCore(companyId, invoiceId, taxGroupId, txHandle);
   }

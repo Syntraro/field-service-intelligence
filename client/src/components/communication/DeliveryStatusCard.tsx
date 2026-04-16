@@ -86,7 +86,7 @@ function StatusBadge({ status }: { status: DeliverySummary["status"] }) {
   const Icon = meta.icon;
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${meta.className}`}
+      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${meta.className}`}
       data-testid={`badge-delivery-status-${status}`}
     >
       <Icon className="h-3 w-3" />
@@ -217,7 +217,7 @@ export function DeliveryStatusCard({ entityType, entityId, onResendSuccess }: De
             </span>
           </div>
           {latest.errorMessage && (
-            <div className="rounded-md bg-red-50 border border-red-200 text-red-800 px-2.5 py-1.5 text-[11px]">
+            <div className="rounded-md bg-red-50 border border-red-200 text-red-800 px-2.5 py-1.5 text-xs">
               {latest.errorMessage}
             </div>
           )}
@@ -226,7 +226,7 @@ export function DeliveryStatusCard({ entityType, entityId, onResendSuccess }: De
         <div className="flex items-center justify-between gap-2 pt-1">
           <button
             type="button"
-            className="text-[11px] text-muted-foreground hover:text-foreground"
+            className="text-xs text-muted-foreground hover:text-foreground"
             onClick={() => setShowHistory((v) => !v)}
             data-testid="button-toggle-delivery-history"
           >
@@ -253,7 +253,7 @@ export function DeliveryStatusCard({ entityType, entityId, onResendSuccess }: De
         {showHistory && history.length > 0 && (
           <ul className="border-t pt-2 space-y-1.5" data-testid="list-delivery-history">
             {history.map((d) => (
-              <li key={d.id} className="flex items-start gap-2 text-[11px]">
+              <li key={d.id} className="flex items-start gap-2 text-xs">
                 <StatusBadge status={d.status} />
                 <div className="flex-1 min-w-0">
                   <div className="truncate">
@@ -270,7 +270,7 @@ export function DeliveryStatusCard({ entityType, entityId, onResendSuccess }: De
         )}
 
         {resendError && (
-          <div className="rounded-md bg-red-50 border border-red-200 text-red-800 px-2.5 py-1.5 text-[11px]">
+          <div className="rounded-md bg-red-50 border border-red-200 text-red-800 px-2.5 py-1.5 text-xs">
             {resendError}
           </div>
         )}

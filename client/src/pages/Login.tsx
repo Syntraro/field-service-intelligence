@@ -4,6 +4,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useAuth } from "@/lib/auth";
+import { isPlatformRole } from "@/lib/platformRoles";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
@@ -47,6 +48,11 @@ export default function Login() {
       // Role-aware destination, computed at the moment of success.
       if (userData.role === "technician") {
         setLocation("/tech/today");
+        return;
+      }
+      // Platform roles land in the Ops Portal — never the tenant shell.
+      if (isPlatformRole(userData.role)) {
+        setLocation("/platform/tenants");
         return;
       }
       const params = new URLSearchParams(window.location.search);

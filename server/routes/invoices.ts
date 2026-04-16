@@ -1236,8 +1236,16 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
   }
   checkQboBillingLock(invoice, { status: 'awaiting_payment' }, { overrideQboLock, overrideReason });
 
-  // ── 3. Dispatch email BEFORE mutating invoice state ──────────────────────
+  // ── 3. Dispatch email + atomically transition invoice state ──────────────
   // Phase 4 correction: if email fails, invoice must NOT be marked sent.
+  // 2026-04-14 Phase D atomicity: the invoice status update runs inside
+  // the same DB transaction as `markSent` via the afterMarkSent callback.
+  // Either both the delivery flip and the invoice update commit, or
+  // neither — closing the orphan window where the delivery was `sent`
+  // but the invoice was still `draft`.
+  let updated: Awaited<ReturnType<typeof storage.updateInvoice>> = null;
+  let warning: string | undefined;
+
   const dispatch = await emailDispatchService.sendInvoiceEmail({
     tenantId,
     invoiceId,
@@ -1248,51 +1256,43 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
     attachPdf,
     attachmentFileIds,
     createdByUserId: req.user?.id ?? null,
-  });
+    afterMarkSent: async (tx) => {
+      const now = new Date();
+      // For a first send (draft → awaiting_payment) we set status + sentAt +
+      // sentByUserId. For a re-send on an already-billable invoice we ONLY
+      // stamp the latest sentAt + sentByUserId; status stays as-is so we
+      // don't trip lifecycle invariants on a no-op transition.
+      let updatePayload: Record<string, unknown> = isResend
+        ? { sentAt: now, sentByUserId: req.user?.id }
+        : { status: "awaiting_payment", sentAt: now, sentByUserId: req.user?.id };
 
-  // ── 4. Email succeeded → persist sent metadata.
-  // For a first send (draft → awaiting_payment) we set status + sentAt +
-  // sentByUserId. For a re-send on an already-billable invoice we ONLY
-  // stamp the latest sentAt + sentByUserId; status stays as-is so we
-  // don't trip lifecycle invariants on a no-op transition.
-  const now = new Date();
-  let updatePayload: Record<string, unknown> = isResend
-    ? {
-        sentAt: now,
-        sentByUserId: req.user?.id,
+      if (!invoice.issuedAt) {
+        updatePayload.issuedAt = now;
       }
-    : {
-        status: "awaiting_payment",
-        sentAt: now,
-        sentByUserId: req.user?.id,
-      };
 
-  if (!invoice.issuedAt) {
-    updatePayload.issuedAt = now;
-  }
+      // 2026-03-19: canonical due-date computation when absent.
+      if (!invoice.dueDate) {
+        const issuedAt = invoice.issuedAt ? new Date(invoice.issuedAt) : now;
+        const paymentTermsDays = invoice.paymentTermsDays ?? 30;
+        updatePayload.dueDate = calculateDueDate(issuedAt, paymentTermsDays);
+      }
 
-  // 2026-03-19: canonical due-date computation when absent.
-  if (!invoice.dueDate) {
-    const issuedAt = invoice.issuedAt ? new Date(invoice.issuedAt) : now;
-    const paymentTermsDays = invoice.paymentTermsDays ?? 30;
-    updatePayload.dueDate = calculateDueDate(issuedAt, paymentTermsDays);
-  }
+      if (isQboSynced(invoice) && overrideQboLock && overrideReason) {
+        const outOfSyncUpdate = buildOutOfSyncUpdate(overrideReason, req.user?.id);
+        updatePayload = { ...updatePayload, ...outOfSyncUpdate };
+        logQboLockOverride(tenantId, invoiceId, req.user?.id ?? 'unknown', 'send_invoice', overrideReason, invoice.qboInvoiceId);
+        warning = "Invoice is now out of sync with QuickBooks. Manual reconciliation required.";
+      }
 
-  let warning: string | undefined;
-
-  if (isQboSynced(invoice) && overrideQboLock && overrideReason) {
-    const outOfSyncUpdate = buildOutOfSyncUpdate(overrideReason, req.user?.id);
-    updatePayload = { ...updatePayload, ...outOfSyncUpdate };
-    logQboLockOverride(tenantId, invoiceId, req.user?.id ?? 'unknown', 'send_invoice', overrideReason, invoice.qboInvoiceId);
-    warning = "Invoice is now out of sync with QuickBooks. Manual reconciliation required.";
-  }
-
-  const updated = await storage.updateInvoice(
-    tenantId,
-    invoiceId,
-    undefined,
-    updatePayload,
-  );
+      updated = await storage.updateInvoice(
+        tenantId,
+        invoiceId,
+        undefined,
+        updatePayload,
+        tx,
+      );
+    },
+  });
 
   // Phase 1: Log invoice sent event
   logEventAsync(getQueryCtx(req), {

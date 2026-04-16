@@ -97,7 +97,7 @@ export function AssignContactDialog({
                 <Label>Roles at this location</Label>
                 <div className="flex flex-wrap gap-1.5">
                   {STANDARD_CONTACT_ROLES.map(role => (
-                    <button key={role} type="button" onClick={() => toggleRole(role)} className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${selectedRoles.has(role) ? "bg-primary text-primary-foreground border-primary" : "bg-white text-muted-foreground border-slate-200 hover:border-slate-400"}`}>
+                    <button key={role} type="button" onClick={() => toggleRole(role)} className={`rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors ${selectedRoles.has(role) ? "bg-primary text-primary-foreground border-primary" : "bg-white text-muted-foreground border-slate-200 hover:border-slate-400"}`}>
                       {role}
                     </button>
                   ))}

@@ -9,6 +9,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useFileUpload, resolveFileAccessUrl } from "@/hooks/useFileUpload";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -103,10 +104,8 @@ export function JobExpensesCard({ jobId, onTotalsChange }: JobExpensesCardProps)
   const [formDate, setFormDate] = useState(format(new Date(), "yyyy-MM-dd"));
   const [formNotes, setFormNotes] = useState("");
   const [formIsBillable, setFormIsBillable] = useState(false);
-  const [formReceiptFileId, setFormReceiptFileId] = useState<string | null>(null);
-  const [formReceiptName, setFormReceiptName] = useState<string | null>(null);
-  const [uploadingReceipt, setUploadingReceipt] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { upload: uploadReceipt, isUploading: uploadingReceipt } = useFileUpload();
 
   const isEditMode = dialogState.editingId !== null;
 
@@ -116,8 +115,6 @@ export function JobExpensesCard({ jobId, onTotalsChange }: JobExpensesCardProps)
     setFormDate(format(new Date(), "yyyy-MM-dd"));
     setFormNotes("");
     setFormIsBillable(false);
-    setFormReceiptFileId(null);
-    setFormReceiptName(null);
   };
 
   const openCreateDialog = () => {
@@ -131,8 +128,6 @@ export function JobExpensesCard({ jobId, onTotalsChange }: JobExpensesCardProps)
     setFormDate(format(new Date(expense.date), "yyyy-MM-dd"));
     setFormNotes(expense.notes || "");
     setFormIsBillable(expense.isBillable);
-    setFormReceiptFileId(expense.receiptFileId);
-    setFormReceiptName(expense.receiptFileId ? "Receipt attached" : null);
     setDialogState({ open: true, editingId: expense.id });
   };
 
@@ -210,27 +205,57 @@ export function JobExpensesCard({ jobId, onTotalsChange }: JobExpensesCardProps)
     },
   });
 
-  // ── Receipt upload — reuses existing /api/uploads endpoint ──
+  // ── Receipt attach / replace / remove ──
+  // Canonical flow: upload via useFileUpload (3-step R2 lifecycle). The
+  // `job_expense_receipt` EntityAdapter writes back to jobExpenses.receiptFileId
+  // on finalize; DELETE /api/files/:fileId clears it. Attach is only available
+  // after the expense exists (edit mode), matching the entityId-first contract
+  // shared by every other file-owning entity in this app.
 
-  const handleReceiptUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const editingExpense = useMemo(
+    () => expenses.find((e) => e.id === dialogState.editingId) ?? null,
+    [expenses, dialogState.editingId],
+  );
+
+  const handleReceiptAttach = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
-    setUploadingReceipt(true);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (!file || !editingExpense) return;
     try {
-      const formData = new FormData();
-      formData.append("files", file);
-      const res = await fetch("/api/uploads", { method: "POST", credentials: "include", body: formData });
-      if (!res.ok) throw new Error("Upload failed");
-      const results: Array<{ fileId: string; originalName: string }> = await res.json();
-      if (results.length > 0) {
-        setFormReceiptFileId(results[0].fileId);
-        setFormReceiptName(results[0].originalName || file.name);
+      // Replace semantics: if a receipt already exists, delete it first so
+      // the old blob and file row are cleaned up. The adapter's detach nulls
+      // the column; the upcoming upload's adapter writes the new id.
+      if (editingExpense.receiptFileId) {
+        await apiRequest(`/api/files/${editingExpense.receiptFileId}`, { method: "DELETE" });
       }
-    } catch {
-      toast({ title: "Upload failed", variant: "destructive" });
-    } finally {
-      setUploadingReceipt(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
+      await uploadReceipt(file, {
+        entityType: "job_expense_receipt",
+        entityId: editingExpense.id,
+      });
+      invalidate();
+      toast({ title: "Receipt attached" });
+    } catch (err: any) {
+      toast({ title: "Upload failed", description: err?.message, variant: "destructive" });
+    }
+  };
+
+  const handleReceiptRemove = async () => {
+    if (!editingExpense?.receiptFileId) return;
+    try {
+      await apiRequest(`/api/files/${editingExpense.receiptFileId}`, { method: "DELETE" });
+      invalidate();
+      toast({ title: "Receipt removed" });
+    } catch (err: any) {
+      toast({ title: "Remove failed", description: err?.message, variant: "destructive" });
+    }
+  };
+
+  const openReceipt = async (fileId: string) => {
+    try {
+      const url = await resolveFileAccessUrl(fileId);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (err: any) {
+      toast({ title: "Could not open receipt", description: err?.message, variant: "destructive" });
     }
   };
 
@@ -247,7 +272,6 @@ export function JobExpensesCard({ jobId, onTotalsChange }: JobExpensesCardProps)
       date: new Date(`${formDate}T00:00:00`).toISOString(),
       notes: formNotes || null,
       isBillable: formIsBillable,
-      receiptFileId: formReceiptFileId,
     };
 
     if (isEditMode) {
@@ -311,20 +335,20 @@ export function JobExpensesCard({ jobId, onTotalsChange }: JobExpensesCardProps)
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="font-medium">{formatCurrency(parseFloat(expense.amount))}</span>
-                      <Badge variant="outline" className="text-[11px] px-1.5 py-0">
+                      <Badge variant="outline" className="text-xs px-1.5 py-0">
                         {categoryLabel(expense.category)}
                       </Badge>
                       {expense.isBillable ? (
-                        <Badge variant="outline" className="text-[11px] px-1.5 py-0 border-blue-200 text-blue-600">
+                        <Badge variant="outline" className="text-xs px-1.5 py-0 border-blue-200 text-blue-600">
                           Billable
                         </Badge>
                       ) : (
-                        <Badge variant="outline" className="text-[11px] px-1.5 py-0 border-slate-200 text-slate-400">
+                        <Badge variant="outline" className="text-xs px-1.5 py-0 border-slate-200 text-slate-400">
                           Internal
                         </Badge>
                       )}
                       {isInvoiced && (
-                        <Badge variant="outline" className="text-[11px] px-1.5 py-0 border-green-200 text-green-600">
+                        <Badge variant="outline" className="text-xs px-1.5 py-0 border-green-200 text-green-600">
                           Invoiced
                         </Badge>
                       )}
@@ -337,16 +361,15 @@ export function JobExpensesCard({ jobId, onTotalsChange }: JobExpensesCardProps)
                   </div>
                   <div className="flex items-center gap-1 ml-2 flex-shrink-0">
                     {expense.receiptFileId && (
-                      <a
-                        href={`/api/files/${expense.receiptFileId}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
                         title="View receipt"
+                        onClick={() => openReceipt(expense.receiptFileId!)}
                       >
-                        <Button variant="ghost" size="icon" className="h-6 w-6">
-                          <ImageIcon className="h-3.5 w-3.5 text-blue-500" />
-                        </Button>
-                      </a>
+                        <ImageIcon className="h-3.5 w-3.5 text-blue-500" />
+                      </Button>
                     )}
                     {!isInvoiced && (
                       <>
@@ -435,47 +458,64 @@ export function JobExpensesCard({ jobId, onTotalsChange }: JobExpensesCardProps)
               />
             </div>
 
-            {/* Receipt upload */}
+            {/* Receipt attach / replace / remove — edit-mode only.
+                Canonical flow needs the expense id before issuing a presigned
+                upload URL, so attach becomes available after Save. */}
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Receipt</label>
-              <div className="flex items-center gap-2">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*,application/pdf"
-                  className="hidden"
-                  onChange={handleReceiptUpload}
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="text-xs"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={uploadingReceipt}
-                >
-                  {uploadingReceipt ? (
-                    <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                  ) : (
-                    <Paperclip className="h-3 w-3 mr-1" />
-                  )}
-                  {formReceiptFileId ? "Replace" : "Attach"}
-                </Button>
-                {formReceiptName && (
-                  <span className="text-xs text-muted-foreground truncate max-w-[180px]">{formReceiptName}</span>
-                )}
-                {formReceiptFileId && (
+              {!isEditMode ? (
+                <p className="text-xs text-muted-foreground">
+                  Save the expense first, then re-open it to attach a receipt.
+                </p>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,application/pdf"
+                    className="hidden"
+                    onChange={handleReceiptAttach}
+                  />
                   <Button
                     type="button"
-                    variant="ghost"
+                    variant="outline"
                     size="sm"
-                    className="text-xs text-red-500 h-auto p-0"
-                    onClick={() => { setFormReceiptFileId(null); setFormReceiptName(null); }}
+                    className="text-xs"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploadingReceipt}
                   >
-                    Remove
+                    {uploadingReceipt ? (
+                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                    ) : (
+                      <Paperclip className="h-3 w-3 mr-1" />
+                    )}
+                    {editingExpense?.receiptFileId ? "Replace" : "Attach"}
                   </Button>
-                )}
-              </div>
+                  {editingExpense?.receiptFileId && (
+                    <>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="text-xs h-auto p-0"
+                        onClick={() => openReceipt(editingExpense.receiptFileId!)}
+                      >
+                        View
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="text-xs text-red-500 h-auto p-0"
+                        onClick={handleReceiptRemove}
+                        disabled={uploadingReceipt}
+                      >
+                        Remove
+                      </Button>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
 
             <label className="flex items-center gap-2 text-sm cursor-pointer">

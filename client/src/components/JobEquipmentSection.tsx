@@ -221,7 +221,7 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
                           <Wrench className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                           <span className="text-sm font-medium truncate">{eq?.name ?? "Unknown equipment"}</span>
                           {eq?.equipmentType && (
-                            <Badge variant="secondary" className="text-[11px] px-1.5 py-0 shrink-0">
+                            <Badge variant="secondary" className="text-xs px-1.5 py-0 shrink-0">
                               {getEquipmentTypeLabel(eq.equipmentType)}
                             </Badge>
                           )}

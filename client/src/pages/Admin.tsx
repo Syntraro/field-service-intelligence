@@ -41,9 +41,9 @@ import {
 export default function Admin() {
   const { user: currentUser } = useAuth();
   const { toast } = useToast();
+  // 2026-04-15: Admin-initiated resets route through the canonical
+  // email-based flow; the admin no longer sets the password manually.
   const [resetPasswordUserId, setResetPasswordUserId] = useState<string | null>(null);
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
   const [, setLocation] = useLocation();
   const [addClientDialogOpen, setAddClientDialogOpen] = useState(false);
   const [calendarStartHour, setCalendarStartHour] = useState<number>(8);
@@ -131,23 +131,23 @@ export default function Admin() {
     },
   });
 
-  const resetPasswordMutation = useMutation({
-    mutationFn: async ({ userId, password }: { userId: string; password: string }) => {
-      return await apiRequest(`/api/admin/users/${userId}/reset-password`, { method: "POST", body: JSON.stringify({ password }) });
+  const sendResetEmailMutation = useMutation({
+    mutationFn: async (userId: string) => {
+      return await apiRequest(`/api/team/${userId}/send-password-reset`, {
+        method: "POST",
+      });
     },
     onSuccess: () => {
       toast({
-        title: "Password reset successfully",
-        description: "The user's password has been updated.",
+        title: "Reset email sent",
+        description: "The user will receive a password reset link shortly.",
       });
       setResetPasswordUserId(null);
-      setNewPassword("");
-      setConfirmPassword("");
     },
     onError: (error: Error) => {
       toast({
         title: "Error",
-        description: error.message || "Failed to reset password",
+        description: error.message || "Failed to send reset email",
         variant: "destructive",
       });
     },
@@ -236,28 +236,9 @@ export default function Admin() {
     },
   });
 
-  const handleResetPassword = () => {
+  const handleSendResetEmail = () => {
     if (!resetPasswordUserId) return;
-    
-    if (newPassword.length < 6) {
-      toast({
-        title: "Invalid password",
-        description: "Password must be at least 6 characters",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (newPassword !== confirmPassword) {
-      toast({
-        title: "Passwords don't match",
-        description: "Please make sure both passwords match",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    resetPasswordMutation.mutate({ userId: resetPasswordUserId, password: newPassword });
+    sendResetEmailMutation.mutate(resetPasswordUserId);
   };
 
   if (isLoading) {
@@ -352,11 +333,7 @@ export default function Admin() {
                   </Button>
 
                   <Dialog open={resetPasswordUserId === user.id} onOpenChange={(open) => {
-                    if (!open) {
-                      setResetPasswordUserId(null);
-                      setNewPassword("");
-                      setConfirmPassword("");
-                    }
+                    if (!open) setResetPasswordUserId(null);
                   }}>
                     <DialogTrigger asChild>
                       <Button
@@ -364,59 +341,35 @@ export default function Admin() {
                         size="icon"
                         onClick={() => setResetPasswordUserId(user.id)}
                         data-testid={`button-reset-password-${user.id}`}
-                        aria-label="Reset password"
+                        aria-label="Send password reset email"
                       >
                         <KeyRound className="h-4 w-4" />
                       </Button>
                     </DialogTrigger>
                     <DialogContent>
                       <DialogHeader>
-                        <DialogTitle>Reset Password</DialogTitle>
+                        <DialogTitle>Send password reset email</DialogTitle>
                         <DialogDescription>
-                          Set a new password for {user.firstName && user.lastName ? `${user.firstName} ${user.lastName}` : user.email}
+                          A one-time reset link will be emailed to{" "}
+                          <strong>{user.email}</strong>. The user chooses the
+                          new password themselves; the link expires in 60
+                          minutes and can be used once.
                         </DialogDescription>
                       </DialogHeader>
-                      <div className="space-y-4 py-4">
-                        <div className="space-y-2">
-                          <Label htmlFor="new-password">New Password</Label>
-                          <Input
-                            id="new-password"
-                            type="password"
-                            placeholder="Enter new password"
-                            value={newPassword}
-                            onChange={(e) => setNewPassword(e.target.value)}
-                            data-testid="input-new-password"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="confirm-password">Confirm Password</Label>
-                          <Input
-                            id="confirm-password"
-                            type="password"
-                            placeholder="Confirm new password"
-                            value={confirmPassword}
-                            onChange={(e) => setConfirmPassword(e.target.value)}
-                            data-testid="input-confirm-password"
-                          />
-                        </div>
-                      </div>
-                      <DialogFooter>
+                      <DialogFooter className="pt-2">
                         <Button
                           variant="outline"
-                          onClick={() => {
-                            setResetPasswordUserId(null);
-                            setNewPassword("");
-                            setConfirmPassword("");
-                          }}
+                          onClick={() => setResetPasswordUserId(null)}
+                          disabled={sendResetEmailMutation.isPending}
                         >
                           Cancel
                         </Button>
                         <Button
-                          onClick={handleResetPassword}
-                          disabled={resetPasswordMutation.isPending}
-                          data-testid="button-confirm-reset-password"
+                          onClick={handleSendResetEmail}
+                          disabled={sendResetEmailMutation.isPending}
+                          data-testid="button-confirm-send-reset-email"
                         >
-                          {resetPasswordMutation.isPending ? "Resetting..." : "Reset Password"}
+                          {sendResetEmailMutation.isPending ? "Sending..." : "Send reset email"}
                         </Button>
                       </DialogFooter>
                     </DialogContent>
