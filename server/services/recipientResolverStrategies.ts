@@ -116,6 +116,12 @@ export const recipientResolverStrategies = {
     });
   },
 
+  // 2026-04-16: reminders resolve recipients identically to the primary
+  // invoice send — same billing-first policy, same location context.
+  async invoice_reminder(tenantId: string, entityId: string): Promise<(string | null | undefined)[]> {
+    return recipientResolverStrategies.invoice(tenantId, entityId);
+  },
+
   async quote(tenantId: string, entityId: string): Promise<(string | null | undefined)[]> {
     const quote = await quoteRepository.getQuote(tenantId, entityId);
     if (!quote) throw createError(404, "Quote not found");

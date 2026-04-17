@@ -18,6 +18,7 @@
 
 import { format, parseISO, isValid } from "date-fns";
 import { storage } from "../storage/index";
+import { companyRepository } from "../storage/company";
 import { createError } from "../middleware/errorHandler";
 import { calculateDueDate } from "./invoiceCreationService";
 import type {
@@ -62,6 +63,33 @@ function formatDate(value: Date | string | null | undefined): string {
 }
 
 /**
+ * 2026-04-16: format time-of-day in the tenant's IANA timezone using
+ * built-in Intl (no new dependency). Returns a customer-friendly string
+ * like "9:00 AM" or "1:30 PM". Empty string on missing/invalid input so
+ * templates never render broken placeholders.
+ */
+function formatTimeInTz(value: Date | string | null | undefined, timeZone: string): string {
+  if (!value) return "";
+  const d = value instanceof Date ? value : typeof value === "string" ? parseISO(value) : null;
+  if (!d || !isValid(d)) return "";
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone,
+    }).format(d);
+  } catch {
+    // Invalid timeZone — fall back to UTC formatting rather than throw.
+    return new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    }).format(d);
+  }
+}
+
+/**
  * Preview-only sample data (2026-04-13). Used by the Settings page preview
  * pane when no real entity is bound to the editor. Renders through the same
  * canonical `templateRenderer` — never forks the render path, never touches
@@ -70,18 +98,22 @@ function formatDate(value: Date | string | null | undefined): string {
  * value.
  */
 export function buildPreviewSampleData(
-  entityType: "invoice" | "quote" | "job",
+  entityType: "invoice" | "quote" | "job" | "invoice_reminder",
 ): Record<string, string> {
   const shared = {
     COMPANY_NAME: "Your Company",
     CLIENT_COMPANY_NAME: "Acme Corp",
   };
-  if (entityType === "invoice") {
+  // 2026-04-16: reminder reuses invoice variables — same sample set.
+  if (entityType === "invoice" || entityType === "invoice_reminder") {
     return {
       ...shared,
       INVOICE_NUMBER: "1234",
       INVOICE_TOTAL: "$250.00",
       INVOICE_DUE_DATE: "January 15, 2026",
+      // Reminder sample values — 2026-04-16.
+      INVOICE_BALANCE: "$250.00",
+      DAYS_OVERDUE: entityType === "invoice_reminder" ? "14" : "0",
     };
   }
   if (entityType === "quote") {
@@ -95,6 +127,10 @@ export function buildPreviewSampleData(
     ...shared,
     JOB_NUMBER: "J-1234",
     JOB_DATE: "January 15, 2026",
+    JOB_TIME: "9:00 AM",
+    // 2026-04-16 grammar fix — sample mirrors the real builder's "with-time"
+    // branch (leading space intentional).
+    JOB_TIME_PHRASE: " at 9:00 AM",
   };
 }
 
@@ -145,12 +181,25 @@ export const templateDataBuilder = {
       dueDateRaw = calculateDueDate(issuedAt, terms);
     }
 
+    // Reminder variables (2026-04-16): outstanding balance + days overdue.
+    // These fields populate on every invoice send; they simply read "0"
+    // / "0 days" when the invoice isn't yet overdue.
+    const balanceRaw = (invoice as any).balance ?? (invoice as any).totalAmount ?? "0";
+    const dueDateForOverdue: Date | null = dueDateRaw
+      ? new Date(dueDateRaw as any)
+      : null;
+    const daysOverdue = dueDateForOverdue
+      ? Math.max(0, Math.floor((Date.now() - dueDateForOverdue.getTime()) / 86_400_000))
+      : 0;
+
     return {
       INVOICE_NUMBER: invoice.invoiceNumber ? String(invoice.invoiceNumber) : "",
       CLIENT_COMPANY_NAME: clientCompanyName,
       COMPANY_NAME: company.name ?? "",
       INVOICE_TOTAL: formatMoney((invoice as any).totalAmount),
       INVOICE_DUE_DATE: formatDate(dueDateRaw as any),
+      INVOICE_BALANCE: formatMoney(balanceRaw),
+      DAYS_OVERDUE: String(daysOverdue),
     };
   },
 
@@ -220,11 +269,27 @@ export const templateDataBuilder = {
     }
     const clientCompanyName = customerCompanyName ?? location?.companyName ?? "";
 
+    // 2026-04-16: scheduled-appointment time in the tenant's timezone.
+    // Emits empty string for all-day jobs or jobs with no scheduled_start.
+    const scheduledStart = (job as any).scheduledStart;
+    const isAllDay = (job as any).isAllDay === true;
+    let jobTime = "";
+    if (scheduledStart && !isAllDay) {
+      const tz = await companyRepository.getCompanyTimezone(tenantId);
+      jobTime = formatTimeInTz(scheduledStart, tz);
+    }
+
     return {
       JOB_NUMBER: (job as any).jobNumber ? String((job as any).jobNumber) : "",
       CLIENT_COMPANY_NAME: clientCompanyName,
       COMPANY_NAME: company.name ?? "",
-      JOB_DATE: formatDate((job as any).scheduledStart),
+      JOB_DATE: formatDate(scheduledStart),
+      JOB_TIME: jobTime,
+      // 2026-04-16 grammar fix: prebuilt phrase that templates can splice
+      // directly after {{JOB_DATE}} with no intervening space. Leading
+      // space is intentional — absorbs the spacer only when a time is
+      // present, so empty renders as a clean period.
+      JOB_TIME_PHRASE: jobTime ? ` at ${jobTime}` : "",
     };
   },
 };

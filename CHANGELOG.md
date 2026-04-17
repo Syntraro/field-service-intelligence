@@ -8,6 +8,230 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+### Added
+
+#### Midnight rollover auto-pause worker (2026-04-16)
+
+Production integrity feature. Prevents technician labour timers from
+running across tenant-local calendar days while preserving the
+underlying job/visit workflow. Complements (does not replace) the
+read-time running-state guard shipped earlier today in
+`getJobTimeSummary`.
+
+**Schema**
+- `migrations/2026_04_16_time_entries_auto_paused.sql` — adds
+  `time_entries.auto_paused_at timestamptz` + a partial index on
+  non-null values. `notification_type` on `notifications` is plain
+  TEXT (validated at the app layer), so the new
+  `time_entry_auto_paused` type is purely a TS enum addition.
+
+**Worker**
+- `server/services/midnightRolloverWorker.ts` (new). Runs every 15
+  minutes with a 60-second startup delay, mirroring the
+  `subscriptionWorker` / `invoiceReminderWorker` pattern.
+  - Scans tenants that currently have at least one open time entry.
+  - For each tenant, resolves the IANA timezone from
+    `companySettings.timezone` (falls back to `DEFAULT_TIMEZONE`).
+  - Closes any open entry whose `start_at` fell on a tenant-local
+    calendar day earlier than today, at local
+    `23:59:59.999` of the start day, computed via a DST-safe
+    noon-anchored offset (`Intl.DateTimeFormat` — no new dep).
+  - Writes `end_at`, `duration_minutes`, `auto_paused_at`,
+    `updated_at`, and guards against race with manual stop by
+    matching `end_at IS NULL` in the UPDATE predicate.
+  - Inserts a per-tech notification keyed by
+    `dedupeKey = time_entry_auto_paused:<entryId>` so re-runs
+    don't produce duplicates (`onConflictDoNothing`).
+  - Orphaned entries (linked visit `isActive = false`) are closed
+    with the same stamp but **skip** the technician banner — per
+    the feature rule "do not alert users about internal bugs /
+    orphans". They remain visible via the office report endpoint.
+- `server/index.ts` — worker registered via
+  `startMidnightRolloverWorker()` alongside existing workers;
+  graceful shutdown via `stopMidnightRolloverWorker()` on
+  SIGTERM/SIGINT.
+
+**Office / admin visibility**
+- `GET /api/time/auto-paused` (`server/routes/timeTracking.ts`) —
+  manager-gated endpoint returning auto-paused entries with
+  technician, job, and visit context. Defaults to the last 7 days;
+  `from`, `to`, `limit` query params supported. Feeds a future
+  "overnight activity" office-side report; for now it is available
+  ad-hoc for ops / admin queries.
+
+**Technician UX**
+- `client/src/tech-app/components/MidnightRolloverBanner.tsx` (new).
+  Reads unread `time_entry_auto_paused` notifications from the
+  existing `/api/notifications?unreadOnly=true` endpoint, renders a
+  single amber banner "Timer paused at midnight — Resume to continue
+  today" inside the mobile shell, and marks all matching rows read
+  via `POST /api/notifications/:id/read` on dismiss. No new mutation
+  endpoint; reuses the canonical notification lifecycle.
+- `client/src/tech-app/components/MobileShell.tsx` — banner mounted
+  inside the scrolling body so it surfaces on every tech-app route
+  the first time the tech opens the app after a rollover, then
+  self-dismisses.
+
+**Resume semantics**
+- Deliberately not a new endpoint. After dismissing the banner the
+  tech uses the existing start-timer UX (visit detail, task detail,
+  or Today page) to create a new `time_entries` row for the new
+  day. The job and visit stay in their prior status — the rollover
+  never touches `jobs` or `job_visits`.
+
+**Edge cases**
+- Tech offline at midnight — next server interaction is the worker,
+  not the tech; sweep runs regardless.
+- Multiple open timers — handled row-by-row with the same
+  race-safe UPDATE predicate.
+- Orphaned timer (visit soft-deleted while open) — closed silently,
+  no user banner, appears in the office report only.
+- DST / tenant timezone — noon-anchored offset read per-sweep;
+  `Intl.DateTimeFormat` handles IANA rules.
+- Pathological clock state (`endAt <= startAt`) — entry skipped,
+  no negative duration persisted.
+
+### Fixed
+
+#### Labour Summary ghost "running" state + narrow-rail collision (2026-04-16)
+
+Two surgical fixes on Job Detail's right-rail Labour Summary card.
+
+**Part A — orphaned active state.** `getJobTimeSummary` derived the
+"running / En Route / On Site" badge purely from
+`time_entries.endAt IS NULL`, so an open entry survived:
+- visit soft-delete (`jobVisits.isActive = false`, FK still points
+  at the now-inactive visit)
+- visit unassignment / rollback during testing
+- prior-day timers never closed
+- midnight crossing
+
+Fix: `server/storage/timeTracking.ts` — the query now left-joins
+`jobVisits` and pulls `jobVisits.isActive`. An open entry is
+treated as running only when (a) any linked visit is still active,
+and (b) the timer hasn't been open past a stale cutoff
+(`STALE_RUNNING_CUTOFF_MS = 12h`). Entries that fail either check
+no longer surface "isRunning / runningType" or the per-tech
+`isRunning` flag. No data migration, no schema change, no write-
+path change. Orphaned rows still exist in the DB for audit but
+stop polluting the UI.
+
+**Part B — narrow-rail badge collision.** The status pill ("En
+Route", "On Site", "Task", "Manual") was marked `shrink-0` and
+collided with the `duration + cost` column once the rail was
+narrowed via the DetailPageShell resize handle.
+
+Fix: `client/src/pages/JobDetailPage.tsx` — `LabourCardContent`
+now carries a `ResizeObserver` on its root; when the container
+falls below 320px the status pill becomes icon-only (`Truck` for
+travel, `MapPin` for on-site, `Tag` for task, `Pencil` for
+manual) with `title` + `aria-label` preserving the text. Pill
+tone, entry order, row geometry, and click/edit behavior all
+unchanged. No shell changes; no viewport breakpoint.
+
+#### DetailPageShell rollout cleanup (2026-04-16)
+
+Post-migration dead-comment sweep across the three detail pages.
+No behavior changes; pure deletion.
+
+- `client/src/pages/JobDetailPage.tsx` — removed the four-line
+  block comment above `return` that described the just-completed
+  shell migration; tightened the `hidden JobHeaderCard` block
+  comment so it documents the *current* rationale (imperative
+  ref retention + space-y avoidance) rather than the migration
+  event; removed the duplicate "Right rail — operations/activity
+  stack. Geometry owned by DetailPageShell" comment that already
+  appears in the shared shell docblock.
+- `client/src/pages/QuoteDetailPage.tsx` — same four-line migration
+  comment removed above `return`; removed the historical "Notes +
+  Reference moved to the right rail (2026-04-14)" breadcrumb and
+  the sibling "Right-rail composition…" comment; removed the
+  three-line migration note attached to the import.
+- `client/src/pages/InvoiceDetailPage.tsx` — removed the three-line
+  migration comment above `return`; removed the stale "Banners —
+  inside left column so right rail starts at top" comment (was
+  only meaningful under the prior inline shell); removed the
+  "Payment Terms card removed — now integrated into
+  InvoiceHeaderCard" historical breadcrumb and the migration note
+  attached to the import.
+- `DetailPageShell.tsx` — audited, no changes. State, refs,
+  effects, and handlers are already canonical; localStorage
+  hydration runs once via a `hydrated` flag; no duplicated max-width
+  calculation worth extracting (two sites, one-line each).
+
+#### `DetailPageShell` rollout to Job + Invoice (2026-04-16)
+
+Follow-up migration for the canonical detail-page shell introduced
+earlier today. Job and Invoice now adopt the same shared layout
+primitive Quote uses; all three pages inherit the shell's resizable
+right rail, DETAILS collapse tab, visible resize divider, and
+`localStorage`-persisted width/collapsed state.
+
+- **`client/src/pages/JobDetailPage.tsx`** — migrated. Removed the
+  hand-rolled `bg-[#f1f5f9] h-full flex-col` outer wrapper, the
+  `px-4 lg:px-6 py-4 flex-1 flex flex-col min-h-0` container, the
+  `grid grid-cols-1 lg:grid-cols-[1fr_400px] lg:grid-rows-[1fr]`
+  split grid, and the per-column `space-y-2.5 min-w-0 min-h-0
+  overflow-y-auto h-full` scaffolding. Left-column content and the
+  `<aside>` rail content moved into the shell's `leftColumn` and
+  `rightRail` props verbatim. The hidden `JobHeaderCard` (kept
+  mounted for imperative ref access via `headerCardRef`) stays as a
+  fragment sibling of the shell so the shell's `space-y` rhythm
+  does not introduce a phantom gap above the first visible card.
+  Dialogs (`AlertDialog`, `SendJobModal`, etc.) remain as fragment
+  siblings as before. `headerCardRef`, mutations, queries, and
+  routes unchanged.
+- **`client/src/pages/InvoiceDetailPage.tsx`** — migrated. Same
+  treatment as Job. This also resolves the lone structural
+  divergence the audit flagged: the old inline grid was missing
+  `lg:grid-rows-[1fr]`, which the shell now provides by default.
+  The rail wrapper (previously a plain `<div>`) is now delivered by
+  the shell as a proper `<aside>`. No changes to payment/void/QBO
+  flows, mutations, or queries.
+- **`client/src/components/layout/DetailPageShell.tsx`** —
+  unchanged. No migration-specific adjustments were required.
+
+#### Canonical `DetailPageShell` + Quote migration (2026-04-16)
+
+New shared layout primitive for the detail pages. Replaces the
+hand-rolled split-pane grid each of Job / Invoice / Quote detail
+pages was maintaining independently. Quote is migrated in this
+pass; Job and Invoice will follow in separate PRs.
+
+- **`client/src/components/layout/DetailPageShell.tsx`** — new.
+  Owns the outer page scaffolding, left-column / right-rail
+  geometry, independent scroll boundaries, drag-to-resize handle,
+  collapse-to-edge-tab + reopen affordance, and localStorage
+  persistence. The rail width is driven by a CSS variable
+  (`--detail-rail-width`); pages no longer touch width literals.
+- **Resize.** Pointer-drag handle between the two panes (desktop
+  only, `hidden lg:block`). Min rail width `300px`, max
+  `min(520px, 45% of container)`. Keyboard support on the handle
+  (`ArrowLeft` / `ArrowRight`, `Shift` for larger step).
+- **Collapse.** A compact chevron button in the rail's control
+  strip collapses the rail to a 32px edge tab; clicking the tab
+  reopens to the previous width. Desktop only — below `lg`, both
+  controls are hidden and the rail renders in the normal stacked
+  flow.
+- **Persistence.** Client-side only via localStorage, shared keys:
+  - `syntraro.detail.rail.width`
+  - `syntraro.detail.rail.collapsed`
+- **Responsive.** Below `lg`, the shell renders as a single stacked
+  column with the page scrolling normally — resize and collapse are
+  no-ops. Above `lg`, left and rail each scroll inside their own
+  `min-h-0 overflow-y-auto` region (independent scroll preserved).
+- **`client/src/pages/QuoteDetailPage.tsx`** — migrated to the new
+  shell. Removed the inline `bg / h-full flex-col / grid
+  [1fr_400px] / grid-rows-[1fr]` scaffolding and the per-column
+  `overflow-y-auto h-full` plumbing; handed left content and rail
+  content to the shell as `leftColumn` / `rightRail` props. No
+  changes to queries, routes, or card content.
+
+Not migrated in this pass: `JobDetailPage.tsx`, `InvoiceDetailPage.tsx`.
+Invoice still omits `lg:grid-rows-[1fr]` from its current inline grid
+— that divergence will be resolved automatically when Invoice adopts
+the shell.
+
 #### Password reset system (self-service + admin-triggered) (2026-04-15)
 
 Wires up real end-to-end password reset. Previously the

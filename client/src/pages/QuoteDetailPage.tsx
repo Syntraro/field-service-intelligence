@@ -77,6 +77,7 @@ import {
 } from "@/lib/entities/lineItemMapper";
 import { Briefcase as BriefcaseIcon, FileSearch, CalendarCheck } from "lucide-react";
 import { MetaRow } from "@/components/ui/meta-row";
+import { DetailPageShell } from "@/components/layout/DetailPageShell";
 
 interface QuoteDetails {
   quote: Quote;
@@ -413,31 +414,12 @@ export default function QuoteDetailPage() {
   };
 
   return (
-    // 2026-04-14 Phase 3D correction: adopt the canonical split-pane shell
-    // from JobDetailPage (lines 859-884). The prior `min-h-screen` +
-    // page-scroll shell worked visually but diverged structurally — Jobs
-    // uses `h-full flex flex-col` at the page, `flex-1 min-h-0` on the
-    // inner wrapper, `lg:grid-rows-[1fr]` on the grid, and per-column
-    // `overflow-y-auto h-full`. All three are load-bearing: without
-    // `grid-rows-[1fr]` the column `h-full` resolves to content height
-    // and per-column scrolling never engages. Without `min-h-0` flex/grid
-    // children refuse to shrink and `overflow-y-auto` is inert.
-    <div className="bg-[#F4F8F4] h-full flex flex-col" data-testid="quote-detail-page">
-      <div className="px-4 lg:px-6 py-4 flex-1 flex flex-col min-h-0">
-        {/* 2026-04-14 Phase 3D correction v2 — audit against JobDetailPage
-            lines 859-884. The header MUST live inside the left column of
-            the split grid, not above it. Prior passes placed it as a
-            sibling of the grid, which made the right rail start below the
-            header instead of at the top of the detail area.
-            Matches Job Detail exactly: page shell → px-4 py-4 flex-1 →
-            split grid (1fr/400px, grid-rows-[1fr]) → [left col with header
-            as first child, aside right rail]. */}
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] lg:grid-rows-[1fr] gap-4 flex-1 min-h-0" data-testid="quote-body-area">
-          {/* ════════════════════════════════════════════════════════
-              LEFT COLUMN — independently scrollable primary content.
-              Header is the FIRST child here, matching Job Detail.
-              ════════════════════════════════════════════════════════ */}
-          <div className="space-y-2.5 min-w-0 min-h-0 overflow-y-auto lg:pr-1 h-full">
+    <>
+      <DetailPageShell
+        background="#F4F8F4"
+        dataTestId="quote-detail-page"
+        leftColumn={
+          <>
             <QuoteHeaderCard
               quote={quote}
               location={location}
@@ -769,18 +751,11 @@ export default function QuoteDetailPage() {
                 </Collapsible>
               </div>
 
-              {/* Notes + Reference moved to the right rail (2026-04-14). */}
             </div>
-          </div>
-
-            {/* ════════════════════════════════════════════════════════
-                RIGHT RAIL — independently scrollable support cards
-                ════════════════════════════════════════════════════════
-                Fixed 400px via parent grid, matching Invoice/Job Detail.
-                Right rail composition matches Jobs — Summary → Notes →
-                Reference → Workflow → Activity. Client info removed
-                (redundant with header card); dates live in header. */}
-            <aside className="space-y-4 min-w-0 min-h-0 overflow-y-auto lg:pl-1 h-full">
+        </>
+      }
+      rightRail={
+        <>
 
               {/* 1. Quote Summary — revenue/tax/total. Profitability BLOCKED
                   until quote_lines.unit_cost column lands (see audit). */}
@@ -907,10 +882,9 @@ export default function QuoteDetailPage() {
                   Backend accepts entityType="quote" via eventEntityTypeEnum;
                   ActivityCard frontend union extended in the same commit. */}
               <ActivityCard entityType="quote" entityId={quote.id} />
-
-            </aside>
-          </div>
-        </div>
+          </>
+        }
+      />
 
       {/* Phase 12 (2026-04-12): Jobber-style send modal. Recipients + subject
           + body loaded from backend preview; Send submits with overrides.
@@ -1158,6 +1132,6 @@ export default function QuoteDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   );
 }

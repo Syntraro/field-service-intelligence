@@ -17,7 +17,7 @@
  */
 
 import { db } from "../db";
-import { sql, eq, and, isNull, count, max, desc } from "drizzle-orm";
+import { sql, eq, and, inArray, isNull, count, max, desc } from "drizzle-orm";
 import {
   companies,
   companySettings,
@@ -258,8 +258,38 @@ export async function getTenantDetail(companyId: string): Promise<TenantAccountD
 
   const company = companyResult[0];
 
-  // Owner (most recently active). Phase 7: also carry firstName/lastName so
-  // the Platform Ops detail page can render a human-readable primary contact.
+  // Primary contact selection (2026-04-16 integrity sprint).
+  //
+  // Old rule: most-recent-login owner. That surfaced test accounts like
+  // pmtest@test.com whenever they happened to log in last, and ignored
+  // admins entirely when the owner was a no-name shell.
+  //
+  // New rule (ranked), applied as a compound ORDER BY inside one query:
+  //   1. User referenced by company_settings.user_id — the account that
+  //      set up the tenant is the strongest existing anchor we have.
+  //   2. role='owner' before role='admin'.
+  //   3. Non-test / non-demo email (excludes @test.*, @example.*, and
+  //      addresses containing "test" in the local part).
+  //   4. Real name present (fullName, or firstName+lastName).
+  //   5. Earliest-created legitimate user.
+  //   6. Most-recent login as last tiebreaker.
+  //
+  // Hard filters: deletedAt IS NULL, disabled = false, status = 'active',
+  // role IN ('owner','admin').
+  const settingsUserRow = await db
+    .select({ userId: companySettings.userId })
+    .from(companySettings)
+    .where(eq(companySettings.companyId, companyId))
+    .limit(1);
+  const settingsUserId = settingsUserRow[0]?.userId ?? null;
+
+  const TEST_EMAIL_PATTERN = sql`(
+    ${users.email} ILIKE '%@test.%'
+    OR ${users.email} ILIKE '%@example.%'
+    OR ${users.email} ILIKE 'test%@%'
+    OR ${users.email} ILIKE '%+test@%'
+  )`;
+
   const ownerUser = await db
     .select({
       id: users.id,
@@ -271,10 +301,30 @@ export async function getTenantDetail(companyId: string): Promise<TenantAccountD
     .from(users)
     .where(and(
       eq(users.companyId, companyId),
-      eq(users.role, "owner"),
-      isNull(users.deletedAt)
+      isNull(users.deletedAt),
+      eq(users.disabled, false),
+      eq(users.status, "active"),
+      inArray(users.role, ["owner", "admin"]),
     ))
-    .orderBy(desc(users.lastLoginAt))
+    .orderBy(
+      // Tier 1 — company_settings.userId anchor. NULL-safe: when no
+      // settings row exists, this branch evaluates to a constant so it
+      // has no effect on ordering.
+      sql`CASE WHEN ${users.id} = ${settingsUserId ?? null} THEN 0 ELSE 1 END`,
+      // Tier 2 — owner before admin.
+      sql`CASE ${users.role} WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END`,
+      // Tier 3 — non-test email first.
+      sql`CASE WHEN ${TEST_EMAIL_PATTERN} THEN 1 ELSE 0 END`,
+      // Tier 4 — real name present.
+      sql`CASE WHEN ${users.fullName} IS NOT NULL
+                 OR ${users.firstName} IS NOT NULL
+                 OR ${users.lastName} IS NOT NULL
+           THEN 0 ELSE 1 END`,
+      // Tier 5 — earliest legitimate user.
+      users.createdAt,
+      // Tier 6 — most recent login as final tiebreaker.
+      sql`${users.lastLoginAt} DESC NULLS LAST`,
+    )
     .limit(1);
 
   // User metrics (count + last login)

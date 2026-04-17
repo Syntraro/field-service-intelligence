@@ -116,6 +116,16 @@ router.post(
         // Successful login
         console.log(`[AUTH] Successful login: ${user.email}`);
 
+        // 2026-04-16 auth-integrity: stamp users.last_login_at on every
+        // real successful login. Fire-and-forget so the login response
+        // is never blocked by this bookkeeping write. Runs inside the
+        // req.logIn success callback so it only fires after Passport
+        // has committed the session.
+        storage.updateUser(user.id, { lastLoginAt: new Date() } as any)
+          .catch((err: unknown) => {
+            console.error(`[AUTH] Failed to stamp lastLoginAt for ${user.email}:`, err);
+          });
+
         res.json({
           id: user.id,
           email: user.email,

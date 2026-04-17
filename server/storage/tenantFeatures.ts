@@ -43,6 +43,12 @@ const DEFAULT_FEATURES: Omit<TenantFeatures, 'id' | 'companyId' | 'createdAt' | 
   liveMapEnabled: true,
   customerPortalEnabled: false,
   customerPortalPaymentsEnabled: false,
+  // 2026-04-16 invoice reminders — ON by default for every tenant.
+  invoiceRemindersEnabled: true,
+  invoiceReminderFirstDelayDays: 3,
+  invoiceReminderRepeatEveryDays: 7,
+  invoiceReminderMaxCount: 3,
+  invoiceReminderTone: "friendly",
 };
 
 // ============================================================================

@@ -29,6 +29,8 @@ import { startPmAutoGeneration } from "./services/pmAutoGeneration";
 import { startOrphanSweeper } from "./services/fileUploadService";
 import { startQueuedEmailSweeper } from "./services/emailDeliveryTrackingService";
 import { startSubscriptionWorker, stopSubscriptionWorker } from "./services/subscriptionWorker";
+import { startInvoiceReminderWorker, stopInvoiceReminderWorker } from "./services/invoiceReminderWorker";
+import { startMidnightRolloverWorker, stopMidnightRolloverWorker } from "./services/midnightRolloverWorker";
 import { stopPmAutoGeneration } from "./services/pmAutoGeneration";
 
 /**
@@ -245,6 +247,15 @@ let queuedEmailSweeperHandle: NodeJS.Timeout | null = null;
       // renewal notices (30/7 day), auto-renew, revert-to-monthly. All
       // operations are idempotent via subscriptionEvents unique key.
       startSubscriptionWorker();
+      // 2026-04-16: overdue invoice reminder sweep. Per-tenant gated via
+      // tenant_features.invoice_reminders_enabled. Sweep runs every 4h
+      // with a 1-minute startup delay. See invoiceReminderWorker.ts.
+      startInvoiceReminderWorker();
+      // 2026-04-16: midnight rollover auto-pause. Closes any time entry
+      // still open past tenant-local midnight, stamps auto_paused_at for
+      // reporting, and notifies the technician. Idempotent via dedupeKey
+      // and the end_at IS NULL write-guard. See midnightRolloverWorker.ts.
+      startMidnightRolloverWorker();
     });
   } catch (error) {
     console.error("Failed to start server:", error);
@@ -262,6 +273,8 @@ function shutdownBackgroundWorkers() {
   workerShutdownRan = true;
   try { stopPmAutoGeneration(); } catch (err) { console.error("[shutdown] stopPmAutoGeneration failed:", err); }
   try { stopSubscriptionWorker(); } catch (err) { console.error("[shutdown] stopSubscriptionWorker failed:", err); }
+  try { stopInvoiceReminderWorker(); } catch (err) { console.error("[shutdown] stopInvoiceReminderWorker failed:", err); }
+  try { stopMidnightRolloverWorker(); } catch (err) { console.error("[shutdown] stopMidnightRolloverWorker failed:", err); }
   if (orphanSweeperHandle) {
     clearInterval(orphanSweeperHandle);
     orphanSweeperHandle = null;

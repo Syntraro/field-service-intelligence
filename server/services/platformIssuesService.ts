@@ -11,7 +11,18 @@ import {
 } from "../storage/platformIssuesStorage";
 import { internalSupportNotesStorage } from "../storage/internalSupportNotesStorage";
 import { platformAuditService } from "./platformAuditService";
+import { db } from "../db";
+import { companies, companySettings, users } from "@shared/schema";
+import { eq, sql, inArray } from "drizzle-orm";
 import type { InsertIssueReport, IssueReport, InternalSupportNote } from "@shared/schema";
+
+function userDisplayName(u: { fullName: string | null; firstName: string | null; lastName: string | null; email: string }) {
+  return (
+    u.fullName?.trim()
+    || [u.firstName, u.lastName].filter(Boolean).join(" ").trim()
+    || u.email
+  );
+}
 
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 25;
@@ -38,10 +49,62 @@ function normalize(input: ListIssuesInput): PlatformIssuesFilter {
   };
 }
 
-async function list(input: ListIssuesInput): Promise<PlatformIssuesListResult & { limit: number; offset: number }> {
+async function list(input: ListIssuesInput) {
   const params = normalize(input);
   const result = await platformIssuesStorage.list(params);
-  return { ...result, limit: params.limit, offset: params.offset };
+
+  if (result.rows.length === 0) {
+    return { ...result, limit: params.limit, offset: params.offset };
+  }
+
+  // Consistency sprint (2026-04-16): attach human-readable tenant name
+  // AND resolved assignee to each row. Same pattern as feedback + sessions.
+  const companyIds = Array.from(new Set(
+    result.rows.map((r) => r.tenantId).filter(Boolean) as string[],
+  ));
+  const userIds = Array.from(new Set(
+    result.rows.map((r) => r.assignedTo).filter(Boolean) as string[],
+  ));
+
+  const [companyRows, userRows] = await Promise.all([
+    companyIds.length > 0
+      ? db
+          .select({
+            id: companies.id,
+            name: sql<string>`COALESCE(${companySettings.companyName}, ${companies.name})`,
+          })
+          .from(companies)
+          .leftJoin(companySettings, eq(companySettings.companyId, companies.id))
+          .where(inArray(companies.id, companyIds))
+      : Promise.resolve([] as { id: string; name: string }[]),
+    userIds.length > 0
+      ? db
+          .select({
+            id: users.id,
+            email: users.email,
+            fullName: users.fullName,
+            firstName: users.firstName,
+            lastName: users.lastName,
+          })
+          .from(users)
+          .where(inArray(users.id, userIds))
+      : Promise.resolve([] as { id: string; email: string; fullName: string | null; firstName: string | null; lastName: string | null }[]),
+  ]);
+
+  const tenantByName = new Map(companyRows.map((c) => [c.id, c.name]));
+  const userById = new Map(userRows.map((u) => [u.id, u]));
+
+  const rows = result.rows.map((r) => {
+    const assignee = r.assignedTo ? userById.get(r.assignedTo) : null;
+    return {
+      ...r,
+      tenantName: r.tenantId ? (tenantByName.get(r.tenantId) ?? null) : null,
+      assigneeEmail: assignee?.email ?? null,
+      assigneeName: assignee ? userDisplayName(assignee) : null,
+    };
+  });
+
+  return { ...result, rows, limit: params.limit, offset: params.offset };
 }
 
 async function getById(id: string): Promise<(IssueReport & { notes: InternalSupportNote[] }) | null> {

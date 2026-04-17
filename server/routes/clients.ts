@@ -347,6 +347,25 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
     throw createError(400, "At least a first name or company name is required");
   }
 
+  // 2026-04-16: location valid when (name) OR (street AND city).
+  // The location name in full-create is derived from primaryLocation.name
+  // OR companyName OR person name (see primaryLocationName below).
+  const primaryAddr = primaryLocation?.serviceAddress;
+  const primaryLocName = primaryLocation?.name?.trim()
+    || company?.name?.trim()
+    || company?.firstName?.trim()
+    || null;
+  const primaryAddrValid = !!(primaryAddr?.street?.trim() && primaryAddr?.city?.trim());
+  if (!primaryLocName && !primaryAddrValid) {
+    if (!primaryAddr?.street?.trim() && primaryAddr?.city?.trim()) {
+      throw createError(400, "Street address is required when no location name is provided.");
+    } else if (primaryAddr?.street?.trim() && !primaryAddr?.city?.trim()) {
+      throw createError(400, "City is required when no location name is provided.");
+    } else {
+      throw createError(400, "Provide a location name, or both street address and city.");
+    }
+  }
+
   // 2026-04-10: Service/billing address split.
   // If billingSameAsService is true (or omitted for backwards compat), derive
   // the company billing address from the primary location's service address.
@@ -404,11 +423,13 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
   );
 
   // 2) Create primary location (client record linked to customer company)
-  // Location name fallback: explicit name → company name → person name
+  // Location name is optional (2026-04-16). When provided, use it; when
+  // omitted, fall back to a natural label. The display layer (COALESCE
+  // in locationDisplayNameExpr) will resolve the best visible identity.
   const primaryLocationName = primaryLocation?.name?.trim()
     || companyName
     || (clientFirstName ? (clientLastName ? `${clientFirstName} ${clientLastName}` : clientFirstName) : null)
-    || "Primary";
+    || null;
   const primarySelectedMonths = primaryLocation?.selectedMonths || [];
 
   const primaryClientData: any = {
@@ -536,6 +557,7 @@ router.post("/quick-create", requireRole(MANAGER_ROLES), asyncHandler(async (req
 
   // Phase 1 geocoding: Zod validation for quick-create (was previously unvalidated)
   // Phase 3: postalCodeSchema validates CA/US format and normalizes Canadian codes
+  // 2026-04-16 hardening: address is required; location name is optional.
   const quickCreateSchema = z.object({
     companyName: z.string().min(1, "Company name is required"),
     contactName: z.string().nullable().optional(),
@@ -1000,6 +1022,20 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
   }
 
   const { location, address, city, province, provinceState, stateOrProvince, postalCode, contactName, phone, email } = req.body;
+
+  // 2026-04-16: location valid when (name) OR (street AND city).
+  const locName = location?.trim() || null;
+  const locAddrValid = !!(address?.trim() && city?.trim());
+  if (!locName && !locAddrValid) {
+    if (!address?.trim() && city?.trim()) {
+      throw createError(400, "Street address is required when no location name is provided.");
+    } else if (address?.trim() && !city?.trim()) {
+      throw createError(400, "City is required when no location name is provided.");
+    } else {
+      throw createError(400, "Provide a location name, or both street address and city.");
+    }
+  }
+
   // Phase 3: resolve province from any variant + normalize postal
   const resolvedProvince = (province || provinceState || stateOrProvince || "")?.trim() || null;
   const resolvedPostal = postalCode?.trim() ? normalizePostalCode(postalCode.trim()) : null;
@@ -1009,7 +1045,9 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
     userId,
     customerCompany.id,
     {
-      location: location?.trim() || customerCompany.name,
+      // 2026-04-16: location name is optional. Null when empty —
+      // the display layer falls back to address or parent company name.
+      location: location?.trim() || null,
       address: address?.trim() || null,
       city: city?.trim() || null,
       province: resolvedProvince,
@@ -1110,6 +1148,38 @@ router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authed
     data.postalCode = normalizePostalCode(data.postalCode.trim());
   }
   const validated = insertClientSchema.partial().parse(data);
+
+  // 2026-04-16: canonical rule — (name) OR (street AND city).
+  // On PATCH, compute the post-patch state and reject if it violates the
+  // rule. Only fires when identity-relevant fields are touched; patches
+  // on non-identity fields (notes, inactive, etc.) pass through even on
+  // legacy rows that don't satisfy the rule today.
+  const identityTouched = "address" in data || "city" in data || "location" in data || "companyName" in data;
+  if (identityTouched) {
+    const existing = await storage.getClient(req.companyId, req.params.id);
+    if (existing) {
+      const afterName = ("location" in data || "companyName" in data)
+        ? ((validated as any).location ?? (validated as any).companyName ?? "").trim()
+        : ((existing as any).location ?? existing.companyName ?? "").trim();
+      const afterAddr = "address" in data
+        ? (typeof validated.address === "string" ? validated.address.trim() : "")
+        : (existing.address ?? "").trim();
+      const afterCity = "city" in data
+        ? (typeof validated.city === "string" ? validated.city.trim() : "")
+        : (existing.city ?? "").trim();
+      const afterAddrValid = !!(afterAddr && afterCity);
+      if (!afterName && !afterAddrValid) {
+        if (!afterAddr && afterCity) {
+          throw createError(400, "Street address is required when no location name is provided.");
+        } else if (afterAddr && !afterCity) {
+          throw createError(400, "City is required when no location name is provided.");
+        } else {
+          throw createError(400, "Provide a location name, or both street address and city.");
+        }
+      }
+    }
+  }
+
   const companyId = req.companyId;
   const clientId = req.params.id;
 

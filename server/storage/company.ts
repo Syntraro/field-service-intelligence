@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { eq } from "drizzle-orm";
-import { companySettings } from "@shared/schema";
+import { companies, companySettings } from "@shared/schema";
 import { BaseRepository } from "./base";
 import { cache, CacheKeys, CacheTTL } from "../services/cache";
 import { DEFAULT_TIMEZONE, isValidTimezone } from "../domain/scheduling";
@@ -33,32 +33,58 @@ export class CompanyRepository extends BaseRepository {
   }
 
   /**
-   * Upsert company settings (invalidates cache)
+   * Upsert company settings (invalidates cache).
+   *
+   * Canonical source of truth for the tenant's display name is
+   * `company_settings.companyName`. Historically, `companies.name` was
+   * written at signup-time and never updated afterwards, which caused
+   * drift (legacy rows held email-derived placeholders like
+   * "<email>'s Company" while settings held the real name).
+   *
+   * 2026-04-16 write-through: whenever the settings payload includes a
+   * non-empty `companyName`, mirror the change to `companies.name` in the
+   * same transaction so the two stay aligned. Platform Ops queries can
+   * then read either column with confidence.
    */
   async upsertCompanySettings(companyId: string, userId: string, settings: any) {
     const existing = await this.getCompanySettings(companyId);
 
-    let result;
-    if (existing) {
-      const [updated] = await db
-        .update(companySettings)
-        .set({ ...settings, updatedAt: new Date().toISOString() })
-        .where(eq(companySettings.companyId, companyId))
-        .returning();
+    const result = await db.transaction(async (tx) => {
+      let row;
+      if (existing) {
+        const [updated] = await tx
+          .update(companySettings)
+          .set({ ...settings, updatedAt: new Date().toISOString() })
+          .where(eq(companySettings.companyId, companyId))
+          .returning();
+        row = updated;
+      } else {
+        const [created] = await tx
+          .insert(companySettings)
+          .values({
+            companyId,
+            userId,
+            ...settings,
+          })
+          .returning();
+        row = created;
+      }
 
-      result = updated;
-    } else {
-      const [created] = await db
-        .insert(companySettings)
-        .values({
-          companyId,
-          userId,
-          ...settings,
-        })
-        .returning();
+      // Write-through to companies.name. Only fires when the caller
+      // explicitly sent a non-empty companyName — preserves existing
+      // companies.name when the settings update is about other fields.
+      const nextName = typeof settings?.companyName === "string"
+        ? settings.companyName.trim()
+        : null;
+      if (nextName) {
+        await tx
+          .update(companies)
+          .set({ name: nextName })
+          .where(eq(companies.id, companyId));
+      }
 
-      result = created;
-    }
+      return row;
+    });
 
     // CRITICAL: Invalidate cache after update
     cache.delete(CacheKeys.companySettings(companyId));

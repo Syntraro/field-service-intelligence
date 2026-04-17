@@ -272,6 +272,12 @@ export class InvoiceRepository extends BaseRepository {
         version: invoices.version,
         createdAt: invoices.createdAt,
         updatedAt: invoices.updatedAt,
+        // 2026-04-16 reminder state — surfaced so services and routes
+        // can gate on / read these without a second query.
+        lastReminderAt: invoices.lastReminderAt,
+        reminderCount: invoices.reminderCount,
+        remindersPaused: invoices.remindersPaused,
+        reminderSnoozeUntil: invoices.reminderSnoozeUntil,
         // Add client data
         client: {
           id: clients.id,
@@ -1867,6 +1873,47 @@ export class InvoiceRepository extends BaseRepository {
 
       return true;
     });
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Reminder tracking (2026-04-16).
+  //
+  // Writes are atomic against a single invoice row. No status transition
+  // side effects — reminders are a communication event, not a lifecycle
+  // change. These helpers are the ONLY path that should touch the four
+  // new reminder columns; callers outside invoiceReminderService should
+  // not reach for `last_reminder_at` / `reminder_count` directly.
+  // ──────────────────────────────────────────────────────────────────────
+
+  async recordReminderSent(companyId: string, invoiceId: string): Promise<void> {
+    await db
+      .update(invoices)
+      .set({
+        lastReminderAt: new Date(),
+        reminderCount: sql`${invoices.reminderCount} + 1`,
+      })
+      .where(and(
+        eq(invoices.id, invoiceId),
+        eq(invoices.companyId, companyId),
+      ));
+  }
+
+  async setRemindersPaused(
+    companyId: string,
+    invoiceId: string,
+    paused: boolean,
+    snoozeUntil: Date | null = null,
+  ): Promise<void> {
+    await db
+      .update(invoices)
+      .set({
+        remindersPaused: paused,
+        reminderSnoozeUntil: snoozeUntil,
+      })
+      .where(and(
+        eq(invoices.id, invoiceId),
+        eq(invoices.companyId, companyId),
+      ));
   }
 }
 

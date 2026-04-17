@@ -81,6 +81,7 @@ import {
   draftToInvoiceLinePayload,
 } from "@/lib/entities/lineItemMapper";
 import { InvoiceHeaderCard } from "@/components/InvoiceHeaderCard";
+import { InvoiceRemindersCard } from "@/components/invoice/InvoiceRemindersCard";
 // Phase 12 (2026-04-12): Jobber-style send modal with recipients + subject + body.
 // Legacy ConfirmSendModal import removed in Phase 13.
 import { SendInvoiceModal } from "@/components/communication/SendInvoiceModal";
@@ -91,6 +92,7 @@ import { ConfirmVoidModal } from "@/components/invoice/ConfirmVoidModal";
 import { QboSyncBanner, isQboSynced, isBillingLocked } from "@/components/invoice/QboSyncBanner";
 import { QboOverrideModal, useQboOverride } from "@/components/invoice/QboOverrideModal";
 import { formatCurrency } from "@/lib/formatters";
+import { DetailPageShell } from "@/components/layout/DetailPageShell";
 
 // JobNote interface removed — notes now rendered by canonical JobNotesSection component
 
@@ -1143,10 +1145,12 @@ export default function InvoiceDetailPage() {
   };
 
   return (
-    <div className="bg-[#f1f5f9] h-full flex flex-col" data-testid="invoice-detail-page">
-      <div className="px-4 lg:px-6 py-4 flex-1 flex flex-col min-h-0">
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] gap-4 flex-1 min-h-0" data-testid="invoice-body-area">
-            <div className="space-y-2.5 min-w-0 min-h-0 overflow-y-auto lg:pr-1 h-full">
+    <>
+      <DetailPageShell
+        background="#f1f5f9"
+        dataTestId="invoice-detail-page"
+        leftColumn={
+          <>
 
               {/* 2026-04-14: email send / viewed metadata now lives in
                   `InvoiceHeaderCard`'s metadata block. The former
@@ -1154,7 +1158,6 @@ export default function InvoiceDetailPage() {
                   and the amber "Invoice has been sent" banner were
                   removed to avoid duplicate email-status surfaces. */}
 
-              {/* Banners — inside left column so right rail starts at top */}
               <QboSyncBanner invoice={invoice} />
 
               {isPastDue && (
@@ -1209,6 +1212,14 @@ export default function InvoiceDetailPage() {
                 onUpdateIssueDate={(date) => updateInvoiceFieldsMutation.mutate({ issueDate: date })}
                 issueDatePending={updateInvoiceFieldsMutation.isPending}
               />
+
+              {/* Reminders card — only meaningful for sendable/unpaid invoices.
+                  Drafts, paid, and voided invoices never carry reminders. */}
+              {invoice.status !== "draft"
+                && invoice.status !== "paid"
+                && invoice.status !== "voided" && (
+                <InvoiceRemindersCard invoice={invoice as any} />
+              )}
 
               {/* Job Description — editable from invoice page */}
               {(job?.description || invoice.workDescription || isEditingDescription) && (
@@ -1535,11 +1546,10 @@ export default function InvoiceDetailPage() {
                     </div>
                   </div>
               </div>
-            </div>
-
-            <div className="space-y-2.5 min-w-0 min-h-0 overflow-y-auto h-full">
-              {/* Payment Terms card removed — now integrated into InvoiceHeaderCard */}
-
+          </>
+        }
+        rightRail={
+          <>
               {/* Technician Notes — canonical writable notes shared with Job Detail */}
               {jobId && (
                 <Card>
@@ -1690,9 +1700,9 @@ export default function InvoiceDetailPage() {
 
               {/* Activity — bottom of rail; reference history. */}
               <ActivityCard entityType="invoice" entityId={invoiceId!} />
-            </div>
-          </div>
-        </div>
+          </>
+        }
+      />
 
       <Dialog open={showPaymentDialog} onOpenChange={setShowPaymentDialog}>
         <DialogContent>
@@ -1824,6 +1834,6 @@ export default function InvoiceDetailPage() {
         onConfirm={qboOverride.handleConfirm}
         isPending={qboOverridePending}
       />
-    </div>
+    </>
   );
 }

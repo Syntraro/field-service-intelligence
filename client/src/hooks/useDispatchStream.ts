@@ -21,6 +21,7 @@
 import { useEffect, useRef } from "react";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth";
+import { isPlatformRole } from "@/lib/platformRoles";
 import { markCalendarInvalidated } from "@/lib/dispatchInvalidationSync";
 
 /** Matches DispatchSignal from server/lib/dispatchBus.ts */
@@ -188,6 +189,12 @@ export function useDispatchStream() {
   useEffect(() => {
     // Only connect when authenticated
     if (!user) return;
+    // 2026-04-16 auth-integrity: platform-role users have no tenant
+    // context. Opening a tenant-scoped SSE for them triggers a 403 at
+    // ensureTenantContext and writes a platform_tenant_access_denied
+    // audit row per session. Gate here so platform users never open
+    // the stream at all.
+    if (isPlatformRole(user.role)) return;
 
     let closed = false;
 

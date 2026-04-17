@@ -18,6 +18,9 @@ import {
 } from "../storage/impersonation";
 import { impersonationService } from "../impersonationService";
 import { platformAuditService } from "./platformAuditService";
+import { db } from "../db";
+import { companies, companySettings, users } from "@shared/schema";
+import { eq, sql, inArray } from "drizzle-orm";
 import type { ImpersonationSession } from "@shared/schema";
 
 // Allowed duration buckets per spec: 15 / 30 / 60 minutes.
@@ -149,7 +152,7 @@ export interface ListInput {
 async function list(input: ListInput) {
   const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
   const offset = Math.max(0, Number(input.offset) || 0);
-  return impersonationRepository.listSessions({
+  const raw = await impersonationRepository.listSessions({
     activeOnly: !!input.activeOnly,
     companyId: input.tenantId,
     ownerUserId: input.ownerUserId,
@@ -158,6 +161,66 @@ async function list(input: ListInput) {
     limit,
     offset,
   });
+
+  if (raw.rows.length === 0) return raw;
+
+  // Usability sprint (2026-04-16): hydrate UUIDs into human-readable
+  // tenant + user labels so ops staff aren't squinting at truncated IDs.
+  // Two batched queries — one for the distinct companies, one for the
+  // distinct users (owners + impersonation targets).
+  const companyIds = Array.from(new Set(raw.rows.map((r) => r.companyId)));
+  const userIds = Array.from(new Set(
+    raw.rows.flatMap((r) => [r.ownerUserId, r.targetUserId].filter(Boolean) as string[]),
+  ));
+
+  const [companyRows, userRows] = await Promise.all([
+    companyIds.length > 0
+      ? db
+          .select({
+            id: companies.id,
+            name: sql<string>`COALESCE(${companySettings.companyName}, ${companies.name})`,
+          })
+          .from(companies)
+          .leftJoin(companySettings, eq(companySettings.companyId, companies.id))
+          .where(inArray(companies.id, companyIds))
+      : Promise.resolve([] as { id: string; name: string }[]),
+    userIds.length > 0
+      ? db
+          .select({
+            id: users.id,
+            email: users.email,
+            fullName: users.fullName,
+            firstName: users.firstName,
+            lastName: users.lastName,
+          })
+          .from(users)
+          .where(inArray(users.id, userIds))
+      : Promise.resolve([] as { id: string; email: string; fullName: string | null; firstName: string | null; lastName: string | null }[]),
+  ]);
+
+  const companyById = new Map(companyRows.map((c) => [c.id, c.name]));
+  const userById = new Map(userRows.map((u) => [u.id, u]));
+
+  const enrichedRows = raw.rows.map((r) => {
+    const owner = userById.get(r.ownerUserId) ?? null;
+    const target = r.targetUserId ? (userById.get(r.targetUserId) ?? null) : null;
+    const label = (u: typeof owner) =>
+      u
+        ? (u.fullName?.trim()
+            || [u.firstName, u.lastName].filter(Boolean).join(" ").trim()
+            || u.email)
+        : null;
+    return {
+      ...r,
+      tenantName: companyById.get(r.companyId) ?? null,
+      ownerEmail: owner?.email ?? null,
+      ownerName: label(owner),
+      targetEmail: target?.email ?? null,
+      targetName: label(target),
+    };
+  });
+
+  return { ...raw, rows: enrichedRows };
 }
 
 async function activate(

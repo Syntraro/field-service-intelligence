@@ -24,6 +24,9 @@ interface Issue {
   id: string; tenantId: string | null; title: string; description: string | null;
   severity: string; status: string; assignedTo: string | null; priority: string | null;
   createdAt: string; featureArea: string | null;
+  tenantName?: string | null;
+  assigneeEmail?: string | null;
+  assigneeName?: string | null;
 }
 
 export default function PlatformIssuesPage() {
@@ -75,6 +78,7 @@ export default function PlatformIssuesPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>When</TableHead>
+                <TableHead>Tenant</TableHead>
                 <TableHead>Title</TableHead>
                 <TableHead>Severity</TableHead>
                 <TableHead>Status</TableHead>
@@ -86,15 +90,23 @@ export default function PlatformIssuesPage() {
               {data?.rows.map((r) => (
                 <TableRow key={r.id} className="cursor-pointer hover-elevate" onClick={() => setSelected(r)}>
                   <TableCell className="text-xs text-muted-foreground">{new Date(r.createdAt).toLocaleString()}</TableCell>
+                  <TableCell className="text-sm">
+                    {r.tenantName
+                      ?? (r.tenantId ? <span className="font-mono text-xs">{r.tenantId.slice(0,8)}…</span> : <span className="text-muted-foreground">—</span>)}
+                  </TableCell>
                   <TableCell>{r.title}</TableCell>
                   <TableCell><Badge variant={sevColor(r.severity) as any}>{r.severity}</Badge></TableCell>
                   <TableCell><Badge variant="outline">{r.status}</Badge></TableCell>
-                  <TableCell className="text-xs">{r.assignedTo ?? "—"}</TableCell>
+                  <TableCell className="text-sm">
+                    {r.assigneeName
+                      ?? r.assigneeEmail
+                      ?? (r.assignedTo ? <span className="font-mono text-xs">{r.assignedTo.slice(0,8)}…</span> : "—")}
+                  </TableCell>
                   <TableCell className="text-xs">{r.featureArea ?? "—"}</TableCell>
                 </TableRow>
               ))}
               {data?.rows.length === 0 && (
-                <TableRow><TableCell colSpan={6}>No issues.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={7}>No issues.</TableCell></TableRow>
               )}
             </TableBody>
           </Table>
@@ -106,13 +118,21 @@ export default function PlatformIssuesPage() {
   );
 }
 
+interface TenantOption { id: string; name: string }
+const UNLINKED = "__unlinked__";
+
 function CreateIssueDialog({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [severity, setSeverity] = useState("medium");
-  const [tenantId, setTenantId] = useState("");
+  const [tenantId, setTenantId] = useState<string>(UNLINKED);
+
+  const { data: tenantList } = useQuery<{ rows: TenantOption[] }>({
+    queryKey: ["/api/platform/tenants", "issue-selector"],
+    queryFn: () => apiRequest("/api/platform/tenants?limit=100"),
+  });
 
   const create = useMutation({
     mutationFn: () => apiRequest("/api/platform/issues", {
@@ -120,7 +140,7 @@ function CreateIssueDialog({ onClose }: { onClose: () => void }) {
       body: JSON.stringify({
         title, description: description || null,
         severity, status: "open", source: "platform",
-        tenantId: tenantId || null,
+        tenantId: tenantId === UNLINKED ? null : tenantId,
       }),
     }),
     onSuccess: () => {
@@ -145,7 +165,18 @@ function CreateIssueDialog({ onClose }: { onClose: () => void }) {
               <SelectContent>{SEVERITIES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
             </Select>
           </div>
-          <div><Label>Tenant ID (optional)</Label><Input value={tenantId} onChange={(e) => setTenantId(e.target.value)} /></div>
+          <div>
+            <Label>Tenant</Label>
+            <Select value={tenantId} onValueChange={setTenantId}>
+              <SelectTrigger data-testid="select-issue-tenant"><SelectValue placeholder="Select tenant..." /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={UNLINKED}>— Not linked to a tenant —</SelectItem>
+                {(tenantList?.rows ?? []).map((t) => (
+                  <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
@@ -196,7 +227,16 @@ function IssueDetailDialog({ issue, onClose }: { issue: Issue; onClose: () => vo
               <SelectContent>{SEVERITIES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
             </Select>
           </div>
-          <div><Label>Assignee user id</Label><Input value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} /></div>
+          <div>
+            <Label>Assignee user id</Label>
+            <Input value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} />
+            {(issue.assigneeName || issue.assigneeEmail) && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Current: {issue.assigneeName ?? issue.assigneeEmail}
+                {issue.assigneeName && issue.assigneeEmail ? ` (${issue.assigneeEmail})` : null}
+              </p>
+            )}
+          </div>
           <Button onClick={() => patch.mutate()} disabled={patch.isPending} className="w-full">Save</Button>
         </div>
       </DialogContent>

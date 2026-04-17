@@ -54,14 +54,15 @@ export default function PlatformTenantsList() {
                 <TableHead>Plan</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Created</TableHead>
+                <TableHead>Last support</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {isLoading && (
-                <TableRow><TableCell colSpan={4}>Loading…</TableCell></TableRow>
+                <TableRow><TableCell colSpan={5}>Loading…</TableCell></TableRow>
               )}
               {!isLoading && data?.rows.length === 0 && (
-                <TableRow><TableCell colSpan={4}>No tenants found.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={5}>No tenants found.</TableCell></TableRow>
               )}
               {data?.rows.map((t) => (
                 <TableRow
@@ -78,6 +79,9 @@ export default function PlatformTenantsList() {
                   <TableCell><Badge variant="outline">{t.status}</Badge></TableCell>
                   <TableCell className="text-muted-foreground text-sm">
                     {new Date(t.createdAt).toLocaleDateString()}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground text-sm">
+                    {t.recentSupportAt ? new Date(t.recentSupportAt).toLocaleDateString() : "—"}
                   </TableCell>
                 </TableRow>
               ))}

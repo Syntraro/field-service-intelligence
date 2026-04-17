@@ -44,6 +44,7 @@ import {
   MoreHorizontal,
   MapPin,
   MessageSquare,
+  Truck,
   RotateCcw,
   Send,
   Wrench,
@@ -108,6 +109,7 @@ import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
 // PERMISSION HELPERS - Role-based action availability
 // ============================================================================
 import { MANAGER_ROLES } from "@/lib/roles";
+import { DetailPageShell } from "@/components/layout/DetailPageShell";
 
 // ============================================================================
 // OFFICE ACTIONS STRIP - Jobber-style attention banner
@@ -338,6 +340,26 @@ function LabourCardContent({
     staleTime: 2 * 60_000,
   });
 
+  // 2026-04-16: the card lives inside DetailPageShell's user-resizable
+  // rail. Status labels ("En Route" / "On Site" / "Task" / "Manual")
+  // collide with the duration+cost column once the rail narrows, so
+  // swap text for lucide icons once the card falls below a tested
+  // width. No viewport breakpoint — this must react to the rail's
+  // own width, independent of the viewport.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [isCompact, setIsCompact] = useState(false);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const apply = (width: number) => setIsCompact(width < 320);
+    apply(el.getBoundingClientRect().width);
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) apply(entry.contentRect.width);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   if (isLoading) {
     return (
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -365,7 +387,7 @@ function LabourCardContent({
 
   // Labour Summary: entries render immediately when card is expanded (no nested toggle)
   return (
-    <div className="space-y-1">
+    <div ref={containerRef} className="space-y-1">
       {/* Running indicator */}
       {timeSummary.isRunning && (
         <div className="flex items-center gap-2 text-xs text-green-600 bg-green-50 dark:bg-green-950 rounded px-2 py-1 mb-1">
@@ -416,6 +438,27 @@ function LabourCardContent({
                 ? ((entry.durationMinutes / 60) * parseFloat(entry.costRateSnapshot)).toFixed(2)
                 : null;
               const isTravel = TRAVEL_SET.has(entry.type);
+              // 2026-04-16: status badge — icon-only under ~320px so it
+              // stops colliding with duration/cost when the rail is narrow.
+              const statusLabel = isTravel
+                ? "En Route"
+                : entry.sourceType === "task"
+                  ? "Task"
+                  : entry.sourceType === "manual"
+                    ? "Manual"
+                    : "On Site";
+              const statusTone = isTravel
+                ? "bg-blue-50 text-blue-600"
+                : entry.sourceType === "task"
+                  ? "bg-indigo-50 text-indigo-600"
+                  : "bg-emerald-50 text-emerald-600";
+              const StatusIcon = isTravel
+                ? Truck
+                : entry.sourceType === "task"
+                  ? Tag
+                  : entry.sourceType === "manual"
+                    ? Pencil
+                    : MapPin;
               return (
                 <div
                   key={entry.id}
@@ -434,10 +477,16 @@ function LabourCardContent({
                         <span className="ml-0.5 text-slate-400">{format(new Date(entry.startAt), "h:mma")}–{format(new Date(entry.endAt), "h:mma")}</span>
                       )}
                     </span>
-                    <span className={cn("text-xs font-medium px-1.5 py-0.5 rounded-full shrink-0",
-                      isTravel ? "bg-blue-50 text-blue-600" : entry.sourceType === "task" ? "bg-indigo-50 text-indigo-600" : "bg-emerald-50 text-emerald-600"
-                    )}>
-                      {isTravel ? "En Route" : entry.sourceType === "task" ? "Task" : entry.sourceType === "manual" ? "Manual" : "On Site"}
+                    <span
+                      className={cn(
+                        "text-xs font-medium rounded-full shrink-0 inline-flex items-center",
+                        statusTone,
+                        isCompact ? "h-5 w-5 justify-center" : "px-1.5 py-0.5",
+                      )}
+                      title={statusLabel}
+                      aria-label={statusLabel}
+                    >
+                      {isCompact ? <StatusIcon className="h-3 w-3" /> : statusLabel}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 shrink-0 ml-2">
@@ -857,8 +906,11 @@ export default function JobDetailPage() {
     : "";
 
   return (
-    <div className="bg-[#f1f5f9] h-full flex flex-col" data-testid="job-detail-page">
-      {/* Hidden: JobHeaderCard kept for dialog/mutation logic via imperative ref */}
+    <>
+      {/* Hidden JobHeaderCard — kept mounted outside the shell for
+          imperative ref access (`headerCardRef.current?.openCloseJobDialog`,
+          `triggerReopenJob`). Staying outside the shell avoids a phantom
+          top gap from the left column's `space-y` rhythm. */}
       <div className="hidden">
         <JobHeaderCard
           ref={headerCardRef}
@@ -870,18 +922,11 @@ export default function JobDetailPage() {
         />
       </div>
 
-      <div className="px-4 lg:px-6 py-4 flex-1 flex flex-col min-h-0">
-        {/* Two-pane layout: both columns fill available height, each scrolls independently */}
-        {/* lg:grid-rows-[1fr] forces the single row to fill the grid's flex-1 height
-            instead of sizing to content (the default auto). Without this, the auto row
-            expands to content height, h-full on columns resolves to that expanded height,
-            overflow-y-auto never activates, and <main overflow-auto> scrolls the whole page. */}
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] lg:grid-rows-[1fr] gap-4 flex-1 min-h-0" data-testid="job-body-area">
-
-        {/* ════════════════════════════════════════════════════════════════
-            LEFT COLUMN — independently scrollable primary content
-            ════════════════════════════════════════════════════════════════ */}
-        <div className="space-y-2.5 min-w-0 min-h-0 overflow-y-auto lg:pr-1 h-full">
+      <DetailPageShell
+        background="#f1f5f9"
+        dataTestId="job-detail-page"
+        leftColumn={
+          <>
 
           {/* 2026-04-14: removed `DeliveryStatusCard` from the top of
               Job Detail. Send/view info now lives in the right-rail
@@ -1421,13 +1466,10 @@ export default function JobDetailPage() {
             </Collapsible>
           </div>
 
-        </div>
-
-        {/* ════════════════════════════════════════════════════════════════
-            RIGHT COLUMN — sticky operations rail
-            ════════════════════════════════════════════════════════════════ */}
-        <aside className="space-y-3 min-h-0 overflow-y-auto h-full">
-
+          </>
+        }
+        rightRail={
+          <>
           {/* 1. JOB SUMMARY — collapsible, minimized by default, profit visible when collapsed */}
           <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="section-job-summary">
             <Collapsible open={jobSummaryExpanded} onOpenChange={setJobSummaryExpanded}>
@@ -1581,10 +1623,9 @@ export default function JobDetailPage() {
 
           {/* 6. ACTIVITY — bottom of rail; reference history. */}
           <ActivityCard entityType="job" entityId={job.id} />
-
-        </aside>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
         <AlertDialogContent data-testid="dialog-delete-confirm">
@@ -1767,6 +1808,6 @@ export default function JobDetailPage() {
           toast({ title: "Job email sent" });
         }}
       />
-    </div>
+    </>
   );
 }

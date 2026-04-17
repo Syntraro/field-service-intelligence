@@ -33,6 +33,9 @@ import {
 } from "@shared/schema";
 import { z } from "zod";
 import { emitDispatch } from "../lib/dispatchBus";
+import { db } from "../db";
+import { and, desc, eq, gte, isNotNull, lte } from "drizzle-orm";
+import { timeEntries, users, jobs, jobVisits } from "@shared/schema";
 
 // Main time tracking router (mounted at /api/time)
 const timeRouter = Router();
@@ -679,6 +682,80 @@ jobTimeRouter.get(
 
     res.json(entries);
   })
+);
+
+// ============================================================================
+// MIDNIGHT ROLLOVER REPORTING (2026-04-16)
+// ============================================================================
+
+/**
+ * GET /api/time/auto-paused
+ * Office/admin visibility into entries closed by the midnight rollover
+ * worker. Returns the most recent auto-paused time entries with job,
+ * visit, and technician context so managers can see which jobs had
+ * overnight labour activity.
+ *
+ * Query params:
+ *   from   ISO date-time, optional — inclusive lower bound on
+ *          `auto_paused_at`. Defaults to 7 days ago.
+ *   to     ISO date-time, optional — inclusive upper bound on
+ *          `auto_paused_at`. Defaults to now.
+ *   limit  number, optional — max rows (default 200, hard cap 500).
+ */
+const autoPausedQuerySchema = z.object({
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  limit: z.coerce.number().int().positive().max(500).optional(),
+});
+
+timeRouter.get(
+  "/auto-paused",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const parsed = autoPausedQuerySchema.parse(req.query);
+    const to = parsed.to ? new Date(parsed.to) : new Date();
+    const from = parsed.from
+      ? new Date(parsed.from)
+      : new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const limit = parsed.limit ?? 200;
+
+    const rows = await db
+      .select({
+        id: timeEntries.id,
+        technicianId: timeEntries.technicianId,
+        technicianName: users.fullName,
+        jobId: timeEntries.jobId,
+        jobNumber: jobs.jobNumber,
+        visitId: timeEntries.visitId,
+        visitIsActive: jobVisits.isActive,
+        type: timeEntries.type,
+        startAt: timeEntries.startAt,
+        endAt: timeEntries.endAt,
+        durationMinutes: timeEntries.durationMinutes,
+        autoPausedAt: timeEntries.autoPausedAt,
+      })
+      .from(timeEntries)
+      .leftJoin(users, eq(timeEntries.technicianId, users.id))
+      .leftJoin(jobs, eq(timeEntries.jobId, jobs.id))
+      .leftJoin(jobVisits, eq(timeEntries.visitId, jobVisits.id))
+      .where(
+        and(
+          eq(timeEntries.companyId, req.companyId!),
+          isNotNull(timeEntries.autoPausedAt),
+          gte(timeEntries.autoPausedAt, from),
+          lte(timeEntries.autoPausedAt, to),
+        ),
+      )
+      .orderBy(desc(timeEntries.autoPausedAt))
+      .limit(limit);
+
+    res.json({
+      from: from.toISOString(),
+      to: to.toISOString(),
+      count: rows.length,
+      entries: rows,
+    });
+  }),
 );
 
 // Export routers

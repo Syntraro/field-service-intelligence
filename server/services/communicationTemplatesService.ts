@@ -41,32 +41,65 @@ import {
 // SMS default copy has been approved for any entity yet).
 
 const SYSTEM_DEFAULTS: Record<string, TemplateInput> = {
+  // 2026-04-16: approved production-ready defaults. Tenants with a saved
+  // row in `communication_templates` for the matching (entity, channel)
+  // keep their override — these defaults only render when no tenant row
+  // exists. See resolveRenderedMessage in emailDispatchService.ts.
   "invoice:email": {
-    subjectTemplate: "Invoice #{{INVOICE_NUMBER}} from {{COMPANY_NAME}}",
+    subjectTemplate: "Invoice #{{INVOICE_NUMBER}} — {{COMPANY_NAME}}",
     bodyTemplate:
-      "Hi {{CLIENT_COMPANY_NAME}},\n\n" +
-      "Thank you for your business with {{COMPANY_NAME}}.\n\n" +
-      "Your invoice #{{INVOICE_NUMBER}} is ready. The total amount is {{INVOICE_TOTAL}}.\n" +
-      "If payment is due by a specific date, please note the due date: {{INVOICE_DUE_DATE}}.\n\n" +
-      "Please contact us if you have any questions.\n\n" +
-      "Sincerely,\n" +
+      "Hello {{CLIENT_COMPANY_NAME}},\n\n" +
+      "Thank you for choosing {{COMPANY_NAME}}.\n\n" +
+      "Your invoice #{{INVOICE_NUMBER}} is attached and ready for payment.\n\n" +
+      "Total amount: {{INVOICE_TOTAL}}\n" +
+      "Due date: {{INVOICE_DUE_DATE}}\n\n" +
+      "If you have any questions, please contact us.\n\n" +
+      "Thank you,\n" +
       "{{COMPANY_NAME}}",
   },
   "quote:email": {
-    subjectTemplate: "Quote from {{COMPANY_NAME}}",
+    subjectTemplate: "Quote #{{QUOTE_NUMBER}} — {{COMPANY_NAME}}",
     bodyTemplate:
-      "Hi {{CLIENT_COMPANY_NAME}},\n\n" +
-      "We\u2019ve prepared your quote from {{COMPANY_NAME}}.\n\n" +
-      "Please review it and let us know if you have any questions or would like to move forward.\n\n" +
+      "Hello {{CLIENT_COMPANY_NAME}},\n\n" +
+      "Thank you for the opportunity to provide pricing.\n\n" +
+      "Your quote #{{QUOTE_NUMBER}} is ready for review.\n\n" +
+      "Quoted amount: {{QUOTE_TOTAL}}\n\n" +
+      "Please contact us if you would like to proceed or if you have any questions.\n\n" +
       "Thank you,\n" +
       "{{COMPANY_NAME}}",
   },
   "job:email": {
-    subjectTemplate: "Update from {{COMPANY_NAME}}",
+    // 2026-04-16 grammar fix: use {{JOB_TIME_PHRASE}} instead of a literal
+    // "at {{JOB_TIME}}" so all-day / un-scheduled jobs no longer render as
+    // "scheduled for January 15, 2026 at ." — the phrase variable carries
+    // its own leading space when a time is present and is empty otherwise.
+    // {{JOB_TIME}} is preserved in the catalog for tenant templates that
+    // already reference it; new defaults should prefer {{JOB_TIME_PHRASE}}.
+    subjectTemplate: "Your service appointment is scheduled — {{COMPANY_NAME}}",
     bodyTemplate:
-      "Hi {{CLIENT_COMPANY_NAME}},\n\n" +
-      "This is an update regarding your job with {{COMPANY_NAME}}.\n\n" +
-      "Please review the details and contact us if you have any questions.\n\n" +
+      "Hello {{CLIENT_COMPANY_NAME}},\n\n" +
+      "Your service appointment with {{COMPANY_NAME}} is scheduled for {{JOB_DATE}}{{JOB_TIME_PHRASE}}.\n\n" +
+      "Please contact us if you have any questions or need to make changes.\n\n" +
+      "Thank you,\n" +
+      "{{COMPANY_NAME}}",
+  },
+  // 2026-04-16 — invoice reminder template. Tenants can override via the
+  // existing templates editor; this entry is only used when no tenant
+  // row exists for ("invoice_reminder", "email"). Variables resolve via
+  // the same renderer path as the primary invoice email.
+  "invoice_reminder:email": {
+    // 2026-04-16: approved production wording. Tenants with a saved row
+    // in `communication_templates` keep their override — the renderer
+    // only falls back to this default when no tenant row exists for
+    // (tenant, "invoice_reminder", "email"). See resolveRenderedMessage
+    // in server/services/emailDispatchService.ts.
+    subjectTemplate: "Reminder: Invoice #{{INVOICE_NUMBER}} is {{DAYS_OVERDUE}} days overdue",
+    bodyTemplate:
+      "Hello {{CLIENT_COMPANY_NAME}},\n\n" +
+      "This is a friendly reminder that invoice #{{INVOICE_NUMBER}} is now {{DAYS_OVERDUE}} days overdue.\n\n" +
+      "Outstanding balance: {{INVOICE_BALANCE}}\n\n" +
+      "If payment has already been sent, please disregard this message.\n\n" +
+      "If you have any questions or need assistance, simply reply to this email.\n\n" +
       "Thank you,\n" +
       "{{COMPANY_NAME}}",
   },

@@ -41,6 +41,7 @@ const PlatformFeedbackPage = lazy(() => import("@/pages/platform/PlatformFeedbac
 const PlatformIssuesPage = lazy(() => import("@/pages/platform/PlatformIssuesPage"));
 const PlatformSupportSessionsPage = lazy(() => import("@/pages/platform/PlatformSupportSessionsPage"));
 const SupportAccessPage = lazy(() => import("@/pages/SupportAccessPage"));
+const InvoiceRemindersSettingsPage = lazy(() => import("@/pages/InvoiceRemindersSettingsPage"));
 // 2026-03-21: AddClientPage and NewClientPage removed — replaced by canonical CreateClientModal
 import Clients from "@/pages/Clients";
 import ClientDetailPage from "@/pages/ClientDetailPage";
@@ -388,6 +389,11 @@ function Router() {
           <TaxBillingRulesPage />
         </ProtectedRoute>
       </Route>
+      <Route path="/settings/invoice-reminders">
+        <ProtectedRoute requireAdmin>
+          <InvoiceRemindersSettingsPage />
+        </ProtectedRoute>
+      </Route>
       <Route path="/settings/integrations">
         <ProtectedRoute requireAdmin>
           <IntegrationsPage />
@@ -621,15 +627,23 @@ function AppContent() {
   // rules-of-hooks stay intact.
   if (isPlatformUser && !isAuthPage && !isPortalPage && !isTechnicianPage) {
     if (!location.startsWith("/platform")) {
+      // One-time toast so the redirect isn't silent on first visit.
+      toast({
+        title: "Platform Ops portal",
+        description: "Tenant views are not available here.",
+      });
       setLocation("/platform/tenants");
       return null;
     }
-    return (
-      <>
-        <ImpersonationBanner />
-        <Router />
-      </>
-    );
+    // Consistency sprint (2026-04-16): do NOT mount <ImpersonationBanner />
+    // here — it queries /api/admin/impersonate/status which is
+    // tenant-scoped and 403s for platform users, leaking one audit row
+    // per platform session. During an actual accessMode='impersonation'
+    // session, req.user is swapped to the tenant user and this branch
+    // is never reached; the tenant shell renders the banner. For
+    // read-only support sessions, the session status is visible on
+    // /platform/support-sessions. No tenant-scoped query fires here.
+    return <Router />;
   }
 
   // Portal pages use a completely separate layout and auth

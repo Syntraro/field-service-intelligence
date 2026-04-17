@@ -25,6 +25,9 @@ interface FeedbackRow {
   assignedTo: string | null;
   createdAt: string;
   title?: string | null;
+  tenantName?: string | null;
+  assigneeEmail?: string | null;
+  assigneeName?: string | null;
 }
 
 export default function PlatformFeedbackPage() {
@@ -63,26 +66,34 @@ export default function PlatformFeedbackPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>When</TableHead>
+                <TableHead>Tenant</TableHead>
                 <TableHead>Category</TableHead>
                 <TableHead>From</TableHead>
                 <TableHead>Message</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Priority</TableHead>
+                <TableHead>Assignee</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {data?.rows.map((r) => (
                 <TableRow key={r.id} className="cursor-pointer hover-elevate" onClick={() => setSelected(r)}>
                   <TableCell className="text-xs text-muted-foreground">{new Date(r.createdAt).toLocaleString()}</TableCell>
+                  <TableCell className="text-sm">{r.tenantName ?? <span className="font-mono text-xs">{r.companyId.slice(0,8)}…</span>}</TableCell>
                   <TableCell>{r.category}</TableCell>
                   <TableCell>{r.userEmail}</TableCell>
                   <TableCell className="max-w-md truncate">{r.title ?? r.message}</TableCell>
                   <TableCell><Badge variant="outline">{r.status}</Badge></TableCell>
                   <TableCell>{r.priority ?? "—"}</TableCell>
+                  <TableCell className="text-sm">
+                    {r.assigneeName
+                      ?? r.assigneeEmail
+                      ?? (r.assignedTo ? <span className="font-mono text-xs">{r.assignedTo.slice(0,8)}…</span> : <span className="text-muted-foreground">—</span>)}
+                  </TableCell>
                 </TableRow>
               ))}
               {data?.rows.length === 0 && (
-                <TableRow><TableCell colSpan={6}>No feedback.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={8}>No feedback.</TableCell></TableRow>
               )}
             </TableBody>
           </Table>
@@ -139,6 +150,12 @@ function FeedbackDetailDialog({ item, onClose }: { item: FeedbackRow; onClose: (
           <div>
             <Label>Assignee user id</Label>
             <Input value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} />
+            {(item.assigneeName || item.assigneeEmail) && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Current: {item.assigneeName ?? item.assigneeEmail}
+                {item.assigneeName && item.assigneeEmail ? ` (${item.assigneeEmail})` : null}
+              </p>
+            )}
           </div>
           <Button onClick={() => patch.mutate()} disabled={patch.isPending} className="w-full">Save</Button>
         </div>

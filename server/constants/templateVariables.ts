@@ -20,6 +20,10 @@ export const INVOICE_TEMPLATE_VARIABLES = [
   "COMPANY_NAME",
   "INVOICE_TOTAL",
   "INVOICE_DUE_DATE",
+  // Reminder-specific additions (2026-04-16). Populated on every
+  // invoice email; zero or negative on non-overdue sends.
+  "INVOICE_BALANCE",
+  "DAYS_OVERDUE",
 ] as const;
 
 export const QUOTE_TEMPLATE_VARIABLES = [
@@ -34,6 +38,17 @@ export const JOB_TEMPLATE_VARIABLES = [
   "CLIENT_COMPANY_NAME",
   "COMPANY_NAME",
   "JOB_DATE",
+  // 2026-04-16: scheduled-appointment time. Formatted in the tenant's
+  // configured timezone (America/Toronto by default). Empty string when
+  // the job has no scheduled_start or is flagged is_all_day.
+  "JOB_TIME",
+  // 2026-04-16: grammar-safe phrase for template bodies that want natural
+  // sentence flow whether or not a time is present. When a time exists:
+  // " at 9:00 AM" (note leading space — absorbs the spacer so the default
+  // body `"{{JOB_DATE}}{{JOB_TIME_PHRASE}}."` renders cleanly). When no
+  // time: empty string. Use this instead of `at {{JOB_TIME}}` in user-
+  // facing copy so rendered text never leaves a " at ." artifact.
+  "JOB_TIME_PHRASE",
 ] as const;
 
 export type InvoiceTemplateVariable = (typeof INVOICE_TEMPLATE_VARIABLES)[number];
@@ -54,4 +69,7 @@ export const TEMPLATE_VARIABLES_BY_ENTITY: Record<
   invoice: INVOICE_TEMPLATE_VARIABLES,
   quote: QUOTE_TEMPLATE_VARIABLES,
   job: JOB_TEMPLATE_VARIABLES,
+  // 2026-04-16: reminder template reuses the invoice variable set — the
+  // renderer hydrates the same data from templateDataBuilder.buildInvoiceTemplateData.
+  invoice_reminder: INVOICE_TEMPLATE_VARIABLES,
 };

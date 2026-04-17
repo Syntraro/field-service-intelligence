@@ -28,6 +28,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { resolveDashboardNav, type DashboardAction } from "@/lib/dashboardNavigation";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DashboardActionModal, type DashboardActionMode } from "@/components/DashboardActionModal";
+import { MidnightRolloverCard } from "@/components/MidnightRolloverCard";
 import type { Job as SchemaJob, Invoice as SchemaInvoice } from "@shared/schema";
 
 // ============================================================================
@@ -366,9 +367,10 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* 2026-04-15: Tasks panel moved to the global header. The
-              right-sidebar grid column previously held by the panel is
-              now empty on this dashboard and the grid auto-collapses. */}
+          {/* 2026-04-16: midnight rollover widget. Only renders when
+              there is at least one auto-paused entry in the last 7 days;
+              silent on quiet days. */}
+          <MidnightRolloverCard />
         </div>
       </main>
       <DashboardActionModal

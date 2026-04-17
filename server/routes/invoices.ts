@@ -13,6 +13,8 @@ import { assertInvoiceStatusTransition } from "../domain/jobLifecycle";
 import { invoiceStatusEnum } from "@shared/schema";
 import type { InvoiceStatus } from "@shared/schema";
 import { createInvoiceFromJob as createInvoiceFromJobService, calculateDueDate, applyTaxGroupToInvoice } from "../services/invoiceCreationService";
+import { invoiceReminderService, ReminderGateError } from "../services/invoiceReminderService";
+import { invoiceRepository } from "../storage/invoices";
 import {
   isBillingLocked,
   isQboSynced,
@@ -1321,6 +1323,76 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
   }
   res.json(response);
 }));
+
+// ─────────────────────────────────────────────────────────────────────
+// Reminder routes (2026-04-16)
+// ─────────────────────────────────────────────────────────────────────
+
+const sendReminderSchema = z.object({
+  recipients: z.array(z.string().email()).min(1).max(20).optional(),
+}).strict().optional();
+
+const patchRemindersSchema = z.object({
+  paused: z.boolean().optional(),
+  snoozeUntil: z.string().datetime().nullable().optional(),
+}).strict();
+
+// POST /api/invoices/:id/send-reminder
+// Manually trigger a reminder. Shares the exact canonical path (gates,
+// dispatch, PDF, delivery row, counter bump) with the sweep worker —
+// see invoiceReminderService.sendOne.
+router.post(
+  "/:id/send-reminder",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const parsed = sendReminderSchema?.safeParse(req.body ?? {});
+    const body = parsed && parsed.success ? parsed.data : undefined;
+    try {
+      const result = await invoiceReminderService.sendOne({
+        tenantId: req.companyId!,
+        invoiceId: req.params.id,
+        recipients: body?.recipients,
+        createdByUserId: req.user?.id ?? null,
+      });
+      res.json(result);
+    } catch (err: any) {
+      if (err instanceof ReminderGateError) {
+        throw createError(err.status, err.message, err.code);
+      }
+      throw err;
+    }
+  }),
+);
+
+// PATCH /api/invoices/:id/reminders — pause / resume / snooze
+router.patch(
+  "/:id/reminders",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const data = validateSchema(patchRemindersSchema, req.body ?? {});
+    const invoice = await storage.getInvoice(req.companyId!, req.params.id);
+    if (!invoice) throw createError(404, "Invoice not found");
+
+    // Two forms of pausing, both via the same storage helper.
+    if (data.paused !== undefined || data.snoozeUntil !== undefined) {
+      await invoiceRepository.setRemindersPaused(
+        req.companyId!,
+        req.params.id,
+        data.paused === true,
+        data.snoozeUntil ? new Date(data.snoozeUntil) : null,
+      );
+    }
+
+    const updated = await storage.getInvoice(req.companyId!, req.params.id);
+    res.json({
+      id: updated?.id,
+      remindersPaused: updated?.remindersPaused ?? false,
+      reminderSnoozeUntil: updated?.reminderSnoozeUntil ?? null,
+      reminderCount: updated?.reminderCount ?? 0,
+      lastReminderAt: updated?.lastReminderAt ?? null,
+    });
+  }),
+);
 
 // POST /api/invoices/:id/void - Void invoice
 // Phase 10A: Status changes on QBO-synced invoices require override

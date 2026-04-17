@@ -15,7 +15,18 @@ import {
 } from "../storage/platformFeedbackStorage";
 import { internalSupportNotesStorage } from "../storage/internalSupportNotesStorage";
 import { platformAuditService } from "./platformAuditService";
+import { db } from "../db";
+import { companies, companySettings, users } from "@shared/schema";
+import { eq, sql, inArray } from "drizzle-orm";
 import type { Feedback, InternalSupportNote } from "@shared/schema";
+
+function userDisplayName(u: { fullName: string | null; firstName: string | null; lastName: string | null; email: string }) {
+  return (
+    u.fullName?.trim()
+    || [u.firstName, u.lastName].filter(Boolean).join(" ").trim()
+    || u.email
+  );
+}
 
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 25;
@@ -42,10 +53,57 @@ function normalize(input: ListFeedbackInput): PlatformFeedbackFilter {
   };
 }
 
-async function list(input: ListFeedbackInput): Promise<PlatformFeedbackListResult & { limit: number; offset: number }> {
+async function list(input: ListFeedbackInput) {
   const params = normalize(input);
   const result = await platformFeedbackStorage.list(params);
-  return { ...result, limit: params.limit, offset: params.offset };
+
+  // Usability + consistency sprints: attach human-readable tenant name
+  // AND resolved assignee user to each row so the inbox is triageable
+  // without clicking in. Same batch pattern used for sessions + issues.
+  const companyIds = Array.from(new Set(result.rows.map((r) => r.companyId)));
+  const assigneeIds = Array.from(new Set(
+    result.rows.map((r) => r.assignedTo).filter(Boolean) as string[],
+  ));
+
+  const [companyRows, assigneeRows] = await Promise.all([
+    companyIds.length > 0
+      ? db
+          .select({
+            id: companies.id,
+            name: sql<string>`COALESCE(${companySettings.companyName}, ${companies.name})`,
+          })
+          .from(companies)
+          .leftJoin(companySettings, eq(companySettings.companyId, companies.id))
+          .where(inArray(companies.id, companyIds))
+      : Promise.resolve([] as { id: string; name: string }[]),
+    assigneeIds.length > 0
+      ? db
+          .select({
+            id: users.id,
+            email: users.email,
+            fullName: users.fullName,
+            firstName: users.firstName,
+            lastName: users.lastName,
+          })
+          .from(users)
+          .where(inArray(users.id, assigneeIds))
+      : Promise.resolve([] as { id: string; email: string; fullName: string | null; firstName: string | null; lastName: string | null }[]),
+  ]);
+
+  const nameById = new Map(companyRows.map((c) => [c.id, c.name]));
+  const userById = new Map(assigneeRows.map((u) => [u.id, u]));
+
+  const enrichedRows = result.rows.map((r) => {
+    const assignee = r.assignedTo ? userById.get(r.assignedTo) : null;
+    return {
+      ...r,
+      tenantName: nameById.get(r.companyId) ?? null,
+      assigneeEmail: assignee?.email ?? null,
+      assigneeName: assignee ? userDisplayName(assignee) : null,
+    };
+  });
+
+  return { ...result, rows: enrichedRows, limit: params.limit, offset: params.offset };
 }
 
 async function getById(id: string): Promise<(Feedback & { notes: InternalSupportNote[] }) | null> {

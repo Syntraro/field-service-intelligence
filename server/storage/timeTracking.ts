@@ -1083,6 +1083,9 @@ export class TimeTrackingRepository extends BaseRepository {
     // 2026-04-10: task labor (type=task_work) with matching jobId is included
     // automatically — no special filter needed since both visit and task entries
     // carry jobId when they contribute to a job.
+    // 2026-04-16: also pull the linked visit's `isActive` flag so the ghost-
+    // state guard below can suppress running badges whose visit context is
+    // no longer valid (visit was soft-deleted, rolled back, etc.).
     const entries = await db
       .select({
         id: timeEntries.id,
@@ -1098,9 +1101,11 @@ export class TimeTrackingRepository extends BaseRepository {
         costRateSnapshot: timeEntries.costRateSnapshot,
         invoiceId: timeEntries.invoiceId,
         invoicedAt: timeEntries.invoicedAt,
+        visitIsActive: jobVisits.isActive,
       })
       .from(timeEntries)
       .leftJoin(users, eq(timeEntries.technicianId, users.id))
+      .leftJoin(jobVisits, eq(timeEntries.visitId, jobVisits.id))
       .where(and(eq(timeEntries.companyId, companyId), eq(timeEntries.jobId, jobId)))
       .orderBy(desc(timeEntries.startAt));
 
@@ -1127,6 +1132,15 @@ export class TimeTrackingRepository extends BaseRepository {
       }
     >();
 
+    // 2026-04-16: ghost-state guard — maximum plausible age of a truly
+    // running timer. Real field labour doesn't run uninterrupted this
+    // long; anything older has almost certainly been abandoned (visit
+    // modified / rolled back, midnight crossed, device lost, etc.).
+    // Applied uniformly to both visit-typed and non-visit-typed open
+    // entries because we have no visit-lifecycle signal for the latter.
+    const STALE_RUNNING_CUTOFF_MS = 12 * 60 * 60 * 1000;
+    const nowMs = Date.now();
+
     for (const entry of entries) {
       const minutes = entry.durationMinutes ?? 0;
       const type = entry.type as TimeEntryType;
@@ -1145,8 +1159,27 @@ export class TimeTrackingRepository extends BaseRepository {
       }
       const tech = techMap.get(entry.technicianId)!;
 
-      // Check if running
-      if (!entry.endAt) {
+      // 2026-04-16: running-state guard. `endAt IS NULL` alone is not
+      // sufficient to show the Labour Summary card's "En Route" / "On
+      // Site" badge — it can survive a visit soft-delete, a visit
+      // unassignment, a prior-day timer that was never closed, or a
+      // visit rollback during testing. Treat an open entry as *running*
+      // only when its visit context is still valid AND the timer hasn't
+      // been open past the stale cutoff.
+      //   - visitIsActive === false → linked visit was soft-deleted,
+      //     open timer is orphaned.
+      //   - visitIsActive === null AND visitId != null → should not
+      //     happen (LEFT JOIN on a present FK), but fail closed.
+      //   - age > STALE_RUNNING_CUTOFF_MS → stale timer, don't surface.
+      const isOpen = !entry.endAt;
+      const hasOrphanedVisit =
+        entry.visitId != null && entry.visitIsActive !== true;
+      const isStale =
+        isOpen &&
+        entry.startAt != null &&
+        nowMs - new Date(entry.startAt).getTime() > STALE_RUNNING_CUTOFF_MS;
+      const isValidRunning = isOpen && !hasOrphanedVisit && !isStale;
+      if (isValidRunning) {
         isRunning = true;
         runningType = type;
         tech.isRunning = true;
@@ -1898,6 +1931,8 @@ export class TimeTrackingRepository extends BaseRepository {
         lockedAt: timeEntries.lockedAt,
         lockedByInvoiceId: timeEntries.lockedByInvoiceId,
         lockReason: timeEntries.lockReason,
+        // 2026-04-16: midnight rollover
+        autoPausedAt: timeEntries.autoPausedAt,
         createdAt: timeEntries.createdAt,
         updatedAt: timeEntries.updatedAt,
         technicianName: users.fullName,

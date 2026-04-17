@@ -70,6 +70,13 @@ export interface SendInvoiceEmailInput {
    *  to the original and marks the template_source as 'override' since the
    *  caller will typically be replaying snapshot subject/body. */
   parentDeliveryId?: string | null;
+  /**
+   * 2026-04-16: optional template entity-type override. Defaults to
+   * "invoice" (the original send). Used by invoiceReminderService to route
+   * rendering through the "invoice_reminder" template row without any
+   * other behavior change — same PDF, same renderer, same delivery row.
+   */
+  templateEntityType?: "invoice" | "invoice_reminder";
 }
 
 // 2026-04-13 (Commit C): caps for user-selected image attachments on the
@@ -294,6 +301,7 @@ export const emailDispatchService = {
       createdByUserId,
       parentDeliveryId,
       afterMarkSent,
+      templateEntityType = "invoice",
     } = input;
     if (!tenantId) throw createError(400, "tenantId is required");
     if (!invoiceId) throw createError(400, "invoiceId is required");
@@ -322,7 +330,7 @@ export const emailDispatchService = {
     // 3. + 4. + 5. Render + overrides + trim-check + template_source, all in one.
     const { subject, body, templateSource } = await resolveRenderedMessage({
       tenantId,
-      entityType: "invoice",
+      entityType: templateEntityType,
       data,
       subjectOverride,
       bodyOverride,

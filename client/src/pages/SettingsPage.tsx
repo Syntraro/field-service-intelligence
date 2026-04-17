@@ -41,6 +41,7 @@ import {
   ChevronRight,
   Shield,
   Timer,
+  Bell,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -149,6 +150,10 @@ const SECTIONS: SettingsSection[] = [
       { title: "Quote Templates", description: "Manage quote templates", href: "/settings/quote-templates", icon: FileCheck },
       // Phase 11 (2026-04-12): customize outbound email templates.
       { title: "Client Communication", description: "Customize invoice / quote / job email templates", href: "/settings/communication", icon: FileText },
+      // 2026-04-16 product correction: lives in Automation (not Financials) —
+      // reminders are an automation, not a billing surface. Reminder template
+      // editing happens ON this page, not in Client Communication.
+      { title: "Invoice Reminders", description: "Automatic nudges for overdue invoices", href: "/settings/invoice-reminders", icon: Bell },
     ],
   },
   {

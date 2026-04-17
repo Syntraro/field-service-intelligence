@@ -14,7 +14,7 @@
 import { db } from "../db";
 import { and, desc, eq, ilike, ne, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
-import { companies, companySettings } from "@shared/schema";
+import { companies, companySettings, impersonationSessions } from "@shared/schema";
 
 export interface PlatformTenantRow {
   id: string;
@@ -80,6 +80,14 @@ export async function searchTenants(params: SearchTenantsParams): Promise<Search
       plan: companies.subscriptionPlan,
       status: companies.subscriptionStatus,
       createdAt: companies.createdAt,
+      // Populated via correlated subquery against impersonation_sessions.
+      // Returns the most recent support-session start for this tenant, or
+      // null if none exist. Low-cost on the current index set.
+      recentSupportAt: sql<Date | null>`(
+        SELECT MAX(${impersonationSessions.createdAt})
+        FROM ${impersonationSessions}
+        WHERE ${impersonationSessions.companyId} = ${companies.id}
+      )`,
     })
     .from(companies)
     .leftJoin(companySettings, eq(companySettings.companyId, companies.id));
@@ -103,8 +111,7 @@ export async function searchTenants(params: SearchTenantsParams): Promise<Search
     plan: r.plan,
     status: r.status,
     createdAt: r.createdAt,
-    // Support sessions land in Phase 4 — nullable placeholder per spec.
-    recentSupportAt: null,
+    recentSupportAt: r.recentSupportAt ?? null,
   }));
 
   return {

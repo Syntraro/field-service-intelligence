@@ -15,6 +15,7 @@
  */
 
 import { eq, and, sql, desc, asc, or, isNull, isNotNull, inArray, ilike, gt, lt } from "drizzle-orm";
+import { db } from "../db";
 import { invoices, clients, customerCompanies, jobs } from "@shared/schema";
 import type { QueryCtx } from "../lib/queryCtx";
 import { activeJobFilter } from "./jobFilters";
@@ -433,3 +434,84 @@ export async function getInvoiceStats(
 
 // 2026-04-09: activeInvoiceFilter no longer exported — function removed.
 export { computeIsPastDue };
+
+// ---------------------------------------------------------------------------
+// Reminder sweep (2026-04-16) — used by invoiceReminderWorker + manual path.
+// Returns invoice IDs ready for a reminder based on tenant cadence config.
+// ---------------------------------------------------------------------------
+
+export interface ReminderSweepConfig {
+  firstDelayDays: number;        // first reminder fires when due_date < now() - firstDelayDays
+  repeatEveryDays: number;       // subsequent reminders fire every N days after the last
+  // 2026-04-16 product correction: `maxCount` removed. Reminders continue
+  // on cadence until paid, voided, paused, or snoozed. The schema column
+  // `tenant_features.invoice_reminder_max_count` is deprecated.
+}
+
+export interface ReminderCandidate {
+  id: string;
+  companyId: string;
+  reminderCount: number;
+  dueDate: string | Date | null;
+  lastReminderAt: Date | null;
+}
+
+/**
+ * Return invoices for a single tenant that are due for a reminder.
+ *
+ * Rules (matching `computeIsPastDue` semantics exactly):
+ *   - status IN ('awaiting_payment', 'partial_paid', 'sent')
+ *   - balance > 0
+ *   - remindersPaused = false
+ *   - reminderSnoozeUntil is null OR in the past
+ *   - reminderCount < maxCount
+ *   - If reminderCount = 0: due_date < now() - firstDelayDays
+ *     Else: last_reminder_at < now() - repeatEveryDays
+ */
+export async function getInvoicesDueForReminder(
+  companyId: string,
+  config: ReminderSweepConfig,
+): Promise<ReminderCandidate[]> {
+  const rows = await db
+    .select({
+      id: invoices.id,
+      companyId: invoices.companyId,
+      reminderCount: invoices.reminderCount,
+      dueDate: invoices.dueDate,
+      lastReminderAt: invoices.lastReminderAt,
+    })
+    .from(invoices)
+    .where(and(
+      eq(invoices.companyId, companyId),
+      inArray(invoices.status, UNPAID_INVOICE_STATUSES),
+      sql`${invoices.balance}::numeric > 0`,
+      eq(invoices.remindersPaused, false),
+      or(
+        isNull(invoices.reminderSnoozeUntil),
+        sql`${invoices.reminderSnoozeUntil} < NOW()`,
+      ),
+      or(
+        // First reminder: due date has passed by firstDelayDays
+        and(
+          eq(invoices.reminderCount, 0),
+          isNotNull(invoices.dueDate),
+          sql`${invoices.dueDate} < (CURRENT_DATE - (${config.firstDelayDays} || ' days')::interval)`,
+        ),
+        // Subsequent reminders: repeat cadence elapsed since last
+        and(
+          sql`${invoices.reminderCount} > 0`,
+          isNotNull(invoices.lastReminderAt),
+          sql`${invoices.lastReminderAt} < (NOW() - (${config.repeatEveryDays} || ' days')::interval)`,
+        ),
+      ),
+    ));
+
+  return rows.map((r) => ({
+    id: r.id,
+    companyId: r.companyId,
+    reminderCount: r.reminderCount,
+    dueDate: r.dueDate,
+    lastReminderAt: r.lastReminderAt,
+  }));
+}
+

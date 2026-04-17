@@ -228,7 +228,15 @@ export function CreateClientModal({
   const [emailTouched, setEmailTouched] = useState(false);
   const emailValid = isValidOptionalEmail(email);
   const showEmailError = emailTouched && !emailValid;
-  const canSubmit = !!(clientFirstName.trim() || companyName.trim()) && emailValid;
+  // 2026-04-16: location valid when (name) OR (street AND city).
+  // For CreateClientModal, the "name" that satisfies the location rule
+  // is the company name (it becomes the location's companyName on create).
+  const locationNameSatisfied = !!(companyName.trim() || clientFirstName.trim());
+  const locationAddressSatisfied = !!(svcStreet.trim() && svcCity.trim());
+  const canSubmit =
+    !!(clientFirstName.trim() || companyName.trim())
+    && emailValid
+    && (locationNameSatisfied || locationAddressSatisfied);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -332,7 +340,7 @@ export function CreateClientModal({
           {/* ── Primary Service Address (optional) ── */}
           <fieldset className="space-y-2">
             <legend className="text-sm font-medium text-muted-foreground">
-              Primary Service Address <span className="text-xs font-normal">(optional)</span>
+              Primary Service Address <span className="text-xs font-normal">(enter a location name, or provide street address and city)</span>
             </legend>
             <Input
               placeholder="Street address"

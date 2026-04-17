@@ -8,6 +8,7 @@
 import { useLocation } from "wouter";
 import { CalendarDays, Clock, Search, LogOut } from "lucide-react";
 import { useAuth } from "@/lib/auth";
+import { MidnightRolloverBanner } from "./MidnightRolloverBanner";
 
 // Only include nav items that resolve to real implemented routes
 const NAV_ITEMS = [
@@ -65,6 +66,10 @@ export function MobileShell({ children, showNav, hideTopBar }: {
         </div>
       )}
       <div className="flex-1 overflow-y-auto" style={{ paddingBottom: showNav ? 52 : 0 }}>
+        {/* 2026-04-16: midnight rollover notice. Renders only when the
+            signed-in tech has an unread `time_entry_auto_paused`
+            notification; silent otherwise. */}
+        <MidnightRolloverBanner />
         {children}
       </div>
       {showNav && (

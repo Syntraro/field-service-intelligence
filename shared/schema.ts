@@ -1322,6 +1322,12 @@ export const invoices = pgTable("invoices", {
   qboOutOfSyncReason: text("qbo_out_of_sync_reason"), // "Edited after QBO sync: <reason>"
   lastBillingEditAt: timestamp("last_billing_edit_at"), // Last time billing fields were modified
   lastBillingEditBy: varchar("last_billing_edit_by"), // User who made last billing edit
+  // Reminder tracking (2026-04-16). Populated by the canonical
+  // invoiceReminderService; never written from a route handler directly.
+  lastReminderAt: timestamp("last_reminder_at"),
+  reminderCount: integer("reminder_count").notNull().default(0),
+  remindersPaused: boolean("reminders_paused").notNull().default(false),
+  reminderSnoozeUntil: timestamp("reminder_snooze_until"),
   // Discount fields (Phase 11: Invoice Corrections + Discount Support)
   discountType: text("discount_type"), // "PERCENT" | "AMOUNT" | null (no discount)
   discountPercent: numeric("discount_percent", { precision: 5, scale: 2 }), // e.g., 10.00 for 10%
@@ -3670,6 +3676,18 @@ export const tenantFeatures = pgTable("tenant_features", {
   // Customer portal feature flags
   customerPortalEnabled: boolean("customer_portal_enabled").notNull().default(false),
   customerPortalPaymentsEnabled: boolean("customer_portal_payments_enabled").notNull().default(false),
+  // Invoice reminder settings (2026-04-16). Reminders default ON for both
+  // new and existing tenants. Cadence fields configure the sweep worker
+  // and the manual reminder path alike.
+  invoiceRemindersEnabled: boolean("invoice_reminders_enabled").notNull().default(true),
+  invoiceReminderFirstDelayDays: integer("invoice_reminder_first_delay_days").notNull().default(3),
+  invoiceReminderRepeatEveryDays: integer("invoice_reminder_repeat_every_days").notNull().default(7),
+  // DEPRECATED 2026-04-16: product decision — reminders now continue
+  // on cadence until paid/voided/paused/snoozed. These columns are no
+  // longer read anywhere in server code and not accepted by the update
+  // schema. Kept in the DB for safe rollback; a future migration may drop.
+  invoiceReminderMaxCount: integer("invoice_reminder_max_count").notNull().default(3),
+  invoiceReminderTone: text("invoice_reminder_tone").notNull().default("friendly"),
   // Metadata
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
@@ -3691,6 +3709,15 @@ export const updateTenantFeaturesSchema = z.object({
   liveMapEnabled: z.boolean().optional(),
   customerPortalEnabled: z.boolean().optional(),
   customerPortalPaymentsEnabled: z.boolean().optional(),
+  // 2026-04-16 invoice reminders.
+  // `invoiceReminderMaxCount` and `invoiceReminderTone` were removed
+  // per locked product decision (reminders continue on cadence until
+  // paid/voided/paused/snoozed). The underlying columns are kept in the
+  // DB as deprecated; this schema deliberately does NOT accept them so
+  // the UI cannot write them.
+  invoiceRemindersEnabled: z.boolean().optional(),
+  invoiceReminderFirstDelayDays: z.number().int().min(0).max(90).optional(),
+  invoiceReminderRepeatEveryDays: z.number().int().min(1).max(90).optional(),
 });
 
 export type InsertTenantFeatures = z.infer<typeof insertTenantFeaturesSchema>;
@@ -3736,6 +3763,10 @@ export const notificationTypeEnum = [
   "missing_clock_out",
   // Time tracking digest (Phase 7)
   "weekly_time_digest",
+  // 2026-04-16: midnight rollover auto-pause. Emitted by the midnight
+  // rollover worker when a running time entry is auto-closed at tenant-
+  // local 23:59:59.999. Rendered as an in-app banner by the tech app.
+  "time_entry_auto_paused",
 ] as const;
 export type NotificationType = typeof notificationTypeEnum[number];
 
@@ -3989,6 +4020,11 @@ export const timeEntries = pgTable("time_entries", {
   lockedAt: timestamp("locked_at"), // When the entry was locked
   lockedByInvoiceId: varchar("locked_by_invoice_id"), // Which invoice locked it (app-managed, no FK for safety)
   lockReason: text("lock_reason"), // e.g., "INVOICED"
+  // 2026-04-16: midnight rollover. Non-null when the rollover worker
+  // closed this entry at tenant-local 23:59:59.999. Distinguishes auto-
+  // paused entries from manually stopped ones in reports and analytics.
+  // Null for every other stop path (manual, shift clock-out, task close).
+  autoPausedAt: timestamp("auto_paused_at"),
   // Timestamps
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
@@ -5424,7 +5460,7 @@ export type UpsertReferenceFieldValue = z.infer<typeof upsertReferenceFieldValue
 //   - channel     ∈ {email, sms}
 //   - email templates require a non-null subject; SMS may omit it
 
-export const communicationTemplateEntityTypeEnum = ["invoice", "quote", "job"] as const;
+export const communicationTemplateEntityTypeEnum = ["invoice", "quote", "job", "invoice_reminder"] as const;
 export type CommunicationTemplateEntityType = (typeof communicationTemplateEntityTypeEnum)[number];
 
 export const communicationTemplateChannelEnum = ["email", "sms"] as const;

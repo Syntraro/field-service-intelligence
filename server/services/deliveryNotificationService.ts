@@ -67,7 +67,10 @@ function buildMessage(params: {
 
 function linkForEntity(entityType: CommunicationTemplateEntityType, entityId: string): string {
   switch (entityType) {
-    case "invoice": return `/invoices/${entityId}`;
+    case "invoice":
+    case "invoice_reminder":
+      // 2026-04-16: reminder notifications deep-link to the same invoice detail.
+      return `/invoices/${entityId}`;
     case "quote":   return `/quotes/${entityId}`;
     case "job":     return `/jobs/${entityId}`;
   }

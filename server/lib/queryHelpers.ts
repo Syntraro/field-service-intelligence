@@ -26,18 +26,28 @@ import type { NeonDatabase } from "drizzle-orm/neon-serverless";
 
 /**
  * Standard COALESCE expression for location display name.
- * Returns the location's own companyName if present, otherwise falls back to
- * the parent customerCompany name.
  *
  * 2026-04-10: Fixed fallback order. Location name takes priority over company name.
- * Previous: COALESCE(customerCompanies.name, clientLocations.companyName) — wrong.
+ * 2026-04-16: Location name is now optional. Extended the fallback chain so
+ *   unnamed locations still show a useful label:
+ *     1. location's own companyName (the "location name" column)
+ *     2. parent customerCompany name
+ *     3. location's full street address
+ *     4. location's city + province/state
+ *     5. 'Unnamed Location' (hardcoded ultimate fallback)
  *
  * Usage in a Drizzle .select():
  *   .select({ locationDisplayName: locationDisplayNameExpr })
  *
  * Requires LEFT JOINs on clientLocations and customerCompanies.
  */
-export const locationDisplayNameExpr = sql<string>`COALESCE(${clientLocations.companyName}, ${customerCompanies.name})`;
+export const locationDisplayNameExpr = sql<string>`COALESCE(
+  NULLIF(${clientLocations.companyName}, ''),
+  NULLIF(${customerCompanies.name}, ''),
+  NULLIF(${clientLocations.address}, ''),
+  NULLIF(CONCAT_WS(', ', NULLIF(${clientLocations.city}, ''), NULLIF(${clientLocations.province}, '')), ''),
+  'Unnamed Location'
+)`;
 
 // ---------------------------------------------------------------------------
 // Effective End SQL Expression

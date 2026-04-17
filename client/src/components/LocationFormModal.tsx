@@ -191,15 +191,30 @@ export default function LocationFormModal({
     },
   });
 
+  // Valid when: (name) OR (street AND city). See canonical rule.
+  const hasName = !!name.trim();
+  const hasStreet = !!street.trim();
+  const hasCity = !!city.trim();
+  const hasFullAddress = hasStreet && hasCity;
+  const isValid = hasName || hasFullAddress;
+
   const handleSubmit = () => {
     setError(null);
-    if (!name.trim()) {
-      setError("Location name is required.");
+    if (!isValid) {
+      if (!hasName && !hasStreet && !hasCity) {
+        setError("Provide a location name, or a street address and city.");
+      } else if (hasStreet && !hasCity) {
+        setError("City is required when providing a street address.");
+      } else if (hasCity && !hasStreet) {
+        setError("Street address is required when providing a city.");
+      } else {
+        setError("Provide a location name, or both street address and city.");
+      }
       return;
     }
 
     const payload: Record<string, any> = {
-      location: name.trim(),
+      location: name.trim() || null,
       billWithParent,
       inactive: !isActive,
     };
@@ -245,13 +260,14 @@ export default function LocationFormModal({
           )}
 
           <div className="space-y-2">
-            <Label htmlFor="location-name">Location Name *</Label>
+            <Label htmlFor="location-name">Location Name</Label>
             <Input
               id="location-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
               disabled={isResolving}
             />
+            <p className="text-xs text-muted-foreground">Enter a location name, or provide street address and city.</p>
           </div>
 
           <div className="space-y-2">
@@ -329,7 +345,7 @@ export default function LocationFormModal({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>
             Cancel
           </Button>
-          <Button onClick={handleSubmit} disabled={isPending || !name.trim()}>
+          <Button onClick={handleSubmit} disabled={isPending || !isValid}>
             {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {isEditIntent ? "Save Changes" : "Add Location"}
           </Button>
