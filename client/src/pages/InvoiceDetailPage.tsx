@@ -1550,14 +1550,24 @@ export default function InvoiceDetailPage() {
         }
         rightRail={
           <>
-              {/* Technician Notes — canonical writable notes shared with Job Detail */}
-              {jobId && (
-                <Card>
-                  <CardContent className="p-0">
-                    <JobNotesSection jobId={jobId} embedded hideHeader={false} showCount={false} />
-                  </CardContent>
-                </Card>
-              )}
+              {/* Notes — writable technician notes (when linked job exists)
+                  merged with inherited client/location/company notes flagged
+                  show_on_invoices. 2026-04-18: always mounted; when no job is
+                  linked, the component still renders inherited notes and
+                  hides its own Add button. */}
+              <Card>
+                <CardContent className="p-0">
+                  <JobNotesSection
+                    jobId={jobId ?? ""}
+                    source="invoice"
+                    invoiceId={invoiceId}
+                    embedded
+                    hideHeader={false}
+                    showCount={false}
+                    hideAddButton={!jobId}
+                  />
+                </CardContent>
+              </Card>
               
               {/* Client Message - customer-facing message on invoice */}
               {(invoice.clientMessage || isEditing) && (

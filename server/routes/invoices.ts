@@ -15,6 +15,8 @@ import type { InvoiceStatus } from "@shared/schema";
 import { createInvoiceFromJob as createInvoiceFromJobService, calculateDueDate, applyTaxGroupToInvoice } from "../services/invoiceCreationService";
 import { invoiceReminderService, ReminderGateError } from "../services/invoiceReminderService";
 import { invoiceRepository } from "../storage/invoices";
+import { jobNotesRepository } from "../storage/jobNotes";
+import { clientNotesRepository } from "../storage/clientNotes";
 import {
   isBillingLocked,
   isQboSynced,
@@ -318,6 +320,57 @@ router.get("/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
   }
 
   res.json(invoice);
+}));
+
+// GET /api/invoices/:invoiceId/notes — canonical invoice notes feed.
+// 2026-04-18: new endpoint. Invoice detail previously reused
+// `/api/jobs/:jobId/notes` (via invoice.jobId), which had no way to consult
+// `show_on_invoices`. This endpoint owns the invoice surface: merges the
+// linked job's entity-owned notes (when invoice.jobId is set) with inherited
+// client notes where show_on_invoices=true, scoped by the invoice's
+// location + parent customer company.
+router.get("/:invoiceId/notes", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const invoiceId = req.params.invoiceId;
+
+  const invoice = await storage.getInvoice(companyId, invoiceId);
+  if (!invoice) throw createError(404, "Invoice not found");
+
+  // 1) Entity-owned notes: invoice "owns" its linked job's notes today.
+  //    When no job is linked, there are no entity-owned notes to show.
+  let owned: any[] = [];
+  if (invoice.jobId) {
+    const ownedRaw = await jobNotesRepository.listJobNotes(companyId, invoice.jobId);
+    owned = ownedRaw.map((n) => ({ ...n, origin: "job" as const, editable: true }));
+  }
+
+  // 2) Inherited client notes for this invoice's location + customer company.
+  let inherited: any[] = [];
+  if (invoice.locationId) {
+    const rows = await clientNotesRepository.listInheritedForEntity(companyId, {
+      locationId: invoice.locationId,
+      customerCompanyId: invoice.customerCompanyId ?? null,
+      surface: "invoices",
+    });
+    inherited = rows.map((r) => ({
+      id: r.id,
+      jobId: null,
+      equipmentId: null,
+      noteText: r.noteText,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+      user: null,
+      userName: r.createdByName,
+      attachments: r.attachments,
+      origin: r.origin,
+      editable: false,
+    }));
+  }
+
+  const merged = [...owned, ...inherited].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
+  res.json(merged);
 }));
 
 // 2026-04-09: DELETE /api/invoices/:id — canonical permanent invoice delete.

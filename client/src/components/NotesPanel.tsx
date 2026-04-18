@@ -113,6 +113,14 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
   const [editShowOnJobs, setEditShowOnJobs] = useState(false);
   const [editShowOnInvoices, setEditShowOnInvoices] = useState(false);
   const [editShowOnQuotes, setEditShowOnQuotes] = useState(false);
+  // 2026-04-18 attachment-edit state — stage-then-commit so Cancel is a no-op
+  // at the server. Loaded from note.attachments on startEdit. Commit runs on
+  // Save: PATCH → DELETE(each markedForRemoval) → upload(each pendingFile).
+  const [editExistingAttachments, setEditExistingAttachments] = useState<Attachment[]>([]);
+  const [editMarkedForRemoval, setEditMarkedForRemoval] = useState<Set<string>>(new Set());
+  const [editPendingFiles, setEditPendingFiles] = useState<PendingFile[]>([]);
+  const [isEditSaving, setIsEditSaving] = useState(false);
+  const editFileInputRef = useRef<HTMLInputElement>(null);
 
   // Delete state
   const [deleteNoteId, setDeleteNoteId] = useState<string | null>(null);
@@ -145,17 +153,6 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
     }) => apiRequest<{ id: string }>(base, { method: "POST", body: JSON.stringify(payload) }),
   });
 
-  const updateMutation = useMutation({
-    mutationFn: async ({ noteId, ...body }: { noteId: string; noteText: string; showOnJobs: boolean; showOnInvoices: boolean; showOnQuotes: boolean }) =>
-      apiRequest(`${base}/${noteId}`, { method: "PATCH", body: JSON.stringify(body) }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: qk });
-      setEditingNoteId(null);
-      toast({ title: "Note updated" });
-    },
-    onError: () => toast({ title: "Error", description: "Failed to update note.", variant: "destructive" }),
-  });
-
   const deleteMutation = useMutation({
     mutationFn: async (noteId: string) => apiRequest(`${base}/${noteId}`, { method: "DELETE" }),
     onSuccess: () => {
@@ -166,15 +163,10 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
     onError: () => toast({ title: "Error", description: "Failed to delete note.", variant: "destructive" }),
   });
 
-  const deleteAttachmentMutation = useMutation({
-    mutationFn: async ({ noteId, attachmentId }: { noteId: string; attachmentId: string }) =>
-      apiRequest(`/api/notes/${noteId}/attachments/${attachmentId}`, { method: "DELETE" }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: qk });
-      toast({ title: "Attachment removed" });
-    },
-    onError: () => toast({ title: "Error", description: "Failed to remove attachment.", variant: "destructive" }),
-  });
+  // 2026-04-18: detach is invoked directly by the edit-save batch below via
+  // `apiRequest` so removals + uploads can share a single query invalidation
+  // at the end. A dedicated mutation hook would invalidate per-call and
+  // trigger N redundant refetches for N attachments.
 
   // ── Helpers ───────────────────────────────────
 
@@ -247,11 +239,125 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
   };
 
   const startEdit = (note: NoteWithAttachments) => {
+    // Revoke any object URLs from a prior open-edit session before we
+    // drop the reference — prevents URL leaks when switching between
+    // notes without going through Cancel.
+    editPendingFiles.forEach((pf) => pf.preview && URL.revokeObjectURL(pf.preview));
     setEditingNoteId(note.id);
     setEditText(note.noteText);
     setEditShowOnJobs(note.showOnJobs ?? false);
     setEditShowOnInvoices(note.showOnInvoices ?? false);
     setEditShowOnQuotes(note.showOnQuotes ?? false);
+    setEditExistingAttachments(note.attachments ?? []);
+    setEditMarkedForRemoval(new Set());
+    setEditPendingFiles([]);
+  };
+
+  const cancelEdit = () => {
+    // Revoke staged object URLs to avoid leaks. No server traffic — Cancel
+    // is intentionally a no-op at the API level.
+    editPendingFiles.forEach((pf) => pf.preview && URL.revokeObjectURL(pf.preview));
+    setEditingNoteId(null);
+    setEditExistingAttachments([]);
+    setEditMarkedForRemoval(new Set());
+    setEditPendingFiles([]);
+  };
+
+  const toggleMarkForRemoval = (attachmentId: string) => {
+    setEditMarkedForRemoval((prev) => {
+      const next = new Set(prev);
+      if (next.has(attachmentId)) next.delete(attachmentId);
+      else next.add(attachmentId);
+      return next;
+    });
+  };
+
+  const handleEditFilesSelected = (fileList: FileList | null) => {
+    if (!fileList) return;
+    const newFiles: PendingFile[] = Array.from(fileList).map((f) => ({
+      file: f,
+      preview: f.type.startsWith("image/") ? URL.createObjectURL(f) : undefined,
+    }));
+    setEditPendingFiles((prev) => [...prev, ...newFiles]);
+  };
+
+  const removeEditPendingFile = (idx: number) => {
+    setEditPendingFiles((prev) => {
+      const pf = prev[idx];
+      if (pf.preview) URL.revokeObjectURL(pf.preview);
+      return prev.filter((_, i) => i !== idx);
+    });
+  };
+
+  const handleEditSave = async (noteId: string) => {
+    const text = editText.trim();
+    if (!text) return;
+    setIsEditSaving(true);
+    try {
+      // 1) PATCH text + visibility flags. PATCH does not touch attachments,
+      //    so text/visibility-only saves cannot duplicate or drop files.
+      //    Using apiRequest directly so we can batch invalidation + toasting
+      //    across all three steps below.
+      await apiRequest(`${base}/${noteId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          noteText: text,
+          showOnJobs: editShowOnJobs,
+          showOnInvoices: editShowOnInvoices,
+          showOnQuotes: editShowOnQuotes,
+        }),
+      });
+
+      // 2) Detach any attachments the user marked for removal. Tenant
+      //    isolation + 404 handling lives in the canonical route.
+      for (const attachmentId of Array.from(editMarkedForRemoval)) {
+        try {
+          await apiRequest(`/api/notes/${noteId}/attachments/${attachmentId}`, {
+            method: "DELETE",
+          });
+        } catch (e: any) {
+          toast({
+            title: "Remove failed",
+            description: e?.message || "Failed to remove attachment.",
+            variant: "destructive",
+          });
+        }
+      }
+
+      // 3) Upload any newly staged files. The R2 lifecycle's ensureAttachment
+      //    is idempotent, so a retried upload will not double-insert the
+      //    note_attachments join row.
+      for (const pf of editPendingFiles) {
+        const err = validateFileClientSide(pf.file);
+        if (err) {
+          toast({ title: "File rejected", description: err, variant: "destructive" });
+          continue;
+        }
+        try {
+          await uploadAttachment(pf.file, { entityType: "client_note", entityId: noteId });
+        } catch (e: any) {
+          toast({
+            title: "Upload failed",
+            description: e?.message || "File failed to upload.",
+            variant: "destructive",
+          });
+        }
+      }
+
+      // 4) One invalidation at the end — refetches the note list including
+      //    updated attachment metadata.
+      queryClient.invalidateQueries({ queryKey: qk });
+      toast({ title: "Note updated" });
+      cancelEdit();
+    } catch (e: any) {
+      toast({
+        title: "Error",
+        description: e?.message || "Failed to update note.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsEditSaving(false);
+    }
   };
 
   const isBusy = createNoteMutation.isPending || isAttachmentUploading;
@@ -363,14 +469,97 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
                       Show on Quotes
                     </label>
                   </div>
+
+                  {/* Existing attachments (staged for removal with X). Hidden
+                      when empty so the edit panel stays compact. */}
+                  {editExistingAttachments.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {editExistingAttachments.map((att) => {
+                        const marked = editMarkedForRemoval.has(att.id);
+                        return (
+                          <div
+                            key={att.id}
+                            className={`flex items-center gap-1.5 px-2 py-1 border rounded text-xs bg-background ${marked ? "opacity-50 line-through" : ""}`}
+                            data-testid={`edit-existing-attachment-${att.id}`}
+                          >
+                            {isImage(att.mimeType) ? (
+                              <ImageIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                            ) : (
+                              <FileIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                            )}
+                            <span className="max-w-[140px] truncate" title={att.originalName ?? "Attachment"}>
+                              {att.originalName ?? "Attachment"}
+                            </span>
+                            {att.size != null && (
+                              <span className="text-muted-foreground">{formatBytes(att.size)}</span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => toggleMarkForRemoval(att.id)}
+                              className="text-muted-foreground hover:text-destructive"
+                              aria-label={marked ? "Undo remove" : `Remove ${att.originalName ?? "attachment"}`}
+                              data-testid={`edit-toggle-remove-${att.id}`}
+                            >
+                              {marked ? <Plus className="h-3 w-3" /> : <X className="h-3 w-3" />}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* File picker for additional attachments staged during edit. */}
+                  <div className="space-y-2">
+                    <input
+                      ref={editFileInputRef}
+                      type="file"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => handleEditFilesSelected(e.target.files)}
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => editFileInputRef.current?.click()}
+                      type="button"
+                      data-testid="edit-attach-files"
+                    >
+                      <Paperclip className="h-3.5 w-3.5 mr-1.5" /> Attach Files
+                    </Button>
+                    {editPendingFiles.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {editPendingFiles.map((pf, i) => (
+                          <div key={i} className="flex items-center gap-1.5 px-2 py-1 border rounded text-xs bg-background">
+                            {pf.preview ? (
+                              <img src={pf.preview} alt="" className="h-6 w-6 rounded object-cover" />
+                            ) : (
+                              <FileIcon className="h-4 w-4 text-muted-foreground" />
+                            )}
+                            <span className="max-w-[120px] truncate">{pf.file.name}</span>
+                            <button
+                              type="button"
+                              onClick={() => removeEditPendingFile(i)}
+                              className="text-muted-foreground hover:text-destructive"
+                              aria-label={`Remove ${pf.file.name}`}
+                              data-testid={`edit-remove-pending-${i}`}
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
                   <div className="flex justify-end gap-2">
-                    <Button variant="outline" size="sm" onClick={() => setEditingNoteId(null)}>Cancel</Button>
+                    <Button variant="outline" size="sm" onClick={cancelEdit}>Cancel</Button>
                     <Button
                       size="sm"
-                      onClick={() => updateMutation.mutate({ noteId: note.id, noteText: editText.trim(), showOnJobs: editShowOnJobs, showOnInvoices: editShowOnInvoices, showOnQuotes: editShowOnQuotes })}
-                      disabled={!editText.trim() || updateMutation.isPending}
+                      onClick={() => handleEditSave(note.id)}
+                      disabled={!editText.trim() || isEditSaving}
+                      data-testid={`button-save-edit-${note.id}`}
                     >
-                      {updateMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      {isEditSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                       Save
                     </Button>
                   </div>

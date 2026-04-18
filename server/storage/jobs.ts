@@ -851,14 +851,19 @@ export class JobRepository extends BaseRepository {
    * Get job parts — LEFT JOINs items to resolve itemType from catalog.
    * No active/deleted filter on items: inactive items still have a valid type.
    */
-  async getJobParts(companyId: string, jobId: string): Promise<(JobPart & { itemType: string | null })[]> {
+  async getJobParts(companyId: string, jobId: string): Promise<(JobPart & { itemType: string | null; itemDescription: string | null })[]> {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
+    // 2026-04-18: Also join items.description so PartsBillingCard can show
+    // the catalog description (e.g. "A421ABD") in the selected-row chip.
+    // Display-only enrichment; job_parts' own description column remains
+    // the canonical line label that Save/PUT/POST round-trip through.
     const rows = await db
       .select({
         jobPart: jobParts,
         itemType: items.type,
+        itemDescription: items.description,
       })
       .from(jobParts)
       .leftJoin(items, eq(jobParts.productId, items.id))
@@ -869,7 +874,7 @@ export class JobRepository extends BaseRepository {
       ))
       .orderBy(jobParts.sortOrder);
 
-    return rows.map(r => ({ ...r.jobPart, itemType: r.itemType }));
+    return rows.map(r => ({ ...r.jobPart, itemType: r.itemType, itemDescription: r.itemDescription }));
   }
 
   /**

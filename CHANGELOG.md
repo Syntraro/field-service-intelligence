@@ -6,6 +6,152 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### Job Detail — view-mode row shows catalog description (2026-04-18)
+
+Parity fix. Edit-mode rows already surfaced the catalog description
+(e.g. "A421ABD") in the selector chip's secondary line. Saved/view rows
+were rendering only the line-label, so a user who hit Save saw the row
+collapse to just the name.
+
+**Files**
+- `client/src/components/PartsBillingCard.tsx` — `SortableLineItemRow`'s
+  view branch now renders the same `getProductDescription(selectedValue)`
+  string beneath the product name when a `catalogDescription` is
+  available. `selectedValue` and `catalogDescription` were already
+  computed above the isEditing branch, so no additional data plumbing
+  was needed. When the catalog has no description the secondary line
+  is not rendered — preserving the existing single-line view for those
+  rows.
+
+**Unchanged** — save payloads, server routes, edit-mode behavior,
+`JobExpensesCard`, row totals.
+
+#### Job Detail — Parts / Labour section-edit bug-fix pass (2026-04-18)
+
+Two confirmed bugs in the same-day section-edit editor.
+
+**Bug #1 — Selector search input stuck at first character on backspace.**
+- `client/src/components/PartsBillingCard.tsx`
+  - Added `suppressNextSearchChangeRef` in `SortableLineItemRow`. Set
+    synchronously in `onChange`, consumed in the immediately-following
+    `onSearchTextChange("")`. This distinguishes the post-select /
+    post-clear cascade that CreateOrSelectField emits from a genuine
+    user backspace-to-empty.
+  - Removed the earlier `text.length > 0` mirror guard; empty string now
+    propagates to `draft.description` for user deletes, while the
+    post-select cascade is blocked by the ref flag. Closes both the
+    backspace-stuck bug and preserves the earlier "Truck Charge" fix.
+
+**Bug #2 — Catalog description not shown in the selected-row chip.**
+- `client/src/lib/entities/productEntity.ts` — `ProductOption` now
+  carries `description?: string | null`. `normalizeProductRow` reads
+  `r.description`; `productOptionToCatalogItem` propagates it.
+  `getProductDescription` prepends the catalog description to the
+  secondary line when present (`"A421ABD · Product · $45.00"`);
+  existing format preserved when absent.
+- `server/storage/jobs.ts` — `getJobParts` additionally selects
+  `items.description as itemDescription` via the existing left join.
+  Return type extended with `{ itemDescription: string | null }`.
+  Display-only — job_parts' own `description` column (the line label)
+  is unchanged and remains the canonical save-path value.
+- `client/src/components/PartsBillingCard.tsx` — new
+  `catalogDescByProductIdRef: Map<productId, description>` populated
+  from hydration (`jp.itemDescription`) and from selection
+  (`product.description`). `SortableLineItemRow` receives a
+  `getCatalogDescription(productId)` lookup and uses it to enrich the
+  reconstructed `ProductOption` shown in the selector chip.
+
+**Unchanged** — JobExpensesCard, canonical Zod schemas, line-item save
+contracts, `lineItemMapper.ts`, `CreateOrSelectField.tsx`. The new
+`itemDescription` field on the job_parts list response is purely
+additive; no existing consumer needs to change.
+
+#### Job Detail — Parts / Labour section-edit polish pass (2026-04-18)
+
+Follow-up to the same-day section-edit migration below. Same feature,
+tighter UX.
+
+**Files**
+- `client/src/pages/JobDetailPage.tsx`
+  - `partsEditMode` state lifted here so the Edit button can live in the
+    card header row. Header split: two CollapsibleTriggers (title +
+    chevron) with the Edit button as a sibling between them.
+  - Passes `isEditing={partsEditMode}` + `onExitEdit={() => setPartsEditMode(false)}`
+    to `PartsBillingCard`.
+- `client/src/components/PartsBillingCard.tsx`
+  - Internal `sectionEditMode` state removed; component now reads
+    `props.isEditing` and calls `props.onExitEdit()` on Cancel / Save success.
+  - `handleSectionEdit` removed (parent-driven now).
+  - New `useEffect([isEditing])` snapshots/clears `originalItems` +
+    `pendingDeletes` on the edit-mode transition.
+  - Internal Edit button + its header block removed (it was pushing
+    content down below the card header).
+  - Row Delete button is now a compact trash icon next to the product
+    selector — no longer a full-width row under the selector.
+    Accessibility preserved via `title` + `aria-label="Remove line item"`.
+  - Product/service `CreateOrSelectField` now receives `disabled={props.isSaving}`
+    so it goes non-interactive for the duration of Save orchestration —
+    closes the mid-save edit gap called out in QA item 9.1.
+  - **Bug fix (QA item 4):** `onSearchTextChange` no longer mirrors an
+    empty string to `draft.description`. `CreateOrSelectField` emits
+    `""` immediately after a selection to clear its search input; under
+    the old logic, a stale closure on `props.item.productId` let that
+    empty value wipe the catalog-hydrated description. Save would then
+    fail with "Missing description" on a just-selected product (the
+    "Truck Charge" reproduction). Now only non-empty typing mirrors to
+    description.
+- Unused `Pencil` import dropped from `PartsBillingCard.tsx`.
+
+**Unchanged** — server routes, canonical schemas, `lineItemMapper.ts`,
+`CreateOrSelectField.tsx`, and `JobExpensesCard.tsx`.
+
+#### Job Detail — Parts / Labour section-level edit mode (2026-04-18)
+
+UX change on the Job Detail page's Parts / Labour card. Replaces the
+row-level click-to-edit / per-row Save / per-row Cancel interaction with
+a single card-level Edit → Save Changes / Cancel lifecycle.
+
+**Files**
+- `client/src/components/PartsBillingCard.tsx` — only file touched.
+  - Added section state: `sectionEditMode`, `originalItems` snapshot,
+    `pendingDeletes: Set<string>`, `isSavingSection`.
+  - Removed per-row state: `editingRowId`, `savingRowId`,
+    `originalDrafts`, `reorderMutation`, `handleEnterEdit`,
+    `handleRowCancel`, `handleRowSave` (and their per-row Save / Cancel
+    buttons inside the row renderer).
+  - `handleRowDelete` now stages (isNew rows drop locally; persisted
+    ids go into `pendingDeletes`). Nothing is deleted on the server
+    until section Save.
+  - `handleDragEnd` reorders `items` locally only; PATCH `/reorder`
+    fires once from the Save orchestrator.
+  - New `handleSectionSave` orchestrates diff in fixed order using the
+    existing row endpoints: POST creates → PUT updates → DELETE staged
+    → PATCH reorder (only when order changed) → refetch → exit edit
+    mode. On failure the toast fires, the section stays in edit mode,
+    and draft state is preserved for retry / cancel.
+  - Hydration effect now gated by `sectionEditMode` instead of
+    `editingRowId` so refetches don't clobber in-flight edits.
+  - Totals (`totalPrice`, `totalCost`, `profit`, `margin`) now compute
+    over `visibleItems` (excludes staged-delete rows) so live totals
+    reflect the staged state.
+  - `handleSelectProduct` now preserves `li.isNew` when merging the
+    fresh catalog draft. Prevents duplicate-row bug when the user
+    changes the product on an existing persisted line in section edit.
+  - Apply Template hidden during section edit (user must save or
+    cancel first); Add Line Item only visible during section edit.
+- No server-side changes. No new routes. Endpoints reused as-is:
+  `POST /api/jobs/:jobId/parts`, `PUT /api/jobs/:jobId/parts/:id`,
+  `DELETE /api/jobs/:jobId/parts/:id`,
+  `PATCH /api/jobs/:jobId/parts/reorder`.
+- `JobExpensesCard` is untouched.
+
+**Migrations** — none.
+
+**Breaking changes** — none (read-only view identical to before;
+edit workflow changes only).
+
 ### Added
 
 ### Added

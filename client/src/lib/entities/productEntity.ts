@@ -34,6 +34,13 @@ export interface ProductOption {
    */
   sku?: string | null;
   category?: string | null;
+  /**
+   * 2026-04-18: Catalog description (distinct from the draft's line-label
+   * `description`). Surfaced in `getProductDescription` so the selector
+   * chip and search-dropdown rows can show catalog text like "A421ABD"
+   * underneath the item name. Display-only; never reaches a save payload.
+   */
+  description?: string | null;
 }
 
 // ── Search ──
@@ -67,6 +74,8 @@ export function normalizeProductRow(r: any): ProductOption {
     // snake_case in case a legacy endpoint serializer is still around.
     sku: r.sku ?? null,
     category: r.category ?? null,
+    // 2026-04-18: propagate catalog description for the selector chip.
+    description: r.description ?? null,
   };
 }
 
@@ -97,6 +106,11 @@ export function getProductLabel(p: ProductOption): string {
  */
 export function getProductDescription(p: ProductOption): string | undefined {
   const parts: string[] = [];
+  // 2026-04-18: Catalog description comes first when present. Example:
+  //   "A421ABD · Product · $45.00"  (description · type · price)
+  // Falls back to the original type/sku/category/price format for items
+  // that don't have a catalog description.
+  if (p.description) parts.push(p.description);
   if (p.type) parts.push(p.type === "service" ? "Service" : "Product");
   if (p.sku) parts.push(p.sku);
   if (p.category) parts.push(p.category);
@@ -133,7 +147,9 @@ export function productOptionToCatalogItem(p: ProductOption): CatalogItem {
     type: p.type === "service" ? "service" : "product",
     name: p.name,
     sku: p.sku ?? null,
-    description: null,
+    // 2026-04-18: propagate catalog description so downstream consumers
+    // (currently just the selector chip via the row's lookup map) see it.
+    description: p.description ?? null,
     cost: p.cost,
     unitPrice: p.unitPrice,
     isTaxable: false,

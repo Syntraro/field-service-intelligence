@@ -1,6 +1,6 @@
 import { Router, Response } from "express";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { storage } from "../storage/index";
 import { db } from "../db";
 import {
@@ -9,7 +9,10 @@ import {
   insertRecurringJobSeriesSchema,
   insertRecurringJobPhaseSchema,
   jobVisits,
+  jobs as jobsTable,
+  clientLocations,
 } from "@shared/schema";
+import { clientNotesRepository } from "../storage/clientNotes";
 import { assertJobStatusTransition } from "../domain/jobLifecycle";
 import { jobStatusEnum, holdReasonEnum, openSubStatusEnum } from "../schemas";
 import type { JobStatus, OpenSubStatus } from "../schemas";
@@ -1377,11 +1380,57 @@ router.post("/:id/reconcile-invoice-links", requireRole(MANAGER_ROLES), asyncHan
 
 import { jobNotesRepository } from "../storage/jobNotes";
 
-// GET /api/jobs/:jobId/notes - List job notes
+// GET /api/jobs/:jobId/notes - List job notes + inherited client notes (showOnJobs).
+// 2026-04-18: dynamic read-time inheritance. Merges entity-owned job_notes with
+// matching client_notes (location / customer-company / tenant-wide) where
+// show_on_jobs = true. Each row carries `origin` + `editable` so the UI does
+// zero derivation.
 router.get("/:jobId/notes", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
-  const notes = await jobNotesRepository.listJobNotes(companyId, req.params.jobId);
-  res.json(notes);
+  const jobId = req.params.jobId;
+
+  // 1) Entity-owned job notes (existing canonical path; throws 404 if job missing/inactive).
+  const ownedRaw = await jobNotesRepository.listJobNotes(companyId, jobId);
+  const owned = ownedRaw.map((n) => ({ ...n, origin: "job" as const, editable: true }));
+
+  // 2) Resolve job's location → customer company for inheritance scope.
+  const [jobScope] = await db
+    .select({
+      locationId: jobsTable.locationId,
+      customerCompanyId: clientLocations.parentCompanyId,
+    })
+    .from(jobsTable)
+    .leftJoin(clientLocations, eq(jobsTable.locationId, clientLocations.id))
+    .where(and(eq(jobsTable.id, jobId), eq(jobsTable.companyId, companyId)))
+    .limit(1);
+
+  let inherited: any[] = [];
+  if (jobScope?.locationId) {
+    const rows = await clientNotesRepository.listInheritedForEntity(companyId, {
+      locationId: jobScope.locationId,
+      customerCompanyId: jobScope.customerCompanyId ?? null,
+      surface: "jobs",
+    });
+    inherited = rows.map((r) => ({
+      id: r.id,
+      jobId: null,
+      equipmentId: null,
+      noteText: r.noteText,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+      user: null,
+      userName: r.createdByName,
+      attachments: r.attachments,
+      origin: r.origin,
+      editable: false,
+    }));
+  }
+
+  // 3) Merge + sort newest first. UUID PKs guarantee no duplicates across sources.
+  const merged = [...owned, ...inherited].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
+  res.json(merged);
 }));
 
 // POST /api/jobs/:jobId/notes - Create job note (with optional attachmentFileIds)

@@ -601,6 +601,10 @@ export default function JobDetailPage() {
   const [billingTotals, setBillingTotals] = useState<{ totalPrice: number; totalCost: number; profit: number } | null>(null);
   // Parts & Billing collapse/expand — expanded by default
   const [billingExpanded, setBillingExpanded] = useState(true);
+  // Parts section-edit state — lifted so the Edit button can live in the
+  // card header row alongside the collapse chevron. PartsBillingCard reads
+  // `isEditing` and calls `onExitEdit` on Cancel / Save success.
+  const [partsEditMode, setPartsEditMode] = useState(false);
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   // Notes count for display
   const [notesCount, setNotesCount] = useState(0);
@@ -1226,40 +1230,67 @@ export default function JobDetailPage() {
           {/* ── Unified Card: Parts, Labour & Expenses ────────────────── */}
           <div id="parts-billing-section" className="rounded-md border border-slate-200 bg-white shadow-sm overflow-hidden" data-testid="job-main-card">
             <Collapsible open={billingExpanded} onOpenChange={setBillingExpanded}>
-              <CollapsibleTrigger asChild>
-                <button
-                  className={cn(
-                    "w-full flex items-center justify-between px-5 py-3 transition-colors",
-                    "bg-slate-50 hover:bg-slate-100",
-                    billingExpanded && "border-b border-slate-200",
-                  )}
-                  data-testid="trigger-parts-billing"
-                >
-                  <div className="flex items-center gap-2">
+              <div
+                className={cn(
+                  "flex items-center justify-between px-5 py-3 transition-colors",
+                  "bg-slate-50 hover:bg-slate-100",
+                  billingExpanded && "border-b border-slate-200",
+                )}
+              >
+                <CollapsibleTrigger asChild>
+                  <button
+                    className="flex-1 flex items-center gap-2 text-left"
+                    data-testid="trigger-parts-billing"
+                  >
                     <DollarSign className="h-5 w-5 text-slate-900" />
                     <span className="text-xl font-bold text-slate-900 tracking-tight">Parts, Labour & Expenses</span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    {/* Collapsed profit snapshot */}
-                    {!billingExpanded && billingTotals && (() => {
-                      const profit = billingTotals.totalPrice - billingTotals.totalCost - labourCostAmount - expenseTotalAmount;
-                      return (
-                        <span className={cn("text-xs font-bold", profit >= 0 ? "text-green-600" : "text-red-600")}>
-                          ${billingTotals.totalPrice.toFixed(2)} rev / ${profit.toFixed(2)} profit
-                        </span>
-                      );
-                    })()}
-                    {billingExpanded
-                      ? <ChevronDown className="h-4 w-4 text-slate-400 shrink-0" />
-                      : <ChevronRight className="h-4 w-4 text-slate-400 shrink-0" />
-                    }
-                  </div>
-                </button>
-              </CollapsibleTrigger>
+                  </button>
+                </CollapsibleTrigger>
+                <div className="flex items-center gap-3 shrink-0">
+                  {/* Collapsed profit snapshot */}
+                  {!billingExpanded && billingTotals && (() => {
+                    const profit = billingTotals.totalPrice - billingTotals.totalCost - labourCostAmount - expenseTotalAmount;
+                    return (
+                      <span className={cn("text-xs font-bold", profit >= 0 ? "text-green-600" : "text-red-600")}>
+                        ${billingTotals.totalPrice.toFixed(2)} rev / ${profit.toFixed(2)} profit
+                      </span>
+                    );
+                  })()}
+                  {/* Header-right Edit button — only when expanded and not already editing. */}
+                  {billingExpanded && !partsEditMode && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setPartsEditMode(true)}
+                      className="border-slate-400 text-slate-800 bg-slate-50 hover:bg-slate-100 hover:border-slate-500 font-medium shadow-sm"
+                      data-testid="button-edit-parts-section"
+                    >
+                      <Pencil className="h-3 w-3 mr-1" />
+                      Edit
+                    </Button>
+                  )}
+                  <CollapsibleTrigger asChild>
+                    <button
+                      className="p-1 text-slate-400 hover:text-slate-600"
+                      aria-label={billingExpanded ? "Collapse section" : "Expand section"}
+                    >
+                      {billingExpanded
+                        ? <ChevronDown className="h-4 w-4 shrink-0" />
+                        : <ChevronRight className="h-4 w-4 shrink-0" />
+                      }
+                    </button>
+                  </CollapsibleTrigger>
+                </div>
+              </div>
               <CollapsibleContent>
                 {/* Line Items (Parts) */}
                 <div className="[&>*]:border-0 [&>*]:rounded-none [&>*]:shadow-none [&>*]:bg-transparent" data-testid="parts-billing-wrapper">
-                  <PartsBillingCard jobId={jobId!} onTotalsChange={setBillingTotals} />
+                  <PartsBillingCard
+                    jobId={jobId!}
+                    isEditing={partsEditMode}
+                    onExitEdit={() => setPartsEditMode(false)}
+                    onTotalsChange={setBillingTotals}
+                  />
                 </div>
 
                 {/* Expenses — flows as continuation, no separate sub-header */}

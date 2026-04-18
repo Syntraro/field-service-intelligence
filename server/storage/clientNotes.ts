@@ -1,7 +1,59 @@
 import { db } from "../db";
-import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
-import { clientNotes, clients, customerCompanies, noteAttachments, users } from "@shared/schema";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { clientNotes, clients, customerCompanies, noteAttachments, users, files } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset } from "./base";
+
+/**
+ * 2026-04-18 — client-note inheritance for downstream entity surfaces.
+ *
+ * `origin` tags where the inherited note was written:
+ *   - "client_location": `client_notes.location_id = entity.locationId`
+ *   - "client_company":  `client_notes.customer_company_id = entity.customerCompanyId`
+ *                        AND `location_id IS NULL` (customer-company scope)
+ *   - "client_tenant":   company-wide note (location/customer-company/client all NULL)
+ *
+ * Downstream entity-owned surfaces emit "job" / "invoice" / "quote" instead;
+ * the union type lives with the two route layers so the storage method only
+ * needs to produce the inherited origins.
+ */
+export type InheritedNoteOrigin =
+  | "client_location"
+  | "client_company"
+  | "client_tenant";
+
+/** Attachment shape matches `NoteAttachmentStrip`'s consumed props — same
+ *  shape as the entity-owned job-note attachment row so the frontend has no
+ *  branching between owned vs inherited. */
+export interface InheritedClientNoteAttachment {
+  id: string;
+  noteId: string;
+  fileId: string;
+  originalName: string | null;
+  mimeType: string | null;
+  size: number | null;
+  storageProvider: string | null;
+  status: string | null;
+}
+
+export interface InheritedClientNote {
+  id: string;
+  noteText: string;
+  createdAt: Date;
+  updatedAt: Date;
+  userId: string;
+  createdByName: string;
+  origin: InheritedNoteOrigin;
+  /** FK that matched (only one is non-null per origin) — useful for traceability. */
+  locationId: string | null;
+  customerCompanyId: string | null;
+  showOnJobs: boolean;
+  showOnInvoices: boolean;
+  showOnQuotes: boolean;
+  /** Files attached to this client_note via `note_attachments`. Read-only
+   *  on downstream surfaces; edited on the location / customer-company
+   *  page that owns the note. Empty when the note has no finalized files. */
+  attachments: InheritedClientNoteAttachment[];
+}
 
 /**
  * 2026-04-13 — canonical cleanup helper shared by every client-note
@@ -563,6 +615,148 @@ export class ClientNotesRepository extends BaseRepository {
       )
       .returning();
     return updated ?? null;
+  }
+
+  // ─── Inherited-note resolution for downstream entities (2026-04-18) ──
+  //
+  // Canonical dynamic read-time inheritance: Job / Invoice / Quote detail
+  // surfaces call this to surface any client_notes flagged for that surface.
+  // A single SELECT covers the three inheritance scopes (location, parent
+  // customer-company, tenant-wide) with a server-computed `origin` so the
+  // route layer merges into one feed with no post-processing.
+  async listInheritedForEntity(
+    companyId: string,
+    params: {
+      locationId: string;
+      customerCompanyId?: string | null;
+      surface: "jobs" | "invoices" | "quotes";
+    },
+  ): Promise<InheritedClientNote[]> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(params.locationId, "locationId");
+    if (params.customerCompanyId) {
+      this.validateUUID(params.customerCompanyId, "customerCompanyId");
+    }
+
+    const flagCol =
+      params.surface === "jobs"
+        ? clientNotes.showOnJobs
+        : params.surface === "invoices"
+          ? clientNotes.showOnInvoices
+          : clientNotes.showOnQuotes;
+
+    // Three scopes combined; server-side OR keeps this to one query.
+    //   1) location-scoped:     location_id = L
+    //   2) customer-company:    customer_company_id = C  AND location_id IS NULL
+    //   3) tenant-wide:         location_id IS NULL AND customer_company_id IS NULL AND client_id IS NULL
+    const scopePredicate = params.customerCompanyId
+      ? or(
+          eq(clientNotes.locationId, params.locationId),
+          and(
+            eq(clientNotes.customerCompanyId, params.customerCompanyId),
+            isNull(clientNotes.locationId),
+          ),
+          and(
+            isNull(clientNotes.locationId),
+            isNull(clientNotes.customerCompanyId),
+            isNull(clientNotes.clientId),
+          ),
+        )
+      : or(
+          eq(clientNotes.locationId, params.locationId),
+          and(
+            isNull(clientNotes.locationId),
+            isNull(clientNotes.customerCompanyId),
+            isNull(clientNotes.clientId),
+          ),
+        );
+
+    const rows = await db
+      .select({
+        id: clientNotes.id,
+        noteText: clientNotes.noteText,
+        createdAt: clientNotes.createdAt,
+        updatedAt: clientNotes.updatedAt,
+        userId: clientNotes.userId,
+        createdByName: users.fullName,
+        locationId: clientNotes.locationId,
+        customerCompanyId: clientNotes.customerCompanyId,
+        clientIdCol: clientNotes.clientId,
+        showOnJobs: clientNotes.showOnJobs,
+        showOnInvoices: clientNotes.showOnInvoices,
+        showOnQuotes: clientNotes.showOnQuotes,
+      })
+      .from(clientNotes)
+      .leftJoin(users, eq(clientNotes.userId, users.id))
+      .where(
+        and(
+          eq(clientNotes.companyId, companyId),
+          eq(flagCol, true),
+          scopePredicate,
+        ),
+      )
+      .orderBy(desc(clientNotes.createdAt));
+
+    // Batched attachment load — mirrors jobNotesRepository.listJobNotes
+    // (one query grouped by noteId). Only finalized files surface; pending/
+    // failed/deleted rows are filtered out so downstream surfaces cannot
+    // render half-uploaded or reaped blobs.
+    const noteIds = rows.map((r) => r.id);
+    const attachmentRows = noteIds.length > 0
+      ? await db
+          .select({
+            id: noteAttachments.id,
+            noteId: noteAttachments.noteId,
+            fileId: noteAttachments.fileId,
+            originalName: files.originalName,
+            mimeType: files.mimeType,
+            size: files.size,
+            storageProvider: files.storageProvider,
+            status: files.status,
+          })
+          .from(noteAttachments)
+          .innerJoin(files, eq(noteAttachments.fileId, files.id))
+          .where(
+            and(
+              eq(noteAttachments.companyId, companyId),
+              inArray(noteAttachments.noteId, noteIds),
+              eq(files.status, "uploaded"),
+            ),
+          )
+      : [];
+
+    const attachmentsByNote = new Map<string, InheritedClientNoteAttachment[]>();
+    for (const a of attachmentRows) {
+      const list = attachmentsByNote.get(a.noteId) ?? [];
+      list.push(a);
+      attachmentsByNote.set(a.noteId, list);
+    }
+
+    return rows.map((r) => {
+      let origin: InheritedNoteOrigin;
+      if (r.locationId) {
+        origin = "client_location";
+      } else if (r.customerCompanyId) {
+        origin = "client_company";
+      } else {
+        origin = "client_tenant";
+      }
+      return {
+        id: r.id,
+        noteText: r.noteText,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+        userId: r.userId,
+        createdByName: r.createdByName ?? "Unknown",
+        origin,
+        locationId: r.locationId,
+        customerCompanyId: r.customerCompanyId,
+        showOnJobs: r.showOnJobs,
+        showOnInvoices: r.showOnInvoices,
+        showOnQuotes: r.showOnQuotes,
+        attachments: attachmentsByNote.get(r.id) ?? [],
+      };
+    });
   }
 
   /**

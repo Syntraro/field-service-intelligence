@@ -25,6 +25,7 @@ import { format } from "date-fns";
 import { MessageSquare, Loader2, Trash2 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { NoteAttachmentStrip } from "@/components/attachments/NoteAttachmentStrip";
 import {
   Dialog,
   DialogContent,
@@ -35,9 +36,30 @@ import {
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
+/** Origin discriminator set by the backend on every row.
+ *  "quote" = entity-owned; "client_*" = inherited client_notes (read-only). */
+type NoteOrigin =
+  | "quote"
+  | "client_location"
+  | "client_company"
+  | "client_tenant";
+
+/** Same shape as JobNotesSection's NoteAttachment — inherited client_notes
+ *  surface their attachments here so mixed feeds render uniformly. */
+interface QuoteNoteAttachment {
+  id: string;
+  noteId: string;
+  fileId: string;
+  originalName: string | null;
+  mimeType: string | null;
+  size: number | null;
+  storageProvider?: string | null;
+  status?: string | null;
+}
+
 interface QuoteNote {
   id: string;
-  quoteId: string;
+  quoteId: string | null;
   noteText: string;
   createdAt: string;
   updatedAt: string | null;
@@ -49,6 +71,22 @@ interface QuoteNote {
     firstName: string | null;
     lastName: string | null;
   } | null;
+  origin?: NoteOrigin;
+  editable?: boolean;
+  attachments?: QuoteNoteAttachment[];
+}
+
+function originChipLabel(origin: NoteOrigin | undefined): string | null {
+  switch (origin) {
+    case "client_location":
+      return "Location Note";
+    case "client_company":
+      return "Client Note";
+    case "client_tenant":
+      return "Company Note";
+    default:
+      return null;
+  }
 }
 
 interface QuoteNotesSectionProps {
@@ -202,36 +240,58 @@ export function QuoteNotesSection({
           </div>
         ) : (
           <div className="space-y-0">
-            {notes.map((note, idx) => (
-              <div
-                key={note.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => openEdit(note)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    openEdit(note);
-                  }
-                }}
-                className={`group py-3 px-1 cursor-pointer rounded hover:bg-slate-50 transition-colors ${idx > 0 ? "border-t border-slate-200" : ""}`}
-                data-testid={`quote-note-${note.id}`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs text-slate-500">
-                    <span className="font-semibold text-slate-700">{note.userName}</span>
-                    {" · "}
-                    {format(new Date(note.createdAt), "MMM d, h:mm a")}
-                    {note.updatedAt && note.updatedAt !== note.createdAt && (
-                      <span className="ml-1 text-xs text-slate-400">(edited)</span>
+            {notes.map((note, idx) => {
+              // Entity-owned quote notes are editable; inherited client_notes
+              // are read-only on this surface. Matches Job/Invoice UX.
+              const canEdit = note.editable !== false && note.origin === "quote";
+              const chipLabel = originChipLabel(note.origin);
+              return (
+                <div
+                  key={note.id}
+                  role={canEdit ? "button" : undefined}
+                  tabIndex={canEdit ? 0 : -1}
+                  onClick={canEdit ? () => openEdit(note) : undefined}
+                  onKeyDown={canEdit ? (e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      openEdit(note);
+                    }
+                  } : undefined}
+                  className={`group py-3 px-1 rounded transition-colors ${canEdit ? "cursor-pointer hover:bg-slate-50" : "cursor-default"} ${idx > 0 ? "border-t border-slate-200" : ""}`}
+                  data-testid={`quote-note-${note.id}`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-slate-500">
+                      <span className="font-semibold text-slate-700">{note.userName}</span>
+                      {" · "}
+                      {format(new Date(note.createdAt), "MMM d, h:mm a")}
+                      {note.updatedAt && note.updatedAt !== note.createdAt && (
+                        <span className="ml-1 text-xs text-slate-400">(edited)</span>
+                      )}
+                    </span>
+                    {chipLabel && (
+                      <span
+                        className="text-[10px] uppercase tracking-wide font-medium px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0"
+                        data-testid={`quote-note-origin-${note.id}`}
+                      >
+                        {chipLabel}
+                      </span>
                     )}
-                  </span>
+                  </div>
+                  <p className="text-[14px] leading-5 whitespace-pre-wrap mt-0.5 text-slate-800">
+                    {note.noteText}
+                  </p>
+
+                  {note.attachments && note.attachments.length > 0 && (
+                    // Stop clicks inside the strip (thumb → lightbox, chip
+                    // → file open) from bubbling to the row-edit handler.
+                    <div className="mt-1.5" onClick={(e) => e.stopPropagation()}>
+                      <NoteAttachmentStrip attachments={note.attachments} />
+                    </div>
+                  )}
                 </div>
-                <p className="text-[14px] leading-5 whitespace-pre-wrap mt-0.5 text-slate-800">
-                  {note.noteText}
-                </p>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
     </div>

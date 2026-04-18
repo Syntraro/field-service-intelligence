@@ -81,6 +81,11 @@ interface JobNoteDialogProps {
   note: ExistingJobNote | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** 2026-04-18: extra TanStack Query key to invalidate after a successful
+   *  mutation. Used by the Invoice Detail surface, which renders this dialog
+   *  under a different query key (`/api/invoices/:id/notes`) — without this,
+   *  the invoice notes feed wouldn't refresh after save/delete. */
+  extraInvalidationKey?: readonly unknown[];
 }
 
 interface StagedFile {
@@ -189,7 +194,7 @@ function SavedImageThumb({
   );
 }
 
-export function JobNoteDialog({ jobId, note, open, onOpenChange }: JobNoteDialogProps) {
+export function JobNoteDialog({ jobId, note, open, onOpenChange, extraInvalidationKey }: JobNoteDialogProps) {
   const { toast } = useToast();
   const { logActivity } = useActivityStore();
   const { upload, progress } = useFileUpload();
@@ -229,6 +234,9 @@ export function JobNoteDialog({ jobId, note, open, onOpenChange }: JobNoteDialog
 
   const invalidateNotes = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "notes"] });
+    if (extraInvalidationKey) {
+      queryClient.invalidateQueries({ queryKey: extraInvalidationKey as unknown[] });
+    }
   };
 
   const handleFilePick = (e: React.ChangeEvent<HTMLInputElement>) => {

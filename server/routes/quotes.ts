@@ -29,7 +29,8 @@ import { tasks } from "@shared/schema";
 import { eq, and, notInArray } from "drizzle-orm";
 import { db } from "../db";
 import { taskRepository } from "../storage/tasks";
-import { quoteNotes, users, quotes, insertQuoteNoteSchema } from "@shared/schema";
+import { quoteNotes, users, quotes, insertQuoteNoteSchema, clientLocations } from "@shared/schema";
+import { clientNotesRepository } from "../storage/clientNotes";
 import { isQuoteDraft, isQuoteSent, isQuoteApproved } from "../lib/quotePredicates";
 // Phase 1 Architecture: Event Log
 import { logEventAsync } from "../lib/events";
@@ -376,13 +377,17 @@ async function assertQuoteExists(companyId: string, quoteId: string) {
   if (!q) throw createError(404, "Quote not found");
 }
 
-// GET /api/quotes/:id/notes — list notes for a quote
+// GET /api/quotes/:id/notes — list entity-owned quote notes + inherited
+// client notes (showOnQuotes). 2026-04-18: dynamic read-time inheritance;
+// merged feed sorted newest first.
 router.get("/:id/notes", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
   const quoteId = req.params.id;
   await assertQuoteExists(companyId, quoteId);
 
-  const rows = await db
+  // 1) Entity-owned quote notes. Sort DESC (parity with jobs/invoices — was
+  //    ASC previously; flipped as part of the 2026-04-18 inheritance rollout).
+  const ownedRows = await db
     .select({
       id: quoteNotes.id,
       quoteId: quoteNotes.quoteId,
@@ -402,15 +407,52 @@ router.get("/:id/notes", asyncHandler(async (req: AuthedRequest, res: Response) 
     .where(and(eq(quoteNotes.quoteId, quoteId), eq(quoteNotes.companyId, companyId)))
     .orderBy(quoteNotes.createdAt);
 
-  // Same shape JobNotesSection consumes — so the reused component works.
-  const withDisplayName = rows.map(r => ({
+  const owned = ownedRows.map((r) => ({
     ...r,
-    userName: r.user?.fullName
-      ?? [r.user?.firstName, r.user?.lastName].filter(Boolean).join(" ")
-      ?? r.user?.email
-      ?? "Unknown",
+    userName:
+      r.user?.fullName
+        ?? [r.user?.firstName, r.user?.lastName].filter(Boolean).join(" ")
+        ?? r.user?.email
+        ?? "Unknown",
+    origin: "quote" as const,
+    editable: true,
   }));
-  res.json(withDisplayName);
+
+  // 2) Inherited client notes — resolve quote's location + customer company.
+  const [quoteScope] = await db
+    .select({
+      locationId: quotes.locationId,
+      customerCompanyId: quotes.customerCompanyId,
+    })
+    .from(quotes)
+    .where(and(eq(quotes.id, quoteId), eq(quotes.companyId, companyId)))
+    .limit(1);
+
+  let inherited: any[] = [];
+  if (quoteScope?.locationId) {
+    const rows = await clientNotesRepository.listInheritedForEntity(companyId, {
+      locationId: quoteScope.locationId,
+      customerCompanyId: quoteScope.customerCompanyId ?? null,
+      surface: "quotes",
+    });
+    inherited = rows.map((r) => ({
+      id: r.id,
+      quoteId: null,
+      noteText: r.noteText,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+      user: null,
+      userName: r.createdByName,
+      attachments: r.attachments,
+      origin: r.origin,
+      editable: false,
+    }));
+  }
+
+  const merged = [...owned, ...inherited].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
+  res.json(merged);
 }));
 
 // POST /api/quotes/:id/notes — create a note

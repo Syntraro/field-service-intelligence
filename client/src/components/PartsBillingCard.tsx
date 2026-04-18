@@ -19,12 +19,15 @@
  *     column on `job_parts` is the line label; if a user picked a product,
  *     the catalog name auto-fills and they can edit it.
  *
- * Preserved behavior:
- *   - Add / edit / delete / save / cancel row workflow
- *   - Drag-and-drop reorder
- *   - Apply Template (replace / merge) flow + AddProductModal create-new
- *   - Margin / profit / total reporting to parent
- *   - Same query keys + invalidation cadence (no SSE/refetch drift)
+ * 2026-04-18 Section-level edit mode:
+ *   - Per-row Save / Cancel / click-to-edit is replaced by a card-level
+ *     Edit → (bulk staged edits) → Save Changes / Cancel lifecycle.
+ *   - Deletes are staged (hidden) until section Save; Cancel restores them.
+ *   - Reorder is local-only in edit mode; PATCH /reorder fires once on Save.
+ *   - Server endpoints are unchanged: POST/PUT/DELETE /api/jobs/:jobId/parts
+ *     and PATCH /api/jobs/:jobId/parts/reorder. No new backend route.
+ *   - Apply Template is hidden during section edit — user must save or
+ *     cancel first. Template application itself is unchanged.
  */
 import { useMemo, useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -49,7 +52,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, Trash2, Loader2, Check, X, FileText, GripVertical, Search, Star } from "lucide-react";
+import { Plus, Trash2, Loader2, FileText, GripVertical, Search, Star } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   DndContext,
@@ -93,6 +96,15 @@ const OFFICE_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
 interface PartsBillingCardProps {
   jobId: string;
+  /**
+   * Section-edit flag driven by the parent's card-header Edit button.
+   * When this flips false → true, the component snapshots `items` for Cancel
+   * restore; when it flips true → false, the snapshot clears. Cancel and
+   * Save success call `onExitEdit` to flip it back to false.
+   */
+  isEditing: boolean;
+  /** Parent-owned exit callback — invoked on Cancel and on Save success. */
+  onExitEdit: () => void;
   /** Report computed totals to parent (for displaying in section header) */
   onTotalsChange?: (totals: { totalPrice: number; totalCost: number; profit: number }) => void;
 }
@@ -112,18 +124,34 @@ function formatCurrency(value: number): string {
   }).format(value);
 }
 
-export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProps) {
+// Diff helper: determines whether a persisted row's tracked fields changed
+// versus its pre-edit snapshot. Used by both the dirty indicator (to enable
+// Save) and the Save orchestrator (to decide PUT vs skip).
+function rowIsChanged(current: LineItemDraft, original: LineItemDraft): boolean {
+  return (
+    current.description !== original.description ||
+    current.productId !== original.productId ||
+    current.quantity !== original.quantity ||
+    current.unitCost !== original.unitCost ||
+    current.unitPrice !== original.unitPrice
+  );
+}
+
+export function PartsBillingCard({ jobId, isEditing, onExitEdit, onTotalsChange }: PartsBillingCardProps) {
   const { toast } = useToast();
   const { user } = useAuth();
   const isOfficeUser = Boolean(user?.role && OFFICE_ROLES.includes(user.role));
 
-  // 2026-04-10 Phase B: items are canonical `LineItemDraft[]` — same shape as
-  // every other line-item surface in the client. No local shadow type.
+  // Canonical `LineItemDraft[]` — same shape as every other line-item surface.
   const [items, setItems] = useState<LineItemDraft[]>([]);
-  const [editingRowId, setEditingRowId] = useState<string | null>(null);
-  const [savingRowId, setSavingRowId] = useState<string | null>(null);
-  // Snapshot of the original draft at edit-start, for cancel-restore.
-  const [originalDrafts, setOriginalDrafts] = useState<Record<string, LineItemDraft>>({});
+
+  // Section-level edit lifecycle state — `isEditing` is parent-driven; the
+  // snapshot + pendingDeletes are owned here because they require access to
+  // the current `items` at transition time.
+  const [originalItems, setOriginalItems] = useState<LineItemDraft[] | null>(null);
+  const [pendingDeletes, setPendingDeletes] = useState<Set<string>>(new Set());
+  const [isSavingSection, setIsSavingSection] = useState(false);
+
   const [productModalState, setProductModalState] = useState<{
     open: boolean;
     seedName: string;
@@ -135,12 +163,19 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
     templateName: string;
     mode: "replace" | "merge";
   }>({ open: false, templateId: null, templateName: "", mode: "replace" });
-  // Template picker dialog state
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [templateSearch, setTemplateSearch] = useState("");
   const lastSyncedPartsRef = useRef<string>("");
 
-  const { data: jobParts = [], isLoading: partsLoading } = useQuery<(JobPart & { itemType?: string | null })[]>({
+  // Display-only lookup: catalog description keyed by productId. Populated
+  // from jobParts.itemDescription on hydration and from the just-selected
+  // ProductOption in `handleSelectProduct`. Held in a ref so mutations
+  // don't re-render on their own — rows re-render via the `items` update
+  // that accompanies every write, and look up their description at render
+  // time. Never reaches any save payload.
+  const catalogDescByProductIdRef = useRef<Map<string, string>>(new Map());
+
+  const { data: jobParts = [], isLoading: partsLoading } = useQuery<(JobPart & { itemType?: string | null; itemDescription?: string | null })[]>({
     queryKey: ["/api/jobs", jobId, "parts"],
     queryFn: async () => {
       const res = await fetch(`/api/jobs/${jobId}/parts`, { credentials: "include" });
@@ -215,11 +250,10 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
     setTemplateConfirmState({ open: false, templateId: null, templateName: "", mode: "replace" });
   };
 
-  // 2026-04-10 Phase B: Hydrate persisted job_parts rows into canonical drafts.
-  // No catalog prefetch — the persisted `description` is the canonical line
-  // label. Catalog reads are now per-row via `useProductSearch`.
+  // Hydrate persisted job_parts rows into canonical drafts. Suspended while
+  // section edit mode is active so refetches don't clobber in-flight edits.
   useEffect(() => {
-    if (!jobParts || editingRowId) return;
+    if (!jobParts || isEditing) return;
 
     const partsKey = JSON.stringify(
       jobParts.map(jp => jp.id + jp.quantity + jp.unitCost + jp.unitPrice + jp.productId + jp.sortOrder),
@@ -229,94 +263,135 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
     const mappedItems: LineItemDraft[] = jobParts.map((jp, index) => {
       const draft = hydrateDraft({
         ...jp,
-        // job_parts has no `notes`, no tax/total fields, no `lineItemType`,
-        // no `source` — hydrateDraft fills safe defaults.
         sortOrder: jp.sortOrder ?? index,
       });
-      // Carry the catalog itemType through so the row can show the right
-      // affordance (product vs service) without re-fetching the catalog.
       if (jp.itemType === "product" || jp.itemType === "service") {
         draft.productType = jp.itemType;
+      }
+      // 2026-04-18: cache catalog description for the selector chip display.
+      if (jp.productId && jp.itemDescription) {
+        catalogDescByProductIdRef.current.set(jp.productId, jp.itemDescription);
       }
       return draft;
     });
     lastSyncedPartsRef.current = partsKey;
     setItems(mappedItems);
-  }, [jobParts, editingRowId]);
+  }, [jobParts, isEditing]);
 
-  const reorderMutation = useMutation({
-    mutationFn: async (newOrder: { id: string; sortOrder: number }[]) => {
-      return await apiRequest(`/api/jobs/${jobId}/parts/reorder`, {
-        method: "PATCH",
-        body: JSON.stringify({ parts: newOrder }),
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
-    },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to reorder items.", variant: "destructive" });
-    },
-  });
+  // Snapshot / clear on the isEditing transition. Snapshot uses the current
+  // `items` at the moment the parent enters edit mode; on exit, the snapshot
+  // and any staged deletes are cleared.
+  useEffect(() => {
+    if (isEditing) {
+      setOriginalItems(items.map((i) => ({ ...i })));
+      setPendingDeletes(new Set());
+    } else {
+      setOriginalItems(null);
+      setPendingDeletes(new Set());
+    }
+    // Only react to the edit-mode transition — `items` at snapshot time is
+    // captured via closure, and re-running on every keystroke would defeat
+    // the point of the snapshot.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
+  // Drag reorder is local-only. In section edit mode it mutates `items` and
+  // rebases sortOrder; PATCH /reorder is deferred until Save. Drag is
+  // effectively disabled outside edit mode since the grip handle isn't
+  // rendered in read-only rows.
   const handleDragEnd = (event: DragEndEvent) => {
+    if (!isEditing) return;
     const { active, over } = event;
     if (!over || active.id === over.id) return;
 
     const oldIndex = items.findIndex((i) => i.id === active.id);
     const newIndex = items.findIndex((i) => i.id === over.id);
+    if (oldIndex === -1 || newIndex === -1) return;
 
     const newItems = arrayMove(items, oldIndex, newIndex).map((item, idx) => ({
       ...item,
       sortOrder: idx,
     }));
-
     setItems(newItems);
-    reorderMutation.mutate(
-      newItems.filter(i => !i.isNew).map((item, idx) => ({ id: item.id, sortOrder: idx }))
-    );
   };
 
+  // Visible rows exclude staged-for-delete persisted rows. New-but-deleted
+  // rows are never in `items` (handleRowDelete drops them on click).
+  const visibleItems = useMemo(
+    () => items.filter((i) => !pendingDeletes.has(i.id)),
+    [items, pendingDeletes],
+  );
+
   const { totalPrice, totalCost, profit, margin } = useMemo(() => {
-    // 2026-04-10 Phase B: parseMoney is the canonical money parser; do not use
-    // bare parseFloat on money strings.
-    const totalPrice = items.reduce(
+    // Totals are computed over visible rows so staged deletions don't count.
+    // `parseMoney` is the canonical money parser; never use bare parseFloat.
+    const totalPrice = visibleItems.reduce(
       (sum, i) => sum + parseMoney(i.unitPrice) * parseMoney(i.quantity),
       0
     );
-    const totalCost = items.reduce(
+    const totalCost = visibleItems.reduce(
       (sum, i) => sum + parseMoney(i.unitCost) * parseMoney(i.quantity),
       0
     );
     const profit = totalPrice - totalCost;
     const margin = totalPrice > 0 ? (profit / totalPrice) * 100 : 0;
     return { totalPrice, totalCost, profit, margin };
-  }, [items]);
+  }, [visibleItems]);
 
   // Report totals to parent for section header display
   useEffect(() => {
     onTotalsChange?.({ totalPrice, totalCost, profit });
   }, [totalPrice, totalCost, profit, onTotalsChange]);
 
-  const handleAddLineItem = () => {
-    // 2026-04-10 Phase B: blank canonical draft instead of inline literal.
-    const draft = blankDraft({ source: "manual", sortOrder: items.length });
-    setItems((prev) => [...prev, draft]);
-    setEditingRowId(draft.id);
-    setOriginalDrafts((prev) => ({ ...prev, [draft.id]: draft }));
+  // Dirty detection drives Save-button enablement and the reorder PATCH.
+  const { isDirty, orderChanged } = useMemo(() => {
+    if (!isEditing || !originalItems) {
+      return { isDirty: false, orderChanged: false };
+    }
+    const origById = new Map(originalItems.map((i) => [i.id, i]));
+    const hasCreates = items.some((i) => i.isNew && !pendingDeletes.has(i.id));
+    const hasDeletes = pendingDeletes.size > 0;
+    const hasUpdates = items.some((i) => {
+      if (i.isNew || pendingDeletes.has(i.id)) return false;
+      const orig = origById.get(i.id);
+      return orig ? rowIsChanged(i, orig) : false;
+    });
+    const currentOrderIds = items
+      .filter((i) => !pendingDeletes.has(i.id))
+      .map((i) => i.id);
+    const originalOrderIds = originalItems
+      .filter((i) => !pendingDeletes.has(i.id))
+      .map((i) => i.id);
+    const orderChanged =
+      hasCreates ||
+      currentOrderIds.length !== originalOrderIds.length ||
+      currentOrderIds.some((id, idx) => originalOrderIds[idx] !== id);
+    return {
+      isDirty: hasCreates || hasUpdates || hasDeletes || orderChanged,
+      orderChanged,
+    };
+  }, [isEditing, originalItems, items, pendingDeletes]);
+
+  // ── Section edit lifecycle ────────────────────────────────────────────
+  // Enter is driven by the parent (Edit button in the card header). The
+  // snapshot/clear is handled by the `isEditing` effect above. Cancel below
+  // restores the local items from the snapshot before notifying the parent.
+
+  const handleSectionCancel = () => {
+    if (originalItems) setItems(originalItems.map((i) => ({ ...i })));
+    onExitEdit();
   };
 
-  const handleEnterEdit = (id: string) => {
-    const item = items.find((i) => i.id === id);
-    if (item) {
-      setOriginalDrafts((prev) => ({ ...prev, [id]: item }));
-    }
-    setEditingRowId(id);
+  // ── Row handlers (only active while isEditing === true) ─────────
+
+  const handleAddLineItem = () => {
+    const draft = blankDraft({ source: "manual", sortOrder: items.length });
+    setItems((prev) => [...prev, draft]);
   };
 
   const handleRowChange = (id: string, patch: Partial<LineItemDraft>) => {
@@ -325,85 +400,39 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
     );
   };
 
-  const handleRowCancel = (id: string) => {
+  // Delete is staged: isNew rows drop from local state immediately; persisted
+  // rows are added to `pendingDeletes` and hidden from the table. Section
+  // Cancel restores both paths; section Save commits the DELETEs.
+  const handleRowDelete = (id: string) => {
     const item = items.find((i) => i.id === id);
     if (item?.isNew) {
       setItems((prev) => prev.filter((i) => i.id !== id));
-    } else {
-      const orig = originalDrafts[id];
-      if (orig) {
-        setItems((prev) =>
-          prev.map((i) => (i.id === id ? { ...orig, isDraft: false } : i))
-        );
-      }
-    }
-    setEditingRowId(null);
-  };
-
-  const handleRowDelete = async (id: string) => {
-    const item = items.find((i) => i.id === id);
-    if (item?.isNew) {
-      setItems((prev) => prev.filter((i) => i.id !== id));
-      if (editingRowId === id) setEditingRowId(null);
       return;
     }
-
-    try {
-      setSavingRowId(id);
-      await apiRequest(`/api/jobs/${jobId}/parts/${id}`, {
-        method: "DELETE",
-      });
-      await queryClient.refetchQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
-      if (editingRowId === id) setEditingRowId(null);
-      toast({ title: "Deleted", description: "Line item removed." });
-    } catch (error) {
-      toast({ title: "Error", description: "Failed to delete line item.", variant: "destructive" });
-    } finally {
-      setSavingRowId(null);
-    }
-  };
-
-  const handleRowSave = async (id: string) => {
-    const item = items.find((i) => i.id === id);
-    if (!item) return;
-
-    try {
-      setSavingRowId(id);
-      // 2026-04-10 Phase B: canonical payload via draftToJobPartPayload.
-      // The server route validates against canonicalLineItemInput and
-      // projects the input down to the persisted job_parts subset via
-      // `canonicalToJobPartFields` in server/routes/jobs.ts. We send the
-      // full canonical shape (the server drops what it doesn't store).
-      const payload = draftToJobPartPayload(item);
-
-      if (item.isNew) {
-        await apiRequest(`/api/jobs/${jobId}/parts`, {
-          method: "POST",
-          body: JSON.stringify(payload),
-        });
-      } else {
-        await apiRequest(`/api/jobs/${jobId}/parts/${item.id}`, {
-          method: "PUT",
-          body: JSON.stringify(payload),
-        });
-      }
-
-      await queryClient.refetchQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
-      setEditingRowId(null);
-      toast({ title: "Saved", description: "Line item saved." });
-    } catch (error) {
-      toast({ title: "Error", description: "Failed to save line item.", variant: "destructive" });
-    } finally {
-      setSavingRowId(null);
-    }
+    setPendingDeletes((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
   };
 
   /**
-   * 2026-04-10 Phase B: canonical catalog→draft mapping. Replaces the inline
-   * field map. Preserves the row id, sortOrder, and existing quantity so the
-   * table doesn't reorder and the user's edited quantity isn't reset.
+   * Canonical catalog→draft mapping. Preserves the row id, sortOrder, and
+   * existing quantity so the table doesn't reorder and the user's edited
+   * quantity isn't reset.
+   *
+   * 2026-04-18: Also preserves `li.isNew`. `catalogItemToDraft` constructs a
+   * fresh draft with `isNew: true` (correct for net-new additions), but when
+   * this handler is called on a persisted row — e.g. the user replaces the
+   * product on an existing line — the row must stay non-new so section Save
+   * routes it through PUT, not POST. Without this, changing the product on
+   * an existing row would create a duplicate on the server.
    */
   const handleSelectProduct = (lineId: string, product: ProductOption) => {
+    // 2026-04-18: cache catalog description for the chip's secondary line.
+    if (product.description) {
+      catalogDescByProductIdRef.current.set(product.id, product.description);
+    }
     setItems((prev) =>
       prev.map((li) => {
         if (li.id !== lineId) return li;
@@ -412,9 +441,103 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
           quantity: li.quantity,
           sortOrder: li.sortOrder,
         });
-        return { ...fresh, id: li.id, isDraft: true };
+        return { ...fresh, id: li.id, isNew: li.isNew, isDraft: true };
       }),
     );
+  };
+
+  // ── Section Save orchestration ────────────────────────────────────────
+
+  const handleSectionSave = async () => {
+    if (isSavingSection || !originalItems) return;
+
+    // Block save if any visible row lacks a description — matches the
+    // canonical Zod requirement (`description.min(1)`) that the server
+    // would reject anyway. Catching it early avoids partial-save state.
+    const invalidRow = visibleItems.find((i) => !i.description?.trim());
+    if (invalidRow) {
+      toast({
+        title: "Missing description",
+        description: "Every line item needs a product, service, or description.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsSavingSection(true);
+    try {
+      const origById = new Map(originalItems.map((i) => [i.id, i]));
+      const localToServerId = new Map<string, string>();
+
+      // 1. POST creates (isNew rows that weren't staged-deleted)
+      const creates = items.filter((i) => i.isNew && !pendingDeletes.has(i.id));
+      for (const draft of creates) {
+        const payload = draftToJobPartPayload(draft);
+        const created = await apiRequest<JobPart>(`/api/jobs/${jobId}/parts`, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        localToServerId.set(draft.id, created.id);
+      }
+
+      // 2. PUT updates (persisted rows with a diff against the snapshot)
+      const updates = items.filter((i) => {
+        if (i.isNew || pendingDeletes.has(i.id)) return false;
+        const orig = origById.get(i.id);
+        return orig ? rowIsChanged(i, orig) : false;
+      });
+      for (const draft of updates) {
+        const payload = draftToJobPartPayload(draft);
+        await apiRequest(`/api/jobs/${jobId}/parts/${draft.id}`, {
+          method: "PUT",
+          body: JSON.stringify(payload),
+        });
+      }
+
+      // 3. DELETE staged deletions (persisted ids only; isNew was dropped locally)
+      for (const id of Array.from(pendingDeletes)) {
+        await apiRequest(`/api/jobs/${jobId}/parts/${id}`, {
+          method: "DELETE",
+        });
+      }
+
+      // 4. PATCH reorder — one call, surviving rows only. localIds for
+      // freshly-created rows are translated to their server ids before send.
+      if (orderChanged) {
+        const survivors = items.filter((i) => !pendingDeletes.has(i.id));
+        const reorderPayload = survivors.map((i, idx) => ({
+          id: localToServerId.get(i.id) ?? i.id,
+          sortOrder: idx,
+        }));
+        if (reorderPayload.length > 0) {
+          await apiRequest(`/api/jobs/${jobId}/parts/reorder`, {
+            method: "PATCH",
+            body: JSON.stringify({ parts: reorderPayload }),
+          });
+        }
+      }
+
+      // 5. Refetch canonical state. Hydration effect is still gated by
+      // isEditing (true) so it won't fire until we exit edit mode.
+      await queryClient.refetchQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+
+      // 6. Notify parent to exit edit mode. The isEditing effect clears the
+      // snapshot + pendingDeletes; the hydrator then repopulates `items` from
+      // the refreshed server data.
+      onExitEdit();
+      toast({ title: "Saved", description: "Line items updated." });
+    } catch (error: any) {
+      // Stay in edit mode so the user can retry or cancel. Draft state
+      // (items, pendingDeletes, originalItems) is deliberately preserved.
+      toast({
+        title: "Save failed",
+        description: error?.message || "Some changes could not be saved.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSavingSection(false);
+    }
   };
 
   const createProductMutation = useMutation({
@@ -433,6 +556,9 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
       });
     },
     onSuccess: (newPart: Item) => {
+      // The catalog item persists even if the user subsequently cancels the
+      // section edit — a new product/service is a tenant-wide resource and
+      // cannot be cleanly rolled back. Intentional carve-out.
       queryClient.invalidateQueries({ queryKey: ["/api/items"] });
       if (productModalState.lineItemId) {
         // Apply the freshly-created catalog item to the row via the canonical
@@ -452,7 +578,7 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
               quantity: li.quantity,
               sortOrder: li.sortOrder,
             });
-            return { ...fresh, id: li.id, isDraft: true };
+            return { ...fresh, id: li.id, isNew: li.isNew, isDraft: true };
           }),
         );
       }
@@ -495,25 +621,27 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
                     <th className="py-2 pl-3 text-right font-medium w-28">Total</th>
                   </tr>
                 </thead>
-                <SortableContext items={items.map((i) => i.id)} strategy={verticalListSortingStrategy}>
+                <SortableContext items={visibleItems.map((i) => i.id)} strategy={verticalListSortingStrategy}>
                   <tbody>
-                    {items.length === 0 && (
+                    {visibleItems.length === 0 && (
                       <tr>
                         <td colSpan={6} className="py-6 text-center text-xs text-muted-foreground">
-                          No line items yet. Add parts or services to this job.
+                          {isEditing
+                            ? "No line items. Use Add Line Item below."
+                            : "No line items yet. Click Edit to add parts or services."}
                         </td>
                       </tr>
                     )}
-                    {items.map((item) => (
+                    {visibleItems.map((item) => (
                       <SortableLineItemRow
                         key={item.id}
                         item={item}
-                        isEditing={editingRowId === item.id}
-                        isSaving={savingRowId === item.id}
-                        onEnterEdit={() => handleEnterEdit(item.id)}
+                        isEditing={isEditing}
+                        isSaving={isSavingSection}
+                        getCatalogDescription={(productId) =>
+                          catalogDescByProductIdRef.current.get(productId) ?? null
+                        }
                         onChange={(patch) => handleRowChange(item.id, patch)}
-                        onSave={() => handleRowSave(item.id)}
-                        onCancel={() => handleRowCancel(item.id)}
                         onDelete={() => handleRowDelete(item.id)}
                         onSelectProduct={(product) => handleSelectProduct(item.id, product)}
                         onRequestAddProduct={(name) =>
@@ -527,33 +655,61 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
             </DndContext>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleAddLineItem}
-              className="border-slate-400 text-slate-800 bg-slate-50 hover:bg-slate-100 hover:border-slate-500 font-medium shadow-sm"
-              data-testid="button-add-line-item"
-            >
-              <Plus className="h-3 w-3 mr-1" />
-              Add Line Item
-            </Button>
-            {isOfficeUser && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => { setTemplatePickerOpen(true); setTemplateSearch(""); }}
-                disabled={applyTemplateMutation.isPending || jobTemplates.length === 0}
-                title={jobTemplates.length === 0 ? "No templates available — create one in Settings → Job Templates" : "Apply a template"}
-                className="border-slate-400 text-slate-800 bg-slate-50 hover:bg-slate-100 hover:border-slate-500 font-medium shadow-sm"
-                data-testid="button-apply-template"
-              >
-                <FileText className="h-3 w-3 mr-1" />
-                Apply Template
-              </Button>
-            )}
-            {applyTemplateMutation.isPending && (
-              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              {isEditing && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAddLineItem}
+                  disabled={isSavingSection}
+                  className="border-slate-400 text-slate-800 bg-slate-50 hover:bg-slate-100 hover:border-slate-500 font-medium shadow-sm"
+                  data-testid="button-add-line-item"
+                >
+                  <Plus className="h-3 w-3 mr-1" />
+                  Add Line Item
+                </Button>
+              )}
+              {!isEditing && isOfficeUser && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => { setTemplatePickerOpen(true); setTemplateSearch(""); }}
+                  disabled={applyTemplateMutation.isPending || jobTemplates.length === 0}
+                  title={jobTemplates.length === 0 ? "No templates available — create one in Settings → Job Templates" : "Apply a template"}
+                  className="border-slate-400 text-slate-800 bg-slate-50 hover:bg-slate-100 hover:border-slate-500 font-medium shadow-sm"
+                  data-testid="button-apply-template"
+                >
+                  <FileText className="h-3 w-3 mr-1" />
+                  Apply Template
+                </Button>
+              )}
+              {applyTemplateMutation.isPending && (
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              )}
+            </div>
+
+            {isEditing && (
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleSectionCancel}
+                  disabled={isSavingSection}
+                  data-testid="button-cancel-section-edit"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleSectionSave}
+                  disabled={isSavingSection || !isDirty}
+                  data-testid="button-save-section-edit"
+                >
+                  {isSavingSection && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
+                  Save Changes
+                </Button>
+              </div>
             )}
           </div>
         </CardContent>
@@ -764,16 +920,17 @@ function TemplatePickerList({
   );
 }
 
-// ── Sortable line item row — uses canonical CreateOrSelectField for catalog selection ──
+// ── Sortable line item row — rendering is driven by section edit mode. ──
 
 interface SortableLineItemRowProps {
   item: LineItemDraft;
+  /** Section-level edit flag; when true, all rows render their edit branch. */
   isEditing: boolean;
+  /** Section-level saving flag; disables row inputs during Save orchestration. */
   isSaving: boolean;
-  onEnterEdit: () => void;
+  /** Lookup for the catalog description to show in the selected-row chip. */
+  getCatalogDescription: (productId: string) => string | null;
   onChange: (patch: Partial<LineItemDraft>) => void;
-  onSave: () => void;
-  onCancel: () => void;
   onDelete: () => void;
   onSelectProduct: (product: ProductOption) => void;
   onRequestAddProduct: (name: string) => void;
@@ -795,12 +952,26 @@ function SortableLineItemRow(props: SortableLineItemRowProps) {
     opacity: isDragging ? 0.5 : 1,
   };
 
-  // 2026-04-10 Phase B: per-row catalog search via canonical useProductSearch.
-  // No prefetched 1000-row catalog; the hook only fires after 2 chars.
+  // Per-row catalog search via canonical useProductSearch.
+  // The hook only fires after 2 chars.
   const [searchText, setSearchText] = useState("");
   const { data: searchResults = [], isLoading: isSearchLoading } = useProductSearch(searchText);
 
+  // Bug #1 fix: distinguishes the post-select / post-clear empty-string
+  // cascade that CreateOrSelectField emits from a genuine user delete-to-
+  // empty. Set synchronously in `onChange`; consumed and reset in the
+  // immediately-following `onSearchTextChange("")`. Lets user deletions
+  // reach `draft.description` so the input can be fully cleared, while
+  // still protecting the catalog-hydrated description that `handleSelectProduct`
+  // just wrote (the "Truck Charge" bug).
+  const suppressNextSearchChangeRef = useRef(false);
+
   // Reconstruct a ProductOption from the canonical draft for the selector chip.
+  // `description` comes from the parent-owned lookup (populated by the
+  // server-joined `itemDescription` or by the selection path).
+  const catalogDescription = props.item.productId
+    ? props.getCatalogDescription(props.item.productId)
+    : null;
   const selectedValue: ProductOption | null = props.item.productId
     ? {
         id: props.item.productId,
@@ -808,6 +979,7 @@ function SortableLineItemRow(props: SortableLineItemRowProps) {
         type: props.item.productType ?? "product",
         unitPrice: props.item.unitPrice,
         cost: props.item.unitCost,
+        description: catalogDescription,
       }
     : null;
 
@@ -815,38 +987,31 @@ function SortableLineItemRow(props: SortableLineItemRowProps) {
   const productDisplay = props.item.description;
 
   if (!props.isEditing) {
+    // Read-only row. No click-to-edit — edit lifecycle is card-level.
+    // 2026-04-18: Saved/view rows mirror edit-mode chip content for parity:
+    // when a catalog description exists, render the same secondary line
+    // that `getProductDescription` composes for the chip. When the catalog
+    // has no description, no secondary line is added — preserving the
+    // original single-line view for those rows.
+    const viewSecondary =
+      selectedValue && catalogDescription ? getProductDescription(selectedValue) : null;
     return (
       <tr
         ref={setNodeRef}
         style={style}
-        className={`border-b border-border/50 hover:bg-muted/50 cursor-pointer ${props.item.isDraft ? 'bg-amber-50 dark:bg-amber-950/20 border-l-2 border-l-amber-400' : ''}`}
-        onClick={props.onEnterEdit}
+        className="border-b border-border/50"
         data-testid={`row-line-item-${props.item.id}`}
       >
-        <td className="py-3 pr-2 align-top w-8">
-          <div
-            className="cursor-grab touch-none text-muted-foreground hover:text-foreground"
-            {...attributes}
-            {...listeners}
-            onClick={(e) => e.stopPropagation()}
-            role="button"
-            tabIndex={0}
-            data-testid={`drag-handle-${props.item.id}`}
-          >
-            <GripVertical className="h-4 w-4" />
-          </div>
-        </td>
+        <td className="py-3 pr-2 align-top w-8"></td>
         <td className="py-3 pr-3 align-top">
-          <div className="flex items-center gap-2">
-            <div className="text-xs font-medium">
-              {productDisplay || <span className="italic text-muted-foreground">No product</span>}
-            </div>
-            {props.item.isDraft && (
-              <span className="text-xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 font-medium">
-                Draft
-              </span>
-            )}
+          <div className="text-xs font-medium">
+            {productDisplay || <span className="italic text-muted-foreground">No product</span>}
           </div>
+          {viewSecondary && (
+            <div className="text-xs text-muted-foreground truncate" data-testid={`row-line-item-secondary-${props.item.id}`}>
+              {viewSecondary}
+            </div>
+          )}
         </td>
         <td className="py-3 px-3 text-right align-top text-xs">{props.item.quantity}</td>
         <td className="py-3 px-3 text-right align-top text-xs">{formatCurrency(parseMoney(props.item.unitCost))}</td>
@@ -877,80 +1042,68 @@ function SortableLineItemRow(props: SortableLineItemRowProps) {
         </div>
       </td>
       <td className="py-2.5 pr-3 align-top">
-        {/* 2026-04-10 Phase B: canonical CreateOrSelectField replaces the
-            custom in-row dropdown + manual catalog filter. The catalog
-            search fires only after 2 chars. The "create new" callback opens
-            the existing AddProductModal seeded with the current search text. */}
-        <CreateOrSelectField<ProductOption>
-          label=""
-          compact
-          value={selectedValue}
-          onChange={(product) => {
-            if (product) {
-              props.onSelectProduct(product);
-              setSearchText("");
-            } else {
-              // Clear: drop catalog link, keep description editable for manual entry
-              props.onChange({ productId: null });
-              setSearchText("");
-            }
-          }}
-          searchResults={searchResults}
-          searchLoading={isSearchLoading}
-          searchText={searchText || (selectedValue ? "" : props.item.description)}
-          onSearchTextChange={(text) => {
-            setSearchText(text);
-            // Manual-entry fallback: if no product is selected, mirror text to description
-            if (!props.item.productId) props.onChange({ description: text });
-          }}
-          getKey={getProductKey}
-          getLabel={getProductLabel}
-          getDescription={getProductDescription}
-          createLabel={`Add "${searchText || "new item"}" as product`}
-          onCreateNew={(text) => props.onRequestAddProduct(text)}
-          placeholder="Search product / service..."
-        />
-        <div className="flex items-center gap-2 mt-2">
-          <Button
-            type="button"
-            size="sm"
-            onClick={props.onSave}
-            disabled={props.isSaving}
-            data-testid={`button-save-line-${props.item.id}`}
-            className="h-7 text-xs"
-          >
-            {props.isSaving ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : (
-              <>
-                <Check className="h-3 w-3 mr-1" />
-                Save
-              </>
-            )}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={props.onCancel}
-            disabled={props.isSaving}
-            data-testid={`button-cancel-line-${props.item.id}`}
-            className="h-7 text-xs"
-          >
-            <X className="h-3 w-3 mr-1" />
-            Cancel
-          </Button>
+        {/* Selector + compact trash icon on one row, so the row height stays
+            tight and Delete never consumes a whole line below the selector. */}
+        <div className="flex items-start gap-2">
+          <div className="flex-1 min-w-0">
+            <CreateOrSelectField<ProductOption>
+              label=""
+              compact
+              disabled={props.isSaving}
+              value={selectedValue}
+              onChange={(product) => {
+                // CreateOrSelectField emits `onSearchTextChange("")` right
+                // after any selection-or-clear. Suppress the mirror path
+                // on that cascade so it doesn't stomp the just-written
+                // `description` via a stale closure on `productId`.
+                suppressNextSearchChangeRef.current = true;
+                if (product) {
+                  props.onSelectProduct(product);
+                } else {
+                  // Clear: drop catalog link, keep description editable for manual entry
+                  props.onChange({ productId: null });
+                }
+                setSearchText("");
+              }}
+              searchResults={searchResults}
+              searchLoading={isSearchLoading}
+              searchText={searchText || (selectedValue ? "" : props.item.description)}
+              onSearchTextChange={(text) => {
+                setSearchText(text);
+                if (suppressNextSearchChangeRef.current) {
+                  // Post-select / post-clear cascade — don't mirror.
+                  suppressNextSearchChangeRef.current = false;
+                  return;
+                }
+                // User typing on a manual-entry row. Mirror EVERY value to
+                // `description`, including empty — the user's delete-to-
+                // empty intent must reach the draft so the controlled input
+                // can actually clear. (The earlier `text.length > 0` guard
+                // made the input stick at the first character.)
+                if (!props.item.productId) {
+                  props.onChange({ description: text });
+                }
+              }}
+              getKey={getProductKey}
+              getLabel={getProductLabel}
+              getDescription={getProductDescription}
+              createLabel={`Add "${searchText || "new item"}" as product`}
+              onCreateNew={(text) => props.onRequestAddProduct(text)}
+              placeholder="Search product / service..."
+            />
+          </div>
           <Button
             type="button"
             variant="ghost"
-            size="sm"
+            size="icon"
             onClick={props.onDelete}
             disabled={props.isSaving}
-            className="h-7 text-xs text-destructive hover:text-destructive"
+            className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+            title="Remove line item"
+            aria-label="Remove line item"
             data-testid={`button-delete-line-${props.item.id}`}
           >
-            <Trash2 className="h-3 w-3 mr-1" />
-            Delete
+            <Trash2 className="h-4 w-4" />
           </Button>
         </div>
       </td>
@@ -961,6 +1114,7 @@ function SortableLineItemRow(props: SortableLineItemRowProps) {
           className="text-xs text-right w-full"
           value={props.item.quantity}
           onChange={(e) => props.onChange({ quantity: e.target.value || "0" })}
+          disabled={props.isSaving}
           data-testid={`input-qty-${props.item.id}`}
         />
       </td>
@@ -975,6 +1129,7 @@ function SortableLineItemRow(props: SortableLineItemRowProps) {
             className="text-xs text-right w-full pl-5 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
             value={props.item.unitCost || ""}
             onChange={(e) => props.onChange({ unitCost: e.target.value })}
+            disabled={props.isSaving}
             data-testid={`input-cost-${props.item.id}`}
           />
         </div>
@@ -990,6 +1145,7 @@ function SortableLineItemRow(props: SortableLineItemRowProps) {
             className="text-xs text-right w-full pl-5 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
             value={props.item.unitPrice || ""}
             onChange={(e) => props.onChange({ unitPrice: e.target.value })}
+            disabled={props.isSaving}
             data-testid={`input-price-${props.item.id}`}
           />
         </div>
