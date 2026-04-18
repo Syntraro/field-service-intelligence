@@ -758,6 +758,31 @@ export class JobVisitsRepository extends BaseRepository {
       }
     }
 
+    // 2026-04-17: active-workflow status coercion.
+    // Integrity rule: a visit in an active-workflow status (en_route / on_site /
+    // in_progress / paused) implies there's live labour tied to a real slot and
+    // real crew. If the same update unschedules the visit or empties the crew,
+    // the active semantics are stale — downstream read models (Job Detail
+    // Visits card, dispatch board) render "In Progress" on a row with no date
+    // and no assignee, which is the integrity drift reported 2026-04-17.
+    // Coerce back to 'scheduled' (the canonical inactive workflow state; also
+    // used for Schedule-Later placeholders with scheduledStart=null) in the
+    // same UPDATE so no extra round-trip and no window where UI sees drift.
+    const ACTIVE_WORKFLOW_STATUSES = ["en_route", "on_site", "in_progress", "paused"];
+    const unschedulingNow = "scheduledStart" in input && input.scheduledStart == null;
+    const unassigningNow =
+      "assignedTechnicianIds" in input &&
+      Array.isArray(updates.assignedTechnicianIds) &&
+      updates.assignedTechnicianIds.length === 0;
+    const statusBeingSetExplicitly = "status" in input;
+    if (
+      !statusBeingSetExplicitly &&
+      (unschedulingNow || unassigningNow) &&
+      ACTIVE_WORKFLOW_STATUSES.includes(existing.status)
+    ) {
+      updates.status = "scheduled";
+    }
+
     // UTC-safe scheduling fix: replace Date objects with SQL expressions
     sanitizeSchedulingTimestamps(updates, visitId);
 
