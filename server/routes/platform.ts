@@ -16,6 +16,7 @@ import platformTenantsRouter from "./platformTenants";
 import platformFeedbackRouter from "./platformFeedback";
 import platformIssuesRouter from "./platformIssues";
 import supportSessionsRouter from "./supportSessions";
+import platformEntitlementsRouter from "./platformEntitlements";
 
 const platformRouter = Router();
 
@@ -36,5 +37,10 @@ platformRouter.use("/issues", platformIssuesRouter);
 
 // Phase 4 (Support Sessions).
 platformRouter.use("/support-sessions", supportSessionsRouter);
+
+// 2026-04-19 Entitlement system — plans, features, plan-feature matrix,
+// tenant subscription assignment, tenant overrides, entitlements + usage.
+// Mounts /plans/*, /features/*, /tenants/:id/{subscription,overrides,entitlements,usage}.
+platformRouter.use("/", platformEntitlementsRouter);
 
 export default platformRouter;

@@ -192,7 +192,13 @@ export class ClientRepository extends BaseRepository {
   }
 
   /**
-   * Create new client
+   * Create new client (raw insert, no dedupe).
+   *
+   * Prefer `createOrGetLocation` for routes that may receive repeat
+   * submissions (modal re-clicks, double form posts, etc.). This
+   * raw-insert variant is kept for callers that have already performed
+   * their own dedupe (e.g. CSV importer with address-composite key) or
+   * intentionally need a duplicate (none today).
    */
   async createClient(
     companyId: string,
@@ -207,6 +213,127 @@ export class ClientRepository extends BaseRepository {
       .returning();
 
     return rows[0];
+  }
+
+  /**
+   * Canonical create-or-get for client locations.
+   *
+   * 2026-04-19 (Customer Data Integrity pass): tenant-scoped,
+   * case-insensitive dedupe. Two natural-key scopes — selected by the
+   * payload shape, matching the real schema's child + orphan models:
+   *
+   *   - **Child location** (has `parentCompanyId`): match by
+   *     `(companyId, parentCompanyId, lower(location))` when `location`
+   *     is a non-empty trimmed string.
+   *   - **Orphan location** (no `parentCompanyId`): match by
+   *     `(companyId, lower(companyName))` when `companyName` is a
+   *     non-empty trimmed string.
+   *
+   * When neither natural key has a meaningful value (e.g. quick-create
+   * flows that defer naming), no dedupe is possible — the insert
+   * proceeds. The matching partial unique indexes in
+   * `2026_04_19_customer_data_unique_indexes.sql` mirror these
+   * predicates exactly.
+   *
+   * Lookup is scoped to `inactive = false` so deactivated locations
+   * don't shadow new creates. No `deleted_at` logic — soft-delete is
+   * being phased out architecturally; existing soft-deleted rows
+   * already carry `inactive = true` (set by the same code path), so
+   * they're naturally excluded from both lookup and index.
+   *
+   * Returns `{location, created}` so callers can distinguish
+   * insert-vs-match without a second lookup.
+   */
+  async createOrGetLocation(
+    companyId: string,
+    userId: string,
+    clientData: InsertClient,
+  ): Promise<{ location: Client; created: boolean }> {
+    const parentId = clientData.parentCompanyId ?? null;
+
+    if (parentId) {
+      const locName = (clientData.location ?? "").trim();
+      if (locName) {
+        const [existing] = await db
+          .select()
+          .from(clients)
+          .where(and(
+            eq(clients.companyId, companyId),
+            eq(clients.parentCompanyId, parentId),
+            sql`lower(${clients.location}) = lower(${locName})`,
+            eq(clients.inactive, false),
+          ))
+          .limit(1);
+        if (existing) return { location: existing, created: false };
+      }
+    } else {
+      const orphanName = (clientData.companyName ?? "").trim();
+      if (orphanName) {
+        const [existing] = await db
+          .select()
+          .from(clients)
+          .where(and(
+            eq(clients.companyId, companyId),
+            isNull(clients.parentCompanyId),
+            sql`lower(${clients.companyName}) = lower(${orphanName})`,
+            eq(clients.inactive, false),
+          ))
+          .limit(1);
+        if (existing) return { location: existing, created: false };
+      }
+    }
+
+    const created = await this.createClient(companyId, userId, clientData);
+    return { location: created, created: true };
+  }
+
+  /** Transaction variant of `createOrGetLocation`. Same dedupe scopes. */
+  async createOrGetLocationTx(
+    tx: any,
+    companyId: string,
+    userId: string,
+    clientData: InsertClient,
+  ): Promise<{ location: Client; created: boolean }> {
+    const parentId = clientData.parentCompanyId ?? null;
+
+    if (parentId) {
+      const locName = (clientData.location ?? "").trim();
+      if (locName) {
+        const rows: Client[] = await tx
+          .select()
+          .from(clients)
+          .where(and(
+            eq(clients.companyId, companyId),
+            eq(clients.parentCompanyId, parentId),
+            sql`lower(${clients.location}) = lower(${locName})`,
+            eq(clients.inactive, false),
+          ))
+          .limit(1);
+        if (rows[0]) return { location: rows[0], created: false };
+      }
+    } else {
+      const orphanName = (clientData.companyName ?? "").trim();
+      if (orphanName) {
+        const rows: Client[] = await tx
+          .select()
+          .from(clients)
+          .where(and(
+            eq(clients.companyId, companyId),
+            isNull(clients.parentCompanyId),
+            sql`lower(${clients.companyName}) = lower(${orphanName})`,
+            eq(clients.inactive, false),
+          ))
+          .limit(1);
+        if (rows[0]) return { location: rows[0], created: false };
+      }
+    }
+
+    const geocoded = await maybeGeocode(clientData);
+    const [row] = await tx
+      .insert(clients)
+      .values({ ...geocoded, companyId, userId })
+      .returning();
+    return { location: row, created: true };
   }
 
   /**
@@ -270,8 +397,14 @@ export class ClientRepository extends BaseRepository {
   }
 
   /**
-   * Create client with parts in a transaction
-   * Uses locationId as the canonical reference for parts
+   * Create client with parts in a transaction.
+   *
+   * 2026-04-20: routes the location insert through `createOrGetLocationTx`
+   * so the same canonical natural-key dedupe applies as the rest of the
+   * creation surface. If the location already matched an existing row,
+   * the parts are still appended to it (clientParts is a quantity-tracked
+   * line-item table — intentional duplicates are allowed per earlier audit).
+   * Uses locationId as the canonical reference for parts.
    */
   async createClientWithParts(
     companyId: string,
@@ -280,13 +413,8 @@ export class ClientRepository extends BaseRepository {
     parts: Array<{ partId: string; quantity: number }>
   ): Promise<Client> {
     return await db.transaction(async (tx) => {
-      // Create client
-      const [client] = await tx
-        .insert(clients)
-        .values({ ...clientData, companyId, userId })
-        .returning();
+      const { location: client } = await this.createOrGetLocationTx(tx, companyId, userId, clientData);
 
-      // Add parts if provided
       if (parts.length > 0) {
         await tx.insert(clientParts).values(
           parts.map((p) => ({

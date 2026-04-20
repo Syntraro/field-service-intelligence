@@ -15,9 +15,13 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { MobileShell } from "../components/MobileShell";
 import { DaySelector, toDateStr } from "../components/DaySelector";
-import { useTodayVisits, type TodayVisit } from "../hooks/useTodayVisits";
+import { useTodayVisits, type TodayVisit, type TodayScope } from "../hooks/useTodayVisits";
 import { useTechShift } from "../hooks/useTechShift";
 import { useElapsedTimer } from "../hooks/useElapsedTimer";
+import { useMyCapabilities } from "../hooks/useMyCapabilities";
+import { ViewingScopePicker } from "../components/ViewingScopePicker";
+import { useTechnicianName } from "@/components/TechnicianSelector";
+import { useAuth } from "@/lib/auth";
 import {
   STATUS_LABELS, STATUS_COLORS, DEFAULT_STATUS_COLOR,
 } from "../utils/visitDisplay";
@@ -25,6 +29,7 @@ import {
   CalendarDays, ChevronRight, Clock, Truck,
   LogIn, LogOut, Navigation, Phone,
   Loader2, RefreshCw, Plus, Briefcase, UserPlus, FileText, X, CheckSquare,
+  Users, User as UserIcon,
 } from "lucide-react";
 import { useLocation } from "wouter";
 import { useTechTasks } from "../hooks/useTechTasks";
@@ -32,11 +37,45 @@ import { toEpochMsSafe, toLocalDateKey } from "../utils/safeDateTime";
 import { toTelHref, toMapsHref } from "../utils/externalLinks";
 import type { Task } from "@shared/schema";
 
+// Capability key for cross-tech viewing. Matches server permission seeded in
+// server/routes/roles.ts (granted to admin + manager by default).
+const SCOPE_ALL_VIEW = "schedule.all.view";
+const SCOPE_STORAGE_PREFIX = "tech.today.scope.v1:";
+
 // Display maps imported from shared utils/visitDisplay.ts
+
+// ── Card body wrapper — <button> in self-mode, inert <div> in read-only.
+// Exists so we don't announce the card as a disabled button to screen readers
+// when a manager is viewing another technician's schedule. Same layout classes
+// either way to preserve the press-scale feel.
+function CardBodyWrapper({ readOnly, onTap, ariaLabel, children }: {
+  readOnly: boolean;
+  onTap: () => void;
+  ariaLabel: string;
+  children: React.ReactNode;
+}) {
+  if (readOnly) {
+    return (
+      <div className="flex-1 min-w-0 text-left bg-transparent" data-testid="visit-card-readonly">
+        {children}
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onTap}
+      aria-label={ariaLabel}
+      className="flex-1 min-w-0 text-left bg-transparent"
+    >
+      {children}
+    </button>
+  );
+}
 
 // ── Job card ──
 
-function JobCard({ visit, isNext, urgencyText, onTap, nodeRef }: {
+function JobCard({ visit, isNext, urgencyText, onTap, nodeRef, readOnly = false, technicianLabel = null }: {
   visit: TodayVisit;
   isNext: boolean;
   /** Optional "in X min" subscript for the NEXT visit only. Computed by
@@ -48,6 +87,13 @@ function JobCard({ visit, isNext, urgencyText, onTap, nodeRef }: {
   /** Callback ref applied to the outer wrapper so the parent can scroll the
    *  NEXT visit into view on initial load without `forwardRef` plumbing. */
   nodeRef?: (el: HTMLDivElement | null) => void;
+  /** Manager cross-tech view: cards are non-tappable and action anchors are
+   *  hidden (phone/navigate still expose location data but would invite
+   *  interaction that isn't relevant to the manager). */
+  readOnly?: boolean;
+  /** Canonical assigned-tech display name to surface on the card when the
+   *  viewer isn't the assignee (manager cross-tech view). Null hides the row. */
+  technicianLabel?: string | null;
 }) {
   const isTerminal = visit.status === "completed" || visit.status === "on_hold" || visit.status === "cancelled";
   // 2026-04-09: paused counts as active in flight (visit is started, just not currently timing).
@@ -80,15 +126,11 @@ function JobCard({ visit, isNext, urgencyText, onTap, nodeRef }: {
       }`}
     >
       <div className="px-3 py-2.5 flex items-center gap-2">
-        {/* Primary body button — the explicit clickable region that opens
-            the visit detail. Now a sibling of the action anchors instead of
-            their parent, so there is no nested interactive content. */}
-        <button
-          type="button"
-          onClick={onTap}
-          aria-label={`Open ${visit.jobTitle}`}
-          className="flex-1 min-w-0 text-left bg-transparent"
-        >
+        {/* Primary body — tappable <button> for assignee, plain <div> in
+            manager cross-tech view (read-only operational visibility in v1).
+            Using element swap rather than a disabled button so screen readers
+            don't announce the card as an inert button to managers. */}
+        <CardBodyWrapper readOnly={readOnly} onTap={onTap} ariaLabel={`Open ${visit.jobTitle}`}>
           {/* 2026-04-19: Information hierarchy rework — Row 1 now leads with
               NEXT + time + job title (what the tech actually acts on);
               Row 2 demotes company + address to subtle secondary context.
@@ -124,11 +166,21 @@ function JobCard({ visit, isNext, urgencyText, onTap, nodeRef }: {
             <span className="text-slate-400"> · </span>
             {visit.address}
           </div>
-        </button>
+          {/* Assigned-tech badge shown only in manager cross-tech view so the
+              self-view layout is unchanged. Lives inside the body so group
+              headers remain the primary grouping cue. */}
+          {technicianLabel && (
+            <div className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-400">
+              <UserIcon className="h-3 w-3" />
+              <span className="truncate">{technicianLabel}</span>
+            </div>
+          )}
+        </CardBodyWrapper>
         <div className="flex items-center gap-1.5 shrink-0">
-          {/* One-tap call — sibling of the body button (no interactive
-              nesting). `tel:` hands off to the native dialer. */}
-          {telHref && (
+          {/* In read-only mode we suppress action anchors AND the chevron so
+              the card cannot trigger navigation or handoff — matches v1 scope:
+              cross-tech view is read-only operational visibility. */}
+          {!readOnly && telHref && (
             <a
               href={telHref}
               aria-label={`Call ${visit.company}`}
@@ -139,7 +191,7 @@ function JobCard({ visit, isNext, urgencyText, onTap, nodeRef }: {
           )}
           {/* One-tap navigate — sibling anchor. `https://` maps URL so
               iOS/Android dispatch to the default maps handler. */}
-          {mapsHref && (
+          {!readOnly && mapsHref && (
             <a
               href={mapsHref}
               target="_blank"
@@ -150,7 +202,7 @@ function JobCard({ visit, isNext, urgencyText, onTap, nodeRef }: {
               <Navigation className="h-4 w-4" />
             </a>
           )}
-          <ChevronRight className="h-4 w-4 text-slate-300" />
+          {!readOnly && <ChevronRight className="h-4 w-4 text-slate-300" />}
         </div>
       </div>
     </div>
@@ -201,11 +253,13 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
 
 // ── Empty state ──
 
-function EmptyState({ dateLabel, onCheckTomorrow }: { dateLabel?: string; onCheckTomorrow?: () => void }) {
+function EmptyState({ dateLabel, onCheckTomorrow, message }: { dateLabel?: string; onCheckTomorrow?: () => void; message?: string }) {
   return (
     <div className="flex flex-col items-center justify-center py-16 text-slate-400">
       <CalendarDays className="h-10 w-10 mb-2 opacity-40" />
-      <p className="text-sm font-medium">No jobs scheduled{dateLabel ? ` for ${dateLabel}` : ""}</p>
+      <p className="text-sm font-medium text-center px-4">
+        {message ?? `No jobs scheduled${dateLabel ? ` for ${dateLabel}` : ""}`}
+      </p>
       {onCheckTomorrow && (
         <button
           onClick={onCheckTomorrow}
@@ -290,6 +344,10 @@ function TaskCard({ task, isTimerRunning, onTap }: {
 
 export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) {
   const [, setLocation] = useLocation();
+  const { user } = useAuth();
+  const { has: hasCapability } = useMyCapabilities();
+  const canViewOthers = hasCapability(SCOPE_ALL_VIEW);
+  const resolveTechName = useTechnicianName();
 
   // Date navigation state
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -300,7 +358,46 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
   const goToNextDay = useCallback(() => setSelectedDate(d => { const n = new Date(d); n.setDate(n.getDate() + 1); return n; }), []);
   const goToToday = useCallback(() => setSelectedDate(new Date()), []);
 
-  const { visits, isLoading, isError, refetch } = useTodayVisits(dateParam);
+  // ── Viewing scope (manager/admin cross-tech visibility) ──
+  // Default = self. Persist last chosen scope per-user in localStorage so
+  // the picker doesn't reset on every navigation. Server re-validates every
+  // request, so tampering with localStorage cannot elevate access.
+  const scopeStorageKey = user ? `${SCOPE_STORAGE_PREFIX}${user.id}` : null;
+  const [scope, setScope] = useState<TodayScope>({ kind: "self" });
+  const [scopePickerOpen, setScopePickerOpen] = useState(false);
+
+  // Hydrate persisted scope on mount (once we know the user id). If the user
+  // loses the capability (role change) the server will 403 the request and
+  // we fall back to self for rendering — handled below in the query error path.
+  useEffect(() => {
+    if (!scopeStorageKey || !canViewOthers) return;
+    try {
+      const raw = window.localStorage.getItem(scopeStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as TodayScope;
+      if (parsed.kind === "self" || parsed.kind === "all") {
+        setScope(parsed);
+      } else if (parsed.kind === "custom" && Array.isArray(parsed.technicianIds)) {
+        setScope({ kind: "custom", technicianIds: parsed.technicianIds.filter((x): x is string => typeof x === "string") });
+      }
+    } catch {
+      // Ignore malformed storage — fall back to self.
+    }
+  }, [scopeStorageKey, canViewOthers]);
+
+  const applyScope = useCallback((next: TodayScope) => {
+    setScope(next);
+    if (scopeStorageKey) {
+      try { window.localStorage.setItem(scopeStorageKey, JSON.stringify(next)); } catch { /* quota / privacy mode */ }
+    }
+  }, [scopeStorageKey]);
+
+  // Users without the capability are pinned to self regardless of any stale
+  // local storage. Belt-and-braces; server also enforces.
+  const effectiveScope: TodayScope = canViewOthers ? scope : { kind: "self" };
+  const isSelfScope = effectiveScope.kind === "self";
+
+  const { visits, isLoading, isError, refetch } = useTodayVisits(dateParam, effectiveScope);
   const { tasks, runningTaskId } = useTechTasks();
   // Task actions (start/stop/complete) live on TaskDetailPage — no inline state needed
   const { isClockedIn, clockInAt, clockIn, clockOut } = useTechShift();
@@ -472,9 +569,18 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
   // Render helper for a single timeline row so we can reuse it across the
   // past / future / terminal buckets without duplicating the conditional
   // visit-vs-task logic.
+  // Non-self scope (manager view): cards are read-only, assigned-tech name
+  // surfaces on the card, and NEXT/scrollIntoView suppression avoids scrolling
+  // to someone else's next visit on the manager's device.
   const renderTimelineItem = (item: typeof timelineItems[number]) => {
     if (item.kind === "visit") {
-      const isNext = item.visit.id === nextVisitId;
+      const isNext = isSelfScope && item.visit.id === nextVisitId;
+      const assignedIds = item.visit.assignedTechnicianIds;
+      const label = !isSelfScope && assignedIds.length > 0
+        ? (assignedIds.length === 1
+            ? resolveTechName(assignedIds[0])
+            : `${resolveTechName(assignedIds[0])} +${assignedIds.length - 1}`)
+        : null;
       return (
         <JobCard
           key={item.visit.id}
@@ -483,6 +589,8 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
           urgencyText={isNext ? urgencyText : null}
           onTap={() => onVisitTap(item.visit.id)}
           nodeRef={isNext ? (el => { nextVisitRef.current = el; }) : undefined}
+          readOnly={!isSelfScope}
+          technicianLabel={label}
         />
       );
     }
@@ -496,8 +604,59 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
     );
   };
 
-  const showNowDivider = isSelectedToday && pastNonTerminal.length > 0 && futureNonTerminal.length > 0;
+  const showNowDivider = isSelfScope && isSelectedToday && pastNonTerminal.length > 0 && futureNonTerminal.length > 0;
   const hasAnyTimeline = pastNonTerminal.length > 0 || futureNonTerminal.length > 0 || terminalItems.length > 0;
+  // In non-self mode, tasks are hidden — so "has content" must be measured
+  // by visit count alone. Without this, a manager with their own unrelated
+  // tasks would bypass the role-aware empty state and render a blank grouped
+  // view below.
+  const hasAnyVisits = visits.length > 0;
+
+  // ── Group timeline items by technician (manager cross-tech mode only) ──
+  // In non-self mode the list is re-rendered as a sequence of grouped
+  // sections: per-tech header + that tech's visits in chronological order.
+  // Unassigned visits are grouped under a sentinel key so they stay visible.
+  // Tasks are excluded (self-only in v1) — server also scopes tasks to self.
+  const UNASSIGNED_KEY = "__unassigned__";
+  const groupedByTech = useMemo(() => {
+    if (isSelfScope) return null;
+    const groups = new Map<string, TodayVisit[]>();
+    for (const item of timelineItems) {
+      if (item.kind !== "visit") continue;
+      const ids = item.visit.assignedTechnicianIds;
+      if (ids.length === 0) {
+        if (!groups.has(UNASSIGNED_KEY)) groups.set(UNASSIGNED_KEY, []);
+        groups.get(UNASSIGNED_KEY)!.push(item.visit);
+        continue;
+      }
+      // A visit can be assigned to multiple techs — show it under each group.
+      // This is correct mirroring of crew semantics: the visit is on both
+      // techs' schedules for the day.
+      for (const techId of ids) {
+        if (!groups.has(techId)) groups.set(techId, []);
+        groups.get(techId)!.push(item.visit);
+      }
+    }
+    // Sort group entries by display name for stable rendering; keep
+    // Unassigned at the bottom.
+    const entries = Array.from(groups.entries());
+    entries.sort((a, b) => {
+      if (a[0] === UNASSIGNED_KEY) return 1;
+      if (b[0] === UNASSIGNED_KEY) return -1;
+      return resolveTechName(a[0]).localeCompare(resolveTechName(b[0]));
+    });
+    return entries;
+  }, [isSelfScope, timelineItems, resolveTechName]);
+
+  // Label for the Viewing chip trigger — communicates current scope at a glance.
+  const scopeTriggerLabel = useMemo(() => {
+    if (effectiveScope.kind === "self") return "Me";
+    if (effectiveScope.kind === "all") return "All technicians";
+    const n = effectiveScope.technicianIds.length;
+    if (n === 0) return "Select technicians";
+    if (n === 1) return resolveTechName(effectiveScope.technicianIds[0]);
+    return `${resolveTechName(effectiveScope.technicianIds[0])} +${n - 1}`;
+  }, [effectiveScope, resolveTechName]);
 
   return (
     <MobileShell showNav>
@@ -509,12 +668,37 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
       <div className="sticky top-0 z-10 bg-slate-50">
         <DaySelector selectedDate={selectedDate} onSelect={setSelectedDate} onPrev={goToPrevDay} onNext={goToNextDay} onToday={goToToday} />
 
+        {/* Viewing-scope chip — only for users with schedule.all.view.
+            Sits directly under DaySelector so it reads as a scope modifier
+            on the day strip. Self-mode users never see this row. */}
+        {canViewOthers && (
+          <div className="bg-white px-3 py-2 flex items-center gap-2 border-b border-slate-200">
+            <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Viewing</span>
+            <button
+              type="button"
+              onClick={() => setScopePickerOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-slate-200 bg-white text-xs font-semibold text-slate-700 active:bg-slate-100 min-h-[32px]"
+              data-testid="button-open-scope-picker"
+            >
+              {effectiveScope.kind === "all" ? (
+                <Users className="h-3.5 w-3.5 text-slate-500" />
+              ) : (
+                <UserIcon className="h-3.5 w-3.5 text-slate-500" />
+              )}
+              <span className="max-w-[180px] truncate">{scopeTriggerLabel}</span>
+              <ChevronRight className="h-3 w-3 text-slate-400" />
+            </button>
+          </div>
+        )}
+
         {/* 2026-04-09: Clock In / Clock Out parity — same placement, padding,
             font weight, and visual hierarchy. The only differences are the
-            state label, the indicator color, and the button color. */}
+            state label, the indicator color, and the button color.
+            2026-04-20: Hidden in manager cross-tech view — the banner
+            controls the viewer's OWN shift, not the person they're looking at. */}
 
         {/* Clock-in banner (not clocked in) */}
-        {!isClockedIn && (
+        {isSelfScope && !isClockedIn && (
           <div className="bg-slate-100 px-3 py-2.5 flex items-center justify-between border-b border-slate-200">
             <div className="flex items-center gap-2">
               <div className="h-2 w-2 rounded-full bg-slate-400" />
@@ -536,7 +720,7 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
             button with the same weight as Clock In. When the tech has a
             visit currently in progress, a Resume pill appears on a second
             row linking back to that visit detail. */}
-        {isClockedIn && (
+        {isSelfScope && isClockedIn && (
           <div className="bg-[#22c55e]/5 border-b border-emerald-100">
             <div className="px-3 py-2.5 flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -571,7 +755,7 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
         )}
 
         {/* Shift success */}
-        {shiftSuccess && (
+        {isSelfScope && shiftSuccess && (
           <div className="px-3 py-1.5 bg-emerald-50 border-b border-emerald-100 flex items-center gap-1.5">
             <LogIn className="h-3 w-3 text-emerald-600" />
             <p className="text-xs font-medium text-emerald-700">{shiftSuccess}</p>
@@ -579,7 +763,7 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
         )}
 
         {/* Shift error */}
-        {shiftError && (
+        {isSelfScope && shiftError && (
           <div className="px-3 py-1.5 bg-red-50 border-b border-red-100">
             <p className="text-xs text-red-600">{shiftError}</p>
             <button onClick={() => setShiftError(null)} className="text-xs text-red-500 underline">Dismiss</button>
@@ -608,16 +792,65 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
         </div>
       )}
 
-      {/* ── Day timeline: visits + scheduled-today tasks, sorted by time ── */}
+      {/* ── Day timeline ──
+          Self scope: visits + scheduled-today tasks, partitioned past/now/future.
+          Non-self scope: visits only, grouped by technician (tasks hidden in v1). */}
       {isLoading ? (
         <LoadingState />
       ) : isError ? (
         <ErrorState onRetry={refetch} />
-      ) : !hasAnyTimeline && sectionTasks.length === 0 ? (
+      ) : (isSelfScope
+            ? !hasAnyTimeline && sectionTasks.length === 0
+            : !hasAnyVisits) ? (
         <EmptyState
           dateLabel={isSelectedToday ? undefined : selectedDate.toLocaleDateString([], { month: "short", day: "numeric" })}
-          onCheckTomorrow={isSelectedToday ? goToNextDay : undefined}
+          onCheckTomorrow={isSelfScope && isSelectedToday ? goToNextDay : undefined}
+          message={
+            isSelfScope
+              ? undefined
+              : effectiveScope.kind === "all"
+                ? "No visits scheduled for any technician"
+                : "No visits for selected technicians"
+          }
         />
+      ) : !isSelfScope && groupedByTech ? (
+        // Manager cross-tech view — grouped by technician.
+        <div className="p-2.5 space-y-3">
+          {groupedByTech.map(([techId, techVisits]) => {
+            const displayName = techId === UNASSIGNED_KEY ? "Unassigned" : resolveTechName(techId);
+            return (
+              <div key={techId} data-testid={`tech-group-${techId}`}>
+                <div className="flex items-center gap-2 px-1 py-1.5 sticky top-0 bg-slate-50">
+                  <UserIcon className="h-3.5 w-3.5 text-slate-400" />
+                  <span className="text-xs font-semibold text-slate-600 truncate">{displayName}</span>
+                  <span className="text-[11px] text-slate-400">
+                    {techVisits.length} visit{techVisits.length === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <div className="space-y-1.5">
+                  {techVisits.map((visit) => {
+                    const assignedIds = visit.assignedTechnicianIds;
+                    // Only add the per-card tech label when the visit is on
+                    // multiple crews — otherwise the group header already says it.
+                    const cardLabel = assignedIds.length > 1
+                      ? `${resolveTechName(assignedIds[0])} +${assignedIds.length - 1}`
+                      : null;
+                    return (
+                      <JobCard
+                        key={`${techId}:${visit.id}`}
+                        visit={visit}
+                        isNext={false}
+                        onTap={() => { /* non-tappable in cross-tech view */ }}
+                        readOnly
+                        technicianLabel={cardLabel}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       ) : (
         <>
           {hasAnyTimeline && (
@@ -644,8 +877,11 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
         </>
       )}
 
-      {/* ── Tasks section: overdue + unscheduled (NOT in timeline) ── */}
-      {sectionTasks.length > 0 && (
+      {/* ── Tasks section: overdue + unscheduled (NOT in timeline) ──
+          Self-only. In non-self scope v1, tasks visibility is not cross-tech
+          (tasks endpoint is scoped to the caller), so we hide the section to
+          avoid misrepresenting the manager's own tasks as the viewed tech's. */}
+      {isSelfScope && sectionTasks.length > 0 && (
         <div className="px-2.5 pb-2">
           <div className="flex items-center gap-1.5 px-1 py-1.5">
             <CheckSquare className="h-3 w-3 text-slate-400" />
@@ -742,6 +978,19 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
         </div>
       )}
       {/* Timer conflict dialog lives on TaskDetailPage now */}
+
+      {/* Manager/Admin viewing-scope bottom sheet. Rendered from the Today
+          page so the trigger chip is right above, and state reset is coupled
+          to the same user id that keys localStorage. */}
+      {canViewOthers && (
+        <ViewingScopePicker
+          open={scopePickerOpen}
+          initialScope={effectiveScope}
+          onClose={() => setScopePickerOpen(false)}
+          onApply={applyScope}
+          selfId={user?.id ?? null}
+        />
+      )}
     </MobileShell>
   );
 }

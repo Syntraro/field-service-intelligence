@@ -16,26 +16,6 @@ import { BaseRepository } from "./base";
 export class ClientContactRepository extends BaseRepository {
 
   // =========================================================================
-  // Person CRUD
-  // =========================================================================
-
-  /** Create a person record (company-level identity). Bypasses the canonical
-   *  dedupe helper — prefer `createOrGetPerson` for routes that may receive
-   *  repeat submissions. Kept for callers that need raw-insert semantics. */
-  async createPerson(companyId: string, data: Omit<InsertContactPerson, "companyId">): Promise<ContactPerson> {
-    this.assertCompanyId(companyId);
-    const [row] = await db.insert(contactPersons).values({ ...data, companyId }).returning();
-    return row;
-  }
-
-  /** Transaction variant of `createPerson`. Same caveat as above. */
-  async createPersonTx(tx: any, companyId: string, data: Omit<InsertContactPerson, "companyId">): Promise<ContactPerson> {
-    this.assertCompanyId(companyId);
-    const [row] = await tx.insert(contactPersons).values({ ...data, companyId }).returning();
-    return row;
-  }
-
-  // =========================================================================
   // Canonical create-or-get (2026-04-19)
   // =========================================================================
   //
@@ -127,13 +107,6 @@ export class ClientContactRepository extends BaseRepository {
     if (existing) return { contact: existing, created: false };
     const [row] = await tx.insert(contactPersons).values({ ...data, companyId }).returning();
     return { contact: row, created: true };
-  }
-
-  /** Bulk create persons. */
-  async createPersons(companyId: string, persons: Omit<InsertContactPerson, "companyId">[]): Promise<ContactPerson[]> {
-    if (persons.length === 0) return [];
-    this.assertCompanyId(companyId);
-    return db.insert(contactPersons).values(persons.map(p => ({ ...p, companyId }))).returning();
   }
 
   /** Get a single person by ID. */
@@ -250,48 +223,13 @@ export class ClientContactRepository extends BaseRepository {
   }
 
   // =========================================================================
-  // Dedup helpers (used by CSV import and similar flows)
-  // =========================================================================
-
-  async findPersonByEmail(companyId: string, customerCompanyId: string, email: string): Promise<ContactPerson | null> {
-    if (!email) return null;
-    const normalized = email.trim().toLowerCase();
-    const persons = await this.getCompanyPersons(companyId, customerCompanyId);
-    return persons.find(p => p.email?.trim().toLowerCase() === normalized) ?? null;
-  }
-
-  // Legacy-compatible aliases for import service
-  async findContactByEmail(companyId: string, customerCompanyId: string, normalizedEmail: string) {
-    return this.findPersonByEmail(companyId, customerCompanyId, normalizedEmail);
-  }
-  async findContactByNamePhone(companyId: string, customerCompanyId: string, normalizedName: string, normalizedPhone: string) {
-    if (!normalizedName || !normalizedPhone) return null;
-    const persons = await this.getCompanyPersons(companyId, customerCompanyId);
-    return persons.find(p => {
-      const fullName = `${p.firstName} ${p.lastName}`.trim().toLowerCase();
-      const phone = (p.phone || "").trim().toLowerCase();
-      return fullName === normalizedName && phone === normalizedPhone;
-    }) ?? null;
-  }
-  async findContactByName(companyId: string, customerCompanyId: string, normalizedName: string) {
-    if (!normalizedName) return null;
-    const persons = await this.getCompanyPersons(companyId, customerCompanyId);
-    return persons.find(p => {
-      const fullName = `${p.firstName} ${p.lastName}`.trim().toLowerCase();
-      return fullName === normalizedName;
-    }) ?? null;
-  }
-  async createContactTx(tx: any, companyId: string, data: any) {
-    return this.createPersonTx(tx, companyId, {
-      customerCompanyId: data.customerCompanyId,
-      firstName: data.firstName ?? "",
-      lastName: data.lastName ?? "",
-      email: data.email ?? null,
-      phone: data.phone ?? null,
-      isPrimary: data.isPrimary ?? false,
-    });
-  }
-
+  // 2026-04-20: legacy dedup helpers (findPersonByEmail,
+  // findContactByEmail, findContactByNamePhone, findContactByName,
+  // createContactTx, createPerson, createPersonTx, createPersons) deleted
+  // — zero callers after the canonical createOrGetPerson(Tx) migration.
+  // The email → name+phone → name cascade lives inside
+  // `matchFromCascade` / `createOrGetPerson(Tx)` as the single source of
+  // truth for contact dedupe.
   // =========================================================================
   // Legacy compatibility — adapts old API response shape
   // =========================================================================

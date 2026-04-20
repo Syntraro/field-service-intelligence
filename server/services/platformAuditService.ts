@@ -46,7 +46,17 @@ export type AuditAction =
   // Phase 6 (Customer Approval)
   | "support_session_tenant_approved"
   | "support_session_tenant_denied"
-  | "support_session_tenant_revoked";
+  | "support_session_tenant_revoked"
+  // 2026-04-19 Entitlement system — canonical plan/feature/override mutations
+  | "entitlement_feature_created"
+  | "entitlement_feature_updated"
+  | "entitlement_plan_created"
+  | "entitlement_plan_updated"
+  | "entitlement_plan_feature_upsert"
+  | "entitlement_plan_metadata_updated"
+  | "entitlement_tenant_plan_assigned"
+  | "entitlement_tenant_override_upsert"
+  | "entitlement_tenant_override_removed";
 
 interface AuditLogParams {
   platformAdminId: string;

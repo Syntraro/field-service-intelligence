@@ -74,6 +74,7 @@ export interface IStorage {
   getPaginatedClients: typeof clientRepository.getPaginatedClients;
   getClient: typeof clientRepository.getClient;
   createClient: typeof clientRepository.createClient;
+  createOrGetLocation: typeof clientRepository.createOrGetLocation;
   createClientWithParts: typeof clientRepository.createClientWithParts;
   bulkCreateClients: typeof clientRepository.bulkCreateClients;
   updateClient: typeof clientRepository.updateClient;
@@ -289,6 +290,7 @@ export const storage: IStorage = {
   getPaginatedClients: clientRepository.getPaginatedClients.bind(clientRepository),
   getClient: clientRepository.getClient.bind(clientRepository),
   createClient: clientRepository.createClient.bind(clientRepository),
+  createOrGetLocation: clientRepository.createOrGetLocation.bind(clientRepository),
   createClientWithParts: clientRepository.createClientWithParts.bind(clientRepository),
   bulkCreateClients: clientRepository.bulkCreateClients.bind(clientRepository),
   updateClient: clientRepository.updateClient.bind(clientRepository),

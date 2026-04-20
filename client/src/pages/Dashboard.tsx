@@ -14,22 +14,20 @@
  * Worklist-style phrasing: every row reads as "object + condition + implied action"
  */
 
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { useLocation } from "wouter";
 import {
   FileText, DollarSign, Briefcase, ChevronRight,
-  Clock, Calendar, Activity, CheckCircle2,
-  Wrench, ExternalLink,
+  Wrench,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { resolveDashboardNav, type DashboardAction } from "@/lib/dashboardNavigation";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DashboardActionModal, type DashboardActionMode } from "@/components/DashboardActionModal";
 import { MidnightRolloverCard } from "@/components/MidnightRolloverCard";
-import type { Job as SchemaJob, Invoice as SchemaInvoice } from "@shared/schema";
+import { TodaysOperationsCard } from "@/components/TodaysOperationsCard";
+import type { Invoice as SchemaInvoice } from "@shared/schema";
 
 // ============================================================================
 // Types
@@ -60,15 +58,12 @@ interface WorkflowSummary {
 // `client/src/components/tasks/TasksPanel.tsx` when the panel relocated
 // to the global header. No local references remain on this page.
 
-interface TodayVisitSummary {
-  scheduled: number;
-  // 2026-04-08: "On Route" KPI removed from dashboard surface; backend still returns
-  // the field but the dashboard no longer renders it.
-  inProgress: number;
-  remaining: number;
-  completed: number;
-  total: number;
-}
+// 2026-04-19: Today-visit aggregate summary (TodayVisitSummary) removed —
+// the former 4-tile KPI strip was replaced by the <TodaysOperationsCard />
+// command center, which derives workload per technician from live visit /
+// live-state data directly. The /api/dashboard/today-summary endpoint
+// still exists server-side for any external consumer, but this page no
+// longer queries it.
 
 // ============================================================================
 // Shared card primitives
@@ -108,44 +103,10 @@ function TodaysOperationsHeader() {
   );
 }
 
-function TodaysOperationsKPIs({ today, isLoading }: {
-  today?: TodayVisitSummary;
-  isLoading: boolean;
-}) {
-  const [, setLocation] = useLocation();
-  const todayFlow: { label: string; value: number; icon: React.ElementType; action?: DashboardAction; primary?: boolean }[] = [
-    { label: "Scheduled Today", value: today?.scheduled ?? 0, icon: Calendar, action: "ops.activeJobs", primary: true },
-    { label: "In Progress", value: today?.inProgress ?? 0, icon: Activity, action: "ops.activeJobs" },
-    { label: "Remaining", value: today?.remaining ?? 0, icon: Clock, action: "ops.activeJobs" },
-    { label: "Completed Today", value: today?.completed ?? 0, icon: CheckCircle2 },
-  ];
-
-  if (isLoading) {
-    return (
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
-        {[1,2,3,4].map(i => <Skeleton key={i} className="h-[66px]" />)}
-      </div>
-    );
-  }
-  return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
-      {todayFlow.map((stat) => (
-        <button
-          key={stat.label}
-          onClick={stat.action ? () => setLocation(resolveDashboardNav(stat.action!)) : undefined}
-          className={`rounded-md px-3 py-4 text-left transition-colors bg-[#ffffff] border border-[#e2e8f0] hover:bg-[#F0F5F0] ${stat.action ? "cursor-pointer" : "cursor-default"}`}
-          style={{ boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}
-        >
-          <div className="flex items-center gap-1.5 mb-0.5">
-            <stat.icon className="h-3 w-3 text-[#4b5563]" />
-            <span className="text-[12px] text-[#4b5563] font-medium leading-tight">{stat.label}</span>
-          </div>
-          <p className={`font-bold tabular-nums ${stat.primary ? "text-3xl text-[#111827]" : "text-2xl text-[#111827]"}`}>{stat.value}</p>
-        </button>
-      ))}
-    </div>
-  );
-}
+// 2026-04-19: The former TodaysOperationsKPIs (4 KPI tiles: Scheduled /
+// In Progress / Remaining / Completed) was replaced by the live
+// command-center card. Tech workload rail + operational alerts stack now
+// live in <TodaysOperationsCard /> in `@/components/TodaysOperationsCard`.
 
 // ============================================================================
 // Worklist Card (flat rows, pipeline-style phrasing)
@@ -279,14 +240,14 @@ export default function Dashboard() {
   const pastDueCount = invoiceStats?.overdue?.count ?? 0;
   const draftInvoiceCount = invoiceStats?.draftCount ?? 0;
 
-  // Today's visit summary — operational live data.
-  // Tier A (live): 15s fallback + window-focus refetch + SSE invalidation.
-  const { data: todaySummary, isLoading: todayLoading } = useQuery<TodayVisitSummary>({
-    queryKey: ["dashboard", "today-summary"],
-    queryFn: () => apiRequest(`/api/dashboard/today-summary`),
-    staleTime: 15_000,
-    refetchOnWindowFocus: true,
-  });
+  // 2026-04-19: The dashboard's top-of-page Today's Operations surface is
+  // now rendered by <TodaysOperationsCard />, which fetches its own
+  // per-technician workload from /api/calendar + /api/team/technicians +
+  // /api/team/technicians/live-state. The former aggregate
+  // `/api/dashboard/today-summary` query and its `TodayVisitSummary`
+  // consumer were removed from this page in the same change — the only
+  // consumer was the retired KPI strip. SSE invalidation for the endpoint
+  // is unchanged; any future consumer can reintroduce the hook.
 
   return (
     <div className="min-h-screen bg-[#F4F8F4]">
@@ -304,9 +265,19 @@ export default function Dashboard() {
             <TodaysOperationsHeader />
           </div>
 
-          {/* Row 2, col 1: KPI cards + dashboard content */}
+          {/* Row 2, col 1: command-center card + dashboard content */}
           <div className="lg:col-start-1 lg:row-start-2 min-w-0 space-y-3">
-            <TodaysOperationsKPIs today={todaySummary} isLoading={todayLoading} />
+            {/* 2026-04-19: Top-of-page full-width live command center.
+                Replaces the former Scheduled/In Progress/Remaining/Completed
+                KPI strip with a technician workload rail + operational
+                alerts stack. All data sourced from existing canonical
+                endpoints — see TodaysOperationsCard.tsx header for the
+                detailed data-source map.
+                2026-04-20: Right-panel alert rows now reuse the Jobs-card
+                modal by receiving the same `openActionModal` handler that
+                powers the lower WorklistCard below. One modal instance,
+                one canonical drill-down for both surfaces. */}
+            <TodaysOperationsCard onOpenActionModal={openActionModal} />
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               {/* 2026-04-19 Task B: Jobs card consolidated from four rows

@@ -173,6 +173,39 @@ export class JobNotesRepository extends BaseRepository {
   }
 
   /**
+   * Transaction variant for system-generated notes (e.g. visit-completion
+   * outcomes, status-change audit trails). Skips the per-call job lookup
+   * and the equipment-linkage validation — callers that write system
+   * notes already hold the canonical job context inside a transaction.
+   *
+   * 2026-04-20: added to eliminate the last raw `tx.insert(jobNotes)`
+   * write in `jobLifecycleOrchestrator.completeVisit`. Routes through
+   * the canonical `jobNotes` column set so any future additions to the
+   * table (or per-tenant default stamping) only need to land here.
+   */
+  async createSystemNoteTx(
+    tx: any,
+    companyId: string,
+    jobId: string,
+    userId: string,
+    noteText: string,
+  ) {
+    this.assertCompanyId(companyId);
+    this.validateUUID(jobId, "jobId");
+    this.validateUUID(userId, "userId");
+    const [row] = await tx
+      .insert(jobNotes)
+      .values({
+        companyId,
+        jobId,
+        userId,
+        noteText,
+      })
+      .returning();
+    return row;
+  }
+
+  /**
    * Update a job note
    * Only the author can update their own notes
    */

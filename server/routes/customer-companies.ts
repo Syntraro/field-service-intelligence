@@ -9,7 +9,9 @@ import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { customerCompanyRepository } from "../storage/customerCompanies";
+import { clientRepository } from "../storage/clients";
 import { clientContactRepository } from "../storage/clientContacts";
+import { storage } from "../storage/index";
 // 2026-04-18 Client-billing workstream: per-company aggregates reuse the
 // canonical invoices-feed storage methods (no direct table access here).
 import { getQueryCtx } from "../lib/queryCtx";
@@ -130,26 +132,28 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
     const lastName = nameParts.slice(1).join(" ") || "";
 
     const newLocation = await db.transaction(async (tx) => {
-      // Step 1: Create location within transaction
-      const location = await customerCompanyRepository.createLocationUnderCustomerCompanyTx(
-        tx,
-        tenantCompanyId,
-        user.id,
-        companyId,
-        {
-          location: req.body.location || "",
-          address: req.body.address || null,
-          city: req.body.city || null,
-          province: req.body.province || null,
-          postalCode: req.body.postalCode || null,
-          contactName,
-          email: contactEmail,
-          phone: contactPhone,
-          roofLadderCode: req.body.roofLadderCode || null,
-          billWithParent: req.body.billWithParent ?? true,
-          inactive: req.body.inactive ?? false,
-        }
-      );
+      // Step 1: Create-or-get the location within the transaction.
+      // 2026-04-19: routes through canonical createOrGetLocationTx —
+      // (companyId, parentCompanyId, lower(location)) dedupe inside the
+      // same transaction as the inline-contact upsert.
+      const { location } = await clientRepository.createOrGetLocationTx(tx, tenantCompanyId, user.id, {
+        parentCompanyId: companyId,
+        companyName: null,
+        location: req.body.location || null,
+        address: req.body.address || null,
+        city: req.body.city || null,
+        province: req.body.province || null,
+        postalCode: req.body.postalCode || null,
+        contactName,
+        email: contactEmail,
+        phone: contactPhone,
+        roofLadderCode: req.body.roofLadderCode || null,
+        billWithParent: req.body.billWithParent ?? true,
+        inactive: req.body.inactive ?? false,
+        selectedMonths: [],
+        isPrimary: false,
+        needsDetails: false,
+      });
 
       // Step 2: Create-or-get the contact within the same transaction.
       // 2026-04-19: routes through canonical createOrGetPersonTx so a
@@ -170,25 +174,27 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
 
     res.status(201).json(newLocation);
   } else {
-    // No inline contact — create location normally (no transaction needed)
-    const newLocation = await customerCompanyRepository.createLocationUnderCustomerCompany(
-      tenantCompanyId,
-      user.id,
-      companyId,
-      {
-        location: req.body.location || "",
-        address: req.body.address || null,
-        city: req.body.city || null,
-        province: req.body.province || null,
-        postalCode: req.body.postalCode || null,
-        contactName: null,
-        email: null,
-        phone: null,
-        roofLadderCode: req.body.roofLadderCode || null,
-        billWithParent: req.body.billWithParent ?? true,
-        inactive: req.body.inactive ?? false,
-      }
-    );
+    // 2026-04-19: routes through canonical createOrGetLocation. Same
+    // (companyId, parentCompanyId, lower(location)) dedupe — repeat
+    // submissions for the same location return the existing row.
+    const { location: newLocation } = await storage.createOrGetLocation(tenantCompanyId, user.id, {
+      parentCompanyId: companyId,
+      companyName: null,
+      location: req.body.location || null,
+      address: req.body.address || null,
+      city: req.body.city || null,
+      province: req.body.province || null,
+      postalCode: req.body.postalCode || null,
+      contactName: null,
+      email: null,
+      phone: null,
+      roofLadderCode: req.body.roofLadderCode || null,
+      billWithParent: req.body.billWithParent ?? true,
+      inactive: req.body.inactive ?? false,
+      selectedMonths: [],
+      isPrimary: false,
+      needsDetails: false,
+    });
 
     res.status(201).json(newLocation);
   }

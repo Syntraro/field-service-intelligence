@@ -11,6 +11,7 @@ import { db } from "../db";
 import { jobs, jobNotes, clientLocations, customerCompanies } from "@shared/schema";
 import { eq, and, isNull, sql } from "drizzle-orm";
 import { jobRepository } from "../storage/jobs";
+import { clientRepository } from "../storage/clients";
 import { notDeletedClientFilter, notDeletedCustomerCompanyFilter } from "../storage/jobFilters";
 import { parseCSV } from "@shared/csvParser";
 import {
@@ -493,10 +494,13 @@ export async function executeJobRow(
       // Create location if needed
       if (locationAction === "create" && !locationId) {
         const serviceProvNorm = normalizeProvinceState(row.serviceProvince);
-        const [newLoc] = await tx
-          .insert(clientLocations)
-          .values({
-            companyId,
+        // 2026-04-20: routes through canonical createOrGetLocationTx so
+        // the Jobber importer gets the same (companyId, parentCompanyId,
+        // lower(location)) dedupe as every other creation path. If a
+        // sibling row was added within the same transaction (or a prior
+        // row in the batch), we surface that instead of twinning.
+        const { location: newLoc, created } = await clientRepository.createOrGetLocationTx(
+          tx, companyId, (validated as any).userId ?? null, {
             parentCompanyId: matchedCompanyId,
             companyName: row.clientName || "",
             location: row.locationName || `${row.serviceStreet || ""}, ${row.serviceCity || ""}`.replace(/^, |, $/g, ""),
@@ -508,10 +512,10 @@ export async function executeJobRow(
             selectedMonths: [],
             isPrimary: false,
             inactive: false,
-          } as any)
-          .returning({ id: clientLocations.id });
+          } as any,
+        );
         locationId = newLoc.id;
-        locationCreated = true;
+        locationCreated = created;
       }
 
       if (!locationId) {

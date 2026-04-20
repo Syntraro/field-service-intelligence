@@ -30,9 +30,9 @@ import {
 import { normalizeForMatch, buildAddressCompositeKey } from "@shared/normalizeForMatch";
 import { normalizePostalCode, isValidPostalCode } from "../lib/addressNormalize";
 import { customerCompanyRepository } from "../storage/customerCompanies";
+import { clientRepository } from "../storage/clients";
 import { clientContactRepository } from "../storage/clientContacts";
 // storage import removed — executeRow now uses tx handle directly for location inserts
-import { maybeGeocode } from "../utils/geocode";
 import { db } from "../db";
 import { eq, and, isNull } from "drizzle-orm";
 import { clientLocations, customerCompanies } from "@shared/schema";
@@ -648,41 +648,44 @@ export async function executeRow(
       let resolvedCompany = companyResolveCache.get(normalizedName);
 
       if (!resolvedCompany) {
-        const existing = await customerCompanyRepository.findCustomerCompanyByNormalizedName(companyId, normalizedName);
-        if (existing) {
-          resolvedCompany = { id: existing.id, name: existing.name ?? "", created: false };
+        // 2026-04-20: routes through canonical createOrGetCustomerCompanyTx
+        // so dedupe logic is shared with every other creation path.
+        // Returns {customerCompany, created} — `created=false` signals an
+        // existing row, at which point the fill-only billing-merge policy
+        // below runs to enrich empty billing fields from this CSV row.
+        const { customerCompany: resolved, created: wasCreated } = await customerCompanyRepository.createOrGetCustomerCompanyTx(tx, companyId, {
+          name: companyName,
+          phone: row.companyPhone ?? null,
+          email: row.companyEmail ?? null,
+          billingStreet: row.billingStreet ?? null,
+          billingStreet2: row.billingStreet2 ?? null,
+          billingCity: row.billingCity ?? null,
+          billingProvince: row.billingProvince ?? null,
+          billingPostalCode: row.billingPostalCode ?? null,
+          billingCountry: row.billingCountry ?? null,
+        });
+        resolvedCompany = { id: resolved.id, name: resolved.name ?? "", created: wasCreated };
 
-          // Fill-only billing policy: update empty billing fields with incoming data
+        if (!wasCreated) {
+          // Fill-only billing policy: enrich empty billing fields on the
+          // existing row with incoming CSV data. Never overwrites.
           const billingUpdates: Record<string, string | null> = {};
-          if (!existing.billingStreet && row.billingStreet) billingUpdates.billingStreet = row.billingStreet;
-          if (!existing.billingStreet2 && row.billingStreet2) billingUpdates.billingStreet2 = row.billingStreet2;
-          if (!existing.billingCity && row.billingCity) billingUpdates.billingCity = row.billingCity;
-          if (!existing.billingProvince && row.billingProvince) billingUpdates.billingProvince = row.billingProvince;
-          if (!existing.billingPostalCode && row.billingPostalCode) billingUpdates.billingPostalCode = row.billingPostalCode;
-          if (!existing.billingCountry && row.billingCountry) billingUpdates.billingCountry = row.billingCountry;
+          if (!resolved.billingStreet && row.billingStreet) billingUpdates.billingStreet = row.billingStreet;
+          if (!resolved.billingStreet2 && row.billingStreet2) billingUpdates.billingStreet2 = row.billingStreet2;
+          if (!resolved.billingCity && row.billingCity) billingUpdates.billingCity = row.billingCity;
+          if (!resolved.billingProvince && row.billingProvince) billingUpdates.billingProvince = row.billingProvince;
+          if (!resolved.billingPostalCode && row.billingPostalCode) billingUpdates.billingPostalCode = row.billingPostalCode;
+          if (!resolved.billingCountry && row.billingCountry) billingUpdates.billingCountry = row.billingCountry;
 
           if (Object.keys(billingUpdates).length > 0) {
             await tx
               .update(customerCompanies)
               .set(billingUpdates)
               .where(and(
-                eq(customerCompanies.id, existing.id),
+                eq(customerCompanies.id, resolved.id),
                 eq(customerCompanies.companyId, companyId),
               ));
           }
-        } else {
-          const created = await customerCompanyRepository.createCustomerCompanyTx(tx, companyId, {
-            name: companyName,
-            phone: row.companyPhone ?? null,
-            email: row.companyEmail ?? null,
-            billingStreet: row.billingStreet ?? null,
-            billingStreet2: row.billingStreet2 ?? null,
-            billingCity: row.billingCity ?? null,
-            billingProvince: row.billingProvince ?? null,
-            billingPostalCode: row.billingPostalCode ?? null,
-            billingCountry: row.billingCountry ?? null,
-          });
-          resolvedCompany = { id: created.id, name: created.name ?? "", created: true };
         }
         companyResolveCache.set(normalizedName, resolvedCompany);
       }
@@ -777,15 +780,17 @@ export async function executeRow(
           needsDetails: false,
         };
 
-        const geocoded = await maybeGeocode(locationData);
-        // Fix: insert via tx (not global db) so the FK to the just-created
-        // customer_company row is visible within this transaction.
-        const [location] = await tx
-          .insert(clientLocations)
-          .values({ ...(geocoded as any), companyId, userId })
-          .returning();
+        // 2026-04-20: routes through canonical createOrGetLocationTx.
+        // Address-composite dedup above catches same-address rows with
+        // different location labels; createOrGetLocationTx adds name-based
+        // dedup as a complementary safety net AND handles the geocode
+        // + insert within the same tx so sibling FK visibility is
+        // preserved. `created` reported back to result.locationCreated.
+        const { location, created } = await clientRepository.createOrGetLocationTx(
+          tx, companyId, userId, locationData as any,
+        );
         result.locationId = location.id;
-        result.locationCreated = true;
+        result.locationCreated = created;
       }
 
       // 3) Contact: classify identity, then dedup (email → name+phone → name-only)

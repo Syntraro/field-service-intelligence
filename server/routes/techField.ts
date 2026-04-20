@@ -27,7 +27,12 @@ import { and, eq, sql, gte, lt, asc, isNull } from "drizzle-orm";
 import { timeTrackingRepository } from "../storage/timeTracking";
 import { jobVisitsRepository } from "../storage/jobVisits";
 // Canonical visit reads — single source of truth (server/storage/visits.ts)
-import { getVisitsForUserInRange } from "../storage/visits";
+import { getVisitsForUserInRange, getVisitsForTenantInRange } from "../storage/visits";
+import type { TenantVisitRangeOptions } from "../storage/visits";
+import { userHasPermission } from "../permissions";
+import { isPlatformRole } from "../auth/roles";
+import { filterSchedulableTechnicians } from "../domain/scheduling";
+import { storage } from "../storage/index";
 import * as lifecycle from "../services/jobLifecycleOrchestrator";
 import { emitDispatch } from "../lib/dispatchBus";
 import { schedulingRepository } from "../storage/scheduling";
@@ -102,8 +107,33 @@ import {
 } from "../guards/visitAssignmentGuards";
 
 // ============================================================================
-// GET /api/tech/visits/today — Today's visits assigned to me
+// GET /api/tech/visits/today — Today's visits
+// ----------------------------------------------------------------------------
+// Self path (default): returns visits assigned to the authenticated user.
+//
+// Cross-tech path (manager/admin): when ?scope=all or ?technicianIds=… is
+// present, requires the `schedule.all.view` permission and validates every
+// requested tech is tenant-bound + schedulable. Read-only operational
+// visibility; no mutation semantics change.
 // ============================================================================
+
+const SCOPE_ALL_VIEW_PERMISSION = "schedule.all.view";
+
+/** Parse ?technicianIds=a,b,c OR repeated ?technicianIds=a&technicianIds=b. */
+function parseTechnicianIdsParam(raw: unknown): string[] {
+  if (raw === undefined || raw === null) return [];
+  const arr = Array.isArray(raw) ? raw : [raw];
+  const out: string[] = [];
+  for (const entry of arr) {
+    if (typeof entry !== "string") continue;
+    for (const piece of entry.split(",")) {
+      const trimmed = piece.trim();
+      if (trimmed) out.push(trimmed);
+    }
+  }
+  // Dedupe while preserving order
+  return Array.from(new Set(out));
+}
 
 router.get(
   "/visits/today",
@@ -119,21 +149,74 @@ router.get(
     const dateStr = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : todayInTimezone(tz);
     const { start, end } = dayBoundsInTz(dateStr, tz);
 
-    // Canonical visit query from shared module — joins job + location, filters by assignment
-    const visits = await getVisitsForUserInRange(companyId, userId, start, end);
+    // Scope inputs. Default = self. Non-self requires schedule.all.view.
+    const rawScope = typeof req.query.scope === "string" ? req.query.scope : "self";
+    const requestedTechIds = parseTechnicianIdsParam(req.query.technicianIds);
+    const isSelfScope = rawScope === "self" && requestedTechIds.length === 0;
 
-    // DEV debug log — minimal observability (no PII). Gated to non-production.
+    if (isSelfScope) {
+      const visits = await getVisitsForUserInRange(companyId, userId, start, end);
+      if (process.env.NODE_ENV !== "production") {
+        console.log(JSON.stringify({
+          _debug: "tech_visits_today",
+          scope: "self",
+          timezone: tz,
+          dateStr,
+          visitsReturned: visits.length,
+        }));
+      }
+      return res.json({ visits, count: visits.length, scope: "self" });
+    }
+
+    // Non-self path — permission gate. Platform roles (impersonation) bypass.
+    if (!isPlatformRole(user.role)) {
+      const allowed = await userHasPermission(userId, SCOPE_ALL_VIEW_PERMISSION);
+      if (!allowed) {
+        throw createError(403, "You do not have permission to view other technicians' schedules");
+      }
+    }
+
+    // Resolve the final tech list, gated by tenant + schedulable.
+    const members = await storage.getTeamMembers(companyId);
+    const { schedulable } = filterSchedulableTechnicians(members, "GET /api/tech/visits/today");
+    const schedulableIds = new Set(schedulable.map((m) => m.id));
+
+    let techIds: string[] | undefined;
+    if (rawScope === "all" && requestedTechIds.length === 0) {
+      techIds = Array.from(schedulableIds);
+    } else {
+      // Validate every requested id is tenant-bound + schedulable.
+      const invalid = requestedTechIds.filter((id) => !schedulableIds.has(id));
+      if (invalid.length > 0) {
+        throw createError(400, "One or more requested technicians are not schedulable in this tenant");
+      }
+      techIds = requestedTechIds;
+    }
+
+    // Empty resolved list (e.g. scope=all with no schedulable users) → no visits.
+    const visits = techIds.length === 0
+      ? []
+      : await getVisitsForTenantInRange(companyId, start, end, {
+          technicianIds: techIds,
+        } satisfies TenantVisitRangeOptions);
+
     if (process.env.NODE_ENV !== "production") {
       console.log(JSON.stringify({
         _debug: "tech_visits_today",
-        userId,
+        scope: rawScope === "all" && requestedTechIds.length === 0 ? "all" : "custom",
         timezone: tz,
         dateStr,
+        techCount: techIds.length,
         visitsReturned: visits.length,
       }));
     }
 
-    res.json({ visits, count: visits.length });
+    res.json({
+      visits,
+      count: visits.length,
+      scope: rawScope === "all" && requestedTechIds.length === 0 ? "all" : "custom",
+      technicianIds: techIds,
+    });
   })
 );
 
@@ -1314,9 +1397,12 @@ router.post(
       }
     );
 
-    // Step 2: Create primary location under customer company (canonical)
+    // Step 2: Create primary location under customer company.
+    // 2026-04-20: routes through canonical createOrGetLocation — a tech
+    // re-submitting the same customer (rare but possible on flaky network)
+    // now gets the existing primary location back instead of twinning.
     const sentinelNextDue = new Date("9999-12-31").toISOString();
-    const location = await storage.createClient(companyId, userId, {
+    const { location } = await storage.createOrGetLocation(companyId, userId, {
       parentCompanyId: customerCompany.id,
       companyName: displayName,
       contactName,

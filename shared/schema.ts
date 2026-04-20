@@ -1115,6 +1115,189 @@ export const insertSubscriptionPlanSchema = createInsertSchema(subscriptionPlans
 export type InsertSubscriptionPlan = z.infer<typeof insertSubscriptionPlanSchema>;
 export type SubscriptionPlan = typeof subscriptionPlans.$inferSelect;
 
+// ============================================================================
+// ENTITLEMENT SYSTEM — canonical feature/plan/override matrix (2026-04-19).
+// Runs in parallel with legacy `tenant_features` boolean-column table; this
+// is the forward source of truth for dynamic features + plan packaging.
+// See migrations/2026_04_19_entitlement_system_schema.sql.
+// ============================================================================
+
+export const featureLimitTypeEnum = [
+  "none",
+  "count",
+  "monthly_count",
+  "seat_count",
+  "storage_mb",
+  "storage_gb",
+  "branch_count",
+  "per_user",
+  "custom",
+] as const;
+export type FeatureLimitType = typeof featureLimitTypeEnum[number];
+
+export const featureCategoryEnum = [
+  "core",
+  "users_team",
+  "technician_app",
+  "service_hvac",
+  "sales_revenue",
+  "integrations",
+  "reporting",
+  "communication",
+  "scale_advanced",
+] as const;
+export type FeatureCategory = typeof featureCategoryEnum[number];
+
+export const subscriptionFeatures = pgTable("subscription_features", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  featureKey: text("feature_key").notNull().unique(),
+  displayName: text("display_name").notNull(),
+  description: text("description"),
+  category: text("category").notNull(),
+  limitType: text("limit_type").notNull().default("none"),
+  isCore: boolean("is_core").notNull().default(false),
+  active: boolean("active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+// feature_key is treated as immutable after creation (enforced in service layer).
+// Admin UI does not expose an edit control for it. Only display_name /
+// description / category / limit_type / metadata / active / is_core / sort_order
+// are editable via the update schema.
+export const insertSubscriptionFeatureSchema = createInsertSchema(subscriptionFeatures).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  featureKey: z.string().min(1).max(80).regex(/^[a-z][a-z0-9_]*$/, "feature_key must be lowercase snake_case"),
+  category: z.enum(featureCategoryEnum),
+  limitType: z.enum(featureLimitTypeEnum),
+});
+
+export const updateSubscriptionFeatureSchema = z.object({
+  displayName: z.string().min(1).max(200).optional(),
+  description: z.string().max(2000).nullable().optional(),
+  category: z.enum(featureCategoryEnum).optional(),
+  limitType: z.enum(featureLimitTypeEnum).optional(),
+  isCore: z.boolean().optional(),
+  active: z.boolean().optional(),
+  sortOrder: z.number().int().optional(),
+  metadata: z.record(z.unknown()).nullable().optional(),
+});
+
+export type InsertSubscriptionFeature = z.infer<typeof insertSubscriptionFeatureSchema>;
+export type UpdateSubscriptionFeature = z.infer<typeof updateSubscriptionFeatureSchema>;
+export type SubscriptionFeature = typeof subscriptionFeatures.$inferSelect;
+
+export const subscriptionPlanFeatures = pgTable("subscription_plan_features", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  planId: varchar("plan_id").notNull().references(() => subscriptionPlans.id, { onDelete: "cascade" }),
+  featureId: varchar("feature_id").notNull().references(() => subscriptionFeatures.id, { onDelete: "cascade" }),
+  enabled: boolean("enabled").notNull().default(true),
+  limitValue: integer("limit_value"),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  planFeatureUnique: uniqueIndex("subscription_plan_features_plan_feature_unique")
+    .on(table.planId, table.featureId),
+}));
+
+export const upsertPlanFeatureSchema = z.object({
+  enabled: z.boolean(),
+  limitValue: z.number().int().min(0).nullable().optional(),
+  metadata: z.record(z.unknown()).nullable().optional(),
+});
+
+export type UpsertPlanFeatureInput = z.infer<typeof upsertPlanFeatureSchema>;
+export type SubscriptionPlanFeature = typeof subscriptionPlanFeatures.$inferSelect;
+
+export const tenantFeatureOverrides = pgTable("tenant_feature_overrides", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  featureId: varchar("feature_id").notNull().references(() => subscriptionFeatures.id, { onDelete: "cascade" }),
+  enabled: boolean("enabled"),
+  limitValue: integer("limit_value"),
+  // 2026-04-20: discriminator for "is limit_value explicitly overridden?"
+  //   true  → override.limitValue wins in the resolver; NULL here = unlimited
+  //           for this tenant (matches the documented null-limit contract).
+  //   false → resolver inherits limit from plan/core/default (backward-compat
+  //           behavior — existing rows default to this).
+  // See migrations/2026_04_20_entitlement_override_limit_flag.sql.
+  limitOverridden: boolean("limit_overridden").notNull().default(false),
+  reason: text("reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  companyFeatureUnique: uniqueIndex("tenant_feature_overrides_company_feature_unique")
+    .on(table.companyId, table.featureId),
+}));
+
+export const upsertTenantOverrideSchema = z.object({
+  enabled: z.boolean().nullable().optional(),
+  limitValue: z.number().int().min(0).nullable().optional(),
+  reason: z.string().max(500).nullable().optional(),
+}).refine(
+  (d) => d.enabled !== undefined || d.limitValue !== undefined,
+  { message: "Override must set at least one of enabled or limitValue" },
+);
+
+export type UpsertTenantOverrideInput = z.infer<typeof upsertTenantOverrideSchema>;
+export type TenantFeatureOverride = typeof tenantFeatureOverrides.$inferSelect;
+
+export const subscriptionPlanMetadata = pgTable("subscription_plan_metadata", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  planId: varchar("plan_id").notNull().unique().references(() => subscriptionPlans.id, { onDelete: "cascade" }),
+  description: text("description"),
+  isPublic: boolean("is_public").notNull().default(false),
+  annualPriceCents: integer("annual_price_cents"),
+  trialEligible: boolean("trial_eligible").notNull().default(false),
+  displayBadge: text("display_badge"),
+  marketingSortOrder: integer("marketing_sort_order"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const upsertPlanMetadataSchema = z.object({
+  description: z.string().max(4000).nullable().optional(),
+  isPublic: z.boolean().optional(),
+  annualPriceCents: z.number().int().min(0).nullable().optional(),
+  trialEligible: z.boolean().optional(),
+  displayBadge: z.string().max(60).nullable().optional(),
+  marketingSortOrder: z.number().int().nullable().optional(),
+});
+
+export type UpsertPlanMetadataInput = z.infer<typeof upsertPlanMetadataSchema>;
+export type SubscriptionPlanMetadata = typeof subscriptionPlanMetadata.$inferSelect;
+
+// Plan CRUD schemas (extends existing subscription_plans table — no column additions)
+export const createPlanSchema = z.object({
+  name: z.string().min(1).max(80).regex(/^[a-z][a-z0-9_]*$/, "plan name must be lowercase snake_case"),
+  displayName: z.string().min(1).max(200),
+  monthlyPriceCents: z.number().int().min(0).nullable().optional(),
+  locationLimit: z.number().int().min(0),
+  isTrial: z.boolean().optional(),
+  trialDays: z.number().int().min(0).nullable().optional(),
+  sortOrder: z.number().int().optional(),
+  active: z.boolean().optional(),
+});
+
+export const updatePlanSchema = z.object({
+  displayName: z.string().min(1).max(200).optional(),
+  monthlyPriceCents: z.number().int().min(0).nullable().optional(),
+  locationLimit: z.number().int().min(0).optional(),
+  isTrial: z.boolean().optional(),
+  trialDays: z.number().int().min(0).nullable().optional(),
+  sortOrder: z.number().int().optional(),
+  active: z.boolean().optional(),
+});
+
+export type CreatePlanInput = z.infer<typeof createPlanSchema>;
+export type UpdatePlanInput = z.infer<typeof updatePlanSchema>;
+
 // Job notes table - stores multiple timestamped notes per assignment with optional images
 export const jobNotes = pgTable("job_notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

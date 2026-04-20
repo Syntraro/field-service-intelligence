@@ -321,8 +321,12 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
       validatedParts
     );
   } else {
-    // No parts, use regular client creation
-    client = await storage.createClient(req.companyId, req.user.id, validated);
+    // 2026-04-19: routes through canonical createOrGetLocation so concurrent
+    // tabs / repeat submits don't produce twin location rows. Returns the
+    // existing row when (companyId, parentCompanyId, lower(location)) — or
+    // (companyId, lower(companyName)) for orphans — already matches.
+    const result = await storage.createOrGetLocation(req.companyId, req.user.id, validated);
+    client = result.location;
   }
 
   // Phase 1: Log client creation event
@@ -462,7 +466,13 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
     isPrimary: true,
   };
 
-  const primaryClient = await storage.createClient(companyId, userId, primaryClientData);
+  // 2026-04-19: createOrGetLocation dedupes by canonical natural key
+  // (companyId, parentCompanyId, lower(location)). A repeat full-create
+  // submission for the same primary location now returns the existing row
+  // instead of producing a sibling — fixes a known double-submit risk in
+  // the New Client modal.
+  const primaryResult = await storage.createOrGetLocation(companyId, userId, primaryClientData);
+  const primaryClient = primaryResult.location;
 
   // 3) Create additional locations (children of same customer company)
   const createdLocations: Client[] = [primaryClient];
@@ -496,8 +506,11 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
       isPrimary: false,
     };
 
-    const newLoc = await storage.createClient(companyId, userId, locData);
-    createdLocations.push(newLoc);
+    // 2026-04-19: same canonical helper as the primary location above —
+    // a re-submitted "Office" location under the same parent now matches
+    // and re-returns the existing row.
+    const additionalResult = await storage.createOrGetLocation(companyId, userId, locData);
+    createdLocations.push(additionalResult.location);
   }
 
   // 4) Create contacts — Identity + Assignment model
@@ -623,7 +636,11 @@ router.post("/quick-create", requireRole(MANAGER_ROLES), asyncHandler(async (req
     needsDetails: !hasAddress,
   };
 
-  const client = await storage.createClient(companyId, userId, clientData);
+  // 2026-04-19: orphan locations dedupe by (companyId, lower(companyName)).
+  // Quick-create with the same company name as an existing orphan returns
+  // the existing row instead of producing a sibling.
+  const result = await storage.createOrGetLocation(companyId, userId, clientData);
+  const client = result.location;
 
   // Phase 1: Log quick-create client event
   logEventAsync(getQueryCtx(req), {
@@ -1085,27 +1102,29 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
   const resolvedProvince = (province || provinceState || stateOrProvince || "")?.trim() || null;
   const resolvedPostal = postalCode?.trim() ? normalizePostalCode(postalCode.trim()) : null;
 
-  const newLocation = await customerCompanyRepository.createLocationUnderCustomerCompany(
-    tenantCompanyId,
-    userId,
-    customerCompany.id,
-    {
-      // 2026-04-16: location name is optional. Null when empty —
-      // the display layer falls back to address or parent company name.
-      location: location?.trim() || null,
-      address: address?.trim() || null,
-      city: city?.trim() || null,
-      province: resolvedProvince,
-      postalCode: resolvedPostal,
-      contactName: contactName?.trim() || null,
-      phone: phone?.trim() || null,
-      email: email?.trim() || null,
-      billWithParent: true,
-      inactive: false,
-    }
-  );
+  // 2026-04-19: routes through canonical createOrGetLocation. A repeat
+  // submission for the same (parent, location) — common when the New
+  // Location modal is double-clicked — returns the existing row instead
+  // of producing a sibling.
+  const result = await storage.createOrGetLocation(tenantCompanyId, userId, {
+    parentCompanyId: customerCompany.id,
+    companyName: customerCompany.name,
+    location: location?.trim() || null,
+    address: address?.trim() || null,
+    city: city?.trim() || null,
+    province: resolvedProvince,
+    postalCode: resolvedPostal,
+    contactName: contactName?.trim() || null,
+    phone: phone?.trim() || null,
+    email: email?.trim() || null,
+    billWithParent: true,
+    inactive: false,
+    selectedMonths: [],
+    isPrimary: false,
+    needsDetails: false,
+  });
 
-  res.json({ customerCompany, location: newLocation });
+  res.json({ customerCompany, location: result.location });
 }));
 // GET /api/clients/:id - Get single client
 router.get("/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {

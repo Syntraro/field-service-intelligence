@@ -13,7 +13,7 @@
  * and toVisitFeedItem mapper for the canonical visit API.
  */
 import { db } from "../db";
-import { and, eq, gte, lte, asc, isNull, sql, type SQL } from "drizzle-orm";
+import { and, eq, gte, lte, asc, isNull, or, sql, type SQL } from "drizzle-orm";
 import { jobVisits, jobs, clientLocations, customerCompanies } from "@shared/schema";
 import type { QueryCtx } from "../lib/queryCtx";
 import { activeJobFilter } from "./jobFilters";
@@ -215,6 +215,12 @@ export async function getVisitByIdForUser(
 export interface TenantVisitRangeOptions {
   /** Optional: filter to visits assigned to a specific user. */
   userId?: string;
+  /** Optional: filter to visits whose crew contains ANY of the listed techs.
+   *  Used by the tech-app Today page when a manager views a set of
+   *  technicians. If both userId and technicianIds are provided,
+   *  technicianIds wins (broader match). Pass undefined or [] for no
+   *  crew-set filtering. */
+  technicianIds?: string[];
   /** Exclude visit statuses (default: none). Calendar passes ['cancelled','completed']. */
   excludeStatuses?: string[];
 }
@@ -241,7 +247,14 @@ export async function getVisitsForTenantInRange(
     lte(jobVisits.scheduledStart, end),
   ];
 
-  if (options.userId) {
+  if (options.technicianIds && options.technicianIds.length > 0) {
+    // Any-of-crew match — reuses the canonical crew-membership SQL fragment so
+    // there is no second assignment-logic code path.
+    const crewOr = or(
+      ...options.technicianIds.map((id) => technicianAssignedToVisitFilter(id)),
+    );
+    if (crewOr) conditions.push(crewOr);
+  } else if (options.userId) {
     conditions.push(assignedToUser(options.userId));
   }
 

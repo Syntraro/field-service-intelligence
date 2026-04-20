@@ -301,10 +301,24 @@ export class CustomerCompanyRepository extends BaseRepository {
   }
 
   /**
-   * Find or create customer company by name (tenant-scoped)
-   * Returns existing if found, creates new if not
+   * Canonical create-or-get for customer companies.
+   *
+   * 2026-04-19 (Customer Data Integrity pass): tenant-scoped, case-insensitive
+   * dedupe on the existing `name_normalized` column (already populated by
+   * every write path via `normalizeForMatch`). Lookup is scoped to
+   * `is_active = true` so deactivated companies don't shadow new creates.
+   * No `deleted_at` logic is introduced here — soft-delete is being phased
+   * out per architectural direction. Existing soft-deleted rows already
+   * carry `is_active = false` (set by the same code path), so they are
+   * naturally excluded from both the lookup and the matching partial
+   * unique index in `2026_04_19_customer_data_unique_indexes.sql`.
+   *
+   * Returns `{customerCompany, created}` so callers can distinguish
+   * insert-vs-match without a second lookup. `findOrCreateCustomerCompany`
+   * (the historical name) delegates to this method and preserves its
+   * single-row return shape for backward compat with existing call sites.
    */
-  async findOrCreateCustomerCompany(
+  async createOrGetCustomerCompany(
     companyId: string,
     data: {
       name?: string | null;
@@ -321,16 +335,89 @@ export class CustomerCompanyRepository extends BaseRepository {
       billingCountry?: string | null;
       nameSource?: string | null;
     }
-  ): Promise<typeof customerCompanies.$inferSelect> {
+  ): Promise<{ customerCompany: typeof customerCompanies.$inferSelect; created: boolean }> {
     this.assertCompanyId(companyId);
 
-    // Use normalized matching for case-insensitive dedup (company name or person name)
     const matchName = data.name?.trim() || (data.firstName ? `${data.firstName} ${data.lastName || ""}`.trim() : "");
     const normalized = normalizeForMatch(matchName);
-    const existing = normalized ? await this.findCustomerCompanyByNormalizedName(companyId, normalized) : null;
-    if (existing) return existing;
+    if (normalized) {
+      const [existing] = await db
+        .select()
+        .from(customerCompanies)
+        .where(
+          and(
+            eq(customerCompanies.companyId, companyId),
+            eq(customerCompanies.nameNormalized, normalized),
+            eq(customerCompanies.isActive, true),
+          )
+        )
+        .limit(1);
+      if (existing) return { customerCompany: existing, created: false };
+    }
 
-    return await this.createCustomerCompany(companyId, data);
+    const created = await this.createCustomerCompany(companyId, data);
+    return { customerCompany: created, created: true };
+  }
+
+  /**
+   * Backward-compat alias. New callers should use `createOrGetCustomerCompany`
+   * to access the `{customerCompany, created}` discriminator.
+   */
+  async findOrCreateCustomerCompany(
+    companyId: string,
+    data: Parameters<CustomerCompanyRepository["createOrGetCustomerCompany"]>[1],
+  ): Promise<typeof customerCompanies.$inferSelect> {
+    const { customerCompany } = await this.createOrGetCustomerCompany(companyId, data);
+    return customerCompany;
+  }
+
+  /**
+   * Transaction variant of `createOrGetCustomerCompany`. Same dedupe
+   * semantics — `(companyId, name_normalized, is_active = true)` — but
+   * the lookup + insert both run on the caller-provided `tx`, so the
+   * CSV importer sees its own uncommitted sibling rows correctly.
+   *
+   * 2026-04-20: added for the CSV import refactor. Matches the shape of
+   * `clientRepository.createOrGetLocationTx` and
+   * `clientContactRepository.createOrGetPersonTx`.
+   */
+  async createOrGetCustomerCompanyTx(
+    tx: any,
+    companyId: string,
+    data: Parameters<CustomerCompanyRepository["createOrGetCustomerCompany"]>[1],
+  ): Promise<{ customerCompany: typeof customerCompanies.$inferSelect; created: boolean }> {
+    this.assertCompanyId(companyId);
+
+    const matchName = data.name?.trim() || (data.firstName ? `${data.firstName} ${data.lastName || ""}`.trim() : "");
+    const normalized = normalizeForMatch(matchName);
+    if (normalized) {
+      const rows: Array<typeof customerCompanies.$inferSelect> = await tx
+        .select()
+        .from(customerCompanies)
+        .where(
+          and(
+            eq(customerCompanies.companyId, companyId),
+            eq(customerCompanies.nameNormalized, normalized),
+            eq(customerCompanies.isActive, true),
+          )
+        )
+        .limit(1);
+      if (rows[0]) return { customerCompany: rows[0], created: false };
+    }
+
+    const created = await this.createCustomerCompanyTx(tx, companyId, {
+      name: matchName,
+      phone: data.phone ?? null,
+      email: data.email ?? null,
+      billingStreet: data.billingStreet ?? null,
+      billingStreet2: data.billingStreet2 ?? null,
+      billingCity: data.billingCity ?? null,
+      billingProvince: data.billingProvince ?? null,
+      billingPostalCode: data.billingPostalCode ?? null,
+      billingCountry: data.billingCountry ?? null,
+      nameSource: data.nameSource ?? null,
+    });
+    return { customerCompany: created, created: true };
   }
 
   // ========================================
@@ -526,132 +613,15 @@ export class CustomerCompanyRepository extends BaseRepository {
     });
   }
 
-  /**
-   * Create location under customer company (tenant-scoped)
-   */
-  async createLocationUnderCustomerCompany(
-    companyId: string,
-    userId: string,
-    customerCompanyId: string,
-    data: {
-      location?: string;
-      address?: string | null;
-      city?: string | null;
-      province?: string | null;
-      postalCode?: string | null;
-      contactName?: string | null;
-      email?: string | null;
-      phone?: string | null;
-      roofLadderCode?: string | null;
-      billWithParent?: boolean;
-      inactive?: boolean;
-    }
-  ): Promise<Client> {
-    this.assertCompanyId(companyId);
-    this.validateUUID(customerCompanyId, "customerCompanyId");
-
-    // Get customer company to inherit name
-    const company = await this.getCustomerCompany(companyId, customerCompanyId);
-    if (!company) {
-      throw this.notFoundError("Customer company");
-    }
-
-    // Auto-geocode address if lat/lng not provided (includes country for disambiguation)
-    const coords = await geocodeToLatLng(data.address, data.city, data.province, data.postalCode, (data as any).country);
-
-    const [location] = await db
-      .insert(clients)
-      .values({
-        companyId,
-        userId,
-        parentCompanyId: customerCompanyId,
-        companyName: company.name,
-        location: data.location || null,
-        address: data.address ?? null,
-        city: data.city ?? null,
-        province: data.province ?? null,
-        postalCode: data.postalCode ?? null,
-        contactName: data.contactName ?? null,
-        email: data.email ?? null,
-        phone: data.phone ?? null,
-        roofLadderCode: data.roofLadderCode ?? null,
-        billWithParent: data.billWithParent ?? true,
-        inactive: data.inactive ?? false,
-        isPrimary: false,
-        needsDetails: false,
-        selectedMonths: [],
-        lat: coords?.lat ?? null,
-        lng: coords?.lng ?? null,
-      })
-      .returning();
-
-    return location;
-  }
-
-  /**
-   * Part A: Transaction-aware variant of createLocationUnderCustomerCompany.
-   * Accepts an external transaction so the caller can bundle location + contact
-   * creation atomically (no partial-save state possible).
-   */
-  async createLocationUnderCustomerCompanyTx(
-    tx: any,
-    companyId: string,
-    userId: string,
-    customerCompanyId: string,
-    data: {
-      location?: string;
-      address?: string | null;
-      city?: string | null;
-      province?: string | null;
-      postalCode?: string | null;
-      contactName?: string | null;
-      email?: string | null;
-      phone?: string | null;
-      roofLadderCode?: string | null;
-      billWithParent?: boolean;
-      inactive?: boolean;
-    }
-  ): Promise<Client> {
-    this.assertCompanyId(companyId);
-    this.validateUUID(customerCompanyId, "customerCompanyId");
-
-    // Get customer company to inherit name
-    const company = await this.getCustomerCompany(companyId, customerCompanyId);
-    if (!company) {
-      throw this.notFoundError("Customer company");
-    }
-
-    // Auto-geocode address (outside transaction — external API call is fine; includes country)
-    const coords = await geocodeToLatLng(data.address, data.city, data.province, data.postalCode, (data as any).country);
-
-    const [location] = await tx
-      .insert(clients)
-      .values({
-        companyId,
-        userId,
-        parentCompanyId: customerCompanyId,
-        companyName: company.name,
-        location: data.location || null,
-        address: data.address ?? null,
-        city: data.city ?? null,
-        province: data.province ?? null,
-        postalCode: data.postalCode ?? null,
-        contactName: data.contactName ?? null,
-        email: data.email ?? null,
-        phone: data.phone ?? null,
-        roofLadderCode: data.roofLadderCode ?? null,
-        billWithParent: data.billWithParent ?? true,
-        inactive: data.inactive ?? false,
-        isPrimary: false,
-        needsDetails: false,
-        selectedMonths: [],
-        lat: coords?.lat ?? null,
-        lng: coords?.lng ?? null,
-      })
-      .returning();
-
-    return location;
-  }
+  // 2026-04-20: createLocationUnderCustomerCompany (+ Tx variant) deleted.
+  // Zero callers after the canonical createOrGetLocation(Tx) migration.
+  // Location creation under a customer company now goes through
+  // `clientRepository.createOrGetLocation(Tx)` (accessed via
+  // `storage.createOrGetLocation` or the repo directly in transaction
+  // contexts). The parent customer-company's `name` inheritance the old
+  // helper performed is now the caller's responsibility (they pass
+  // `companyName` on the InsertClient payload — see the wired routes in
+  // `server/routes/customer-companies.ts` for the pattern).
 
   // ========================================
   // OVERVIEW / AGGREGATION QUERIES

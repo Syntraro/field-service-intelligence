@@ -40,6 +40,11 @@ const PlatformTenantDetail = lazy(() => import("@/pages/platform/PlatformTenantD
 const PlatformFeedbackPage = lazy(() => import("@/pages/platform/PlatformFeedbackPage"));
 const PlatformIssuesPage = lazy(() => import("@/pages/platform/PlatformIssuesPage"));
 const PlatformSupportSessionsPage = lazy(() => import("@/pages/platform/PlatformSupportSessionsPage"));
+// 2026-04-19 Entitlement system — plans + features + feature-matrix surfaces.
+const PlatformPlansList = lazy(() => import("@/pages/platform/PlatformPlansList"));
+const PlatformPlanDetail = lazy(() => import("@/pages/platform/PlatformPlanDetail"));
+const PlatformFeaturesCatalog = lazy(() => import("@/pages/platform/PlatformFeaturesCatalog"));
+const PlatformFeatureDetail = lazy(() => import("@/pages/platform/PlatformFeatureDetail"));
 const SupportAccessPage = lazy(() => import("@/pages/SupportAccessPage"));
 const InvoiceRemindersSettingsPage = lazy(() => import("@/pages/InvoiceRemindersSettingsPage"));
 // 2026-03-21: AddClientPage and NewClientPage removed — replaced by canonical CreateClientModal
@@ -341,6 +346,27 @@ function Router() {
       <Route path="/platform/support-sessions">
         <ProtectedRoute requirePlatformRole>
           <PlatformSupportSessionsPage />
+        </ProtectedRoute>
+      </Route>
+      {/* 2026-04-19 Entitlement system routes. */}
+      <Route path="/platform/plans">
+        <ProtectedRoute requirePlatformRole>
+          <PlatformPlansList />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/platform/plans/:planId">
+        <ProtectedRoute requirePlatformRole>
+          <PlatformPlanDetail />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/platform/features">
+        <ProtectedRoute requirePlatformRole>
+          <PlatformFeaturesCatalog />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/platform/features/:featureId">
+        <ProtectedRoute requirePlatformRole>
+          <PlatformFeatureDetail />
         </ProtectedRoute>
       </Route>
 

@@ -23,7 +23,8 @@
 
 import { db } from "../db";
 import { and, eq, ne, notInArray, isNull, isNotNull, or, sql } from "drizzle-orm";
-import { jobVisits, jobs, jobNotes, invoices } from "@shared/schema";
+import { jobVisits, jobs, invoices } from "@shared/schema";
+import { jobNotesRepository } from "../storage/jobNotes";
 import type {
   Job,
   JobVisit,
@@ -481,7 +482,11 @@ export async function completeVisit(
       .where(and(eq(jobVisits.id, visitId), eq(jobVisits.companyId, companyId)))
       .returning();
 
-    // Auto-create job note documenting the outcome (if note provided)
+    // Auto-create job note documenting the outcome (if note provided).
+    // 2026-04-20: routes through canonical jobNotesRepository.createSystemNoteTx
+    // so this surface joins every other job-note write path under one
+    // helper. Drops the raw tx.insert() and stops re-declaring column
+    // defaults (id, createdAt, updatedAt) the DB already stamps.
     if (trimmedNote) {
       const outcomeLabels: Record<string, string> = {
         completed: "Completed",
@@ -489,15 +494,13 @@ export async function completeVisit(
         needs_followup: "Needs follow-up",
       };
       const label = visitNumber ? `Visit #${visitNumber}` : "Visit";
-      await tx.insert(jobNotes).values({
-        id: sql`gen_random_uuid()`,
+      await jobNotesRepository.createSystemNoteTx(
+        tx,
         companyId,
         jobId,
-        userId: completedByUserId,
-        noteText: `${label} — ${outcomeLabels[outcome] ?? outcome}: ${trimmedNote}`,
-        createdAt: now,
-        updatedAt: now,
-      });
+        completedByUserId,
+        `${label} — ${outcomeLabels[outcome] ?? outcome}: ${trimmedNote}`,
+      );
     }
 
     return visit;

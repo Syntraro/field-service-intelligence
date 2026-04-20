@@ -8,6 +8,758 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Global raw-write audit + final priority-domain drift fix (2026-04-20)
+
+System-wide scan of every direct `db.insert` / `db.update` / `tx.insert` /
+`tx.update` call across `server/`. 88 write sites classified. Priority
+domains (jobs, visits, invoices, quotes, tasks, notes, attachments,
+payments) are almost entirely canonical; the one remaining drift surface
+(system-generated job notes in the lifecycle orchestrator) is converted
+this pass. Non-priority drift sites in `pmTemplates` and `roles` routes
+are documented but out of scope for this pass.
+
+**Findings by priority domain**
+
+| Domain | Canonical owner | Total writes | Canonical | Specialized | Drift |
+|---|---|---|---|---|---|
+| Jobs | `jobRepository` (`server/storage/jobs.ts`) | 3 | 3 | 0 | 0 |
+| Visits | `jobVisitsRepository` (`server/storage/jobVisits.ts`) | inherited via schedulingRepository | — | 1 audit | 0 |
+| Invoices | `invoiceRepository` (`server/storage/invoices.ts`, source-guarded) | 2 | 2 | 0 | 0 |
+| Quotes | `quoteRepository` (`server/storage/quotes.ts`) | 1 | 1 | 0 | 0 |
+| Tasks | `taskRepository` (`server/storage/tasks.ts`) | 1 | 1 | 0 | 0 |
+| Notes | `jobNotesRepository`, `clientNotes`, `leadRepository.createNote`, `internalSupportNotesStorage` | 7 | 7 | 0 | ~~1~~ 0 (fixed this pass) |
+| Attachments | `fileUploadService` + entity adapters | 11 | 11 | 0 | 0 |
+| Payments | `paymentRepository` (`server/storage/payments.ts`) | 3 | 3 | 0 | 0 |
+
+Payments repo was initially flagged UNKNOWN by the broad audit (single-
+line grep missed the multi-line `tx.insert(payments).values(...)`
+pattern). Re-verified with multi-line grep — all 3 write sites are
+canonical; QBO payment sync paths (`QboPaymentService.ts:621`,
+`maybeSyncPayment.ts:106`) are intentional specialized bypasses with
+their own reconciliation semantics.
+
+**Priority-domain drift fix**
+
+`server/services/jobLifecycleOrchestrator.ts:492` — visit-completion
+outcome note was writing `tx.insert(jobNotes).values({...})` directly
+inside the orchestrator transaction. Every other job-note write path
+(manual notes, CSV import preservation, lead notes) already went
+through a canonical helper; this was the last raw insert in the notes
+domain.
+
+- **New helper**: `jobNotesRepository.createSystemNoteTx(tx, companyId, jobId, userId, noteText)`
+  (`server/storage/jobNotes.ts`) — transaction-aware, no per-call job
+  lookup, no equipment-linkage validation (caller already holds the
+  canonical job context). Drops the explicit `id`/`createdAt`/`updatedAt`
+  column stamping the raw insert was re-declaring; DB defaults handle
+  those.
+- **Conversion**: orchestrator now calls
+  `jobNotesRepository.createSystemNoteTx(tx, ...)` and drops the
+  unused `jobNotes` / `sql` imports from the call site.
+
+**Dangerous bypasses**
+
+Zero in priority domains after this pass. Non-priority domains carry
+3 remaining bypasses (flagged for future, outside this pass's scope):
+
+- `server/routes/pmTemplates.ts:29` — `POST /api/pm/templates` raw
+  insert. Needs a `PMTemplateRepository.createTemplate()` helper.
+- `server/routes/pmTemplates.ts:43` — `PATCH /api/pm/templates/:id`
+  raw update. Needs `PMTemplateRepository.updateTemplate()`.
+- `server/routes/roles.ts:367, 419` — `POST /api/roles` and
+  `POST /api/roles/:id/permissions` raw inserts. Needs a
+  `RoleRepository` with `createRole()` + `assignPermissions()`.
+- `server/routes/roles.ts:195, 218, 234` — seed-bootstrap writes for
+  the role/permission catalog on app init. Documented SPECIALIZED; not
+  drift.
+
+**Legitimate writes outside canonical repos (documented, intentional)**
+
+- **QBO sync services** (17 writes total across `QboCustomerImportService`,
+  `QboCatalogImportService`, `QboItemService`, `QboPaymentService`,
+  `QboSyncLogger`, `maybeSyncPayment`): each has an explicit user-driven
+  MAP/CREATE/SKIP or automated reconciliation flow that writes QBO
+  metadata (`qbo_customer_id`, `qbo_sync_token`, `qbo_sync_status`,
+  `qbo_last_synced_at`, etc.) alongside the entity row. Routing these
+  through canonical `createOrGet*` helpers would either drop the QBO
+  columns or require bloating the helper signatures. Kept specialized
+  by design.
+- **OAuth token refresh** (`server/routes/qbo.ts:99, 276`): writes to
+  `qbo_connections` for OAuth handshake and access/refresh token
+  updates. Intentional route-level write — no storage layer needed.
+- **Portal magic tokens** (`server/routes/portal.ts:203, 331`): issuance
+  + atomic single-use consumption. Race-sensitive — the atomic
+  conditional UPDATE is the canonical pattern here.
+- **Seed operations** (`server/routes/roles.ts:195, 218, 234`): catalog
+  seeding on app init. Idempotent, one-shot.
+- **Onboarding service** (`server/services/onboardingService.ts:102, 117, 132`):
+  owns the atomic signup transaction (company, owner user, email
+  identity, settings row, business hours seed). Specialized by design.
+- **Audit log repositories** (`server/storage/audit.ts`,
+  `server/services/auditService.ts`, `server/storage/scheduling.ts:1021`):
+  dedicated append-only audit writes. Canonical.
+- **Entitlements / subscription configuration**
+  (`server/storage/entitlements.ts`, 8 writes): dedicated repository.
+  Canonical.
+
+**Files affected**
+- `server/storage/jobNotes.ts` — new `createSystemNoteTx` helper
+- `server/services/jobLifecycleOrchestrator.ts` — orchestrator drift
+  converted; `jobNotes` + `sql` imports replaced with
+  `jobNotesRepository` import
+
+### Fixed
+
+#### Entitlement QA hardening — override null-limit semantics + tenant precheck (2026-04-20)
+
+Closes the one real bug found in yesterday's entitlement QA sweep
+(Bug #1: `limit_value = null` on an override did not mean "unlimited"
+because the storage layer collapsed both "caller did not provide
+limitValue" and "caller explicitly passed null" into a single NULL
+column). Adds a discriminator column + resolver update so the
+documented `null = unlimited` contract is honored uniformly across
+plan and override sources, without breaking the partial-override
+use case.
+
+1. **New column `tenant_feature_overrides.limit_overridden`**
+   (`BOOLEAN NOT NULL DEFAULT false`).
+   - `true` → `override.limit_value` is authoritative for this tenant
+     (NULL here = unlimited).
+   - `false` → resolver inherits limit from plan / core / default.
+   - Existing rows default to `false` so prior behavior is preserved —
+     admins wanting "unlimited via override" re-upsert through the UI
+     to set the flag.
+2. **Storage write boundary preserves input intent.**
+   `server/storage/entitlements.ts` `upsertOverride` now uses
+   `Object.prototype.hasOwnProperty.call(patch, "limitValue")` to
+   distinguish "key present (even null)" from "key absent". On PUT
+   (full-state write), omitting `limitValue` resets `limit_overridden`
+   to `false`, restoring the "inherit" state.
+3. **Resolver honors the flag.** `entitlementService.ts` has a single
+   `resolveLimit()` helper used by all four precedence branches
+   (core / override / plan / default):
+   ```
+   override.limit_overridden ? override.limit_value
+     : plan_feature ? plan_feature.limit_value
+     : null
+   ```
+4. **Tenant precheck on override writes (P2).**
+   `assertTenantExists(tenantId)` runs before `PUT` and `DELETE` on
+   `/api/platform/tenants/:tenantId/overrides/:featureKey`. Writes
+   against a nonexistent tenant UUID now return a clean **404**
+   instead of a raw Postgres FK-violation 500. Read endpoints
+   unchanged — returning an empty list / zero usage for an unknown
+   tenant stays harmless.
+
+**Migration:** `migrations/2026_04_20_entitlement_override_limit_flag.sql`
+— additive, idempotent (`ADD COLUMN IF NOT EXISTS`).
+
+**QA rerun:** `scripts/qa-entitlements.ts` extended with three new
+assertions (explicit-null → `isUnlimited`; no-limitValue → inherit
+plan cap; FK rejection proof for nonexistent tenant). All 37 checks
+PASS (up from 33/34 pre-fix).
+
+**Files changed**
+- `migrations/2026_04_20_entitlement_override_limit_flag.sql` (new)
+- `shared/schema.ts` — `tenantFeatureOverrides.limitOverridden` column
+- `server/storage/entitlements.ts` — `upsertOverride` flag semantics
+- `server/services/entitlementService.ts` — `resolveLimit()` helper,
+  all four resolution branches updated
+- `server/routes/platformEntitlements.ts` — `assertTenantExists`
+  helper + prechecks on override PUT + DELETE
+- `scripts/qa-entitlements.ts` — 3 new assertions
+
+**Not touched**
+- Existing `tenant_features` legacy system
+- Plan catalog, plan-feature matrix behavior
+- Core-feature protection, audit coverage, role gating
+- Any consumer of the entitlement resolver (no caller-facing type change)
+
+### Changed
+
+#### CRM helper convergence — all direct-insert drift surfaces eliminated (2026-04-20)
+
+Final cleanup pass following the canonical `createOrGet*` pattern work.
+All remaining bypass creation paths for customer companies, client
+locations, and contacts now converge on the canonical helpers. The
+legacy raw helpers that had zero callers after the migration have been
+deleted outright.
+
+**P1: `createClientWithParts` + tech quick-create converted**
+
+- `server/storage/clients.ts` — `createClientWithParts` now composes
+  with `createOrGetLocationTx` (same transaction as the parts insert).
+  A re-submitted "create client with parts" payload returns the
+  existing location and still appends parts. Documented caveat: parts
+  duplicate on re-submit — `clientParts` is a quantity-tracked
+  line-item table (intentional), not an inventory-set.
+- `server/routes/techField.ts:1402` — tech field quick-create converted
+  from `storage.createClient` to `storage.createOrGetLocation`. Missed
+  in prior pass; the tech path had a latent double-submit risk.
+
+**P2: `createOrGetCustomerCompanyTx` added**
+
+- `server/storage/customerCompanies.ts` — new transaction variant of
+  `createOrGetCustomerCompany`. Same dedupe predicate
+  (`(companyId, name_normalized, is_active = true)`), same
+  `{customerCompany, created}` return shape. Lookup + insert both run
+  on the caller-provided `tx` so the CSV importer sees its own
+  uncommitted sibling rows.
+
+**P3: CSV bulk client import converted to canonical helpers**
+
+- `server/services/clientImport.ts` `executeRow`:
+  - Company resolution: manual `findCustomerCompanyByNormalizedName` +
+    `createCustomerCompanyTx` cascade replaced with a single
+    `createOrGetCustomerCompanyTx` call. The within-batch
+    `companyResolveCache` is preserved (legitimate per-batch perf
+    optimization — avoids N DB queries for rows referencing the same
+    company). The fill-only billing-merge policy is preserved and
+    gated on the `created === false` branch.
+  - Location insertion: raw `tx.insert(clientLocations)` replaced with
+    `clientRepository.createOrGetLocationTx`. The address-composite-key
+    pre-check is retained ABOVE the canonical helper as a broader
+    dedupe net (catches rows with same physical address but different
+    location labels — broader than the name-based natural key).
+    `result.locationCreated` is now sourced from the helper's `created`
+    discriminator instead of being stamped unconditionally.
+  - Contact insertion: already canonical from prior pass
+    (`createOrGetPersonTx`) — no change.
+  - `maybeGeocode` import removed from this file (the helper handles it).
+- `server/services/jobImport.ts` `executeJobImportRow`: raw
+  `tx.insert(clientLocations)` for the Jobber CSV importer's
+  location-create branch replaced with
+  `clientRepository.createOrGetLocationTx`. `locationCreated` flag
+  now sourced from the helper.
+
+**P4: Remaining direct-insert audit (post-pass)**
+
+Final grep for CRM-entity `db.insert` / `tx.insert` across `server/`
+returned 5 hits — all legitimate:
+
+| File:Line | Context | Status |
+|---|---|---|
+| `server/services/qbo/QboCustomerImportService.ts:830` | `upsertClientLocation` — QBO sync MAP-resolved insert with QBO metadata | Intentional bypass (specialized conflict-resolution UX) |
+| `server/services/qbo/QboCustomerImportService.ts:885` | `ensurePrimaryLocation` — QBO parent-customer safety hatch | Intentional bypass (specialized) |
+| `server/storage/clientContacts.ts:93` | Inside `createOrGetPerson` | Canonical helper's own insert ✓ |
+| `server/storage/clientContacts.ts:108` | Inside `createOrGetPersonTx` | Canonical helper's own insert ✓ |
+| `server/storage/clientContacts.ts:153` | Inside `assignToLocation` — person→location assignment (4 active callers) | Legitimate; no dedupe concept for assignments |
+
+**P5: Dead code deleted this pass**
+
+Zero-caller methods removed from `server/storage/clientContacts.ts`:
+- `createPerson`
+- `createPersonTx`
+- `createPersons` (bulk)
+- `createContactTx` (legacy wrapper)
+- `findPersonByEmail`
+- `findContactByEmail` (legacy alias)
+- `findContactByNamePhone` (legacy alias)
+- `findContactByName` (legacy alias)
+
+Zero-caller methods removed from
+`server/storage/customerCompanies.ts`:
+- `createLocationUnderCustomerCompany`
+- `createLocationUnderCustomerCompanyTx`
+
+Kept for legitimate use:
+- `clientContactRepository.assignToLocation` — 4 active callers
+  (full-create contact assignment, customer-companies contact route
+  loops, direct link endpoint).
+- `clientRepository.createClient` / `bulkCreateClients` — still
+  composed internally by `createOrGetLocation(Tx)` (createClient) and
+  by CSV bulk paths (`bulkCreateClients`). The former has no external
+  callers outside the helper it composes. The latter has 2 bulk-route
+  callers that intentionally bulk-insert with their own dedupe.
+- `customerCompanyRepository.createCustomerCompany` /
+  `createCustomerCompanyTx` — both composed internally by the
+  `createOrGetCustomerCompany(Tx)` helpers. No external callers
+  remain; kept as internal implementation of the canonical helpers.
+
+**Files affected**
+- `server/storage/clients.ts` — `createClientWithParts` refactored
+- `server/storage/clientContacts.ts` — 8 methods deleted; comment block documents removal
+- `server/storage/customerCompanies.ts` — 2 methods deleted; new `createOrGetCustomerCompanyTx`
+- `server/routes/techField.ts` — tech quick-create converted
+- `server/services/clientImport.ts` — CSV import routed through canonical helpers; `maybeGeocode` import removed
+- `server/services/jobImport.ts` — Jobber CSV import location-create branch converted; `clientRepository` import added
+
+### Added
+
+#### Tech App Today: manager/admin cross-technician view (2026-04-20)
+
+Managers and admins can now use the Tech App Today page to view other
+technicians' schedules on mobile. Technician users are unchanged — they
+remain pinned to their own schedule. Cross-technician viewing is read-only
+in v1 (no mutations, no tap-through to VisitDetailPage).
+
+**Backend**
+- `GET /api/tech/visits/today` — added `?scope=self|all` and `?technicianIds=a,b,…`
+  query params. Self is the default. Non-self requires the `schedule.all.view`
+  permission (already seeded for admin + manager in `server/routes/roles.ts`).
+  Each requested technician is validated against tenant membership +
+  `isSchedulable` before the query runs; unknown/out-of-tenant ids → 400.
+- `server/storage/visits.ts` — extended `TenantVisitRangeOptions` with a
+  `technicianIds?: string[]` field; `getVisitsForTenantInRange` now composes
+  the canonical `technicianAssignedToVisitFilter` via OR for crew-set
+  membership. No parallel assignment logic, no schema change.
+
+**Frontend**
+- `useTodayVisits(dateStr, scope)` — accepts `TodayScope` (`self` / `all` /
+  `custom`). Scope is folded into the query key so SSE prefix invalidation
+  on `"/api/tech/visits/today"` continues to match every variant.
+- `useMyCapabilities` — resolves the caller's effective permissions via the
+  existing `/api/team/:userId/effective-permissions` endpoint (no parallel
+  permission store).
+- `client/src/tech-app/components/ViewingScopePicker.tsx` — mobile bottom
+  sheet for Me / All technicians / specific techs (single or multi). Uses
+  the canonical `useTechniciansDirectory` data source.
+- `TodayPage` — adds a compact Viewing chip under `DaySelector` (only for
+  users with `schedule.all.view`). In non-self mode: visits are grouped by
+  technician with per-group header (name + visit count); visit cards are
+  non-tappable; clock in/out banner, Resume Active Visit, and Tasks section
+  are hidden; empty state reads "No visits for selected technicians".
+- Scope selection persists in `localStorage` keyed by user id; server always
+  re-validates, so tampering cannot elevate access.
+
+**Files**
+- `server/routes/techField.ts`
+- `server/storage/visits.ts`
+- `client/src/tech-app/hooks/useTodayVisits.ts`
+- `client/src/tech-app/hooks/useMyCapabilities.ts` (new)
+- `client/src/tech-app/components/ViewingScopePicker.tsx` (new)
+- `client/src/tech-app/pages/TodayPage.tsx`
+
+**No changes to:** payroll/timer semantics, visit mutation endpoints,
+VisitDetailPage, or the tech tasks endpoint (remains self-scoped).
+
+### Changed
+
+#### Dashboard: tighten Today's Operations right-panel alerts (2026-04-20)
+
+Surgical refinement of the right-side Operational alerts stack on
+`TodaysOperationsCard`. Prior revision shipped five rows that mixed
+today-scoped signals with not-today-scoped subsets of the Jobs card —
+operators flagged this as noisy and partly misleading.
+
+**Removed**
+- **Waiting Parts** — client-side filter over an on-hold sample capped
+  at 200 rows; not today-scoped and duplicates info already visible
+  per-row inside the Action Required modal (where each row renders
+  `getHoldReasonLabel(holdReason)` canonically). Hold-reason detail
+  belongs inside the drill-down, not as a fragmented top-level row.
+- **Emergency Jobs** — `/api/jobs?priority=urgent&status=open` count.
+  Not today-scoped; capped at 50 rows; no clear operational action
+  distinct from Action Required.
+- **Open Schedule Gaps** — local `techCards.filter(...)` derivation
+  against an arbitrary 180-minute threshold. Label was jargon, signal
+  was weak, threshold was speculative.
+
+**Kept / added (final 4 rows, each mirrors a canonical Jobs-card
+destination)**
+
+| Row | Count source (canonical) | Opens |
+|---|---|---|
+| Unscheduled | `workflow.jobs.unscheduledCount` | `DashboardActionModal(scheduling_issues)` |
+| Past Due | `workflow.jobs.overdueCount` | `DashboardActionModal(scheduling_issues)` |
+| Action Required | `workflow.jobs.onHoldCount` | `DashboardActionModal(action_required)` |
+| Ready for Invoice | `workflow.jobs.requiresInvoicingCount` | `DashboardActionModal(ready_to_invoice)` |
+
+All four counts now come from the single `getJobCounts` SQL query that
+also feeds the lower Jobs card — there are no client-side
+aggregations, sampling caps, or arbitrary thresholds left in the
+right panel.
+
+**Drill-down parity**: `TodaysOperationsCard` now accepts an optional
+`onOpenActionModal: (mode: DashboardActionMode) => void` prop; the
+Dashboard page passes its existing `openActionModal` handler down.
+This means right-panel rows open the **same** modal instance the
+lower WorklistCard opens — identical UX across both surfaces. When
+the prop is omitted the component falls back to
+`resolveDashboardNav()` URL navigation (degraded, still functional).
+
+**Splitting Unscheduled from Past Due** (instead of the lower card's
+combined "Scheduling Issues" row) is intentional: each row maps to a
+distinct operator decision ("assign it" vs "fix the calendar").
+Clicking either opens the same modal where both sections are clearly
+labelled and ordered (Past Due first) — the lower Jobs card remains
+the canonical collapsed view.
+
+**Backend churn reverted**: the `priority` query-param passthrough
+added to `server/routes/jobs.ts` in the prior pass solely to feed the
+Emergency row has been removed. The `priority` filter in
+`server/storage/jobsFeed.ts` itself stays (it's canonical and used by
+other call sites).
+
+**Files affected**
+- `client/src/components/TodaysOperationsCard.tsx` — 4-row right panel;
+  dropped on-hold + urgent fetches; dropped waiting-parts / urgent /
+  schedule-gap derivations; new `onOpenActionModal` prop + fallback
+  helper; swapped Package / Users icon imports out (removed rows),
+  added Receipt (Ready for Invoice).
+- `client/src/pages/Dashboard.tsx` — pass `onOpenActionModal={openActionModal}`.
+- `server/routes/jobs.ts` — revert the 2-line `priority` passthrough.
+
+No schema change, no migration, no new endpoint, no new aggregation
+query, no sidebar/header/lower-card changes.
+
+#### Dashboard: live Today's Operations command center (2026-04-19)
+
+Replaced the passive four-tile KPI strip at the top of the Dashboard
+(Scheduled Today / In Progress / Remaining / Completed Today) with a
+full-width live command-center card. Two compositions in one surface:
+
+**LEFT (≈75%) — Technician workload rail.** Horizontally scrollable row
+of per-technician cards. Each card shows avatar/initials, name, today's
+job count + total scheduled hours, a derived status badge
+(Available / On Job / Heavy Load / Completed / Unscheduled Gap), a
+load-bar (0–100% against an 8-hour reference shift), and up to three
+upcoming-visit preview rows (`8:00 AM · Customer Name`). "+N more"
+appears when the tech has more than three visits today. Cards are
+sorted: On Job → Heavy Load → Available → Unscheduled Gap → Completed,
+then by scheduled minutes descending, then by name. Clicking a card
+navigates to `/dispatch` (canonical destination — `dashboardNavigation.ts`
+notes dispatch does not yet accept URL-driven filters, and this pass
+does not invent one).
+
+**RIGHT (≈25%) — Operational alerts stack.** Compact clickable rows:
+Unscheduled Jobs, Past Due, Waiting Parts, Emergency Jobs, Open
+Schedule Gaps. Each row shows an icon, label, count, and chevron. Red
+urgency tint on Past Due and Emergency when the count is non-zero.
+
+**Data sources — all canonical, no new aggregation endpoints**:
+- `GET /api/calendar?start=X&end=Y` — today's visits, including
+  `customerCompanyName`, `locationName`, `startAt`, `endAt`,
+  `durationMinutes`, `visitStatus`, `assignedTechnicianIds`. Cache key
+  `["/api/calendar", startISO, endISO]` is **shared with the dispatch
+  board**, so navigating between Dashboard and Dispatch reuses the
+  same cached payload.
+- `GET /api/team/technicians` — schedulable roster with color.
+- `GET /api/team/technicians/live-state` — canonical activity
+  projection (`idle | en_route | on_site | paused`).
+- `GET /api/dashboard/workflow` — Unscheduled + Past Due counts.
+  Cache key `["dashboard", "workflow"]` shared with the rest of the
+  dashboard.
+- `GET /api/jobs?status=open&openSubStatus=on_hold&limit=200` — on-hold
+  sample for the Waiting Parts client-side filter. Cache key
+  `["dashboard-action", "action_required", "on_hold"]` is **shared with
+  the DashboardActionModal(action_required) drill-down** added in the
+  prior consolidation commit — opening that modal gets instant data.
+- `GET /api/jobs?status=open&priority=urgent&limit=50` — Emergency
+  count. The `priority` filter is canonical in
+  `server/storage/jobsFeed.ts:456`; the route-level query-param
+  passthrough was added in `server/routes/jobs.ts` in the same commit
+  (two lines). No new aggregation, no new endpoint.
+
+**Derived selectors (local to TodaysOperationsCard — no shared domain
+logic introduced for a UI-only concern):**
+- Per-tech workload derived from today's visit list, bucketed by each
+  `assignedTechnicianIds` entry (same multi-tech semantics the
+  server's `getDaySummary` uses).
+- Status badge priority: On Job > Completed > Heavy Load >
+  Unscheduled Gap > Available. Thresholds: heavy > 540 min, gap < 180
+  min when visit count > 0.
+- Open Schedule Gaps count: techs with `visitCount > 0 &&
+  scheduledMinutes < 180 && status !== "completed"`.
+- Waiting Parts count: `holdReason === "parts"` filtered from the
+  on-hold sample (canonical enum value per 2026-04-19 Task A fix).
+
+**SSE invalidation**: every query key used by the new card is already
+covered by `useDispatchStream`'s `VISIT_JOB_KEYS` / `TIME_KEYS` prefix
+sets — no SSE wiring changes needed.
+
+**Lower dashboard cards (Jobs / Invoices / Quotes / PM Health) and the
+MidnightRolloverCard are untouched.** Left sidebar and top header
+untouched. Page title ("Today's Operations") and its surrounding grid
+structure untouched.
+
+**Removed (surgical cleanup):**
+- `TodayVisitSummary` interface in `Dashboard.tsx`.
+- `TodaysOperationsKPIs` component.
+- `useQuery(["dashboard", "today-summary"])` call. The
+  `/api/dashboard/today-summary` endpoint itself is preserved for any
+  external consumer; only the dashboard-internal hook is removed.
+- Unused imports on `Dashboard.tsx`: `useMemo`, `Clock`, `Calendar`,
+  `Activity`, `CheckCircle2`, `ExternalLink`, `apiRequest` (still
+  unused here — kept `apiRequest` import removed), `Button`, `Badge`,
+  `SchemaJob`.
+
+**Files affected**
+- `client/src/components/TodaysOperationsCard.tsx` — new.
+- `client/src/pages/Dashboard.tsx` — swap KPI strip → new card;
+  drop today-summary query and unused imports.
+- `server/routes/jobs.ts` — add `priority` query-param passthrough
+  into `JobFeedFilters.priority` (filter already implemented in
+  `server/storage/jobsFeed.ts`; two-line wiring).
+
+No schema change, no migration, no new API route, no changes to
+sidebar / header / lower dashboard cards / SSE wiring.
+
+### Added
+
+#### Plan / feature entitlement system foundation (2026-04-19)
+
+Canonical forward-looking entitlement system for dynamic features, per-plan
+feature configuration, per-tenant overrides, feature limits, and platform-
+admin plan management. Runs **in parallel** with the legacy
+`tenant_features` hardcoded-column table (no migration of that system in
+this phase — existing `requireFeature("quotesEnabled")` gates continue to
+work unchanged).
+
+**Schema (4 new tables, additive; no existing tables modified):**
+- `subscription_features` — feature catalog keyed by immutable `feature_key`.
+  50 features seeded across 9 categories (core, users_team, technician_app,
+  service_hvac, sales_revenue, integrations, reporting, communication,
+  scale_advanced). 9 features flagged `is_core = true` — resolver
+  short-circuits these to enabled regardless of plan.
+- `subscription_plan_features` — plan × feature matrix. Empty on deploy; plan
+  packaging is built via the admin UI, not by seed.
+- `tenant_feature_overrides` — per-tenant escape hatch (override enablement,
+  override limit, reason).
+- `subscription_plan_metadata` — editorial/packaging metadata (description,
+  isPublic, annualPriceCents, trialEligible, displayBadge,
+  marketingSortOrder). Split out from `subscription_plans` per architecture
+  decision to minimize risk around the just-fixed trial provisioning work.
+
+**Resolver (`server/services/entitlementService.ts`):**
+- Precedence: tenant_feature_overrides → subscription_plan_features →
+  feature.is_core → deny.
+- Null `limit_value` means unlimited.
+- Cached per-tenant (5 min TTL) with invalidation on any write.
+- Canonical API: `getTenantEntitlements`, `isFeatureEnabled`,
+  `getFeatureLimit`, `getEntitlement`.
+
+**Enforcement (`server/services/entitlementEnforcement.ts`):**
+- `assertFeatureAccess(companyId, featureKey)` — throws 403
+  `FEATURE_DISABLED` if disabled; core features always pass.
+- `assertFeatureCapacity(companyId, featureKey, currentCount, nextIncrement)`
+  — throws 403 `FEATURE_LIMIT_REACHED` if cap would be exceeded. Core
+  features never cap-deny.
+- `assertFeatureCapacityAuto` — convenience wrapper that fetches live
+  usage via `usageMetricsService`.
+
+**Usage metrics (`server/services/usageMetricsService.ts`):**
+- Live counts (1 min cache) for: `clients` / `locations` / `branches`,
+  `office_users`, `technician_users`, `total_users`, `pm_contracts`,
+  `equipment_tracking`.
+
+**Routes (all under `/api/platform/*`, `requirePlatformRole` guarded):**
+- `GET/POST/PATCH /plans`, `/plans/:id`, `/plans/:id/metadata` (no DELETE —
+  deactivation via `active: false`)
+- `GET/POST/PATCH /features`, `/features/:id` (no DELETE; `feature_key`
+  immutable — update Zod schema does not accept it)
+- `PUT /plans/:planId/features/:featureId`, `POST /plans/:planId/features/bulk`
+  (core features cannot be disabled via plan-feature upsert — rejected 400)
+- `GET/PATCH /tenants/:id/subscription` (plan assignment on `companies`
+  columns — reuses existing billing repo)
+- `GET /tenants/:id/overrides`, `PUT /tenants/:id/overrides/:featureKey`,
+  `DELETE /tenants/:id/overrides/:featureKey`
+- `GET /tenants/:id/entitlements`, `GET /tenants/:id/usage`
+
+**Audit:**
+- All write paths log via the existing `platformAuditService` into
+  `audit_logs`. New actions added to the `AuditAction` union:
+  `entitlement_feature_created`, `entitlement_feature_updated`,
+  `entitlement_plan_created`, `entitlement_plan_updated`,
+  `entitlement_plan_feature_upsert`,
+  `entitlement_plan_metadata_updated`,
+  `entitlement_tenant_plan_assigned`,
+  `entitlement_tenant_override_upsert`,
+  `entitlement_tenant_override_removed`.
+- Before / after state + input captured in `audit_logs.details`.
+
+**Platform admin UI (4 new pages, 1 extended):**
+- `/platform/plans` — plans list with feature counts, tenant counts,
+  active/inactive, trial-eligible badges.
+- `/platform/plans/:planId` — plan basics form, metadata form, and
+  full feature matrix grouped by category with per-feature
+  enabled/limit controls. Core-feature switches are disabled in the UI.
+- `/platform/features` — features catalog grouped by category with
+  "new feature" dialog.
+- `/platform/features/:featureId` — feature detail/edit form.
+  `feature_key` shown read-only (immutable contract).
+- `/platform/tenants/:id` — extended with Plan Assignment + Effective
+  Entitlements (grouped, with source badge showing override/plan/core/default)
+  + Overrides actions (override/clear).
+- New nav entries: Plans, Features.
+
+**Migrations (additive, idempotent):**
+- `migrations/2026_04_19_entitlement_system_schema.sql`
+- `migrations/2026_04_19_seed_entitlement_feature_catalog.sql`
+  (50 features, `ON CONFLICT (feature_key) DO UPDATE`).
+
+**Out of scope (deferred):**
+- `requireFeature` middleware migration from legacy `tenant_features`
+  boolean columns to the new resolver. All existing gates keep reading
+  the legacy table — parallel operation by explicit architecture decision.
+- Stripe / billing-provider coupling. Plans have `monthlyPriceCents` +
+  `annualPriceCents` for display only this phase.
+- Initial plan packaging (Core / Pro / Growth / Scale). Admin builds
+  plans via the UI — no opinionated seed.
+
+**Files added:**
+- `migrations/2026_04_19_entitlement_system_schema.sql`
+- `migrations/2026_04_19_seed_entitlement_feature_catalog.sql`
+- `server/storage/entitlements.ts`
+- `server/services/entitlementService.ts`
+- `server/services/entitlementEnforcement.ts`
+- `server/services/usageMetricsService.ts`
+- `server/routes/platformEntitlements.ts`
+- `client/src/pages/platform/PlatformPlansList.tsx`
+- `client/src/pages/platform/PlatformPlanDetail.tsx`
+- `client/src/pages/platform/PlatformFeaturesCatalog.tsx`
+- `client/src/pages/platform/PlatformFeatureDetail.tsx`
+- `scripts/check-entitlements.ts` (verification tool, manual-run only)
+
+**Files edited:**
+- `shared/schema.ts` (added 4 table definitions + Zod + types — ~170 LOC)
+- `server/services/platformAuditService.ts` (9 new AuditAction values)
+- `server/routes/platform.ts` (mount new entitlement router)
+- `client/src/App.tsx` (4 new lazy-load routes)
+- `client/src/pages/platform/PlatformLayout.tsx` (2 new nav entries)
+- `client/src/pages/platform/PlatformTenantDetail.tsx` (Entitlements
+  section + override controls + plan assignment)
+
+### Changed
+
+#### Customer data integrity Phase 2 — companies + locations dedupe shipped (2026-04-19)
+
+Continuation of the customer data integrity work. Customer companies
+and client locations now have canonical `createOrGet*` helpers + matching
+partial unique indexes. Every direct API creation route converges on
+the helpers; bulk import paths keep their existing per-row dedupe with
+the new indexes acting as an additional safety net.
+
+**Architectural correction (this pass):** No `deleted_at` scope on any
+new index. Soft-delete is being phased out — new constraints scope on
+the existing canonical active flags instead:
+- `customer_companies.is_active = true`
+- `client_locations.inactive = false`
+
+The application's soft-delete code paths set BOTH `deleted_at` AND the
+active flag together, so existing soft-deleted rows are naturally
+excluded from these indexes without referencing `deleted_at`. Future
+hard-delete paths leave no residual rows; the active-state scope
+handles both transition states cleanly.
+
+**Live duplicate scan (raw, no soft-delete filter)** on dev DB:
+- `customer_companies` (company_id, name_normalized) — 0 groups
+- `client_locations` (parent_company_id, lower(location)) — 0 groups
+- `client_locations` orphan (company_id, lower(company_name)) — 0 groups
+
+Safe to ship without a separate consolidation pass.
+
+**Helpers (P1 + P2)**
+
+`customerCompanyRepository.createOrGetCustomerCompany(companyId, data)`
+in `server/storage/customerCompanies.ts`. Tenant-scoped,
+case-insensitive dedupe on the existing `name_normalized` column
+(populated by `normalizeForMatch` from `@shared/normalizeForMatch` —
+the system's canonical normalization, unchanged here). Lookup is
+scoped to `is_active = true`. Returns `{customerCompany, created}`.
+The historical `findOrCreateCustomerCompany` (used by 4+ callers)
+is preserved as a thin alias that delegates to the new helper and
+returns just the row, so existing call sites keep working.
+
+`clientRepository.createOrGetLocation(companyId, userId, data)` (and
+`createOrGetLocationTx`) in `server/storage/clients.ts`. Two natural-key
+scopes selected by payload shape — matching the real schema's child +
+orphan models:
+- **Child** (`parentCompanyId` set + non-empty `location`):
+  match on `(companyId, parentCompanyId, lower(location))`
+- **Orphan** (no `parentCompanyId` + non-empty `companyName`):
+  match on `(companyId, lower(companyName))`
+- **Neither** (quick-create flows that defer naming):
+  no dedupe possible — insert proceeds. The matching unique indexes
+  have the same predicates and intentionally exclude these rows too.
+
+Both helpers scope lookup to `inactive = false`. Returns
+`{location, created}`. Existing `createClient` is preserved with a
+docstring directing new callers to the new helper.
+
+**Routes converged (P3)** — every direct API creation path now goes
+through the canonical helpers:
+
+| Route | File:Line | Now uses |
+|---|---|---|
+| `POST /api/clients` (basic, no parts) | `server/routes/clients.ts:325` | `createOrGetLocation` |
+| `POST /api/clients/full-create` (primary) | `server/routes/clients.ts:475` | `createOrGetLocation` |
+| `POST /api/clients/full-create` (additional locations loop) | `server/routes/clients.ts:507` | `createOrGetLocation` |
+| `POST /api/clients/quick-create` (orphan) | `server/routes/clients.ts:642` | `createOrGetLocation` |
+| `POST /api/clients/:companyId/locations` | `server/routes/clients.ts:1108` | `createOrGetLocation` |
+| `POST /api/customer-companies/:companyId/locations` (inline-contact branch) | `server/routes/customer-companies.ts:135` | `createOrGetLocationTx` (inside same tx as contact upsert) |
+| `POST /api/customer-companies/:companyId/locations` (no inline contact) | `server/routes/customer-companies.ts:175` | `createOrGetLocation` |
+
+Customer companies were already canonical via `findOrCreateCustomerCompany`
+(used by full-create at `server/routes/clients.ts:411`,
+`:companyId/locations` legacy-client→company normalization at
+`server/routes/clients.ts:1029`, CSV import at
+`server/services/clientImport.ts:651`, and QBO import has its own
+multi-signal dedupe). All four continue to work; they now go through
+`createOrGetCustomerCompany` under the hood.
+
+**Lead conversion**: confirmed not present (audit re-verified). Leads
+are metadata-only — no entity creation triggered.
+
+**Bulk import paths**: `clientImport.executeRow` (CSV) keeps its
+within-batch address-composite-key dedup as the primary path — bulk
+inserts are too hot for per-row helper calls. The new unique indexes
+act as the safety net if a row escapes the in-CSV cache.
+
+**Migration (P4)**: `migrations/2026_04_19_customer_data_unique_indexes.sql`
+
+```sql
+-- Customer companies
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS customer_companies_company_name_normalized_active_uq
+  ON customer_companies (company_id, name_normalized)
+  WHERE is_active = true AND name_normalized IS NOT NULL AND name_normalized <> '';
+
+-- Locations (child)
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS client_locations_parent_location_lower_active_uq
+  ON client_locations (parent_company_id, lower(location))
+  WHERE inactive = false AND parent_company_id IS NOT NULL
+    AND location IS NOT NULL AND TRIM(location) <> '';
+
+-- Locations (orphan)
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS client_locations_orphan_company_name_lower_active_uq
+  ON client_locations (company_id, lower(company_name))
+  WHERE inactive = false AND parent_company_id IS NULL
+    AND company_name IS NOT NULL AND TRIM(company_name) <> '';
+```
+
+`CONCURRENTLY` for production safety. All three applied cleanly (0
+conflicts on dev). No `deleted_at` scope anywhere — see architectural
+note above.
+
+**Drift surfaces remaining (P5)**
+
+- `clientRepository.createClient` — kept with docstring directing new
+  callers to `createOrGetLocation`. Still used by:
+  - `createClientWithParts` (transaction wrapper for parts) — internal
+    composition; safe.
+  - CSV bulk importer (`bulkCreateClients`) — bulk path, has its own
+    address-composite dedup.
+  - `POST /api/clients` parts branch — composes with parts insert; the
+    no-parts branch was converted; the parts branch still uses
+    `createClientWithParts` which calls `createClient` internally. Out
+    of scope for this surgical pass; the unique index catches escape
+    cases.
+- `customerCompanyRepository.createLocationUnderCustomerCompany` and
+  `createLocationUnderCustomerCompanyTx` — no longer called by any
+  route. Kept for now to avoid an unrelated refactor sweep; flagged
+  for deletion next pass.
+- `customerCompanyRepository.createCustomerCompany` and
+  `createCustomerCompanyTx` — internal-only helpers used by
+  `createOrGetCustomerCompany` and CSV import. Kept.
+
+**Files affected**
+- `server/storage/customerCompanies.ts` — `createOrGetCustomerCompany` (returns `{customerCompany, created}`); `findOrCreateCustomerCompany` delegates to it
+- `server/storage/clients.ts` — `createOrGetLocation` + `createOrGetLocationTx`; `createClient` docstring updated
+- `server/storage/index.ts` — `storage.createOrGetLocation` façade binding
+- `server/routes/clients.ts` — 5 route call-sites converted
+- `server/routes/customer-companies.ts` — 2 route call-sites converted; added `clientRepository` + `storage` imports
+- `migrations/2026_04_19_customer_data_unique_indexes.sql` (new)
+
 #### Customer data integrity — contact dedupe shipped, companies/locations migration-ready (2026-04-19)
 
 Continuation of the catalog hardening work. Live duplicate scan

@@ -9,7 +9,7 @@
 import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Building2, MessageSquare, Bug, LifeBuoy, Shield } from "lucide-react";
+import { Building2, MessageSquare, Bug, LifeBuoy, Shield, Package, Layers } from "lucide-react";
 
 interface Props {
   children: React.ReactNode;
@@ -17,6 +17,8 @@ interface Props {
 
 const NAV = [
   { href: "/platform/tenants", label: "Tenants", icon: Building2 },
+  { href: "/platform/plans", label: "Plans", icon: Package },
+  { href: "/platform/features", label: "Features", icon: Layers },
   { href: "/platform/feedback", label: "Feedback", icon: MessageSquare },
   { href: "/platform/issues", label: "Issues", icon: Bug },
   { href: "/platform/support-sessions", label: "Support Sessions", icon: LifeBuoy },
