@@ -20,6 +20,9 @@ export interface TodayVisit {
   company: string;
   jobTitle: string;
   address: string;
+  /** Backend-provided site phone. Surfaced so the Today card can offer a
+   *  one-tap `tel:` call action without the tech drilling into the visit. */
+  phone: string | null;
   /** Raw ISO scheduledStart from backend — canonical sort source. Null for unscheduled. */
   scheduledStartRaw: string | null;
   scheduledTime: string;     // "8:00 AM" format (display only, NOT for sorting)
@@ -73,6 +76,7 @@ function toTodayVisit(v: BackendVisit): TodayVisit {
     company: v.location?.companyName || UNKNOWN_LOCATION,
     jobTitle: v.job.summary || `Job #${v.job.jobNumber}`,
     address: locationParts.length > 0 ? locationParts.join(", ") : NO_ADDRESS,
+    phone: v.location?.phone ?? null,
     // 2026-04-10: scheduledStartRaw is the canonical ISO datetime for sorting.
     // scheduledTime is display-only — never use it for chronological ordering.
     scheduledStartRaw: v.scheduledStart ?? null,

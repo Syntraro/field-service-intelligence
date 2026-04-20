@@ -24,6 +24,9 @@ import { randomUUID } from "crypto";
 import { filesRepository } from "../storage/files";
 import { extractNameplateFields } from "../services/nameplateOcr";
 import { computeNextDueDate } from "@shared/nextDue";
+// 2026-04-18 Client-billing workstream: per-location aggregates reuse the
+// canonical invoices-feed storage methods (no direct table access here).
+import { getClientBillingSummary, getClientBillingHistory } from "../storage/invoicesFeed";
 
 const router = Router();
 
@@ -499,7 +502,15 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
 
   // 4) Create contacts — Identity + Assignment model
   // contacts array format: [{ firstName, lastName, email, phone, roles, locationIndex?, isPrimary }]
-  // Creates person record first, then assignment if locationIndex is specified
+  // Creates person record first, then assignment to a location.
+  //
+  // 2026-04-19 contact-rail fix: when `locationIndex` is omitted, default
+  // to the primary location (index 0). The CreateClientModal builds a
+  // primary contact from the inline first/last/email/phone fields without
+  // setting locationIndex; previously that contact was created at company
+  // level only and never appeared on the location's contacts rail. Callers
+  // that genuinely want a company-only contact can opt out by passing
+  // `locationIndex: null` explicitly.
   let createdContacts: any[] = [];
   if (contacts.length > 0) {
     // 2026-04-14: shape-validate every contact email at the API boundary.
@@ -509,7 +520,11 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
       }
     }
     for (const c of contacts) {
-      const person = await clientContactRepository.createPerson(companyId!, {
+      // 2026-04-19: createOrGetPerson dedupes within the customer scope.
+      // Re-submits and second-locations with the same primary contact
+      // (typically the company owner) now attach the existing person row
+      // instead of producing a twin. Returns existing on email/name match.
+      const { contact: person } = await clientContactRepository.createOrGetPerson(companyId!, {
         customerCompanyId: customerCompany.id,
         firstName: (c.firstName || "").trim(),
         lastName: (c.lastName || "").trim(),
@@ -518,9 +533,11 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
         isPrimary: c.isPrimary === true,
       });
       createdContacts.push(person);
-      // Create location assignment if locationIndex is specified
-      if (c.locationIndex != null && c.locationIndex >= 0) {
-        const loc = createdLocations[c.locationIndex];
+      // Default to primary location (index 0) when caller didn't specify.
+      // Explicit `null` opts out (company-only contact).
+      const idx = c.locationIndex === undefined ? 0 : c.locationIndex;
+      if (idx !== null && idx >= 0) {
+        const loc = createdLocations[idx];
         if (loc) {
           await clientContactRepository.assignToLocation(companyId!, {
             contactPersonId: person.id,
@@ -827,6 +844,16 @@ router.get("/:id/overview", asyncHandler(async (req: AuthedRequest, res: Respons
     let jobsList: any[] = [];
     let invoicesList: any[] = [];
     let company: any = null;
+    // 2026-04-19 Fix B: server-side billing aggregates. Computed over
+    // the FULL invoice set per-location so the UI summary numbers are
+    // correct even though the `invoicesList` above is truncated to
+    // ~100 rows for table rendering.
+    let billingAggregates: {
+      lifetimeRevenue: string;
+      paidYtd: string;
+      outstanding: { count: number; total: string; overdueTotal: string };
+      agingBuckets: { current: string; d30: string; d60: string; d90: string };
+    } | null = null;
 
     if (client.parentCompanyId) {
       // This is a child location - fetch via parent customer company
@@ -852,13 +879,20 @@ router.get("/:id/overview", asyncHandler(async (req: AuthedRequest, res: Respons
 
         const locationIds = locations.map((l) => l.id).filter(Boolean);
         if (locationIds.length > 0) {
-          const result = await customerCompanyRepository.getJobsAndInvoicesForLocations(
-            tenantCompanyId!,
-            locationIds,
-            100
-          );
+          const [result, aggregates] = await Promise.all([
+            customerCompanyRepository.getJobsAndInvoicesForLocations(
+              tenantCompanyId!,
+              locationIds,
+              100,
+            ),
+            customerCompanyRepository.getBillingAggregatesForLocations(
+              tenantCompanyId!,
+              locationIds,
+            ),
+          ]);
           jobsList = result.jobs;
           invoicesList = result.invoices;
+          billingAggregates = aggregates;
         }
       }
     } else {
@@ -926,13 +960,20 @@ router.get("/:id/overview", asyncHandler(async (req: AuthedRequest, res: Respons
 
       const locationIds = locations.map((l) => l.id).filter(Boolean);
       if (locationIds.length > 0) {
-        const result = await customerCompanyRepository.getJobsAndInvoicesForLocations(
-          tenantCompanyId!,
-          locationIds,
-          100
-        );
+        const [result, aggregates] = await Promise.all([
+          customerCompanyRepository.getJobsAndInvoicesForLocations(
+            tenantCompanyId!,
+            locationIds,
+            100,
+          ),
+          customerCompanyRepository.getBillingAggregatesForLocations(
+            tenantCompanyId!,
+            locationIds,
+          ),
+        ]);
         jobsList = result.jobs;
         invoicesList = result.invoices;
+        billingAggregates = aggregates;
       }
     }
 
@@ -950,6 +991,10 @@ router.get("/:id/overview", asyncHandler(async (req: AuthedRequest, res: Respons
     jobs: jobsList,
     invoices: invoicesList,
     stats,
+    // 2026-04-19 Fix B: server-computed billing aggregates over the
+    // FULL invoice set. Clients must prefer these over deriving
+    // totals from the truncated `invoices` list.
+    billingAggregates,
   });
 }));
 
@@ -1078,6 +1123,43 @@ router.get("/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
   };
 
   res.json(clientWithDue);
+}));
+
+// 2026-04-18 Client-billing workstream
+// ---------------------------------------------------------------------------
+// GET /api/clients/:id/billing-summary — location-scope summary.
+// GET /api/clients/:id/billing-history — location-scope ledger.
+//
+// These are the location-scope twins of the company-scope routes mounted
+// under /api/customer-companies/:companyId/billing-*. Same DTO, same
+// display-only provider hints, same tenant-isolation contract.
+//
+// `:id` here is a `client_locations.id` — the URL-space already maps
+// "/api/clients" to client_locations in this router. The getClient()
+// existence check is the same one used by `GET /api/clients/:id`,
+// preventing cross-tenant id probing.
+// ---------------------------------------------------------------------------
+router.get("/:id/billing-summary", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const location = await storage.getClient(companyId, req.params.id);
+  if (!location) throw createError(404, "Client not found");
+
+  const summary = await getClientBillingSummary(getQueryCtx(req), { locationId: req.params.id });
+  res.json(summary);
+}));
+
+router.get("/:id/billing-history", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const location = await storage.getClient(companyId, req.params.id);
+  if (!location) throw createError(404, "Client not found");
+
+  const limitParam = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : undefined;
+  const history = await getClientBillingHistory(
+    getQueryCtx(req),
+    { locationId: req.params.id },
+    { limit: Number.isFinite(limitParam) ? limitParam : undefined },
+  );
+  res.json({ items: history });
 }));
 
 // GET /api/clients/:id/report - Get client report

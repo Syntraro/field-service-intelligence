@@ -218,6 +218,12 @@ const rangeQuerySchema = z.object({
 
 const scheduleJobSchema = z.object({
   jobId: z.string().uuid(),
+  // 2026-04-18 Phase 1 (multi-visit): explicit visit-targeting field.
+  //   - present  → update that exact visit (the canonical flow)
+  //   - absent   → create a new visit row; never auto-pick an existing one
+  // Together with the Phase 0 unique index, this eliminates the previous
+  // single-visit invariant. See ARCH: no-auto-select for details.
+  targetVisitId: z.string().uuid().optional(),
   // 2026-04-12 final cleanup: canonical crew input — the only way to assign.
   // `[]` / null = unassigned; missing = unassigned. Single-tech callers send
   // `[techId]`; multi-tech callers send the full crew.
@@ -229,10 +235,12 @@ const scheduleJobSchema = z.object({
   durationMinutes: z.number().int().min(15).optional(),
   notes: z.string().max(2000).optional(),
   version: z.number().int(),
-  // Visit Reschedule Architecture: conflict resolution mode from client
-  conflictMode: z.enum(['replace', 'complete_and_new']).optional(),
-  conflictVisitId: z.string().uuid().optional(),
-}).refine((data) => {
+  // 2026-04-18 Phase 4: pre-multi-visit `conflictMode` + `conflictVisitId`
+  // fields removed. All frontend callers were migrated to `targetVisitId`
+  // in Phase 2; the one-release compat shim is no longer needed. Any
+  // caller still sending these fields will fail Zod `.strict()` parsing
+  // with a clear 400 — that's the intentional fail-loud migration signal.
+}).strict().refine((data) => {
   if (data.allDay) return true;
   if (data.startAt && data.endAt) {
     return new Date(data.startAt) < new Date(data.endAt);
@@ -431,28 +439,22 @@ router.post(
       ? data.assignedTechnicianIds
       : [];
 
+    // 2026-04-18 Phase 4: `targetVisitId` is the sole canonical way to
+    // target an existing visit. The Phase 1 legacy-compat mapping for
+    // `conflictMode='replace' + conflictVisitId` has been removed.
     let result;
     try {
       result = await schedulingRepository.scheduleJob(companyId, {
         jobId: data.jobId,
+        targetVisitId: data.targetVisitId,
         assignedTechnicianIds: scheduledCrewInput,
         startAt,
         endAt,
         notes: data.notes,
         allDay: isAllDay,
         expectedVersion: data.version,
-        conflictMode: data.conflictMode,
-        conflictVisitId: data.conflictVisitId,
       });
     } catch (error: any) {
-      // Visit Reschedule Architecture: actioned visit conflict — frontend should show 2-button dialog
-      if (error.code === 'VISIT_CONFLICT') {
-        return res.status(409).json({
-          error: error.message,
-          code: 'VISIT_CONFLICT',
-          conflictVisitId: error.conflictVisitId,
-        });
-      }
       // Handle version mismatch
       if (error.message?.includes('modified by another user')) {
         return res.status(409).json({ error: error.message, code: 'VERSION_MISMATCH' });
@@ -582,8 +584,11 @@ router.get(
       // Coordinates for dispatch map markers
       lat: job.lat ?? null,
       lng: job.lng ?? null,
-      // 2026-03-22: Real visit ID for canonical EditVisitModal opening from unscheduled panel
-      activeVisitId: (job as any).activeVisitId ?? null,
+      // 2026-04-18 Phase 1/2 (multi-visit): canonical array of all active
+      // non-terminal visit ids on this backlog job. The deprecated
+      // singular `activeVisitId` field was removed in Phase 2 once all
+      // frontend consumers migrated.
+      visitIds: Array.isArray((job as any).visitIds) ? (job as any).visitIds : [],
     }));
 
     res.json(transformedJobs);
@@ -843,13 +848,23 @@ router.post(
 );
 
 // ============================================================================
-// POST /api/calendar/bulk-unschedule - Bulk unschedule jobs by moving visits to backlog
-// Resolves active visit per job, calls canonical unscheduleVisit per visit.
+// POST /api/calendar/bulk-unschedule
+//
+// 2026-04-18 Phase 2 (multi-visit): this endpoint is VISIT-SCOPED.
+// Input: { visitIds: uuid[] }. Each visit is independently unscheduled
+// via the canonical `schedulingRepository.unscheduleVisit()` path.
+// Siblings on the same job are never touched implicitly.
+//
+// The pre-Phase-2 job-scoped shape (`{ jobIds: [] }`) is intentionally
+// no longer accepted — it was ambiguous under multi-visit (a job can now
+// have multiple open visits; which one should bulk-unschedule pick?).
+// Zod validation surfaces a clear 400 if a legacy caller sends `jobIds`
+// instead of `visitIds`, so migration fails loudly rather than guessing.
 // ============================================================================
 
 const bulkUnscheduleSchema = z.object({
-  jobIds: z.array(z.string().uuid()).min(1).max(100),
-});
+  visitIds: z.array(z.string().uuid()).min(1).max(100),
+}).strict();
 
 router.post(
   "/bulk-unschedule",
@@ -858,50 +873,57 @@ router.post(
     const companyId = req.companyId!;
     assertCanEditSchedule(req.user);
 
-    const { jobIds } = validateSchema(bulkUnscheduleSchema, req.body);
+    const { visitIds } = validateSchema(bulkUnscheduleSchema, req.body);
 
     const succeeded: string[] = [];
-    const skipped: { jobId: string; reason: string }[] = [];
-    const failed: { jobId: string; reason: string }[] = [];
+    const skipped: { visitId: string; reason: string }[] = [];
+    const failed: { visitId: string; reason: string }[] = [];
+    const affectedJobIds = new Set<string>();
 
-    for (const jobId of jobIds) {
+    for (const visitId of visitIds) {
       try {
-        // Resolve active non-terminal visit for this job
-        const visit = await jobVisitsRepository.getCurrentEligibleVisit(companyId, jobId);
+        const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
         if (!visit) {
-          skipped.push({ jobId, reason: "No eligible visit found" });
+          skipped.push({ visitId, reason: "Visit not found" });
           continue;
         }
 
-        // Call canonical unschedule with version for optimistic locking
         await schedulingRepository.unscheduleVisit(companyId, visit.id, visit.version);
+        affectedJobIds.add(visit.jobId);
+        succeeded.push(visitId);
 
-        // Recompute attention for this job
-        recomputeAttentionForEntity(companyId, "job", jobId).catch(() => {});
-
-        succeeded.push(jobId);
+        // Recompute attention for each touched job (deduplicated below)
+        recomputeAttentionForEntity(companyId, "job", visit.jobId).catch(() => {});
       } catch (err: any) {
-        failed.push({ jobId, reason: err.message || "Failed" });
+        failed.push({ visitId, reason: err.message || "Failed" });
       }
     }
 
-    // Emit dispatch signal once for the batch
-    emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: jobIds[0], ts: new Date().toISOString() });
+    // Emit one dispatch signal per affected job so multiple jobs receive
+    // independent cache-invalidation events rather than a single batch stub.
+    for (const jobId of Array.from(affectedJobIds)) {
+      emitDispatch(companyId, {
+        scope: "calendar",
+        entityType: "job",
+        entityId: jobId,
+        ts: new Date().toISOString(),
+      });
+    }
 
-    // Log batch event
     logEventAsync(getQueryCtx(req), {
-      eventType: "job.bulk_unscheduled",
-      entityType: "job",
-      entityId: jobIds[0],
-      summary: `Bulk unscheduled ${succeeded.length}/${jobIds.length} jobs (${skipped.length} skipped, ${failed.length} failed)`,
-      meta: { succeeded, skipped, failed },
+      eventType: "visit.bulk_unscheduled",
+      entityType: "visit",
+      entityId: visitIds[0],
+      summary: `Bulk unscheduled ${succeeded.length}/${visitIds.length} visits (${skipped.length} skipped, ${failed.length} failed) across ${affectedJobIds.size} jobs`,
+      meta: { succeeded, skipped, failed, affectedJobIds: Array.from(affectedJobIds) },
     });
 
     res.json({
-      totalCount: jobIds.length,
+      totalCount: visitIds.length,
       successCount: succeeded.length,
       skippedCount: skipped.length,
       failedCount: failed.length,
+      affectedJobIds: Array.from(affectedJobIds),
       succeeded,
       skipped,
       failed,

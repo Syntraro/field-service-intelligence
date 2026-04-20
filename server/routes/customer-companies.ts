@@ -10,6 +10,10 @@ import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { customerCompanyRepository } from "../storage/customerCompanies";
 import { clientContactRepository } from "../storage/clientContacts";
+// 2026-04-18 Client-billing workstream: per-company aggregates reuse the
+// canonical invoices-feed storage methods (no direct table access here).
+import { getQueryCtx } from "../lib/queryCtx";
+import { getClientBillingSummary, getClientBillingHistory } from "../storage/invoicesFeed";
 import { db } from "../db";
 import { clientLocations } from "@shared/schema";
 import {
@@ -147,15 +151,17 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
         }
       );
 
-      // Step 2: Create client_contacts record within same transaction
-      await clientContactRepository.createContactTx(tx, tenantCompanyId!, {
+      // Step 2: Create-or-get the contact within the same transaction.
+      // 2026-04-19: routes through canonical createOrGetPersonTx so a
+      // re-submit (or a second location with the same primary contact)
+      // attaches the existing person rather than creating a twin.
+      // Cascade: lower(email) → name+phone → name. Returns {contact, created}.
+      await clientContactRepository.createOrGetPersonTx(tx, tenantCompanyId!, {
         customerCompanyId: companyId,
-        locationId: location.id,
         firstName,
         lastName,
         email: contactEmail,
         phone: contactPhone,
-        roles: [],
         isPrimary: true,
       });
 
@@ -204,6 +210,48 @@ router.get("/:companyId/overview", asyncHandler(async (req: AuthedRequest, res: 
   if (!overview) throw createError(404, "Customer company not found");
 
   res.json(overview);
+}));
+
+/**
+ * GET /api/customer-companies/:companyId/billing-summary
+ * Canonical per-company billing summary: outstanding / overdue / open count
+ * / last payment / provider hints. Backs the client billing page's summary
+ * cards. Display-only — nothing on this response belongs in a save payload.
+ *
+ * Existence is verified against the same `getCustomerCompany` path used by
+ * `/overview` before aggregating; a bogus or cross-tenant id returns 404.
+ */
+router.get("/:companyId/billing-summary", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { companyId } = req.params;
+
+  const company = await customerCompanyRepository.getCustomerCompany(tenantCompanyId!, companyId);
+  if (!company) throw createError(404, "Customer company not found");
+
+  const summary = await getClientBillingSummary(getQueryCtx(req), { customerCompanyId: companyId });
+  res.json(summary);
+}));
+
+/**
+ * GET /api/customer-companies/:companyId/billing-history
+ * Canonical per-company billing ledger (invoice_issued + payment/refund/reversal
+ * events, unified, with server-computed running AR balance). Supports optional
+ * `?limit=<int>` (clamped to [1, 500], default 200).
+ */
+router.get("/:companyId/billing-history", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { companyId } = req.params;
+
+  const company = await customerCompanyRepository.getCustomerCompany(tenantCompanyId!, companyId);
+  if (!company) throw createError(404, "Customer company not found");
+
+  const limitParam = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : undefined;
+  const history = await getClientBillingHistory(
+    getQueryCtx(req),
+    { customerCompanyId: companyId },
+    { limit: Number.isFinite(limitParam) ? limitParam : undefined },
+  );
+  res.json({ items: history });
 }));
 
 /**
@@ -324,8 +372,10 @@ router.post("/:companyId/contacts", requireRole(MANAGER_ROLES), asyncHandler(asy
   const locationsWithRoles = association.locations ?? [];
   const locationIds = association.locationIds ?? [];
 
-  // Identity + Assignment model: always create ONE person record first
-  const person = await clientContactRepository.createPerson(tenantCompanyId!, {
+  // Identity + Assignment model: always create-or-get ONE person record first.
+  // 2026-04-19: createOrGetPerson dedupes by email when present, falling back
+  // to name+phone then name within the customer scope.
+  const { contact: person } = await clientContactRepository.createOrGetPerson(tenantCompanyId!, {
     customerCompanyId,
     firstName: contactFields.firstName ?? "",
     lastName: contactFields.lastName ?? "",

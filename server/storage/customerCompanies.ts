@@ -31,6 +31,15 @@ export interface CustomerCompanyOverview {
     openJobs: number;
     openInvoices: number;
   };
+  // 2026-04-19 Fix B: canonical billing aggregates computed over the
+  // FULL invoice set; UI uses these instead of deriving from the
+  // truncated `invoices` list.
+  billingAggregates: {
+    lifetimeRevenue: string;
+    paidYtd: string;
+    outstanding: { count: number; total: string; overdueTotal: string };
+    agingBuckets: { current: string; d30: string; d60: string; d90: string };
+  } | null;
 }
 
 export interface LocationsPaginationOptions {
@@ -673,7 +682,9 @@ export class CustomerCompanyRepository extends BaseRepository {
 
     // Get jobs and invoices through locationIds (limited to 100 for performance)
     // Bug fix: apply activeJobFilter() to exclude soft-deleted jobs (deletedAt IS NULL, isActive = true)
-    const [jobsList, invoicesList] = await Promise.all([
+    // 2026-04-19 Fix B: billing aggregates computed over the FULL
+    // invoice set in parallel with the truncated list reads.
+    const [jobsList, invoicesList, aggregates] = await Promise.all([
       locationIds.length === 0
         ? []
         : db
@@ -701,6 +712,7 @@ export class CustomerCompanyRepository extends BaseRepository {
             )
             .orderBy(desc(invoices.createdAt))
             .limit(100),
+      this.getBillingAggregatesForLocations(companyId, locationIds),
     ]);
 
     // Calculate stats
@@ -720,6 +732,7 @@ export class CustomerCompanyRepository extends BaseRepository {
       jobs: jobsList,
       invoices: invoicesList,
       stats,
+      billingAggregates: aggregates,
     };
   }
 
@@ -762,6 +775,104 @@ export class CustomerCompanyRepository extends BaseRepository {
     ]);
 
     return { jobs: jobsList, invoices: invoicesList };
+  }
+
+  /**
+   * 2026-04-19 Fix B: canonical billing aggregates over the FULL invoice
+   * set for a client's locations — computed server-side so the overview
+   * totals (outstanding, past-due, aging buckets, lifetime revenue,
+   * paid-YTD) are correct even when the UI list is paginated/truncated.
+   *
+   * All amounts are returned as numeric strings (same convention as the
+   * other money fields) to avoid float drift on large ledgers.
+   */
+  async getBillingAggregatesForLocations(
+    companyId: string,
+    locationIds: string[],
+  ): Promise<{
+    lifetimeRevenue: string;
+    paidYtd: string;
+    outstanding: { count: number; total: string; overdueTotal: string };
+    agingBuckets: { current: string; d30: string; d60: string; d90: string };
+  }> {
+    this.assertCompanyId(companyId);
+
+    if (locationIds.length === 0) {
+      const zero = "0.00";
+      return {
+        lifetimeRevenue: zero,
+        paidYtd: zero,
+        outstanding: { count: 0, total: zero, overdueTotal: zero },
+        agingBuckets: { current: zero, d30: zero, d60: zero, d90: zero },
+      };
+    }
+
+    // Canonical unpaid statuses must match `UNPAID_INVOICE_STATUSES` in
+    // `@shared/invoiceStatus`. Inlined here as a SQL fragment to keep
+    // this aggregate a single round-trip.
+    const unpaidSql = sql.raw("'awaiting_payment', 'sent', 'partial_paid'");
+    const ytdStart = `${new Date().getUTCFullYear()}-01-01`;
+
+    // Single query covering every aggregate the client overview needs.
+    // SUM(balance) for outstanding / aging to match the canonical A/R
+    // math; SUM(total) for paid rows since balance is 0 on paid.
+    const [row] = await db
+      .select({
+        lifetimeRevenue: sql<string>`COALESCE(SUM(CAST(${invoices.total} AS numeric)) FILTER (WHERE ${invoices.status} = 'paid'), 0)::text`,
+        paidYtd: sql<string>`COALESCE(SUM(CAST(${invoices.total} AS numeric)) FILTER (
+          WHERE ${invoices.status} = 'paid' AND ${invoices.issueDate} >= ${ytdStart}
+        ), 0)::text`,
+        outstandingCount: sql<number>`COUNT(*) FILTER (WHERE ${invoices.status} IN (${unpaidSql}))::int`,
+        outstandingTotal: sql<string>`COALESCE(SUM(CAST(${invoices.balance} AS numeric)) FILTER (
+          WHERE ${invoices.status} IN (${unpaidSql})
+        ), 0)::text`,
+        overdueTotal: sql<string>`COALESCE(SUM(CAST(${invoices.balance} AS numeric)) FILTER (
+          WHERE ${invoices.status} IN (${unpaidSql})
+            AND ${invoices.dueDate} IS NOT NULL
+            AND ${invoices.dueDate} < CURRENT_DATE
+        ), 0)::text`,
+        agingCurrent: sql<string>`COALESCE(SUM(CAST(${invoices.balance} AS numeric)) FILTER (
+          WHERE ${invoices.status} IN (${unpaidSql})
+            AND (${invoices.dueDate} IS NULL OR ${invoices.dueDate} >= CURRENT_DATE)
+        ), 0)::text`,
+        aging30: sql<string>`COALESCE(SUM(CAST(${invoices.balance} AS numeric)) FILTER (
+          WHERE ${invoices.status} IN (${unpaidSql})
+            AND ${invoices.dueDate} < CURRENT_DATE
+            AND ${invoices.dueDate} >= CURRENT_DATE - INTERVAL '30 days'
+        ), 0)::text`,
+        aging60: sql<string>`COALESCE(SUM(CAST(${invoices.balance} AS numeric)) FILTER (
+          WHERE ${invoices.status} IN (${unpaidSql})
+            AND ${invoices.dueDate} < CURRENT_DATE - INTERVAL '30 days'
+            AND ${invoices.dueDate} >= CURRENT_DATE - INTERVAL '60 days'
+        ), 0)::text`,
+        aging90: sql<string>`COALESCE(SUM(CAST(${invoices.balance} AS numeric)) FILTER (
+          WHERE ${invoices.status} IN (${unpaidSql})
+            AND ${invoices.dueDate} < CURRENT_DATE - INTERVAL '60 days'
+        ), 0)::text`,
+      })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.companyId, companyId),
+          inArray(invoices.locationId, locationIds),
+        ),
+      );
+
+    return {
+      lifetimeRevenue: row?.lifetimeRevenue ?? "0",
+      paidYtd: row?.paidYtd ?? "0",
+      outstanding: {
+        count: Number(row?.outstandingCount ?? 0),
+        total: row?.outstandingTotal ?? "0",
+        overdueTotal: row?.overdueTotal ?? "0",
+      },
+      agingBuckets: {
+        current: row?.agingCurrent ?? "0",
+        d30: row?.aging30 ?? "0",
+        d60: row?.aging60 ?? "0",
+        d90: row?.aging90 ?? "0",
+      },
+    };
   }
 
   // ========================================

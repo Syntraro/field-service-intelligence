@@ -19,8 +19,8 @@ import {
 import { impersonationService } from "../impersonationService";
 import { platformAuditService } from "./platformAuditService";
 import { db } from "../db";
-import { companies, companySettings, users } from "@shared/schema";
-import { eq, sql, inArray } from "drizzle-orm";
+import { companies, users } from "@shared/schema";
+import { inArray } from "drizzle-orm";
 import type { ImpersonationSession } from "@shared/schema";
 
 // Allowed duration buckets per spec: 15 / 30 / 60 minutes.
@@ -178,10 +178,9 @@ async function list(input: ListInput) {
       ? db
           .select({
             id: companies.id,
-            name: sql<string>`COALESCE(${companySettings.companyName}, ${companies.name})`,
+            name: companies.name,
           })
           .from(companies)
-          .leftJoin(companySettings, eq(companySettings.companyId, companies.id))
           .where(inArray(companies.id, companyIds))
       : Promise.resolve([] as { id: string; name: string }[]),
     userIds.length > 0

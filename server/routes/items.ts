@@ -67,13 +67,19 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
 }));
 
 // POST /api/items - Create new item
+//
+// 2026-04-19: routes through the canonical `createOrGetItem` so concurrent
+// tabs / repeat submits can't produce twin rows. Case-insensitive dedupe
+// scope: (companyId, type, lower(name)). Soft-deleted matches are
+// reactivated rather than re-inserted. The matching unique index in
+// `2026_04_19_items_unique_name_per_type.sql` is the safety net.
 router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const userId = req.user?.id;
   if (!companyId || !userId) throw createError(401, "Unauthorized");
 
   const validated = validateSchema(createItemSchema, req.body);
-  const created = await storage.createItem(companyId, userId, {
+  const created = await storage.createOrGetItem(companyId, userId, {
     ...validated,
     cost: toDbNumericString(validated.cost),
     markupPercent: toDbNumericString(validated.markupPercent),

@@ -237,9 +237,11 @@ export async function getTenantDetail(companyId: string): Promise<TenantAccountD
     .select({
       id: companies.id,
       name: companies.name,
-      // Phase 7 identity fix: user-configured name from company_settings.
-      // Prefer this when present; fall back to the signup-time companies.name.
-      displayName: companySettings.companyName,
+      // 2026-04-19 Profile consolidation: `companies.name` is canonical.
+      // `displayName` is preserved on the response shape for backward
+      // compatibility with existing Ops Portal consumers, but it now
+      // mirrors `name` rather than being a separate settings-side value.
+      displayName: companies.name,
       createdAt: companies.createdAt,
       subscriptionStatus: companies.subscriptionStatus,
       subscriptionPlan: companies.subscriptionPlan,
@@ -248,7 +250,6 @@ export async function getTenantDetail(companyId: string): Promise<TenantAccountD
       qboRealmId: companies.qboRealmId,
     })
     .from(companies)
-    .leftJoin(companySettings, eq(companySettings.companyId, companies.id))
     .where(eq(companies.id, companyId))
     .limit(1);
 

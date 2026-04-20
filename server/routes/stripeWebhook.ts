@@ -40,6 +40,7 @@ import { db } from "../db";
 import { payments } from "@shared/schema";
 import { paymentRepository } from "../storage/payments";
 import { getStripeClient, getStripeWebhookSecret } from "../services/stripeClient";
+import { emailDispatchService } from "../services/emailDispatchService";
 
 const WEBHOOK_PATH = "/api/webhooks/stripe";
 
@@ -147,6 +148,25 @@ async function handlePaymentIntentSucceeded(
       paymentId: metadata.prospectivePaymentId,
       amount: amountDollars,
     });
+
+    // 2026-04-18 Phase 11: fire customer payment-receipt email. Runs
+    // AFTER the canonical ledger write so the rendered balance reflects
+    // the just-committed payment. Failures here must not break webhook
+    // acknowledgement — Stripe's job is done; the receipt is a
+    // downstream notification.
+    try {
+      await emailDispatchService.sendPaymentReceiptEmail({
+        tenantId: metadata.companyId,
+        invoiceId: metadata.invoiceId,
+        paymentAmount: amountDollars,
+      });
+    } catch (receiptErr: any) {
+      logAnomaly("payment_receipt_send_failed", {
+        eventId: event.id,
+        invoiceId: metadata.invoiceId,
+        message: receiptErr?.message ?? String(receiptErr),
+      });
+    }
   } catch (err: any) {
     // Common case: replay — PK or provider_event_id UNIQUE violation.
     // Treat as already-ingested (200 ACK) per the Stripe pattern.

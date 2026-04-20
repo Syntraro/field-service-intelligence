@@ -239,7 +239,10 @@ export default function Dashboard() {
 
   // Dashboard action modal state
   const [actionModalOpen, setActionModalOpen] = useState(false);
-  const [actionModalMode, setActionModalMode] = useState<DashboardActionMode>("unscheduled");
+  // 2026-04-19 Task B: default mode aligned with the first Jobs card row after
+  // consolidation (Action Required). No runtime effect — just keeps the initial
+  // state readable.
+  const [actionModalMode, setActionModalMode] = useState<DashboardActionMode>("action_required");
   const openActionModal = (mode: DashboardActionMode) => { setActionModalMode(mode); setActionModalOpen(true); };
 
   // 2026-04-08 freshness tier:
@@ -306,6 +309,17 @@ export default function Dashboard() {
             <TodaysOperationsKPIs today={todaySummary} isLoading={todayLoading} />
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              {/* 2026-04-19 Task B: Jobs card consolidated from four rows
+                  (past-due / on-hold / unscheduled / ready-to-invoice) into
+                  three operational buckets. The underlying counts still come
+                  from the canonical workflow endpoint (no new aggregation
+                  added) — we just roll overdue + unscheduled into a single
+                  "Scheduling Issues" row, and the drilldown modal renders
+                  both sections with a labelled divider. overdueCount and
+                  unscheduledCount are mutually exclusive by construction in
+                  server/storage/dashboard.ts (overdue requires
+                  scheduledStart IS NOT NULL; unscheduled requires
+                  scheduledStart IS NULL), so summing them is safe. */}
               <WorklistCard
                 title="Jobs"
                 icon={Briefcase}
@@ -315,10 +329,30 @@ export default function Dashboard() {
                 elevated
                 isLoading={workflowLoading}
                 rows={[
-                  { label: "Jobs past due date — need rescheduling", value: workflowData?.jobs.overdueCount ?? 0, action: "alerts.overdueJobs", warn: true, urgentBg: true, onClick: () => openActionModal("overdue") },
-                  { label: "Jobs on hold — needs action", value: workflowData?.jobs.onHoldCount ?? 0, action: "ops.onHold", warn: true, onClick: () => openActionModal("on_hold") },
-                  { label: "Jobs needing scheduling", value: workflowData?.jobs.unscheduledCount ?? 0, action: "jobs.unscheduled", onClick: () => openActionModal("unscheduled") },
-                  { label: "Jobs completed — ready for invoice", value: workflowData?.jobs.requiresInvoicingCount ?? 0, action: "jobs.needsInvoicing", onClick: () => openActionModal("ready_to_invoice") },
+                  {
+                    label: "Action Required",
+                    value: workflowData?.jobs.onHoldCount ?? 0,
+                    action: "ops.onHold",
+                    warn: true,
+                    onClick: () => openActionModal("action_required"),
+                  },
+                  {
+                    label: "Scheduling Issues",
+                    value: (workflowData?.jobs.overdueCount ?? 0) + (workflowData?.jobs.unscheduledCount ?? 0),
+                    sub: (workflowData?.jobs.overdueCount ?? 0) > 0
+                      ? `${workflowData?.jobs.overdueCount} past due`
+                      : undefined,
+                    action: "alerts.overdueJobs",
+                    warn: (workflowData?.jobs.overdueCount ?? 0) > 0,
+                    urgentBg: (workflowData?.jobs.overdueCount ?? 0) > 0,
+                    onClick: () => openActionModal("scheduling_issues"),
+                  },
+                  {
+                    label: "Ready for Invoice",
+                    value: workflowData?.jobs.requiresInvoicingCount ?? 0,
+                    action: "jobs.needsInvoicing",
+                    onClick: () => openActionModal("ready_to_invoice"),
+                  },
                 ]}
               />
               <WorklistCard

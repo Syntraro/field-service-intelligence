@@ -32,6 +32,17 @@ import { Button } from "@/components/ui/button";
 
 // ── Types ──
 
+/**
+ * 2026-04-19: optional multi-action create. When provided, replaces the
+ * single createLabel/onCreateNew button with a row of typed-create
+ * actions (e.g., "Create 'X' as Part" / "Create 'X' as Labor"). Existing
+ * single-action callers continue to use createLabel + onCreateNew unchanged.
+ */
+export interface CreateOption {
+  label: string;
+  onCreate: (searchText: string) => void;
+}
+
 export interface CreateOrSelectFieldProps<T> {
   /** Field label */
   label: string;
@@ -56,10 +67,16 @@ export interface CreateOrSelectFieldProps<T> {
   getDescription?: (item: T) => string | null | undefined;
   /** Render the selected value display (optional — defaults to label + change button) */
   renderSelected?: (item: T, onClear: () => void) => ReactNode;
-  /** Label for the "create new" action */
+  /** Label for the "create new" action (single-action mode) */
   createLabel?: string;
-  /** Called when user clicks "create new" — receives current search text */
+  /** Called when user clicks "create new" — receives current search text (single-action mode) */
   onCreateNew?: (searchText: string) => void;
+  /**
+   * Multi-action create. Mutually exclusive with createLabel/onCreateNew —
+   * when provided, renders one action row per option below the search results.
+   * Use for context-aware typed creation (e.g., Part vs Labor in Parts & Labor).
+   */
+  createOptions?: CreateOption[];
   /** Input placeholder */
   placeholder?: string;
   /** Disabled state */
@@ -83,6 +100,7 @@ export function CreateOrSelectField<T>({
   renderSelected,
   createLabel,
   onCreateNew,
+  createOptions,
   placeholder = "Search...",
   disabled = false,
   compact = false,
@@ -159,8 +177,26 @@ export function CreateOrSelectField<T>({
                 <div className="px-3 py-2 text-xs text-slate-400">No results</div>
               )}
 
-              {/* Create new action */}
-              {!searchLoading && onCreateNew && createLabel && (
+              {/* Create new action(s).
+                  2026-04-19: prefer the multi-action `createOptions` when
+                  provided (e.g., Quick Add in Parts & Labor offers
+                  Part vs Labor). Falls back to the single-action
+                  createLabel/onCreateNew for the existing callers. */}
+              {!searchLoading && createOptions && createOptions.length > 0 && (
+                <div className="border-t border-slate-200">
+                  {createOptions.map((opt, idx) => (
+                    <button
+                      key={`${opt.label}-${idx}`}
+                      className="w-full text-left px-3 py-2.5 hover:bg-blue-50 border-b border-slate-100 last:border-b-0 flex items-center gap-2"
+                      onClick={() => opt.onCreate(searchText)}
+                    >
+                      <UserPlus className="h-3.5 w-3.5 text-blue-500 shrink-0" />
+                      <span className="text-sm font-medium text-blue-600">{opt.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {!searchLoading && (!createOptions || createOptions.length === 0) && onCreateNew && createLabel && (
                 <button
                   className="w-full text-left px-3 py-2.5 hover:bg-blue-50 border-t border-slate-200 flex items-center gap-2"
                   onClick={() => onCreateNew(searchText)}

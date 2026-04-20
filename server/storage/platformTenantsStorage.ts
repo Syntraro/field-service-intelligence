@@ -12,9 +12,9 @@
  */
 
 import { db } from "../db";
-import { and, desc, eq, ilike, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, ne, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
-import { companies, companySettings, impersonationSessions } from "@shared/schema";
+import { companies, impersonationSessions } from "@shared/schema";
 
 export interface PlatformTenantRow {
   id: string;
@@ -42,13 +42,12 @@ export interface SearchTenantsResult {
 function buildFilter(params: SearchTenantsParams): SQL | undefined {
   const preds: SQL[] = [];
   if (params.q && params.q.trim().length > 0) {
-    // Search matches BOTH the canonical companies.name and the user-set
-    // company_settings.companyName — either can be the visible label.
+    // 2026-04-19 Profile consolidation: `companies.name` is the single
+    // canonical display name. The old fallback to company_settings.companyName
+    // is no longer required — the Phase 1 backfill wrote meaningful settings
+    // values onto `companies`.
     const like = `%${params.q.trim()}%`;
-    preds.push(or(
-      ilike(companies.name, like),
-      ilike(companySettings.companyName, like),
-    )!);
+    preds.push(ilike(companies.name, like));
   }
   if (params.status) {
     preds.push(eq(companies.subscriptionStatus, params.status));
@@ -69,14 +68,13 @@ function buildFilter(params: SearchTenantsParams): SQL | undefined {
 export async function searchTenants(params: SearchTenantsParams): Promise<SearchTenantsResult> {
   const where = buildFilter(params);
 
-  // Phase 7 identity fix: COALESCE the user-configured company_settings.companyName
-  // over the signup-time companies.name. Legacy rows sometimes hold an
-  // email-derived placeholder ("service's Company") in companies.name while
-  // the real name lives in company_settings.companyName.
+  // 2026-04-19 Profile consolidation: `companies.name` is canonical — the
+  // Phase 1 backfill folded meaningful `company_settings.company_name`
+  // values onto the companies row. No COALESCE / leftJoin needed.
   const rowsQuery = db
     .select({
       id: companies.id,
-      name: sql<string>`COALESCE(${companySettings.companyName}, ${companies.name})`,
+      name: companies.name,
       plan: companies.subscriptionPlan,
       status: companies.subscriptionStatus,
       createdAt: companies.createdAt,
@@ -89,13 +87,11 @@ export async function searchTenants(params: SearchTenantsParams): Promise<Search
         WHERE ${impersonationSessions.companyId} = ${companies.id}
       )`,
     })
-    .from(companies)
-    .leftJoin(companySettings, eq(companySettings.companyId, companies.id));
+    .from(companies);
 
   const totalQuery = db
     .select({ count: sql<number>`count(*)::int` })
-    .from(companies)
-    .leftJoin(companySettings, eq(companySettings.companyId, companies.id));
+    .from(companies);
 
   const [rowsResult, totalResult] = await Promise.all([
     (where ? rowsQuery.where(where) : rowsQuery)

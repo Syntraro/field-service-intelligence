@@ -32,7 +32,14 @@ interface JobEquipmentSectionProps {
   onExternalAddOpenChange?: (open: boolean) => void;
 }
 
-const EQUIPMENT_TYPES: Record<string, string> = {
+// 2026-04-19 Equipment types are now tenant-owned (see equipment_types
+// table + EquipmentTypeCombobox). New equipment writes the human-readable
+// type name directly into `location_equipment.equipment_type`. This map
+// remains ONLY as a display fallback so legacy rows that still hold
+// snake_case slugs (rtu, split_system, walk_in_cooler, ...) render with
+// human labels until users edit them. Do not extend — add new types via
+// the combobox UI; they go to the per-tenant catalog table instead.
+const LEGACY_TYPE_LABELS: Record<string, string> = {
   rtu: "Rooftop Unit",
   split_system: "Split System",
   chiller: "Chiller",
@@ -147,7 +154,7 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
 
   const getEquipmentTypeLabel = (type: string | null) => {
     if (!type) return "-";
-    return EQUIPMENT_TYPES[type] || type;
+    return LEGACY_TYPE_LABELS[type] || type;
   };
 
   if (jobEquipmentLoading) {

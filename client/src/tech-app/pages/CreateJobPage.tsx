@@ -139,8 +139,12 @@ export function CreateJobPage() {
     <MobileShell showNav>
       <div className="bg-[#0f1a2e] px-3 pt-2 pb-2">
         <div className="flex items-center gap-2">
-          <button onClick={() => setLocation("/tech/today")} className="p-1 -ml-1 rounded-md hover:bg-white/10">
-            <ArrowLeft className="h-4 w-4 text-white" />
+          <button
+            onClick={() => setLocation("/tech/today")}
+            aria-label="Back"
+            className="min-h-[44px] min-w-[44px] -ml-2 flex items-center justify-center rounded-md hover:bg-white/10 active:bg-white/20"
+          >
+            <ArrowLeft className="h-5 w-5 text-white" />
           </button>
           <h1 className="text-base font-bold text-white">Create Job</h1>
         </div>

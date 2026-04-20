@@ -118,7 +118,9 @@ passport.deserializeUser(async (payload: SessionPayload | string, done) => {
       stripeSubscriptionId: company.stripeSubscriptionId,
       billingInterval: company.billingInterval,
       currentPeriodEnd: company.currentPeriodEnd,
-      cancelAtPeriodEnd: company.cancelAtPeriodEnd
+      cancelAtPeriodEnd: company.cancelAtPeriodEnd,
+      // 2026-04-19 Hybrid SaaS onboarding gate
+      onboardingCompletedAt: company.onboardingCompletedAt,
     };
 
     done(null, authenticatedUser as any);

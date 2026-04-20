@@ -16,8 +16,8 @@ import {
 import { internalSupportNotesStorage } from "../storage/internalSupportNotesStorage";
 import { platformAuditService } from "./platformAuditService";
 import { db } from "../db";
-import { companies, companySettings, users } from "@shared/schema";
-import { eq, sql, inArray } from "drizzle-orm";
+import { companies, users } from "@shared/schema";
+import { inArray } from "drizzle-orm";
 import type { Feedback, InternalSupportNote } from "@shared/schema";
 
 function userDisplayName(u: { fullName: string | null; firstName: string | null; lastName: string | null; email: string }) {
@@ -70,10 +70,9 @@ async function list(input: ListFeedbackInput) {
       ? db
           .select({
             id: companies.id,
-            name: sql<string>`COALESCE(${companySettings.companyName}, ${companies.name})`,
+            name: companies.name,
           })
           .from(companies)
-          .leftJoin(companySettings, eq(companySettings.companyId, companies.id))
           .where(inArray(companies.id, companyIds))
       : Promise.resolve([] as { id: string; name: string }[]),
     assigneeIds.length > 0

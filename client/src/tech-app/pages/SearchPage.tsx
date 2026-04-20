@@ -5,27 +5,39 @@
  */
 import { useState } from "react";
 import { useLocation } from "wouter";
-import { Search, MapPin, Phone, ChevronRight } from "lucide-react";
+import { Search, MapPin, Phone, ChevronRight, AlertCircle, Loader2 } from "lucide-react";
 import { MobileShell } from "../components/MobileShell";
 import { useLocationSearch } from "@/hooks/useLocationSearch";
+import { useDebouncedValue } from "../utils/useDebouncedValue";
 
 export function SearchPage() {
   const [, setLocation] = useLocation();
   const [search, setSearch] = useState("");
+  // Debounce the query string locally so the canonical `useLocationSearch`
+  // hook fires at most once per quiet window instead of on every keystroke.
+  // Does not change the hook's contract or query key.
+  const debouncedSearch = useDebouncedValue(search, 200);
 
-  const { data: results, isLoading } = useLocationSearch(search, { limit: 30 });
+  const { data: results, isLoading, isError, refetch } = useLocationSearch(debouncedSearch, { limit: 30 });
 
   const list = results ?? [];
 
   return (
     <MobileShell showNav>
       <div className="px-3 pt-3 pb-2">
+        <label htmlFor="tech-search-input" className="sr-only">Search clients or locations</label>
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" aria-hidden="true" />
           <input
+            id="tech-search-input"
+            type="search"
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search clients, locations..."
+            inputMode="search"
+            enterKeyHint="search"
+            autoComplete="off"
+            spellCheck={false}
             className="w-full h-10 pl-10 pr-3 text-sm border border-slate-200 rounded-md bg-white focus:ring-2 focus:ring-emerald-200 focus:border-emerald-300 transition-shadow"
             autoFocus
           />
@@ -41,13 +53,35 @@ export function SearchPage() {
           </div>
         )}
 
-        {search.length >= 2 && isLoading && (
-          <div className="text-center py-12 text-slate-400">
-            <p className="text-xs">Searching...</p>
+        {/* "Searching…" covers both the debounce wait (search !== debouncedSearch)
+            and the network fetch, so the user never sees a misleading
+            "No results" flash while typing. */}
+        {search.length >= 2 && (isLoading || search !== debouncedSearch) && (
+          <div
+            className="flex flex-col items-center justify-center py-12 text-slate-400"
+            role="status"
+            aria-live="polite"
+          >
+            <Loader2 className="h-6 w-6 animate-spin mb-2 opacity-50" aria-hidden="true" />
+            <p className="text-xs font-medium">Searching…</p>
           </div>
         )}
 
-        {search.length >= 2 && !isLoading && list.length === 0 && (
+        {search.length >= 2 && search === debouncedSearch && !isLoading && isError && (
+          <div className="text-center py-12 px-6">
+            <AlertCircle className="h-10 w-10 mx-auto mb-2 text-slate-400 opacity-60" />
+            <p className="text-sm font-medium text-slate-600">Search failed</p>
+            <p className="text-xs mt-1 text-slate-400">Check your connection and try again.</p>
+            <button
+              onClick={() => refetch()}
+              className="mt-3 min-h-[44px] px-5 rounded-md border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 active:bg-slate-100"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {search.length >= 2 && search === debouncedSearch && !isLoading && !isError && list.length === 0 && (
           <div className="text-center py-12 text-slate-400">
             <p className="text-sm font-medium">No results found</p>
             <p className="text-xs mt-1">Try a different search term</p>

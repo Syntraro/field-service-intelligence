@@ -17,8 +17,10 @@ import {
 export class ApiError extends Error {
   status: number;
   url: string;
-  /** Server-supplied error code (e.g., "VERSION_MISMATCH", "VISIT_CONFLICT", "ACTIVE_TIMER_EXISTS").
-   *  Extracted from response body `code` field so callers can distinguish 409 subtypes. */
+  /** Server-supplied error code (e.g., "VERSION_MISMATCH", "ACTIVE_VISIT_CONFLICT",
+   *  "ACTIVE_TIMER_EXISTS"). Extracted from response body `code` field so callers
+   *  can distinguish 409 subtypes. (Phase 2: the pre-multi-visit `VISIT_CONFLICT`
+   *  subtype was removed server-side and no longer appears here.) */
   code?: string;
   /** Additional structured data from the response body (e.g., activeItem for timer conflicts). */
   data?: Record<string, any>;
@@ -85,6 +87,13 @@ function notifySessionExpired(url: string): void {
   // Skip endpoints that naturally return 401 during bootstrap or use non-fetch transports
   if (url === "/api/auth/me") return;
   if (url === "/api/dispatch/stream") return;
+  // 2026-04-19 Portal auth fix: all portal endpoints are guarded by a
+  // SEPARATE auth system (`req.session.portal` magic-link sessions), not
+  // Passport/staff auth. A 401 on any /api/portal/* call must NOT open
+  // the staff SessionExpiredDialog — doing so sent portal users to the
+  // office /login page. Portal auth failures are handled by the
+  // `<PortalProtected>` guard which redirects to `/portal/login`.
+  if (url.startsWith("/api/portal/") || url === "/api/portal") return;
 
   // 2026-04-10 Phase-2 Fix B: one-shot guard. The first 401 in a session-expired
   // burst opens the modal; subsequent in-flight 401s are swallowed until login.

@@ -16,7 +16,8 @@
 
 import { eq, and, sql, desc, asc, or, isNull, isNotNull, inArray, ilike, gt, lt } from "drizzle-orm";
 import { db } from "../db";
-import { invoices, clients, customerCompanies, jobs } from "@shared/schema";
+import { invoices, clients, customerCompanies, jobs, payments } from "@shared/schema";
+import { UNPAID_INVOICE_STATUSES as SHARED_UNPAID_INVOICE_STATUSES } from "@shared/invoiceStatus";
 import type { QueryCtx } from "../lib/queryCtx";
 import { activeJobFilter } from "./jobFilters";
 import { locationDisplayNameExpr } from "../lib/queryHelpers";
@@ -113,15 +114,25 @@ export interface InvoiceStatsResult {
   outstandingCount: number;
   overdueCount: number;
   draftCount: number;
+  /** SUM(invoice.total) for unpaid invoices. Pre-existing. */
   totalOutstanding: number;
+  /** 2026-04-18 Phase 9: SUM(invoice.balance) for UNPAID + PAST-DUE
+   *  invoices only. Accurate overdue $ for dashboard A/R signals;
+   *  replaces the pre-Phase-9 "overdue uses outstanding total"
+   *  approximation on the route layer. */
+  totalOverdue: number;
 }
 
 // ---------------------------------------------------------------------------
 // Internal: shared select fields and helpers
 // ---------------------------------------------------------------------------
 
-/** Canonical unpaid/outstanding invoice statuses — invoices awaiting or with pending payment. */
-export const UNPAID_INVOICE_STATUSES: string[] = ["awaiting_payment", "sent", "partial_paid"];
+/**
+ * Canonical unpaid/outstanding invoice statuses — invoices awaiting or
+ * with pending payment. Re-exported from `@shared/invoiceStatus` so the
+ * same list is visible to the client runtime.
+ */
+export const UNPAID_INVOICE_STATUSES: string[] = SHARED_UNPAID_INVOICE_STATUSES;
 
 /** Raw SQL fragment derived from UNPAID_INVOICE_STATUSES for hand-written queries. */
 export const UNPAID_INVOICE_STATUS_SQL = UNPAID_INVOICE_STATUSES.map(s => `'${s}'`).join(", ");
@@ -142,8 +153,7 @@ function computeIsPastDue(
   dueDate: string | Date | null,
   balance: string | number | null
 ): boolean {
-  const unpaidStatuses = ["awaiting_payment", "sent", "partial_paid"];
-  if (!status || !unpaidStatuses.includes(status)) return false;
+  if (!status || !UNPAID_INVOICE_STATUSES.includes(status)) return false;
 
   const balanceNum = typeof balance === "string" ? parseFloat(balance) : (balance ?? 0);
   if (balanceNum <= 0) return false;
@@ -400,9 +410,15 @@ export async function getInvoiceStats(
     }
   }
 
-  // Overdue count requires a separate query since isPastDue depends on dueDate
+  // 2026-04-18 Phase 9: overdue count AND total in one aggregate query.
+  // SUMs `invoice.balance` (the receivable side) rather than `invoice.total`
+  // so the dashboard A/R figure reflects what the customer actually owes
+  // today, net of any partial payments.
   const overdueRows = await ctx.db
-    .select({ count: sql<number>`count(*)::int` })
+    .select({
+      count: sql<number>`count(*)::int`,
+      total: sql<number>`COALESCE(SUM(CAST(${invoices.balance} AS numeric)), 0)`,
+    })
     .from(invoices)
     .where(
       and(
@@ -414,6 +430,7 @@ export async function getInvoiceStats(
     );
 
   overdueCount = Number(overdueRows[0]?.count ?? 0);
+  const totalOverdue = Number(overdueRows[0]?.total ?? 0);
 
   return {
     byStatus: rows.map(r => ({
@@ -425,6 +442,7 @@ export async function getInvoiceStats(
     overdueCount,
     draftCount,
     totalOutstanding,
+    totalOverdue,
   };
 }
 
@@ -513,5 +531,419 @@ export async function getInvoicesDueForReminder(
     dueDate: r.dueDate,
     lastReminderAt: r.lastReminderAt,
   }));
+}
+
+// ---------------------------------------------------------------------------
+// 2026-04-18 Client billing — canonical per-client aggregates
+// ---------------------------------------------------------------------------
+// Backend support for the client billing/account page. Two read-only
+// aggregators that reuse the existing invoices + payments tables; no schema
+// change, no provider-specific logic in the storage layer (Stripe / QBO are
+// surfaced only as display-only flags on the summary + history rows).
+//
+// Scope is a discriminated union keyed on `customerCompanyId` vs `locationId`
+// so every caller has to pick exactly one. Tenant isolation is enforced by
+// `companyId = ctx.tenantId` on every SELECT; scope ownership is assumed to
+// be verified at the route layer (existing repo checks), so these methods
+// accept the id as-is.
+// ---------------------------------------------------------------------------
+
+/** Exactly one of the fields must be set. */
+export type ClientBillingScope =
+  | { customerCompanyId: string; locationId?: never }
+  | { locationId: string; customerCompanyId?: never };
+
+export interface ClientBillingSummary {
+  scope: "company" | "location";
+  scopeId: string;
+  currency: string | null;
+  totals: {
+    /** SUM(balance) over unpaid open invoices in scope. Money string. */
+    outstanding: string;
+    /** SUM(balance) over unpaid + past-due invoices in scope. Money string. */
+    overdue: string;
+    overdueCount: number;
+    /** COUNT(*) over unpaid open invoices in scope. */
+    openCount: number;
+    /** Always `null` today — no credits table. Never "0" (avoids false zero). */
+    credits: string | null;
+    lastPayment: {
+      paymentId: string;
+      invoiceId: string;
+      amount: string;
+      receivedAt: string;
+    } | null;
+  };
+  /** Display-only flags; never mix into save payloads. */
+  providerHints: {
+    hasStripe: boolean;
+    hasQboSync: boolean;
+  };
+}
+
+export interface ClientBillingHistoryRow {
+  kind: "invoice_issued" | "payment" | "refund" | "reversal";
+  occurredAt: string;
+  /** Signed delta against the client's AR: +invoice_issued, -payment, +refund, +reversal. */
+  signedDelta: string;
+  /** Server-computed running AR balance, accumulated over occurredAt ASC. */
+  runningBalance: string;
+  label: string;
+  invoiceId?: string;
+  paymentId?: string;
+  providerSource?: "manual" | "stripe" | "qbo";
+}
+
+/** Internal: resolve scope → (SQL filter, kind, id). */
+function resolveBillingScope(scope: ClientBillingScope) {
+  if (scope.customerCompanyId) {
+    return {
+      filter: eq(invoices.customerCompanyId, scope.customerCompanyId),
+      kind: "company" as const,
+      id: scope.customerCompanyId,
+    };
+  }
+  return {
+    filter: eq(invoices.locationId, scope.locationId!),
+    kind: "location" as const,
+    id: scope.locationId!,
+  };
+}
+
+/**
+ * Canonical client-level billing summary.
+ *
+ * Derives every metric from existing columns:
+ *   - outstanding / overdue: SUM(invoices.balance) over unpaid-set, with a
+ *     second filter for past-due.
+ *   - openCount / overdueCount: COUNT(*) with matching filters.
+ *   - hasQboSync: BOOL_OR(invoices.qboInvoiceId IS NOT NULL) across ALL
+ *     invoices in scope (not just unpaid).
+ *   - lastPayment: MAX(receivedAt) via ORDER BY + LIMIT 1 over payment rows
+ *     with paymentType='payment' (ignores refund/reversal).
+ *   - hasStripe: existence check against payments.providerSource='stripe'.
+ *   - credits: intentionally null — no credits table exists in the schema.
+ *
+ * Three parallel queries. No schema change. No provider-specific logic.
+ */
+export async function getClientBillingSummary(
+  ctx: QueryCtx,
+  scope: ClientBillingScope,
+): Promise<ClientBillingSummary> {
+  const { filter: scopeFilter, kind: scopeKind, id: scopeId } = resolveBillingScope(scope);
+  // Inline unpaid-status list for FILTER aggregates. UNPAID_INVOICE_STATUS_SQL
+  // is a compile-time constant (no user input) — safe to raw-interpolate.
+  const unpaidList = sql.raw(UNPAID_INVOICE_STATUS_SQL);
+
+  const [aggResults, lastPaymentResults, stripeResults] = await Promise.all([
+    ctx.db
+      .select({
+        openCount: sql<number>`COUNT(*) FILTER (WHERE ${invoices.status} IN (${unpaidList}) AND CAST(${invoices.balance} AS numeric) > 0)::int`,
+        outstanding: sql<string>`COALESCE(SUM(CAST(${invoices.balance} AS numeric)) FILTER (WHERE ${invoices.status} IN (${unpaidList}) AND CAST(${invoices.balance} AS numeric) > 0), 0)::text`,
+        overdueCount: sql<number>`COUNT(*) FILTER (WHERE ${invoices.status} IN (${unpaidList}) AND CAST(${invoices.balance} AS numeric) > 0 AND ${invoices.dueDate} < CURRENT_DATE)::int`,
+        overdueTotal: sql<string>`COALESCE(SUM(CAST(${invoices.balance} AS numeric)) FILTER (WHERE ${invoices.status} IN (${unpaidList}) AND CAST(${invoices.balance} AS numeric) > 0 AND ${invoices.dueDate} < CURRENT_DATE), 0)::text`,
+        hasQboSync: sql<boolean>`COALESCE(BOOL_OR(${invoices.qboInvoiceId} IS NOT NULL), false)`,
+        currency: sql<string | null>`MAX(${invoices.currency})`,
+      })
+      .from(invoices)
+      .where(and(eq(invoices.companyId, ctx.tenantId), scopeFilter)),
+    ctx.db
+      .select({
+        id: payments.id,
+        amount: payments.amount,
+        receivedAt: payments.receivedAt,
+        invoiceId: payments.invoiceId,
+      })
+      .from(payments)
+      .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+      .where(and(
+        eq(invoices.companyId, ctx.tenantId),
+        scopeFilter,
+        eq(payments.paymentType, "payment"),
+      ))
+      .orderBy(desc(payments.receivedAt))
+      .limit(1),
+    ctx.db
+      .select({ cnt: sql<number>`count(*)::int` })
+      .from(payments)
+      .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+      .where(and(
+        eq(invoices.companyId, ctx.tenantId),
+        scopeFilter,
+        eq(payments.providerSource, "stripe"),
+      ))
+      .limit(1),
+  ]);
+
+  const agg = aggResults[0];
+  const lastPaymentRow = lastPaymentResults[0];
+  const stripeRow = stripeResults[0];
+
+  return {
+    scope: scopeKind,
+    scopeId,
+    currency: agg?.currency ?? null,
+    totals: {
+      outstanding: agg?.outstanding ?? "0",
+      overdue: agg?.overdueTotal ?? "0",
+      overdueCount: Number(agg?.overdueCount ?? 0),
+      openCount: Number(agg?.openCount ?? 0),
+      credits: null,
+      lastPayment: lastPaymentRow
+        ? {
+            paymentId: lastPaymentRow.id,
+            invoiceId: lastPaymentRow.invoiceId,
+            amount: lastPaymentRow.amount ?? "0",
+            receivedAt: toISOOrNull(lastPaymentRow.receivedAt) ?? "",
+          }
+        : null,
+    },
+    providerHints: {
+      hasStripe: Number(stripeRow?.cnt ?? 0) > 0,
+      hasQboSync: Boolean(agg?.hasQboSync ?? false),
+    },
+  };
+}
+
+/**
+ * Canonical client-level billing history / ledger.
+ *
+ * Returns a unified stream of:
+ *   - invoice_issued events (status != 'draft'; occurredAt = sent/issue/created, first non-null)
+ *   - payment / refund / reversal events from `payments`
+ *
+ * `signedDelta` is the AR-relative delta:
+ *   - invoice_issued: +total (AR increases when billed)
+ *   - payment:        -amount (payment amount is stored positive; AR decreases)
+ *   - refund:         -amount (amount is stored negative; double-negative = +)
+ *   - reversal:       -amount (same)
+ *
+ * `runningBalance` is computed server-side over occurredAt ASC so the client
+ * never re-aggregates. Rows are returned DESC (most recent first). `limit`
+ * caps the response size.
+ *
+ * Three source columns for "issued at" (COALESCE sentAt → issueDate → createdAt)
+ * tolerate the full lifecycle of in-schema state (legacy invoices with only
+ * createdAt, modern ones with sentAt set at the send event). issueDate is a
+ * `date` column so cast to timestamp before COALESCE.
+ */
+export async function getClientBillingHistory(
+  ctx: QueryCtx,
+  scope: ClientBillingScope,
+  options: { limit?: number } = {},
+): Promise<ClientBillingHistoryRow[]> {
+  const { filter: scopeFilter } = resolveBillingScope(scope);
+  const limit = Math.max(1, Math.min(options.limit ?? 200, 500));
+
+  const [invoiceRows, paymentRows] = await Promise.all([
+    ctx.db
+      .select({
+        id: invoices.id,
+        invoiceNumber: invoices.invoiceNumber,
+        total: invoices.total,
+        occurredAt: sql<Date | string | null>`COALESCE(${invoices.sentAt}, ${invoices.issueDate}::timestamp, ${invoices.createdAt})`,
+        qboInvoiceId: invoices.qboInvoiceId,
+      })
+      .from(invoices)
+      .where(and(
+        eq(invoices.companyId, ctx.tenantId),
+        scopeFilter,
+        sql`${invoices.status} <> 'draft'`,
+      )),
+    ctx.db
+      .select({
+        id: payments.id,
+        invoiceId: payments.invoiceId,
+        amount: payments.amount,
+        paymentType: payments.paymentType,
+        method: payments.method,
+        providerSource: payments.providerSource,
+        receivedAt: payments.receivedAt,
+        invoiceNumber: invoices.invoiceNumber,
+      })
+      .from(payments)
+      .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+      .where(and(
+        eq(invoices.companyId, ctx.tenantId),
+        scopeFilter,
+      )),
+  ]);
+
+  type RawEvent = {
+    kind: ClientBillingHistoryRow["kind"];
+    occurredAtMs: number;
+    occurredAt: string;
+    delta: number;
+    label: string;
+    invoiceId?: string;
+    paymentId?: string;
+    providerSource?: ClientBillingHistoryRow["providerSource"];
+  };
+
+  const toMs = (v: Date | string | null | undefined): number => {
+    if (!v) return 0;
+    if (v instanceof Date) return v.getTime();
+    return new Date(v).getTime();
+  };
+
+  const events: RawEvent[] = [];
+
+  for (const r of invoiceRows) {
+    const ms = toMs(r.occurredAt as any);
+    events.push({
+      kind: "invoice_issued",
+      occurredAtMs: ms,
+      occurredAt: toISOOrNull(r.occurredAt as any) ?? new Date(ms || Date.now()).toISOString(),
+      delta: Number(r.total ?? "0"),
+      label: r.invoiceNumber ? `Invoice #${r.invoiceNumber}` : "Invoice",
+      invoiceId: r.id,
+      providerSource: r.qboInvoiceId ? "qbo" : undefined,
+    });
+  }
+
+  for (const p of paymentRows) {
+    const amt = Number(p.amount ?? "0");
+    const kind = (p.paymentType ?? "payment") as ClientBillingHistoryRow["kind"];
+    const invoiceRef = p.invoiceNumber ? `Invoice #${p.invoiceNumber}` : "Invoice";
+    const providerLabel =
+      p.providerSource === "stripe"
+        ? "Stripe"
+        : p.providerSource === "qbo"
+          ? "QuickBooks"
+          : p.method ?? "manual";
+    const baseLabel =
+      kind === "payment" ? "Payment" : kind === "refund" ? "Refund" : "Reversal";
+    const ms = toMs(p.receivedAt as any);
+    events.push({
+      kind,
+      occurredAtMs: ms,
+      occurredAt: toISOOrNull(p.receivedAt as any) ?? new Date(ms || Date.now()).toISOString(),
+      delta: -amt, // see docstring: signedDelta = -amount for every payment kind
+      label: `${baseLabel} (${providerLabel}) · ${invoiceRef}`,
+      invoiceId: p.invoiceId,
+      paymentId: p.id,
+      providerSource: (p.providerSource ?? "manual") as ClientBillingHistoryRow["providerSource"],
+    });
+  }
+
+  // Accumulate running balance over ASC order, then reverse for DESC output.
+  events.sort((a, b) => a.occurredAtMs - b.occurredAtMs);
+  let running = 0;
+  const asc: ClientBillingHistoryRow[] = events.map((e) => {
+    running += e.delta;
+    return {
+      kind: e.kind,
+      occurredAt: e.occurredAt,
+      signedDelta: e.delta.toFixed(2),
+      runningBalance: running.toFixed(2),
+      label: e.label,
+      invoiceId: e.invoiceId,
+      paymentId: e.paymentId,
+      providerSource: e.providerSource,
+    };
+  });
+
+  return asc.reverse().slice(0, limit);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10 (2026-04-18) — Reconciliation signals
+//
+// Detects invoices whose persisted status + money fields have diverged
+// from each other. Canonical truth is `recalculateInvoiceBalance` —
+// this helper does NOT recompute or mutate, it only surfaces rows
+// that look inconsistent so a manager can reconcile them manually.
+//
+// Three suspicious shapes we detect:
+//   1) status = 'paid'              but balance > 0       (marked paid, still owed)
+//   2) balance <= 0 && amountPaid>0 but status IN unpaid  (fully collected, status stuck)
+//   3) status = 'partial_paid'      but amountPaid <= 0   (partial label, no payment rows)
+//
+// These arise from edge cases: QBO sync races, manual status edits,
+// or a payment delete that wasn't followed by recalculation. The
+// UI surfaces this as a banner so the user can click through and
+// trigger a fresh recalculation / correction.
+// ---------------------------------------------------------------------------
+
+export type ReconciliationIssueKind =
+  | "paid_with_balance"
+  | "zero_balance_still_unpaid"
+  | "partial_without_payment";
+
+export interface ReconciliationIssue {
+  invoiceId: string;
+  invoiceNumber: string | null;
+  status: string | null;
+  total: string | null;
+  amountPaid: string | null;
+  balance: string | null;
+  jobId: string | null;
+  locationDisplayName: string | null;
+  kind: ReconciliationIssueKind;
+}
+
+export async function getReconciliationIssues(
+  ctx: QueryCtx,
+  limit: number = 50,
+): Promise<ReconciliationIssue[]> {
+  const rows = await ctx.db
+    .select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      status: invoices.status,
+      total: invoices.total,
+      amountPaid: invoices.amountPaid,
+      balance: invoices.balance,
+      jobId: invoices.jobId,
+      locationDisplayName: locationDisplayNameExpr,
+    })
+    .from(invoices)
+    .leftJoin(clients, eq(invoices.locationId, clients.id))
+    .leftJoin(customerCompanies, eq(invoices.customerCompanyId, customerCompanies.id))
+    .where(
+      and(
+        eq(invoices.companyId, ctx.tenantId),
+        or(
+          and(
+            eq(invoices.status, "paid"),
+            sql`CAST(${invoices.balance} AS numeric) > 0`,
+          ),
+          and(
+            inArray(invoices.status, UNPAID_INVOICE_STATUSES),
+            sql`CAST(${invoices.balance} AS numeric) <= 0`,
+            sql`CAST(${invoices.amountPaid} AS numeric) > 0`,
+          ),
+          and(
+            eq(invoices.status, "partial_paid"),
+            sql`CAST(${invoices.amountPaid} AS numeric) <= 0`,
+          ),
+        ),
+      ),
+    )
+    .limit(limit);
+
+  return rows.map((r) => {
+    const balanceNum = parseFloat(r.balance ?? "0");
+    const paidNum = parseFloat(r.amountPaid ?? "0");
+    let kind: ReconciliationIssueKind;
+    if (r.status === "paid" && balanceNum > 0) {
+      kind = "paid_with_balance";
+    } else if (r.status === "partial_paid" && paidNum <= 0) {
+      kind = "partial_without_payment";
+    } else {
+      kind = "zero_balance_still_unpaid";
+    }
+    return {
+      invoiceId: r.id,
+      invoiceNumber: r.invoiceNumber ?? null,
+      status: r.status ?? null,
+      total: r.total ?? null,
+      amountPaid: r.amountPaid ?? null,
+      balance: r.balance ?? null,
+      jobId: r.jobId ?? null,
+      locationDisplayName: (r as any).locationDisplayName ?? null,
+      kind,
+    };
+  });
 }
 

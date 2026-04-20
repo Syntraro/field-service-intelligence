@@ -411,8 +411,12 @@ export async function executeRow(
       };
     }
 
-    // 2026-03-20 F-02: Route through canonical storage method instead of direct db.insert(items).
-    const created = await itemRepository.createItem(companyId, userId, {
+    // 2026-04-19: route through canonical createOrGet so the unique-index
+    // safety net + reactivate-on-soft-delete behavior apply uniformly. The
+    // pre-loaded `existing` cache + within-CSV `dedupCache` above still
+    // shortcut the common case (importer is the heaviest item-create path);
+    // createOrGet is the catch-net for races and for rows the cache missed.
+    const created = await itemRepository.createOrGet(companyId, userId, {
       type: row.type,
       name: row.name,
       description: row.description,

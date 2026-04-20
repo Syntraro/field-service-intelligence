@@ -140,9 +140,9 @@ function CrewPicker({
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
 
-  const currentIds = visit.technicianIds.length > 0
-    ? visit.technicianIds
-    : (visit.technicianId ? [visit.technicianId] : []);
+  // 2026-04-19: canonical crew list. Scalar technicianId fallback removed
+  // (drift surface). Empty array == unassigned.
+  const currentIds = visit.technicianIds;
 
   const filtered = useMemo(() => {
     if (!search.trim()) return technicians;
@@ -268,7 +268,7 @@ function UnscheduledScheduleForm({
   // Prefill date from dispatch board's selected day (not today unless board is on today)
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(boardDate);
   const [selectedTime, setSelectedTime] = useState("09:00");
-  const [selectedTechIds, setSelectedTechIds] = useState<string[]>(visit.technicianId ? [visit.technicianId] : []);
+  const [selectedTechIds, setSelectedTechIds] = useState<string[]>(visit.technicianIds);
   const [selectedDuration, setSelectedDuration] = useState(String(visit.durationMinutes || 60));
   const [techSearchOpen, setTechSearchOpen] = useState(false);
   const [techSearch, setTechSearch] = useState("");
@@ -687,7 +687,7 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
             {onUpdateCrew ? (
               <CrewPicker visit={visit} technicians={technicians} onUpdateCrew={onUpdateCrew} />
             ) : (
-              <Select value={visit.technicianId ?? ""} onValueChange={handleTechChange}>
+              <Select value={visit.technicianIds[0] ?? ""} onValueChange={handleTechChange}>
                 <SelectTrigger className="h-8 text-xs">
                   <SelectValue placeholder="Assign technician" />
                 </SelectTrigger>

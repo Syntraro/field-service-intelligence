@@ -1374,6 +1374,9 @@ interface PmBillingJob {
   recurrenceTemplateId: string | null;
   closedAt: string | null;
   locationId: string;
+  // 2026-04-19 Fix A: canonical invoice count from jobs feed. Replaces
+  // the client-side invoice-existence aggregation used before.
+  invoiceCount?: number;
 }
 
 /** Format billing model for display */
@@ -1397,20 +1400,32 @@ function formatDispositionLabel(d: string | null): string {
   }
 }
 
-/** Determine PM billing exception state */
-function getPmBillingExceptionState(job: PmBillingJob): {
+/**
+ * Determine PM billing exception state.
+ *
+ * 2026-04-19 audit fix: under multi-invoice-per-job, `job.invoiceId` is
+ * only the primary pointer and is `null` when the primary was deleted
+ * even if siblings still exist. The exception check now receives a
+ * `hasAnyInvoice` signal derived from the canonical invoice feed so it
+ * correctly recognises "any invoice on this job" rather than just "the
+ * primary pointer is set".
+ */
+function getPmBillingExceptionState(
+  job: PmBillingJob,
+  hasAnyInvoice: boolean,
+): {
   isException: boolean;
   reason: string | null;
 } {
   // Per-visit job completed but no invoice
   if (job.pmBillingDisposition === "invoice_on_completion" &&
       ["completed", "archived"].includes(job.status) &&
-      !job.invoiceId) {
+      !hasAnyInvoice) {
     return { isException: true, reason: "Per-visit PM completed but no invoice created" };
   }
   // Covered by contract but invoice was created (possible error)
   if ((job.pmBillingDisposition === "covered_by_contract" || job.pmBillingDisposition === "archive_no_invoice") &&
-      job.invoiceId) {
+      hasAnyInvoice) {
     return { isException: true, reason: "No-invoice PM has an invoice attached" };
   }
   return { isException: false, reason: null };
@@ -1465,6 +1480,11 @@ function PMBillingTab({ contracts }: { contracts: RecurringTemplate[] }) {
     },
   });
 
+  // 2026-04-19 Fix A: invoice existence is now read from the canonical
+  // `invoiceCount` field on the jobs feed. The prior 1000-row
+  // client-side aggregation is replaced by the per-row count, which
+  // scales to any tenant size.
+
   // PM Billing Phase 2: Fetch contract billing events
   const { data: billingEvents = [], isLoading: eventsLoading } = useQuery<BillingEventRow[]>({
     queryKey: ["/api/pm/billing/events"],
@@ -1486,6 +1506,9 @@ function PMBillingTab({ contracts }: { contracts: RecurringTemplate[] }) {
   });
 
   // Categorize PM jobs into billing buckets (per-visit oversight)
+  // 2026-04-19 Fix A: uses `job.invoiceCount` from the canonical jobs
+  // feed (correlated subquery; multi-invoice safe at any scale) for
+  // both the exception check and the "invoiced" bucket.
   const buckets = useMemo(() => {
     const pendingInvoice: PmBillingJob[] = [];
     const coveredByContract: PmBillingJob[] = [];
@@ -1493,10 +1516,11 @@ function PMBillingTab({ contracts }: { contracts: RecurringTemplate[] }) {
     const invoiced: PmBillingJob[] = [];
 
     for (const job of pmJobs) {
-      const exState = getPmBillingExceptionState(job);
+      const hasAnyInvoice = (job.invoiceCount ?? 0) > 0;
+      const exState = getPmBillingExceptionState(job, hasAnyInvoice);
       if (exState.isException) {
         exceptions.push({ ...job, exceptionReason: exState.reason! });
-      } else if (job.status === "invoiced" || job.invoiceId) {
+      } else if (job.status === "invoiced" || hasAnyInvoice) {
         invoiced.push(job);
       } else if (job.pmBillingDisposition === "invoice_on_completion" &&
                  ["completed"].includes(job.status)) {

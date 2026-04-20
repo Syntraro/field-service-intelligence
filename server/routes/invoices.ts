@@ -29,6 +29,7 @@ import {
   isBillingImpactingPatch,
 } from "../utils/qboInvoiceLock";
 import { generateInvoicePdf } from "../services/invoicePdfService";
+import { getInvoiceTimeline } from "../storage/invoiceTimeline";
 // 2026-04-12 Phase 4: canonical email dispatch for invoice send flow.
 import { emailDispatchService } from "../services/emailDispatchService";
 // 2026-04-12 Phase 5: preview + recipient defaults.
@@ -46,7 +47,7 @@ import { logEventAsync } from "../lib/events";
 import * as lifecycle from "../services/jobLifecycleOrchestrator";
 // Phase 5 Step A4: canonical invoice feed builders
 import { getQueryCtx } from "../lib/queryCtx";
-import { getInvoicesFeed, getInvoiceStats as getCanonicalInvoiceStats, UNPAID_INVOICE_STATUSES } from "../storage/invoicesFeed";
+import { getInvoicesFeed, getInvoiceStats as getCanonicalInvoiceStats, UNPAID_INVOICE_STATUSES, getReconciliationIssues } from "../storage/invoicesFeed";
 // 2026-04-08: P7 — Canonical line-item input schema (shared with quotes/jobs)
 // 2026-04-08: Stabilization pass — canonical money helpers for tax math
 import { canonicalLineItemInput, moneyString, parseMoney, formatMoney } from "@shared/lineItem";
@@ -77,8 +78,25 @@ const createInvoiceLineSchema = canonicalLineItemInput.extend({
   overrideReason: z.string().min(10).max(500).optional(),
 }).strict();
 
+// Phase 8 (invoice composition control): optional selection of which
+// time entries and/or job parts to include on the new invoice. When
+// absent, the canonical "all eligible" behavior runs. When present,
+// the server intersects with eligibility predicates so stale client
+// selections cannot double-bill.
+const invoiceSelectionSchema = z.object({
+  partIds: z.array(z.string().uuid()).optional(),
+  timeEntryIds: z.array(z.string().uuid()).optional(),
+}).strict();
+
 const createInvoiceFromJobSchema = z.object({
   markJobCompleted: z.boolean().optional().default(false),
+  selection: invoiceSelectionSchema.optional(),
+}).strict();
+
+const refreshInvoiceFromJobSchema = z.object({
+  overrideQboLock: z.boolean().optional(),
+  overrideReason: z.string().min(10).max(500).optional(),
+  selection: invoiceSelectionSchema.optional(),
 }).strict();
 
 const updateInvoiceSchema = z.object({
@@ -240,13 +258,40 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
   res.status(201).json(result.invoice);
 }));
 
-// Phase 5 Step A4: GET /api/invoices/list — canonical invoice feed
+// Phase 5 Step A4: GET /api/invoices/list — canonical invoice feed.
+//
+// 2026-04-18 Phase 5 (multi-invoice-per-job): accepts an optional
+// `?jobId=<uuid>` query param. When present, returns every invoice
+// belonging to that job in canonical feed shape. This is the plural
+// by-job read path — no new route added; the canonical `/list` endpoint
+// now owns it via its existing `jobId` filter in `getInvoicesFeed`.
+//
+// 2026-04-18 Client-billing workstream: adds three more passthrough
+// filters (`customerCompanyId`, `locationId`, `unpaidOnly`) which were
+// already implemented in the `getInvoicesFeed` storage layer but were
+// not wired at the route. No breaking change — legacy callers that omit
+// these params see identical behavior. Tenant isolation is unchanged
+// (companyId is sourced from ctx, not the query string).
 router.get("/list", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const ctx = getQueryCtx(req);
   const pagination = parsePagination(req.query);
+  const jobIdParam = typeof req.query.jobId === "string" ? req.query.jobId : undefined;
+  const customerCompanyIdParam =
+    typeof req.query.customerCompanyId === "string" && req.query.customerCompanyId.length > 0
+      ? req.query.customerCompanyId
+      : undefined;
+  const locationIdParam =
+    typeof req.query.locationId === "string" && req.query.locationId.length > 0
+      ? req.query.locationId
+      : undefined;
+  const unpaidOnlyParam = req.query.unpaidOnly === "true" || req.query.unpaidOnly === "1";
   const { items } = await getInvoicesFeed(ctx, {
     limit: pagination.limit,
     offset: pagination.offset ?? 0,
+    jobId: jobIdParam,
+    customerCompanyId: customerCompanyIdParam,
+    locationId: locationIdParam,
+    unpaidOnly: unpaidOnlyParam || undefined,
   });
   // Preserve existing response shape for backward compatibility
   res.json(paginated(items, { limit: pagination.limit, hasMore: items.length >= pagination.limit }));
@@ -267,9 +312,14 @@ router.get("/stats", asyncHandler(async (req: AuthedRequest, res: Response) => {
     .reduce((sum, s) => sum + s.totalAmount, 0);
   const averageInvoice = totalIssued > 0 ? totalIssuedAmount / totalIssued : 0;
 
+  // 2026-04-18 Phase 9 (collections visibility): `overdue.amount` now
+  // reflects an accurate `SUM(invoice.balance)` over past-due unpaid
+  // invoices rather than the pre-Phase-9 approximation that reused
+  // `totalOutstanding`. The shape is unchanged so existing dashboard
+  // / InvoicesList consumers continue to render with the same keys.
   res.json({
     outstanding: { amount: stats.totalOutstanding, count: stats.outstandingCount },
-    overdue: { amount: stats.totalOutstanding, count: stats.overdueCount }, // overdue amount approximation — uses outstanding total
+    overdue: { amount: stats.totalOverdue, count: stats.overdueCount },
     issuedLast30Days: { count: totalIssued }, // simplified — full 30d filter would need date range
     averageInvoice: Math.round(averageInvoice * 100) / 100,
     draftCount: stats.draftCount,
@@ -294,18 +344,103 @@ router.get("/dashboard", asyncHandler(async (req: AuthedRequest, res: Response) 
   res.json({ data: combined });
 }));
 
-// Phase 5 Step A4: GET /api/invoices/by-job/:jobId — canonical feed with jobId filter
-router.get("/by-job/:jobId", asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const ctx = getQueryCtx(req);
-  const { items } = await getInvoicesFeed(ctx, { jobId: req.params.jobId, limit: 1 });
+// GET /api/invoices/reconciliation
+//
+// 2026-04-18 Phase 10 (payments clarity): surfaces invoices whose
+// persisted status and money fields have drifted apart — paid rows
+// that still show a balance, unpaid statuses with no remaining
+// balance, or partial_paid rows with no payment dollars. Manager-
+// gated because reconciling these typically requires touching
+// payments. This route does NOT mutate; it's a read-only signal
+// consumed by the list-page banner.
+router.get(
+  "/reconciliation",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const ctx = getQueryCtx(req);
+    const issues = await getReconciliationIssues(ctx, 50);
+    res.json({ data: issues, count: issues.length });
+  }),
+);
 
-  if (items.length === 0) {
-    // Return null instead of 404 — it's valid for a job to not have an invoice
+// POST /api/invoices/bulk-send-reminders
+//
+// 2026-04-18 Phase 9 (collections workflow): bulk variant of the single
+// manual-send endpoint. Iterates the existing canonical path
+// (`invoiceReminderService.sendOne`) per invoice, so every gate the
+// sweep worker honors — QBO billing lock, reminders paused, snooze
+// until, deliverability — still applies. Returns per-invoice results so
+// the client can toast partial outcomes rather than failing the whole
+// batch.
+//
+// Registered BEFORE any `/:id/*` route so Express does not accidentally
+// match this as an invoice-id lookup.
+//
+// Hard cap at 100 IDs per request; same cap as bulk-unschedule for UX
+// consistency and to bound the latency of any single request.
+const bulkSendReminderSchema = z.object({
+  invoiceIds: z.array(z.string().uuid()).min(1).max(100),
+}).strict();
+
+router.post(
+  "/bulk-send-reminders",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { invoiceIds } = validateSchema(bulkSendReminderSchema, req.body);
+    const companyId = req.companyId!;
+    const userId = req.user?.id ?? null;
+
+    const succeeded: string[] = [];
+    const skipped: { invoiceId: string; reason: string; code?: string }[] = [];
+    const failed: { invoiceId: string; reason: string }[] = [];
+
+    for (const invoiceId of invoiceIds) {
+      try {
+        await invoiceReminderService.sendOne({
+          tenantId: companyId,
+          invoiceId,
+          createdByUserId: userId,
+        });
+        succeeded.push(invoiceId);
+      } catch (err: any) {
+        if (err instanceof ReminderGateError) {
+          skipped.push({ invoiceId, reason: err.message, code: err.code });
+        } else {
+          failed.push({ invoiceId, reason: err?.message ?? "Failed" });
+        }
+      }
+    }
+
+    res.json({
+      totalCount: invoiceIds.length,
+      successCount: succeeded.length,
+      skippedCount: skipped.length,
+      failedCount: failed.length,
+      succeeded,
+      skipped,
+      failed,
+    });
+  }),
+);
+
+// GET /api/invoices/by-job/:jobId — the job's PRIMARY invoice.
+//
+// 2026-04-18 Phase 5 (multi-invoice-per-job): this route is now an
+// explicit primary-pointer read. It resolves `jobs.invoiceId` (the
+// preferred/first invoice on the job) and returns that invoice, or
+// `null` when the job has no invoices at all. Callers that need the
+// full list of invoices on a job should use `GET /api/invoices/list?jobId=<uuid>`.
+router.get("/by-job/:jobId", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const primary = await storage.getPrimaryInvoiceByJobId(req.companyId!, req.params.jobId);
+  if (!primary) {
     res.json(null);
     return;
   }
-
-  res.json(items[0]);
+  // Shape parity with the feed-driven response (adds computed isPastDue).
+  const ctx = getQueryCtx(req);
+  const { items } = await getInvoicesFeed(ctx, { jobId: req.params.jobId });
+  const enriched = items.find((i) => i.id === primary.id);
+  res.json(enriched ?? primary);
 }));
 
 // GET /api/invoices/:id - Get single invoice
@@ -321,6 +456,42 @@ router.get("/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
 
   res.json(invoice);
 }));
+
+// POST /api/invoices/:id/set-primary
+//
+// 2026-04-18 Phase 6 (primary invoice management): explicit manual
+// reassignment of a job's primary invoice pointer. Sets
+// `jobs.invoiceId = :id` for the job this invoice is linked to.
+//
+// Justification for a new route: this is a narrow, billing-specific
+// action that doesn't fit cleanly into any existing endpoint's
+// contract. Extending the generic `PATCH /api/jobs/:id` would leak
+// billing concerns into the job-update surface and require opening
+// that route to a field most callers must not touch. A dedicated
+// action endpoint keeps the authority boundary clean.
+//
+// No auto-promotion on delete — this route is the ONLY write path for
+// `jobs.invoiceId` after the initial auto-set by `createInvoiceFromJob`.
+router.post(
+  "/:id/set-primary",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    try {
+      const updated = await storage.setPrimaryInvoiceForJob(
+        req.companyId!,
+        req.params.id,
+      );
+      res.json({
+        jobId: updated.id,
+        primaryInvoiceId: updated.invoiceId,
+      });
+    } catch (err: any) {
+      if (err?.statusCode === 404) throw err;
+      if (err?.statusCode === 400) throw err;
+      throw err;
+    }
+  }),
+);
 
 // GET /api/invoices/:invoiceId/notes — canonical invoice notes feed.
 // 2026-04-18: new endpoint. Invoice detail previously reused
@@ -684,9 +855,15 @@ router.post("/:id/apply-tax", requireRole(MANAGER_ROLES), requireEditableStatus(
 }));
 
 router.post("/:id/refresh-from-job", requireRole(MANAGER_ROLES), requireEditableStatus(), asyncHandler(async (req: AuthedRequest, res: Response) => {
-  // Parse QBO override from body
-  const overrideQboLock = req.body?.overrideQboLock === true;
-  const overrideReason = typeof req.body?.overrideReason === 'string' ? req.body.overrideReason : undefined;
+  // Phase 8: body now supports an optional `selection` alongside the
+  // existing QBO override fields. Zod runs in non-strict mode here for
+  // the legacy callers that POST with an empty body (undefined content).
+  const parsed = req.body ? refreshInvoiceFromJobSchema.safeParse(req.body) : { success: true as const, data: {} };
+  if (!parsed.success) throw createError(400, parsed.error.issues.map(i => i.message).join("; "));
+  const validated: { overrideQboLock?: boolean; overrideReason?: string; selection?: { partIds?: string[]; timeEntryIds?: string[] } } =
+    parsed.success ? (parsed.data as any) : {};
+  const overrideQboLock = validated.overrideQboLock === true;
+  const overrideReason = validated.overrideReason;
 
   // Phase 10A: Check QBO billing lock
   const invoice = await storage.getInvoice(req.companyId!, req.params.id);
@@ -700,8 +877,14 @@ router.post("/:id/refresh-from-job", requireRole(MANAGER_ROLES), requireEditable
   // Check lock (throws 409 if locked without override)
   checkQboLineItemLock(invoice, 'refresh', { overrideQboLock, overrideReason });
 
-  // Refresh the invoice from job
-  const result = await storage.refreshInvoiceFromJob(req.companyId!, req.params.id);
+  // Refresh the invoice from job — forward optional selection so the
+  // user can pick which remaining labor/parts to add.
+  const result = await storage.refreshInvoiceFromJob(
+    req.companyId!,
+    req.params.id,
+    undefined,
+    validated.selection,
+  );
 
   // If this was a QBO-synced invoice with override, mark as out-of-sync
   let warning: string | undefined;
@@ -716,12 +899,19 @@ router.post("/:id/refresh-from-job", requireRole(MANAGER_ROLES), requireEditable
 }));
 
 /**
- * POST /api/invoices/from-job/:jobId - Create invoice from job (idempotent)
+ * POST /api/invoices/from-job/:jobId - Create a new invoice from a job.
  *
- * PHASE A.1: This route uses createInvoiceFromJob() which provides:
- * - SELECT FOR UPDATE locking to prevent race conditions
- * - Idempotency guarantees (calling twice returns same invoice)
- * - Atomic invoice number assignment
+ * 2026-04-18 Phase 5 (multi-invoice-per-job): each call creates a fresh
+ * invoice. A job can now carry multiple invoices; the pre-Phase-5
+ * "return existing invoice if job already has one" short-circuit has
+ * been removed. The first invoice created for a job auto-populates
+ * `jobs.invoiceId` as the primary-invoice pointer; subsequent invoices
+ * leave it alone.
+ *
+ * Duplicate-request protection (double-click / network retry) is not
+ * enforced here — add at the request/transaction layer if required.
+ * Atomic invoice number assignment is still guaranteed by the shared
+ * createInvoiceShell sequence.
  */
 router.post("/from-job/:jobId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const validated = validateSchema(createInvoiceFromJobSchema, req.body);
@@ -732,7 +922,7 @@ router.post("/from-job/:jobId", requireRole(MANAGER_ROLES), asyncHandler(async (
     const result = await createInvoiceFromJobService(
       req.companyId!,
       req.params.jobId,
-      { markJobCompleted: validated.markJobCompleted },
+      { markJobCompleted: validated.markJobCompleted, selection: validated.selection },
       "INVOICE_ROUTE"
     );
 
@@ -1505,6 +1695,19 @@ router.post("/:id/void", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
   }
   res.json(response);
 }));
+
+// GET /api/invoices/:id/timeline — read-only activity timeline.
+// 2026-04-19 Phase 12: assembles per-invoice lifecycle events from
+// existing canonical sources (invoices row, email_deliveries,
+// payments). No new write paths, no new storage columns.
+router.get(
+  "/:id/timeline",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const ctx = getQueryCtx(req);
+    const events = await getInvoiceTimeline(ctx, req.params.id);
+    res.json({ data: events, count: events.length });
+  }),
+);
 
 // GET /api/invoices/:id/pdf - Download invoice PDF
 router.get("/:id/pdf", asyncHandler(async (req: AuthedRequest, res: Response) => {

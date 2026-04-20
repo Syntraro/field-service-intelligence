@@ -23,7 +23,7 @@ import { createError } from "../middleware/errorHandler";
 import { generateInvoicePdf } from "./invoicePdfService";
 import { generateQuotePdf } from "./quotePdfService";
 import { getFileBufferForTenant } from "./fileUploadService";
-import { normalizeEmailList } from "./recipientResolverService";
+import { normalizeEmailList, recipientResolverService } from "./recipientResolverService";
 import { templateDataBuilder } from "./templateDataBuilder";
 import { communicationTemplatesService } from "./communicationTemplatesService";
 import { emailDeliveryTrackingService } from "./emailDeliveryTrackingService";
@@ -270,12 +270,29 @@ function htmlEscape(text: string): string {
 }
 
 /**
+ * 2026-04-19 Phase 12 — auto-linkify http(s) URLs in escaped body text so
+ * the {{PAYMENT_URL}} / {{PAY_NOW_CTA}} CTAs render as clickable links in
+ * email clients without requiring HTML in the plain-text template. Runs
+ * AFTER `htmlEscape` so the URL itself is already entity-safe; the regex
+ * is intentionally conservative — bare http(s) tokens, no Markdown.
+ */
+function linkifyEscapedHtml(escaped: string): string {
+  return escaped.replace(
+    /(https?:\/\/[^\s<>"']+)/g,
+    (url) => `<a href="${url}" style="color:#2563eb;text-decoration:underline">${url}</a>`,
+  );
+}
+
+/**
  * Wrap the rendered plain-text body in minimal HTML so Resend renders line
  * breaks correctly. The template itself stays plain-text (portable to SMS
- * later); only the email transport converts newlines to <br>.
+ * later); only the email transport converts newlines to <br> and turns
+ * bare URLs into clickable links.
  */
 function bodyToHtml(body: string): string {
-  return `<div style="font-family: Arial, sans-serif; white-space: pre-wrap;">${htmlEscape(body)}</div>`;
+  const escaped = htmlEscape(body);
+  const linked = linkifyEscapedHtml(escaped);
+  return `<div style="font-family: Arial, sans-serif; white-space: pre-wrap;">${linked}</div>`;
 }
 
 export const emailDispatchService = {
@@ -479,6 +496,138 @@ export const emailDispatchService = {
       recipients: normalizedRecipients,
       subject,
       attachmentFilename: attachPdf ? pdfFilename : "",
+    };
+  },
+
+  // ==========================================================================
+  // Phase 11 (2026-04-18): sendPaymentReceiptEmail
+  //
+  // Fires after a successful payment has been written via the canonical
+  // `paymentRepository.createPayment` path (invoked by the Stripe
+  // webhook). Reuses the canonical template + delivery tracking
+  // infrastructure; no PDF attachment, no afterMarkSent callback
+  // (payment row and invoice balance are already committed).
+  //
+  // Recipient resolution reuses the billing-first invoice list so
+  // receipts land with the same party that received the invoice. The
+  // delivery row is recorded under entityType="invoice" so the
+  // customer's email history for an invoice includes send + reminder +
+  // receipt events under a single entity stream.
+  // ==========================================================================
+  async sendPaymentReceiptEmail(input: {
+    tenantId: string;
+    invoiceId: string;
+    paymentAmount: string;
+    /** Optional explicit recipient list. Defaults to billing-first resolution. */
+    recipients?: string[];
+  }): Promise<{ emailId: string | null; recipients: string[]; subject: string } | null> {
+    const { tenantId, invoiceId, paymentAmount } = input;
+    if (!tenantId) throw createError(400, "tenantId is required");
+    if (!invoiceId) throw createError(400, "invoiceId is required");
+
+    // Resolve recipients — explicit override wins, else canonical strategy.
+    let normalizedRecipients = normalizeEmailList(input.recipients ?? []);
+    if (normalizedRecipients.length === 0) {
+      const defaults = await recipientResolverService.getDefaultRecipients({
+        tenantId,
+        entityType: "payment_receipt",
+        entityId: invoiceId,
+      });
+      normalizedRecipients = defaults.recipients;
+    }
+    // No recipient → no receipt. Webhook path tolerates this — we just
+    // skip the send rather than failing the webhook.
+    if (normalizedRecipients.length === 0) {
+      return null;
+    }
+
+    const data = await templateDataBuilder.buildPaymentReceiptTemplateData(
+      tenantId,
+      invoiceId,
+      paymentAmount,
+    );
+
+    const { subject, body, templateSource } = await resolveRenderedMessage({
+      tenantId,
+      entityType: "payment_receipt",
+      data,
+    });
+
+    // 2026-04-19 audit fix: parity with sendInvoiceEmail / sendQuoteEmail
+    // / sendJobEmail. Guards against concurrent receipt sends for the
+    // same invoice (e.g. a retried Stripe webhook event that slips past
+    // the payments idempotency check, or any future caller added
+    // outside the webhook). Records the delivery row only if no queued
+    // row already exists for this invoice.
+    await emailDeliveryTrackingService.assertNoActiveQueuedDelivery(
+      tenantId,
+      "invoice",
+      invoiceId,
+    );
+
+    // Record delivery row under invoice entity so history rolls up
+    // alongside the send + reminder stream for the same invoice.
+    const delivery = await emailDeliveryTrackingService.createQueuedDelivery({
+      tenantId,
+      entityType: "invoice",
+      entityId: invoiceId,
+      recipients: normalizedRecipients,
+      cc: [],
+      attachments: [],
+      subject,
+      bodySnapshot: body,
+      templateSource,
+      createdByUserId: null,
+      retriedFromDeliveryId: null,
+    });
+
+    const { client, fromEmail } = await getResendClient();
+    let resendResult: Awaited<ReturnType<typeof client.emails.send>>;
+    try {
+      resendResult = await client.emails.send(
+        {
+          from: fromEmail,
+          to: normalizedRecipients,
+          subject,
+          html: bodyToHtml(body),
+        },
+        { idempotencyKey: delivery.id },
+      );
+    } catch (err: any) {
+      await emailDeliveryTrackingService
+        .markFailed({
+          tenantId,
+          deliveryId: delivery.id,
+          errorMessage: err?.message ?? "Resend transport error",
+        })
+        .catch(() => {});
+      throw createError(500, `Payment receipt send failed: ${err?.message ?? "unknown"}`);
+    }
+
+    if (resendResult.error) {
+      const msg = resendResult.error.message ?? resendResult.error.name ?? "unknown";
+      await emailDeliveryTrackingService
+        .markFailed({
+          tenantId,
+          deliveryId: delivery.id,
+          errorMessage: msg,
+        })
+        .catch(() => {});
+      throw createError(500, `Payment receipt send failed: ${msg}`);
+    }
+
+    await emailDeliveryTrackingService
+      .markSent({
+        tenantId,
+        deliveryId: delivery.id,
+        providerMessageId: resendResult.data?.id ?? null,
+      })
+      .catch(() => {});
+
+    return {
+      emailId: resendResult.data?.id ?? null,
+      recipients: normalizedRecipients,
+      subject,
     };
   },
 

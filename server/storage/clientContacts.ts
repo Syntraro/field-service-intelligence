@@ -19,18 +19,114 @@ export class ClientContactRepository extends BaseRepository {
   // Person CRUD
   // =========================================================================
 
-  /** Create a person record (company-level identity). */
+  /** Create a person record (company-level identity). Bypasses the canonical
+   *  dedupe helper — prefer `createOrGetPerson` for routes that may receive
+   *  repeat submissions. Kept for callers that need raw-insert semantics. */
   async createPerson(companyId: string, data: Omit<InsertContactPerson, "companyId">): Promise<ContactPerson> {
     this.assertCompanyId(companyId);
     const [row] = await db.insert(contactPersons).values({ ...data, companyId }).returning();
     return row;
   }
 
-  /** Create a person in an external transaction (used by full-create flow). */
+  /** Transaction variant of `createPerson`. Same caveat as above. */
   async createPersonTx(tx: any, companyId: string, data: Omit<InsertContactPerson, "companyId">): Promise<ContactPerson> {
     this.assertCompanyId(companyId);
     const [row] = await tx.insert(contactPersons).values({ ...data, companyId }).returning();
     return row;
+  }
+
+  // =========================================================================
+  // Canonical create-or-get (2026-04-19)
+  // =========================================================================
+  //
+  // Natural key: `(company_id, customer_company_id, lower(email))` when an
+  // email is present. The matching partial unique index is in
+  // `migrations/2026_04_19_contacts_unique_email_per_customer.sql`.
+  //
+  // Email is the strong dedupe signal — a contact's email is the closest
+  // thing to a stable real-world identity in this domain. When email is
+  // absent, we fall back to a softer cascade matching the field-tested
+  // CSV-import dedupe pattern:
+  //
+  //   1. lower(email)                            — strong, also DB-enforced
+  //   2. lower(name) + phone (both required)     — moderate
+  //   3. lower(name) only                        — weakest, last resort
+  //
+  // Falls through to insert when no match. Returns the existing or
+  // newly-inserted row in either case.
+  //
+  // The fallback path is intentionally NOT enforced by a unique index — two
+  // different humans can legitimately share a name within a customer
+  // (e.g., John Smith Sr. and Jr.). The application-layer cascade is the
+  // best-effort dedupe; the email index is the safety net for the
+  // overwhelmingly common case of a known email.
+
+  private normalize(s: string | null | undefined): string {
+    return (s ?? "").trim().toLowerCase();
+  }
+
+  /** Internal: run the email → name+phone → name cascade against a list. */
+  private matchFromCascade(
+    persons: ContactPerson[],
+    data: Omit<InsertContactPerson, "companyId">,
+  ): ContactPerson | null {
+    const normalizedEmail = this.normalize(data.email);
+    const fullName = `${(data.firstName ?? "").trim()} ${(data.lastName ?? "").trim()}`.trim();
+    const normalizedName = fullName.toLowerCase();
+    const normalizedPhone = this.normalize(data.phone);
+
+    if (normalizedEmail) {
+      const m = persons.find(p => this.normalize(p.email) === normalizedEmail);
+      if (m) return m;
+    }
+    if (normalizedName && normalizedPhone) {
+      const m = persons.find(p => {
+        const pName = `${p.firstName} ${p.lastName}`.trim().toLowerCase();
+        return pName === normalizedName && this.normalize(p.phone) === normalizedPhone;
+      });
+      if (m) return m;
+    }
+    if (normalizedName) {
+      const m = persons.find(p => {
+        const pName = `${p.firstName} ${p.lastName}`.trim().toLowerCase();
+        return pName === normalizedName;
+      });
+      if (m) return m;
+    }
+    return null;
+  }
+
+  /**
+   * Canonical create-or-get for contact persons. Returns the existing row
+   * if the email → name+phone → name cascade matches, otherwise inserts.
+   * The `created` flag tells callers (e.g. CSV importer) which path fired
+   * without forcing a second lookup.
+   */
+  async createOrGetPerson(
+    companyId: string,
+    data: Omit<InsertContactPerson, "companyId">,
+  ): Promise<{ contact: ContactPerson; created: boolean }> {
+    this.assertCompanyId(companyId);
+    const persons = await this.getCompanyPersons(companyId, data.customerCompanyId);
+    const existing = this.matchFromCascade(persons, data);
+    if (existing) return { contact: existing, created: false };
+    const [row] = await db.insert(contactPersons).values({ ...data, companyId }).returning();
+    return { contact: row, created: true };
+  }
+
+  /** Transaction variant. Same cascade; the read also goes through `tx`. */
+  async createOrGetPersonTx(
+    tx: any,
+    companyId: string,
+    data: Omit<InsertContactPerson, "companyId">,
+  ): Promise<{ contact: ContactPerson; created: boolean }> {
+    this.assertCompanyId(companyId);
+    const persons: ContactPerson[] = await tx.select().from(contactPersons)
+      .where(and(eq(contactPersons.companyId, companyId), eq(contactPersons.customerCompanyId, data.customerCompanyId)));
+    const existing = this.matchFromCascade(persons, data);
+    if (existing) return { contact: existing, created: false };
+    const [row] = await tx.insert(contactPersons).values({ ...data, companyId }).returning();
+    return { contact: row, created: true };
   }
 
   /** Bulk create persons. */

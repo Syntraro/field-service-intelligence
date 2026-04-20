@@ -34,6 +34,9 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ReferenceFieldsSection } from "@/components/shared/ReferenceFieldsSection";
 import JobNotesSection from "@/components/JobNotesSection";
+import { InvoiceCompositionDialog } from "@/components/InvoiceCompositionDialog";
+import { PaymentHistoryCard } from "@/components/invoice/PaymentHistoryCard";
+import { InvoiceTimelineCard } from "@/components/invoice/InvoiceTimelineCard";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -81,10 +84,16 @@ import {
   draftToInvoiceLinePayload,
 } from "@/lib/entities/lineItemMapper";
 import { InvoiceHeaderCard } from "@/components/InvoiceHeaderCard";
-import { InvoiceRemindersCard } from "@/components/invoice/InvoiceRemindersCard";
+// 2026-04-19 Reminders UI refactor — replaced the full-width
+// InvoiceRemindersCard with a compact header dropdown.
+import { InvoiceRemindersButton } from "@/components/invoice/InvoiceRemindersButton";
 // Phase 12 (2026-04-12): Jobber-style send modal with recipients + subject + body.
 // Legacy ConfirmSendModal import removed in Phase 13.
 import { SendInvoiceModal } from "@/components/communication/SendInvoiceModal";
+// 2026-04-19 Portal activation: office-side CTAs for the customer portal.
+import { SendPaymentLinkDialog } from "@/components/portal/SendPaymentLinkDialog";
+import { buildPortalInvoiceUrl } from "@/lib/portalUrls";
+import { useTenantFeatures } from "@/hooks/useTenantFeatures";
 // 2026-04-14: DeliveryStatusCard retired from this page; send/viewed
 // metadata now lives inline in `InvoiceHeaderCard`'s metadata table.
 import { ActivityCard } from "@/components/activity/ActivityCard";
@@ -495,6 +504,8 @@ export default function InvoiceDetailPage() {
   const [showSendConfirm, setShowSendConfirm] = useState(false);
   const [showVoidConfirm, setShowVoidConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  // 2026-04-19 Portal activation: dialog state for "Send payment link".
+  const [showSendPaymentLink, setShowSendPaymentLink] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("e-transfer");
   const [paymentReference, setPaymentReference] = useState("");
@@ -559,6 +570,9 @@ export default function InvoiceDetailPage() {
 
   const jobId = details?.job?.id;
   // Job notes are now rendered by canonical JobNotesSection component (writable, shared with Job Detail)
+
+  // 2026-04-18 Phase 8: composition dialog state for "Choose Items to Add…"
+  const [showCompositionDialog, setShowCompositionDialog] = useState(false);
 
   const { data: companySettings } = useQuery<{ taxName?: string; defaultTaxRate?: string }>({
     queryKey: ["/api/company-settings"],
@@ -975,6 +989,15 @@ export default function InvoiceDetailPage() {
     retry: 2,
   });
 
+  // 2026-04-19 Portal activation — hook order fix (2026-04-19):
+  // This hook MUST stay at the top level, above the `if (isLoading)` /
+  // `if (!details)` early returns further down. Previously it lived
+  // inside the post-details derivation block, which caused React to see
+  // a different number of hooks on loading vs. loaded renders
+  // ("Rendered more hooks than during the previous render"). Keep
+  // co-located with the other invoice-detail queries above.
+  const tenantFeaturesQuery = useTenantFeatures();
+
   // Compute current tax label from taxGroupId — single source of truth for display
   // taxGroupId is the canonical reference; invoice_lines.taxRate is calculation-only
   const currentTaxLabel = useMemo(() => {
@@ -1131,6 +1154,31 @@ export default function InvoiceDetailPage() {
   const canEdit = invoice.status !== "paid" && invoice.status !== "voided";
   const isDraft = invoice.status === "draft";
 
+  // 2026-04-19 Portal activation — three CTAs (copy link, open portal,
+  // send payment-link email) are available when the tenant's portal flag
+  // is on and the invoice is past draft. Voided invoices still render the
+  // link (customers sometimes need to see voided history), but drafts
+  // never leak outside the office. `tenantFeaturesQuery` is declared at
+  // top level (above the early returns) to keep hook order stable.
+  const portalEnabled = tenantFeaturesQuery.data?.customerPortalEnabled === true;
+  const portalCtasAvailable = portalEnabled && !isDraft;
+  const handleCopyPaymentLink = async () => {
+    const url = buildPortalInvoiceUrl(invoiceId);
+    try {
+      await navigator.clipboard.writeText(url);
+      toast({ title: "Payment link copied", description: url });
+    } catch {
+      toast({
+        title: "Copy failed",
+        description: "Your browser blocked clipboard access. Open the portal instead.",
+        variant: "destructive",
+      });
+    }
+  };
+  const handleOpenClientPortal = () => {
+    window.open(buildPortalInvoiceUrl(invoiceId), "_blank", "noopener,noreferrer");
+  };
+
   const handleRecordPayment = () => {
     if (!paymentAmount || parseFloat(paymentAmount) <= 0) {
       toast({ title: "Please enter a valid amount", variant: "destructive" });
@@ -1189,6 +1237,7 @@ export default function InvoiceDetailPage() {
                 onVoid={() => setShowVoidConfirm(true)}
                 onDelete={() => setShowDeleteConfirm(true)}
                 onRefreshFromJob={() => refreshFromJobMutation.mutate(undefined)}
+                onChooseItemsFromJob={jobId ? () => setShowCompositionDialog(true) : undefined}
                 refreshPending={refreshFromJobMutation.isPending}
                 voidPending={voidMutation.isPending}
                 deletePending={deleteMutation.isPending}
@@ -1196,6 +1245,20 @@ export default function InvoiceDetailPage() {
                 onPrintPdf={handlePrintPdf}
                 pdfPending={pdfPending}
                 onPreview={() => window.open(`/api/invoices/${invoiceId}/pdf`, "_blank")}
+                onCopyPaymentLink={portalCtasAvailable ? handleCopyPaymentLink : undefined}
+                onOpenClientPortal={portalCtasAvailable ? handleOpenClientPortal : undefined}
+                onSendPaymentLink={portalCtasAvailable ? () => setShowSendPaymentLink(true) : undefined}
+                remindersSlot={
+                  // 2026-04-19 Reminders UI refactor — header dropdown only
+                  // shown for sendable/unpaid invoices. Drafts, paid, and
+                  // voided invoices never carry reminders (matches the
+                  // visibility rule of the old InvoiceRemindersCard).
+                  invoice.status !== "draft" &&
+                  invoice.status !== "paid" &&
+                  invoice.status !== "voided"
+                    ? <InvoiceRemindersButton invoice={invoice as any} />
+                    : undefined
+                }
                 onToggleSent={handleToggleSent}
                 toggleSentPending={toggleSentPending}
                 canEdit={canEdit}
@@ -1213,13 +1276,10 @@ export default function InvoiceDetailPage() {
                 issueDatePending={updateInvoiceFieldsMutation.isPending}
               />
 
-              {/* Reminders card — only meaningful for sendable/unpaid invoices.
-                  Drafts, paid, and voided invoices never carry reminders. */}
-              {invoice.status !== "draft"
-                && invoice.status !== "paid"
-                && invoice.status !== "voided" && (
-                <InvoiceRemindersCard invoice={invoice as any} />
-              )}
+              {/* 2026-04-19 Reminders UI refactor — former full-width
+                  `InvoiceRemindersCard` removed from the main content stack.
+                  Reminder actions now live in the invoice header action bar
+                  via the `remindersSlot` prop on InvoiceHeaderCard above. */}
 
               {/* Job Description — editable from invoice page */}
               {(job?.description || invoice.workDescription || isEditingDescription) && (
@@ -1568,7 +1628,18 @@ export default function InvoiceDetailPage() {
                   />
                 </CardContent>
               </Card>
-              
+
+              {/* 2026-04-18 Phase 10 (payments clarity): canonical
+                  payment history for this invoice. Consumes the
+                  already-fetched payments[] cache — no new query. */}
+              <PaymentHistoryCard payments={payments as any} />
+
+              {/* 2026-04-19 Phase 12: read-only invoice activity
+                  timeline assembled from invoices / email_deliveries /
+                  payments. Fetched independently so the card stays
+                  decoupled from existing invoice state. */}
+              {invoiceId && <InvoiceTimelineCard invoiceId={invoiceId} />}
+
               {/* Client Message - customer-facing message on invoice */}
               {(invoice.clientMessage || isEditing) && (
                 <Card>
@@ -1803,6 +1874,16 @@ export default function InvoiceDetailPage() {
         }}
       />
 
+      {/* 2026-04-19 Portal activation — magic-link trigger for the portal
+          sign-in flow. Dialog is rendered regardless of the feature flag,
+          but the overflow-menu entry that opens it is gated by `portalCtasAvailable`. */}
+      <SendPaymentLinkDialog
+        open={showSendPaymentLink}
+        onOpenChange={setShowSendPaymentLink}
+        defaultEmail={primaryContact?.email ?? null}
+        invoiceNumber={invoice.invoiceNumber ?? null}
+      />
+
       {/* Delete Draft Confirmation */}
       <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
         <DialogContent>
@@ -1844,6 +1925,27 @@ export default function InvoiceDetailPage() {
         onConfirm={qboOverride.handleConfirm}
         isPending={qboOverridePending}
       />
+
+      {/* 2026-04-18 Phase 8: composition dialog for "Choose Items to Add…"
+          variant of the refresh-from-job action. Only relevant for draft
+          invoices linked to a job; the header menu item is hidden
+          otherwise (see `onChooseItemsFromJob={jobId ? ... : undefined}`). */}
+      {jobId && details?.job && (
+        <InvoiceCompositionDialog
+          mode="refresh"
+          open={showCompositionDialog}
+          onOpenChange={setShowCompositionDialog}
+          jobId={jobId}
+          jobNumber={details.job.jobNumber}
+          jobSummary={details.job.summary ?? ""}
+          locationDisplayName={details.location?.companyName || details.location?.location || "Unknown"}
+          invoiceId={invoiceId!}
+          onRefreshed={() => {
+            queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
+            queryClient.invalidateQueries({ queryKey: ["invoices"] });
+          }}
+        />
+      )}
     </>
   );
 }

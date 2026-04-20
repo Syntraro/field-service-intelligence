@@ -798,51 +798,20 @@ export async function executeRow(
       const contactIdentity = hasAnyContactField ? classifyContactIdentity(row) : null;
 
       if (hasAnyContactField && contactIdentity?.meaningful) {
-        let contactExists = false;
-        const email = normalizeForMatch(row.contactEmail);
-        const name = normalizeForMatch(`${row.contactFirstName ?? ""} ${row.contactLastName ?? ""}`);
-        const phone = normalizeForMatch(row.contactPhone);
-
-        // Dedup chain: email → name+phone → name-only
-        if (email) {
-          const existing = await clientContactRepository.findContactByEmail(companyId, resolvedCompany.id, email);
-          if (existing) {
-            result.contactId = existing.id;
-            contactExists = true;
-          }
-        }
-
-        if (!contactExists && name && phone) {
-          const existing = await clientContactRepository.findContactByNamePhone(companyId, resolvedCompany.id, name, phone);
-          if (existing) {
-            result.contactId = existing.id;
-            contactExists = true;
-          }
-        }
-
-        if (!contactExists && name && !email && !phone) {
-          // Name-only fallback: dedup by full name within company
-          const existing = await clientContactRepository.findContactByName(companyId, resolvedCompany.id, name);
-          if (existing) {
-            result.contactId = existing.id;
-            contactExists = true;
-          }
-        }
-
-        if (!contactExists) {
-          const contact = await clientContactRepository.createContactTx(tx, companyId, {
-            customerCompanyId: resolvedCompany.id,
-            locationId: null,
-            firstName: row.contactFirstName?.trim() || "",
-            lastName: row.contactLastName?.trim() || "",
-            email: row.contactEmail?.trim() || null,
-            phone: row.contactPhone?.trim() || null,
-            roles: [],
-            isPrimary: true,
-          });
-          result.contactId = contact.id;
-          result.contactCreated = true;
-        }
+        // 2026-04-19: collapsed onto canonical `createOrGetPersonTx`. The
+        // helper runs the same email → name+phone → name cascade the
+        // importer hand-rolled previously, and returns `{contact,created}`
+        // so the importer reports `contactCreated` without a second lookup.
+        const { contact, created } = await clientContactRepository.createOrGetPersonTx(tx, companyId, {
+          customerCompanyId: resolvedCompany.id,
+          firstName: row.contactFirstName?.trim() || "",
+          lastName: row.contactLastName?.trim() || "",
+          email: row.contactEmail?.trim() || null,
+          phone: row.contactPhone?.trim() || null,
+          isPrimary: true,
+        });
+        result.contactId = contact.id;
+        result.contactCreated = created;
       }
 
       result.success = true;

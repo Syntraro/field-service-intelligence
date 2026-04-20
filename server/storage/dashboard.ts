@@ -112,8 +112,18 @@ import { effectiveEndExpr, locationDisplayNameExpr } from "../lib/queryHelpers";
 async function getJobCounts(ctx: QueryCtx) {
   const result = await ctx.db
     .select({
+      // 2026-04-19 Fix A: "ready for invoice" now requires both
+      // status='completed' AND zero existing invoices on the job. The
+      // prior filter over-counted jobs that already had invoices but
+      // hadn't transitioned to 'invoiced' status (e.g. manual invoice
+      // creation that bypassed the close-with-invoice flow).
       requiresInvoicingCount: sql<number>`
-        COUNT(*) FILTER (WHERE ${jobs.status} = 'completed')
+        COUNT(*) FILTER (WHERE ${jobs.status} = 'completed'
+          AND NOT EXISTS (
+            SELECT 1 FROM ${invoices}
+            WHERE ${invoices.jobId} = ${jobs.id}
+              AND ${invoices.companyId} = ${jobs.companyId}
+          ))
       `.as("requires_invoicing_count"),
       activeCount: sql<number>`
         COUNT(*) FILTER (WHERE ${jobs.status} = 'open')
@@ -337,6 +347,10 @@ export async function getNeedsAttentionJobs(
       .orderBy(asc(jobs.scheduledStart)),
 
     // Query 2: Attention jobs (on_hold or completed/needs-invoicing)
+    // 2026-04-19 Fix A: the 'requires_invoicing' tag and the
+    // WHERE branch that admits completed jobs both now require zero
+    // existing invoices. Jobs that are 'completed' but already have
+    // invoices should NOT appear in the needs-attention stream.
     ctx.db
       .select({
         ...dashboardJobSelect,
@@ -357,7 +371,14 @@ export async function getNeedsAttentionJobs(
           activeJobFilter(),
           or(
             and(eq(jobs.status, "open"), eq(jobs.openSubStatus, "on_hold")),
-            eq(jobs.status, "completed")
+            and(
+              eq(jobs.status, "completed"),
+              sql`NOT EXISTS (
+                SELECT 1 FROM ${invoices}
+                WHERE ${invoices.jobId} = ${jobs.id}
+                  AND ${invoices.companyId} = ${jobs.companyId}
+              )`,
+            ),
           )
         )
       )

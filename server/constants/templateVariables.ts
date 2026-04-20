@@ -24,6 +24,24 @@ export const INVOICE_TEMPLATE_VARIABLES = [
   // invoice email; zero or negative on non-overdue sends.
   "INVOICE_BALANCE",
   "DAYS_OVERDUE",
+  // 2026-04-19 Phase 12 — payment-conversion variables.
+  // PAYMENT_URL: raw customer-portal invoice URL, empty when not
+  // payable (paid/voided/zero-balance/payments-disabled). Tenants
+  // can splice this into custom template copy.
+  // PAY_NOW_CTA: full self-contained CTA block (multi-line) or empty
+  // when not payable. Used by the system default templates so the
+  // CTA paragraph cleanly disappears for paid/voided sends.
+  "PAYMENT_URL",
+  "PAY_NOW_CTA",
+] as const;
+
+// 2026-04-18 Phase 11 — payment receipt variables. Superset of invoice
+// variables plus the specific payment that just posted. `PAYMENT_AMOUNT`
+// is the amount received on THIS payment; `INVOICE_BALANCE` is the
+// remaining balance after the canonical recalculation.
+export const PAYMENT_RECEIPT_TEMPLATE_VARIABLES = [
+  ...INVOICE_TEMPLATE_VARIABLES,
+  "PAYMENT_AMOUNT",
 ] as const;
 
 export const QUOTE_TEMPLATE_VARIABLES = [
@@ -54,12 +72,14 @@ export const JOB_TEMPLATE_VARIABLES = [
 export type InvoiceTemplateVariable = (typeof INVOICE_TEMPLATE_VARIABLES)[number];
 export type QuoteTemplateVariable = (typeof QUOTE_TEMPLATE_VARIABLES)[number];
 export type JobTemplateVariable = (typeof JOB_TEMPLATE_VARIABLES)[number];
+export type PaymentReceiptTemplateVariable = (typeof PAYMENT_RECEIPT_TEMPLATE_VARIABLES)[number];
 
 /** Union of every known template variable across entities. */
 export type KnownTemplateVariable =
   | InvoiceTemplateVariable
   | QuoteTemplateVariable
-  | JobTemplateVariable;
+  | JobTemplateVariable
+  | PaymentReceiptTemplateVariable;
 
 /** Lookup: entity type → allowed-variable list. */
 export const TEMPLATE_VARIABLES_BY_ENTITY: Record<
@@ -72,4 +92,6 @@ export const TEMPLATE_VARIABLES_BY_ENTITY: Record<
   // 2026-04-16: reminder template reuses the invoice variable set — the
   // renderer hydrates the same data from templateDataBuilder.buildInvoiceTemplateData.
   invoice_reminder: INVOICE_TEMPLATE_VARIABLES,
+  // 2026-04-18 Phase 11: payment receipt — invoice vars + PAYMENT_AMOUNT.
+  payment_receipt: PAYMENT_RECEIPT_TEMPLATE_VARIABLES,
 };

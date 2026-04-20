@@ -8,7 +8,8 @@
  * - Preserved all canonical data paths, filters, search, QBO sync, actions
  */
 import { useState, useMemo, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { apiRequest } from "@/lib/queryClient";
 import { format, isValid, parseISO } from "date-fns";
 import { useLocation, useSearch, Link } from "wouter";
 import {
@@ -32,6 +33,7 @@ import {
 import { EmptyState } from "@/components/ui/empty-state";
 import { tableRowClass, listPrimaryClass, listSecondaryClass } from "@/components/ui/list-surface";
 import type { Invoice } from "@shared/schema";
+import { UNPAID_INVOICE_STATUSES } from "@shared/invoiceStatus";
 import { getInvoiceStatusBadge } from "@/lib/statusBadges";
 
 interface EnrichedInvoice extends Invoice {
@@ -94,6 +96,45 @@ export default function InvoicesListPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
+  // 2026-04-18 Phase 9 (collections): bulk reminders. Reuses the
+  // canonical `invoiceReminderService.sendOne` per invoice server-side
+  // via `POST /api/invoices/bulk-send-reminders`. Gate failures (paused,
+  // snoozed, billing-locked) come back in the `skipped` array and are
+  // surfaced in the toast alongside the success count.
+  const UNPAID_STATUSES = new Set(UNPAID_INVOICE_STATUSES);
+  const bulkRemindersMutation = useMutation({
+    mutationFn: async (invoiceIds: string[]) =>
+      apiRequest<{
+        totalCount: number;
+        successCount: number;
+        skippedCount: number;
+        failedCount: number;
+        succeeded: string[];
+        skipped: { invoiceId: string; reason: string; code?: string }[];
+        failed: { invoiceId: string; reason: string }[];
+      }>("/api/invoices/bulk-send-reminders", {
+        method: "POST",
+        body: JSON.stringify({ invoiceIds }),
+      }),
+    onSuccess: (data) => {
+      const parts: string[] = [];
+      if (data.successCount > 0) parts.push(`${data.successCount} sent`);
+      if (data.skippedCount > 0) parts.push(`${data.skippedCount} skipped`);
+      if (data.failedCount > 0) parts.push(`${data.failedCount} failed`);
+      toast({
+        title: data.failedCount > 0 ? "Reminders partial" : "Reminders sent",
+        description: parts.join(", ") + ".",
+        variant: data.failedCount > 0 ? "destructive" : undefined,
+      });
+      setSelectedIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+    },
+    onError: (err: any) => {
+      toast({ title: "Reminders failed", description: err?.message, variant: "destructive" });
+    },
+  });
+
   useEffect(() => {
     const params = new URLSearchParams(search);
     const filterParam = params.get("filter");
@@ -122,6 +163,32 @@ export default function InvoicesListPage() {
     },
   });
 
+  // 2026-04-18 Phase 10 (payments clarity): surface invoices whose
+  // status / money fields have drifted apart so a manager can
+  // reconcile them. Manager-gated endpoint returns [] to non-managers
+  // — the banner silently stays hidden in that case.
+  const { data: reconciliationData } = useQuery<{
+    data: Array<{
+      invoiceId: string;
+      invoiceNumber: string | null;
+      status: string | null;
+      balance: string | null;
+      amountPaid: string | null;
+      locationDisplayName: string | null;
+      kind: "paid_with_balance" | "zero_balance_still_unpaid" | "partial_without_payment";
+    }>;
+    count: number;
+  }>({
+    queryKey: ["invoices", "reconciliation"],
+    queryFn: async () => {
+      const res = await fetch("/api/invoices/reconciliation", { credentials: "include" });
+      if (!res.ok) return { data: [], count: 0 };
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+  const reconciliationIssues = reconciliationData?.data ?? [];
+
   const outstandingAmount = stats?.outstanding?.amount ?? 0;
   const outstandingCount = stats?.outstanding?.count ?? 0;
   const issuedCount30d = stats?.issuedLast30Days?.count ?? 0;
@@ -138,7 +205,9 @@ export default function InvoicesListPage() {
   const enrichedInvoices = useMemo(() => {
     return invoices.map(inv => ({
       ...inv,
-      statusInfo: getInvoiceStatusBadge(inv.status, inv.isPastDue ?? false),
+      // 2026-04-18 Phase 9: pass dueDate so awaiting-payment invoices
+      // within the Due Soon window render the "Due Soon" badge.
+      statusInfo: getInvoiceStatusBadge(inv.status, inv.isPastDue ?? false, inv.dueDate),
     }));
   }, [invoices]);
 
@@ -231,6 +300,55 @@ export default function InvoicesListPage() {
           />
         </div>
 
+        {/* ── 2b. Reconciliation banner (Phase 10) ── */}
+        {reconciliationIssues.length > 0 && (
+          <div
+            className="bg-amber-50 border border-amber-200 rounded-md px-4 py-2.5 flex items-start gap-3"
+            data-testid="reconciliation-banner"
+          >
+            <AlertTriangle className="h-4 w-4 text-amber-700 mt-0.5 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium text-amber-900">
+                {reconciliationIssues.length} invoice
+                {reconciliationIssues.length === 1 ? "" : "s"} need
+                {reconciliationIssues.length === 1 ? "s" : ""} reconciliation
+              </div>
+              <div className="text-xs text-amber-800 mt-0.5">
+                Status and payment totals have drifted on these rows. Open
+                each to review and correct.
+              </div>
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs">
+                {reconciliationIssues.slice(0, 6).map((iss) => {
+                  const label =
+                    iss.kind === "paid_with_balance"
+                      ? "Paid · balance owed"
+                      : iss.kind === "zero_balance_still_unpaid"
+                        ? "Unpaid · no balance"
+                        : "Partial · no payments";
+                  return (
+                    <Link
+                      key={iss.invoiceId}
+                      href={`/invoices/${iss.invoiceId}`}
+                      className="text-amber-900 hover:underline inline-flex items-center gap-1"
+                      data-testid={`reconciliation-link-${iss.invoiceId}`}
+                    >
+                      <span className="font-medium">
+                        {iss.invoiceNumber ?? "—"}
+                      </span>
+                      <span className="text-amber-700">· {label}</span>
+                    </Link>
+                  );
+                })}
+                {reconciliationIssues.length > 6 && (
+                  <span className="text-amber-700">
+                    +{reconciliationIssues.length - 6} more
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ── 3. Search / Filter Row ── */}
         <div className="flex items-center gap-3">
           <div className="relative flex-1 max-w-sm">
@@ -310,6 +428,32 @@ export default function InvoicesListPage() {
                     >
                       Clear
                     </Button>
+                    {/* 2026-04-18 Phase 9: bulk reminder action. Shown
+                        only when every selected row is an unpaid invoice
+                        (awaiting_payment / sent / partial_paid) — the
+                        same set that `invoiceReminderService` gates
+                        server-side. Keeps the button out of the way
+                        when the selection contains drafts or paid
+                        invoices, which can't legitimately receive a
+                        reminder. */}
+                    {(() => {
+                      const remindable = filteredInvoices.filter(
+                        (inv) => selectedIds.has(inv.id) && UNPAID_STATUSES.has(inv.status),
+                      );
+                      if (remindable.length === 0 || remindable.length !== selectedIds.size) return null;
+                      return (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => bulkRemindersMutation.mutate(remindable.map((r) => r.id))}
+                          disabled={bulkRemindersMutation.isPending}
+                          data-testid="button-bulk-send-reminders"
+                        >
+                          <Send className="h-3.5 w-3.5 mr-2" />
+                          Send {remindable.length} reminder{remindable.length === 1 ? "" : "s"}
+                        </Button>
+                      );
+                    })()}
                     <Button
                       size="sm"
                       onClick={() => setBatchOpen(true)}

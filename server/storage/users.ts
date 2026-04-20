@@ -43,6 +43,7 @@ export class UserRepository extends BaseRepository {
       billingInterval: company[0].billingInterval,
       currentPeriodEnd: company[0].currentPeriodEnd,
       cancelAtPeriodEnd: company[0].cancelAtPeriodEnd,
+      onboardingCompletedAt: company[0].onboardingCompletedAt,
     };
   }
 

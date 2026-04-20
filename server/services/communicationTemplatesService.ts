@@ -53,6 +53,10 @@ const SYSTEM_DEFAULTS: Record<string, TemplateInput> = {
       "Your invoice #{{INVOICE_NUMBER}} is attached and ready for payment.\n\n" +
       "Total amount: {{INVOICE_TOTAL}}\n" +
       "Due date: {{INVOICE_DUE_DATE}}\n\n" +
+      // 2026-04-19 Phase 12 — Pay Now CTA. Self-contained block
+      // (multi-line) that resolves to empty string when the invoice
+      // isn't payable, leaving the surrounding paragraphs untouched.
+      "{{PAY_NOW_CTA}}" +
       "If you have any questions, please contact us.\n\n" +
       "Thank you,\n" +
       "{{COMPANY_NAME}}",
@@ -98,8 +102,27 @@ const SYSTEM_DEFAULTS: Record<string, TemplateInput> = {
       "Hello {{CLIENT_COMPANY_NAME}},\n\n" +
       "This is a friendly reminder that invoice #{{INVOICE_NUMBER}} is now {{DAYS_OVERDUE}} days overdue.\n\n" +
       "Outstanding balance: {{INVOICE_BALANCE}}\n\n" +
+      // 2026-04-19 Phase 12 — Pay Now CTA on overdue reminders, gated
+      // by the same payable + balance + feature-flag rules as the
+      // primary invoice send.
+      "{{PAY_NOW_CTA}}" +
       "If payment has already been sent, please disregard this message.\n\n" +
       "If you have any questions or need assistance, simply reply to this email.\n\n" +
+      "Thank you,\n" +
+      "{{COMPANY_NAME}}",
+  },
+  // 2026-04-18 Phase 11 — payment receipt. Fires after a successful
+  // portal (Stripe) payment via the canonical webhook path. Uses
+  // {{PAYMENT_AMOUNT}} + {{INVOICE_BALANCE}} so the same copy works
+  // for both full and partial payments — when the remaining balance
+  // is zero the reminder text simply reflects that.
+  "payment_receipt:email": {
+    subjectTemplate: "Payment received — Invoice #{{INVOICE_NUMBER}}",
+    bodyTemplate:
+      "Hello {{CLIENT_COMPANY_NAME}},\n\n" +
+      "Thank you — we received your payment of {{PAYMENT_AMOUNT}} for invoice #{{INVOICE_NUMBER}}.\n\n" +
+      "Remaining balance: {{INVOICE_BALANCE}}\n\n" +
+      "If you have any questions about this payment, simply reply to this email.\n\n" +
       "Thank you,\n" +
       "{{COMPANY_NAME}}",
   },

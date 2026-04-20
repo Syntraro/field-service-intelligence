@@ -36,7 +36,24 @@ export default function PortalVerify() {
         }
         // Invalidate portal/me so PortalAuthProvider picks up the new session
         queryClient.invalidateQueries({ queryKey: ["/api/portal/me"] });
-        setLocation("/portal");
+        // 2026-04-19 Portal auth fix: preserve intended destination. When a
+        // user arrives at a protected portal page (e.g. /portal/invoices/:id)
+        // without a session, `PortalProtected` stashes the path in
+        // sessionStorage before redirecting to login. Restore it here so the
+        // customer lands on the invoice they originally clicked, not the
+        // dashboard. Only trust paths that start with /portal/ — defensive
+        // against tampering. Cleared on read so it doesn't leak across logins.
+        let target = "/portal";
+        try {
+          const stashed = sessionStorage.getItem("portal:returnTo");
+          sessionStorage.removeItem("portal:returnTo");
+          if (stashed && stashed.startsWith("/portal/")) {
+            target = stashed;
+          }
+        } catch {
+          /* storage blocked — fall back to dashboard */
+        }
+        setLocation(target);
       } catch {
         setError("Something went wrong. Please try again.");
       }

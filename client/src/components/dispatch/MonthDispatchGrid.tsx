@@ -87,8 +87,10 @@ function MonthDayCell({
       {/* Visit cards */}
       <div className="flex flex-col gap-px flex-1 min-w-0">
         {visibleVisits.map(v => {
-          const techColor = v.technicianId
-            ? techColorMap.get(v.technicianId) ?? UNASSIGNED_COLOR
+          // 2026-04-19: derive color from canonical crew (technicianIds[0]).
+          const primaryTechId = v.technicianIds[0] ?? null;
+          const techColor = primaryTechId
+            ? techColorMap.get(primaryTechId) ?? UNASSIGNED_COLOR
             : UNASSIGNED_COLOR;
           const isSelected = selectedVisitId === v.id;
           return (

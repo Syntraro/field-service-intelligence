@@ -19,6 +19,13 @@ export const INVOICE_VARIABLES = [
   "COMPANY_NAME",
   "INVOICE_TOTAL",
   "INVOICE_DUE_DATE",
+  // 2026-04-19 Portal activation: surface the portal-dependent pay-link
+  // tokens so admins editing the invoice template can insert them. Both
+  // render to "" when `customerPortalPaymentsEnabled` is off or the
+  // invoice has zero outstanding balance (see templateDataBuilder on
+  // the server). Included here so the chip shows up in the editor UI.
+  "PAYMENT_URL",
+  "PAY_NOW_CTA",
 ] as const;
 
 export const QUOTE_VARIABLES = [

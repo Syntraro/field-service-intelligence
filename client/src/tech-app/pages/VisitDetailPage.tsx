@@ -29,24 +29,27 @@
  * The office `draftToJobPartPayload(...)` helper is intentionally NOT used
  * here. Do not migrate this route to the full canonical input shape.
  */
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft, Navigation, MapPin, StickyNote, AlertCircle, Check,
   Loader2, RefreshCw, Send, Plus, Wrench, Package, Trash2, Paperclip, X as CloseIcon,
-  ChevronRight, Search, X, FileText, Clock, Pause, Camera, File as FileIcon,
+  ChevronRight, Search, X, FileText, Clock, Pause, Camera, File as FileIcon, Phone,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { MobileShell } from "../components/MobileShell";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   useTechVisitDetail,
-  type DetailNote, type DetailEquipment,
+  type DetailNote, type DetailEquipment, type DetailPart,
 } from "../hooks/useTechVisitDetail";
 import {
   STATUS_LABELS, OUTCOME_LABELS, OUTCOME_COLORS, DEFAULT_OUTCOME_COLOR,
 } from "../utils/visitDisplay";
+import { displayApiError } from "../utils/apiErrorDisplay";
+import { useDebouncedValue } from "../utils/useDebouncedValue";
+import { toTelHref, toMapsHref } from "../utils/externalLinks";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { NoteAttachmentStrip } from "@/components/attachments/NoteAttachmentStrip";
 import { useOfflineNotes } from "@/hooks/useOfflineNoteQueue";
@@ -95,7 +98,10 @@ function OutcomeModal({ onSelect, onCancel }: {
   onSelect: (outcome: string, note?: string) => void;
   onCancel: () => void;
 }) {
-  const [selected, setSelected] = useState<string | null>(null);
+  // Preselect "completed" — the most-frequent visit exit. Combined with the
+  // tap-twice-to-confirm shortcut below, this cuts the happy-path completion
+  // from 2 taps (select + Confirm) to 1 tap.
+  const [selected, setSelected] = useState<string | null>("completed");
   const [note, setNote] = useState("");
   const outcomes = [
     { key: "completed", label: "Completed", desc: "Work finished successfully", cls: "border-emerald-400 bg-emerald-50" },
@@ -105,13 +111,24 @@ function OutcomeModal({ onSelect, onCancel }: {
   const needsNote = selected === "needs_parts" || selected === "needs_followup";
   const canSubmit = selected && (!needsNote || note.trim());
 
+  // Tap an outcome row: select it. Tap the already-selected "completed" row
+  // again: instantly confirm (no note required for that outcome). For the
+  // outcomes that need a note, keep the explicit Confirm button as the gate.
+  const handleOutcomeTap = (key: string) => {
+    if (key === "completed" && selected === key) {
+      onSelect(key);
+      return;
+    }
+    setSelected(key);
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40" onClick={onCancel}>
       <div className="w-full max-w-md bg-white rounded-t-2xl p-5 space-y-3 shadow-xl" onClick={e => e.stopPropagation()}>
         <h2 className="text-sm font-bold text-slate-900">Visit Outcome</h2>
         <div className="space-y-2">
           {outcomes.map(o => (
-            <button key={o.key} onClick={() => setSelected(o.key)}
+            <button key={o.key} onClick={() => handleOutcomeTap(o.key)}
               className={`w-full text-left p-3 rounded-md border transition-colors ${selected === o.key ? o.cls : "border-slate-200"}`}>
               <div className="text-sm font-semibold text-slate-800">{o.label}</div>
               <div className="text-xs text-slate-500">{o.desc}</div>
@@ -147,9 +164,19 @@ function OutcomeModal({ onSelect, onCancel }: {
 // Save contract is intentionally REF-BASED — see the file-level header for
 // the full asymmetry note.
 
-function AddPartSheet({ equipmentId, onClose, addPart, onError }: {
+function AddPartSheet({ equipmentId, equipmentName, recentParts, onClose, onSuccess, addPart, onError }: {
   equipmentId: string | null;
+  /** Optional human-readable equipment label, shown in the sheet header so
+   *  the tech sees which equipment context this add will attach to. */
+  equipmentName?: string | null;
+  /** Parts already on this visit. Used to render "Recent on this visit"
+   *  chips for one-tap re-add of items the tech is already working with. */
+  recentParts: DetailPart[];
   onClose: () => void;
+  /** Fired only when a part has actually been added. Caller uses this for
+   *  the success toast so a backdrop / X dismissal does not falsely
+   *  announce "Part added". */
+  onSuccess?: () => void;
   addPart: { mutateAsync: (p: { productId: string; quantity: string; equipmentId?: string | null }) => Promise<any>; isPending: boolean };
   onError: (err: any) => void;
 }) {
@@ -162,11 +189,80 @@ function AddPartSheet({ equipmentId, onClose, addPart, onError }: {
   const [newPrice, setNewPrice] = useState("");
   const [newType, setNewType] = useState<"product" | "service">("product");
   const [createPending, setCreatePending] = useState(false);
+  // Multi-part flow controls. `keepOpen` toggles whether a successful add
+  // closes the sheet or returns to the search view for the next part.
+  // `lastAdded` drives the brief inline confirmation that replaces the
+  // close-as-feedback signal when keepOpen is true.
+  // `pendingChipId` disables the tapped recent chip while its mutation
+  // is in flight so the tech can't double-fire.
+  const [keepOpen, setKeepOpen] = useState(false);
+  const [lastAdded, setLastAdded] = useState<{ name: string; qty: string } | null>(null);
+  const [pendingChipId, setPendingChipId] = useState<string | null>(null);
+  const qtyInputRef = useRef<HTMLInputElement>(null);
 
   // 2026-04-10 Phase C: canonical search hook. Fires after 2 chars; same
   // /api/items endpoint, same caching, same normalized ProductOption[] shape
   // as every office selector.
-  const { data: searchResults = [], isLoading: isSearchLoading } = useProductSearch(searchText);
+  // Debounce the query locally so the shared hook fires at most once per
+  // quiet window instead of on every keystroke. Hook contract unchanged.
+  const debouncedSearchText = useDebouncedValue(searchText, 200);
+  const {
+    data: searchResults = [],
+    isLoading: isSearchLoading,
+    isError: isSearchError,
+    refetch: refetchSearch,
+  } = useProductSearch(debouncedSearchText);
+  // Hook gate: `useProductSearch` only fires when searchText.length >= 2.
+  // Scope the error banner to the same condition so we don't show a retry
+  // prompt for queries that were never issued.
+  const showSearchError = isSearchError && searchText.trim().length >= 2;
+  // Keep the selector showing a loading indicator during the debounce wait
+  // as well as the network fetch so the results list doesn't briefly flash
+  // "empty" between keystroke and request.
+  const selectorLoading = isSearchLoading || (searchText.trim().length >= 2 && searchText !== debouncedSearchText);
+
+  // "Recent on this visit" chips — dedupe by productId (so re-add is
+  // unambiguous), most-recent first, capped at 5. Skip parts without a
+  // productId (legacy / manually-described rows can't be re-added by ref).
+  const recentChips = useMemo(() => {
+    const seen = new Set<string>();
+    const out: DetailPart[] = [];
+    const sorted = [...recentParts].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    for (const p of sorted) {
+      if (!p.productId || seen.has(p.productId)) continue;
+      seen.add(p.productId);
+      out.push(p);
+      if (out.length >= 5) break;
+    }
+    return out;
+  }, [recentParts]);
+
+  // Auto-focus qty as soon as a product is picked. `select()` highlights the
+  // default "1" so the tech can immediately type a new number without
+  // erasing — typing replaces the selection.
+  useEffect(() => {
+    if (selected) {
+      qtyInputRef.current?.focus();
+      qtyInputRef.current?.select();
+    }
+  }, [selected]);
+
+  // Auto-expand the create-new form when a search yielded zero hits. Saves
+  // the explicit "tap Create" step on the slow new-catalog-item path.
+  // Only triggers once results have settled (not loading) and the user is
+  // not already in the create form.
+  const noResults = !selectorLoading && searchText.trim().length >= 2 && searchResults.length === 0 && !creating;
+  useEffect(() => {
+    if (noResults) setCreating(true);
+  }, [noResults]);
+
+  // Clear the inline "Added" strip after a short window so it doesn't
+  // linger across multiple adds.
+  useEffect(() => {
+    if (!lastAdded) return;
+    const t = setTimeout(() => setLastAdded(null), 2500);
+    return () => clearTimeout(t);
+  }, [lastAdded]);
 
   const handleCreateItem = async () => {
     if (!searchText.trim() || createPending) return;
@@ -195,19 +291,147 @@ function AddPartSheet({ equipmentId, onClose, addPart, onError }: {
       // matching `productId`. Do NOT use draftToJobPartPayload — that's the
       // office contract. See `shared/lineItem.ts` Rule 6 for the rationale.
       await addPart.mutateAsync({ productId: selected.id, quantity: qty, equipmentId });
-      onClose();
+      const justAdded = { name: selected.name, qty };
+      onSuccess?.();
+      if (keepOpen) {
+        // Multi-part flow: clear and return to search so the next part can
+        // be entered without a sheet open/close cycle. Inline strip below
+        // confirms the add since we're not closing.
+        setSelected(null);
+        setSearchText("");
+        setQty("1");
+        setCreating(false);
+        setLastAdded(justAdded);
+      } else {
+        onClose();
+      }
     } catch (err: any) { onError(err); }
   };
 
+  // One-tap re-add from a recent chip. Fires the same mutation contract
+  // used by the manual flow, with qty="1" and the current sheet's
+  // equipment context. Skips view B entirely.
+  const handleChipTap = async (chip: DetailPart) => {
+    if (!chip.productId || pendingChipId || addPart.isPending) return;
+    setPendingChipId(chip.id);
+    try {
+      await addPart.mutateAsync({ productId: chip.productId, quantity: "1", equipmentId });
+      onSuccess?.();
+      setLastAdded({ name: chip.description, qty: "1" });
+      if (!keepOpen) onClose();
+    } catch (err: any) { onError(err); }
+    finally { setPendingChipId(null); }
+  };
+
+  // Qty stepper handlers — keep at integer floor of 1.
+  const stepQty = (delta: number) => {
+    const current = Math.max(1, parseInt(qty || "1", 10) || 1);
+    setQty(String(Math.max(1, current + delta)));
+  };
+
+  // Backdrop tap closes only when there is no in-progress work. When the
+  // tech has selected a product or opened the inline catalog-create form,
+  // an accidental backdrop tap would discard half-entered fields — so
+  // backdrop is a no-op and the X / Back button becomes the explicit exit.
+  const hasInProgressWork = !!selected || creating || createPending;
+  const handleBackdrop = () => { if (!hasInProgressWork) onClose(); };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40" onClick={handleBackdrop}>
       <div className="w-full max-w-md bg-white rounded-t-2xl p-4 shadow-xl max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-bold text-slate-900">Add Part</h2>
-          <button onClick={onClose} className="p-1 rounded-md hover:bg-slate-100"><X className="h-4 w-4 text-slate-400" /></button>
+        <div className="flex items-center justify-between mb-3 gap-2">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-bold text-slate-900">Add Part</h2>
+            {/* Equipment context — shown when AddPartSheet was opened with
+                a specific equipment target so the tech knows which item
+                this part will attach to. */}
+            {equipmentName && (
+              <p className="text-[11px] text-slate-500 truncate flex items-center gap-1 mt-0.5">
+                <Wrench className="h-3 w-3 shrink-0" aria-hidden="true" />
+                <span className="truncate">{equipmentName}</span>
+              </p>
+            )}
+          </div>
+          {/* Keep adding toggle — drives multi-part flow. Persisted only
+              for the lifetime of this sheet session. */}
+          <button
+            onClick={() => setKeepOpen(v => !v)}
+            aria-pressed={keepOpen}
+            className={`min-h-[44px] px-3 rounded-md text-xs font-semibold transition-colors ${
+              keepOpen
+                ? "bg-emerald-100 text-emerald-700 border border-emerald-300"
+                : "bg-slate-100 text-slate-600 border border-slate-200"
+            }`}
+            title={keepOpen ? "Sheet stays open after each add" : "Sheet closes after each add"}
+          >
+            {keepOpen ? "Keep adding ✓" : "Keep adding"}
+          </button>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="min-h-[44px] min-w-[44px] -mr-2 flex items-center justify-center rounded-md hover:bg-slate-100 active:bg-slate-200"
+          >
+            <X className="h-5 w-5 text-slate-400" />
+          </button>
         </div>
+        {/* Inline confirmation — replaces close-as-feedback during a
+            keep-open session. Auto-clears via the timeout effect above. */}
+        {lastAdded && (
+          <div
+            className="mb-2 rounded-md bg-emerald-50 border border-emerald-200 px-3 py-1.5 flex items-center gap-2"
+            role="status"
+            aria-live="polite"
+          >
+            <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" aria-hidden="true" />
+            <p className="text-xs text-emerald-700 truncate">
+              Added <span className="font-semibold">{lastAdded.name}</span> ×{lastAdded.qty}
+            </p>
+          </div>
+        )}
         {!selected ? (
           <>
+            {/* Recent chips — one-tap re-add of items already on this
+                visit. Sourced from `visit.parts` (deduped by productId,
+                most-recent first, max 5). Tap fires the canonical add
+                mutation at qty 1; honors the keep-open toggle. */}
+            {!creating && recentChips.length > 0 && (
+              <div className="mb-2">
+                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Recent on this visit</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {recentChips.map(chip => {
+                    const pending = pendingChipId === chip.id;
+                    return (
+                      <button
+                        key={chip.id}
+                        onClick={() => handleChipTap(chip)}
+                        disabled={!!pendingChipId || addPart.isPending}
+                        aria-label={`Add another ${chip.description}`}
+                        className="min-h-[36px] px-2.5 py-1 rounded-full bg-slate-100 text-xs font-medium text-slate-700 hover:bg-slate-200 active:bg-slate-300 disabled:opacity-60 flex items-center gap-1.5 max-w-[200px]"
+                      >
+                        {pending ? <Loader2 className="h-3 w-3 animate-spin shrink-0" /> : <Plus className="h-3 w-3 shrink-0" />}
+                        <span className="truncate">{chip.description}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {/* Search error banner — rendered alongside the canonical
+                CreateOrSelectField rather than modifying the shared
+                selector's contract. Only shows once the hook would have
+                fired (searchText >= 2 chars). */}
+            {showSearchError && (
+              <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 text-amber-600 shrink-0" />
+                <p className="text-xs text-amber-800 flex-1">Couldn't load catalog results.</p>
+                <button
+                  onClick={() => refetchSearch()}
+                  className="min-h-[44px] px-3 rounded-md text-xs font-semibold text-amber-700 hover:bg-amber-100 active:bg-amber-200"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
             {/* 2026-04-10 Phase C: canonical CreateOrSelectField replaces the
                 manual input + result-list. The "Create new" callback opens the
                 inline tech catalog create form below. */}
@@ -224,7 +448,7 @@ function AddPartSheet({ equipmentId, onClose, addPart, onError }: {
                   }
                 }}
                 searchResults={searchResults}
-                searchLoading={isSearchLoading}
+                searchLoading={selectorLoading}
                 searchText={searchText}
                 onSearchTextChange={setSearchText}
                 getKey={getProductKey}
@@ -249,7 +473,7 @@ function AddPartSheet({ equipmentId, onClose, addPart, onError }: {
                   </button>
                 </div>
                 <input value={newPrice} onChange={e => setNewPrice(e.target.value)} placeholder="Unit price (optional)"
-                  type="number" step="0.01" className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
+                  type="number" step="0.01" inputMode="decimal" className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
                 <button onClick={handleCreateItem} disabled={createPending || !searchText.trim()}
                   className="w-full h-10 rounded-md bg-emerald-600 text-white text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-1.5">
                   {createPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Create & Select
@@ -267,9 +491,50 @@ function AddPartSheet({ equipmentId, onClose, addPart, onError }: {
               </p>
             </div>
             <div>
-              <label className="text-xs font-semibold text-slate-500 mb-1 block">Quantity</label>
-              <input value={qty} onChange={e => setQty(e.target.value)} type="number" min="1" step="1"
-                className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
+              <label htmlFor="add-part-qty" className="text-xs font-semibold text-slate-500 mb-1 block">Quantity</label>
+              {/* Stepper flanks the numeric input so common qty bumps don't
+                  require opening the soft keyboard. Each stepper is 44×44
+                  for thumb-friendly hit targets. */}
+              <div className="flex items-stretch gap-2">
+                <button
+                  type="button"
+                  onClick={() => stepQty(-1)}
+                  aria-label="Decrease quantity"
+                  disabled={parseInt(qty || "1", 10) <= 1}
+                  className="min-h-[44px] min-w-[44px] rounded-md border border-slate-200 text-base font-semibold text-slate-600 hover:bg-slate-50 active:bg-slate-100 disabled:opacity-50"
+                >
+                  −
+                </button>
+                <input
+                  ref={qtyInputRef}
+                  id="add-part-qty"
+                  value={qty}
+                  onChange={e => setQty(e.target.value)}
+                  onKeyDown={(e) => {
+                    // Enter on qty submits the add — pairs with the qty
+                    // autofocus so the common "select → confirm qty=1 →
+                    // submit" flow is keyboard-only.
+                    if (e.key === "Enter" && selected && !addPart.isPending) {
+                      e.preventDefault();
+                      handleSubmit();
+                    }
+                  }}
+                  type="number"
+                  min="1"
+                  step="1"
+                  inputMode="numeric"
+                  enterKeyHint="done"
+                  className="flex-1 min-w-0 h-11 px-3 text-center text-sm border border-slate-200 rounded-md tabular-nums"
+                />
+                <button
+                  type="button"
+                  onClick={() => stepQty(1)}
+                  aria-label="Increase quantity"
+                  className="min-h-[44px] min-w-[44px] rounded-md border border-slate-200 text-base font-semibold text-slate-600 hover:bg-slate-50 active:bg-slate-100"
+                >
+                  +
+                </button>
+              </div>
             </div>
             <div className="flex gap-2">
               <button onClick={() => setSelected(null)} className="flex-1 h-10 rounded-md border border-slate-200 text-sm font-medium text-slate-600">Back</button>
@@ -287,9 +552,13 @@ function AddPartSheet({ equipmentId, onClose, addPart, onError }: {
 
 // ── Add Equipment Sheet ──
 
-function AddEquipmentSheet({ visitId, onClose, addEquipment, onError }: {
+function AddEquipmentSheet({ visitId, onClose, onSuccess, addEquipment, onError }: {
   visitId: string;
   onClose: () => void;
+  /** Fired only when an equipment selection or creation actually succeeded.
+   *  Caller uses this for the success toast so a backdrop / X dismissal
+   *  does not falsely announce "Equipment added". */
+  onSuccess?: () => void;
   addEquipment: { mutateAsync: (equipmentId: string) => Promise<any>; isPending: boolean };
   onError: (err: any) => void;
 }) {
@@ -302,7 +571,7 @@ function AddEquipmentSheet({ visitId, onClose, addEquipment, onError }: {
   const [createPending, setCreatePending] = useState(false);
 
   // Fetch location equipment for the visit's job location
-  const { data: locationEquip } = useQuery<any[]>({
+  const { data: locationEquip, isError: locationEquipError, refetch: refetchLocationEquip } = useQuery<any[]>({
     queryKey: ["/api/tech/visits", visitId, "location-equipment"],
     queryFn: async () => {
       // Get the visit to find job → location, then fetch location equipment
@@ -323,6 +592,7 @@ function AddEquipmentSheet({ visitId, onClose, addEquipment, onError }: {
   const handleSelect = async (equipmentId: string) => {
     try {
       await addEquipment.mutateAsync(equipmentId);
+      onSuccess?.();
       onClose();
     } catch (err: any) { onError(err); }
   };
@@ -335,17 +605,32 @@ function AddEquipmentSheet({ visitId, onClose, addEquipment, onError }: {
         method: "POST",
         body: JSON.stringify({ name: newName.trim(), equipmentType: newType || null, modelNumber: newModel || null, serialNumber: newSerial || null }),
       });
-      if (created?.id) onClose(); // Auto-attached by the endpoint
+      if (created?.id) {
+        onSuccess?.();
+        onClose(); // Auto-attached by the endpoint
+      }
     } catch (err: any) { onError(err); }
     finally { setCreatePending(false); }
   };
 
+  // Backdrop tap closes only when no create-form work is in progress.
+  // Prevents discarding a half-filled new-equipment form if the tech
+  // fat-fingers the backdrop.
+  const hasInProgressWork = creating || createPending;
+  const handleBackdrop = () => { if (!hasInProgressWork) onClose(); };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40" onClick={handleBackdrop}>
       <div className="w-full max-w-md bg-white rounded-t-2xl p-4 shadow-xl max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-bold text-slate-900">Add Equipment</h2>
-          <button onClick={onClose} className="p-1 rounded-md hover:bg-slate-100"><X className="h-4 w-4 text-slate-400" /></button>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="min-h-[44px] min-w-[44px] -mr-2 flex items-center justify-center rounded-md hover:bg-slate-100 active:bg-slate-200"
+          >
+            <X className="h-5 w-5 text-slate-400" />
+          </button>
         </div>
         {!creating ? (
           <>
@@ -355,14 +640,26 @@ function AddEquipmentSheet({ visitId, onClose, addEquipment, onError }: {
                 className="w-full h-9 pl-9 pr-3 text-sm border border-slate-200 rounded-md" autoFocus />
             </div>
             <div className="overflow-y-auto flex-1 -mx-1">
-              {filtered.map((e: any) => (
+              {locationEquipError && (
+                <div className="text-center py-6 px-4">
+                  <AlertCircle className="h-6 w-6 mx-auto mb-2 text-slate-400 opacity-60" />
+                  <p className="text-xs text-slate-500 mb-2">Failed to load equipment</p>
+                  <button
+                    onClick={() => refetchLocationEquip()}
+                    className="min-h-[44px] px-5 rounded-md border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 active:bg-slate-100"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+              {!locationEquipError && filtered.map((e: any) => (
                 <button key={e.id} onClick={() => handleSelect(e.id)} disabled={addEquipment.isPending}
                   className="w-full text-left px-3 py-2.5 hover:bg-slate-50 rounded-md">
                   <p className="text-sm font-medium text-slate-800">{e.name}</p>
                   <p className="text-xs text-slate-400">{[e.equipmentType, e.serialNumber].filter(Boolean).join(" · ")}</p>
                 </button>
               ))}
-              {filtered.length === 0 && search.length > 0 && (
+              {!locationEquipError && filtered.length === 0 && search.length > 0 && (
                 <p className="text-center text-xs text-slate-400 py-3">No matching equipment</p>
               )}
             </div>
@@ -485,16 +782,27 @@ function EquipmentDetailScreen({ equipmentId, equipment, isTerminal, onClose, on
   ].filter(([, v]) => v);
 
   const historyLoading = timeline.isLoading || eqNotes.isLoading;
-  const jobHistory = (!historyLoading && timeline.data && eqNotes.data)
+  const historyError = timeline.isError || eqNotes.isError;
+  const jobHistory = (!historyLoading && !historyError && timeline.data && eqNotes.data)
     ? buildJobHistory(timeline.data, eqNotes.data) : [];
-  const historyEmpty = !historyLoading && jobHistory.length === 0;
+  const historyEmpty = !historyLoading && !historyError && jobHistory.length === 0;
+  const retryHistory = () => {
+    if (timeline.isError) timeline.refetch();
+    if (eqNotes.isError) eqNotes.refetch();
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-50 flex flex-col">
       {/* Compact header */}
       <div className="bg-[#0f1a2e] px-3 pt-2 pb-2 shrink-0">
         <div className="flex items-center gap-2">
-          <button onClick={onClose} className="p-1 -ml-1 rounded-md hover:bg-white/10"><ArrowLeft className="h-4 w-4 text-white" /></button>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="min-h-[44px] min-w-[44px] -ml-2 flex items-center justify-center rounded-md hover:bg-white/10 active:bg-white/20"
+          >
+            <ArrowLeft className="h-5 w-5 text-white" />
+          </button>
           <div className="flex-1 min-w-0">
             <h1 className="text-sm font-bold text-white truncate">{eq.name}</h1>
             <p className="text-xs text-slate-400 truncate">{[eq.type, eq.manufacturer].filter(Boolean).join(" · ") || "Equipment"}</p>
@@ -546,6 +854,18 @@ function EquipmentDetailScreen({ equipmentId, equipment, isTerminal, onClose, on
 
           {/* Job-grouped history */}
           {historyLoading && <div className="text-center py-8"><Loader2 className="h-5 w-5 animate-spin mx-auto text-slate-300" /></div>}
+          {historyError && (
+            <div className="text-center py-8 px-4">
+              <AlertCircle className="h-6 w-6 mx-auto mb-2 text-slate-400 opacity-60" />
+              <p className="text-xs text-slate-500 mb-2">Failed to load equipment history</p>
+              <button
+                onClick={retryHistory}
+                className="min-h-[44px] px-5 rounded-md border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 active:bg-slate-100"
+              >
+                Retry
+              </button>
+            </div>
+          )}
           {historyEmpty && <p className="text-center py-8 text-xs text-slate-400">No history for this equipment</p>}
           {jobHistory.map(job => (
             <div key={job.jobId} className="rounded-md border border-slate-200 bg-white overflow-hidden">
@@ -649,7 +969,13 @@ function ErrorState({ onBack, onRetry }: { onBack: () => void; onRetry: () => vo
   return (
     <MobileShell>
       <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-200">
-        <button onClick={onBack} className="p-1 rounded-md active:bg-slate-100"><ArrowLeft className="h-5 w-5 text-slate-600" /></button>
+        <button
+          onClick={onBack}
+          aria-label="Back"
+          className="min-h-[44px] min-w-[44px] -ml-2 flex items-center justify-center rounded-md hover:bg-slate-100 active:bg-slate-200"
+        >
+          <ArrowLeft className="h-5 w-5 text-slate-600" />
+        </button>
         <h1 className="text-sm font-semibold text-slate-800">Visit Detail</h1>
       </div>
       <div className="flex flex-col items-center justify-center py-16 text-slate-400">
@@ -708,6 +1034,10 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
   const [editValue, setEditValue] = useState("");
   // 2026-04-14 Fix E: tap-to-edit note sheet
   const [editingNote, setEditingNote] = useState<DetailNote | null>(null);
+  // Two-step delete confirm for part rows. Holds the part id awaiting
+  // confirmation; resets to null on cancel, on a different row's first
+  // tap, or on successful delete.
+  const [confirmDeletePartId, setConfirmDeletePartId] = useState<string | null>(null);
 
   const onBack = () => setLocation("/tech/today");
 
@@ -747,14 +1077,26 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
       setActionError("This record was updated elsewhere. Refresh and try again.");
       return;
     }
-    setActionError(err?.message || "Failed");
+    // Auth-aware fallback: 401 is handled by SessionExpiredDialog at the app
+    // root — surfacing a toast here causes a flicker. 403 gets a stable
+    // message. Everything else shows the server-supplied text.
+    const msg = displayApiError(err);
+    if (msg === null) return;
+    setActionError(msg);
   };
 
+  // A16 double-submit guards: explicit early-return prevents a second
+  // mutation dispatch if the user taps a button while the first call is
+  // still in flight. TanStack Query will dedupe identical mutateAsync calls
+  // but these guards make the contract obvious to readers and close the
+  // window between user tap and React re-render disabling the button.
   const handleStartTravel = async () => {
+    if (startTravel.isPending) return;
     setActionError(null);
     try { await startTravel.mutateAsync(); showSuccess("En route"); } catch (err: any) { showError(err); }
   };
   const handleStartJob = async () => {
+    if (startJob.isPending) return;
     setActionError(null);
     try { await startJob.mutateAsync(); showSuccess("On site — job started"); } catch (err: any) { showError(err); }
   };
@@ -763,22 +1105,27 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
   // server (timeTrackingRepository.stopAndDiscardIfTrivial) so the tech does
   // not see phantom 5-second segments in payroll.
   const handleCancelRoute = async () => {
+    if (cancelRoute.isPending) return;
     setActionError(null);
     try { await cancelRoute.mutateAsync(); showSuccess("Route cancelled"); } catch (err: any) { showError(err); }
   };
   const handleCancelStart = async () => {
+    if (cancelStart.isPending) return;
     setActionError(null);
     try { await cancelStart.mutateAsync(); showSuccess("Start cancelled — back to en route"); } catch (err: any) { showError(err); }
   };
   const handlePauseJob = async () => {
+    if (pauseJob.isPending) return;
     setActionError(null);
     try { await pauseJob.mutateAsync(); showSuccess("Paused"); } catch (err: any) { showError(err); }
   };
   const handleResumeJob = async () => {
+    if (resumeJob.isPending) return;
     setActionError(null);
     try { await resumeJob.mutateAsync(); showSuccess("Resumed"); } catch (err: any) { showError(err); }
   };
   const handleComplete = async (outcome: string, outcomeNote?: string) => {
+    if (complete.isPending) return;
     setActionError(null); setShowOutcome(false);
     try { await complete.mutateAsync({ outcome, outcomeNote }); showSuccess("Visit completed"); } catch (err: any) { showError(err); }
   };
@@ -875,8 +1222,12 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
       {/* ══════ HEADER ══════ */}
       <div className="bg-[#0f1a2e] px-3 pt-2 pb-2">
         <div className="flex items-center gap-2">
-          <button onClick={onBack} className="p-1 -ml-1 rounded-md hover:bg-white/10 transition-colors">
-            <ArrowLeft className="h-4 w-4 text-white" />
+          <button
+            onClick={onBack}
+            aria-label="Back"
+            className="min-h-[44px] min-w-[44px] -ml-2 flex items-center justify-center rounded-md hover:bg-white/10 active:bg-white/20 transition-colors"
+          >
+            <ArrowLeft className="h-5 w-5 text-white" />
           </button>
           <h1 className="text-base font-bold text-white leading-tight truncate flex-1">{visit.jobTitle}</h1>
         </div>
@@ -887,9 +1238,30 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
           <div className="flex items-center gap-1 text-xs text-slate-500 min-w-0 flex-1 truncate">
             <MapPin className="h-2.5 w-2.5 shrink-0" /><span className="truncate">{visit.address}</span>
           </div>
-          <button className="flex items-center gap-1 text-sm font-semibold text-[#76B054] shrink-0 ml-2 px-2 py-1 rounded-md hover:bg-[#76B054]/10 transition-colors">
-            <Navigation className="h-3 w-3" />Directions
-          </button>
+          <div className="flex items-center gap-1 shrink-0 ml-2">
+            {/* One-tap call — only rendered when the site has a phone on file. */}
+            {toTelHref(visit.locationPhone) && (
+              <a
+                href={toTelHref(visit.locationPhone)!}
+                aria-label={`Call ${visit.company}`}
+                className="flex items-center gap-1 text-sm font-semibold text-emerald-400 min-h-[44px] px-2 rounded-md hover:bg-emerald-500/10 transition-colors"
+              >
+                <Phone className="h-3.5 w-3.5" />Call
+              </a>
+            )}
+            {/* One-tap navigate — OS handoff to maps. */}
+            {toMapsHref(visit.address) && (
+              <a
+                href={toMapsHref(visit.address)!}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Open in maps"
+                className="flex items-center gap-1 text-sm font-semibold text-[#76B054] min-h-[44px] px-2 rounded-md hover:bg-[#76B054]/10 transition-colors"
+              >
+                <Navigation className="h-3.5 w-3.5" />Directions
+              </a>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1021,16 +1393,43 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
         </div>
       )}
 
-      {/* Toast messages */}
+      {/* Action feedback banners — announced by screen readers. Success is
+          polite (doesn't interrupt), error is assertive (stops current
+          announcement). */}
       {actionSuccess && (
-        <div className="px-3 py-1.5 bg-emerald-50 border-b border-emerald-100 flex items-center gap-1.5">
-          <Check className="h-3 w-3 text-emerald-600" /><p className="text-xs font-medium text-emerald-700">{actionSuccess}</p>
+        <div
+          className="px-3 py-1.5 bg-emerald-50 border-b border-emerald-100 flex items-center gap-1.5"
+          role="status"
+          aria-live="polite"
+        >
+          <Check className="h-3 w-3 text-emerald-600" aria-hidden="true" /><p className="text-xs font-medium text-emerald-700">{actionSuccess}</p>
         </div>
       )}
       {actionError && (
-        <div className="px-3 py-1.5 bg-red-50 border-b border-red-100">
+        <div
+          className="px-3 py-1.5 bg-red-50 border-b border-red-100"
+          role="alert"
+          aria-live="assertive"
+        >
           <p className="text-xs text-red-600">{actionError}</p>
-          <button onClick={() => setActionError(null)} className="text-xs text-red-500 underline mt-0.5">Dismiss</button>
+          <button
+            onClick={() => setActionError(null)}
+            aria-label="Dismiss error"
+            className="min-h-[44px] text-xs text-red-500 underline mt-0.5"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Visit Instructions — dispatch-authored notes shown persistently
+          across all tabs so the tech does not have to switch to Overview
+          to read them. Compact (small leading + condensed font) so it does
+          not steal real estate when the body is more important. */}
+      {visit.visitNotes && (
+        <div className="px-3 py-1.5 bg-emerald-50 border-b border-emerald-100">
+          <p className="text-[10px] font-semibold text-emerald-700 uppercase tracking-wider">Instructions</p>
+          <p className="text-xs text-slate-700 leading-snug whitespace-pre-wrap">{visit.visitNotes}</p>
         </div>
       )}
 
@@ -1050,13 +1449,24 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
         {/* ── OVERVIEW ── */}
         {activeTab === "Overview" && (
           <div className="space-y-2">
-            {/* Office-owned fields: read-only in tech app */}
-            {visit.visitNotes && (
-              <div className="rounded-md border border-emerald-200 bg-emerald-50/50 p-3">
-                <p className="text-xs font-semibold text-emerald-600 uppercase tracking-wider mb-1">Visit Instructions</p>
-                <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{visit.visitNotes}</p>
+            {/* 2026-04-19: Job # reference line — techs need the canonical
+                job number visible without digging (customer reference,
+                paperwork, warranty calls, PO matching, dispatch comms).
+                Muted metadata styling (no pill, no bold) so it reads as a
+                reference, not a CTA, and doesn't compete with Equipment
+                to Service / Job Description below. `tabular-nums` keeps
+                digit columns aligned. Hidden entirely when the visit has
+                no linked job — no "N/A" placeholder. */}
+            {visit.jobNumber != null && (
+              <div className="text-sm font-medium text-slate-600 tabular-nums">
+                Job # {visit.jobNumber}
               </div>
             )}
+            {/* Visit Instructions are now rendered as a persistent banner
+                above the tabs bar (visible on every tab), so the redundant
+                Overview-only card has been removed. Job Description and
+                Site Instructions remain here — they are reference content,
+                not in-flight dispatch notes. */}
             {visit.jobDescription && (
               <div className="rounded-md border border-slate-200 bg-white p-3">
                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Job Description</p>
@@ -1091,7 +1501,10 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 </div>
               </div>
             )}
-            {visit.equipment.length === 0 && !visit.visitNotes && !visit.jobDescription && !visit.accessInstructions && (
+            {/* visitNotes is now displayed in the persistent banner above
+                the tabs, not inside Overview, so it no longer suppresses
+                the Overview empty-state. */}
+            {visit.equipment.length === 0 && !visit.jobDescription && !visit.accessInstructions && (
               <EmptyState message="No overview information" className="py-8" />
             )}
             {/* Create Lead from visit context */}
@@ -1231,9 +1644,10 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 {!isTerminal && (
                   <button
                     onClick={(e) => { e.stopPropagation(); handleRemoveEquipment(eq.jobEquipmentId); }}
-                    className="p-1.5 rounded-md hover:bg-red-50 text-slate-300 hover:text-red-500 transition-colors shrink-0"
+                    aria-label="Remove equipment"
+                    className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-md hover:bg-red-50 text-slate-300 hover:text-red-500 transition-colors shrink-0"
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    <Trash2 className="h-4 w-4" />
                   </button>
                 )}
               </div>
@@ -1251,27 +1665,72 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
               className="w-full h-10 rounded-md border-2 border-dashed border-slate-200 text-sm font-semibold text-slate-500 flex items-center justify-center gap-1.5 hover:border-slate-300 hover:text-slate-600">
               <Plus className="h-3.5 w-3.5" />Add Part
             </button>
-            {visit.parts.length > 0 ? visit.parts.map(p => (
-              <div key={p.id} className="rounded-md border border-slate-200 bg-white p-3 flex items-center justify-between">
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-slate-800 truncate">{p.description}</p>
-                  <p className="text-[10px] text-slate-400">
-                    {new Date(p.createdAt).toLocaleDateString([], { month: "short", day: "numeric" })}
-                    {p.unitPrice && ` · $${p.unitPrice}`}
-                  </p>
+            {visit.parts.length > 0 ? visit.parts.map(p => {
+              const eqName = p.equipmentId ? visit.equipment.find(e => e.id === p.equipmentId)?.name : null;
+              const confirming = confirmDeletePartId === p.id;
+              return (
+                <div key={p.id} className="rounded-md border border-slate-200 bg-white p-3 flex items-center justify-between">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-slate-800 truncate">{p.description}</p>
+                    {/* 2026-04-19: Added-date subscript removed — it was
+                        noise on an inventory row. Secondary line now renders
+                        only when genuine inventory info (unit price, or
+                        equipment attachment) exists, so rows with neither
+                        stay a single clean line (no blank placeholder). */}
+                    {(p.unitPrice || eqName) && (
+                      <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                        {p.unitPrice && (
+                          <span className="text-[10px] text-slate-400">${p.unitPrice}</span>
+                        )}
+                        {/* Equipment pill — shown only when this part was
+                            attached to a specific piece of equipment. Helps
+                            spot wrong-equipment duplicates at a glance. */}
+                        {eqName && (
+                          <span className="text-[10px] font-medium text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full inline-flex items-center gap-0.5 max-w-[140px]">
+                            <Wrench className="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
+                            <span className="truncate">{eqName}</span>
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 ml-2">
+                    <span className="text-xs font-semibold text-slate-500">×{p.quantity}</span>
+                    {!isTerminal && !confirming && (
+                      <button
+                        onClick={() => setConfirmDeletePartId(p.id)}
+                        aria-label="Remove part"
+                        className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded hover:bg-red-50 text-slate-300 hover:text-red-500 transition-colors"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
+                    {!isTerminal && confirming && (
+                      <>
+                        <button
+                          onClick={() => setConfirmDeletePartId(null)}
+                          aria-label="Cancel remove"
+                          className="min-h-[44px] px-2.5 rounded-md text-xs font-medium text-slate-600 hover:bg-slate-100"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => deletePart.mutateAsync(p.id)
+                            .then(() => { setConfirmDeletePartId(null); showSuccess("Part removed"); })
+                            .catch((err: any) => { setConfirmDeletePartId(null); showError(err); })}
+                          disabled={deletePart.isPending}
+                          aria-label="Confirm remove part"
+                          className="min-h-[44px] px-2.5 rounded-md text-xs font-bold text-white bg-red-600 hover:bg-red-700 active:bg-red-800 disabled:opacity-60 flex items-center gap-1"
+                        >
+                          {deletePart.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                          Remove
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
-                <div className="flex items-center gap-2 shrink-0 ml-2">
-                  <span className="text-xs font-semibold text-slate-500">×{p.quantity}</span>
-                  {!isTerminal && (
-                    <button onClick={() => deletePart.mutateAsync(p.id).then(() => showSuccess("Part removed")).catch((err: any) => showError(err))}
-                      disabled={deletePart.isPending}
-                      className="p-1 rounded hover:bg-red-50 text-slate-300 hover:text-red-500 transition-colors">
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                </div>
-              </div>
-            )) : (
+              );
+            }) : (
               <EmptyState icon={Package} message="No parts added" className="py-6" />
             )}
           </div>
@@ -1284,7 +1743,14 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
       {addPartForEquipment !== undefined && (
         <AddPartSheet
           equipmentId={addPartForEquipment}
-          onClose={() => { setAddPartForEquipment(undefined); showSuccess("Part added"); }}
+          equipmentName={addPartForEquipment ? (visit.equipment.find(e => e.id === addPartForEquipment)?.name ?? null) : null}
+          recentParts={visit.parts}
+          // onClose is invoked on backdrop dismiss, X tap, AND after a
+          // successful add. The success toast is now driven by the sheet's
+          // explicit `onSuccess`, not `onClose`, so dismissing without
+          // adding no longer announces a false "Part added".
+          onClose={() => setAddPartForEquipment(undefined)}
+          onSuccess={() => showSuccess("Part added")}
           addPart={addPart}
           onError={showError}
         />
@@ -1292,7 +1758,8 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
       {showAddEquipment && (
         <AddEquipmentSheet
           visitId={visitId}
-          onClose={() => { setShowAddEquipment(false); showSuccess("Equipment added"); }}
+          onClose={() => setShowAddEquipment(false)}
+          onSuccess={() => showSuccess("Equipment added")}
           addEquipment={addEquipment}
           onError={showError}
         />
@@ -1406,16 +1873,25 @@ function NoteEditSheet({
             type="button"
             onClick={onClose}
             disabled={busy}
-            className="p-1 rounded-md text-slate-500 hover:text-slate-700 disabled:opacity-50"
+            className="min-h-[44px] min-w-[44px] -mr-2 flex items-center justify-center rounded-md text-slate-500 hover:text-slate-700 hover:bg-slate-100 active:bg-slate-200 disabled:opacity-50"
             aria-label="Close"
           >
-            <X className="h-4 w-4" />
+            <X className="h-5 w-5" />
           </button>
         </div>
 
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            // Cmd/Ctrl + Enter saves the edit (same pattern as the compose
+            // textarea). Guard on dirty + not busy so repeat presses do
+            // not double-fire while a save is in flight.
+            if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && dirty && !busy) {
+              e.preventDefault();
+              void onSave(note.id, text.trim());
+            }
+          }}
           disabled={busy}
           rows={6}
           className="w-full text-xs border border-slate-200 rounded-md px-3 py-2 resize-none disabled:bg-slate-50"
@@ -1650,8 +2126,26 @@ function NoteInput({ equipmentId, equipment, onEquipmentChange, onSubmit, isPend
         </select>
       ) : null}
       <div className="flex gap-2">
-        <textarea value={text} onChange={e => setText(e.target.value)} disabled={pending}
+        <textarea
+          value={text}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={(e) => {
+            // Cmd/Ctrl + Enter submits without losing the newline-friendly
+            // Enter default. Shift+Enter still inserts a newline (browser
+            // default unchanged). Matches the common "compose" pattern.
+            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+              e.preventDefault();
+              handleSubmit();
+            }
+          }}
+          disabled={pending}
           placeholder={lockedEquipment && selectedEq ? `Note for ${selectedEq.name}…` : "Add a note…"}
+          enterKeyHint="send"
+          // NoteInput is conditionally rendered inside the Notes tab, so
+          // mounting === tab activation. Auto-focusing the textarea on mount
+          // means switching to Notes immediately raises the soft keyboard
+          // and saves the tech a tap-to-focus.
+          autoFocus
           className="flex-1 text-xs border border-slate-200 rounded-md px-3 py-2 resize-none h-16 disabled:bg-slate-50" />
         <div className="flex flex-col gap-1 relative" ref={menuRef}>
           {/* 2026-04-14 Fix F: quick camera shortcut. Direct tap into the
@@ -1677,9 +2171,10 @@ function NoteInput({ equipmentId, equipment, onEquipmentChange, onSubmit, isPend
             <Paperclip className="h-3.5 w-3.5" />
           </button>
           <button onClick={handleSubmit} disabled={!text.trim() || pending}
-            className="h-8 w-8 rounded-md bg-emerald-600 text-white flex items-center justify-center disabled:bg-slate-200"
+            aria-label="Send note"
+            className="min-h-[44px] min-w-[44px] rounded-md bg-emerald-600 text-white flex items-center justify-center disabled:bg-slate-200"
             data-testid="button-note-submit">
-            {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+            {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </button>
           {showAttachMenu && isOnline && (
             <div className="absolute right-10 top-0 z-20 w-40 rounded-md border border-slate-200 bg-white shadow-md overflow-hidden">

@@ -9,17 +9,17 @@ import clientsRouter from "./clients";
 import techniciansRouter from "./technicians";
 import jobTemplatesRouter from "./jobTemplates";
 import invitationsRouter from "./invitations";
+import onboardingRouter from "./onboarding";
 import usersAdminRouter from "./users_admin";
 import itemsRouter from "./items";
-import clientPartsRouter from "./clientParts";
 import companySettingsRouter from "./companySettings";
 import communicationTemplatesRouter from "./communicationTemplates";
 // Phase 15 (2026-04-12): cross-entity delivery-history endpoint.
 import communicationsRouter from "./communications";
 import businessHoursRouter from "./businessHours";
+import equipmentTypesRouter from "./equipmentTypes";
 import maintenanceRouter from "./maintenance";
 import subscriptionsRouter from "./subscriptions";
-import impersonationRouter from "./impersonation";
 import authRouter from "./auth";
 import portalRouter from "./portal";
 
@@ -52,7 +52,6 @@ import leadsRouter from "./leads";
 import notificationsRouter from "./notifications";
 import adminRouter from "./admin";
 import { timeRouter as timeTrackingRouter, jobTimeRouter, payrollRouter } from "./timeTracking";
-import analyticsRouter from "./analytics";
 import timeAlertsRouter from "./timeAlerts";
 import timeBillingRulesRouter from "./timeBillingRules";
 import rolesRouter, { permissionsRouter } from "./roles";
@@ -68,10 +67,6 @@ import visitsRouter from "./visits";
 // Phase 1 Architecture: Event Log + Attention Queue
 import activityRouter from "./activity";
 import attentionRouter from "./attention";
-// Phase 4A: Route optimization (ORS-based)
-import routesRouter from "./routes";
-// Phase 4B: Technician telemetry (GPS pings)
-import telemetryRouter from "./telemetry";
 // Real-time dispatch freshness (SSE stream)
 import dispatchStreamRouter from "./dispatch-stream";
 // Phase 5: Visit intelligence signals
@@ -222,16 +217,16 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/technicians", techniciansRouter);
   app.use("/api/job-templates", jobTemplatesRouter);
   app.use("/api/invitations", invitationsRouter);
+  app.use("/api/onboarding", onboardingRouter);
   app.use("/api/users-admin", usersAdminRouter);
   app.use("/api/items", itemsRouter);
-  app.use("/api/client-parts", clientPartsRouter);
   app.use("/api/company-settings", companySettingsRouter);
   app.use("/api/communication-templates", communicationTemplatesRouter);
   app.use("/api/communications", communicationsRouter);
   app.use("/api/company/business-hours", businessHoursRouter);
+  app.use("/api/equipment-types", equipmentTypesRouter);
   app.use("/api/maintenance", maintenanceRouter);
   app.use("/api/subscriptions", subscriptionsRouter);
-  app.use("/api/impersonation", impersonationRouter);
   app.use("/api/tasks", tasksRoutes);
   app.use("/api/feedback", feedbackRouter);
   app.use("/api/suppliers", suppliersRouter);
@@ -246,7 +241,6 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/notifications", notificationsRouter);
   app.use("/api/time", timeTrackingRouter); // Time tracking: clock in/out + time entries
   app.use("/api/payroll", payrollRouter); // Payroll: weekly summaries + approval + CSV export
-  app.use("/api/analytics", analyticsRouter); // Analytics: time utilization + leakage dashboard
   app.use("/api/time-alerts", timeAlertsRouter); // Time alerts: settings + snoozes + worker triggers
   app.use("/api/time-billing", timeBillingRulesRouter); // Time billing: rules for rounding, minimums, multipliers
   app.use("/api/roles", rolesRouter); // Roles: CRUD for roles and role-permissions
@@ -299,12 +293,6 @@ export function registerRoutes(app: Express): Server {
   // Phase 1 Architecture: Event Log + Attention Queue
   app.use("/api/activity", activityRouter);
   app.use("/api/attention", attentionRouter);
-
-  // Phase 4A: Route optimization (ORS-based dispatch routing)
-  app.use("/api/routes", routesRouter);
-
-  // Phase 4B: Technician telemetry (GPS pings)
-  app.use("/api/telemetry", telemetryRouter);
 
   // Real-time dispatch freshness (SSE stream)
   app.use("/api/dispatch", dispatchStreamRouter);

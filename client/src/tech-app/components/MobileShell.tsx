@@ -57,15 +57,19 @@ export function MobileShell({ children, showNav, hideTopBar }: {
             </span>
             <button
               onClick={handleLogout}
-              className="p-1 rounded-md text-slate-500 hover:text-slate-300 active:bg-white/10 transition-colors"
+              className="min-h-[44px] min-w-[44px] -mr-2 flex items-center justify-center rounded-md text-slate-500 hover:text-slate-300 active:bg-white/10 transition-colors"
               title="Sign out"
+              aria-label="Sign out"
             >
-              <LogOut className="h-3.5 w-3.5" />
+              <LogOut className="h-4 w-4" />
             </button>
           </div>
         </div>
       )}
-      <div className="flex-1 overflow-y-auto" style={{ paddingBottom: showNav ? 52 : 0 }}>
+      <div
+        className="flex-1 overflow-y-auto"
+        style={{ paddingBottom: showNav ? "calc(52px + env(safe-area-inset-bottom, 0px))" : 0 }}
+      >
         {/* 2026-04-16: midnight rollover notice. Renders only when the
             signed-in tech has an unread `time_entry_auto_paused`
             notification; silent otherwise. */}
@@ -73,18 +77,23 @@ export function MobileShell({ children, showNav, hideTopBar }: {
         {children}
       </div>
       {showNav && (
-        <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-md bg-white border-t border-slate-200 flex" style={{ height: 52 }}>
+        <nav
+          className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-md bg-white border-t border-slate-200 flex"
+          style={{ height: 52, paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+        >
           {NAV_ITEMS.map(({ label, icon: Icon, path }) => {
             const isActive = location === path || (path === "/tech/today" && location.startsWith("/tech/visit"));
             return (
               <button
                 key={path}
                 onClick={() => setLocation(path)}
-                className={`flex-1 flex flex-col items-center justify-center gap-0.5 text-xs font-semibold transition-colors ${
+                aria-label={label}
+                aria-current={isActive ? "page" : undefined}
+                className={`flex-1 min-h-[44px] flex flex-col items-center justify-center gap-0.5 text-xs font-semibold transition-colors ${
                   isActive ? "text-[#22c55e]" : "text-slate-400"
                 }`}
               >
-                <Icon className={`h-4.5 w-4.5 ${isActive ? "stroke-[2.5]" : ""}`} style={{ width: 18, height: 18 }} />
+                <Icon className={isActive ? "stroke-[2.5]" : ""} style={{ width: 20, height: 20 }} />
                 {label}
               </button>
             );

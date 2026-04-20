@@ -308,24 +308,272 @@ export class InvoiceRepository extends BaseRepository {
   }
 
   /**
-   * Get invoice by job ID (for idempotency checks)
+   * Get the primary invoice for a job (canonical primary-pointer read).
+   *
+   * 2026-04-18 Phase 5 (billing): under the multi-invoice model, a job
+   * may have many invoices. The singular "by job" lookup now resolves to
+   * `jobs.invoiceId` — the primary pointer set at first-invoice creation.
+   * When no primary is set (no invoices yet), returns null.
+   *
+   * Callers that want every invoice for a job should use
+   * `listInvoicesByJobId()` (or the canonical `/api/invoices/list?jobId=`).
    */
-  async getInvoiceByJobId(companyId: string, jobId: string) {
+  async getPrimaryInvoiceByJobId(companyId: string, jobId: string) {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
-    const rows = await db
+    const [job] = await db
+      .select({ invoiceId: jobs.invoiceId })
+      .from(jobs)
+      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+      .limit(1);
+    if (!job?.invoiceId) return null;
+
+    const [row] = await db
+      .select()
+      .from(invoices)
+      .where(and(eq(invoices.companyId, companyId), eq(invoices.id, job.invoiceId)))
+      .limit(1);
+    return row ?? null;
+  }
+
+  /**
+   * 2026-04-18 Phase 8 (invoice composition control): compute what's
+   * currently billable for a job — the union of uninvoiced time entries
+   * and un-allocated job parts, with canonical billing-rules applied
+   * to labor amounts so the preview matches what creation will write.
+   *
+   * Labor eligibility mirrors `addLaborLinesFromTimeEntries`:
+   *   - billable = true
+   *   - endAt IS NOT NULL (completed entries only)
+   *   - invoicedAt IS NULL (not yet billed)
+   *   - lockedAt IS NULL AND lockedByInvoiceId IS NULL (not locked by a
+   *     concurrent invoice in-flight)
+   *
+   * Parts eligibility mirrors the Phase 7 allocation guard in
+   * `refreshInvoiceFromJob`: no existing `invoice_lines.jobLineItemId`
+   * row references this part from any invoice on this job.
+   *
+   * Returns money fields as strings to match the rest of the invoice
+   * pipeline (numeric-as-string is the canonical precision discipline).
+   */
+  async getBillablePreviewForJob(companyId: string, jobId: string) {
+    this.assertCompanyId(companyId);
+    this.validateUUID(jobId, "jobId");
+
+    // ── Labor ────────────────────────────────────────────────────────
+    const laborRaw = await db
+      .select({
+        id: timeEntries.id,
+        technicianId: timeEntries.technicianId,
+        technicianName: users.fullName,
+        type: timeEntries.type,
+        durationMinutes: timeEntries.durationMinutes,
+        billableRateSnapshot: timeEntries.billableRateSnapshot,
+        startAt: timeEntries.startAt,
+        jobId: timeEntries.jobId,
+      })
+      .from(timeEntries)
+      .leftJoin(users, eq(timeEntries.technicianId, users.id))
+      .where(
+        and(
+          eq(timeEntries.companyId, companyId),
+          eq(timeEntries.jobId, jobId),
+          eq(timeEntries.billable, true),
+          isNotNull(timeEntries.endAt),
+          isNull(timeEntries.invoicedAt),
+          isNull(timeEntries.lockedAt),
+          isNull(timeEntries.lockedByInvoiceId),
+        ),
+      )
+      .orderBy(asc(timeEntries.startAt));
+
+    const rules = await timeBillingRulesRepository.getRules(companyId);
+    const rulesResult = applyBillingRulesToEntries(
+      rules,
+      laborRaw.map((e) => ({
+        id: e.id,
+        type: e.type,
+        durationMinutes: e.durationMinutes ?? 0,
+        billableRateSnapshot: e.billableRateSnapshot,
+        jobId: e.jobId,
+        startAt: e.startAt,
+      })),
+    );
+    const billedMap = new Map(rulesResult.entries.map((b) => [b.entryId, b]));
+
+    let laborSubtotalCents = 0;
+    const labor = laborRaw
+      .map((e) => {
+        const billed = billedMap.get(e.id);
+        const billedMinutes = billed?.billedMinutes ?? 0;
+        const billedRate = billed?.billedRate ?? parseFloat(e.billableRateSnapshot || "0");
+        const amountCents = Math.round((billedMinutes / 60) * billedRate * 100);
+        laborSubtotalCents += amountCents;
+        return {
+          id: e.id,
+          startAt: e.startAt instanceof Date ? e.startAt.toISOString() : e.startAt,
+          technicianId: e.technicianId,
+          technicianName: e.technicianName ?? "Unknown",
+          type: e.type,
+          billedMinutes,
+          billedRate: billedRate.toFixed(2),
+          billedAmount: (amountCents / 100).toFixed(2),
+          wasExcluded: billed?.wasExcluded === true,
+        };
+      })
+      .filter((e) => !e.wasExcluded && e.billedMinutes > 0);
+
+    // ── Parts ────────────────────────────────────────────────────────
+    const partsRaw = await db
+      .select({
+        id: jobParts.id,
+        description: jobParts.description,
+        quantity: jobParts.quantity,
+        unitPrice: jobParts.unitPrice,
+      })
+      .from(jobParts)
+      .where(
+        and(
+          eq(jobParts.companyId, companyId),
+          eq(jobParts.jobId, jobId),
+          eq(jobParts.isActive, true),
+          sql`NOT EXISTS (
+            SELECT 1
+              FROM ${invoiceLines} AS il_sibling
+              JOIN ${invoices}     AS inv_sibling
+                ON inv_sibling.id = il_sibling.invoice_id
+             WHERE il_sibling.company_id = ${companyId}
+               AND il_sibling.source = 'job'
+               AND il_sibling.job_line_item_id = ${jobParts.id}
+               AND inv_sibling.company_id = ${companyId}
+               AND inv_sibling.job_id = ${jobId}
+          )`,
+        ),
+      )
+      .orderBy(asc(jobParts.sortOrder));
+
+    let partsSubtotalCents = 0;
+    const parts = partsRaw.map((p) => {
+      const qty = parseFloat(p.quantity || "1");
+      const unitPrice = parseFloat(String(p.unitPrice || "0"));
+      const lineCents = Math.round(qty * unitPrice * 100);
+      partsSubtotalCents += lineCents;
+      return {
+        id: p.id,
+        description: p.description,
+        quantity: p.quantity,
+        unitPrice: unitPrice.toFixed(2),
+        lineSubtotal: (lineCents / 100).toFixed(2),
+      };
+    });
+
+    const subtotalCents = laborSubtotalCents + partsSubtotalCents;
+    return {
+      labor,
+      parts,
+      laborSubtotal: (laborSubtotalCents / 100).toFixed(2),
+      partsSubtotal: (partsSubtotalCents / 100).toFixed(2),
+      subtotal: (subtotalCents / 100).toFixed(2),
+    };
+  }
+
+  /**
+   * List every invoice for a job (canonical plural read).
+   * 2026-04-18 Phase 5: multi-invoice-per-job is now valid.
+   * Ordered newest-first by `issueDate` then `createdAt` for deterministic paging.
+   */
+  async listInvoicesByJobId(companyId: string, jobId: string) {
+    this.assertCompanyId(companyId);
+    this.validateUUID(jobId, "jobId");
+
+    return db
+      .select()
+      .from(invoices)
+      .where(and(eq(invoices.companyId, companyId), eq(invoices.jobId, jobId)))
+      .orderBy(desc(invoices.issueDate), desc(invoices.createdAt));
+  }
+
+  /**
+   * Phase 6 (multi-invoice usability): short-lived duplicate-submit
+   * guard. Returns the most recently created invoice for this job if
+   * its `createdAt` is within the given window, else null.
+   *
+   * Used by `invoiceCreationService.createInvoiceFromJob()` to short-
+   * circuit accidental double-clicks / network retries without
+   * reintroducing the cardinality guard that Phase 5 removed. A
+   * legitimate second invoice created after the window passes is
+   * unaffected — this is a submit-dedupe, not a cardinality constraint.
+   */
+  async findRecentInvoiceByJob(
+    companyId: string,
+    jobId: string,
+    windowSeconds: number,
+  ) {
+    this.assertCompanyId(companyId);
+    this.validateUUID(jobId, "jobId");
+    if (windowSeconds <= 0) return null;
+
+    const cutoff = new Date(Date.now() - windowSeconds * 1000);
+    const [row] = await db
       .select()
       .from(invoices)
       .where(
         and(
           eq(invoices.companyId, companyId),
-          eq(invoices.jobId, jobId)
-        )
+          eq(invoices.jobId, jobId),
+          sql`${invoices.createdAt} > ${cutoff}`,
+        ),
       )
+      .orderBy(desc(invoices.createdAt))
       .limit(1);
+    return row ?? null;
+  }
 
-    return rows[0] ?? null;
+  /**
+   * Phase 6 (primary invoice management): explicit manual primary
+   * reassignment. Sets `jobs.invoiceId = invoiceId` for the job that
+   * the invoice belongs to. Caller is responsible for authorization.
+   *
+   * Validates:
+   *   - the invoice exists and is tenant-scoped
+   *   - the invoice's own `jobId` is set (cannot promote a PM-billing
+   *     invoice with no job link to be a job's primary)
+   *
+   * Returns the updated job row. Throws if validation fails.
+   * No auto-promotion on delete — this method is the ONLY path that
+   * writes a non-null `jobs.invoiceId` after the initial auto-set in
+   * `createInvoiceFromJob()`.
+   */
+  async setPrimaryInvoiceForJob(companyId: string, invoiceId: string) {
+    this.assertCompanyId(companyId);
+    this.validateUUID(invoiceId, "invoiceId");
+
+    const [inv] = await db
+      .select({ id: invoices.id, jobId: invoices.jobId })
+      .from(invoices)
+      .where(and(eq(invoices.id, invoiceId), eq(invoices.companyId, companyId)))
+      .limit(1);
+    if (!inv) throw this.notFoundError("Invoice");
+    if (!inv.jobId) {
+      throw this.validationError(
+        "Cannot set a job-less (e.g. PM-billing) invoice as a job's primary invoice.",
+      );
+    }
+
+    const [job] = await db
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(and(eq(jobs.id, inv.jobId), eq(jobs.companyId, companyId)))
+      .limit(1);
+    if (!job) throw this.notFoundError("Job");
+
+    const [updated] = await db
+      .update(jobs)
+      .set({ invoiceId: invoiceId, updatedAt: new Date() })
+      .where(and(eq(jobs.id, inv.jobId), eq(jobs.companyId, companyId)))
+      .returning();
+    return updated;
   }
 
   /**
@@ -894,7 +1142,12 @@ export class InvoiceRepository extends BaseRepository {
    * Prices are snapshotted at the time of invoicing
    * Can be called multiple times safely - always produces same result
    */
-  async refreshInvoiceFromJob(companyId: string, invoiceId: string, txHandle?: any) {
+  async refreshInvoiceFromJob(
+    companyId: string,
+    invoiceId: string,
+    txHandle?: any,
+    selection?: { partIds?: string[]; timeEntryIds?: string[] },
+  ) {
     // Use txHandle for the lookup so newly-created invoices are visible
     // within the same transaction (fixes READ COMMITTED isolation issue)
     const queryDb = txHandle ?? db;
@@ -933,8 +1186,52 @@ export class InvoiceRepository extends BaseRepository {
         ));
       const baseLineNumber = Number(maxLine || 0);
 
-      // Step 2: Get current job parts with their CURRENT prices (snapshot)
-      // LEFT JOIN items to resolve item type — no active/deleted filter on items
+      // Step 2: Get current job parts with their CURRENT prices (snapshot).
+      // LEFT JOIN items to resolve item type — no active/deleted filter on items.
+      //
+      // 2026-04-18 Phase 7 (multi-invoice allocation): exclude parts that
+      // are already linked to ANOTHER invoice for the same job. We use
+      // `invoice_lines.jobLineItemId` (set when a part's snapshot becomes
+      // a line in `refreshInvoiceFromJob`) as the allocation signal —
+      // no schema change needed.
+      //
+      // 2026-04-18 Phase 8 (invoice composition): when `selection.partIds`
+      // is provided, further restrict to exactly that set. The allocation
+      // guard still runs so a stale selection from the client can never
+      // double-bill — IDs that are already on a sibling's invoice_lines
+      // are silently dropped rather than letting the request create a
+      // duplicate.
+      //
+      // The CURRENT invoice is excluded from the NOT-EXISTS check: when
+      // this call is the refresh path on an already-populated draft
+      // invoice, we still want its own previously-captured parts to
+      // reappear after the Step-1 delete-and-rebuild cycle.
+      const partSelectionConditions = [
+        eq(jobParts.companyId, companyId),
+        eq(jobParts.jobId, invoice.jobId!),
+        eq(jobParts.isActive, true),
+        sql`NOT EXISTS (
+          SELECT 1
+            FROM ${invoiceLines} AS il_sibling
+            JOIN ${invoices}     AS inv_sibling
+              ON inv_sibling.id = il_sibling.invoice_id
+           WHERE il_sibling.company_id = ${companyId}
+             AND il_sibling.source = 'job'
+             AND il_sibling.job_line_item_id = ${jobParts.id}
+             AND inv_sibling.company_id = ${companyId}
+             AND inv_sibling.job_id = ${invoice.jobId!}
+             AND inv_sibling.id <> ${invoiceId}
+        )`,
+      ];
+      if (Array.isArray(selection?.partIds)) {
+        if (selection!.partIds.length === 0) {
+          // Caller explicitly selected zero parts — emit an always-false
+          // predicate so nothing matches.
+          partSelectionConditions.push(sql`false`);
+        } else {
+          partSelectionConditions.push(inArray(jobParts.id, selection!.partIds));
+        }
+      }
       const partsWithType = await tx
         .select({
           part: jobParts,
@@ -942,11 +1239,7 @@ export class InvoiceRepository extends BaseRepository {
         })
         .from(jobParts)
         .leftJoin(items, eq(jobParts.productId, items.id))
-        .where(and(
-          eq(jobParts.companyId, companyId), // Tenant isolation
-          eq(jobParts.jobId, invoice.jobId!),
-          eq(jobParts.isActive, true)
-        ))
+        .where(and(...partSelectionConditions))
         .orderBy(jobParts.sortOrder);
 
       const parts = partsWithType.map((r: { part: typeof jobParts.$inferSelect; catalogType: string | null }) => ({
@@ -1002,13 +1295,18 @@ export class InvoiceRepository extends BaseRepository {
       }
 
       // Step 3b: Add labor lines from uninvoiced billable time entries
-      // Group by technician + type for cleaner invoice presentation
+      // Group by technician + type for cleaner invoice presentation.
+      // Phase 8: pass through `selection.timeEntryIds` so the caller can
+      // restrict to a specific user-picked subset. The labor path still
+      // enforces `invoicedAt IS NULL` + lock guards, so stale selections
+      // can't double-bill.
       const laborLinesCreated = await this.addLaborLinesFromTimeEntries(
         tx,
         companyId,
         invoiceId,
         invoice.jobId!,
-        baseLineNumber + linesCreated
+        baseLineNumber + linesCreated,
+        selection?.timeEntryIds,
       );
 
       // Step 4: Recalculate invoice totals
@@ -1038,12 +1336,32 @@ export class InvoiceRepository extends BaseRepository {
     companyId: string,
     invoiceId: string,
     jobId: string,
-    startLineNumber: number
+    startLineNumber: number,
+    timeEntryIdsSelection?: string[],
   ): Promise<number> {
     // Get company billing rules (or defaults)
     const rules = await timeBillingRulesRepository.getRules(companyId);
 
-    // Get uninvoiced billable time entries for this job
+    // Get uninvoiced billable time entries for this job.
+    // Phase 8: when a selection is provided, further restrict to that
+    // explicit set. The canonical invoicedAt / lock guards still apply,
+    // so a stale selection silently drops any already-invoiced IDs
+    // rather than double-billing.
+    const entryWhere: any[] = [
+      eq(timeEntries.companyId, companyId),
+      eq(timeEntries.jobId, jobId),
+      eq(timeEntries.billable, true),
+      isNotNull(timeEntries.endAt),
+      isNull(timeEntries.invoicedAt),
+    ];
+    if (Array.isArray(timeEntryIdsSelection)) {
+      if (timeEntryIdsSelection.length === 0) {
+        entryWhere.push(sql`false`);
+      } else {
+        entryWhere.push(inArray(timeEntries.id, timeEntryIdsSelection));
+      }
+    }
+
     const entries = await tx
       .select({
         id: timeEntries.id,
@@ -1061,15 +1379,7 @@ export class InvoiceRepository extends BaseRepository {
       })
       .from(timeEntries)
       .leftJoin(users, eq(timeEntries.technicianId, users.id))
-      .where(
-        and(
-          eq(timeEntries.companyId, companyId),
-          eq(timeEntries.jobId, jobId),
-          eq(timeEntries.billable, true),
-          isNotNull(timeEntries.endAt), // Only completed entries
-          isNull(timeEntries.invoicedAt) // Not yet invoiced
-        )
-      )
+      .where(and(...entryWhere))
       .orderBy(asc(timeEntries.startAt)); // Oldest first for deterministic capping
 
     if (entries.length === 0) {
@@ -1392,24 +1702,27 @@ export class InvoiceRepository extends BaseRepository {
   /**
    * Create a new invoice from an existing job (IDEMPOTENT)
    *
-   * PHASE A SECURITY FIX: Uses SELECT FOR UPDATE to prevent race conditions
-   * PHASE A.1.1 GUARD: Requires creationSource (COMPILE-TIME + RUNTIME enforced)
+   * PHASE A.1.1 GUARD: Requires creationSource (COMPILE-TIME + RUNTIME enforced).
    *
-   * IDEMPOTENCY GUARANTEE:
-   * - If job already has an invoice, returns the existing invoice (created: false)
-   * - Uses SELECT FOR UPDATE on job row to prevent concurrent invoice creation
-   * - Falls back to unique constraint handling for extra safety
+   * 2026-04-18 Phase 5 (multi-invoice-per-job): this method no longer
+   * enforces one-invoice-per-job. Each call creates a fresh invoice,
+   * even when the job already has others. The pre-Phase-5 SELECT FOR
+   * UPDATE idempotency check has been removed; duplicate-request
+   * idempotency (if needed) moves to the request/transaction layer.
    *
-   * CONCURRENCY PROTECTION:
-   * - Job row is locked with FOR UPDATE at the start of transaction
-   * - Idempotency check happens INSIDE the transaction under lock
-   * - This prevents invoice number waste and race condition window
+   * PRIMARY-POINTER SEMANTICS:
+   * - `jobs.invoiceId` is now the "primary invoice" pointer, not a
+   *   cardinality guard.
+   * - First invoice on the job sets `jobs.invoiceId` automatically.
+   * - Subsequent invoices DO NOT overwrite the pointer — they're just
+   *   linked via `invoices.jobId`. The primary stays stable unless it's
+   *   deleted (FK onDelete: 'set null') or explicitly reassigned later.
    *
    * PRICING SNAPSHOT:
    * - Job parts prices are snapshotted when refreshInvoiceFromJob is called
    * - Changes to product catalog after invoicing do NOT affect existing invoices
    *
-   * LIFECYCLE NOTE (2026-03-18):
+   * LIFECYCLE NOTE:
    * - Does NOT set job.status — lifecycle transition is the caller's responsibility
    * - Use MARK_INVOICED orchestrator intent to transition job to "invoiced" status
    *
@@ -1473,64 +1786,39 @@ export class InvoiceRepository extends BaseRepository {
       .limit(1);
     const paymentTermsDays = settings?.defaultPaymentTermsDays ?? 30;
 
-    // When txHandle is provided, run directly in the outer transaction.
-    // When not provided, create our own transaction for isolation.
+    // 2026-04-18 Phase 5 (multi-invoice-per-job): straight create — no
+    // idempotency guard, no row lock on the job. Each call produces a
+    // fresh invoice shell. If the caller needs duplicate-request
+    // protection, that now belongs at the request layer (idempotency
+    // key / mutation deduplication), not the cardinality layer.
     const runInTx = async (tx: any) => {
-        // PHASE A FIX: Lock the job row with SELECT FOR UPDATE
-        // This prevents concurrent invoice creation for the same job
-        const [job] = await tx
-          .select()
-          .from(jobs)
-          .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), activeJobFilter()))
-          .for("update") // Lock the row
-          .limit(1);
+      const [job] = await tx
+        .select()
+        .from(jobs)
+        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), activeJobFilter()))
+        .limit(1);
+      if (!job) {
+        throw this.notFoundError("Job");
+      }
 
-        if (!job) {
-          throw this.notFoundError("Job");
-        }
+      const { invoice } = await this.createInvoiceShell(
+        companyId,
+        {
+          locationId: job.locationId,
+          customerCompanyId: location.parentCompanyId,
+          jobId: jobId,
+          workDescription: job.description || job.summary || null,
+        },
+        tx,
+        paymentTermsDays,
+      );
 
-        // IDEMPOTENCY CHECK: Now check under lock if invoice already exists
-        // This is the key fix - checking INSIDE the transaction after acquiring lock
-        const [existingInvoice] = await tx
-          .select()
-          .from(invoices)
-          .where(
-            and(
-              eq(invoices.companyId, companyId),
-              eq(invoices.jobId, jobId)
-            )
-          )
-          .limit(1);
-
-        if (existingInvoice) {
-          // Invoice already exists - return it (idempotent behavior)
-          // Fetch lines outside transaction since we're returning early
-          const existingLines = await this.getInvoiceLines(companyId, existingInvoice.id);
-          return {
-            invoice: existingInvoice,
-            created: false,
-            lines: existingLines,
-          };
-        }
-
-        // Delegate shell creation to canonical shared method (numbering, defaults, INSERT)
-        const { invoice } = await this.createInvoiceShell(
-          companyId,
-          {
-            locationId: job.locationId,
-            customerCompanyId: location.parentCompanyId,
-            jobId: jobId,
-            workDescription: job.description || job.summary || null,
-          },
-          tx,
-          paymentTermsDays
-        );
-
-        // 2026-03-18: Invoice creation ONLY links invoice to job.
-        // Lifecycle transition (status → invoiced) is the caller's responsibility
-        // via the canonical jobLifecycleOrchestrator.
-        // Previously, standalone invoice creation autonomously set status="invoiced"
-        // which violated single-authority lifecycle contract.
+      // Primary-pointer write: only set `jobs.invoiceId` on the FIRST
+      // invoice for the job. Subsequent invoices leave the primary
+      // unchanged so downstream readers of `jobs.invoiceId` get a
+      // stable "preferred" pointer. The authoritative link stays on
+      // `invoices.jobId` (one-to-many from the job side).
+      if (!job.invoiceId) {
         await tx
           .update(jobs)
           .set({
@@ -1538,34 +1826,22 @@ export class InvoiceRepository extends BaseRepository {
             updatedAt: new Date(),
           })
           .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
+      } else {
+        // Bump updatedAt so downstream feeds / activity log see the change,
+        // but leave the primary pointer alone.
+        await tx
+          .update(jobs)
+          .set({ updatedAt: new Date() })
+          .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
+      }
 
-        return {
-          invoice,
-          created: true,
-        };
+      return { invoice, created: true };
     };
 
-    try {
-      // Use provided transaction or create a new one
-      if (txHandle) {
-        return await runInTx(txHandle);
-      }
-      return await db.transaction(runInTx);
-    } catch (error: any) {
-      // FALLBACK RACE CONDITION HANDLING: Unique constraint violation
-      if (error.code === "23505" && error.constraint?.includes("invoices_company_job")) {
-        const existingInvoice = await this.getInvoiceByJobId(companyId, jobId);
-        if (existingInvoice) {
-          const existingLines = await this.getInvoiceLines(companyId, existingInvoice.id);
-          return {
-            invoice: existingInvoice,
-            created: false,
-            lines: existingLines,
-          };
-        }
-      }
-      throw error;
+    if (txHandle) {
+      return await runInTx(txHandle);
     }
+    return await db.transaction(runInTx);
   }
   /**
    * PM Billing Phase 2: Create an invoice from a PM billing event (contract-period billing).

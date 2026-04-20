@@ -15,8 +15,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
-import { insertCompanySettingsSchema, type CompanySettings } from "@shared/schema";
-import type { z } from "zod";
+import { companyProfileFormSchema, type CompanyProfileFormData, type CompanySettings } from "@shared/schema";
 import {
   Search,
   Building2,
@@ -61,7 +60,11 @@ import { TIMEZONE_OPTIONS } from "@/lib/regionalConstants";
 
 // ── Types ──
 
-type CompanySettingsFormData = z.infer<typeof insertCompanySettingsSchema>;
+// 2026-04-19 Profile consolidation: profile form is rooted in `companies`
+// columns via companyProfileFormSchema. The `/api/company-settings` API
+// contract is unchanged — the route handler partitions writes between
+// `companies` (profile) and `company_settings` (preferences) server-side.
+type CompanySettingsFormData = CompanyProfileFormData;
 
 // 2026-04-10: NumberingSettings interface REMOVED. The numbering settings UI
 // was calling /api/settings/numbering which was never built. Manual job/invoice
@@ -219,7 +222,7 @@ function CompanyInfoFields({ registerSave }: { registerSave: (fn: () => void) =>
   });
 
   const form = useForm<CompanySettingsFormData>({
-    resolver: zodResolver(insertCompanySettingsSchema),
+    resolver: zodResolver(companyProfileFormSchema),
     defaultValues: {
       companyName: "",
       address: "",

@@ -17,14 +17,20 @@
  */
 
 import { format, parseISO, isValid } from "date-fns";
+import { eq } from "drizzle-orm";
+import { db } from "../db";
+import { tenantFeatures } from "@shared/schema";
 import { storage } from "../storage/index";
 import { companyRepository } from "../storage/company";
 import { createError } from "../middleware/errorHandler";
 import { calculateDueDate } from "./invoiceCreationService";
+import { canAcceptInvoicePayment } from "../lib/invoicePredicates";
+import { buildPortalInvoiceUrl } from "../lib/portalUrls";
 import type {
   INVOICE_TEMPLATE_VARIABLES,
   QUOTE_TEMPLATE_VARIABLES,
   JOB_TEMPLATE_VARIABLES,
+  PAYMENT_RECEIPT_TEMPLATE_VARIABLES,
 } from "../constants/templateVariables";
 import { quoteRepository } from "../storage/quotes";
 
@@ -41,6 +47,11 @@ export type QuoteTemplateData = Record<
 
 export type JobTemplateData = Record<
   (typeof JOB_TEMPLATE_VARIABLES)[number],
+  string
+>;
+
+export type PaymentReceiptTemplateData = Record<
+  (typeof PAYMENT_RECEIPT_TEMPLATE_VARIABLES)[number],
   string
 >;
 
@@ -98,22 +109,35 @@ function formatTimeInTz(value: Date | string | null | undefined, timeZone: strin
  * value.
  */
 export function buildPreviewSampleData(
-  entityType: "invoice" | "quote" | "job" | "invoice_reminder",
+  entityType: "invoice" | "quote" | "job" | "invoice_reminder" | "payment_receipt",
 ): Record<string, string> {
   const shared = {
     COMPANY_NAME: "Your Company",
     CLIENT_COMPANY_NAME: "Acme Corp",
   };
   // 2026-04-16: reminder reuses invoice variables — same sample set.
-  if (entityType === "invoice" || entityType === "invoice_reminder") {
+  // 2026-04-18 Phase 11: payment_receipt layers PAYMENT_AMOUNT on top.
+  if (
+    entityType === "invoice" ||
+    entityType === "invoice_reminder" ||
+    entityType === "payment_receipt"
+  ) {
+    const sampleUrl = "https://app.example.com/portal/invoices/sample";
     return {
       ...shared,
       INVOICE_NUMBER: "1234",
       INVOICE_TOTAL: "$250.00",
       INVOICE_DUE_DATE: "January 15, 2026",
-      // Reminder sample values — 2026-04-16.
-      INVOICE_BALANCE: "$250.00",
+      INVOICE_BALANCE: entityType === "payment_receipt" ? "$0.00" : "$250.00",
       DAYS_OVERDUE: entityType === "invoice_reminder" ? "14" : "0",
+      // 2026-04-19 Phase 12 — Pay Now sample renders for invoice + reminder
+      // (where the CTA is meaningful) and stays empty for payment_receipt.
+      PAYMENT_URL: entityType === "payment_receipt" ? "" : sampleUrl,
+      PAY_NOW_CTA:
+        entityType === "payment_receipt"
+          ? ""
+          : `Pay securely online: ${sampleUrl}\n\n`,
+      ...(entityType === "payment_receipt" ? { PAYMENT_AMOUNT: "$250.00" } : {}),
     };
   }
   if (entityType === "quote") {
@@ -192,6 +216,29 @@ export const templateDataBuilder = {
       ? Math.max(0, Math.floor((Date.now() - dueDateForOverdue.getTime()) / 86_400_000))
       : 0;
 
+    // 2026-04-19 Phase 12: Pay Now CTA. Resolves the customer portal URL
+    // and gates the CTA on three conditions:
+    //   1. Tenant has customerPortalPaymentsEnabled = true.
+    //   2. Invoice is in a payable status (canAcceptInvoicePayment).
+    //   3. Invoice has a positive outstanding balance.
+    // When any gate fails, both PAYMENT_URL and PAY_NOW_CTA render as
+    // empty strings — the default template's CTA paragraph then
+    // disappears cleanly without leaving a "Pay online: " orphan line.
+    const balanceCents = Math.round(parseFloat(String(balanceRaw)) * 100);
+    let paymentUrl = "";
+    let payNowCta = "";
+    if (canAcceptInvoicePayment(invoice.status) && balanceCents > 0) {
+      const [features] = await db
+        .select({ paymentsEnabled: tenantFeatures.customerPortalPaymentsEnabled })
+        .from(tenantFeatures)
+        .where(eq(tenantFeatures.companyId, tenantId))
+        .limit(1);
+      if (features?.paymentsEnabled) {
+        paymentUrl = buildPortalInvoiceUrl(invoiceId);
+        payNowCta = `Pay securely online: ${paymentUrl}\n\n`;
+      }
+    }
+
     return {
       INVOICE_NUMBER: invoice.invoiceNumber ? String(invoice.invoiceNumber) : "",
       CLIENT_COMPANY_NAME: clientCompanyName,
@@ -200,6 +247,8 @@ export const templateDataBuilder = {
       INVOICE_DUE_DATE: formatDate(dueDateRaw as any),
       INVOICE_BALANCE: formatMoney(balanceRaw),
       DAYS_OVERDUE: String(daysOverdue),
+      PAYMENT_URL: paymentUrl,
+      PAY_NOW_CTA: payNowCta,
     };
   },
 
@@ -290,6 +339,27 @@ export const templateDataBuilder = {
       // space is intentional — absorbs the spacer only when a time is
       // present, so empty renders as a clean period.
       JOB_TIME_PHRASE: jobTime ? ` at ${jobTime}` : "",
+    };
+  },
+
+  /**
+   * 2026-04-18 Phase 11 — payment-receipt template data.
+   *
+   * Reuses `buildInvoiceTemplateData` so receipts always quote the same
+   * invoice numbers / balance / company names as the original send, and
+   * layers the specific `PAYMENT_AMOUNT` that just posted. `paymentAmount`
+   * is already a canonical numeric(12,2) string on the payments row —
+   * this builder just formats it.
+   */
+  async buildPaymentReceiptTemplateData(
+    tenantId: string,
+    invoiceId: string,
+    paymentAmount: string | number,
+  ): Promise<PaymentReceiptTemplateData> {
+    const invoiceData = await this.buildInvoiceTemplateData(tenantId, invoiceId);
+    return {
+      ...invoiceData,
+      PAYMENT_AMOUNT: formatMoney(paymentAmount),
     };
   },
 };

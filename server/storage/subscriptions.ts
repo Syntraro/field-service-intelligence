@@ -104,7 +104,14 @@ export class SubscriptionRepository extends BaseRepository {
       .from(clients)
       .where(and(eq(clients.companyId, companyId), eq(clients.inactive, false)));
 
-    // Get plan info
+    // Resolve plan strictly from the canonical pointer
+    // (`companies.subscription_plan` → `subscription_plans.name`).
+    //
+    // 2026-04-19: removed the silent "if no plan set, default to trial"
+    // fallback. Every tenant now carries an explicit plan name on the
+    // companies row (signup writes it; the matching backfill migration
+    // populated legacy rows). A null `plan` here is a real misconfiguration
+    // and must surface — not be papered over — per the no-pretend rule.
     let plan = null;
     if (company[0].subscriptionPlan) {
       const planRows = await db
@@ -119,19 +126,6 @@ export class SubscriptionRepository extends BaseRepository {
         .limit(1);
 
       plan = planRows[0] ?? null;
-    }
-
-    // Default to trial plan if no plan set
-    if (!plan) {
-      const trialPlan = await db
-        .select()
-        .from(subscriptionPlans)
-        .where(
-          and(eq(subscriptionPlans.name, "trial"), eq(subscriptionPlans.active, true))
-        )
-        .limit(1);
-
-      plan = trialPlan[0] ?? null;
     }
 
     const locations = Number(clientCount[0]?.count || 0);

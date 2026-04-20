@@ -19,6 +19,9 @@ export interface PortalUser {
   companyName: string;
   customerCompanyName: string;
   paymentsEnabled: boolean;
+  // 2026-04-19 Portal polish: tenant company contact info for header / footer.
+  companyPhone: string | null;
+  companyEmail: string | null;
 }
 
 interface PortalAuthContextType {

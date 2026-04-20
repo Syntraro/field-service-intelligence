@@ -78,6 +78,10 @@ export const companies = pgTable("companies", {
   // QBO onboarding — set once on first successful import run (fetched > 0)
   qboOnboardingCatalogImportedAt: timestamp("qbo_onboarding_catalog_imported_at"),
   qboOnboardingCustomersImportedAt: timestamp("qbo_onboarding_customers_imported_at"),
+  // 2026-04-19 Hybrid SaaS: null until the owner finishes the onboarding
+  // wizard (public signup path). Legacy tenants are backfilled to
+  // `created_at` by the matching migration so they skip the wizard.
+  onboardingCompletedAt: timestamp("onboarding_completed_at"),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
@@ -88,6 +92,23 @@ export const insertCompanySchema = createInsertSchema(companies).omit({
 
 export type InsertCompany = z.infer<typeof insertCompanySchema>;
 export type Company = typeof companies.$inferSelect;
+
+// 2026-04-19 Profile consolidation (Phase 1): canonical Zod schema for the
+// Company Settings profile form. Fields live on `companies` (canonical) but
+// the API contract — and this schema's field names — preserve `companyName`
+// for backward compatibility with the existing `/api/company-settings` shape
+// the frontend already speaks. The route handler translates `companyName`
+// <-> `companies.name` on the write/read boundary.
+export const companyProfileFormSchema = z.object({
+  companyName: z.string().min(1, "Company name is required").max(200),
+  address: z.string().max(500).optional().nullable(),
+  city: z.string().max(100).optional().nullable(),
+  provinceState: z.string().max(100).optional().nullable(),
+  postalCode: postalCodeSchema,
+  email: z.string().email().max(255).optional().nullable().or(z.literal("")),
+  phone: z.string().max(30).optional().nullable(),
+});
+export type CompanyProfileFormData = z.infer<typeof companyProfileFormSchema>;
 
 // QBO Mapping Configuration Schema
 // TYPE mapping: how our catalog item types map to QBO Item.Types.
@@ -213,15 +234,16 @@ export type InsertUserIdentity = z.infer<typeof insertUserIdentitySchema>;
 export type UserIdentity = typeof userIdentities.$inferSelect;
 
 // Authenticated user type that merges User with Company subscription data
-export type AuthenticatedUser = User & Pick<Company, 
-  "trialEndsAt" | 
-  "subscriptionStatus" | 
-  "subscriptionPlan" | 
-  "stripeCustomerId" | 
-  "stripeSubscriptionId" | 
-  "billingInterval" | 
-  "currentPeriodEnd" | 
-  "cancelAtPeriodEnd"
+export type AuthenticatedUser = User & Pick<Company,
+  "trialEndsAt" |
+  "subscriptionStatus" |
+  "subscriptionPlan" |
+  "stripeCustomerId" |
+  "stripeSubscriptionId" |
+  "billingInterval" |
+  "currentPeriodEnd" |
+  "cancelAtPeriodEnd" |
+  "onboardingCompletedAt"
 >;
 
 export const passwordResetTokens = pgTable("password_reset_tokens", {
@@ -815,7 +837,16 @@ export const companyBusinessHours = pgTable("company_business_hours", {
   endMinutes: integer("end_minutes"), // 1-1440 (1440 = midnight next day)
   createdAt: timestamp("created_at").notNull().default(sql`NOW()`),
   updatedAt: timestamp("updated_at").notNull().default(sql`NOW()`),
-});
+}, (table) => ({
+  // 2026-04-19 schema-reality sync: the DB already enforces this unique
+  // constraint via migrations/2026_01_28_add_company_business_hours.sql
+  // (CONSTRAINT company_business_hours_company_day_unique). Declaring
+  // it here makes Drizzle aware of the invariant that
+  // storage.upsertCompanyBusinessHours relies on in its
+  // `onConflictDoUpdate({ target: [companyId, dayOfWeek] })`.
+  companyDayUnique: uniqueIndex("company_business_hours_company_day_unique")
+    .on(table.companyId, table.dayOfWeek),
+}));
 
 export const insertCompanyBusinessHoursSchema = createInsertSchema(companyBusinessHours).omit({
   id: true,
@@ -825,6 +856,37 @@ export const insertCompanyBusinessHoursSchema = createInsertSchema(companyBusine
 
 export type InsertCompanyBusinessHours = z.infer<typeof insertCompanyBusinessHoursSchema>;
 export type CompanyBusinessHours = typeof companyBusinessHours.$inferSelect;
+
+// ============================================================================
+// EQUIPMENT TYPES — tenant-owned, free-form catalog
+// ============================================================================
+// Each tenant manages their own list (RTU, Walk-in Cooler, Boiler, custom).
+// Replaces the prior hardcoded HVAC-only frontend constant. Vertical-agnostic:
+// fits HVAC, refrigeration, plumbing, electrical, fire suppression, etc.
+
+export const equipmentTypes = pgTable("equipment_types", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  // Case-insensitive uniqueness per tenant — prevents duplicates like
+  // "Boiler" / "boiler" / "BOILER" stacking up via the create-on-the-fly UX.
+  uniqueNamePerCompany: uniqueIndex("equipment_types_company_name_lower_uq")
+    .on(table.companyId, sql`lower(${table.name})`),
+}));
+
+export const insertEquipmentTypeSchema = createInsertSchema(equipmentTypes).omit({
+  id: true,
+  companyId: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type EquipmentType = typeof equipmentTypes.$inferSelect;
+export type InsertEquipmentType = z.infer<typeof insertEquipmentTypeSchema>;
 
 // ============================================================================
 // USER INVITATIONS (dispatch software access) - single-company system
@@ -1343,10 +1405,16 @@ export const invoices = pgTable("invoices", {
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
 }, (table) => ({
-  // Enforce one invoice per job *when jobId is set*
-  oneInvoicePerJob: uniqueIndex("invoices_company_job_uq")
-    .on(table.companyId, table.jobId)
-    .where(sql`job_id is not null`),
+  // 2026-04-18 Phase 5/6 (multi-invoice-per-job): the old
+  // `oneInvoicePerJob` partial unique index was the DB-level cardinality
+  // enforcer that blocked a job from carrying more than one invoice.
+  // Dropped in `migrations/2026_04_18_invoices_drop_job_uniqueness.sql`
+  // and removed from the schema here so a future `drizzle-kit push`
+  // cannot re-create it. Cardinality is now controlled by the
+  // application layer (short-lived dedupe guard in
+  // invoiceCreationService) and intentional business rules, NOT by the
+  // FK/index topology.
+
   // Enforce unique invoice numbers per company when invoiceNumber is set
   invoiceNumberPerCompany: uniqueIndex("invoices_company_invoice_number_uq")
     .on(table.companyId, table.invoiceNumber)
@@ -2085,7 +2153,16 @@ export const jobs = pgTable("jobs", {
   // Travel tracking (for billing drive time)
   travelStartedAt: timestamp("travel_started_at"),  // When tech started traveling to job
   arrivedOnSiteAt: timestamp("arrived_on_site_at"), // When tech arrived at job site
-  // Billing
+  // Billing.
+  // 2026-04-18 Phase 5 (multi-invoice-per-job): `invoiceId` is now the
+  // **primary invoice pointer** for the job, NOT a cardinality guard.
+  // Many invoices may reference a job via `invoices.jobId`; this column
+  // names the preferred / first-created one for back-compat singular
+  // readers. Populated by `createInvoiceFromJob` only when the job has
+  // no invoices yet; preserved across subsequent invoice creations.
+  // Cleared automatically (onDelete: 'set null') if the primary invoice
+  // is deleted. No automatic re-assignment to a sibling invoice — by
+  // design; re-assignment can be explicit in a later phase if needed.
   invoiceId: varchar("invoice_id").references(() => invoices.id, { onDelete: "set null" }),
   qboInvoiceId: text("qbo_invoice_id"),
   billingNotes: text("billing_notes"),
@@ -5460,7 +5537,7 @@ export type UpsertReferenceFieldValue = z.infer<typeof upsertReferenceFieldValue
 //   - channel     ∈ {email, sms}
 //   - email templates require a non-null subject; SMS may omit it
 
-export const communicationTemplateEntityTypeEnum = ["invoice", "quote", "job", "invoice_reminder"] as const;
+export const communicationTemplateEntityTypeEnum = ["invoice", "quote", "job", "invoice_reminder", "payment_receipt"] as const;
 export type CommunicationTemplateEntityType = (typeof communicationTemplateEntityTypeEnum)[number];
 
 export const communicationTemplateChannelEnum = ["email", "sms"] as const;

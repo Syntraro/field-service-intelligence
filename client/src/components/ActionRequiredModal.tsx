@@ -33,11 +33,6 @@ export const HOLD_REASONS = HOLD_REASON_OPTIONS;
 export type { HoldReason };
 export { getHoldReasonLabel };
 
-// Legacy aliases
-export const ACTION_REQUIRED_REASONS = HOLD_REASON_OPTIONS;
-export type ActionRequiredReason = HoldReason;
-export const getActionRequiredReasonLabel = getHoldReasonLabel;
-
 interface ActionRequiredModalProps {
   jobId: string;
   /** Current job version for optimistic locking on status change */

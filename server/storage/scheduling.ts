@@ -13,7 +13,7 @@ import { BaseRepository } from "./base";
 import { createError } from "../middleware/errorHandler";
 import { activeJobFilter, JOB_ACTIVE_SQL_J } from "./jobFilters";
 import { TERMINAL_VISIT_STATUSES, VISIT_TERMINAL_STATUS_SQL } from "../lib/visitPredicates";
-import { jobVisitsRepository, isVisitActioned, isVisitEmpty } from "./jobVisits";
+import { jobVisitsRepository } from "./jobVisits";
 import { resolveTechnicianName } from "../lib/resolveTechnicianName";
 // Phase 5 Step C2: shared query helpers for bulk resolution
 import { bulkResolveTechnicians, bulkResolveCustomerCompanies } from "../lib/queryHelpers";
@@ -179,6 +179,13 @@ export interface ScheduledJobWithDetails {
   lat?: string | null;
   /** Client location longitude (from client_locations) */
   lng?: string | null;
+  /** 2026-04-18 Phase 1/2 (multi-visit): every active non-terminal visit id
+   *  on this job, ordered by visit_number asc. Present on backlog rows;
+   *  omitted on calendar-range event rows (those already carry `visitId`
+   *  for their single event). Canonical field — the old singular
+   *  `activeVisitId` projection was removed in Phase 2 once all consumers
+   *  migrated. */
+  visitIds?: string[];
 }
 
 /**
@@ -522,18 +529,24 @@ export class SchedulingRepository extends BaseRepository {
    * @param companyId - Tenant ID
    */
   async getUnscheduledJobs(companyId: string): Promise<ScheduledJobWithDetails[]> {
-    // 2026-03-22: Added activeVisitId subquery so unscheduled items carry
-    // the real visit identity for canonical EditVisitModal opening.
-    const activeVisitIdSubquery = sql<string | null>`(
-      SELECT jv.id FROM job_visits jv
+    // 2026-04-18 Phase 1 (multi-visit): emit the full ordered list of
+    // active non-terminal visit IDs per backlog row. Replaces the old
+    // `active_visit_id LIMIT 1` projection, which was a single-visit
+    // invariant ("the" current visit) dressed up as a convenience field.
+    //
+    // `active_visit_id` (singular) is still emitted on the DTO below —
+    // computed as `visit_ids[0]` — solely for one-release back-compat
+    // with frontends that haven't been updated to read the array yet.
+    // It will be removed once those callers migrate.
+    const visitIdsSubquery = sql<string[]>`COALESCE((
+      SELECT ARRAY_AGG(jv.id ORDER BY jv.visit_number ASC)
+      FROM job_visits jv
       WHERE jv.job_id = ${jobs.id}
         AND jv.company_id = ${jobs.companyId}
         AND jv.is_active = true
         AND jv.archived_at IS NULL
         AND jv.status NOT IN (${sql.raw(TERMINAL_VISIT_STATUSES.map(s => `'${s}'`).join(','))})
-      ORDER BY jv.visit_number ASC
-      LIMIT 1
-    )`.as("active_visit_id");
+    ), ARRAY[]::varchar[])`.as("visit_ids");
 
     const jobRows = await db
       .select({
@@ -560,7 +573,7 @@ export class SchedulingRepository extends BaseRepository {
         locationPostalCode: clientLocations.postalCode,
         lat: clientLocations.lat,
         lng: clientLocations.lng,
-        activeVisitId: activeVisitIdSubquery,
+        visitIds: visitIdsSubquery,
       })
       .from(jobs)
       .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
@@ -656,7 +669,10 @@ export class SchedulingRepository extends BaseRepository {
         locationPostalCode: job.locationPostalCode,
         lat: job.lat ?? null,
         lng: job.lng ?? null,
-        activeVisitId: job.activeVisitId ?? null,
+        // 2026-04-18 Phase 1/2: canonical multi-visit field. The deprecated
+        // `activeVisitId` projection was removed in Phase 2 now that all
+        // consumers read `visitIds`.
+        visitIds: Array.isArray(job.visitIds) ? job.visitIds : [],
       };
     });
 
@@ -834,25 +850,30 @@ export class SchedulingRepository extends BaseRepository {
   }
 
   /**
-   * PHASE 4: Schedule a job (place it on the calendar)
+   * PHASE 4 + 2026-04-18 Phase 1 (multi-visit): Schedule a visit for a job.
    *
-   * MIGRATION: Now writes to job_visits instead of jobs table.
-   * The jobs table is updated via syncJobScheduleFromVisits for backwards compat.
+   * CALL SHAPE:
+   *   - `targetVisitId` present → update that exact visit in place.
+   *   - `targetVisitId` absent  → create a new visit row.
+   *   - No auto-selection of an existing visit. No sibling-archive.
+   *   - A job may legitimately have multiple open visits at any time.
    *
-   * BEHAVIOR:
-   * - Creates a new job_visit row with scheduled_start/end, technician assignment
-   * - visit_number is auto-computed as max(existing)+1
-   * - Calls syncJobScheduleFromVisits to mirror to jobs table
-   * - Returns the job row (after sync) for API response compatibility
+   * MIGRATION: Writes go to job_visits. The jobs table schedule fields are
+   * mirrored via syncJobScheduleFromVisits (called inside
+   * createJobVisit / updateJobVisit) for legacy read compatibility.
    *
    * INVARIANTS:
-   * - job_visits.scheduled_start is always set for scheduled events
-   * - jobs.* schedule fields are driven ONLY by syncJobScheduleFromVisits
+   * - job_visits.scheduled_start is always set for scheduled events.
+   * - jobs.* schedule fields are driven ONLY by syncJobScheduleFromVisits.
+   * - Operations on visit A never mutate visit B (no sibling writes).
    */
   async scheduleJob(
     companyId: string,
     data: {
       jobId: string;
+      // 2026-04-18 Phase 1: when present, update that exact visit.
+      // When absent, create a new visit.
+      targetVisitId?: string;
       // 2026-04-12 final cleanup: canonical crew array only.
       // `null` / `[]` = unassigned; `undefined` = no crew specified (= unassigned here).
       assignedTechnicianIds?: string[] | null;
@@ -862,9 +883,6 @@ export class SchedulingRepository extends BaseRepository {
       allDay?: boolean;
       timezone?: string;
       expectedVersion?: number;
-      // Visit Reschedule Architecture: conflict resolution from client
-      conflictMode?: 'replace' | 'complete_and_new';
-      conflictVisitId?: string;
     }
   ) {
     // Normalize schedule times through canonical helper
@@ -918,68 +936,39 @@ export class SchedulingRepository extends BaseRepository {
       }
     }
 
-    // Visit Reschedule Architecture: 2-case model for single active visit per job.
-    // Find the open active non-terminal visit (broader than old placeholder-only check).
-    // 2026-03-20: Uses canonical TERMINAL_VISIT_STATUSES from visitPredicates.ts
-    const [openVisit] = await db
-      .select()
-      .from(jobVisits)
-      .where(
-        and(
-          eq(jobVisits.jobId, data.jobId),
-          eq(jobVisits.companyId, companyId),
-          eq(jobVisits.isActive, true),
-          isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
-          notInArray(jobVisits.status, TERMINAL_VISIT_STATUSES),
-        )
-      )
-      .orderBy(asc(jobVisits.visitNumber))
-      .limit(1);
-
+    // 2026-04-18 Phase 1 (multi-visit): two-branch dispatch — no auto-select,
+    // no sibling-archive. A job may have any number of coexisting open visits.
     let visit;
-    if (!openVisit) {
-      // Case 1: No open visit → create new visit
-      visit = await jobVisitsRepository.createJobVisit(companyId, data.jobId, {
-        scheduledStart,
-        scheduledEnd,
-        isAllDay,
-        assignedTechnicianIds: techAssignment.assignedTechnicianIds,
-        status: 'scheduled',
-        visitNotes: data.notes,
-      });
-    } else if (isVisitEmpty(openVisit) || data.conflictMode === 'replace') {
-      // Case 2: Empty visit OR explicit replace → UPDATE IN-PLACE (no duplicate rows)
-      // 2026-03-05: Changed from soft-delete+create to in-place update to prevent
-      // the "2 visits" duplication bug on the Job Detail page.
+    if (data.targetVisitId) {
+      // Branch A — update an explicit target visit in place.
+      const existing = await jobVisitsRepository.getJobVisit(companyId, data.targetVisitId);
+      if (!existing) {
+        throw new Error('Target visit not found');
+      }
+      if (existing.jobId !== data.jobId) {
+        throw new Error('Target visit does not belong to this job');
+      }
+      if (TERMINAL_VISIT_STATUSES.includes(existing.status as any)) {
+        throw new Error(
+          `Cannot reschedule a ${existing.status} visit. Reopen it first.`,
+        );
+      }
       visit = await jobVisitsRepository.updateJobVisit(
         companyId,
-        openVisit.id,
-        openVisit.version,
+        existing.id,
+        existing.version,
         {
           scheduledStart,
           scheduledEnd,
           isAllDay,
           assignedTechnicianIds: techAssignment.assignedTechnicianIds,
           status: 'scheduled',
-          visitNotes: data.notes ?? openVisit.visitNotes,
-        }
+          visitNotes: data.notes ?? existing.visitNotes,
+        },
       );
-    } else if (data.conflictMode === 'complete_and_new') {
-      // Case 3: Actioned visit + explicit complete_and_new → complete old, create new
-      // Labor unification: actualDurationMinutes deprecated — duration derived from time_entries
-      const now = new Date();
-      await jobVisitsRepository.updateJobVisit(
-        companyId,
-        openVisit.id,
-        openVisit.version,
-        {
-          status: 'completed',
-          outcome: 'completed',
-          completedAt: now,
-          isFollowUpNeeded: false,
-          checkedOutAt: now,
-        }
-      );
+    } else {
+      // Branch B — create a new visit. Siblings (if any) are preserved
+      // untouched; this is the core Phase 1 multi-visit semantics.
       visit = await jobVisitsRepository.createJobVisit(companyId, data.jobId, {
         scheduledStart,
         scheduledEnd,
@@ -988,37 +977,20 @@ export class SchedulingRepository extends BaseRepository {
         status: 'scheduled',
         visitNotes: data.notes,
       });
-    } else {
-      // Case 4: Actioned visit + no conflictMode → 409 conflict for frontend dialog
-      const err: any = new Error(
-        `Visit #${openVisit.visitNumber} is already active and has been actioned. Choose "Replace Visit" or "Complete & Schedule New".`
-      );
-      err.code = 'VISIT_CONFLICT';
-      err.conflictVisitId = openVisit.id;
-      throw err;
     }
 
-    // 2026-03-20 BUG FIX: Archive ALL non-terminal, non-current visits for this job.
-    // Previously only archived placeholders (scheduledStart IS NULL). Visits that
-    // acquired scheduledStart from a prior scheduling cycle but were superseded by
-    // a new schedule action retained scheduledStart IS NOT NULL, were NOT archived,
-    // and matched the reconciliationActionableVisitFilter — blocking job closure
-    // after visit completion (reconciliation saw "remaining actionable visits").
-    // Terminal visits (completed, cancelled) are preserved for history.
-    if (visit) {
-      await db
-        .update(jobVisits)
-        .set({ archivedAt: new Date() })
-        .where(
-          and(
-            eq(jobVisits.jobId, data.jobId),
-            eq(jobVisits.companyId, companyId),
-            notInArray(jobVisits.status, TERMINAL_VISIT_STATUSES),
-            isNull(jobVisits.archivedAt),
-            sql`${jobVisits.id} != ${visit.id}`
-          )
-        );
-    }
+    // 2026-04-18 Phase 1: sibling-archive REMOVED.
+    //
+    // The pre-Phase-1 code archived every other non-terminal visit on the
+    // same job after any schedule action ("one visit to rule them all").
+    // That block lived here and was the primary enforcement point of the
+    // single-visit invariant. Removing it is the whole point of Phase 1:
+    // multiple open visits on a single job are now legal and stable.
+    //
+    // Status/archival of individual visits is now driven explicitly —
+    // callers that want to close a specific visit must call the visit
+    // completion endpoint (or the unschedule endpoint for placeholder
+    // conversion). The scheduling write path never mutates siblings.
 
     // 2026-03-24: Clear openSubStatus (and hold fields) when scheduling a visit.
     // Two cases:

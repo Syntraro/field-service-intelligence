@@ -1,0 +1,32 @@
+-- 2026-04-18 Phase 5 (multi-invoice-per-job): drop the UNIQUE constraint
+-- on `invoices(company_id, job_id)` so a single job can carry multiple
+-- invoices.
+--
+-- The pre-Phase-5 model enforced one-invoice-per-job at the DB layer via
+-- this constraint. Phase 5 shifts the model to:
+--   * `invoices.jobId` (many-to-one) — authoritative link
+--   * `jobs.invoiceId` — primary-invoice pointer (set on first invoice,
+--     preserved across subsequent invoices on the same job)
+--
+-- Dropping the unique guarantee unblocks the new canonical create path
+-- in `invoiceCreationService.createInvoiceFromJob` which no longer
+-- enforces idempotency-by-job.
+--
+-- The enforcement object is a PARTIAL UNIQUE INDEX, not a table
+-- constraint. It was originally created as:
+--   CREATE UNIQUE INDEX invoices_company_job_uq ON invoices
+--     (company_id, job_id) WHERE (job_id IS NOT NULL);
+-- The `WHERE` clause let PM-billing invoices (jobId IS NULL) exist in
+-- parallel while still blocking more-than-one per-job. For Phase 5 we
+-- drop the whole index.
+--
+-- Replay-safe via `IF EXISTS`. Idempotent against a DB where the index
+-- has already been dropped (or never existed). A table-level
+-- constraint with the same name has never existed in this schema, but
+-- we include the constraint-drop line too for belt-and-suspenders in
+-- case a future environment re-adds it as a proper constraint.
+--
+-- Run via: npm run db:migrate
+
+DROP INDEX IF EXISTS invoices_company_job_uq;
+ALTER TABLE invoices DROP CONSTRAINT IF EXISTS invoices_company_job_uq;

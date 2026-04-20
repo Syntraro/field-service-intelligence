@@ -48,9 +48,9 @@ export function mapEventToDispatchVisit(event: CalendarEventDto): DispatchVisit 
     jobOpenSubStatus: event.openSubStatus ?? null,
     locationName: event.locationName,
     customerName: event.customerCompanyName ?? event.locationName,
-    // 2026-04-12 (Option A): assignedTechnicianIds on the event DTO is the
-    // visit-derived crew (server-computed). No fallback to primaryTechnicianId.
-    technicianId: event.assignedTechnicianIds?.[0] ?? null,
+    // 2026-04-19: scalar `technicianId` removed from DispatchVisit — color
+    // and DnD callers derive a primary via `technicianIds[0] ?? null`. The
+    // visit-derived crew is server-computed; no fallback to job-level fields.
     technicianIds: Array.isArray(event.assignedTechnicianIds) ? event.assignedTechnicianIds : [],
     scheduledStart: event.startAt,
     scheduledEnd: event.endAt,
@@ -81,33 +81,50 @@ export function mapEventToDispatchVisit(event: CalendarEventDto): DispatchVisit 
   };
 }
 
-/** Map UnscheduledJobDto → DispatchVisit (null scheduling fields) */
-export function mapUnscheduledToDispatchVisit(job: UnscheduledJobDto): DispatchVisit {
+/**
+ * 2026-04-18 Phase 3 (multi-visit UI): produce ONE DispatchVisit per
+ * unscheduled visit on the job (not one card per job).
+ *
+ * Shape rules:
+ *   - N>=1 active non-terminal visit ids → N cards. Each card carries
+ *     its own `visitId`, a unique `id` (= visitId), and a sequential
+ *     `visitNumber` derived from the server-ordered `visitIds` position.
+ *   - Zero visit ids (edge case: backlog job with no placeholder visit
+ *     yet) → one "job placeholder" card with `visitId: null` and
+ *     `id: job.id`. Clicking or dragging it creates a brand-new visit
+ *     (no targetVisitId).
+ *
+ * Siblings on the same job render as siblings — no deduplication. This
+ * is the locked product rule that multi-visit jobs appearing multiple
+ * times in the backlog is valid, not a bug.
+ */
+function buildBacklogCard(
+  job: UnscheduledJobDto,
+  visitId: string | null,
+  visitNumber: number,
+): DispatchVisit {
   return {
-    id: job.id,
-    visitNumber: 0,
+    // Card identity must be unique per card — the visit id when we have
+    // one, the job id otherwise (fallback for the zero-visit placeholder).
+    id: visitId ?? job.id,
+    visitNumber,
     jobNumber: job.jobNumber,
     jobId: job.jobId,
     summary: job.summary,
-    status: "scheduled",  // 2026-03-18: unscheduled backlog items display as "scheduled"
+    status: "scheduled",
     jobStatus: job.status,
     jobOpenSubStatus: job.openSubStatus ?? null,
     locationName: job.locationName,
     customerName: job.customerCompanyName ?? job.locationName,
-    // 2026-04-12 (Option A): visit-derived crew from server.
-    technicianId: job.assignedTechnicianIds?.[0] ?? null,
     technicianIds: Array.isArray(job.assignedTechnicianIds) ? job.assignedTechnicianIds : [],
     scheduledStart: null,
     scheduledEnd: null,
-    // PM dispatch fix: use actual job duration from backend (falls back to 60 for legacy jobs)
     durationMinutes: job.durationMinutes ?? 60,
     isAllDay: false,
     priority: "normal",
     version: job.version,
     kind: "backlog",
-    // 2026-03-22: Real visit ID from server — enables canonical EditVisitModal opening.
-    // Null if no active visit exists (scheduleJob will create one on first schedule).
-    visitId: job.activeVisitId ?? null,
+    visitId,
     jobType: job.jobType ?? undefined,
     locationId: job.locationId,
     customerCompanyId: job.customerCompanyId,
@@ -116,10 +133,18 @@ export function mapUnscheduledToDispatchVisit(job: UnscheduledJobDto): DispatchV
     locationCity: job.locationCity,
     locationProvinceState: job.locationProvinceState,
     locationPostalCode: job.locationPostalCode,
-    // Map coordinates for dispatch map markers (same as scheduled mapper)
     lat: job.lat ?? null,
     lng: job.lng ?? null,
   };
+}
+
+/** Map one UnscheduledJobDto → zero-or-more DispatchVisit cards (one per visit). */
+export function mapUnscheduledToDispatchVisits(job: UnscheduledJobDto): DispatchVisit[] {
+  const ids = Array.isArray(job.visitIds) ? job.visitIds : [];
+  if (ids.length === 0) {
+    return [buildBacklogCard(job, null, 0)];
+  }
+  return ids.map((visitId, idx) => buildBacklogCard(job, visitId, idx + 1));
 }
 
 /** Map raw task API response to DispatchTask */

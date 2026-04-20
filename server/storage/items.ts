@@ -50,7 +50,10 @@ export class ItemRepository extends BaseRepository {
   }
 
   /**
-   * Create item
+   * Create item — direct insert. Prefer `createOrGet` for the canonical
+   * create path; this method exists for the QBO catalog importer which
+   * has its own explicit conflict-resolution flow and writes QBO sync
+   * metadata that doesn't fit the createOrGet contract.
    */
   async createItem(companyId: string, userId: string, itemData: any): Promise<Item> {
     // Auto-calculate unitPrice from cost and markup if provided
@@ -72,6 +75,75 @@ export class ItemRepository extends BaseRepository {
       .returning();
 
     return rows[0];
+  }
+
+  /**
+   * Canonical create-or-get for catalog items.
+   *
+   * 2026-04-19: company-scoped, case-insensitive, type-aware dedupe.
+   * The natural key is `(company_id, type, lower(name))` — a "Filter"
+   * service and a "Filter" product can coexist, but two products named
+   * "filter"/"FILTER" cannot. Mirrors `EquipmentTypeRepository.createOrGet`
+   * and is paired with the matching partial unique index in
+   * `migrations/2026_04_19_items_unique_name_per_type.sql` (the index is
+   * the safety net; this method is the primary dedupe).
+   *
+   * Behavior:
+   *   - Active match exists → return it (no insert, no field overwrite).
+   *   - Soft-deleted match exists → reactivate (clear deletedAt, set
+   *     isActive=true) and return. Preserves catalog history without
+   *     forcing the user to manually un-archive.
+   *   - No match → insert new row.
+   *
+   * `name` and `type` are required; the rest of the payload is forwarded
+   * to the insert when a new row is created.
+   *
+   * Used by: POST /api/items, POST /api/tech/items, productImport CSV
+   * executor. NOT used by the QBO catalog importer (see `createItem`).
+   */
+  async createOrGet(
+    companyId: string,
+    userId: string,
+    itemData: any,
+  ): Promise<Item> {
+    const rawName = typeof itemData?.name === "string" ? itemData.name.trim() : "";
+    const type = typeof itemData?.type === "string" ? itemData.type : null;
+    if (!rawName) {
+      throw new Error("Item name is required");
+    }
+    if (!type) {
+      throw new Error("Item type is required");
+    }
+
+    // Case-insensitive lookup against the canonical natural key. Includes
+    // soft-deleted rows so a returning name doesn't bypass the unique index.
+    const existing = await db
+      .select()
+      .from(items)
+      .where(
+        and(
+          eq(items.companyId, companyId),
+          eq(items.type, type),
+          sql`lower(${items.name}) = lower(${rawName})`,
+        ),
+      )
+      .limit(1);
+
+    if (existing[0]) {
+      const row = existing[0];
+      const isLive = row.isActive && row.deletedAt === null;
+      if (isLive) return row;
+      // Reactivate the archived row so it's pickable from selectors again.
+      const [reactivated] = await db
+        .update(items)
+        .set({ isActive: true, deletedAt: null, updatedAt: new Date() })
+        .where(eq(items.id, row.id))
+        .returning();
+      return reactivated;
+    }
+
+    // No match — fall through to the canonical insert with auto-priced unitPrice.
+    return this.createItem(companyId, userId, { ...itemData, name: rawName });
   }
 
   /**

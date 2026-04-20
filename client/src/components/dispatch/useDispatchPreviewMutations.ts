@@ -38,7 +38,9 @@ function isVersionConflict(err: unknown): boolean {
   const e = err as any;
   if ((e.status ?? 0) !== 409) return false;
   // If a code is present, only treat VERSION_MISMATCH as a version conflict.
-  // VISIT_CONFLICT (also 409) is a different error and must not trigger the stale-edit toast.
+  // ACTIVE_VISIT_CONFLICT (tech-scope) and other 409 subtypes must not trigger
+  // the stale-edit toast. (Phase 2 removed the pre-multi-visit VISIT_CONFLICT
+  // subtype entirely — the server no longer emits it.)
   const code = e.code ?? e.body?.code ?? "";
   if (code) return code === "VERSION_MISMATCH";
   // No code present — fall back to treating all 409s as version conflict (legacy endpoints)
@@ -139,13 +141,17 @@ function resolveVisitFromCache(
   }
 
   // Check unscheduled backlog cache
-  // 2026-03-23: Also match by activeVisitId — unscheduled items are keyed by jobId
-  // but EditVisitModal passes the actual visit UUID. Both must resolve.
+  // 2026-04-18 Phase 2 (multi-visit): unscheduled items are keyed by jobId
+  // but EditVisitModal passes the actual visit UUID. Match if the visit id
+  // appears anywhere in the backlog card's `visitIds` array.
   const unscheduledEntries = qc.getQueriesData<UnscheduledJobDto[]>({ queryKey: ["/api/calendar/unscheduled"] });
   for (const [, data] of unscheduledEntries) {
     if (!data) continue;
     for (const job of data) {
-      if ((job.id === visitId || job.activeVisitId === visitId) && job.version != null) {
+      const matchesVisit =
+        job.id === visitId ||
+        (Array.isArray(job.visitIds) && job.visitIds.includes(visitId));
+      if (matchesVisit && job.version != null) {
         return { version: job.version, jobId: job.jobId };
       }
     }
@@ -177,12 +183,16 @@ function patchCachedVersion(
   );
 
   // Patch unscheduled cache
-  // 2026-03-23: Also match by activeVisitId (see resolveVisitFromCache comment)
+  // 2026-04-18 Phase 2 (multi-visit): match by any visit id in the card's
+  // canonical `visitIds` array.
   qc.setQueriesData<UnscheduledJobDto[]>(
     { queryKey: ["/api/calendar/unscheduled"] },
     (old) => {
       if (!old) return old;
-      const idx = old.findIndex(j => j.id === visitId || j.activeVisitId === visitId);
+      const idx = old.findIndex(j =>
+        j.id === visitId ||
+        (Array.isArray(j.visitIds) && j.visitIds.includes(visitId))
+      );
       if (idx === -1) return old;
       const next = [...old];
       next[idx] = { ...next[idx], version: newVersion };
@@ -290,22 +300,28 @@ function optimisticSchedule(
   const date = startAt.slice(0, 10);
 
   // Find the unscheduled job to get display data
-  // 2026-03-23: Also match by activeVisitId — EditVisitModal passes the actual visit UUID
-  // but unscheduled cache items are keyed by job ID with activeVisitId as a separate field.
+  // 2026-04-18 Phase 2 (multi-visit): unscheduled cache items are keyed by
+  // job id but EditVisitModal passes a visit UUID. Match by jobId
+  // equality or by membership in the card's canonical `visitIds` array.
   let jobData: UnscheduledJobDto | null = null;
   const unscheduledEntries = qc.getQueriesData<UnscheduledJobDto[]>({ queryKey: ["/api/calendar/unscheduled"] });
+  const cardMatchesVisit = (j: UnscheduledJobDto) =>
+    j.id === visitId ||
+    (Array.isArray(j.visitIds) && j.visitIds.includes(visitId));
   for (const [, data] of unscheduledEntries) {
     if (!data) continue;
-    const found = data.find(j => j.id === visitId || j.activeVisitId === visitId);
+    const found = data.find(cardMatchesVisit);
     if (found) { jobData = found; break; }
   }
 
-  // Remove from unscheduled cache
+  // Remove from unscheduled cache — filter out the card whose visitIds
+  // contain the just-scheduled visit. Remaining backlog cards for other
+  // siblings on the same job are preserved.
   qc.setQueriesData<UnscheduledJobDto[]>(
     { queryKey: ["/api/calendar/unscheduled"] },
     (old) => {
       if (!old) return old;
-      return old.filter(j => j.id !== visitId && j.activeVisitId !== visitId);
+      return old.filter(j => !cardMatchesVisit(j));
     },
   );
 
@@ -409,7 +425,7 @@ function optimisticUnschedule(
       locationPostalCode: eventData.locationPostalCode ?? null,
       lat: eventData.lat ?? null,
       lng: eventData.lng ?? null,
-      activeVisitId: eventData.visitId ?? visitId,
+      visitIds: [eventData.visitId ?? visitId],
     };
 
     qc.setQueriesData<UnscheduledJobDto[]>(
@@ -706,7 +722,14 @@ export function useDispatchPreviewMutations() {
     return resolved;
   }, [queryClient]);
 
-  /** Schedule an unscheduled job (first visit). POST /api/calendar/schedule */
+  /** Schedule a visit via POST /api/calendar/schedule.
+   *
+   *  2026-04-18 Phase 3 (multi-visit): when the dragged/scheduled backlog
+   *  card represents an existing placeholder visit (`params.visitId` is
+   *  set), forward it as `targetVisitId` so the backend updates THAT
+   *  specific visit in place instead of silently creating a new one.
+   *  A card without `visitId` (zero-visit job placeholder) falls through
+   *  to the create-new path. */
   const scheduleVisit = useCallback(async (params: ScheduleParams) => {
     const { jobId, visitId, assignedTechnicianIds, startAt, endAt, allDay, visitNotes } = params;
 
@@ -720,11 +743,14 @@ export function useDispatchPreviewMutations() {
       markSaving(optimisticKey);
       inflightRef.current++;
       try {
-        // 2026-04-12 final cleanup: canonical crew input.
         const resp = await apiRequest<{ version?: number }>("/api/calendar/schedule", {
           method: "POST",
           body: JSON.stringify({
             jobId,
+            // 2026-04-18 Phase 3: explicit visit targeting when a
+            // placeholder visit was dragged. Omitted → backend creates
+            // a new visit. Never silently picks a sibling.
+            ...(visitId && { targetVisitId: visitId }),
             assignedTechnicianIds: Array.isArray(assignedTechnicianIds) ? assignedTechnicianIds : [],
             startAt,
             endAt,

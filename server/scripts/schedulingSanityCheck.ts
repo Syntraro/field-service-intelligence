@@ -65,7 +65,6 @@ interface ViolationRow {
   scheduled_end?: Date | null;
   is_all_day?: boolean | null;
   duration_minutes?: number | null;
-  primary_technician_id?: string | null;
   assigned_technician_ids?: string[] | null;
   version?: number | null;
 }

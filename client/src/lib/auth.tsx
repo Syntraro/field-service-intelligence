@@ -10,13 +10,27 @@ export interface User {
   isAdmin?: boolean;
   firstName?: string | null;
   lastName?: string | null;
+  // 2026-04-19 Hybrid SaaS onboarding gate:
+  //  - `onboardingCompletedAt` is null until the owner finishes the wizard
+  //  - `isImpersonating` bypasses the gate when a platform admin is using
+  //    this session (server flag `req.isImpersonating`)
+  onboardingCompletedAt?: string | null;
+  isImpersonating?: boolean;
 }
 
 interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<User>;
-  signup: (email: string, password: string) => Promise<User>;
+  /**
+   * Create a new user account.
+   * 2026-04-19: accepts the full signup payload (public staged flow or
+   * invite flow) so AuthProvider's onSuccess can call setUser
+   * synchronously and ProtectedRoute never sees a stale null after
+   * navigation. Previous `(email, password)` signature was insufficient
+   * for the staged public payload and for invite tokens.
+   */
+  signup: (body: Record<string, unknown>) => Promise<User>;
   logout: () => Promise<void>;
   /**
    * 2026-04-10 Phase-2 Fix A — canonical "the session is gone, clean up
@@ -105,10 +119,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
 
   const signupMutation = useMutation({
-    mutationFn: async ({ email, password }: { email: string; password: string }) =>
+    mutationFn: async (body: Record<string, unknown>) =>
       apiRequest<User>("/api/auth/signup", {
         method: "POST",
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify(body),
       }),
     onSuccess: (userData) => {
       // Same rationale as loginMutation onSuccess — isolation between sessions.
@@ -150,7 +164,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user,
         isLoading: isLoading || !userInitialized,
         login: (e, p) => loginMutation.mutateAsync({ email: e, password: p }),
-        signup: (e, p) => signupMutation.mutateAsync({ email: e, password: p }),
+        signup: (body) => signupMutation.mutateAsync(body),
         logout: () => logoutMutation.mutateAsync(),
         clearAuth,
       }}

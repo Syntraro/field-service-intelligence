@@ -715,11 +715,18 @@ function applyMarkInvoicedTransition(
   const schedulePatch = getScheduleClearingPatch();
   const openSubStatusPatch = getOpenSubStatusClearingPatch();
 
+  // 2026-04-18 Phase 7 (billing semantics cleanup): `jobs.invoiceId` is
+  // owned by the storage layer (`createInvoiceFromJob` sets it on the
+  // FIRST invoice, preserved on subsequent invoices, and `setPrimary-
+  // InvoiceForJob` is the only other writer). MARK_INVOICED used to
+  // overwrite it here on every call — under multi-invoice that could
+  // silently reassign the primary to whichever invoice the markJobCompleted
+  // flag was last paired with. Removed; this intent only owns the status
+  // transition now. The pointer write path is no longer duplicated.
   const patch: Partial<Job> = {
     ...schedulePatch,
     ...openSubStatusPatch,
     status: "invoiced",
-    invoiceId: intent.invoiceId,
     previousStatus: currentStatus,
     closedAt: new Date(),
     closedBy: actor.userId,

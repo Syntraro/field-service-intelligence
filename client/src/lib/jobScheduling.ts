@@ -77,46 +77,50 @@ export function scheduleValueToPayload(
 // ============================================================================
 
 /**
- * Fetch the current eligible visit ID for a job.
- * Returns null if job has no active, non-terminal visit.
- */
-async function getCurrentVisitForJob(jobId: string): Promise<{ id: string; version: number } | null> {
-  try {
-    const visits: any[] = await apiRequest(`/api/jobs/${jobId}/visits`);
-    const eligible = visits.find((v: any) =>
-      v.isActive && !['completed', 'cancelled'].includes(v.status)
-    );
-    return eligible ? { id: eligible.id, version: eligible.version } : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Apply scheduling to a job (create or update assignment)
+ * Apply scheduling to a job.
  *
- * @param jobId - The job to schedule
- * @param value - The schedule value from JobScheduleFields
- * @param options - Additional options (notes, visitId for updates)
+ * 2026-04-18 Phase 4 (multi-visit stabilization): the legacy auto-pick of
+ * "the" current visit is removed. Callers must pass `visitId` explicitly
+ * when targeting an existing visit, or omit it to create a new visit.
+ * For unschedule, callers must pass the specific `visitId` (and
+ * optionally `visitVersion`) they want to send back to backlog.
+ *
+ * @param jobId - Parent job id.
+ * @param value - The schedule value from JobScheduleFields.
+ * @param options.visitId - Visit to update in place. When absent → create new.
+ * @param options.visitVersion - Visit version for optimistic locking on update.
  */
 export async function applyJobSchedule(
   jobId: string,
   value: JobScheduleValue,
   options?: {
     notes?: string;
-    /** Visit ID for updating existing schedule. */
     visitId?: string;
-    /** Visit version for optimistic locking on updates. */
     visitVersion?: number;
-    /** Set true when editing an existing scheduled job without a known visitId.
-     *  Triggers auto-fetch of the current eligible visit and version. */
-    isUpdate?: boolean;
   }
 ): Promise<ScheduleJobResult> {
   try {
     if (value.unscheduled) {
-      // Unschedule: clear schedule and return job to backlog
-      return await unscheduleJob(jobId);
+      if (!options?.visitId) {
+        return {
+          success: false,
+          error: "Unschedule requires an explicit visitId. The caller must choose which visit to return to the backlog.",
+        };
+      }
+      // Resolve version for the target visit via the canonical per-job
+      // visits list. Targeted lookup (not singular pick) — caller has
+      // already chosen the visit.
+      let resolvedVersion = options.visitVersion;
+      if (resolvedVersion === undefined) {
+        try {
+          const visits: Array<{ id: string; version: number }> = await apiRequest(`/api/jobs/${jobId}/visits?all=true`);
+          const match = Array.isArray(visits) ? visits.find((v) => v.id === options!.visitId) : undefined;
+          resolvedVersion = match?.version;
+        } catch {
+          // fall through; unscheduleVisit surfaces the error.
+        }
+      }
+      return await unscheduleVisit(options.visitId, resolvedVersion);
     }
 
     const payload = scheduleValueToPayload(jobId, value, options?.notes);
@@ -124,8 +128,6 @@ export async function applyJobSchedule(
       return { success: false, error: "Invalid schedule value" };
     }
 
-    // Conflict detection: check for overlap but do NOT change scheduled times.
-    // Lead tech for conflict check = first in canonical crew (2026-04-12).
     let hasConflict = false;
     const leadTech = payload.assignedTechnicianIds?.[0];
     if (payload.startAt && payload.endAt && leadTech && value.date) {
@@ -137,24 +139,29 @@ export async function applyJobSchedule(
       );
     }
 
-    // Determine if this is an update (has visitId) or first-schedule.
-    // If no visitId but isUpdate is true, fetch the current visit automatically (2026-03-06).
-    let visitId = options?.visitId;
-    let visitVersion = options?.visitVersion;
-    if (!visitId && options?.isUpdate) {
-      const currentVisit = await getCurrentVisitForJob(jobId);
-      visitId = currentVisit?.id;
-      visitVersion = currentVisit?.version;
-    }
+    const { visitId } = options ?? {};
+    let { visitVersion } = options ?? {};
 
     if (visitId) {
-      // Update existing visit via visit-centric reschedule (2026-03-06)
-      // Fetch version if not provided — server requires version for optimistic locking
+      // Explicit visit target — update in place via visit-centric endpoint.
+      // If the caller didn't provide a version, fetch THIS specific visit's
+      // version. This is a targeted lookup (not a singular "pick a visit"
+      // auto-fetch) — the caller has already chosen which visit to update.
       if (visitVersion === undefined) {
-        const fresh = await getCurrentVisitForJob(jobId);
-        visitVersion = fresh?.version;
+        try {
+          const visits: Array<{ id: string; version: number }> = await apiRequest(`/api/jobs/${jobId}/visits?all=true`);
+          const match = Array.isArray(visits) ? visits.find((v) => v.id === visitId) : undefined;
+          visitVersion = match?.version;
+        } catch {
+          // Fall through — server will reject without a version.
+        }
       }
-      // 2026-04-12 final cleanup: canonical crew input on reschedule.
+      if (visitVersion === undefined) {
+        return {
+          success: false,
+          error: "Could not resolve visit version for the target visit.",
+        };
+      }
       const result = await apiRequest(
         `/api/calendar/visit/${visitId}/reschedule`,
         {
@@ -172,15 +179,15 @@ export async function applyJobSchedule(
       );
       invalidateScheduleQueries(jobId);
       return { success: true, job: result, hasConflict };
-    } else {
-      // First-schedule: POST /api/calendar/schedule (creates visit)
-      const result = await apiRequest("/api/calendar/schedule", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      invalidateScheduleQueries(jobId);
-      return { success: true, job: result, hasConflict };
     }
+
+    // No visitId → create a new visit via POST /api/calendar/schedule.
+    const result = await apiRequest("/api/calendar/schedule", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    invalidateScheduleQueries(jobId);
+    return { success: true, job: result, hasConflict };
   } catch (error: any) {
     console.error("[jobScheduling] applyJobSchedule error:", error);
     return {
@@ -191,30 +198,32 @@ export async function applyJobSchedule(
 }
 
 /**
- * Unschedule a job (return to backlog)
- * Visit-centric: fetches current visit, then unschedules via visit endpoint (2026-03-06)
+ * Unschedule a specific visit (return that visit to backlog).
+ * 2026-04-18 Phase 4: accepts an explicit visitId + version. No
+ * job-level "pick the current visit" auto-fetch — caller chooses.
  */
-export async function unscheduleJob(
-  jobId: string
+export async function unscheduleVisit(
+  visitId: string,
+  visitVersion?: number,
 ): Promise<ScheduleJobResult> {
   try {
-    const visit = await getCurrentVisitForJob(jobId);
-    if (!visit) {
-      return { success: false, error: "No active visit to unschedule" };
-    }
-
-    await apiRequest(`/api/calendar/visit/${visit.id}/unschedule`, {
+    const result: any = await apiRequest(`/api/calendar/visit/${visitId}/unschedule`, {
       method: "POST",
-      body: JSON.stringify({ version: visit.version }),
+      body: JSON.stringify({ version: visitVersion }),
     });
 
-    invalidateScheduleQueries(jobId);
+    if (result?.jobId) {
+      invalidateScheduleQueries(result.jobId);
+    } else {
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+    }
     return { success: true };
   } catch (error: any) {
-    console.error("[jobScheduling] unscheduleJob error:", error);
+    console.error("[jobScheduling] unscheduleVisit error:", error);
     return {
       success: false,
-      error: error.message || "Failed to unschedule job",
+      error: error.message || "Failed to unschedule visit",
     };
   }
 }

@@ -6,7 +6,7 @@
  * backed by canonical time_entries.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { MobileShell } from "../components/MobileShell";
@@ -28,9 +28,25 @@ interface SupplierVisitDetails {
 
 export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [, setLocation] = useLocation();
-  const { tasks, runningTaskId, startTask, stopTask, closeTask } = useTechTasks();
+  const { tasks, runningTaskId, startTask, stopTask, closeTask, refetch } = useTechTasks();
   const [actionPending, setActionPending] = useState<string | null>(null);
   const [timerConflict, setTimerConflict] = useState<ActiveTimerInfo | null>(null);
+
+  // Resync task + timer state when the app regains focus. Prevents a stale
+  // "running" badge if the backend stopped the timer (e.g., started another
+  // task on desktop or an admin closed it) while this tab was backgrounded.
+  // SSE handles this when connected; this is the disconnected-tab fallback.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refetch();
+    };
+    window.addEventListener("focus", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [refetch]);
 
   const task = tasks.find((t) => t.id === taskId);
 
@@ -51,7 +67,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     return (
       <MobileShell showNav={false}>
         <div className="flex items-center gap-2 px-3 py-3 border-b border-slate-200">
-          <button onClick={() => setLocation("/tech/today")} className="p-1.5 -ml-1.5 rounded-md active:bg-slate-100">
+          <button
+            onClick={() => setLocation("/tech/today")}
+            aria-label="Back"
+            className="min-h-[44px] min-w-[44px] -ml-2 flex items-center justify-center rounded-md hover:bg-slate-100 active:bg-slate-200"
+          >
             <ArrowLeft className="h-5 w-5 text-slate-600" />
           </button>
           <span className="text-base font-semibold text-slate-700">Task</span>

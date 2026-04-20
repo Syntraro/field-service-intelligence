@@ -1,15 +1,28 @@
 /**
  * DashboardActionModal — Reusable modal for triaging dashboard job action rows.
  *
- * One shared modal shell configured by `mode` prop. Supports:
- * - overdue: Jobs past due — reschedule or bulk unschedule
- * - on_hold: Jobs on hold — schedule (clears hold server-side)
- * - unscheduled: Jobs needing scheduling — schedule
- * - ready_to_invoice: Completed jobs — create invoice
+ * 2026-04-19 Task B consolidation: user-facing modes reduced from four to three.
+ * Internally the modal still composes the same canonical /api/jobs queries —
+ * no parallel backend aggregation introduced.
  *
- * All write actions use existing canonical flows (applyJobSchedule, /api/invoices/from-job,
- * /api/calendar/bulk-unschedule).
- * No parallel scheduling or invoice logic introduced.
+ * User-facing modes:
+ * - action_required:    Jobs on hold (needs parts, customer approval, access,
+ *                       internal approval, weather, other). Row action: Open Job.
+ *                       Hold reason label rendered via canonical
+ *                       `getHoldReasonLabel()` from `@shared/schema`.
+ * - scheduling_issues:  Two sections in one modal — Past Due jobs (with
+ *                       bulk-unschedule + inline reschedule), then a labelled
+ *                       divider, then Jobs Needing Scheduling (inline schedule).
+ * - ready_to_invoice:   Completed jobs with no invoice yet. Row action: Create
+ *                       Invoice (unchanged from prior implementation).
+ *
+ * Internally each mode composes one or two "sources". Each source is a single
+ * canonical /api/jobs query param set (the same params the dashboard widget
+ * counters read). No new aggregation endpoint added, no duplicate filter logic.
+ *
+ * All write actions continue to use existing canonical flows (applyJobSchedule,
+ * /api/invoices/from-job, /api/calendar/bulk-unschedule) — this refactor only
+ * changes how rows are *grouped* and *labeled*, not how they are acted upon.
  */
 
 import { useState, useCallback, useMemo } from "react";
@@ -24,7 +37,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Calendar, ChevronRight, Loader2, X, ExternalLink, Receipt, ArrowUpRight,
+  Loader2, ExternalLink, Receipt, ArrowUpRight,
 } from "lucide-react";
 import {
   JobScheduleFields, createDefaultScheduleValue,
@@ -32,43 +45,62 @@ import {
 } from "@/components/jobs/JobScheduleFields";
 import { applyJobSchedule } from "@/lib/jobScheduling";
 import { resolveDashboardNav, type DashboardAction } from "@/lib/dashboardNavigation";
+import { getHoldReasonLabel } from "@shared/schema";
 
 // ============================================================================
-// Action mode configuration
+// Mode / source configuration
 // ============================================================================
 
-export type DashboardActionMode = "overdue" | "on_hold" | "unscheduled" | "ready_to_invoice";
+/** Three user-facing modes the dashboard Jobs card exposes. */
+export type DashboardActionMode = "action_required" | "scheduling_issues" | "ready_to_invoice";
+
+/**
+ * Internal "source" identifies one /api/jobs query shape. Each user-facing
+ * mode composes one or two sources. Sources map 1:1 onto the same canonical
+ * filters the dashboard widget counters use — this preserves the invariant
+ * that tile counts and drill-down lists stay in lockstep by construction.
+ */
+type InternalSource = "overdue" | "on_hold" | "unscheduled" | "ready_to_invoice";
+
+/** Query params per source. Mirrors getWorkflowSummary / getJobCounts in
+ *  server/storage/dashboard.ts and the readyToInvoiceOnly filter in
+ *  server/storage/jobsFeed.ts. */
+const SOURCE_PARAMS: Record<InternalSource, string> = {
+  overdue: "status=open&overdue=true&limit=50",
+  on_hold: "status=open&openSubStatus=on_hold&limit=50",
+  unscheduled: "status=open&unscheduledOnly=true&limit=50",
+  ready_to_invoice: "readyToInvoiceOnly=true&limit=50",
+};
+
+/** Human label for a section header when more than one source is rendered. */
+const SOURCE_SECTION_LABEL: Record<InternalSource, string> = {
+  overdue: "Past Due — Reschedule",
+  on_hold: "On Hold",
+  unscheduled: "Needs Scheduling",
+  ready_to_invoice: "Ready to Invoice",
+};
 
 interface ModeConfig {
   title: string;
-  fetchParams: string;
-  actionLabel: string;
+  /** Ordered list of sources. Primary first. Length 1 = single section. */
+  sources: InternalSource[];
   viewAllAction: DashboardAction;
 }
 
 const MODE_CONFIG: Record<DashboardActionMode, ModeConfig> = {
-  overdue: {
-    title: "Jobs Past Due — Need Rescheduling",
-    fetchParams: "status=open&overdue=true&limit=50",
-    actionLabel: "Reschedule",
-    viewAllAction: "alerts.overdueJobs",
-  },
-  on_hold: {
-    title: "Jobs On Hold — Needs Action",
-    fetchParams: "status=open&openSubStatus=on_hold&limit=50",
-    actionLabel: "Open Job",
+  action_required: {
+    title: "Action Required",
+    sources: ["on_hold"],
     viewAllAction: "ops.onHold",
   },
-  unscheduled: {
-    title: "Jobs Needing Scheduling",
-    fetchParams: "status=open&unscheduledOnly=true&limit=50",
-    actionLabel: "Schedule",
-    viewAllAction: "jobs.unscheduled",
+  scheduling_issues: {
+    title: "Scheduling Issues",
+    sources: ["overdue", "unscheduled"],
+    viewAllAction: "alerts.overdueJobs",
   },
   ready_to_invoice: {
     title: "Jobs Ready to Invoice",
-    fetchParams: "status=completed&limit=50",
-    actionLabel: "Create Invoice",
+    sources: ["ready_to_invoice"],
     viewAllAction: "jobs.needsInvoicing",
   },
 };
@@ -91,6 +123,14 @@ interface JobItem {
   holdNotes?: string | null;
   onHoldAt?: string | null;
   completedAt?: string | null;
+  /** 2026-04-18 Phase 3: active non-terminal visit ids on this job.
+   *  Source: canonical jobsFeed DTO extension. Lets this modal resolve
+   *  bulk-unschedule visit ids without an N+1 per-job API round-trip. */
+  visitIds?: string[];
+}
+
+interface JobsResponse {
+  data: JobItem[];
 }
 
 // ============================================================================
@@ -107,19 +147,31 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
   const config = MODE_CONFIG[mode];
   const [, setLocation] = useLocation();
   const { toast } = useToast();
+
+  // Inline-scheduler expansion and per-row action loading state are both
+  // keyed on job id, so they continue to work unchanged across composed
+  // multi-source views.
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [scheduleValue, setScheduleValue] = useState<JobScheduleValue>(createDefaultScheduleValue({ unscheduled: false }));
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  // Selection state (overdue mode only)
+  // Selection state — only meaningful when an overdue section is rendered.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showBulkConfirm, setShowBulkConfirm] = useState(false);
 
-  // Fetch jobs for this action mode
-  const { data, isLoading, isError, refetch } = useQuery<{ data: JobItem[] }>({
-    queryKey: ["dashboard-action", mode],
+  // ── Data fetches ─────────────────────────────────────────────────────────
+  //
+  // Every mode has at least a primary source; scheduling_issues has a
+  // secondary one. Both hooks are declared unconditionally (React rule) and
+  // the secondary hook is gated via `enabled` when the current mode has no
+  // secondary source.
+  const primarySource = config.sources[0];
+  const secondarySource: InternalSource | undefined = config.sources[1];
+
+  const primaryQuery = useQuery<JobsResponse>({
+    queryKey: ["dashboard-action", mode, primarySource],
     queryFn: async () => {
-      const res = await fetch(`/api/jobs?${config.fetchParams}`, { credentials: "include" });
+      const res = await fetch(`/api/jobs?${SOURCE_PARAMS[primarySource]}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch");
       return res.json();
     },
@@ -127,27 +179,60 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
     staleTime: 30_000,
   });
 
-  const jobs: JobItem[] = data?.data ?? [];
+  const secondaryQuery = useQuery<JobsResponse>({
+    queryKey: ["dashboard-action", mode, secondarySource ?? "none"],
+    queryFn: async () => {
+      if (!secondarySource) return { data: [] };
+      const res = await fetch(`/api/jobs?${SOURCE_PARAMS[secondarySource]}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch");
+      return res.json();
+    },
+    enabled: open && !!secondarySource,
+    staleTime: 30_000,
+  });
 
-  // Selection helpers
-  const allSelected = jobs.length > 0 && selectedIds.size === jobs.length;
-  const someSelected = selectedIds.size > 0;
+  const refetchAll = useCallback(() => {
+    primaryQuery.refetch();
+    if (secondarySource) secondaryQuery.refetch();
+  }, [primaryQuery, secondaryQuery, secondarySource]);
+
+  const isLoading = primaryQuery.isLoading || (!!secondarySource && secondaryQuery.isLoading);
+  const isError = primaryQuery.isError || (!!secondarySource && secondaryQuery.isError);
+
+  const primaryJobs: JobItem[] = primaryQuery.data?.data ?? [];
+  const secondaryJobs: JobItem[] = secondarySource ? (secondaryQuery.data?.data ?? []) : [];
+  const totalJobCount = primaryJobs.length + secondaryJobs.length;
+
+  // Overdue section only surfaces under `scheduling_issues` — that's the only
+  // mode that currently pulls from the "overdue" source. If it shifts in
+  // the future we recompute from the visible sections, not the mode name.
+  const overdueJobs = useMemo<JobItem[]>(() => {
+    const out: JobItem[] = [];
+    if (primarySource === "overdue") out.push(...primaryJobs);
+    if (secondarySource === "overdue") out.push(...secondaryJobs);
+    return out;
+  }, [primarySource, secondarySource, primaryJobs, secondaryJobs]);
+
+  const overdueSelectableCount = overdueJobs.length;
+  const allOverdueSelected = overdueSelectableCount > 0 && selectedIds.size === overdueSelectableCount;
+  const someOverdueSelected = selectedIds.size > 0;
+
   const toggleSelect = (id: string) => {
-    setSelectedIds(prev => {
+    setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
   };
   const toggleSelectAll = () => {
-    if (allSelected) {
+    if (allOverdueSelected) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(jobs.map(j => j.id)));
+      setSelectedIds(new Set(overdueJobs.map((j) => j.id)));
     }
   };
 
-  // Reset state when modal opens/closes or mode changes
+  // Reset local state when modal closes.
   const handleOpenChange = useCallback((v: boolean) => {
     if (!v) {
       setExpandedJobId(null);
@@ -158,16 +243,22 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
     onOpenChange(v);
   }, [onOpenChange]);
 
-  // ── Schedule/Reschedule action (overdue, on_hold, unscheduled) ──
-  const handleSchedule = useCallback(async (jobId: string) => {
+  // ── Schedule/Reschedule action (overdue + unscheduled sources) ──
+  const handleSchedule = useCallback(async (jobId: string, source: InternalSource) => {
     setActionLoading(jobId);
     try {
-      const result = await applyJobSchedule(jobId, scheduleValue, { isUpdate: true });
+      const pool = source === "overdue" ? overdueJobs : secondaryJobs;
+      const row = pool.find((j) => j.id === jobId)
+        ?? primaryJobs.find((j) => j.id === jobId)
+        ?? secondaryJobs.find((j) => j.id === jobId);
+      const ids = Array.isArray(row?.visitIds) ? row!.visitIds : [];
+      const visitId = ids.length > 0 ? ids[0] : undefined;
+      const result = await applyJobSchedule(jobId, scheduleValue, visitId ? { visitId } : undefined);
       if (result.success) {
         toast({ title: "Scheduled", description: `Job scheduled successfully.` });
         setExpandedJobId(null);
         setScheduleValue(createDefaultScheduleValue({ unscheduled: false }));
-        refetch();
+        refetchAll();
         queryClient.invalidateQueries({ queryKey: ["dashboard"] });
         queryClient.invalidateQueries({ queryKey: ["attention"] });
       } else {
@@ -178,7 +269,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
     } finally {
       setActionLoading(null);
     }
-  }, [scheduleValue, toast, refetch]);
+  }, [scheduleValue, toast, refetchAll, overdueJobs, primaryJobs, secondaryJobs]);
 
   // ── Create invoice action (ready_to_invoice) ──
   const handleCreateInvoice = useCallback(async (jobId: string) => {
@@ -189,7 +280,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
         body: JSON.stringify({ markJobCompleted: false }),
       });
       toast({ title: "Invoice Created", description: `Invoice #${result.invoiceNumber || ""} created.` });
-      refetch();
+      refetchAll();
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
@@ -199,38 +290,63 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
     } finally {
       setActionLoading(null);
     }
-  }, [toast, refetch]);
+  }, [toast, refetchAll]);
 
-  // ── Bulk unschedule mutation (overdue mode) ──
+  // ── Bulk unschedule mutation (overdue section inside scheduling_issues) ──
+  //
+  // Preserved verbatim from the prior implementation — same canonical
+  // `/api/calendar/bulk-unschedule` contract, same visit-id resolution from
+  // the cached `visitIds` field on each JobItem, same result messaging.
   interface BulkUnscheduleResponse {
     totalCount: number;
     successCount: number;
     skippedCount: number;
     failedCount: number;
+    affectedJobIds: string[];
     succeeded: string[];
-    skipped: { jobId: string; reason: string }[];
-    failed: { jobId: string; reason: string }[];
+    skipped: { visitId: string; reason: string }[];
+    failed: { visitId: string; reason: string }[];
   }
 
   const bulkUnscheduleMutation = useMutation({
-    mutationFn: (jobIds: string[]) =>
-      apiRequest<BulkUnscheduleResponse>(
+    mutationFn: async (jobIds: string[]) => {
+      const byId = new Map<string, JobItem>(overdueJobs.map((j) => [j.id, j]));
+      const visitIds = jobIds.flatMap((jobId) => {
+        const row = byId.get(jobId);
+        const ids = Array.isArray(row?.visitIds) ? row!.visitIds : [];
+        return ids;
+      });
+
+      if (visitIds.length === 0) {
+        throw new Error(
+          "No eligible visits to unschedule. Each selected job must have at least one scheduled, non-terminal visit.",
+        );
+      }
+
+      return apiRequest<BulkUnscheduleResponse>(
         "/api/calendar/bulk-unschedule",
-        { method: "POST", body: JSON.stringify({ jobIds }) }
-      ),
+        { method: "POST", body: JSON.stringify({ visitIds }) },
+      );
+    },
     onSuccess: (data) => {
-      // Truthful messaging based on actual results
       if (data.failedCount === 0 && data.skippedCount === 0) {
-        toast({ title: "Jobs Moved to Unscheduled", description: `${data.successCount} jobs moved to the unscheduled queue.` });
+        toast({
+          title: "Visits Moved to Unscheduled",
+          description: `${data.successCount} visit${data.successCount === 1 ? "" : "s"} moved across ${data.affectedJobIds.length} job${data.affectedJobIds.length === 1 ? "" : "s"}.`,
+        });
       } else {
         const parts: string[] = [`${data.successCount} moved`];
         if (data.skippedCount > 0) parts.push(`${data.skippedCount} skipped`);
         if (data.failedCount > 0) parts.push(`${data.failedCount} failed`);
-        toast({ title: "Bulk Unschedule Complete", description: parts.join(", ") + ".", variant: data.failedCount > 0 ? "destructive" : undefined });
+        toast({
+          title: "Bulk Unschedule Complete",
+          description: parts.join(", ") + ".",
+          variant: data.failedCount > 0 ? "destructive" : undefined,
+        });
       }
       setSelectedIds(new Set());
       setShowBulkConfirm(false);
-      refetch();
+      refetchAll();
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["attention"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
@@ -242,7 +358,6 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
     },
   });
 
-  // Toggle inline scheduler for a row
   const toggleExpand = useCallback((jobId: string) => {
     if (expandedJobId === jobId) {
       setExpandedJobId(null);
@@ -253,38 +368,180 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
     }
   }, [expandedJobId]);
 
-  const isScheduleMode = mode !== "ready_to_invoice" && mode !== "on_hold";
-  const isOnHoldMode = mode === "on_hold";
-  const isOverdueMode = mode === "overdue";
+  const showOverdueBulkControls = primarySource === "overdue" && overdueJobs.length > 0 && !isLoading;
+
+  // ── Row renderer — source-aware ─────────────────────────────────────────
+  //
+  // The same <JobRow /> shape renders under every section; per-row action
+  // varies by the *source* the row came from (not the enclosing mode), so
+  // scheduling_issues can render a "Reschedule" button on overdue rows and
+  // "Schedule" on unscheduled rows in the same modal without branching on
+  // the user-facing mode.
+  function renderJobRow(job: JobItem, source: InternalSource, isLastInSection: boolean) {
+    const isExpanded = expandedJobId === job.id;
+    const isActioning = actionLoading === job.id;
+    const location = job.locationDisplayName || job.locationName || "—";
+    const city = job.locationCity ? `, ${job.locationCity}` : "";
+    const isScheduleRow = source === "overdue" || source === "unscheduled";
+    const isOnHoldRow = source === "on_hold";
+    const isOverdueRow = source === "overdue";
+    const isReadyToInvoiceRow = source === "ready_to_invoice";
+
+    return (
+      <div key={job.id} className={`${!isLastInSection ? "border-b border-[#e5e7eb]" : ""}`}>
+        <div className="flex items-center justify-between px-5 py-3 hover:bg-[#f8fafc] transition-colors">
+          {isOverdueRow && (
+            <div className="mr-3 shrink-0">
+              <Checkbox
+                checked={selectedIds.has(job.id)}
+                onCheckedChange={() => toggleSelect(job.id)}
+                disabled={bulkUnscheduleMutation.isPending}
+                className="h-3.5 w-3.5"
+              />
+            </div>
+          )}
+          <div className="min-w-0 flex-1 mr-3">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-[#4b5563] tabular-nums">#{job.jobNumber}</span>
+              <span className="text-sm font-medium text-[#111827] truncate">{job.summary}</span>
+            </div>
+            <div className="text-xs text-[#4b5563] mt-0.5 truncate">
+              {location}{city}
+              {/* 2026-04-19 Task A: canonical hold-reason label.
+                  Replaces the previous `job.holdReason.replace(/_/g, " ")`
+                  which rendered "parts" as "parts" (lowercase enum) instead
+                  of "Needs Parts". `getHoldReasonLabel` is the single
+                  source of truth in `@shared/schema` and is already used
+                  by JobDetailPage and ActionRequiredModal. */}
+              {job.holdReason && (
+                <span className="ml-2 text-orange-600">· Hold: {getHoldReasonLabel(job.holdReason)}</span>
+              )}
+            </div>
+            {isOnHoldRow && job.holdNotes && (
+              <div className="text-xs text-[#4b5563] mt-1 line-clamp-2 italic">
+                {job.holdNotes}
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {isScheduleRow ? (
+              <Button
+                size="sm"
+                variant={isExpanded ? "outline" : "default"}
+                onClick={() => toggleExpand(job.id)}
+                className="shrink-0 h-8 text-xs"
+              >
+                {isExpanded ? "Cancel" : (isOverdueRow ? "Reschedule" : "Schedule")}
+              </Button>
+            ) : isOnHoldRow ? (
+              <Button
+                size="sm"
+                onClick={() => { handleOpenChange(false); setLocation(`/jobs/${job.id}`); }}
+                className="shrink-0 h-8 text-xs"
+              >
+                Open Job <ArrowUpRight className="h-3 w-3 ml-0.5" />
+              </Button>
+            ) : isReadyToInvoiceRow ? (
+              <Button
+                size="sm"
+                onClick={() => handleCreateInvoice(job.id)}
+                disabled={isActioning}
+                className="shrink-0 h-8 text-xs"
+              >
+                {isActioning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Receipt className="h-3.5 w-3.5 mr-1" />}
+                Create Invoice
+              </Button>
+            ) : null}
+            {!isExpanded && !isOnHoldRow && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => { handleOpenChange(false); setLocation(`/jobs/${job.id}`); }}
+                className="shrink-0 h-8 text-xs text-[#4b5563] hover:text-[#111827]"
+                title="Open full job detail"
+              >
+                Open Job <ArrowUpRight className="h-3 w-3 ml-0.5" />
+              </Button>
+            )}
+          </div>
+        </div>
+        {isScheduleRow && isExpanded && (
+          <div className="px-5 pb-4 pt-1 bg-[#f8fafc] border-t border-[#e5e7eb]">
+            <JobScheduleFields
+              value={scheduleValue}
+              onChange={setScheduleValue}
+              hideUnscheduledToggle
+              compact
+            />
+            <div className="flex items-center gap-2 mt-3">
+              <Button
+                size="sm"
+                onClick={() => handleSchedule(job.id, source)}
+                disabled={isActioning || scheduleValue.unscheduled}
+                className="h-8 text-xs"
+              >
+                {isActioning && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />}
+                Save Schedule
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => { setExpandedJobId(null); setScheduleValue(createDefaultScheduleValue({ unscheduled: false })); }}
+                className="h-8 text-xs"
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function renderSection(source: InternalSource, rows: JobItem[]) {
+    if (rows.length === 0) return null;
+    const showHeader = config.sources.length > 1;
+    return (
+      <div key={source}>
+        {showHeader && (
+          <div className="sticky top-0 z-10 bg-[#f1f5f9] px-5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#e5e7eb]">
+            {SOURCE_SECTION_LABEL[source]}
+            <span className="ml-2 text-[#94a3b8] tabular-nums normal-case">({rows.length})</span>
+          </div>
+        )}
+        <div>
+          {rows.map((job, i) => renderJobRow(job, source, i === rows.length - 1))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col p-0">
-        {/* Header */}
         <DialogHeader className="px-5 pt-5 pb-3 border-b border-[#e5e7eb] shrink-0">
           <DialogTitle className="text-base font-semibold text-[#111827] flex items-center gap-2">
             {config.title}
             {!isLoading && (
               <span className="inline-flex items-center justify-center h-5 min-w-5 px-1.5 rounded-full bg-[#f8fafc] text-xs font-bold text-[#4b5563] tabular-nums">
-                {jobs.length}
+                {totalJobCount}
               </span>
             )}
           </DialogTitle>
-          {/* Bulk controls for overdue mode */}
-          {isOverdueMode && jobs.length > 0 && !isLoading && (
+          {showOverdueBulkControls && (
             <div className="flex items-center justify-between mt-2">
               <label className="flex items-center gap-2 cursor-pointer">
                 <Checkbox
-                  checked={allSelected}
+                  checked={allOverdueSelected}
                   onCheckedChange={toggleSelectAll}
                   disabled={bulkUnscheduleMutation.isPending}
                   className="h-3.5 w-3.5"
                 />
                 <span className="text-xs text-[#4b5563]">
-                  {someSelected ? `${selectedIds.size} of ${jobs.length} shown selected` : `Select all ${jobs.length} shown`}
+                  {someOverdueSelected ? `${selectedIds.size} of ${overdueJobs.length} past-due selected` : `Select all ${overdueJobs.length} past-due`}
                 </span>
               </label>
-              {someSelected && (
+              {someOverdueSelected && (
                 <Button
                   size="sm"
                   variant="outline"
@@ -299,135 +556,23 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
           )}
         </DialogHeader>
 
-        {/* Scrollable body */}
         <div className="flex-1 overflow-y-auto min-h-0">
           {isLoading ? (
             <div className="p-5 space-y-3">
-              {[1,2,3].map(i => <Skeleton key={i} className="h-14" />)}
+              {[1, 2, 3].map((i) => <Skeleton key={i} className="h-14" />)}
             </div>
           ) : isError ? (
             <div className="p-5 text-sm text-red-600">Failed to load jobs. Please try again.</div>
-          ) : jobs.length === 0 ? (
+          ) : totalJobCount === 0 ? (
             <div className="p-8 text-center text-sm text-[#4b5563]">No jobs in this category.</div>
           ) : (
             <div>
-              {jobs.map((job, i) => {
-                const isExpanded = expandedJobId === job.id;
-                const isActioning = actionLoading === job.id;
-                const location = job.locationDisplayName || job.locationName || "—";
-                const city = job.locationCity ? `, ${job.locationCity}` : "";
-
-                return (
-                  <div key={job.id} className={`${i < jobs.length - 1 ? "border-b border-[#e5e7eb]" : ""}`}>
-                    {/* Job row */}
-                    <div className="flex items-center justify-between px-5 py-3 hover:bg-[#f8fafc] transition-colors">
-                      {/* Checkbox (overdue mode only) */}
-                      {isOverdueMode && (
-                        <div className="mr-3 shrink-0">
-                          <Checkbox
-                            checked={selectedIds.has(job.id)}
-                            onCheckedChange={() => toggleSelect(job.id)}
-                            disabled={bulkUnscheduleMutation.isPending}
-                            className="h-3.5 w-3.5"
-                          />
-                        </div>
-                      )}
-                      <div className="min-w-0 flex-1 mr-3">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-[#4b5563] tabular-nums">#{job.jobNumber}</span>
-                          <span className="text-sm font-medium text-[#111827] truncate">{job.summary}</span>
-                        </div>
-                        <div className="text-xs text-[#4b5563] mt-0.5 truncate">
-                          {location}{city}
-                          {job.holdReason && <span className="ml-2 text-orange-600">· Hold: {job.holdReason.replace(/_/g, " ")}</span>}
-                        </div>
-                        {isOnHoldMode && job.holdNotes && (
-                          <div className="text-xs text-[#4b5563] mt-1 line-clamp-2 italic">
-                            {job.holdNotes}
-                          </div>
-                        )}
-                      </div>
-                      {/* Row actions */}
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {isScheduleMode ? (
-                          <Button
-                            size="sm"
-                            variant={isExpanded ? "outline" : "default"}
-                            onClick={() => toggleExpand(job.id)}
-                            className="shrink-0 h-8 text-xs"
-                          >
-                            {isExpanded ? "Cancel" : config.actionLabel}
-                          </Button>
-                        ) : isOnHoldMode ? (
-                          <Button
-                            size="sm"
-                            onClick={() => { handleOpenChange(false); setLocation(`/jobs/${job.id}`); }}
-                            className="shrink-0 h-8 text-xs"
-                          >
-                            Open Job <ArrowUpRight className="h-3 w-3 ml-0.5" />
-                          </Button>
-                        ) : (
-                          <Button
-                            size="sm"
-                            onClick={() => handleCreateInvoice(job.id)}
-                            disabled={isActioning}
-                            className="shrink-0 h-8 text-xs"
-                          >
-                            {isActioning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Receipt className="h-3.5 w-3.5 mr-1" />}
-                            {config.actionLabel}
-                          </Button>
-                        )}
-                        {!isExpanded && !isOnHoldMode && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => { handleOpenChange(false); setLocation(`/jobs/${job.id}`); }}
-                            className="shrink-0 h-8 text-xs text-[#4b5563] hover:text-[#111827]"
-                            title="Open full job detail"
-                          >
-                            Open Job <ArrowUpRight className="h-3 w-3 ml-0.5" />
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                    {/* Inline compact scheduler (schedule modes only) */}
-                    {isScheduleMode && isExpanded && (
-                      <div className="px-5 pb-4 pt-1 bg-[#f8fafc] border-t border-[#e5e7eb]">
-                        <JobScheduleFields
-                          value={scheduleValue}
-                          onChange={setScheduleValue}
-                          hideUnscheduledToggle
-                          compact
-                        />
-                        <div className="flex items-center gap-2 mt-3">
-                          <Button
-                            size="sm"
-                            onClick={() => handleSchedule(job.id)}
-                            disabled={isActioning || scheduleValue.unscheduled}
-                            className="h-8 text-xs"
-                          >
-                            {isActioning && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />}
-                            Save Schedule
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => { setExpandedJobId(null); setScheduleValue(createDefaultScheduleValue({ unscheduled: false })); }}
-                            className="h-8 text-xs"
-                          >
-                            Cancel
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+              {renderSection(primarySource, primaryJobs)}
+              {secondarySource && renderSection(secondarySource, secondaryJobs)}
             </div>
           )}
         </div>
 
-        {/* Footer */}
         <div className="px-5 py-3 border-t border-[#e5e7eb] shrink-0 flex items-center justify-between">
           <Button
             variant="ghost"
@@ -447,7 +592,6 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
         </div>
       </DialogContent>
 
-      {/* Bulk unschedule confirmation dialog */}
       {showBulkConfirm && (
         <Dialog open={showBulkConfirm} onOpenChange={(v) => { if (!v) setShowBulkConfirm(false); }}>
           <DialogContent className="sm:max-w-[440px]">

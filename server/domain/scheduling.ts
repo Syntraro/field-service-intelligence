@@ -405,7 +405,6 @@ export interface JobLike {
   scheduledEnd?: Date | string | null;
   isAllDay?: boolean | null;
   version?: number | null;
-  primaryTechnicianId?: string | null;
   assignedTechnicianIds?: string[] | null;
 }
 

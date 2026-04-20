@@ -81,6 +81,7 @@ import { TimezoneSetupDialog } from "@/components/TimezoneSetupDialog";
 import SessionExpiredDialog from "@/components/SessionExpiredDialog";
 import Login from "@/pages/Login";
 import Signup from "@/pages/Signup";
+import OnboardingWizard from "@/pages/OnboardingWizard";
 import RequestReset from "@/pages/RequestReset";
 import ResetPassword from "@/pages/ResetPassword";
 import NotFound from "@/pages/not-found";
@@ -156,6 +157,14 @@ function Router() {
       <Route path="/signup" component={Signup} />
       <Route path="/request-reset" component={RequestReset} />
       <Route path="/reset-password" component={ResetPassword} />
+      {/* 2026-04-19 Hybrid SaaS onboarding: owner-only gated wizard.
+          ProtectedRoute (without requireAdmin) lets only authenticated
+          users in; the wizard component enforces role === "owner". */}
+      <Route path="/onboarding">
+        <ProtectedRoute>
+          <OnboardingWizard />
+        </ProtectedRoute>
+      </Route>
       <Route path="/">
         <ProtectedRoute requireAdmin>
           <Dashboard />
@@ -552,7 +561,7 @@ function PortalRouter() {
 /** Guard: redirects to /portal/login if no portal session */
 function PortalProtected({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = usePortalAuth();
-  const [, setLocation] = useLocation();
+  const [location, setLocation] = useLocation();
 
   if (isLoading) {
     return (
@@ -563,6 +572,22 @@ function PortalProtected({ children }: { children: React.ReactNode }) {
   }
 
   if (!user) {
+    // 2026-04-19 Portal auth fix: preserve the user's intended portal
+    // destination across the magic-link round-trip. `PortalVerify` reads
+    // this key on success and navigates there instead of defaulting to
+    // /portal. Skip login/verify pages themselves.
+    if (
+      location &&
+      location.startsWith("/portal/") &&
+      location !== "/portal/login" &&
+      location !== "/portal/verify"
+    ) {
+      try {
+        sessionStorage.setItem("portal:returnTo", location);
+      } catch {
+        /* storage blocked — verify will fall back to /portal dashboard */
+      }
+    }
     setLocation("/portal/login");
     return null;
   }

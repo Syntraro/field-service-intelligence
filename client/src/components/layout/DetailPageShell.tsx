@@ -69,8 +69,18 @@ const LS_COLLAPSED_KEY = "syntraro.detail.rail.collapsed";
 export interface DetailPageShellProps {
   /** Main content (the "left column"). Rendered in its own scroll region on desktop. */
   leftColumn: ReactNode;
-  /** Supporting content (the "right rail"). Rendered in its own scroll region on desktop. */
-  rightRail: ReactNode;
+  /** Supporting content (the "right rail"). Rendered in its own scroll
+   *  region on desktop. Optional — pages that don't need a supporting
+   *  column omit it for a 1- or 2-column layout (e.g. Client Detail
+   *  after the 2026-04-18 simplification). When absent, the resize
+   *  handle and collapse button are also omitted. */
+  rightRail?: ReactNode;
+  /** Optional sidebar rendered to the LEFT of `leftColumn` (3-column
+   *  layout). The caller owns width, border, and responsive visibility
+   *  (e.g. `hidden lg:flex`). Used by Client Detail's multi-location
+   *  Locations navigator; other detail pages omit this prop for the
+   *  canonical 2-column layout. Added 2026-04-18. */
+  leftSidebar?: ReactNode;
   /** Page background CSS color. Passed straight through to `style.backgroundColor`. */
   background?: string;
   /** Optional `data-testid` on the shell root — pages can keep their existing test anchor. */
@@ -81,6 +91,10 @@ export interface DetailPageShellProps {
   leftClassName?: string;
   /** Optional extra classes applied to the right-rail scroll container. */
   railClassName?: string;
+  /** Tailwind gap class between columns in the flex row. Defaults to
+   *  `gap-4` — matches Job / Invoice / Quote detail pages. Client Detail
+   *  uses `gap-3` for a tighter 3-column rhythm. */
+  columnGapClassName?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,10 +104,12 @@ export interface DetailPageShellProps {
 export function DetailPageShell({
   leftColumn,
   rightRail,
+  leftSidebar,
   background,
   dataTestId,
   leftClassName,
   railClassName,
+  columnGapClassName = "gap-4",
 }: DetailPageShellProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState<number>(DEFAULT_WIDTH);
@@ -218,7 +234,11 @@ export function DetailPageShell({
       data-testid={dataTestId}
     >
       <div className="px-4 lg:px-6 py-4 lg:flex-1 lg:min-h-0 flex flex-col">
-        <div className="flex flex-col lg:flex-row gap-4 lg:flex-1 lg:min-h-0">
+        <div className={cn("flex flex-col lg:flex-row lg:flex-1 lg:min-h-0", columnGapClassName)}>
+          {/* ──────────────── OPTIONAL LEFT SIDEBAR ────────────────
+              Rendered as-is; caller owns geometry and responsive rules. */}
+          {leftSidebar}
+
           {/* ──────────────── LEFT COLUMN ──────────────── */}
           <div
             className={cn(
@@ -233,11 +253,11 @@ export function DetailPageShell({
           </div>
 
           {/* ──────────────── RESIZE HANDLE ────────────────
-              Desktop only, hidden when collapsed. The visible divider is
-              a 1px line always present at rest (subtle slate tone), with
-              a wider invisible hit target around it for forgiving drags.
-              Hover/focus intensifies the line. */}
-          {!collapsed && (
+              Desktop only, hidden when collapsed or when there is no
+              right rail at all. The visible divider is a 1px line always
+              present at rest (subtle slate tone), with a wider invisible
+              hit target around it for forgiving drags. */}
+          {rightRail !== undefined && !collapsed && (
             <div
               role="separator"
               aria-orientation="vertical"
@@ -269,7 +289,9 @@ export function DetailPageShell({
               Aside is `relative` so the collapse button can be absolutely
               positioned inside it without consuming vertical layout space.
               That keeps the first rail card anchored at the same top as
-              the left-column header. */}
+              the left-column header. Entirely omitted when the page
+              opts out of a rail (no `rightRail` prop). */}
+          {rightRail !== undefined && (
           <aside
             className={cn(
               "relative w-full lg:shrink-0 min-w-0 lg:min-h-0 lg:h-full",
@@ -349,6 +371,7 @@ export function DetailPageShell({
               </>
             )}
           </aside>
+          )}
         </div>
       </div>
     </div>

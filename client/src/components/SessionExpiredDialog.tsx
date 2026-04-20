@@ -12,8 +12,20 @@ import {
 import { initCSRF } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 
-/** Auth-page prefixes — never open the dialog on top of these. */
-const AUTH_PAGE_PREFIXES = ["/login", "/signup", "/request-reset", "/reset-password"];
+/**
+ * Auth-page prefixes — never open the dialog on top of these.
+ * 2026-04-19 Portal auth fix: include portal auth pages so a stale
+ * session-expired event can't cover them while the portal login flow
+ * is in progress.
+ */
+const AUTH_PAGE_PREFIXES = [
+  "/login",
+  "/signup",
+  "/request-reset",
+  "/reset-password",
+  "/portal/login",
+  "/portal/verify",
+];
 
 /**
  * Listens for "session-expired" custom events (fired by queryClient on 401)
@@ -54,6 +66,22 @@ export default function SessionExpiredDialog() {
     clearAuth();
     // Pre-warm CSRF for the login page (non-blocking)
     initCSRF().catch(() => {});
+    // 2026-04-19 Portal auth fix: if the user is on a /portal page when
+    // the dialog fires, route them to the portal magic-link flow — NOT
+    // the staff /login page. Portal uses a separate session (req.session.portal)
+    // and staff auth cannot grant portal access. The intended portal path
+    // is stashed in sessionStorage so `PortalVerify` can return the user
+    // to their original invoice after the magic-link round-trip.
+    const pathname = window.location.pathname;
+    if (pathname.startsWith("/portal/")) {
+      try {
+        sessionStorage.setItem("portal:returnTo", location);
+      } catch {
+        /* storage blocked — fall through; verify will land on /portal dashboard */
+      }
+      setLocation("/portal/login");
+      return;
+    }
     // Encode the current path so Login can redirect back after auth
     const returnTo = encodeURIComponent(location);
     setLocation(`/login?returnTo=${returnTo}`);

@@ -51,8 +51,9 @@ export type DispatchVisit = {
   jobOpenSubStatus: string | null;
   locationName: string;
   customerName: string;
-  technicianId: string | null;
-  /** All assigned technician IDs — multi-tech visits have length > 1 */
+  /** Canonical assigned crew (visit-level). Multi-tech visits have length > 1.
+   *  2026-04-19: the legacy scalar `technicianId` was removed — derive a
+   *  primary tech for color/DnD/single-select via `technicianIds[0] ?? null`. */
   technicianIds: string[];
   scheduledStart: string | null; // ISO datetime
   scheduledEnd: string | null;

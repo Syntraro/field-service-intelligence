@@ -7,6 +7,11 @@ import { DollarSign, Clock, FileText, AlertTriangle } from "lucide-react";
 import { formatCurrency } from "@/lib/formatters";
 import { getClientDisplayName } from "@shared/clientDisplayName";
 
+// 2026-04-19 companion to server AR aging rewrite. Canonical bucket
+// keys match `getBillingAggregatesForLocations` so this page reconciles
+// with the Client Detail billing-tab aggregates.
+type ARAgingBucketKey = "current" | "d30" | "d60" | "d90";
+
 interface ARAgingInvoice {
   id: string;
   invoiceNumber: string | null;
@@ -16,7 +21,7 @@ interface ARAgingInvoice {
   total: string;
   balance: string;
   daysOverdue: number;
-  agingBucket: "0-30" | "31-60" | "61-90" | "90+";
+  agingBucket: ARAgingBucketKey;
   customerCompany: {
     id: string | null;
     name: string | null;
@@ -29,7 +34,7 @@ interface ARAgingInvoice {
 }
 
 interface ARAgingBucket {
-  bucket: "0-30" | "31-60" | "61-90" | "90+";
+  bucket: ARAgingBucketKey;
   count: number;
   totalBalance: number;
 }
@@ -44,18 +49,18 @@ interface ARAgingReport {
   invoices: ARAgingInvoice[];
 }
 
-const BUCKET_LABELS: Record<string, string> = {
-  "0-30": "Current (0-30 days)",
-  "31-60": "31-60 days",
-  "61-90": "61-90 days",
-  "90+": "90+ days",
+const BUCKET_LABELS: Record<ARAgingBucketKey, string> = {
+  current: "Current",
+  d30: "1–30 Days",
+  d60: "31–60 Days",
+  d90: "61+ Days",
 };
 
-const BUCKET_COLORS: Record<string, string> = {
-  "0-30": "bg-green-500",
-  "31-60": "bg-yellow-500",
-  "61-90": "bg-orange-500",
-  "90+": "bg-red-500",
+const BUCKET_COLORS: Record<ARAgingBucketKey, string> = {
+  current: "bg-green-500",
+  d30: "bg-yellow-500",
+  d60: "bg-orange-500",
+  d90: "bg-red-500",
 };
 
 function formatDate(dateStr: string | null): string {
@@ -229,7 +234,7 @@ export default function AccountsReceivablePage() {
                       </TableCell>
                       <TableCell>
                         <Badge
-                          variant={invoice.agingBucket === "90+" ? "destructive" : "secondary"}
+                          variant={invoice.agingBucket === "d90" ? "destructive" : "secondary"}
                           className="whitespace-nowrap"
                         >
                           {invoice.daysOverdue > 0 && (

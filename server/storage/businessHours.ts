@@ -9,6 +9,7 @@ import { db } from "../db";
 import { eq, and, asc } from "drizzle-orm";
 import { companyBusinessHours } from "@shared/schema";
 import { BaseRepository } from "./base";
+import { createError } from "../middleware/errorHandler";
 
 // Default business hours for new companies
 const DEFAULT_BUSINESS_HOURS = [
@@ -102,7 +103,14 @@ export class BusinessHoursRepository extends BaseRepository {
 
   /**
    * Upsert all 7 days of business hours for a company.
-   * Validates that all 7 days (0-6) are present.
+   * Validates that all 7 days (0-6) are present, then writes all rows
+   * inside a single DB transaction so the save is atomic — a failure on
+   * any one day rolls back the entire set, preventing partial state.
+   *
+   * Validation throws structured 400s via `createError` so route-level
+   * `asyncHandler` surfaces them as client-readable errors (not opaque
+   * 500s). Duplicates the Zod checks in server/routes/businessHours.ts
+   * on purpose: belt-and-suspenders for any non-HTTP caller.
    */
   async upsertCompanyBusinessHours(
     companyId: string,
@@ -112,67 +120,73 @@ export class BusinessHoursRepository extends BaseRepository {
     const daysPresent = new Set(hours.map(h => h.dayOfWeek));
     for (let dow = 0; dow <= 6; dow++) {
       if (!daysPresent.has(dow)) {
-        throw new Error(`Missing business hours for day ${dow}`);
+        throw createError(400, `Missing business hours for day ${dow}`);
       }
     }
 
     // Validate each day's data
     for (const day of hours) {
       if (day.dayOfWeek < 0 || day.dayOfWeek > 6) {
-        throw new Error(`Invalid dayOfWeek: ${day.dayOfWeek}`);
+        throw createError(400, `Invalid dayOfWeek: ${day.dayOfWeek}`);
       }
       if (day.isOpen) {
         if (day.startMinutes === null || day.startMinutes === undefined) {
-          throw new Error(`Day ${day.dayOfWeek} is open but missing startMinutes`);
+          throw createError(400, `Day ${day.dayOfWeek} is open but missing startMinutes`);
         }
         if (day.endMinutes === null || day.endMinutes === undefined) {
-          throw new Error(`Day ${day.dayOfWeek} is open but missing endMinutes`);
+          throw createError(400, `Day ${day.dayOfWeek} is open but missing endMinutes`);
         }
         if (day.startMinutes < 0 || day.startMinutes > 1439) {
-          throw new Error(`Day ${day.dayOfWeek} has invalid startMinutes: ${day.startMinutes}`);
+          throw createError(400, `Day ${day.dayOfWeek} has invalid startMinutes: ${day.startMinutes}`);
         }
         if (day.endMinutes < 1 || day.endMinutes > 1440) {
-          throw new Error(`Day ${day.dayOfWeek} has invalid endMinutes: ${day.endMinutes}`);
+          throw createError(400, `Day ${day.dayOfWeek} has invalid endMinutes: ${day.endMinutes}`);
         }
         if (day.endMinutes <= day.startMinutes) {
-          throw new Error(`Day ${day.dayOfWeek}: endMinutes (${day.endMinutes}) must be greater than startMinutes (${day.startMinutes})`);
+          throw createError(
+            400,
+            `Day ${day.dayOfWeek}: endMinutes (${day.endMinutes}) must be greater than startMinutes (${day.startMinutes})`,
+          );
         }
       } else {
         // Closed days should have null times
         if (day.startMinutes !== null && day.startMinutes !== undefined) {
-          throw new Error(`Day ${day.dayOfWeek} is closed but has startMinutes`);
+          throw createError(400, `Day ${day.dayOfWeek} is closed but has startMinutes`);
         }
         if (day.endMinutes !== null && day.endMinutes !== undefined) {
-          throw new Error(`Day ${day.dayOfWeek} is closed but has endMinutes`);
+          throw createError(400, `Day ${day.dayOfWeek} is closed but has endMinutes`);
         }
       }
     }
 
     const now = new Date();
 
-    // Perform upsert for each day
-    // Note: Using individual upserts since Drizzle doesn't have great batch upsert support
-    for (const day of hours) {
-      await db
-        .insert(companyBusinessHours)
-        .values({
-          companyId,
-          dayOfWeek: day.dayOfWeek,
-          isOpen: day.isOpen,
-          startMinutes: day.isOpen ? day.startMinutes : null,
-          endMinutes: day.isOpen ? day.endMinutes : null,
-          updatedAt: now,
-        })
-        .onConflictDoUpdate({
-          target: [companyBusinessHours.companyId, companyBusinessHours.dayOfWeek],
-          set: {
+    // 2026-04-19 business-hours hardening: wrap the 7 upserts in a single
+    // transaction so a failure on any day rolls back the others. Without
+    // this, a mid-loop error left partial state committed.
+    await db.transaction(async (tx) => {
+      for (const day of hours) {
+        await tx
+          .insert(companyBusinessHours)
+          .values({
+            companyId,
+            dayOfWeek: day.dayOfWeek,
             isOpen: day.isOpen,
             startMinutes: day.isOpen ? day.startMinutes : null,
             endMinutes: day.isOpen ? day.endMinutes : null,
             updatedAt: now,
-          },
-        });
-    }
+          })
+          .onConflictDoUpdate({
+            target: [companyBusinessHours.companyId, companyBusinessHours.dayOfWeek],
+            set: {
+              isOpen: day.isOpen,
+              startMinutes: day.isOpen ? day.startMinutes : null,
+              endMinutes: day.isOpen ? day.endMinutes : null,
+              updatedAt: now,
+            },
+          });
+      }
+    });
 
     // Return the updated hours
     return this.getCompanyBusinessHours(companyId);

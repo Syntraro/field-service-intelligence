@@ -84,7 +84,7 @@ export default function SupportConsole() {
   // Start impersonation mutation
   const startImpersonation = useMutation({
     mutationFn: (data: { targetUserId: string; reason: string }) =>
-      apiRequest("/api/impersonation/start", { method: "POST", body: JSON.stringify(data) }),
+      apiRequest("/api/admin/impersonate", { method: "POST", body: JSON.stringify(data) }),
     onSuccess: () => {
       toast({
         title: "Impersonation started",

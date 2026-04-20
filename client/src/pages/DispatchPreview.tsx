@@ -397,7 +397,9 @@ export default function DispatchPreview() {
     for (const t of visibleTechs) map.set(t.id, []);
     for (const v of scheduledVisits) {
       if (!selectedStatuses.has(v.status)) continue;
-      const techIds = v.technicianIds.length > 0 ? v.technicianIds : (v.technicianId ? [v.technicianId] : []);
+      // 2026-04-19: group strictly by canonical crew array — same fix as
+      // useDispatchWeekData. The scalar-fallback was a stale-state hazard.
+      const techIds = v.technicianIds;
       if (techIds.length === 0) {
         const arr = map.get(UNASSIGNED_TECH_ID);
         if (arr) arr.push(v);
@@ -1329,10 +1331,11 @@ export default function DispatchPreview() {
 
   // ── Lane data for selected item's panel (Goal 1: overlap validation for panel edits) ──
   const selectedLaneData = useMemo(() => {
-    if (selectedVisit?.technicianId) {
+    const selectedVisitPrimaryTech = selectedVisit?.technicianIds[0] ?? null;
+    if (selectedVisitPrimaryTech) {
       return {
-        visits: visitsByTech.get(selectedVisit.technicianId) ?? [],
-        tasks: tasksByTech.get(selectedVisit.technicianId) ?? [],
+        visits: visitsByTech.get(selectedVisitPrimaryTech) ?? [],
+        tasks: tasksByTech.get(selectedVisitPrimaryTech) ?? [],
       };
     }
     if (selectedTask?.assignedToUserId) {

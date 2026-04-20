@@ -122,18 +122,13 @@ router.get(
     // Canonical visit query from shared module — joins job + location, filters by assignment
     const visits = await getVisitsForUserInRange(companyId, userId, start, end);
 
-    // DEV debug log — helps verify auth + date + assignment correctness
+    // DEV debug log — minimal observability (no PII). Gated to non-production.
     if (process.env.NODE_ENV !== "production") {
       console.log(JSON.stringify({
         _debug: "tech_visits_today",
         userId,
-        email: user.email,
-        role: user.role,
-        isSchedulable: user.isSchedulable,
-        companyId,
         timezone: tz,
         dateStr,
-        dayBoundsUTC: { start: start.toISOString(), end: end.toISOString() },
         visitsReturned: visits.length,
       }));
     }
@@ -1079,7 +1074,11 @@ router.post(
     const data = validateSchema(techCreateItemSchema, req.body);
 
     const { storage } = await import("../storage/index");
-    const created = await storage.createItem(companyId, userId, {
+    // 2026-04-19: routes through the canonical `createOrGetItem` so a tech
+    // who quick-creates an item that already exists in the office catalog
+    // gets the existing row back (no twin). Same dedupe scope as the
+    // office route — (companyId, type, lower(name)) — case-insensitive.
+    const created = await storage.createOrGetItem(companyId, userId, {
       name: data.name,
       type: data.type,
       unitPrice: data.unitPrice != null ? String(data.unitPrice) : null,

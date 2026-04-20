@@ -31,6 +31,13 @@ interface EquipmentPickerProps {
   locationId: string | null;
   selectedEquipmentIds: string[];
   onChange: (ids: string[]) => void;
+  /**
+   * 2026-04-19: hide the inline "+ Add" button when the parent surface
+   * already provides one (e.g., EditVisitModal exposes a "+ New Equipment"
+   * button in its section header). Defaults to true so existing callers
+   * (QuickAddJobDialog) keep the button.
+   */
+  showAddButton?: boolean;
 }
 
 
@@ -78,7 +85,7 @@ function matchesSearch(eq: LocationEquipment, query: string): boolean {
 }
 
 
-export function EquipmentPicker({ locationId, selectedEquipmentIds, onChange }: EquipmentPickerProps) {
+export function EquipmentPicker({ locationId, selectedEquipmentIds, onChange, showAddButton = true }: EquipmentPickerProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [addDialogOpen, setAddDialogOpen] = useState(false);
@@ -134,30 +141,37 @@ export function EquipmentPicker({ locationId, selectedEquipmentIds, onChange }: 
 
   return (
     <div className="space-y-1.5">
-      {/* Selected equipment chips */}
+      {/* Selected equipment chips — 2026-04-19: bumped contrast (white surface,
+          border, slate-800 text, visible Wrench + X) so attached equipment
+          reads as a clearly-distinct selected state, not faded gray-on-gray. */}
       {selected.length > 0 && (
-        <div className="flex flex-wrap gap-1">
+        <div className="flex flex-wrap gap-1.5">
           {selected.map(eq => (
             <span
               key={eq.id}
-              className="inline-flex items-center gap-1 rounded-full bg-slate-100 pl-2 pr-1 py-0.5 text-xs font-medium text-slate-700"
+              className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white pl-2 pr-1 py-1 text-xs font-medium text-slate-800 shadow-sm"
               title={formatEquipmentLabel(eq)}
+              data-testid={`chip-equipment-${eq.id}`}
             >
-              <Wrench className="h-2.5 w-2.5 text-slate-400" />
-              {formatChipLabel(eq)}
+              <Wrench className="h-3 w-3 text-slate-500 shrink-0" />
+              <span className="truncate max-w-[18rem]">{formatChipLabel(eq)}</span>
               <button
                 type="button"
                 onClick={() => handleRemove(eq.id)}
-                className="h-3.5 w-3.5 rounded-full hover:bg-slate-300/50 flex items-center justify-center"
+                aria-label="Remove equipment"
+                className="h-4 w-4 rounded-sm text-slate-500 hover:bg-slate-100 hover:text-slate-900 flex items-center justify-center transition-colors"
+                data-testid={`chip-remove-${eq.id}`}
               >
-                <X className="h-2 w-2" />
+                <X className="h-3 w-3" />
               </button>
             </span>
           ))}
         </div>
       )}
 
-      {/* Searchable equipment picker + Add button row */}
+      {/* Searchable equipment picker + Add button row.
+          2026-04-19: explicit white background + border on the trigger so it
+          stops blending into the modal surface; aligned heights with Add. */}
       <div className="flex gap-1.5">
         <Popover open={pickerOpen} onOpenChange={(o) => { setPickerOpen(o); if (!o) setSearch(""); }}>
           <PopoverTrigger asChild>
@@ -165,22 +179,22 @@ export function EquipmentPicker({ locationId, selectedEquipmentIds, onChange }: 
               type="button"
               variant="outline"
               size="sm"
-              className="h-8 text-xs flex-1 justify-start text-muted-foreground"
+              className="h-8 text-xs flex-1 justify-start bg-white border-slate-300 text-slate-500 hover:bg-slate-50 hover:text-slate-700 focus-visible:ring-2 focus-visible:ring-ring"
               disabled={isLoading}
             >
-              <Search className="h-3 w-3 mr-1.5 shrink-0" />
+              <Search className="h-3.5 w-3.5 mr-1.5 shrink-0 text-slate-400" />
               {isLoading ? "Loading..." : "Search equipment..."}
             </Button>
           </PopoverTrigger>
           <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
-            {/* Search input */}
-            <div className="flex items-center border-b px-2 py-1.5">
-              <Search className="h-3.5 w-3.5 text-muted-foreground mr-2 shrink-0" />
+            {/* Search input — white surface so it reads as an active field */}
+            <div className="flex items-center border-b bg-white px-2 py-1.5">
+              <Search className="h-3.5 w-3.5 text-slate-400 mr-2 shrink-0" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search by name, model, serial..."
-                className="flex-1 text-xs bg-transparent outline-none placeholder:text-muted-foreground"
+                className="flex-1 text-xs bg-transparent outline-none text-slate-800 placeholder:text-slate-400"
                 autoFocus
               />
             </div>
@@ -209,17 +223,21 @@ export function EquipmentPicker({ locationId, selectedEquipmentIds, onChange }: 
           </PopoverContent>
         </Popover>
 
-        {/* Add Equipment button */}
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="h-8 text-xs gap-1 shrink-0"
-          onClick={() => setAddDialogOpen(true)}
-        >
-          <Plus className="h-3 w-3" />
-          Add
-        </Button>
+        {/* Add Equipment button — same h-8 + bg-white as the search trigger
+            for clean side-by-side alignment. Hidden when the parent surface
+            already exposes its own "+ New Equipment" affordance. */}
+        {showAddButton && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs gap-1 shrink-0 bg-white border-slate-300 text-slate-700 hover:bg-slate-50"
+            onClick={() => setAddDialogOpen(true)}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add
+          </Button>
+        )}
       </div>
 
       {/* Fetch error state */}
@@ -227,8 +245,10 @@ export function EquipmentPicker({ locationId, selectedEquipmentIds, onChange }: 
         <p className="text-xs text-destructive">Failed to load equipment</p>
       )}
 
-      {/* Shared Add Equipment Dialog — uses canonical POST /api/clients/:locationId/equipment */}
-      {locationId && (
+      {/* Shared Add Equipment Dialog — uses canonical POST /api/clients/:locationId/equipment.
+          Only rendered when this picker owns the Add button; parent surfaces
+          that hide it own their own dialog instance. */}
+      {showAddButton && locationId && (
         <AddEquipmentDialog
           locationId={locationId}
           open={addDialogOpen}

@@ -97,9 +97,22 @@ async function applyMigration(client: pg.Client, filename: string): Promise<void
   const hasConcurrently = /\bCONCURRENTLY\b/i.test(sql);
 
   if (hasConcurrently) {
-    // Run outside transaction (CREATE INDEX CONCURRENTLY cannot be in a txn)
-    console.log(`  [no-txn] Contains CONCURRENTLY, running without transaction wrapper`);
-    await client.query(sql);
+    // Run outside transaction (CREATE INDEX CONCURRENTLY cannot be in a txn).
+    // 2026-04-19 fresh-install fix: pg's simple-query protocol wraps
+    // multi-statement strings in an implicit transaction block, which
+    // Postgres forbids for CREATE INDEX CONCURRENTLY. Split the file
+    // into statements and dispatch them one at a time. Index-creation
+    // migrations in this project don't contain semicolons in strings
+    // or function bodies, so a line-terminator split is adequate.
+    console.log(`  [no-txn] Contains CONCURRENTLY, dispatching statements individually`);
+    const cleaned = sql.replace(/--[^\n]*$/gm, ""); // strip single-line comments
+    const statements = cleaned
+      .split(/;\s*(?:\r?\n|$)/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    for (const stmt of statements) {
+      await client.query(stmt + ";");
+    }
   } else {
     // Wrap in transaction for atomicity
     await client.query("BEGIN");

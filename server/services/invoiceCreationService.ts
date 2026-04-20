@@ -40,6 +40,16 @@ export function calculateDueDate(issuedAt: Date, paymentTermsDays: number): stri
 
 export interface CreateFromJobOptions {
   markJobCompleted?: boolean;
+  /** 2026-04-18 Phase 8 (invoice composition control):
+   *  optional explicit selection of which time entries and/or parts to
+   *  include. When omitted, the existing "all eligible" behavior runs.
+   *  When provided, the enrichment step filters to exactly these IDs
+   *  (intersected with the canonical eligibility predicates, so stale
+   *  selections can never double-bill). */
+  selection?: {
+    partIds?: string[];
+    timeEntryIds?: string[];
+  };
 }
 
 export interface CreateFromJobResult {
@@ -49,17 +59,36 @@ export interface CreateFromJobResult {
 
 /**
  * Canonical create-from-job workflow:
- * 1. Create invoice (with SELECT FOR UPDATE locking + idempotency)
- * 2. Refresh/populate lines from job parts + labor
- * 3. Resolve default tax group
- * 4. Batch apply combined tax rate (single UPDATE + one recalculation)
- * 5. Snapshot tax component rates into invoice_tax_lines
+ * 1. Create invoice shell (new row every call, after dedupe guard).
+ * 2. Refresh/populate lines from job parts + labor.
+ * 3. Resolve default tax group.
+ * 4. Batch apply combined tax rate (single UPDATE + one recalculation).
+ * 5. Snapshot tax component rates into invoice_tax_lines.
  *
- * Steps 2–5 run inside a single transaction when the invoice is newly created.
- * Step 1 has its own internal locking transaction (createInvoiceFromJob).
+ * 2026-04-18 Phase 5/6 (multi-invoice-per-job + safety):
+ *   - Phase 5 removed the one-invoice-per-job cardinality guard; a job
+ *     may legitimately carry many invoices.
+ *   - Phase 6 adds a narrow duplicate-submit guard here: if an invoice
+ *     for THIS job was created within the last `DUPLICATE_SUBMIT_WINDOW_SEC`
+ *     seconds, return it with `created: false` instead of making a new
+ *     one. Prevents accidental double-click / network-retry duplicates
+ *     without reintroducing cardinality enforcement. Legitimate second
+ *     invoices created after the window passes are unaffected.
  *
- * Returns { invoice, created } — caller decides lifecycle (markInvoiced, event log).
+ *   - The guard is intentionally short (3s) so it can't silently block
+ *     an intentional rapid second invoice; the natural user path to
+ *     create two invoices in quick succession involves at least a
+ *     navigation round-trip.
+ *   - When the caller passes `txHandle` (the atomic close+invoice flow
+ *     in `POST /api/jobs/:id/close`), the guard is skipped — that path
+ *     is not exposed to double-click risk and has its own lifecycle.
+ *
+ * `created: false` on the return type signals "deduped existing invoice";
+ * downstream (event log + MARK_INVOICED) treat that like the prior
+ * idempotent return so no second event / lifecycle transition fires.
  */
+const DUPLICATE_SUBMIT_WINDOW_SEC = 3;
+
 export async function createInvoiceFromJob(
   companyId: string,
   jobId: string,
@@ -68,7 +97,19 @@ export async function createInvoiceFromJob(
   txHandle?: any
 ): Promise<CreateFromJobResult> {
   assertWritableSupportContext("invoice.createFromJob");
-  // Step 1: Create invoice shell (uses txHandle if provided for atomic close+invoice flow)
+
+  // Duplicate-submit guard (skipped when caller owns the transaction).
+  if (!txHandle) {
+    const recent = await storage.findRecentInvoiceByJob(
+      companyId,
+      jobId,
+      DUPLICATE_SUBMIT_WINDOW_SEC,
+    );
+    if (recent) {
+      return { invoice: recent, created: false };
+    }
+  }
+
   const result = await storage.createInvoiceFromJob(
     companyId,
     jobId,
@@ -77,22 +118,12 @@ export async function createInvoiceFromJob(
     txHandle
   );
 
-  // If idempotent return (already existed), check for incomplete enrichment.
-  if (!result.created) {
-    const needsEnrichment =
-      result.invoice.status === "draft" &&
-      Array.isArray(result.lines) &&
-      result.lines.length === 0;
-
-    if (!needsEnrichment) {
-      return { invoice: result.invoice, created: false };
-    }
-  }
-
-  // Steps 2–4: Populate lines, resolve default tax, apply tax.
-  // When txHandle is provided, run in that transaction. Otherwise create our own.
+  // Enrichment always runs now — the pre-Phase-5 !result.created
+  // short-circuit was the only caller of the idempotent branch.
+  // Phase 8: forward `options.selection` to `refreshInvoiceFromJob`
+  // so the caller's explicit labor/parts choice flows end-to-end.
   const enrichInTx = async (tx: any) => {
-    await storage.refreshInvoiceFromJob(companyId, result.invoice.id, tx);
+    await storage.refreshInvoiceFromJob(companyId, result.invoice.id, tx, options.selection);
     const defaultGroup = await taxRepository.getDefaultTaxGroup(companyId);
     if (defaultGroup && defaultGroup.rates.length > 0) {
       await applyTaxGroupToInvoice(companyId, result.invoice.id, defaultGroup.id, tx);

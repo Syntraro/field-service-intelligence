@@ -74,9 +74,12 @@ export function CreateClientPage() {
     <MobileShell showNav>
       <div className="bg-[#0f1a2e] px-3 pt-2 pb-2">
         <div className="flex items-center gap-2">
-          <button onClick={() => setLocation(fromCreateJob ? "/tech/create-job" : "/tech/today")}
-            className="p-1 -ml-1 rounded-md hover:bg-white/10">
-            <ArrowLeft className="h-4 w-4 text-white" />
+          <button
+            onClick={() => setLocation(fromCreateJob ? "/tech/create-job" : "/tech/today")}
+            aria-label="Back"
+            className="min-h-[44px] min-w-[44px] -ml-2 flex items-center justify-center rounded-md hover:bg-white/10 active:bg-white/20"
+          >
+            <ArrowLeft className="h-5 w-5 text-white" />
           </button>
           <h1 className="text-base font-bold text-white">Create Client</h1>
         </div>
@@ -84,80 +87,97 @@ export function CreateClientPage() {
 
       <div className="px-3 py-3 pb-28 space-y-3">
         {success && (
-          <div className="rounded-md bg-emerald-50 border border-emerald-200 p-3 flex items-center gap-2">
-            <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+          <div
+            className="rounded-md bg-emerald-50 border border-emerald-200 p-3 flex items-center gap-2"
+            role="status"
+            aria-live="polite"
+          >
+            <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" aria-hidden="true" />
             <p className="text-xs font-medium text-emerald-700">{success}</p>
           </div>
         )}
         {error && (
-          <div className="rounded-md bg-red-50 border border-red-200 p-3">
+          <div
+            className="rounded-md bg-red-50 border border-red-200 p-3"
+            role="alert"
+            aria-live="assertive"
+          >
             <p className="text-xs text-red-600">{error}</p>
           </div>
         )}
 
         {/* Company Name */}
         <div>
-          <label className="text-xs font-semibold text-slate-500 mb-1 block">Company Name</label>
-          <input value={companyName} onChange={e => setCompanyName(e.target.value)}
+          <label htmlFor="tech-cc-company" className="text-xs font-semibold text-slate-500 mb-1 block">Company Name</label>
+          <input id="tech-cc-company" value={companyName} onChange={e => setCompanyName(e.target.value)}
             placeholder="Business name (or leave blank for personal)"
+            autoComplete="organization"
             className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
         </div>
 
         {/* Name */}
         <div className="flex gap-2">
           <div className="flex-1">
-            <label className="text-xs font-semibold text-slate-500 mb-1 block">First Name</label>
-            <input value={firstName} onChange={e => setFirstName(e.target.value)}
+            <label htmlFor="tech-cc-first" className="text-xs font-semibold text-slate-500 mb-1 block">First Name</label>
+            <input id="tech-cc-first" value={firstName} onChange={e => setFirstName(e.target.value)}
               placeholder="First"
+              autoComplete="given-name"
               className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
           </div>
           <div className="flex-1">
-            <label className="text-xs font-semibold text-slate-500 mb-1 block">Last Name</label>
-            <input value={lastName} onChange={e => setLastName(e.target.value)}
+            <label htmlFor="tech-cc-last" className="text-xs font-semibold text-slate-500 mb-1 block">Last Name</label>
+            <input id="tech-cc-last" value={lastName} onChange={e => setLastName(e.target.value)}
               placeholder="Last"
+              autoComplete="family-name"
               className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
           </div>
         </div>
 
         {/* Contact */}
         <div>
-          <label className="text-xs font-semibold text-slate-500 mb-1 block">Phone</label>
-          <input value={phone} onChange={e => setPhone(e.target.value)}
+          <label htmlFor="tech-cc-phone" className="text-xs font-semibold text-slate-500 mb-1 block">Phone</label>
+          <input id="tech-cc-phone" value={phone} onChange={e => setPhone(e.target.value)}
             type="tel" placeholder="(555) 123-4567"
+            inputMode="tel" autoComplete="tel"
             className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
         </div>
         <div>
-          <label className="text-xs font-semibold text-slate-500 mb-1 block">Email</label>
-          <input value={email} onChange={e => setEmail(e.target.value)}
+          <label htmlFor="tech-cc-email" className="text-xs font-semibold text-slate-500 mb-1 block">Email</label>
+          <input id="tech-cc-email" value={email} onChange={e => setEmail(e.target.value)}
             type="email" placeholder="contact@example.com"
+            inputMode="email" autoComplete="email" autoCapitalize="off" spellCheck={false}
             className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
         </div>
 
         {/* Address */}
         <div>
-          <label className="text-xs font-semibold text-slate-500 mb-1 block">Address</label>
-          <input value={address} onChange={e => setAddress(e.target.value)}
+          <label htmlFor="tech-cc-address" className="text-xs font-semibold text-slate-500 mb-1 block">Address</label>
+          <input id="tech-cc-address" value={address} onChange={e => setAddress(e.target.value)}
             placeholder="Street address"
+            autoComplete="street-address"
             className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
         </div>
         <div className="flex gap-2">
           <div className="flex-1">
-            <label className="text-xs font-semibold text-slate-500 mb-1 block">City</label>
-            <input value={city} onChange={e => setCity(e.target.value)}
+            <label htmlFor="tech-cc-city" className="text-xs font-semibold text-slate-500 mb-1 block">City</label>
+            <input id="tech-cc-city" value={city} onChange={e => setCity(e.target.value)}
               placeholder="City"
+              autoComplete="address-level2"
               className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
           </div>
           <div className="w-24">
-            <label className="text-xs font-semibold text-slate-500 mb-1 block">Province</label>
-            <input value={province} onChange={e => setProvince(e.target.value)}
+            <label htmlFor="tech-cc-province" className="text-xs font-semibold text-slate-500 mb-1 block">Province</label>
+            <input id="tech-cc-province" value={province} onChange={e => setProvince(e.target.value)}
               placeholder="ON"
+              autoComplete="address-level1"
               className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
           </div>
         </div>
         <div className="w-32">
-          <label className="text-xs font-semibold text-slate-500 mb-1 block">Postal Code</label>
-          <input value={postalCode} onChange={e => setPostalCode(e.target.value)}
+          <label htmlFor="tech-cc-postal" className="text-xs font-semibold text-slate-500 mb-1 block">Postal Code</label>
+          <input id="tech-cc-postal" value={postalCode} onChange={e => setPostalCode(e.target.value)}
             placeholder="A1A 1A1"
+            autoComplete="postal-code" autoCapitalize="characters"
             className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
         </div>
 

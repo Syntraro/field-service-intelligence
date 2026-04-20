@@ -22,7 +22,6 @@ import {
   Calendar,
   Clock,
   AlertTriangle,
-  AlertCircle,
   DollarSign,
   Repeat,
   ChevronRight,
@@ -30,10 +29,7 @@ import {
   Plus,
   Lock,
   CalendarPlus,
-  CalendarMinus,
   FileText,
-  PauseCircle,
-  Play,
   Briefcase,
   Receipt,
   Pause,
@@ -55,6 +51,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { ReferenceFieldsSection } from "@/components/shared/ReferenceFieldsSection";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import JobEquipmentSection from "@/components/JobEquipmentSection";
+import { JobInvoicesCard } from "@/components/JobInvoicesCard";
 import { AddVisitDialog } from "@/components/AddVisitDialog";
 import { EditVisitModal } from "@/components/visits/EditVisitModal";
 import JobNotesSection from "@/components/JobNotesSection";
@@ -62,7 +59,7 @@ import { PartsBillingCard } from "@/components/PartsBillingCard";
 import { JobExpensesCard } from "@/components/JobExpensesCard";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import { JobHeaderCard, type JobHeaderCardHandle } from "@/components/JobHeaderCard";
-import { CreateInvoiceFromJobDialog } from "@/components/CreateInvoiceFromJobDialog";
+import { InvoiceCompositionDialog } from "@/components/InvoiceCompositionDialog";
 import { JobNoteDialog } from "@/components/JobNoteDialog";
 // JobAssignmentsCard + JobMetaCard replaced by unified top-section layout
 import { ActionRequiredModal, getHoldReasonLabel } from "@/components/ActionRequiredModal";
@@ -98,7 +95,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import { isVisitActioned, isVisitEmpty } from "@/lib/visitUtils";
+// 2026-04-18 Phase 2: isVisitActioned / isVisitEmpty usage was eliminated
+// with the singular reschedule-conflict dialog. Imports removed to keep
+// JobDetailPage free of dead single-visit helpers.
 import { useAuth } from "@/lib/auth";
 import { MetaRow } from "@/components/ui/meta-row";
 import type { Job, Client, CustomerCompany, User as UserType, RecurringJobSeries, Invoice, JobTimeSummary, TimeEntryType } from "@shared/schema";
@@ -110,134 +109,6 @@ import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
 // ============================================================================
 import { MANAGER_ROLES } from "@/lib/roles";
 import { DetailPageShell } from "@/components/layout/DetailPageShell";
-
-// ============================================================================
-// OFFICE ACTIONS STRIP - Jobber-style attention banner
-// ============================================================================
-// Shows when job is in a "Needs Attention" state:
-// - requires_invoicing: status='completed'
-// - on_hold: status='open' AND openSubStatus='on_hold'
-// - overdue: status='open' AND effectiveEnd < now
-// ============================================================================
-
-type AttentionReason = 'requires_invoicing' | 'on_hold' | 'overdue' | null;
-
-function getAttentionReason(job: {
-  status: string;
-  openSubStatus?: string | null;
-  scheduledStart?: Date | string | null;
-  scheduledEnd?: Date | string | null;
-  durationMinutes?: number | null;
-}): AttentionReason {
-  // Priority order: requires_invoicing > on_hold > overdue
-
-  // 1. Completed but not invoiced
-  if (job.status === 'completed') {
-    return 'requires_invoicing';
-  }
-
-  // Only check further if status is 'open'
-  if (job.status !== 'open') {
-    return null;
-  }
-
-  // 2. On hold
-  if (job.openSubStatus === 'on_hold') {
-    return 'on_hold';
-  }
-
-  // 3. Overdue - matches server/storage/dashboard.ts getNeedsAttentionJobs()
-  // Server SQL: CASE
-  //   WHEN scheduled_end IS NOT NULL THEN scheduled_end
-  //   WHEN duration_minutes IS NOT NULL THEN scheduled_start + duration_minutes
-  //   ELSE scheduled_start
-  // END < todayStart (midnight UTC)
-  if (job.scheduledStart) {
-    // Match server: compare against midnight UTC of today, not current moment
-    const todayStart = new Date();
-    todayStart.setUTCHours(0, 0, 0, 0);
-
-    const scheduledStart = new Date(job.scheduledStart);
-
-    // Compute effectiveEnd matching server logic exactly
-    let effectiveEnd: Date;
-    if (job.scheduledEnd != null) {
-      // Server: WHEN scheduled_end IS NOT NULL
-      effectiveEnd = new Date(job.scheduledEnd);
-    } else if (job.durationMinutes != null) {
-      // Server: WHEN duration_minutes IS NOT NULL (includes 0)
-      effectiveEnd = new Date(scheduledStart.getTime() + job.durationMinutes * 60 * 1000);
-    } else {
-      // Server: ELSE scheduled_start
-      effectiveEnd = scheduledStart;
-    }
-
-    // Server: effectiveEnd < todayStart (job should have finished before today started)
-    if (effectiveEnd < todayStart) {
-      return 'overdue';
-    }
-  }
-
-  return null;
-}
-
-// ============================================================================
-// ATTENTION CONFIG - Jobber-style action buttons per attention reason
-// ============================================================================
-// Rules:
-// A) requires_invoicing: Primary="Schedule another visit", Secondary="Mark Invoiced" (with confirm)
-// B) on_hold: Primary="Schedule another visit", Secondary="Resume" (clears hold)
-// C) overdue: Primary="Reschedule", Secondary="Unschedule"
-//
-// IMPORTANT: No path should archive jobs from on_hold or overdue.
-// requires_invoicing -> invoiced (not archived) unless explicitly chosen elsewhere.
-// ============================================================================
-const ATTENTION_CONFIG: Record<Exclude<AttentionReason, null>, {
-  label: string;
-  badgeClass: string;
-  icon: React.ElementType;
-  primaryAction: string;
-  primaryIcon: React.ElementType;
-  secondaryAction: string;
-  secondaryIcon: React.ElementType;
-  requiresConfirm: boolean; // Whether secondary action needs confirmation dialog
-}> = {
-  // Phase: List Screens Cleanup — single "Create Invoice" CTA replaces old dual-button layout
-  requires_invoicing: {
-    label: 'Requires Invoicing',
-    badgeClass: 'bg-[rgba(245,158,11,0.14)] text-[#92400E] border border-[rgba(245,158,11,0.28)] dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800',
-    icon: FileText,
-    primaryAction: 'Create Invoice',
-    primaryIcon: Receipt,
-    secondaryAction: '',
-    secondaryIcon: Receipt,
-    requiresConfirm: false,
-  },
-  // Rationalized: unique action only — Schedule Visit is always in the action bar
-  on_hold: {
-    label: 'On Hold',
-    badgeClass: 'bg-[rgba(245,158,11,0.14)] text-[#92400E] border border-[rgba(245,158,11,0.28)] dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800',
-    icon: PauseCircle,
-    primaryAction: 'Resume',
-    primaryIcon: Play,
-    secondaryAction: '',
-    secondaryIcon: Play,
-    requiresConfirm: false,
-  },
-  // Rationalized: unique action only — Schedule Visit is always in the action bar
-  overdue: {
-    label: 'Overdue',
-    badgeClass: 'bg-[rgba(220,38,38,0.12)] text-[#B91C1C] border border-[rgba(220,38,38,0.25)] dark:bg-red-950/40 dark:text-red-400 dark:border-red-800',
-    icon: AlertCircle,
-    primaryAction: 'Unschedule',
-    primaryIcon: CalendarMinus,
-    secondaryAction: '',
-    secondaryIcon: CalendarMinus,
-    requiresConfirm: false,
-  },
-};
-
-// OfficeActionsStrip removed — replaced by inline attention indicator in action row
 
 // Phase 4 Step A7: Use canonical JobHeaderDetail type for main job data.
 // The canonical getJobHeader now correctly joins customerCompanies,
@@ -620,14 +491,12 @@ export default function JobDetailPage() {
   const [showAddEquipmentDialog, setShowAddEquipmentDialog] = useState(false);
   // Visits collapse: show first 2 by default, toggle to show all
   const [showAllVisits, setShowAllVisits] = useState(false);
-  // Visit Reschedule Architecture: conflict resolution state
-  const [conflictMode, setConflictMode] = useState<'replace' | 'complete_and_new' | undefined>();
-  const [conflictVisitId, setConflictVisitId] = useState<string | undefined>();
-  // Conflict dialog: holds the visit that conflicts + whether it's empty or actioned
-  const [rescheduleConflict, setRescheduleConflict] = useState<{
-    visit: import("@shared/schema").JobVisit;
-    kind: 'empty' | 'actioned';
-  } | null>(null);
+  // 2026-04-18 Phase 2 (multi-visit): removed `conflictMode`,
+  // `conflictVisitId`, and the `rescheduleConflict` dialog state. Under
+  // multi-visit, clicking "Schedule Visit" always creates a new visit —
+  // existing visits are untouched. To edit an existing visit, the user
+  // clicks its row in the Visits list (which opens EditVisitModal keyed
+  // on that specific visit id).
   const jobId = params?.id;
 
   // Expense totals — query directly so header always reflects latest data
@@ -667,7 +536,7 @@ export default function JobDetailPage() {
   const { teamMembers: allTechnicians } = useTechniciansDirectory();
 
   // Inline visits list for middle column
-  const { visits: allVisits, isLoading: visitsLoading, activeVisit, completedVisits } = useJobVisits(jobId || "", { enabled: !!jobId });
+  const { visits: allVisits, isLoading: visitsLoading, completedVisits } = useJobVisits(jobId || "", { enabled: !!jobId });
 
   // Sort visits: active first, then by scheduledStart descending (newest first)
   const sortedVisits = useMemo(() => [...allVisits].sort((a, b) => {
@@ -706,23 +575,14 @@ export default function JobDetailPage() {
     return `${names[0]} +${names.length - 1}`;
   };
 
-  // Visit Reschedule Architecture: check for existing active visits before scheduling.
-  // Both empty and actioned visits show a confirmation dialog before proceeding.
+  // 2026-04-18 Phase 2 (multi-visit): scheduling a visit always creates a
+  // new one; existing visits are untouched. Editing a specific visit is
+  // done by clicking its row in the Visits list (opens EditVisitModal
+  // keyed on that visit id). The old reschedule-conflict dialog was
+  // removed — it modeled a singular "the other open visit" assumption
+  // that no longer exists under multi-visit.
   const handleScheduleVisit = () => {
-    const VISIT_TERMINAL_STATUSES = ["completed", "cancelled"];
-    const activeNonTerminal = allVisits.filter(
-      (v) => v.isActive && !VISIT_TERMINAL_STATUSES.includes(v.status)
-    );
-    if (activeNonTerminal.length > 0) {
-      const conflict = activeNonTerminal[0];
-      const kind = isVisitActioned(conflict) ? 'actioned' : 'empty';
-      setRescheduleConflict({ visit: conflict, kind });
-    } else {
-      // No conflict — open schedule dialog directly
-      setConflictMode(undefined);
-      setConflictVisitId(undefined);
-      setShowScheduleVisitDialog(true);
-    }
+    setShowScheduleVisitDialog(true);
   };
 
   // Phase 4 Step C3: Use canonical useJobHeader with ['jobs', 'detail', jobId] key
@@ -744,6 +604,30 @@ export default function JobDetailPage() {
     enabled: !!jobId,
     staleTime: 10 * 60_000,
   });
+
+  // 2026-04-19 audit fix: plural invoice existence for header-button
+  // logic. Reuses `JobInvoicesCard`'s canonical query key so the fetch
+  // dedups via React Query cache — no extra network call. Needed because
+  // `jobInvoice` (primary pointer) can be null even when siblings exist
+  // (e.g. primary deleted without reassignment), in which case the old
+  // "Create Invoice" button was offered alongside the plural list.
+  const { data: jobInvoicesFeed } = useQuery<{ data: Invoice[] } | undefined>({
+    queryKey: ["invoices", "list", { jobId }],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/invoices/list?jobId=${encodeURIComponent(jobId!)}`,
+        { credentials: "include" },
+      );
+      if (!res.ok) return undefined;
+      return res.json();
+    },
+    enabled: !!jobId,
+    staleTime: 30_000,
+  });
+  const jobInvoiceCount = Array.isArray(jobInvoicesFeed?.data)
+    ? jobInvoicesFeed!.data.length
+    : 0;
+  const firstJobInvoice = jobInvoicesFeed?.data?.[0] ?? null;
 
   // 2026-03-24: updateStatusMutation and clearHoldMutation REMOVED.
   // Generic status mutations allowed invalid transitions (e.g. completed → open).
@@ -920,6 +804,7 @@ export default function JobDetailPage() {
           ref={headerCardRef}
           job={job}
           jobInvoice={jobInvoice ?? null}
+          jobInvoices={jobInvoicesFeed?.data ?? []}
           onEdit={() => setShowEditDialog(true)}
           onDelete={() => deleteJobMutation.mutate()}
           showActions={false}
@@ -1007,18 +892,15 @@ export default function JobDetailPage() {
                           {jobNumberError && <div className="text-xs text-destructive">{jobNumberError}</div>}
                         </td>
                       </tr>
-                      <tr>
-                        <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Invoice #</td>
-                        <td className="py-0.5">
-                          {jobInvoice ? (
-                            <Link href={`/invoices/${jobInvoice.id}`} className="font-semibold text-primary hover:underline" data-testid="link-invoice">
-                              {(jobInvoice as any).invoiceNumber || "—"}
-                            </Link>
-                          ) : (
-                            <span className="text-slate-300">—</span>
-                          )}
-                        </td>
-                      </tr>
+                      {/* 2026-04-18 Phase 7 (billing semantics cleanup):
+                          the singular "Invoice #" metadata row was
+                          misleading under multi-invoice — it showed
+                          only the primary even when a job had many
+                          invoices. Canonical billing surface is now
+                          the JobInvoicesCard in the right rail, which
+                          lists every invoice with primary badge +
+                          per-row actions. Removing this row here
+                          eliminates the drift. */}
                       <tr>
                         <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">Created</td>
                         <td className="text-slate-600 py-0.5">{job.createdAt ? format(new Date(job.createdAt), "MMM d, yyyy") : "—"}</td>
@@ -1059,11 +941,30 @@ export default function JobDetailPage() {
                 <Button
                   size="sm"
                   className="bg-green-600 hover:bg-green-700 text-white gap-1.5 h-7"
-                  onClick={() => { jobInvoice ? setLocation(`/invoices/${jobInvoice.id}`) : setShowCreateInvoiceDialog(true); }}
+                  onClick={() => {
+                    // 2026-04-19 audit fix: button now respects the plural
+                    // invoice feed. When a primary exists, jump to it.
+                    // When no primary but siblings exist, jump to the
+                    // first invoice in the feed so the user can reach
+                    // the invoice surface without being prompted to
+                    // duplicate it. Only when zero invoices exist do we
+                    // open the create dialog.
+                    if (jobInvoice) {
+                      setLocation(`/invoices/${jobInvoice.id}`);
+                    } else if (jobInvoiceCount > 0 && firstJobInvoice) {
+                      setLocation(`/invoices/${firstJobInvoice.id}`);
+                    } else {
+                      setShowCreateInvoiceDialog(true);
+                    }
+                  }}
                   data-testid="button-invoice-action"
                 >
                   <Receipt className="h-3.5 w-3.5" />
-                  {jobInvoice ? "View Invoice" : "Create Invoice"}
+                  {jobInvoice
+                    ? "View Invoice"
+                    : jobInvoiceCount > 0
+                      ? jobInvoiceCount === 1 ? "View Invoice" : "View Invoices"
+                      : "Create Invoice"}
                 </Button>
               )}
               {job.status === "archived" && isOfficeUser && (
@@ -1640,6 +1541,24 @@ export default function JobDetailPage() {
             </Collapsible>
           </div>
 
+          {/* 2026-04-18 Phase 6 (multi-invoice usability): invoices list
+              in the right rail. Shows every invoice linked to the job,
+              pins the primary (jobs.invoiceId) to the top, exposes
+              explicit "Set Primary" on siblings, and a "Create Another
+              Invoice" action once at least one exists. Replaces the
+              singular Invoice # metadata row as the canonical billing
+              surface on Job Detail. */}
+          <JobInvoicesCard
+            jobId={job.id}
+            primaryInvoiceId={jobInvoice?.id ?? null}
+            onCreateInvoice={
+              job.status === "open" || job.status === "completed"
+                ? () => setShowCreateInvoiceDialog(true)
+                : undefined
+            }
+            canCreate={job.status === "open" || job.status === "completed"}
+          />
+
           {/* 4. REFERENCE — compact section in right rail */}
           <ReferenceFieldsSection entityType="job" entityId={job.id} />
 
@@ -1695,21 +1614,15 @@ export default function JobDetailPage() {
         onOpenChange={setShowActionRequiredModal}
       />
 
-      {/* Schedule Visit Dialog - triggered from Office Actions strip + inline visits header */}
+      {/* Schedule Visit Dialog - triggered from Office Actions strip +
+          inline visits header. 2026-04-18 Phase 2: always creates a new
+          visit (no targetVisitId). Edits go through the per-row
+          EditVisitModal on the Visits list. */}
       <AddVisitDialog
         jobId={job.id}
         jobVersion={job.version}
         open={showScheduleVisitDialog}
-        onOpenChange={(open) => {
-          setShowScheduleVisitDialog(open);
-          // Clear conflict state when dialog closes
-          if (!open) {
-            setConflictMode(undefined);
-            setConflictVisitId(undefined);
-          }
-        }}
-        conflictMode={conflictMode}
-        conflictVisitId={conflictVisitId}
+        onOpenChange={setShowScheduleVisitDialog}
       />
 
       {/* Edit Visit Modal — canonical shared component (replaces VisitDetailDialog)
@@ -1730,36 +1643,8 @@ export default function JobDetailPage() {
         />
       )}
 
-      {/* Visit Reschedule Architecture: confirmation dialog for empty OR actioned visits */}
-      <AlertDialog open={!!rescheduleConflict} onOpenChange={(open) => { if (!open) setRescheduleConflict(null); }}>
-        <AlertDialogContent data-testid="dialog-reschedule-conflict">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Active Visit Found</AlertDialogTitle>
-            <AlertDialogDescription>
-              {rescheduleConflict?.kind === 'empty'
-                ? "This visit has no activity. It will be removed and replaced with the new scheduled visit."
-                : "You have an uncompleted visit with activity. The uncompleted visit will be completed, and a new visit will be scheduled."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter className="flex-col sm:flex-row gap-2">
-            <AlertDialogCancel data-testid="button-cancel-reschedule">Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                if (rescheduleConflict) {
-                  const mode = rescheduleConflict.kind === 'empty' ? 'replace' : 'complete_and_new';
-                  setConflictMode(mode);
-                  setConflictVisitId(rescheduleConflict.visit.id);
-                }
-                setRescheduleConflict(null);
-                setShowScheduleVisitDialog(true);
-              }}
-              data-testid={rescheduleConflict?.kind === 'empty' ? "button-replace-visit" : "button-complete-and-new"}
-            >
-              {rescheduleConflict?.kind === 'empty' ? "Yes, Replace Visit" : "Yes, Complete & Schedule New"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* 2026-04-18 Phase 2: reschedule-conflict AlertDialog removed. Under
+          multi-visit there is no "the other open visit" to displace. */}
 
       {/* 2026-03-24: Complete Job confirmation now delegates to canonical Close Job dialog
           in JobHeaderCard, which handles invoice_now/later/archive options and visit guardrails. */}
@@ -1787,8 +1672,10 @@ export default function JobDetailPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Create Invoice from Job — canonical component */}
-      <CreateInvoiceFromJobDialog
+      {/* 2026-04-18 Phase 8 (invoice composition control): canonical
+          create-from-job dialog with per-item labor/parts selection. */}
+      <InvoiceCompositionDialog
+        mode="create"
         open={showCreateInvoiceDialog}
         onOpenChange={setShowCreateInvoiceDialog}
         jobId={job.id}

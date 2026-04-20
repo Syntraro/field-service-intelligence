@@ -15,7 +15,7 @@
 import { Router, Request, Response, NextFunction, RequestHandler } from "express";
 import crypto from "crypto";
 import { db } from "../db";
-import { eq, and, isNull, desc, sql, inArray, or } from "drizzle-orm";
+import { eq, and, isNull, desc, sql, inArray, or, gt } from "drizzle-orm";
 import {
   contactPersons,
   customerCompanies,
@@ -29,7 +29,12 @@ import {
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { getResendClient } from "../resendClient";
 import { rateLimitPerTenant } from "../auth/tenantIsolation";
-import { isInvoiceDraft, isInvoiceVoided } from "../lib/invoicePredicates";
+import { isInvoiceDraft, isInvoiceVoided, canAcceptInvoicePayment } from "../lib/invoicePredicates";
+import { generateInvoicePdf } from "../services/invoicePdfService";
+import { storage } from "../storage/index";
+import { invoiceRepository } from "../storage/invoices";
+import { getStripeClient } from "../services/stripeClient";
+import { randomUUID } from "crypto";
 
 // ============================================================================
 // Types
@@ -111,6 +116,20 @@ const magicLinkLimiter = rateLimitPerTenant({
 });
 
 // ------------------------------------------------------------------
+// 2026-04-19 audit fix: rate limiter for customer-portal Stripe
+// PaymentIntent creation. An authenticated portal session should not
+// be able to hammer this endpoint — every call creates a new Stripe
+// PaymentIntent (costly on the Stripe side) and a new idempotency key.
+// 6/min/IP is generous for legitimate customer retry loops and tight
+// enough to stop scripted abuse.
+// ------------------------------------------------------------------
+const portalPaymentIntentLimiter = rateLimitPerTenant({
+  scope: "portal-payment-intent",
+  windowMs: 60_000,
+  max: 6,
+});
+
+// ------------------------------------------------------------------
 // POST /api/portal/auth/request-link — request a magic link
 // ------------------------------------------------------------------
 router.post(
@@ -152,7 +171,21 @@ router.post(
       .where(eq(tenantFeatures.companyId, contact.companyId))
       .limit(1);
     if (portalFeature && !portalFeature.enabled) {
-      throw createError(403, "Customer portal is not enabled for this account.");
+      // 2026-04-19 Portal login debug: previously threw a 403 with no
+      // machine-readable code, so PortalLogin rendered the generic
+      // "Something went wrong" message and nobody knew the tenant flag
+      // was the blocker. We now emit `PORTAL_DISABLED` so the frontend
+      // can render an actionable message pointing the customer at the
+      // business that issued the invoice. Log server-side so ops can see
+      // which tenant is mis-configured.
+      console.warn(
+        `[Portal] Magic-link request denied — customerPortalEnabled=false for tenant ${contact.companyId} (contact ${contact.id})`,
+      );
+      throw createError(
+        403,
+        "The customer portal is not enabled for this workspace. Please contact the business that issued your invoice.",
+        "PORTAL_DISABLED",
+      );
     }
 
     // Generate token + hash
@@ -160,15 +193,35 @@ router.post(
     const tokenHash = hashToken(rawToken);
     const expiresAt = new Date(Date.now() + MAGIC_LINK_EXPIRY_MS);
 
-    // Store hashed token
-    await db.insert(portalMagicTokens).values({
-      companyId: contact.companyId,
-      contactId: contact.id,
-      customerCompanyId: contact.customerCompanyId,
-      tokenHash,
-      email: normalizedEmail,
-      expiresAt,
-    });
+    // Store hashed token. Wrapped so that any DB-level integrity error
+    // (e.g. the pre-2026-04-19 schema-drift case where the FK still
+    // pointed at the legacy `client_contacts` table, or any future FK
+    // target change) surfaces cleanly to the client instead of leaking
+    // a raw Postgres constraint message via the central error handler.
+    // The server log carries the diagnostic context.
+    try {
+      await db.insert(portalMagicTokens).values({
+        companyId: contact.companyId,
+        contactId: contact.id,
+        customerCompanyId: contact.customerCompanyId,
+        tokenHash,
+        email: normalizedEmail,
+        expiresAt,
+      });
+    } catch (err) {
+      console.error("[Portal] Failed to persist magic-link token", {
+        tenantId: contact.companyId,
+        contactId: contact.id,
+        customerCompanyId: contact.customerCompanyId,
+        email: normalizedEmail,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw createError(
+        500,
+        "Could not create sign-in link. Please try again in a moment.",
+        "MAGIC_LINK_CREATE_FAILED",
+      );
+    }
 
     // Build magic link URL
     const appBase = process.env.APP_URL || BASE_URL;
@@ -267,27 +320,28 @@ router.get(
     const tokenHash = hashToken(rawToken);
     const now = new Date();
 
-    // Find unexpired, unconsumed token
+    // 2026-04-19 audit fix: atomic consume-or-fail. The prior
+    // implementation SELECTed + UPDATEd in two steps, so two
+    // simultaneous verify requests could both pass the isNull check and
+    // each mint a portal session. This single conditional UPDATE only
+    // mutates the row when `consumedAt` is still null; the RETURNING
+    // clause tells us whether we won the race. Matching unexpired rows
+    // is enforced in the WHERE so expired tokens cannot consume either.
     const [tokenRow] = await db
-      .select()
-      .from(portalMagicTokens)
+      .update(portalMagicTokens)
+      .set({ consumedAt: now })
       .where(
         and(
           eq(portalMagicTokens.tokenHash, tokenHash),
           isNull(portalMagicTokens.consumedAt),
+          gt(portalMagicTokens.expiresAt, now),
         )
       )
-      .limit(1);
+      .returning();
 
-    if (!tokenRow || tokenRow.expiresAt < now) {
+    if (!tokenRow) {
       throw createError(401, "Invalid or expired link");
     }
-
-    // Mark token as consumed (single-use)
-    await db
-      .update(portalMagicTokens)
-      .set({ consumedAt: now })
-      .where(eq(portalMagicTokens.id, tokenRow.id));
 
     // Fetch contact + customer company
     const [contact] = await db
@@ -368,9 +422,24 @@ router.get(
       .where(eq(tenantFeatures.companyId, portal.companyId))
       .limit(1);
 
+    // 2026-04-19 Portal polish: surface company contact info so the
+    // portal header/footer can display a trustworthy "call us / email us"
+    // block to customers. Already-existing columns on `companies`; no
+    // schema change, purely additive SELECT.
+    const [companyContact] = await db
+      .select({
+        phone: companies.phone,
+        email: companies.email,
+      })
+      .from(companies)
+      .where(eq(companies.id, portal.companyId))
+      .limit(1);
+
     return res.json({
       ...portal,
       paymentsEnabled: features?.paymentsEnabled ?? false,
+      companyPhone: companyContact?.phone ?? null,
+      companyEmail: companyContact?.email ?? null,
     });
   })
 );
@@ -542,6 +611,153 @@ router.get(
       paymentsEnabled: features?.paymentsEnabled ?? false,
     });
   })
+);
+
+// ------------------------------------------------------------------
+// GET /api/portal/invoices/:invoiceId/pdf — customer PDF download
+// ------------------------------------------------------------------
+// 2026-04-18 Phase 11: customer-facing PDF download. Reuses the
+// canonical `generateInvoicePdf` so the customer receives the exact
+// same document the staff route serves. Scope/visibility guardrails
+// mirror the invoice-detail route above — draft/voided 404, strict
+// tenant + customerCompanyId isolation.
+router.get(
+  "/invoices/:invoiceId/pdf",
+  requirePortalAuth,
+  asyncHandler(async (req: Request, res: Response) => {
+    const { companyId, customerCompanyId } = (req as PortalRequest).portal;
+    const { invoiceId } = req.params;
+
+    const invoice = await storage.getInvoice(companyId, invoiceId);
+    if (
+      !invoice ||
+      invoice.customerCompanyId !== customerCompanyId ||
+      isInvoiceDraft(invoice.status) ||
+      isInvoiceVoided(invoice.status)
+    ) {
+      throw createError(404, "Invoice not found");
+    }
+
+    const [lines, location, company] = await Promise.all([
+      storage.getInvoiceLines(companyId, invoiceId),
+      storage.getClient(companyId, invoice.locationId),
+      storage.getCompanyById(companyId),
+    ]);
+    if (!location) throw createError(400, "Invoice has invalid location reference");
+    if (!company) throw createError(500, "Company not found");
+
+    let customerCompany = null;
+    const resolvedCustCompanyId = invoice.customerCompanyId || location.parentCompanyId;
+    if (resolvedCustCompanyId) {
+      customerCompany = await storage.getCustomerCompany(companyId, resolvedCustCompanyId);
+    }
+
+    const pdfBuffer = await generateInvoicePdf({
+      invoice: invoice as any,
+      lines,
+      company,
+      location: {
+        companyName: location.companyName ?? "",
+        address: location.address,
+        address2: location.address2,
+        city: location.city,
+        provinceState: location.province,
+        postalCode: location.postalCode,
+        phone: location.phone,
+        email: location.email,
+      },
+      customerCompany: customerCompany ? { name: customerCompany.name ?? "" } : null,
+    });
+
+    const filename = `Invoice-${invoice.invoiceNumber || invoice.id.slice(0, 8)}.pdf`;
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Length", pdfBuffer.length);
+    res.send(pdfBuffer);
+  }),
+);
+
+// ------------------------------------------------------------------
+// POST /api/portal/invoices/:invoiceId/stripe/payment-intent
+// ------------------------------------------------------------------
+// 2026-04-18 Phase 11: portal-scoped PaymentIntent creation. Mirrors
+// the staff route (`server/routes/stripePayments.ts`) but gates on the
+// portal session + the `customerPortalPaymentsEnabled` feature flag.
+// The canonical Stripe webhook remains the only writer of the
+// `payments` ledger row — this route just hands the customer a
+// clientSecret so Stripe Elements can confirm the card on the
+// customer's side.
+router.post(
+  "/invoices/:invoiceId/stripe/payment-intent",
+  portalPaymentIntentLimiter,
+  requirePortalAuth,
+  asyncHandler(async (req: Request, res: Response) => {
+    const { companyId, customerCompanyId } = (req as PortalRequest).portal;
+    const { invoiceId } = req.params;
+
+    if (!process.env.STRIPE_SECRET_KEY) {
+      throw createError(503, "Online payments are not configured");
+    }
+    const publishableKey = process.env.STRIPE_PUBLISHABLE_KEY;
+    if (!publishableKey) {
+      throw createError(503, "Online payments are not configured");
+    }
+
+    // Feature flag gate — tenant must have customer-portal payments enabled.
+    const [features] = await db
+      .select({ paymentsEnabled: tenantFeatures.customerPortalPaymentsEnabled })
+      .from(tenantFeatures)
+      .where(eq(tenantFeatures.companyId, companyId))
+      .limit(1);
+    if (!features?.paymentsEnabled) {
+      throw createError(403, "Online payments are not enabled for this account");
+    }
+
+    // Scope check — invoice must belong to this customer company and be
+    // in a payable state. Draft/voided/paid are rejected.
+    const invoice = await invoiceRepository.getInvoice(companyId, invoiceId);
+    if (!invoice || invoice.customerCompanyId !== customerCompanyId) {
+      throw createError(404, "Invoice not found");
+    }
+    if (!canAcceptInvoicePayment(invoice.status)) {
+      throw createError(400, `Cannot take payment on invoice with status "${invoice.status}".`);
+    }
+
+    // The customer always pays the current outstanding balance — no
+    // partial-amount UI on the portal in this phase.
+    const balanceCents = Math.round(parseFloat(invoice.balance ?? "0") * 100);
+    if (!Number.isFinite(balanceCents) || balanceCents <= 0) {
+      throw createError(400, "Invoice has no outstanding balance");
+    }
+
+    // Pre-generated id doubles as the Stripe Idempotency-Key and becomes
+    // the `payments.id` when the webhook records the ledger row. Same
+    // pattern as the staff path — keeps the webhook canonical.
+    const prospectivePaymentId = randomUUID();
+
+    const stripe = getStripeClient();
+    const intent = await stripe.paymentIntents.create(
+      {
+        amount: balanceCents,
+        currency: "usd",
+        automatic_payment_methods: { enabled: true },
+        metadata: {
+          companyId,
+          invoiceId,
+          prospectivePaymentId,
+          invoiceNumber: String(invoice.invoiceNumber ?? ""),
+          source: "portal",
+        },
+      },
+      { idempotencyKey: prospectivePaymentId },
+    );
+
+    res.status(201).json({
+      clientSecret: intent.client_secret,
+      paymentIntentId: intent.id,
+      publishableKey,
+    });
+  }),
 );
 
 export default router;

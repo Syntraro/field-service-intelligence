@@ -6,10 +6,11 @@
 import { useState } from "react";
 import { useLocation, useParams } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, MapPin, Phone, Mail, Wrench, Briefcase, FileText, ChevronRight, Loader2, User, Calendar } from "lucide-react";
+import { ArrowLeft, MapPin, Phone, Mail, Wrench, Briefcase, FileText, ChevronRight, Loader2, User, Calendar, Navigation } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { MobileShell } from "../components/MobileShell";
 import { apiRequest } from "@/lib/queryClient";
+import { toTelHref, toMapsHref } from "../utils/externalLinks";
 
 interface LocationData {
   id: string;
@@ -63,6 +64,18 @@ export function LocationDetailPage() {
   const [, setLocation] = useLocation();
   const [activeTab, setActiveTab] = useState<Tab>("Overview");
 
+  // Back navigation: prefer referrer history so the tech returns to the page
+  // they came from (Search, Today, Create Job picker, etc.). Falls back to
+  // /tech/today when the page was opened from a cold URL, matching the
+  // app's canonical landing destination.
+  const handleBack = () => {
+    if (typeof window !== "undefined" && window.history.length > 1) {
+      window.history.back();
+    } else {
+      setLocation("/tech/today");
+    }
+  };
+
   const { data: loc, isLoading, isError } = useQuery<LocationData>({
     queryKey: ["/api/clients", locationId],
     queryFn: () => apiRequest(`/api/clients/${locationId}`),
@@ -93,7 +106,7 @@ export function LocationDetailPage() {
     <MobileShell showNav>
       <div className="text-center py-16 text-slate-400">
         <p className="text-sm">Location not found</p>
-        <button onClick={() => setLocation("/tech/search")} className="mt-2 text-xs text-emerald-600">Back to Search</button>
+        <button onClick={handleBack} className="mt-2 min-h-[44px] px-4 text-xs text-emerald-600">Back</button>
       </div>
     </MobileShell>
   );
@@ -113,8 +126,12 @@ export function LocationDetailPage() {
       {/* Header */}
       <div className="bg-[#0f1a2e] px-3 pt-2 pb-3">
         <div className="flex items-center gap-2">
-          <button onClick={() => setLocation("/tech/search")} className="p-1 -ml-1 rounded-md hover:bg-white/10">
-            <ArrowLeft className="h-4 w-4 text-white" />
+          <button
+            onClick={handleBack}
+            aria-label="Back"
+            className="min-h-[44px] min-w-[44px] -ml-2 flex items-center justify-center rounded-md hover:bg-white/10 active:bg-white/20"
+          >
+            <ArrowLeft className="h-5 w-5 text-white" />
           </button>
           <div className="flex-1 min-w-0">
             <h1 className="text-sm font-bold text-white truncate">{loc.companyName}</h1>
@@ -127,13 +144,52 @@ export function LocationDetailPage() {
           <p className="text-xs text-slate-400 pl-7 mt-0.5 flex items-center gap-1"><MapPin className="h-3 w-3 shrink-0" />{addressLine}</p>
         )}
         <div className="pl-7 mt-0.5 flex items-center gap-3">
-          {loc.phone && <span className="text-xs text-slate-400 flex items-center gap-1"><Phone className="h-3 w-3" />{loc.phone}</span>}
-          {loc.email && <span className="text-xs text-slate-400 flex items-center gap-1"><Mail className="h-3 w-3" />{loc.email}</span>}
+          {loc.phone && toTelHref(loc.phone) && (
+            <a
+              href={toTelHref(loc.phone)!}
+              aria-label={`Call ${loc.phone}`}
+              className="text-xs text-slate-400 flex items-center gap-1 min-h-[32px] hover:text-emerald-400"
+            >
+              <Phone className="h-3 w-3" />{loc.phone}
+            </a>
+          )}
+          {loc.email && (
+            <a
+              href={`mailto:${loc.email}`}
+              aria-label={`Email ${loc.email}`}
+              className="text-xs text-slate-400 flex items-center gap-1 min-h-[32px] hover:text-emerald-400"
+            >
+              <Mail className="h-3 w-3" />{loc.email}
+            </a>
+          )}
         </div>
       </div>
 
       {/* Action buttons */}
       <div className="px-3 py-2 flex gap-2 border-b border-slate-100">
+        {/* Primary quick actions — one tap to dial / navigate / create. The
+            Call and Directions buttons are the top reasons a tech opens a
+            location, so they sit at the widest thumb zone on top. */}
+        {toTelHref(loc.phone) && (
+          <a
+            href={toTelHref(loc.phone)!}
+            aria-label={`Call ${loc.companyName}`}
+            className="flex-1 h-9 rounded-md border border-emerald-200 text-xs font-semibold text-emerald-700 flex items-center justify-center gap-1.5 hover:bg-emerald-50 active:bg-emerald-100"
+          >
+            <Phone className="h-3 w-3" />Call
+          </a>
+        )}
+        {toMapsHref(addressLine) && (
+          <a
+            href={toMapsHref(addressLine)!}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Open in maps"
+            className="flex-1 h-9 rounded-md border border-slate-200 text-xs font-semibold text-slate-700 flex items-center justify-center gap-1.5 hover:bg-slate-50 active:bg-slate-100"
+          >
+            <Navigation className="h-3 w-3" />Directions
+          </a>
+        )}
         <button onClick={handleCreateJob}
           className="flex-1 h-9 rounded-md border border-slate-200 text-xs font-semibold text-slate-700 flex items-center justify-center gap-1.5 hover:bg-slate-50 active:bg-slate-100">
           <Briefcase className="h-3 w-3" />Create Job
@@ -162,8 +218,12 @@ export function LocationDetailPage() {
               <div className="rounded-md border border-slate-200 bg-white p-3">
                 <p className="text-[10px] font-semibold text-slate-400 uppercase">Contact</p>
                 <p className="text-sm font-medium text-slate-800 flex items-center gap-1"><User className="h-3 w-3 text-slate-400" />{loc.contactName}</p>
-                {loc.phone && <p className="text-xs text-slate-500 mt-0.5">{loc.phone}</p>}
-                {loc.email && <p className="text-xs text-slate-500">{loc.email}</p>}
+                {loc.phone && toTelHref(loc.phone) && (
+                  <a href={toTelHref(loc.phone)!} className="text-xs text-emerald-600 mt-0.5 inline-block">{loc.phone}</a>
+                )}
+                {loc.email && (
+                  <a href={`mailto:${loc.email}`} className="text-xs text-emerald-600 block">{loc.email}</a>
+                )}
               </div>
             )}
             {loc.notes && (

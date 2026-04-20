@@ -20,35 +20,9 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-
-/** Equipment type options — canonical list shared across equipment surfaces */
-export const EQUIPMENT_TYPES = [
-  { value: "rtu", label: "Rooftop Unit (RTU)" },
-  { value: "split_system", label: "Split System" },
-  { value: "chiller", label: "Chiller" },
-  { value: "boiler", label: "Boiler" },
-  { value: "furnace", label: "Furnace" },
-  { value: "heat_pump", label: "Heat Pump" },
-  { value: "ahu", label: "Air Handler Unit (AHU)" },
-  { value: "vrf", label: "VRF System" },
-  { value: "walk_in_cooler", label: "Walk-in Cooler" },
-  { value: "walk_in_freezer", label: "Walk-in Freezer" },
-  { value: "reach_in_cooler", label: "Reach-in Cooler" },
-  { value: "reach_in_freezer", label: "Reach-in Freezer" },
-  { value: "ice_machine", label: "Ice Machine" },
-  { value: "exhaust_fan", label: "Exhaust Fan" },
-  { value: "makeup_air", label: "Makeup Air Unit" },
-  { value: "other", label: "Other" },
-];
+import { EquipmentTypeCombobox } from "@/components/EquipmentTypeCombobox";
 
 const emptyForm = {
   name: "",
@@ -122,19 +96,11 @@ export function AddEquipmentDialog({ locationId, open, onOpenChange, onCreated }
           </div>
           <div className="grid gap-1.5">
             <Label className="text-xs">Type</Label>
-            <Select
+            <EquipmentTypeCombobox
               value={form.equipmentType}
-              onValueChange={(v) => setForm(prev => ({ ...prev, equipmentType: v }))}
-            >
-              <SelectTrigger className="h-8 text-sm">
-                <SelectValue placeholder="Select type..." />
-              </SelectTrigger>
-              <SelectContent>
-                {EQUIPMENT_TYPES.map(t => (
-                  <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              onChange={(name) => setForm(prev => ({ ...prev, equipmentType: name }))}
+              placeholder="Select or create type..."
+            />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="grid gap-1.5">

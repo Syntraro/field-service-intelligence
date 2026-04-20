@@ -42,7 +42,7 @@ export function useJobVisits(jobId: string, options: UseJobVisitsOptions = {}) {
   const visits = query.data || [];
 
   // Derived selectors (computed on each render, memoized)
-  const { currentEligibleVisit, upcomingVisits, historyVisits, eligibleVisits, activeVisit, completedVisits } = useMemo(() => {
+  const { upcomingVisits, historyVisits, eligibleVisits, activeVisits, completedVisits, hasScheduledVisit } = useMemo(() => {
     const now = new Date();
 
     // Eligible visits: isActive=true AND status NOT IN (completed, cancelled)
@@ -95,10 +95,12 @@ export function useJobVisits(jobId: string, options: UseJobVisitsOptions = {}) {
         return bCreated - aCreated;
       });
 
-    // 2026-03-05: Jobber-style active/completed split (Rule B).
-    // activeVisit = the single current working visit (not completed, not cancelled)
-    // completedVisits = only status='completed' visits, sorted newest first
-    const active = eligible[0] || null;
+    // 2026-04-18 Phase 2 (multi-visit): plural active visits. A job may
+    // legitimately have multiple non-terminal visits open at once; callers
+    // that previously read a singular "the active visit" must decide
+    // explicitly (choose one, render a chooser, or act over all of them).
+    // The old `activeVisit = eligible[0]` singular was removed.
+    const actives = eligible;
     const completed = visits
       .filter((v) => v.status === "completed")
       .sort((a, b) => {
@@ -107,13 +109,18 @@ export function useJobVisits(jobId: string, options: UseJobVisitsOptions = {}) {
         return bTime - aTime; // Newest first
       });
 
+    // 2026-04-18 Phase 4: the derived `current` is used ONLY to partition
+    // upcoming/history below. It's no longer exported — external callers
+    // that need "a" visit should pick explicitly from `activeVisits`.
+    const hasScheduled = eligible.some((v) => v.scheduledStart !== null);
+
     return {
-      currentEligibleVisit: current,
       upcomingVisits: upcoming,
       historyVisits: history,
       eligibleVisits: eligible,
-      activeVisit: active,
+      activeVisits: actives,
       completedVisits: completed,
+      hasScheduledVisit: hasScheduled,
     };
   }, [visits]);
 
@@ -132,17 +139,16 @@ export function useJobVisits(jobId: string, options: UseJobVisitsOptions = {}) {
     refetch: query.refetch,
 
     // Derived selectors
-    currentEligibleVisit,
     upcomingVisits,
     historyVisits,
     eligibleVisits,
-    activeVisit,
+    activeVisits,
     completedVisits,
 
     // Helpers
     refetchVisits,
     hasVisits: visits.length > 0,
-    isScheduled: !!currentEligibleVisit,
+    isScheduled: hasScheduledVisit,
   };
 }
 

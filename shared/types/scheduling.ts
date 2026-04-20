@@ -195,9 +195,12 @@ export interface UnscheduledJobDto {
   lat?: string | null;
   /** Client location longitude (from client_locations) — for dispatch map markers */
   lng?: string | null;
-  /** 2026-03-22: Real visit ID from job_visits — enables canonical EditVisitModal opening.
-   *  Null if no active non-terminal visit exists (e.g., all visits archived/completed). */
-  activeVisitId?: string | null;
+  /** 2026-04-18 Phase 2 (multi-visit): every active non-terminal visit id
+   *  on this backlog job, ordered by visit_number asc. Canonical replacement
+   *  for `activeVisitId`. A backlog card may now carry multiple visitIds —
+   *  consumers that need a single id for a legacy singular UI path should
+   *  use `visitIds[0]` explicitly and plan to migrate to a visit chooser. */
+  visitIds: string[];
 }
 
 // ============================================================================

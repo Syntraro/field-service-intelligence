@@ -43,8 +43,12 @@ export function DaySelector({ selectedDate, onSelect, onPrev, onNext, onToday }:
   return (
     <div className="px-4 pt-2 pb-1">
       <div className="flex items-center justify-between mb-1.5">
-        <button onClick={onPrev} className="p-1 rounded-md active:bg-slate-100">
-          <ChevronLeft className="text-slate-500" style={{ width: 18, height: 18 }} />
+        <button
+          onClick={onPrev}
+          aria-label="Previous day"
+          className="min-h-[44px] min-w-[44px] -ml-2 flex items-center justify-center rounded-md active:bg-slate-100"
+        >
+          <ChevronLeft className="text-slate-500" style={{ width: 20, height: 20 }} />
         </button>
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold text-slate-800">
@@ -56,8 +60,12 @@ export function DaySelector({ selectedDate, onSelect, onPrev, onNext, onToday }:
             </button>
           )}
         </div>
-        <button onClick={onNext} className="p-1 rounded-md active:bg-slate-100">
-          <ChevronRight className="text-slate-500" style={{ width: 18, height: 18 }} />
+        <button
+          onClick={onNext}
+          aria-label="Next day"
+          className="min-h-[44px] min-w-[44px] -mr-2 flex items-center justify-center rounded-md active:bg-slate-100"
+        >
+          <ChevronRight className="text-slate-500" style={{ width: 20, height: 20 }} />
         </button>
       </div>
       <div className="grid grid-cols-7 gap-0.5">

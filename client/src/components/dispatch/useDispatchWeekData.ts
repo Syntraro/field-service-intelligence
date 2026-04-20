@@ -35,12 +35,20 @@ export function useDispatchWeekData(selectedDate: Date, enabled = true) {
   );
 
   /** Multi-tech: visits grouped by each assigned technicianId -> "yyyy-MM-dd" -> DispatchVisit[]
-   *  Unassigned visits bucketed under UNASSIGNED_TECH_ID. */
+   *  Unassigned visits bucketed under UNASSIGNED_TECH_ID.
+   *
+   *  2026-04-19 dispatch-drift fix: group STRICTLY by `visit.technicianIds`
+   *  (the canonical visit-level crew array). The previous fallback to the
+   *  scalar `visit.technicianId` (= `assignedTechnicianIds[0]`) was a stale-
+   *  state hazard: if any optimistic update ever sets the scalar without
+   *  clearing the array, an unassigned visit lingers under the prior
+   *  technician's lane. The scalar field stays on `DispatchVisit` for
+   *  color/DnD callers but is no longer authoritative for placement. */
   const visitsByTechByDay = useMemo(() => {
     const map = new Map<string, Map<string, DispatchVisit[]>>();
     for (const visit of rangeData.scheduledVisits) {
       if (!visit.scheduledStart) continue;
-      const techIds = visit.technicianIds.length > 0 ? visit.technicianIds : (visit.technicianId ? [visit.technicianId] : []);
+      const techIds = visit.technicianIds;
       const dayKey = getDispatchDayKey(visit.scheduledStart, visit.isAllDay);
       if (techIds.length === 0) {
         if (!map.has(UNASSIGNED_TECH_ID)) map.set(UNASSIGNED_TECH_ID, new Map());

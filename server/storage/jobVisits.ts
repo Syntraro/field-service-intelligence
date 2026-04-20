@@ -549,10 +549,20 @@ export class JobVisitsRepository extends BaseRepository {
 
   /**
    * Compute next visit number for a job (max across ALL visits + 1).
+   *
    * Visit Reschedule Architecture fix: removed isActive filter because the
-   * unique constraint job_visits_job_visit_number_uq covers ALL rows including
-   * inactive ones. Without this fix, soft-deleting visit #1 then creating a
-   * new visit would try to reuse #1, causing a constraint violation.
+   * uniqueness guard covers ALL rows including inactive ones (canonical
+   * 3-col index job_visits_company_job_visit_number_uq as of 2026-04-18
+   * Phase 0). Without this, soft-deleting visit #1 then creating a new
+   * visit would try to reuse #1, causing a constraint violation.
+   *
+   * 2026-04-18 Phase 0 — race-condition caveat: `MAX + 1` is read, then
+   * used by the caller for an INSERT. Two concurrent creates on the same
+   * job can read the same max and collide on INSERT. The canonical DB
+   * unique index now surfaces that collision as 23505, which
+   * `createJobVisit` catches and retries with a freshly recomputed
+   * max+1. This method is intentionally NOT in a transaction with its
+   * caller — the retry loop is the protection, not locking.
    */
   private async getNextVisitNumber(companyId: string, jobId: string): Promise<number> {
     const [row] = await db
@@ -585,8 +595,13 @@ export class JobVisitsRepository extends BaseRepository {
       throw this.notFoundError("Job");
     }
 
-    // Part 2: Compute visitNumber if not provided
-    const visitNumber = input.visitNumber ?? await this.getNextVisitNumber(companyId, jobId);
+    // Part 2: Compute visitNumber if not provided. Caller-supplied values
+    // are trusted and not auto-retried — only repository-computed numbers
+    // participate in the race-recovery loop below.
+    const callerProvidedVisitNumber = input.visitNumber != null;
+    let visitNumber: number = callerProvidedVisitNumber
+      ? input.visitNumber
+      : await this.getNextVisitNumber(companyId, jobId);
 
     // Part 2: Normalize scheduling fields
     const rawStart = input.scheduledStart ?? input.scheduledDate;
@@ -646,10 +661,64 @@ export class JobVisitsRepository extends BaseRepository {
     };
     sanitizeSchedulingTimestamps(visitValues, jobId);
 
-    const [visit] = await db
-      .insert(jobVisits)
-      .values(visitValues)
-      .returning();
+    // 2026-04-18 Phase 0 — collision-safe create.
+    //
+    // The canonical unique index
+    //   UNIQUE(company_id, job_id, visit_number)
+    //   [job_visits_company_job_visit_number_uq]
+    // makes the DB the source of truth for visit-number uniqueness. If two
+    // concurrent calls read the same MAX and both attempt INSERT with the
+    // same computed number, exactly one succeeds and the other throws a
+    // 23505 unique-violation. We catch that specific error, recompute
+    // MAX+1 with a tiny jittered backoff, and retry. The winning insert
+    // is authoritative; the loser takes the next number. No transaction
+    // or row lock is needed — DB uniqueness is the arbiter.
+    //
+    // MAX_ATTEMPTS is sized for realistic contention (typical dispatcher
+    // bulk-create + a small safety margin). Caller-supplied visit numbers
+    // are never auto-rewritten — the caller's intent is respected and the
+    // 23505 propagates unmodified so the integration layer can surface it.
+    //
+    // Error detection intentionally checks BOTH `err.code === "23505"`
+    // AND a message/constraint substring match. The Neon serverless
+    // driver does not always populate `err.constraint`, but the error
+    // message always carries the constraint name on a unique violation.
+    const MAX_ATTEMPTS = 20;
+    let visit: typeof jobVisits.$inferSelect | undefined;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      try {
+        [visit] = await db
+          .insert(jobVisits)
+          .values(visitValues)
+          .returning();
+        break;
+      } catch (err: any) {
+        const isUniqueViolation = err?.code === "23505";
+        const hint = `${err?.constraint ?? ""} ${err?.message ?? ""}`;
+        const isVisitNumberConflict =
+          isUniqueViolation && hint.includes("visit_number");
+        if (
+          isVisitNumberConflict &&
+          !callerProvidedVisitNumber &&
+          attempt < MAX_ATTEMPTS - 1
+        ) {
+          // Small jittered backoff so concurrent retriers don't all
+          // re-read MAX in lockstep again on the next iteration.
+          await new Promise((r) => setTimeout(r, 5 + Math.floor(Math.random() * 15)));
+          visitNumber = await this.getNextVisitNumber(companyId, jobId);
+          visitValues.visitNumber = visitNumber;
+          lastErr = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (!visit) {
+      // Exhausted retries. Surface the last unique-violation so the
+      // caller sees the exact DB error, not a generic "undefined visit".
+      throw lastErr ?? new Error("createJobVisit: insert produced no row");
+    }
 
     // Step 2.4: Sync job schedule from visits after create
     await this.syncJobScheduleFromVisits(companyId, jobId);

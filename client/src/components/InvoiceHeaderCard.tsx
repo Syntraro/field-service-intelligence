@@ -24,6 +24,9 @@ import {
   MoreHorizontal, Send, DollarSign, PenTool, RotateCw, Ban, Edit, FileText,
   Printer, CheckCircle, MapPin, Mail, Briefcase,
   Check, X, Trash2,
+  // 2026-04-19 Portal activation: icons for the three new portal actions
+  // (copy payment link, open portal, send payment link email).
+  Link2, ExternalLink,
 } from "lucide-react";
 import { Link } from "wouter";
 import type { Invoice, Client, CustomerCompany, Job } from "@shared/schema";
@@ -67,6 +70,9 @@ interface InvoiceHeaderCardProps {
   onVoid?: () => void;
   onDelete?: () => void;
   onRefreshFromJob?: () => void;
+  /** 2026-04-18 Phase 8: opens the composition dialog so the user can
+   *  pick specific labor/parts instead of adding everything remaining. */
+  onChooseItemsFromJob?: () => void;
   refreshPending?: boolean;
   voidPending?: boolean;
   deletePending?: boolean;
@@ -74,6 +80,22 @@ interface InvoiceHeaderCardProps {
   onPrintPdf?: () => void;
   onPreview?: () => void;
   pdfPending?: boolean;
+  // 2026-04-19 Portal activation — surface three portal CTAs in the
+  // overflow menu. Visibility is owned by the parent (it reads tenant
+  // features + invoice status); passing a callback = "show this item".
+  /** Copy the customer-facing portal URL to clipboard. */
+  onCopyPaymentLink?: () => void;
+  /** Open the customer-facing portal URL in a new tab. */
+  onOpenClientPortal?: () => void;
+  /** Send a magic-link email so the customer can sign in and pay. */
+  onSendPaymentLink?: () => void;
+  /**
+   * 2026-04-19 Reminders UI refactor — slot for the compact
+   * `InvoiceRemindersButton` that replaced the full-width reminders
+   * card. Parent controls visibility (hidden on draft / paid / voided).
+   * Receiving a ReactNode keeps InvoiceHeaderCard reminder-agnostic.
+   */
+  remindersSlot?: React.ReactNode;
   onToggleSent?: (sentStatus: boolean) => void;
   toggleSentPending?: boolean;
   canEdit?: boolean;
@@ -95,8 +117,10 @@ export function InvoiceHeaderCard({
   invoice, location, customerCompany, job,
   billingAddress, serviceAddress, primaryContact,
   onEdit, onSend, onCollectPayment, onVoid, onDelete,
-  onRefreshFromJob, refreshPending, voidPending, deletePending,
+  onRefreshFromJob, onChooseItemsFromJob, refreshPending, voidPending, deletePending,
   onDownloadPdf, onPrintPdf, onPreview, pdfPending,
+  onCopyPaymentLink, onOpenClientPortal, onSendPaymentLink,
+  remindersSlot,
   onToggleSent, toggleSentPending,
   canEdit, isDraft, isEditing, sendPending,
   statusLabel, statusVariant = "outline", isPastDue,
@@ -329,6 +353,9 @@ export function InvoiceHeaderCard({
             <FileText className="h-3.5 w-3.5" />Preview
           </Button>
         )}
+        {/* 2026-04-19 Reminders UI refactor — compact header dropdown,
+            replacing the former full-width InvoiceRemindersCard strip. */}
+        {remindersSlot}
         {isDraft && onSend && (
           <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white gap-1.5 h-7" onClick={onSend} disabled={sendPending}>
             <Send className="h-3.5 w-3.5" />{sendPending ? "Sending..." : "Send Invoice"}
@@ -367,12 +394,43 @@ export function InvoiceHeaderCard({
                 <Printer className="h-4 w-4 mr-2" />Print
               </DropdownMenuItem>
             )}
+            {/* 2026-04-19 Portal activation — three customer-portal CTAs.
+                Parent controls visibility by whether it passes a callback;
+                shown only on non-draft / non-voided invoices in practice. */}
+            {(onCopyPaymentLink || onOpenClientPortal || onSendPaymentLink) && (
+              <>
+                <DropdownMenuSeparator />
+                {onCopyPaymentLink && (
+                  <DropdownMenuItem onClick={onCopyPaymentLink} data-testid="menu-item-copy-payment-link">
+                    <Link2 className="h-4 w-4 mr-2" />Copy payment link
+                  </DropdownMenuItem>
+                )}
+                {onOpenClientPortal && (
+                  <DropdownMenuItem onClick={onOpenClientPortal} data-testid="menu-item-open-client-portal">
+                    <ExternalLink className="h-4 w-4 mr-2" />Open client portal
+                  </DropdownMenuItem>
+                )}
+                {onSendPaymentLink && (
+                  <DropdownMenuItem onClick={onSendPaymentLink} data-testid="menu-item-send-payment-link">
+                    <Mail className="h-4 w-4 mr-2" />Send payment link
+                  </DropdownMenuItem>
+                )}
+              </>
+            )}
             {isDraft && job && onRefreshFromJob && (
               <>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={onRefreshFromJob} disabled={refreshPending}>
                   <RotateCw className="h-4 w-4 mr-2" />Refresh from Job
                 </DropdownMenuItem>
+                {/* 2026-04-18 Phase 8: composition variant — same refresh
+                    endpoint, but the dialog lets the user pick specific
+                    labor/parts rather than adding all remaining items. */}
+                {onChooseItemsFromJob && (
+                  <DropdownMenuItem onClick={onChooseItemsFromJob} disabled={refreshPending}>
+                    <RotateCw className="h-4 w-4 mr-2" />Choose Items to Add…
+                  </DropdownMenuItem>
+                )}
               </>
             )}
             {/* "Mark as sent" preserved for the case where staff sent an

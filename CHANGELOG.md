@@ -8,6 +8,2600 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Customer data integrity — contact dedupe shipped, companies/locations migration-ready (2026-04-19)
+
+Continuation of the catalog hardening work. Live duplicate scan
+across all four customer-data tables on dev DB returned **zero**
+duplicate groups under the recommended natural keys. Contact dedupe
+is shipped (helper + migration + all routes converted). Customer
+companies and client locations are now staged for production scan +
+migration — code paths already converge on app-level dedupe for
+companies; locations need a helper before their constraint goes in.
+
+**P1 — duplicate-risk audit (live counts)**
+
+| Domain | Natural key scanned | Live dupe groups | App dedupe today | Schema today |
+|---|---|---|---|---|
+| Customer companies | `(company_id, name_normalized)` | 0 | `findOrCreateCustomerCompany` (used by full-create, CSV import, legacy-client→company normalization, QBO import) | Only QBO sync ID unique |
+| Client locations (child) | `(parent_company_id, lower(location))` | 0 | None on direct routes; CSV import has address-composite check; QBO import has multi-signal | Only QBO sync ID unique |
+| Client locations (orphan) | `(company_id, lower(company_name))` | 0 | None | Only QBO sync ID unique |
+| Contacts (with email) | `(company_id, customer_company_id, lower(email))` | 0 | CSV import only (not direct routes) | None |
+| Contacts (no email) | name-only fallback | 0 | CSV import only | None |
+
+**P2 — Contact dedupe shipped**
+
+Helper: `clientContactRepository.createOrGetPerson` (and `Tx`
+variant) in `server/storage/clientContacts.ts`. Email-first cascade
+matching the field-tested CSV import pattern:
+
+  1. `lower(email)` within `(company_id, customer_company_id)` — strong, also DB-enforced
+  2. `lower(name) + lower(phone)` (both required) — moderate
+  3. `lower(name)` only — weakest fallback for no-email contacts
+
+Returns `{contact, created}` so callers (notably the CSV importer)
+can report whether the path created or matched without a second
+lookup.
+
+The legacy `createPerson`, `createPersonTx`, `createContactTx`,
+`findContactByEmail`, `findContactByNamePhone`, `findContactByName`
+methods are kept for backward compat but documented as raw-insert /
+internal — every API route now goes through `createOrGetPerson(Tx)`.
+
+Migration: `migrations/2026_04_19_contacts_unique_email_per_customer.sql`
+
+```sql
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS contacts_company_customer_email_lower_uq
+  ON contact_persons (company_id, customer_company_id, lower(email))
+  WHERE email IS NOT NULL AND TRIM(email) <> '';
+```
+
+The partial scope keeps no-email contacts out of the constraint.
+Name-only dedupe stays application-only because two different humans
+can legitimately share a name within a customer ("John Smith Sr." vs
+"Jr.") — a hard schema constraint there would block real-world data.
+The email index is the safety net for the strong-signal case; the
+helper cascade is the primary dedupe.
+
+Live scan: 0 conflicts — applied cleanly.
+
+**P3 — Audit of all client/contact creation flows + route convergence**
+
+All four contact-creation paths now go through the canonical helper:
+
+| Path | File:Line | Was | Now |
+|---|---|---|---|
+| `POST /api/clients/full-create` (contacts loop) | `server/routes/clients.ts:514–523` | `createPerson` raw insert per element | `createOrGetPerson` per element; existing matches return without insert |
+| `POST /api/customer-companies/:id/contacts` | `server/routes/customer-companies.ts:374` | `createPerson` raw insert | `createOrGetPerson` |
+| `POST /api/customer-companies/:id/locations` (inline-contact branch) | `server/routes/customer-companies.ts:155` | `createContactTx` raw insert in TX | `createOrGetPersonTx` in same TX |
+| `clientImport.executeRow` (CSV) | `server/services/clientImport.ts:800–845` | hand-rolled email→name+phone→name cascade with branch flags | single `createOrGetPersonTx` call; `created` flag from helper return |
+
+The CSV importer change collapses ~45 lines of cascade logic into a
+single helper call. The same cascade now lives in one place,
+authoritative for all routes.
+
+**Lead conversion path**: confirmed not present. `server/routes/leads.ts`
+manages lead status (`new → contacted → quoted → won`) as metadata
+only — no entity creation triggered by status transitions. Quotes
+reference `leadId` but do not promote leads. No new code path needed.
+
+**P4 — Migration readiness for customer companies + client locations**
+
+Both domains are clean on the dev DB and ready to ship — but each
+has a missing piece that should land before adding a hard constraint.
+
+**Customer companies** — READY pending production scan + helper alignment
+
+- Live `(company_id, name_normalized)` dupes: **0**
+- Null/empty `name_normalized` rows: **0** (would be excluded by partial scope anyway)
+- App-level dedupe already exists via `findOrCreateCustomerCompany`
+  (used by `full-create`, CSV import, `:companyId/locations` legacy path, and QBO import has its own multi-signal dedupe).
+
+Recommended migration (run after pre-deploy scan):
+```sql
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS customer_companies_company_name_normalized_uq
+  ON customer_companies (company_id, name_normalized)
+  WHERE deleted_at IS NULL AND name_normalized IS NOT NULL AND name_normalized <> '';
+```
+
+Pre-deploy detection query:
+```sql
+SELECT company_id, name_normalized, COUNT(*) AS dupes,
+       array_agg(name ORDER BY created_at) AS variants
+  FROM customer_companies
+ WHERE deleted_at IS NULL AND name_normalized IS NOT NULL AND name_normalized <> ''
+ GROUP BY company_id, name_normalized
+HAVING COUNT(*) > 1;
+```
+
+Cleanup needed before constraint: any duplicate groups must be
+consolidated by either (a) merging the rows (re-pointing
+`client_locations.parent_company_id`, `contact_persons.customer_company_id`,
+and any tagged FKs) or (b) renaming the older variant. Recommend
+running the consolidation as a separate migration before the index.
+
+**Client locations (child of customer company)** — READY pending production scan + helper
+
+- Live `(parent_company_id, lower(location))` dupes: **0**
+- Null/empty `location` rows under a parent: **0** (would be excluded)
+- App-level dedupe today: **NONE on direct routes**
+  (CSV importer has address composite-key check but the
+  `POST /api/clients`, `POST /api/clients/full-create` additional-
+  locations loop, `POST /api/clients/:id/locations`, and
+  `POST /api/customer-companies/:id/locations` all insert without
+  a name pre-check.)
+
+Recommended sequence:
+1. Add a `createOrGetLocation` helper in
+   `server/storage/customerCompanies.ts` mirroring the
+   `createOrGetCustomerCompany` and `createOrGetPerson` patterns.
+   Natural key: `(parent_company_id, lower(location))` for
+   child locations; `(company_id, lower(company_name))` for orphan
+   locations. Skip the helper when location text is empty (legitimate
+   single-site customers often have no location label).
+2. Convert all four direct-route insert paths to use the helper.
+3. Pre-deploy detection query (analogous to companies above).
+4. Migration:
+   ```sql
+   CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS client_locations_parent_location_lower_uq
+     ON client_locations (parent_company_id, lower(location))
+     WHERE deleted_at IS NULL AND parent_company_id IS NOT NULL
+       AND location IS NOT NULL AND TRIM(location) <> '';
+
+   CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS client_locations_orphan_company_name_lower_uq
+     ON client_locations (company_id, lower(company_name))
+     WHERE deleted_at IS NULL AND parent_company_id IS NULL
+       AND company_name IS NOT NULL AND TRIM(company_name) <> '';
+   ```
+
+Both index migrations can ship together. Do not ship the index
+without the helper first — direct routes would surface 23505 errors
+to the UI on the very first re-submit.
+
+**Files affected**
+- `server/storage/clientContacts.ts` — new `createOrGetPerson` + `createOrGetPersonTx` (returns `{contact, created}`); cascade extracted into `matchFromCascade` helper
+- `server/routes/clients.ts` — full-create contacts loop uses `createOrGetPerson`
+- `server/routes/customer-companies.ts` — both contact-creation routes use `createOrGetPerson(Tx)`
+- `server/services/clientImport.ts` — CSV cascade collapsed into single helper call
+- `migrations/2026_04_19_contacts_unique_email_per_customer.sql` (new)
+
+### Changed
+
+#### Catalog hardening — server-side dedupe for `items` (2026-04-19)
+
+Closes the long-flagged item-uniqueness gap: company-scoped,
+case-insensitive, type-aware dedupe enforced at both the application
+and database layers. Live duplicate scan against the dev DB returned 0
+groups — migration ships in the same release as the helper.
+
+**Natural key**: `(company_id, type, lower(name))` — preserves the
+intentional product-vs-service distinction (a "Filter" service and a
+"Filter" product can coexist; two products both named "filter"/"FILTER"
+cannot).
+
+**Storage helper** (`server/storage/items.ts`): new
+`ItemRepository.createOrGet(companyId, userId, itemData)`. Mirrors
+`EquipmentTypeRepository.createOrGet`:
+
+- Active match → return existing row, no insert, no field overwrite.
+- Soft-deleted match → reactivate (clear `deletedAt`, set
+  `isActive = true`) and return. Preserves catalog history without
+  forcing manual unarchive.
+- No match → forward to `createItem` (which keeps its
+  cost+markup auto-pricing).
+
+The legacy `createItem` is kept and now documented as the path the
+QBO catalog importer uses — that flow has its own explicit
+conflict-resolution UX with user-driven MAP/CREATE/SKIP decisions and
+writes QBO sync metadata that doesn't fit the create-or-get contract,
+so it intentionally bypasses the helper.
+
+**Routes converted to createOrGet**:
+
+- `POST /api/items` (`server/routes/items.ts:70`) — primary office
+  create endpoint used by PartsBillingCard, JobTemplateModal,
+  QuoteTemplateModal, EditVisitModal Quick Add, PartsSelectorModal.
+- `POST /api/tech/items` (`server/routes/techField.ts:1067`) — auth-
+  scoped shim for the tech app. Tech quick-creates of an item already
+  in the office catalog now return the existing row instead of
+  twinning.
+- `productImport.executeRow` (`server/services/productImport.ts:415`)
+  — CSV bulk importer. Pre-loaded existing-items cache + within-CSV
+  dedup cache still shortcut the common case; createOrGet is now the
+  catch-net for races and rows the cache missed.
+
+**Storage façade** (`server/storage/index.ts`): exposed as
+`storage.createOrGetItem` (mirrors `storage.createItem`).
+
+**Migration**: `migrations/2026_04_19_items_unique_name_per_type.sql`
+adds the matching partial unique index:
+
+```sql
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS items_company_type_name_lower_active_uq
+  ON items (company_id, type, lower(name))
+  WHERE deleted_at IS NULL AND is_active = true;
+```
+
+`CONCURRENTLY` so production index build doesn't lock the catalog.
+Partial scope keeps soft-deleted rows out of the constraint, matching
+the helper's reactivation behavior. Live dev scan: 0 conflicts —
+migration applied cleanly.
+
+**Selector audit (P3) — no changes required.** All 8 catalog-item
+selector surfaces (PartsBillingCard, JobTemplateModal,
+QuoteTemplateModal, EditVisitModal, InvoiceDetailPage,
+PMTemplateEditorPage, PartsSelectorModal, tech VisitDetailPage)
+already use the canonical `CreateOrSelectField` + `useProductSearch`.
+All create flows hit the canonical `POST /api/items` endpoint, which
+now dedupes via `createOrGet`. No standalone `<Select>` or custom
+combobox over `/api/items` results found.
+
+**Duplicate-risk report (P4)** — read-only audit of the four sibling
+domains. Detection queries provided; no migrations shipped without
+explicit go-ahead.
+
+| Domain | Table(s) | Schema dedupe | App dedupe | Risk |
+|---|---|---|---|---|
+| Items | `items` | NEW `(company_id, type, lower(name))` partial unique index | NEW `createOrGet` helper | **Resolved this pass** |
+| Equipment | `location_equipment` | None | None | **HIGH** — natural key `(company_id, location_id, lower(name))`. Frequent create paths (full-create, bulk import, equipment route) all unprotected. |
+| Customer companies | `customer_companies` | QBO sync only | `findOrCreateCustomerCompany` (used in full-create + bulk import + location creation paths) | **MEDIUM** — already has a `nameNormalized` column; just needs `(company_id, name_normalized)` partial unique index to make the existing app dedupe authoritative. |
+| Client locations | `client_locations` | QBO sync only | None | **MEDIUM** — natural key `(parent_company_id, lower(location))` for child locations, `(company_id, lower(company_name))` for orphan locations. |
+| Contacts | `contact_persons` | None | `findPersonByEmail` (CSV import only — not used by `POST /api/clients/full-create`) | **MEDIUM** — natural keys: `(company_id, customer_company_id, lower(email))` partial unique WHERE email IS NOT NULL; secondary `(company_id, customer_company_id, lower(first_name||' '||last_name))`. |
+| `client_parts` (location ↔ item association) | `client_parts` | None | None | **INFORMATIONAL** — multiple rows per `(location_id, part_id)` appear intentional (quantity-tracked line items). Confirm with product before constraining. |
+
+Detection queries for each (run per environment before adding
+constraints):
+
+```sql
+-- Equipment
+SELECT company_id, location_id, lower(name) AS lname, COUNT(*) AS dupes,
+       array_agg(name) AS variants
+  FROM location_equipment
+ WHERE deleted_at IS NULL AND is_active = true
+ GROUP BY company_id, location_id, lower(name)
+HAVING COUNT(*) > 1;
+
+-- Customer companies
+SELECT company_id, name_normalized, COUNT(*) AS dupes,
+       array_agg(name) AS variants
+  FROM customer_companies
+ WHERE deleted_at IS NULL
+ GROUP BY company_id, name_normalized
+HAVING COUNT(*) > 1;
+
+-- Client locations (child)
+SELECT parent_company_id, lower(location) AS lloc, COUNT(*) AS dupes,
+       array_agg(location) AS variants
+  FROM client_locations
+ WHERE deleted_at IS NULL AND parent_company_id IS NOT NULL AND location IS NOT NULL
+ GROUP BY parent_company_id, lower(location)
+HAVING COUNT(*) > 1;
+
+-- Contacts (by email)
+SELECT company_id, customer_company_id, lower(email) AS lemail, COUNT(*) AS dupes,
+       array_agg(email) AS variants
+  FROM contact_persons
+ WHERE email IS NOT NULL AND TRIM(email) <> ''
+ GROUP BY company_id, customer_company_id, lower(email)
+HAVING COUNT(*) > 1;
+```
+
+Recommended pattern for each follow-up: pair every new partial unique
+index with a matching `createOrGet` repository helper that mirrors the
+ItemRepository / EquipmentTypeRepository pattern. The helper is the
+primary dedupe; the index is the safety net.
+
+**Files affected**
+- `server/storage/items.ts` (createOrGet helper)
+- `server/storage/index.ts` (façade binding)
+- `server/routes/items.ts` (createOrGetItem)
+- `server/routes/techField.ts` (createOrGetItem in `/api/tech/items`)
+- `server/services/productImport.ts` (createOrGet in CSV executor)
+- `migrations/2026_04_19_items_unique_name_per_type.sql` (new)
+
+### Fixed
+
+#### Hold reason drift: tech-app `needs_parts` surviving end-to-end (2026-04-19 — Task A)
+
+**Root cause**: The tech-app visit-complete route
+(`server/routes/techField.ts:361`) passes `holdReason: null` into
+`lifecycle.completeVisit(...)`, because the tech-app OutcomeModal only
+captures an outcome + free-text note — it does not ask the tech to
+choose a canonical hold reason. Inside
+`reconcileJobAfterVisitCompletion()` (the single canonical writer of
+`jobs.hold_reason`), both the "last visit" and "remaining visits"
+branches fell back to `holdReason || "other"`. So a tech marking a
+visit as `needs_parts` persisted `jobs.hold_reason = "other"`, and the
+dashboard drill-down rendered "Hold: other" instead of "Needs Parts".
+
+Additionally, the display path in `DashboardActionModal.tsx:398`
+rendered the raw enum value via `job.holdReason.replace(/_/g, " ")`,
+so even once the canonical value `"parts"` is persisted, the UI would
+have read "parts" (lowercase) instead of the canonical label
+"Needs Parts" from `shared/schema.ts`. Two independent bugs, one
+user-visible symptom.
+
+**Fix** — two surgical changes on the canonical axis:
+
+1. **Write** (`server/services/jobLifecycleOrchestrator.ts`): the
+   reconciliation function now derives an `effectiveHoldReason` at the
+   top of the function:
+   `holdReason ?? (outcome === "needs_parts" ? "parts" : "other")`.
+   Both `updateJobStatusWithEvent` call sites (Rule 2 — last visit,
+   Rule 3 — remaining visits) now pass `effectiveHoldReason` in both
+   `meta` and `additionalUpdates`. Caller-supplied `holdReason` wins
+   whenever provided, so the office completion route
+   (`server/routes/jobVisits.routes.ts`) is unaffected. Existing
+   behavior for `needs_followup` is preserved — still falls through to
+   `"other"` because the tech app does not select a reason and there
+   is no canonical hold-reason value for "follow-up".
+2. **Display** (`client/src/components/DashboardActionModal.tsx`):
+   imports `getHoldReasonLabel` from `@shared/schema` and renders
+   `Hold: {getHoldReasonLabel(job.holdReason)}`. This is the same
+   canonical label function already used by `JobDetailPage.tsx` and
+   `ActionRequiredModal.tsx` — no duplicate mapping introduced.
+
+**End-to-end result**: a tech selecting "Needs Parts" in the visit
+outcome modal now writes `jobs.hold_reason = "parts"`, the dashboard
+Action Required count reflects it, and the drill-down row reads
+"Hold: Needs Parts".
+
+**Pre-existing rows**: jobs already placed on hold with
+`hold_reason = "other"` for a `needs_parts` visit remain with "other"
+until they're touched again. No retro-migration included — the user
+did not request one, and rewriting history could mis-label other
+genuinely-"other" holds. Future holds via the corrected code path
+will surface the canonical label.
+
+### Changed
+
+#### Dashboard Jobs card: consolidate to three operational buckets (2026-04-19 — Task B)
+
+The Jobs card on the operations dashboard previously showed four rows
+(past-due, on-hold, needs-scheduling, ready-for-invoice). Consolidated
+to three rows to reduce cognitive load while preserving every workflow:
+
+1. **Action Required** — jobs with `openSubStatus = 'on_hold'`. Drill-
+   down modal renders each row with its canonical hold-reason label
+   (Needs Parts / Customer Approval / Access Issue / Internal Approval /
+   Weather Delay / Other) and an "Open Job" action. Count sources from
+   the existing `onHoldCount` on `/api/dashboard/workflow` — no new
+   aggregation.
+2. **Scheduling Issues** — combines past-due and unscheduled jobs in a
+   single drill-down with a sticky section divider. Past Due appears
+   first (with bulk-select + Reschedule actions preserved verbatim from
+   the prior `overdue` modal); Needs Scheduling appears below a labelled
+   header row (with the existing inline Schedule flow). Count is
+   `overdueCount + unscheduledCount` — the two are mutually exclusive
+   by construction in `server/storage/dashboard.ts` (overdue requires
+   `scheduledStart IS NOT NULL`; unscheduled requires
+   `scheduledStart IS NULL`), so the sum cannot double-count.
+3. **Ready for Invoice** — unchanged. Still sources from
+   `requiresInvoicingCount` and uses `readyToInvoiceOnly=true` on the
+   drill-down.
+
+**Modal architecture**: `DashboardActionMode` reduced from four modes
+to three user-facing modes (`action_required`, `scheduling_issues`,
+`ready_to_invoice`). Each mode composes one or two internal `sources`
+(`overdue`, `on_hold`, `unscheduled`, `ready_to_invoice`) — each
+source is a single canonical `/api/jobs` query shape. The same
+sources the workflow counters use are reused verbatim, so tile
+counts and drill-down lists stay in lockstep by construction. Per-row
+action type (Reschedule vs Schedule vs Open Job vs Create Invoice)
+is keyed off the row's `source`, not the enclosing mode, so a combined
+`scheduling_issues` view can render the correct action per section in
+a single pass.
+
+All write paths are unchanged: `applyJobSchedule`,
+`bulkUnscheduleMutation` → `/api/calendar/bulk-unschedule`,
+`/api/invoices/from-job`, and "Open Job" navigation are all preserved
+verbatim.
+
+**Files affected**
+- `server/services/jobLifecycleOrchestrator.ts` — canonical
+  outcome→holdReason derivation in `reconcileJobAfterVisitCompletion`.
+- `client/src/components/DashboardActionModal.tsx` — rewritten mode /
+  source composition; canonical label via `getHoldReasonLabel`.
+- `client/src/pages/Dashboard.tsx` — Jobs card rows 4 → 3.
+
+No schema change, no migration, no new API endpoint, no new query
+shape, no new aggregation path.
+
+#### Catalog + assignment debt cleanup pass (2026-04-19)
+
+Surgical follow-up on the dispatch/edit-visit/parts work.
+
+**P1. `DispatchVisit.technicianId` scalar removed from the type.**
+The legacy single-tech field stayed on the type after the multi-tech
+crew array landed, and was a recurring drift surface (see the
+`useDispatchWeekData` fix earlier today and the `DispatchPreview`
+fallback that produced typecheck errors when the field was dropped).
+The scalar is now gone from `DispatchVisit`. Every visit-presentation
+consumer derives a primary tech as `visit.technicianIds[0] ?? null`
+inline. DnD `DispatchDragData.technicianId` (which represents the
+*lane source* of a drag, not a visit field) keeps its scalar shape and
+is populated from the same derivation. Color and DnD behavior
+preserved.
+
+Files touched:
+- `client/src/components/dispatch/dispatchPreviewTypes.ts`
+- `client/src/components/dispatch/dispatchPreviewMappers.ts`
+  (both `mapEventToDispatchVisit` and `buildBacklogCard`)
+- `client/src/components/dispatch/DispatchDetailPanel.tsx`
+  (CrewPicker init, UnscheduledScheduleForm init, single-tech Select)
+- `client/src/components/dispatch/DispatchMapPanel.tsx`
+  (route grouping + marker color)
+- `client/src/components/dispatch/DispatchVisitBlock.tsx`
+  (DnD drag data)
+- `client/src/components/dispatch/MonthDispatchGrid.tsx`
+  (cell color)
+- `client/src/components/dispatch/WeekDispatchCell.tsx`
+  (isUnassigned check, drag data, same-tech filters, cell color)
+- `client/src/pages/DispatchPreview.tsx`
+  (visitsByTech grouping fallback removed; selectedLaneData uses
+  derived primary)
+
+**P2. Quick Add Parts & Labor — Part vs Labor inline create.**
+
+`CreateOrSelectField` now accepts an optional
+`createOptions: Array<{label, onCreate}>` for multi-action create. The
+existing single-action `createLabel` + `onCreateNew` props remain
+unchanged for current callers (PartsBillingCard, JobTemplateModal,
+QuoteTemplateModal, EquipmentTypeCombobox via direct API).
+
+`EditVisitModal`'s `QuickAddProductCell` now renders two typed create
+actions when search is non-empty with no exact match:
+- "Create '<X>' as Part" → POST `/api/items` with `type: "product"`
+- "Create '<X>' as Labor" → POST `/api/items` with `type: "service"`
+
+Same canonical mutation; the type is parameterized. Auto-selects on
+success via the existing `onSelect(product)` path. No new endpoint, no
+modal jump. Type stays editable from the items management page after
+creation.
+
+Files touched:
+- `client/src/components/shared/CreateOrSelectField.tsx`
+  (added `CreateOption` type + `createOptions` prop, render branch)
+- `client/src/components/visits/EditVisitModal.tsx`
+  (mutation now takes `{name, type}`; createOptions wired)
+
+**P3. Item uniqueness — recommendation, no migration shipped.**
+
+Current state: `items` table has no uniqueness on `(company_id, name)`
+or `(company_id, sku)`. The Quick Add inline-create has a
+case-insensitive guard against the current search results, but two
+concurrent tabs can still create twin rows. Live dev DB scan for
+case-insensitive name duplicates among active items: zero groups
+across all tenants today.
+
+Recommended canonical strategy (defer migration until prod scan
+green-lights):
+
+1. **Pre-deploy detection query** (run per environment):
+   ```sql
+   SELECT company_id, lower(name) AS lname, COUNT(*) AS dupes,
+          array_agg(name ORDER BY created_at) AS variants
+     FROM items
+    WHERE deleted_at IS NULL
+    GROUP BY company_id, lower(name)
+   HAVING COUNT(*) > 1;
+   ```
+2. **If zero results across all envs** — ship a single migration:
+   ```sql
+   CREATE UNIQUE INDEX CONCURRENTLY items_company_name_lower_active_uq
+     ON items (company_id, lower(name))
+     WHERE deleted_at IS NULL;
+   ```
+   Mirrors `equipment_types_company_name_lower_uq` (added 2026-04-19).
+   Scope is `WHERE deleted_at IS NULL` so soft-deleted historical
+   rows can keep their names without blocking creation.
+3. **If duplicates exist anywhere** — run a one-time consolidation
+   migration FIRST that picks the most-recent row as canonical and
+   either soft-deletes the rest (`deleted_at = now()`) OR appends a
+   ` (n)` disambiguator to the older variants — ops decision per
+   tenant. Then ship the unique index migration.
+
+Pair with a server-side `createOrGet` pattern in
+`server/storage/items.ts` (mirror of `EquipmentTypeRepository.createOrGet`)
+so all create paths — including future bulk imports — converge. The
+unique index is the safety net; the repo helper is the primary dedupe.
+
+No code or migrations shipped this pass — flagged for explicit
+sign-off after the production duplicate scan.
+
+**P4. Equipment selector consolidation in EditVisitModal.**
+
+`EditVisitModal` carried a modal-local equipment popover with its own
+search state, available/selected derivations, and chip rendering — a
+duplicate of the canonical `EquipmentPicker` we polished last pass.
+
+Consolidation:
+- `EquipmentPicker` gained an optional `showAddButton?: boolean` prop
+  (defaults to `true`). When `false`, the inline "+ Add" button and
+  its embedded `AddEquipmentDialog` are not rendered. Existing callers
+  (`QuickAddJobDialog`) keep their button.
+- `EditVisitModal` now mounts
+  `<EquipmentPicker showAddButton={false} ... />` inside the equipment
+  section. The modal's external "+ New Equipment" header button keeps
+  working via its standalone `AddEquipmentDialog` instance and
+  `handleEquipmentCreated` callback.
+- Removed from `EditVisitModal`: `equipmentSearch` state +
+  reset, `LocationEquipmentRecord` interface, the modal-local
+  `useQuery` for location equipment (EquipmentPicker fetches the same
+  query key — React Query dedupes), `equipmentSearchTerm`,
+  `availableEquipment`, `selectedEquipment`, `handleSelectEquipment`,
+  `handleRemoveEquipment`, the popover JSX block, the modal-local
+  chip rendering, and the empty-state hint.
+
+Net effect: one canonical equipment selector. Modal chip rendering
+matches `EquipmentPicker`'s (white surface, slate border, name +
+model/serial in tooltip, hover-X). Manufacturer is no longer inlined
+on the chip — flagged as a follow-up if users want it back.
+
+Files touched:
+- `client/src/components/EquipmentPicker.tsx`
+  (`showAddButton` prop)
+- `client/src/components/visits/EditVisitModal.tsx`
+  (consolidation + dead-code removal)
+
+### Fixed
+
+#### Dispatch / Edit Visit / Quick Add: assignment drift, modal polish, inline item create (2026-04-19)
+
+Three coupled fixes to the dispatch + edit-visit + parts pipeline.
+
+**A. Dispatch assignment drift — visits saved as unassigned now group only under Unassigned**
+
+The week-view grouping hook fell back to a scalar `visit.technicianId`
+when `visit.technicianIds` was empty:
+
+```ts
+// client/src/components/dispatch/useDispatchWeekData.ts:43 (before)
+const techIds = visit.technicianIds.length > 0
+  ? visit.technicianIds
+  : (visit.technicianId ? [visit.technicianId] : []);
+```
+
+`visit.technicianId` is derived in the mapper as
+`assignedTechnicianIds?.[0] ?? null`, which is supposed to be safe — but
+the existence of the fallback meant any optimistic update or stale local
+mutation that touched the scalar without clearing the array would
+re-route an unassigned visit back under the prior technician's lane.
+Per the canonical guardrails (`assignedTechnicianIds` array is
+canonical; do not reintroduce primary technician logic; no fallback
+logic that masks bad state), the fallback is removed:
+
+```ts
+// after
+const techIds = visit.technicianIds;
+```
+
+`DispatchVisit.technicianId` stays on the type for color/DnD callers
+(`DispatchVisitBlock`, `MonthDispatchGrid`, `DispatchMapPanel`, etc.)
+but is no longer authoritative for placement. Day, Month, and the
+Unschedule cell paths already grouped without the fallback — only
+`useDispatchWeekData` was affected.
+
+**B. Edit Visit modal — header sizing, equipment chip simplification, section rename**
+
+- `client/src/components/visits/EditVisitModal.tsx:438,440` — company
+  name bumped one canonical step: `text-[18px]` → `text-xl` (20px).
+  Job number stays `text-sm` so the hierarchy reads cleanly.
+- Same file, lines 580–593 — equipment chips dropped the
+  `bg-emerald-50/60` tint and the nested type sub-badge for the app's
+  understated card-language: `border border-slate-200 bg-white`,
+  inline dot-separated metadata, slate-800 name, slate-500 type,
+  hover-only X. Strong contrast, subtle border, no over-styling.
+- Section title at line 645 renamed:
+  `Parts & Work Logged (Job)` → `Parts & Labor`. The wrapping `h3`
+  retains the canonical section-title pattern
+  (`text-xs font-bold uppercase tracking-wider`), so the rendered
+  result is `PARTS & LABOR`.
+- Font audit: confirmed canonical Inter throughout the modal and all
+  sub-components. No font-family overrides found; nothing to change.
+  Source of truth is `client/src/index.css:88` (`--font-sans` chain)
+  applied via `body` at line 254 and surfaced through Tailwind
+  `font.sans` mapping.
+
+**C. Quick Add inline item create — extends the canonical selector**
+
+The Edit Visit modal's Parts & Labor → Quick Add row already used the
+canonical `CreateOrSelectField` + `useProductSearch` pipeline (same
+selector used by PartsBillingCard, JobTemplateModal,
+QuoteTemplateModal, and the tech app), but it omitted `createLabel`
+and `onCreateNew`. Result: typing a name with no match showed
+"No results" with no recourse.
+
+Fix: `client/src/components/visits/EditVisitModal.tsx`
+`QuickAddProductCell` now wires both props on the same canonical
+selector. Inline create POSTs to the canonical `POST /api/items`
+catalog endpoint (`{ name, type: "product", isActive: true,
+isTaxable: true }`), invalidates the `/api/items` query cache, and
+auto-selects the returned item in the same row via `onSelect` — no
+modal jump, no parallel endpoint, no shadow create flow. Duplicate
+prevention is handled the same way as `EquipmentTypeCombobox`:
+the "Create" affordance hides on case-insensitive exact match.
+
+**Files affected**
+- `client/src/components/dispatch/useDispatchWeekData.ts` (Part A)
+- `client/src/components/visits/EditVisitModal.tsx` (Parts B + C)
+
+### Changed
+
+#### Tech app Visit Overview: surface Job # reference chip (2026-04-19)
+
+Techs need the canonical job number visible without digging (customer
+reference, paperwork, warranty calls, PO matching, dispatch comms).
+`jobs.job_number` (int, NOT NULL, 6-digit default, unique per company)
+was already returned on `GET /api/tech/visits/:visitId` via
+`BackendJob.jobNumber` but was only consumed by the visit adapter as a
+fallback for `jobTitle` when `summary` was empty — it never reached the
+render.
+
+Adapter surfaces it cleanly: `DetailVisit` now carries a
+`jobNumber: number | null` field, populated from
+`data.job?.jobNumber ?? null` in `toDetailVisit()` inside
+`client/src/tech-app/hooks/useTechVisitDetail.ts`. No backend route,
+storage query, or schema change — the value was already on the wire.
+
+Render places a single muted metadata line at the very top of the
+Overview tab's existing `space-y-2` stack (above Job Description /
+Site Instructions / Equipment to Service). Styling is deliberately
+understated — no pill background, no border, no bold weight — so the
+line reads as a reference, not a CTA, and doesn't compete with the
+Equipment / Description cards below. Final classes:
+`text-sm font-medium text-slate-600 tabular-nums`. Format is
+`Job # 104523` (space between `#` and the number). `tabular-nums`
+keeps the digit columns aligned across visits. The wrapping `<div>`
+is rendered only when `visit.jobNumber != null`, so a linkless visit
+shows nothing in that slot (no "N/A", no empty placeholder, no change
+to the Overview empty-state condition).
+
+Untouched: visit state logic, timer strip, travel/job buttons,
+mutations, equipment logic, routing, permissions, sorting, query keys,
+header strip above the tabs.
+
+**Files affected**
+- `client/src/tech-app/hooks/useTechVisitDetail.ts` — `DetailVisit`
+  interface gains `jobNumber`; `toDetailVisit()` maps it through.
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — Overview tab gets a
+  new leading chip guarded on `visit.jobNumber != null`.
+
+#### Tech app UX cleanups: Today card hierarchy + Parts row date removal (2026-04-19)
+
+**Today card information hierarchy** — `client/src/tech-app/pages/TodayPage.tsx`
+
+Row 1 of the visit card previously read `NEXT | time | company`, with
+job title on its own second row and address (with MapPin icon) on a
+third row. That buried the two fields a tech actually scans for — the
+time slot and *what the call is about* — under the company/address
+context. Reordered so Row 1 is `NEXT | time | urgency | job title |
+status pill` and Row 2 demotes `company · address` to a single subtle
+secondary line. Row 1 drops `flex-wrap` in favor of a `min-w-0` flex
+row with `shrink-0` on the fixed-width leading chips and
+`flex-1 min-w-0 truncate` on the job title, so long descriptions
+ellipse cleanly without pushing action icons off the card. Row 2
+concatenates company + address inside a single `truncate` span so the
+ellipsis falls at the combined string's end. The old MapPin icon is
+removed and dropped from the lucide-react import list.
+
+No data source, query, sorting, status/badge logic, navigation handler,
+or action-button behavior changed — only the JSX order and
+flex/truncation classes on the visible rows.
+
+**Parts tab row: drop added-date subscript** —
+`client/src/tech-app/pages/VisitDetailPage.tsx`
+
+The per-part row on the Parts tab rendered a small secondary line
+reading `Apr 19 · $12.34` (localized createdAt + optional unit price)
+followed by an optional equipment pill. The date carried no decision
+value on an inventory row, so the primary line (`description`) is now
+the only mandatory text; the secondary `<div>` renders **only when**
+a unit price or equipment attachment exists — no empty placeholder
+when both are absent. Unit price / equipment pill styling and behavior
+unchanged. Quantity, remove/confirm buttons, delete mutation, Add Part
+sheet, and the `DetailPart` shape are untouched — no backend, adapter,
+storage, or schema changes.
+
+**Files affected**
+- `client/src/tech-app/pages/TodayPage.tsx`
+- `client/src/tech-app/pages/VisitDetailPage.tsx`
+
+No migrations, no backend behavior changes, no query-key changes.
+
+#### Tech app visit card: remove lateness duration from time row (2026-04-19)
+
+The NEXT visit's time row in `client/src/tech-app/pages/TodayPage.tsx`
+previously rendered a lateness subscript (e.g. `8:00 AM  12 h 56 min late`)
+once the scheduled time had passed. Per product request the duration
+readout is dropped — the card now shows only the scheduled time (and
+the existing `·` separator before the company name, which is static and
+was not driven by the lateness text).
+
+Implementation is a single surgical narrowing of the `urgencyText`
+`useMemo`: the `diffMin < 0` branch now returns `null`, so the render
+guard (`{showNextBadge && urgencyText && (...)}`) elides the subscript
+entirely for past-scheduled visits. Forward-looking urgency (`now`,
+`in X min`, `in X h`) is preserved unchanged. Dead `lateMin`/`h`/`m`
+locals removed. Two stale doc comments on the `JobCard` prop and the
+render site updated to match.
+
+**Files affected**
+- `client/src/tech-app/pages/TodayPage.tsx` — `urgencyText` memo + two
+  doc comments.
+
+No schema, API, query-key, cache, or polling behavior touched.
+
+### Fixed
+
+#### New Job → Equipment flow: contact auto-create + tenant equipment types + visual contrast (2026-04-19)
+
+Three coupled fixes addressed in one pass.
+
+**A. Client creation auto-creates the primary contact (canonical, single backend change)**
+
+When a user filled in first name / last name / email / phone in the
+"Create Client" modal, the contact never appeared on the new location's
+contacts rail. Root cause: `CreateClientModal.tsx` already built a
+`contacts[]` array with `isPrimary: true`, but it omitted
+`locationIndex`. The full-create handler at
+`server/routes/clients.ts:525` only created a `contact_assignments`
+row when `locationIndex` was an explicit non-null number, so the
+contact landed at company level only and was filtered out by the
+location-scoped query (`getLegacyContactsForLocation`).
+
+Fix: `/api/clients/full-create` now defaults `locationIndex = 0`
+(primary location) when the field is `undefined`, and only skips
+assignment when the caller passes `locationIndex: null` to
+deliberately opt out (company-only contact). One canonical change at
+the route boundary — no frontend patchwork, no per-flow duplicates.
+Other creation paths (`POST /api/clients`, `quick-create`,
+`import-simple`, `import`) don't accept inline contact identity
+fields and were correctly out of scope.
+
+**B. Tenant-owned equipment types replace the hardcoded HVAC list**
+
+The Add Equipment modal's Type dropdown was rendered from a
+16-item HVAC-only constant (`EQUIPMENT_TYPES` duplicated across
+`AddEquipmentDialog.tsx` and `JobEquipmentSection.tsx`), with the
+backend free-form text column accepting anything. That hard-coded
+the platform to HVAC and prevented tenants in refrigeration,
+plumbing, electrical, fire suppression, or general field service
+from managing their own vocabulary.
+
+New canonical model:
+- `equipment_types` table: one row per (companyId, name).
+  Case-insensitive uniqueness per tenant. Soft-deactivable via
+  `active` column.
+- `GET /api/equipment-types` — list active types for the tenant.
+- `POST /api/equipment-types` — create-or-return: re-typing an existing
+  name returns the existing row (and reactivates it if previously
+  deactivated). No duplicate rows from the create-on-the-fly UX.
+- `EquipmentTypeCombobox` (new component): searchable select. As the
+  user types, the list filters; when there's no exact match, an
+  inline "Create &lsquo;<input>&rsquo;" option commits to the
+  catalog and selects.
+- `AddEquipmentDialog` now uses the combobox; the duplicated frontend
+  constants are gone.
+- `JobEquipmentSection` keeps the slug-to-label map, **renamed
+  `LEGACY_TYPE_LABELS` and scoped to display-only fallback** for
+  pre-existing rows that hold snake_case slugs (`rtu`,
+  `walk_in_cooler`, ...). New rows write the human-readable name
+  directly, so the fallback degrades naturally over time.
+- Migration `2026_04_19_equipment_types.sql` creates the table +
+  unique index and backfills existing distinct
+  `location_equipment.equipment_type` values per tenant. No data
+  loss; legacy equipment rows are not rewritten.
+
+**C. Equipment chips + search input visual contrast**
+
+The selected-equipment chips in the New Job modal's Equipment
+section rendered as light gray pills on a light gray background
+with a near-invisible X — easy to miss that equipment had been
+attached. The search trigger had the same blend-into-modal problem.
+
+`EquipmentPicker.tsx` chip + search styling:
+- Chips: white surface, slate-300 border, slate-800 text,
+  slate-500 wrench icon, visible 4×4px X with hover state. Reads
+  unambiguously as a selected attachment.
+- Search trigger button: explicit `bg-white border-slate-300`
+  surface so it stops blending into the modal background; clearer
+  placeholder color and focus ring.
+- Popover search input: white surface, darker text, brighter
+  placeholder.
+- Add button: matched `bg-white border-slate-300` styling for clean
+  side-by-side alignment with the search trigger.
+
+Compact, professional UI preserved — no over-stylization, just
+contrast lifted to the level the chips were always supposed to have.
+
+**Files changed**
+- `server/routes/clients.ts` (Part A — full-create handler)
+- `shared/schema.ts` (Part B — `equipmentTypes` table + types)
+- `server/storage/equipmentTypes.ts` (Part B — new repo)
+- `server/routes/equipmentTypes.ts` (Part B — new routes)
+- `server/routes/index.ts` (Part B — register `/api/equipment-types`)
+- `client/src/components/EquipmentTypeCombobox.tsx` (Part B — new)
+- `client/src/components/AddEquipmentDialog.tsx` (Part B — combobox swap)
+- `client/src/components/JobEquipmentSection.tsx` (Part B — legacy fallback rename)
+- `client/src/components/EquipmentPicker.tsx` (Part C — chips + search visuals)
+- `migrations/2026_04_19_equipment_types.sql` (new)
+
+#### Trial provisioning — new signups land with a valid 14-day trial (2026-04-19)
+
+Brand-new tenants created via public signup were hitting **"No active
+plan found"** the moment they tried to add their first client. The
+canonical resolver `subscriptionRepository.getSubscriptionUsage` looks
+up plan info via `companies.subscription_plan` →
+`subscription_plans.name`, and two things were broken at once:
+
+1. `onboardingService.createCompanyWithOwner` set
+   `companies.subscription_status = 'trial'` and `trial_ends_at = +14d`
+   but never wrote `subscription_plan`. The resolver's primary lookup
+   returned null.
+2. The resolver papered over (1) with a silent fallback ("if no plan
+   set, look up name='trial'"). That fallback worked only when the
+   `subscription_plans` table contained a `'trial'` row — but the seed
+   migration `2026_03_08_seed_subscription_plans.sql` had been wiped
+   in dev (almost certainly by a `dev_reset_*` script after the seed
+   ran). With both halves broken, plan resolved to null and
+   `canAddLocation` rejected every request.
+
+**Fix (canonical, single source of truth):**
+
+- `server/services/onboardingService.ts`: signup transaction now writes
+  `subscriptionPlan: 'trial'` on the `companies` insert. Resolver
+  primary lookup succeeds; no implicit fallback required.
+- `server/storage/subscriptions.ts`: removed the silent
+  "if plan is null, look up name='trial'" fallback in
+  `getSubscriptionUsage`. With explicit writes guaranteed at the write
+  boundary, a null plan is now a real misconfiguration that surfaces
+  as `entitlementReason: 'NO_PLAN'` instead of being papered over.
+
+**Migrations (run in this order via `npm run db:migrate`):**
+
+- `migrations/2026_04_19_backfill_companies_subscription_plan.sql` —
+  one-time repair: sets `subscription_plan = 'trial'` for any company
+  with a NULL plan. Idempotent.
+- `migrations/2026_04_19_reseed_subscription_plans.sql` — re-applies
+  the canonical 4-plan seed (trial, starter, pro, enterprise) under a
+  new filename so every environment that lost rows after the original
+  seed converges. Uses `ON CONFLICT (name) DO UPDATE` and is safe to
+  re-run.
+
+**Why this is canonical, not a bandaid:**
+
+- One resolver path, one source of truth (`companies.subscription_plan`).
+- Signup writes that pointer explicitly. No "if missing, pretend" branch.
+- Admin display, runtime entitlement, and `canAddLocation` all read
+  through the same resolver / same column — no drift between admin
+  and gating logic.
+- `tenant_subscriptions` (v2 billing) is correctly NOT touched at trial
+  signup; that table activates on paid upgrade. The trial gate lives
+  on `companies.subscription_status` + `trial_ends_at`, which is
+  unchanged and remains the entitlement source.
+
+**Files affected**
+- `server/services/onboardingService.ts`
+- `server/storage/subscriptions.ts`
+- `migrations/2026_04_19_backfill_companies_subscription_plan.sql` (new)
+- `migrations/2026_04_19_reseed_subscription_plans.sql` (new)
+
+### Removed
+
+#### Phase 3 Batches 1 + 2 dead code cleanup (2026-04-19)
+
+Zero-behavior-change removals of verified-orphan frontend and backend
+modules. Every target was grep-verified for zero importers / zero
+callers before deletion. No schema changes. No migration edits.
+No renames. No speculative refactors.
+
+**Deleted files (5):**
+1. `client/src/components/CreateInvoiceFromJobDialog.tsx` — canonical
+   invoice dialog that was extracted but never wired up. Zero imports
+   across the repo. Related refactor comments in `JobDetailPage.tsx`
+   and `JobHeaderCard.tsx` are left in place (they document the prior
+   extraction).
+2. `client/src/components/attachments/EntityDocumentsSection.tsx` —
+   utility component marked "Phase 2 (2026-04-12)" awaiting
+   contract/technician document surfaces that never shipped. Zero
+   imports.
+3. `shared/types/visits.ts` (`VisitJob`, `VisitLocation` interfaces) —
+   shared types extracted from tech pages that never got rewired.
+   Zero importers; tech pages still use their own local copies.
+4. `server/routes/impersonation.ts` — single-handler file exposing
+   `GET /api/impersonation/status`. Zero client callers. Also
+   unmounted from `server/routes/index.ts` (`app.use("/api/impersonation", ...)` +
+   import removed). `server/impersonationService.ts` and
+   `server/impersonationMiddleware.ts` remain — they are used by
+   `server/routes/admin.ts` (canonical impersonation flow under
+   `/api/admin/impersonate`).
+5. `server/routes/clientParts.ts` — single-handler file exposing
+   `POST /api/client-parts/bulk`. Zero client callers. Also unmounted
+   from `server/routes/index.ts`. Storage method
+   `storage.upsertClientPartsBulk` is deliberately preserved — it has
+   an active caller in `server/routes/clients.ts:789` (CSV client
+   import flow).
+
+**Deleted from `client/src/pages/JobDetailPage.tsx`:**
+- `type AttentionReason`, function `getAttentionReason()`, constant
+  `ATTENTION_CONFIG` (lines ~117-243). Defined but never called.
+  Leftover from the removed `OfficeActionsStrip` component. 4 now-
+  orphaned lucide-react icon imports also cleaned:
+  `AlertCircle`, `CalendarMinus`, `PauseCircle`, `Play`. All other
+  imports (`FileText`, `Receipt`, etc.) verified still used elsewhere
+  in the file.
+
+**Deleted `migrations/meta/` folder** — stale Drizzle journal
+(`_journal.json` stopped at idx 3, ~2026-01-15) and 4 snapshot JSON
+files. The repo has 180+ SQL migrations; this folder was ~178
+migrations behind reality. The migration runner
+(`server/scripts/runMigrations.ts`) uses the `schema_migrations` table
+as its tracking source of truth, not Drizzle's meta files — confirmed
+by reading the runner source. Removing these files eliminates the
+risk of a future `drizzle-kit generate` producing a catastrophic
+diff against a stale baseline.
+
+### Fixed
+
+#### SupportConsole impersonation action points at live endpoint (2026-04-19)
+
+`client/src/pages/SupportConsole.tsx:87` was calling
+`POST /api/impersonation/start` — an endpoint that does not exist on
+the backend. The real impersonation start endpoint is
+`POST /api/admin/impersonate` (defined at `server/routes/admin.ts:195`,
+schema at lines 178-181: `{ targetUserId: uuid, reason?: string }`).
+The frontend payload shape `{ targetUserId, reason }` is unchanged
+and matches the backend schema exactly. No UX change; only URL
+corrected so the mutation resolves against a live handler instead of
+404-ing.
+
+**Files changed**
+- Deleted: `client/src/components/CreateInvoiceFromJobDialog.tsx`,
+  `client/src/components/attachments/EntityDocumentsSection.tsx`,
+  `shared/types/visits.ts`, `server/routes/impersonation.ts`,
+  `server/routes/clientParts.ts`, `migrations/meta/_journal.json`
+  plus 4 `*_snapshot.json` files
+- Edited: `client/src/pages/JobDetailPage.tsx` (removed dead
+  AttentionReason / getAttentionReason / ATTENTION_CONFIG block +
+  4 orphaned icon imports),
+  `client/src/pages/SupportConsole.tsx` (endpoint URL fix),
+  `server/routes/index.ts` (2 import lines + 2 mount lines removed)
+
+**Verification**
+- `npm run check` clean (zero diagnostics) after clearing
+  `node_modules/typescript/tsbuildinfo` to avoid incremental false
+  positives.
+
+#### Phase 2 dead backend endpoints (2026-04-19)
+
+Surgical backend removal of five endpoints with zero live callers,
+verified via template-literal-aware grep across client, server, tests,
+and scripts. No schema changes, no migration changes, no worker
+changes, no tech-app flow changes, no SSE/realtime changes.
+
+1. **Deleted `server/routes/analytics.ts`** (119 lines) and unmounted
+   `app.use("/api/analytics", analyticsRouter)` from
+   `server/routes/index.ts`. Endpoints removed:
+   - `GET /api/analytics/time/weekly`
+   - `GET /api/analytics/time/technicians`
+   Both were Phase-5 manager-facing time analytics endpoints with zero
+   frontend callers. Dashboard endpoints cover the remaining reporting
+   needs.
+2. **Deleted `server/routes/telemetry.ts`** (112 lines) and unmounted
+   `app.use("/api/telemetry", telemetryRouter)`. Endpoints removed:
+   - `POST /api/telemetry/ping`
+   - `POST /api/telemetry/purge`
+   Phase-4B.1 GPS telemetry was never wired to the tech app; no
+   callers anywhere. DB tables `technician_live_positions` and
+   `technician_positions` left untouched (schema out of scope).
+3. **Deleted `server/routes/routes.ts`** (264 lines) and unmounted
+   `app.use("/api/routes", routesRouter)`. Endpoint removed:
+   - `POST /api/routes/optimize`
+   Phase-4A route optimization, zero callers. `routeOptimizationService`
+   itself is preserved — it has an active caller in
+   `server/routes/intelligence.ts` (`optimizeRoute` call used by the
+   visit intelligence flow).
+4. **Removed handler `GET /api/jobs/action-required`** from
+   `server/routes/jobs.ts` (13 lines). Also removed the now-orphan
+   storage method `jobRepository.getActionRequiredJobs` from
+   `server/storage/jobs.ts` (~60 lines) and its two barrel entries
+   from `server/storage/index.ts`. Superseded by `/api/attention/*`.
+5. **Removed handler `GET /api/time/me/today`** from
+   `server/routes/timeTracking.ts` (17 lines). **Storage method
+   `getTechnicianTodayStatus` preserved** — it has an active caller
+   in `server/routes/techField.ts` (an active technician-app path
+   explicitly out of scope).
+6. **Removed unused type imports** from
+   `server/storage/timeTracking.ts` (`WeeklyAnalyticsResponse`,
+   `TechnicianAnalyticsResponse`, `WeeklyAnalyticsData`,
+   `TechnicianAnalytics`, `TimeByTypeBreakdown`) that became orphaned
+   after the analytics methods were removed. The type definitions in
+   `shared/schema.ts` are left in place (schema out of scope).
+
+**Not removed (explicitly out of scope or not exclusively tied):**
+- Feature flag `routeOptimizationEnabled` — kept. It is a tenant DB
+  column in `tenantFeatures`, displayed in the admin tenant detail UI,
+  and consumed by `server/auth/requireFeature.ts`. Not exclusive to
+  the deleted route. Per instructions, flag retirement only proceeds
+  when exclusively tied.
+- DB tables `technician_live_positions`, `technician_positions` —
+  schema out of scope.
+- Types `WeeklyAnalyticsResponse` et al. in `shared/schema.ts` — schema
+  out of scope; local imports cleaned only.
+
+**Files changed**
+- Deleted: `server/routes/analytics.ts`, `server/routes/telemetry.ts`,
+  `server/routes/routes.ts`
+- Edited: `server/routes/index.ts` (3 import lines + 3 mount lines
+  removed), `server/routes/jobs.ts` (handler block removed),
+  `server/routes/timeTracking.ts` (handler block removed),
+  `server/storage/jobs.ts` (`getActionRequiredJobs` method removed),
+  `server/storage/index.ts` (2 barrel entries removed),
+  `server/storage/timeTracking.ts` (analytics methods block + 5
+  orphaned type imports removed)
+
+**Verification**
+- `npm run check` clean after clearing stale
+  `node_modules/typescript/tsbuildinfo` cache.
+
+#### Phase 1 dead-code cleanup (2026-04-19)
+
+Zero-behavior-change removals following the 2026-04-19 dead-code audit.
+All targets verified to have zero active callers before deletion.
+
+1. **Deleted `client/src/lib/visitUtils.ts`** (42 lines). Orphan client-side
+   mirrors of `isVisitActioned` / `isVisitEmpty`. Zero imports across
+   `client/`, `server/`, `tests/`. Logic now lives in `useJobVisits()`
+   eligibility filter and server-side `server/storage/jobVisits.ts`.
+2. **Deleted `client/src/components/dispatch/dispatchPreviewMockData.ts`**
+   (172 lines). `MOCK_TECHNICIANS`, `MOCK_SCHEDULED_VISITS`,
+   `MOCK_UNSCHEDULED_VISITS` — early dispatch-preview fixtures with zero
+   importers. DispatchPreview now uses real backend data via
+   `useDispatchRangeData()`.
+3. **Removed legacy re-exports from
+   `client/src/components/ActionRequiredModal.tsx`**:
+   `ACTION_REQUIRED_REASONS`, `ActionRequiredReason`,
+   `getActionRequiredReasonLabel`. Zero external callers; canonical
+   `HOLD_REASON_OPTIONS` / `HoldReason` / `getHoldReasonLabel` are
+   exported from `@shared/schema` and already re-exported on the same
+   component. Active modal behavior unchanged.
+4. **Removed dead "Alert Settings" button from
+   `client/src/pages/NotificationsPage.tsx`**. The button navigated to
+   `/settings/time-alerts`, a route that no longer exists (the
+   `TimeAlertSettingsPage` was removed 2026-04-04). Snooze management is
+   already inline in the same page. Also removed the now-unused
+   `Settings` icon import.
+5. **Removed dead `primaryTechnicianId` type field declarations**
+   (column was dropped in `2026_04_12_drop_job_tech_assignment.sql`):
+   - `server/domain/scheduling.ts` — `JobLike.primaryTechnicianId`
+     (never read; all `JobLike` consumers use `assignedTechnicianIds`
+     via canonical visit-crew derivation).
+   - `server/scripts/schedulingSanityCheck.ts` —
+     `ViolationRow.primary_technician_id` (no SQL query selects it, no
+     consumer reads it; `formatExample` only formats other fields).
+   Defensive destructure-strip guards in `server/storage/jobs.ts`
+   (`const { primaryTechnicianId: _ptId, ... } = ...`) are intentionally
+   preserved — they drop the field from external payloads defensively.
+6. **Archived loose backup SQL artifacts.** Moved from repo root to
+   `docs/archive/db-backups/`:
+   - `backup-before-date-fix.sql`
+   - `backup-before-money-fix.sql`
+   - `backup_before_critical_fixes_20260109_123817.sql`
+   These are historical schema dumps, never applied by `db:migrate`.
+
+**Files changed**
+- Deleted: `client/src/lib/visitUtils.ts`,
+  `client/src/components/dispatch/dispatchPreviewMockData.ts`
+- Edited: `client/src/components/ActionRequiredModal.tsx`,
+  `client/src/pages/NotificationsPage.tsx`,
+  `server/domain/scheduling.ts`,
+  `server/scripts/schedulingSanityCheck.ts`
+- Moved: 3 backup SQL files → `docs/archive/db-backups/`
+
+**Not changed**
+- No runtime behavior, no API contracts, no DB schema, no migration
+  chain, no worker startup, no route mounting, no business logic.
+
+### Changed
+
+#### Business-hours endpoint hardening (2026-04-19)
+
+Three surgical fixes to `PUT /api/company/business-hours` with no change
+to the route contract or Settings UI behavior.
+
+1. **Structured 400 errors.** `storage.upsertCompanyBusinessHours`
+   previously threw bare `Error(...)` objects for validation failures,
+   which `asyncHandler` surfaced as opaque 500s. Now throws
+   `createError(400, ...)` so clients see readable validation messages
+   and real 500s are distinguishable from user-input errors.
+2. **Atomic upsert.** The 7 per-day upserts were previously issued in
+   a plain `for` loop — a failure on day N left days 0..N-1 committed.
+   The loop is now wrapped in `db.transaction(async (tx) => { ... })`
+   so the save is all-or-nothing.
+3. **Schema truth.** `shared/schema.ts` `companyBusinessHours` now
+   declares the `uniqueIndex("company_business_hours_company_day_unique")`
+   on `(companyId, dayOfWeek)` that the DB has enforced since
+   `migrations/2026_01_28_add_company_business_hours.sql`. No live-DB
+   change — this is dev-time schema/DB alignment so tooling and future
+   contributors see the invariant that `onConflictDoUpdate({ target: [
+   companyId, dayOfWeek ] })` depends on.
+
+**Files changed**
+- `server/storage/businessHours.ts` — validation error type + tx wrap.
+- `shared/schema.ts` — `uniqueIndex` declaration on `companyBusinessHours`.
+
+**Not changed**
+- Route shape (`GET`/`PUT /api/company/business-hours`), Zod payload
+  schema, closed-day null normalization, Settings UI, silent seed path
+  in `onboardingService`, CHECK constraints, default-hours values.
+
+#### Staged public signup + minimal onboarding (2026-04-19)
+
+Public signup is now a two-step, two-column auth experience. Required
+onboarding is reduced to timezone confirmation only. Invite signup flow
+preserved verbatim.
+
+**Signup flow**
+- `/signup` (no token) → staged flow:
+  - **Step 1 — Account Credentials**: email + password + confirm
+    password. CTA: "Continue". No server call.
+  - **Step 2 — Identity**: required first/last name; plain inline
+    "Business info (optional)" section with business name + company
+    phone. CTA: "Start Free Trial". Helper text: "Optional business
+    details can be added later." Back button preserves Step 1 values.
+  - Single `POST /api/auth/signup` fires only on Step 2 submit — no
+    half-created tenants.
+- `/signup?token=XYZ` → invite flow unchanged (extracted verbatim to
+  `SignupInvite.tsx`). Server handler untouched.
+- Orchestrator (`Signup.tsx`) hoists one react-hook-form instance so
+  Back never loses data.
+- New `<AuthLayout>` provides the two-column structure used by both
+  signup and onboarding (right column is an empty placeholder; graphic
+  panel is out of scope).
+
+**Required onboarding**
+- `/onboarding` simplified to a single timezone step. CTA: "Enter
+  Workspace". No skip. Owners cannot bypass.
+- Business hours removed from required onboarding UI. Seeded silently
+  inside `onboardingService.createCompanyWithOwner` transaction
+  (Mon–Fri 08:00–17:00, Sat/Sun closed). Settings → Business Hours
+  remains the canonical editor.
+- `GET /api/onboarding/state` no longer returns a `businessHours` key.
+  `POST /api/onboarding/complete` unchanged (requires timezone).
+- On finish: `sessionStorage.onboardingJustCompleted = "1"` set for a
+  future guided-tour trigger, auth cache invalidated, navigate to `/`.
+
+**Files changed**
+- `server/services/onboardingService.ts` — seed 7 rows into
+  `company_business_hours` inside the signup transaction.
+- `server/routes/onboarding.ts` — drop `businessHours` step from
+  `/state`.
+- `client/src/components/AuthLayout.tsx` (new) — two-column wrapper.
+- `client/src/pages/Signup.tsx` — orchestrator for staged flow /
+  invite branch.
+- `client/src/pages/signup/StepCredentials.tsx` (new) — Step 1.
+- `client/src/pages/signup/StepIdentity.tsx` (new) — Step 2.
+- `client/src/pages/signup/SignupInvite.tsx` (new) — invite flow.
+- `client/src/pages/signup/publicSignupSchema.ts` (new) — shared Zod.
+- `client/src/pages/OnboardingWizard.tsx` — timezone-only, wrapped in
+  `<AuthLayout>`; business-hours / step-pill / finish-screen code
+  removed.
+
+**Not changed**
+- `/api/auth/signup` server handler, payload shape, CSRF, session,
+  `ProtectedRoute` gate, impersonation bypass, legacy-tenant backfill,
+  `PUT /api/company/business-hours` endpoint (still used by Settings).
+
+#### Company profile field consolidation — Phase 1 of 2 (2026-04-19)
+
+Eliminates the long-standing split-brain between `companies` and
+`company_settings` for profile/contact fields. **`companies` is now the
+single canonical owner** of `name`, `phone`, `email`, `address`, `city`,
+`province_state`, `postal_code`. `company_settings` retains preferences
+only (timezone, regional formats, calendarStartHour,
+defaultPaymentTermsDays, timezoneConfirmedAt).
+
+The 2026-04-16 settings → companies write-through is removed; with one
+canonical owner, there is nothing to mirror.
+
+**Migration (Phase 1, runs now)**
+- `migrations/2026_04_19_consolidate_company_profile_phase1.sql`
+  backfills `companies.*` from `company_settings.*` using SETTINGS-WINS:
+  any meaningful (non-empty, trimmed) settings value overwrites the
+  matching companies value. Empty/whitespace/null settings never clobber
+  good companies values. Idempotent.
+- Phase 2 (separate, later migration) will `DROP COLUMN` the duplicated
+  `company_settings.{company_name,address,city,province_state,postal_code,email,phone}`
+  after this Phase 1 deploy is verified in production.
+
+**Backend**
+- `server/storage/company.ts`: new `getCompanyProfile()` and
+  `updateCompanyProfile()` read/write the canonical `companies` row.
+  `upsertCompanySettings()` now whitelists preference keys only —
+  profile keys passed in are silently ignored at the repo layer (the
+  route layer partitions them up front, so this is a defense-in-depth
+  guard against future drift). Write-through to `companies.name`
+  removed.
+- `server/routes/companySettings.ts`: GET merges
+  `companies` (profile) + `company_settings` (preferences) into the
+  same response shape the frontend already speaks (`companyName`,
+  `address`, ..., `timezone`, `dateFormat`, ..., `timezoneConfirmed`).
+  PUT/POST partitions the request payload by canonical owner and
+  routes profile keys to `updateCompanyProfile`, preference keys to
+  `upsertCompanySettings`. Backward-compat preserved for the legacy
+  `invoiceSettings.defaultTermsDays` shape.
+- `server/services/onboardingService.ts`: stops seeding `companyName`
+  and `phone` into the new tenant's `company_settings` row. The row is
+  still inserted (so preference defaults from the schema materialize)
+  but only `companyId` and `userId` are written.
+- COALESCE / leftJoin against `company_settings.companyName` removed
+  from platform read paths now that `companies.name` is canonical:
+  `server/services/platformFeedbackService.ts`,
+  `server/services/platformIssuesService.ts`,
+  `server/services/supportSessionService.ts`,
+  `server/storage/platformTenantsStorage.ts`,
+  `server/storage/admin.ts` (`getTenantDetail` — `displayName` is
+  preserved on the response shape but now mirrors `companies.name`).
+  Unused drizzle imports cleaned up.
+- Deleted superseded one-off script
+  `scripts/backfill-company-names.ts`. Its job (copying
+  `company_settings.companyName` → `companies.name` for legacy
+  placeholder rows) is now handled — and extended to all seven profile
+  fields — by the Phase 1 migration.
+- Silently-dropped fields removed from
+  `updateCompanySettingsSchema` (`currency`, `defaultTaxRate`,
+  `businessHours`, `invoiceSettings.{showCompanyLogo,footer}`) — they
+  had no DB column and were never persisted. The frontend does not
+  send them.
+
+**Frontend**
+- `client/src/pages/SettingsPage.tsx`: profile form resolver swapped
+  from `insertCompanySettingsSchema` to the new `companyProfileFormSchema`.
+  No JSX or UX changes — field names, layout, and the `/api/company-settings`
+  request shape are identical.
+
+**Shared**
+- `shared/schema.ts`: adds `companyProfileFormSchema` +
+  `CompanyProfileFormData` (Zod schema for the profile form, rooted in
+  `companies` columns). `companySettings` pgTable definition is
+  unchanged in Phase 1; the duplicated columns will be removed in the
+  Phase 2 migration.
+
+**Files affected**
+- `migrations/2026_04_19_consolidate_company_profile_phase1.sql` (new)
+- `shared/schema.ts`
+- `server/storage/company.ts`
+- `server/routes/companySettings.ts`
+- `server/services/onboardingService.ts`
+- `server/services/platformFeedbackService.ts`
+- `server/services/platformIssuesService.ts`
+- `server/services/supportSessionService.ts`
+- `server/storage/platformTenantsStorage.ts`
+- `server/storage/admin.ts`
+- `client/src/pages/SettingsPage.tsx`
+- `scripts/backfill-company-names.ts` (deleted)
+
+**Breaking changes**
+- API: `/api/company-settings` PUT/POST no longer accepts `currency`,
+  `defaultTaxRate`, `businessHours`, or `invoiceSettings.showCompanyLogo`/
+  `footer` — they will return a 400. No frontend caller sends them today.
+- Frontend type: `insertCompanySettingsSchema` is no longer the source
+  of the SettingsPage profile form type; use `companyProfileFormSchema`
+  going forward.
+
+### Added
+
+#### Hybrid SaaS onboarding state + owner-gated wizard (2026-04-19)
+
+New tenants created via public signup are now routed through a minimal
+onboarding wizard before accessing the app. Legacy tenants and invited
+users are not affected.
+
+**Schema**
+- `companies.onboarding_completed_at timestamp` (nullable). `NULL` = owner
+  has not finished the wizard; non-null = completed.
+- Migration `migrations/2026_04_19_companies_onboarding_completed_at.sql`
+  adds the column and backfills all existing rows with `created_at` as a
+  **legacy bypass** (not historical truth — keeps legacy tenants out of
+  the wizard entirely).
+
+**Backend**
+- `server/routes/onboarding.ts` (new, owner-only):
+  - `GET  /api/onboarding/state` returns derived step-completion from
+    canonical sources (`company_settings.timezoneConfirmedAt`,
+    `company_business_hours` row count) so wizard progress is never
+    drift-prone. Includes `completed` + `completedAt` for the company.
+  - `POST /api/onboarding/complete` stamps `onboarding_completed_at`.
+    Blocking requirement: timezone must be confirmed; business hours are
+    optional. Idempotent — returns existing timestamp if already set.
+    403 for non-owners.
+- `server/routes/auth.ts` `/api/auth/me` now additionally returns:
+  - `onboardingCompletedAt` (from `companies.onboarding_completed_at`)
+  - `isImpersonating` (from `req.isImpersonating` — canonical flag set
+    by `impersonationMiddleware`)
+  These fields are also returned from `/api/auth/login`, public
+  `/api/auth/signup`, and invite `/api/auth/signup` so the client-side
+  auth cache is seeded with the correct shape immediately after auth.
+- `AuthenticatedUser` type extended to include `onboardingCompletedAt`.
+- `userRepository.getAuthenticatedUser` populates the new field.
+- Onboarding service and invite signup: no behavioral change; column
+  defaults to `NULL` for new public signups (correct) and invitees
+  never land on the wizard (they aren't owners).
+
+**Frontend**
+- `client/src/lib/auth.tsx` `User` interface extended with
+  `onboardingCompletedAt` + `isImpersonating`.
+- `client/src/components/ProtectedRoute.tsx` route guard: if
+  `user.role === "owner" && !user.isImpersonating &&
+  !user.onboardingCompletedAt && location !== "/onboarding"`, redirects
+  to `/onboarding`. Impersonation bypass prevents platform support
+  sessions from getting trapped in the wizard.
+- `client/src/pages/OnboardingWizard.tsx` (new): resumable two-step
+  wizard (Timezone → Business Hours → Finish). Step 1 uses
+  `PUT /api/company-settings`; Step 2 uses `PUT /api/company/business-hours`
+  with a sensible Mon–Fri 8–5 default and a Skip option; Finish calls
+  `POST /api/onboarding/complete`, invalidates `/api/auth/me` to clear
+  the guard, and routes to `/`.
+- `client/src/App.tsx` registers `/onboarding` (auth-only, not
+  requireAdmin — the page enforces owner role itself). Suppresses
+  `TimezoneSetupDialog` and `TimezoneSetupBanner` while the wizard is
+  mounted so the legacy one-off dialog doesn't overlay the wizard.
+
+**Not changed**
+- Login / logout / CSRF / session config / invite signup payload /
+  platform role logic / technician redirect behavior.
+
+### Added
+
+#### Hybrid SaaS public signup — company + owner in one transaction (2026-04-19)
+
+`POST /api/auth/signup` now serves two paths selected by presence of
+`invitationToken`:
+
+- **Invite path (unchanged)** — existing staff invitation flow continues
+  to use `storage.createUser` + `storage.createEmailIdentity`. Behavior,
+  role handling, and audit logging are identical to prior release.
+- **Public path (new)** — tokenless signup creates a new company tenant
+  and an owner user in a single `db.transaction`. Payload:
+  `{ firstName, lastName, email, password, companyName?, companyPhone? }`.
+  Required: first name, last name, email, password. Optional: business
+  name, company phone. When business name is omitted, the server derives
+  a display name of `"<First> <Last>"` (e.g. `"John Smith"`). Owner user
+  is stamped with `role: "owner"`, company with
+  `subscriptionStatus: "trial"` and `trialEndsAt: now + 14 days`. Auto
+  login via `req.logIn` on success.
+
+**Rules enforced:**
+- Single transaction for `companies` + `users` + `user_identities` inserts.
+- Global email uniqueness pre-checked via
+  `identityRepository.isEmailGloballyAvailable`; Postgres `23505`
+  unique-violation (race) collapsed to the same 400.
+- Email normalized via `.trim().toLowerCase()` at the route boundary
+  (Zod `z.string().trim().toLowerCase().email()`).
+- Per-IP rate limit on `POST /signup` (5 attempts / 15 min).
+- Password minimum raised to 8 chars on both paths (was 6 on client).
+
+**Files affected:**
+- `server/services/onboardingService.ts` (new) — owns
+  `createCompanyWithOwner()` and `TRIAL_DAYS` constant.
+- `server/routes/auth.ts` — adds `signupLimiter`, `publicSignupSchema`,
+  branches signup handler on `invitationToken`.
+- `client/src/pages/Signup.tsx` — collects `companyName` on the
+  tokenless path, shows first/last name on both paths, 14-day trial
+  copy, branches POST payload.
+
+**No migration required** — `companies.subscriptionStatus` default and
+`companies.trialEndsAt` column already existed.
+
+**No breaking changes** — invite signup payload shape and login/logout
+endpoints untouched.
+
+#### Public signup — auto-login + Company Name seeding fixes (2026-04-19)
+
+Two surgical fixes to the Hybrid SaaS public signup flow:
+
+1. **Auto-login now works.** `Signup.tsx` called `apiRequest` directly
+   instead of `useAuth().signup()`, so the auth-context TanStack Query
+   cache for `["/api/auth/me"]` was never seeded with the new user. The
+   server session was established via `req.logIn` and the Set-Cookie was
+   sent, but `ProtectedRoute` read a stale `user: null` from cache and
+   bounced to `/login`. Fix: after `apiRequest('/api/auth/signup')`
+   resolves, `Signup.tsx` mirrors `signupMutation.onSuccess` in
+   `lib/auth.tsx` — `queryClient.cancelQueries() → clear() →
+   setQueryData(["/api/auth/me"], userData)` — before `setLocation("/")`.
+2. **Company Name populates in Company Settings.** `GET
+   /api/company-settings` reads from the `company_settings` table (the
+   canonical source documented at `server/storage/company.ts:38-48`),
+   not `companies.name`. Onboarding previously only inserted into
+   `companies`, so the settings GET returned `null` and the form
+   defaulted to an empty Company Name. Fix: the onboarding transaction
+   now also inserts a `company_settings` row seeded with the resolved
+   display name (entered business name, or `"<First> <Last>"` fallback)
+   and the optional company phone. Same transaction, same invariants.
+
+### Fixed
+
+#### Portal magic-link FK pointing at legacy contacts table (2026-04-19)
+
+Portal request-link was returning 500s with a raw Postgres constraint
+error: `insert or update on table "portal_magic_tokens" violates foreign
+key constraint "portal_magic_tokens_contact_id_fkey"`.
+
+**Root cause** — the 2026-02-15 migration that created
+`portal_magic_tokens` pointed `contact_id` at `client_contacts(id)`. The
+2026-03-28 contact-identity refactor renamed `client_contacts` →
+`client_contacts_legacy` and introduced `contact_persons` as the
+canonical identity table, but **did not re-point the portal token FK**.
+The Drizzle schema declaration in `shared/schema.ts:5022` was updated
+to `references(() => contactPersons.id)` but that doesn't retroactively
+alter the live DB. Handler was writing valid `contact_persons.id`
+values into a column whose live FK still targeted the legacy table.
+
+**Migration** — `migrations/2026_04_19_fix_portal_magic_tokens_contact_fk.sql`:
+1. `DROP CONSTRAINT IF EXISTS portal_magic_tokens_contact_id_fkey`
+2. `DELETE` any orphaned token rows (tokens are ephemeral 15-minute
+   single-use artifacts; purge is harmless).
+3. Re-add the FK pointing at the canonical `contact_persons(id)`.
+
+Safe to run idempotently. Execute with:
+```
+npm run db:migrate:one -- migrations/2026_04_19_fix_portal_magic_tokens_contact_fk.sql
+```
+
+**Handler hardening** (`server/routes/portal.ts`) — wrap the
+`portal_magic_tokens` insert in a try/catch so any future DB integrity
+error surfaces as a sanitized `MAGIC_LINK_CREATE_FAILED` response with
+a user-facing message. The full diagnostic (tenant id, contact id,
+email, raw error) is logged server-side only. Raw Postgres messages
+never reach the browser.
+
+### Changed
+
+#### Client Detail page — role chips match note chip treatment (2026-04-19)
+
+Role tags on contact cards (Row 3b of `ContactCard`) were using an
+outline Badge style that visually competed with the contact name.
+Swapped to the same chip pattern the Notes tab uses for visibility
+chips (Jobs / Invoices / Quotes):
+
+- `Badge variant="outline" text-xs px-1 py-0 capitalize`
+  → `span text-xs px-1.5 py-0.5 rounded bg-slate-50 text-slate-600 capitalize`
+- Wrapper gap loosened from `gap-0.5` → `gap-1` so the chips don't
+  crowd each other.
+- Neutral slate tint (vs the blue / green / purple used by the note
+  chips) keeps role tags visually **tertiary** — name primary,
+  phone/email secondary, roles tertiary — so the rail reads by
+  hierarchy, not by competition.
+
+No layout change, no new icons, no stronger borders, no added
+noise. Same utility vocabulary as the rest of the rail.
+
+**Files**
+- `client/src/pages/ClientDetailPage.tsx` — `ContactCard` only.
+
+**Verification** — `npx tsc --noEmit` clean; role tags render on
+cards that have roles, same data binding, no handler changes.
+
+#### Client Detail page — right-rail Contacts + Notes visual polish (2026-04-19)
+
+Subtle UI polish to contact cards and note cards inside the right-rail
+Contacts and Notes tabs. No structural changes, no new icons, no new
+features. All new classes use the project's existing Tailwind
+vocabulary (slate / amber / opacity / leading / border utilities).
+
+**Contacts (`ClientDetailPage.tsx` — local `ContactCard`)**
+- Padding: `px-1.5 py-1` → `px-2 py-1.5` for more breathing room.
+- Border tone pinned to `border-slate-200`, corners `rounded-md`.
+- Subtle hover: `hover:bg-slate-50/60 transition-colors`.
+- Primary star shrunk `h-3 w-3` → `h-2.5 w-2.5` (cleaner; still
+  amber-500 fill; matches the locations-rail primary indicator).
+- Phone / Email / MapPin icons dimmed to `text-slate-400` so the text
+  is the signal, not the glyph.
+- Row rhythm bumped `mt-0.5` → `mt-1` between rows.
+- Name already `font-semibold` from the prior pass — kept.
+
+**Notes (`components/NotesPanel.tsx`, consumed only by
+`ClientDetailPage.tsx`)**
+- Note body: added `leading-relaxed`.
+- Body → tags / body → attachments spacing bumped `mt-2` → `mt-2.5`.
+  Footer spacing bumped to `mt-3`.
+- Footer font shrunk `text-xs` → `text-[11px]` (stays muted).
+- Edit / Delete cluster moved to an idle `opacity-50` that becomes
+  `opacity-100` on card hover (`group`-scoped) — controls don't
+  compete with the body at rest. Buttons stay focusable.
+- Subtle left-border accent: `border-l-2 border-l-slate-300` on the
+  note card, outer rule line pinned to `border-slate-200`.
+- Visibility chips (Jobs / Invoices / Quotes), attachment strip,
+  inline edit form, and all click handlers unchanged.
+
+**Verification**
+- `npx tsc --noEmit` — zero new errors in either file.
+- Contacts: name / phone / email visible; star renders only when
+  primary; hover reveals action cluster; Add / Assign / Edit / Edit
+  Roles / Delete / Unassign handlers unchanged.
+- Notes: body reads with more breathing room; visibility chips and
+  attachment strip render as before; footer reads at lower visual
+  weight; edit/delete idle at 50% → 100% on card hover; delete
+  confirm dialog and inline edit flow unchanged.
+
+**Files**
+- `client/src/pages/ClientDetailPage.tsx`
+- `client/src/components/NotesPanel.tsx`
+
+**Migrations** — none. **Breaking changes** — none. **Backend** —
+not touched.
+
+#### Client Detail page — right-rail contact-card cleanup (2026-04-19)
+
+Small UI refinement of the contact cards rendered inside the right
+rail's **Contacts** tab. Scoped to the local `ContactCard` component in
+`ClientDetailPage.tsx` — the component is not shared elsewhere, so the
+change has no global contact-card impact.
+
+**Changes**
+- **Initials avatar removed.** The 20×20 `bg-slate-100` initials chip
+  and the `initials` computation were deleted. The name now sits at
+  the leading edge of the row.
+- **Primary indicator switched from a yellow "Primary" badge to a
+  `<Star>` icon** (amber 500, filled), matching the indicator already
+  used in the locations rail for primary-location rows. Star is
+  imported from `lucide-react` (already in this file — no new import).
+- **Name hierarchy strengthened** from `font-medium` to
+  `font-semibold text-slate-900`, with phone/email kept at
+  `text-muted-foreground` as secondary.
+- **Density tightened**: container padding `p-1.5` → `px-1.5 py-1`;
+  removed the `pl-[26px]` left indent from phone/email, location-
+  label, and role-badge rows (that indent existed only to align under
+  the now-removed avatar chip).
+- **Role chips preserved** (outline variant, `px-1 py-0`, capitalize)
+  — they represent contact responsibilities (billing/scheduling/etc.)
+  actively used by the `STANDARD_CONTACT_ROLES` dropdown.
+
+**Verification**
+| Item | Result |
+|---|---|
+| `npx tsc --noEmit` — no new errors in `ClientDetailPage.tsx` | ✅ |
+| Initials avatar removed | ✅ |
+| Primary shown as star | ✅ |
+| Name / phone / email still visible | ✅ |
+| Add Contact still works (CompanyContactsCompact / LocContactsCompact unchanged) | ✅ |
+| Assign / Edit / Edit Roles / Delete / Unassign click handlers preserved | ✅ |
+| Company scope badge still shows when `showScope` is true | ✅ |
+| No regression in Contacts tab list rendering | ✅ |
+| No unintended changes elsewhere (component is not exported / not shared) | ✅ |
+
+**Files**
+- `client/src/pages/ClientDetailPage.tsx`
+
+**Migrations** — none. **Breaking changes** — none. **Backend** — not
+touched.
+
+#### Portal polish — trust, conversion, mobile (2026-04-19)
+
+Frontend polish pass on the existing customer portal. No page rewrites.
+One minimal additive backend touch: `GET /api/portal/me` now also
+returns `companyPhone` + `companyEmail` from the existing `companies`
+row so the portal header/footer can surface contact info.
+
+**Files**
+- `server/routes/portal.ts` — 7-line additive SELECT on the `/me`
+  handler. No schema change; columns already existed.
+- `client/src/lib/portalAuth.tsx` — `PortalUser` extended with
+  `companyPhone` + `companyEmail`.
+- `client/src/pages/portal/portalUtils.ts` — richer status-badge
+  contract (`portalStatusBadge` returns `{kind, label, className}` with
+  derived past-due / due-soon states); `formatDueLabel`, `daysUntil`,
+  `resolveStatusKind` helpers centralized here.
+- `client/src/components/PortalLayout.tsx` — branded header with brand
+  monogram + tenant/account subtitle; desktop trust footer with
+  tap-to-call / tap-to-email; mobile trust strip above the bottom nav;
+  44px tap targets on all nav items.
+- `client/src/pages/portal/PortalLogin.tsx` — shield trust icon, tighter
+  typography, visible secure-sign-in affordance, 44px submit button.
+- `client/src/pages/portal/PortalDashboard.tsx` — emphasized Balance Due
+  (red tone when any invoice is past-due), skeleton loading for
+  summary + recent-invoices rows, contextual empty state with tenant
+  name, "All paid up" signal when balance is zero.
+- `client/src/pages/portal/PortalInvoicesList.tsx` — skeleton rows,
+  unified badge tones via `portalStatusBadge`, per-tab empty states,
+  due-soon / past-due surfaced inline in every row.
+- `client/src/pages/portal/PortalInvoiceDetail.tsx` — hero-style
+  Balance Due with past-due tone; inline desktop Pay CTA AND sticky
+  mobile Pay CTA that floats above the trust strip / bottom nav;
+  skeleton loading; unified status banners via a single `StatusBanner`
+  sub-component driven by `portalStatusBadge.kind`; larger tap targets.
+
+**Missing blocker** — company logo: no `companies.logoFileId` column
+exists in the schema. The brand monogram (first letter of the tenant
+name) is the placeholder today. Surfacing a real uploaded logo would
+require a schema column + an upload endpoint; called out for product
+decision before proceeding.
+
+**Not touched** — portal auth flow (`/auth/request-link`, `/auth/verify`),
+`PortalPayInvoiceForm`, Stripe webhook, QBO sync, payment ledger
+writers, office-side surfaces, tech hub, client-detail redesign, any
+in-flight multi-visit / invoice workstreams.
+
+**Optional Phase 4 (payment history) skipped** — the portal invoice
+detail endpoint does not return a `payments[]` array today, so a
+history section would require a backend extension. Flagged as a
+follow-up, not in scope.
+
+### Fixed
+
+#### Audit Fix A + B — canonical invoice-count signal + client overview aggregates (2026-04-19)
+
+Two surgical fixes from the secondary drift audit. No refactors, no
+new features, no schema changes.
+
+**Fix A — Canonical `invoiceCount` on jobs feed**
+
+- `server/storage/jobsFeed.ts`: added `invoiceCount` correlated
+  subquery to `feedSelectFields` (runs against the FK index on
+  `invoices.job_id`); `JobFeedItem` gained a matching field;
+  `mapFeedRow` surfaces the count as a number.
+- `JobFeedFilters.readyToInvoiceOnly` added. Predicate:
+  `status='completed' AND NOT EXISTS (SELECT 1 FROM invoices …)`.
+  Route passes it through on `readyToInvoiceOnly=true`.
+- `server/storage/dashboard.ts`:
+  - `getJobCounts.requiresInvoicingCount` now requires `status='completed'`
+    **AND** zero invoices on the job — prevents the tile from
+    over-reporting when invoices exist outside the close-with-invoice
+    flow.
+  - `getNeedsAttentionJobs` attention-feed branch for `requires_invoicing`
+    now excludes jobs with any invoices via the same `NOT EXISTS` clause.
+- `client/src/pages/PMWorkspacePage.tsx`:
+  - `PmBillingJob.invoiceCount?: number` added.
+  - Dropped the 1000-row client-side invoice aggregation (previously
+    built a `Set<jobId>`). Exception check + "invoiced" bucket now
+    read `job.invoiceCount` directly from the canonical feed.
+  - Scales to any tenant size; the prior 1000-invoice cap is gone.
+- `client/src/components/DashboardActionModal.tsx`:
+  `ready_to_invoice.fetchParams` switched from `status=completed`
+  (list) to `readyToInvoiceOnly=true` (canonical). Tile count and
+  modal list now agree row-for-row.
+
+**Fix B — Server-side billing aggregates for client overview**
+
+- `server/storage/customerCompanies.ts`: new
+  `getBillingAggregatesForLocations(companyId, locationIds)` — single
+  SQL query returning:
+  - `lifetimeRevenue` (SUM total where status='paid')
+  - `paidYtd` (same, filtered to current year via `issueDate`)
+  - `outstanding.count` + `outstanding.total` + `outstanding.overdueTotal`
+  - `agingBuckets` { current, d30, d60, d90 } by `dueDate`
+  - All aggregates computed server-side over the FULL invoice set —
+    the route's `invoicesList` can stay truncated to 100 rows for the
+    UI without breaking totals.
+- `getCustomerCompanyOverview` + `CustomerCompanyOverview` updated to
+  include `billingAggregates`.
+- `GET /api/clients/:id/overview` (both branches — parent path +
+  legacy/standalone path) + `GET /api/customer-companies/:id/overview`
+  return `billingAggregates` alongside the existing `invoices` list.
+- `client/src/pages/ClientDetailPage.tsx`: `lifetimeRevenue`,
+  `outstandingInvoices`, `paidYtd`, and `agingBuckets` all now
+  prefer `overview.billingAggregates` when present and fall back to
+  client-side derivation only if the payload omits them (rollout
+  safety). No UI change; numbers are now correct for clients with
+  >100 invoices.
+
+**Files changed**
+- `server/storage/jobsFeed.ts`
+- `server/storage/dashboard.ts`
+- `server/storage/customerCompanies.ts`
+- `server/routes/jobs.ts` (wire `readyToInvoiceOnly`)
+- `server/routes/clients.ts` (emit `billingAggregates`)
+- `client/src/pages/PMWorkspacePage.tsx`
+- `client/src/components/DashboardActionModal.tsx`
+- `client/src/pages/ClientDetailPage.tsx`
+
+**Verified:** `npm run check` passes clean.
+
+### Added
+
+#### Portal activation — Phase 1 office UI (2026-04-19)
+
+Surfaces the already-built customer portal inside the office app.
+Surgical, no rewrites, no schema changes, no touch of the in-flight
+client-detail redesign or tech hub.
+
+**Files**
+- `server/routes/companySettings.ts` — new `GET /api/company-settings/features`
+  returning the tenant's own `tenant_features` row (read-only; uses the
+  existing `tenantFeaturesRepository.getFeatures` cache).
+- `client/src/hooks/useTenantFeatures.ts` (new) — React Query hook,
+  staleTime 5 min to mirror the server cache.
+- `client/src/lib/portalUrls.ts` (new) — frontend mirror of the server's
+  `buildPortalInvoiceUrl`. Uses `window.location.origin`; no env-var
+  plumbing needed.
+- `client/src/lib/communicationTemplateVariables.ts` — `INVOICE_VARIABLES`
+  gains `PAYMENT_URL` and `PAY_NOW_CTA` so the template-editor chips
+  surface the portal-dependent tokens.
+- `client/src/components/portal/SendPaymentLinkDialog.tsx` (new) — shared
+  office-side trigger for the existing public magic-link endpoint
+  `POST /api/portal/auth/request-link`. Anti-enumeration copy tells the
+  user honestly that unknown emails are silently ignored.
+- `client/src/components/InvoiceHeaderCard.tsx` — three new overflow-menu
+  items (Copy payment link, Open client portal, Send payment link) with
+  three new callback props. Visibility owned by the parent.
+- `client/src/pages/InvoiceDetailPage.tsx` — wires the three callbacks
+  (clipboard copy, new-tab open, dialog open); gates them on
+  `customerPortalEnabled && !isDraft`. Mounts SendPaymentLinkDialog.
+- `client/src/pages/CommunicationSettingsPage.tsx` — portal-status strip
+  above the template editor (Customer Portal / Customer Portal Payments
+  badges + an explanatory line about the template variables).
+
+**Not touched** — portal pages, portal auth, Stripe webhook, QBO sync,
+`tenant_features` schema, admin billing routes, the client detail
+3-column redesign, and job/visit/tech-hub surfaces. The "Client Billing
+tab" placeholder called out in Phase 1 item #2 was already deleted by
+the client-detail redesign that landed overnight — no surface remained
+to modify; per-invoice CTAs now live on InvoiceDetailPage where they
+belong contextually.
+
+### Fixed
+
+#### Audit fixes — multi-invoice UI + portal security (2026-04-19)
+
+Surgical fixes driven by the full-system audit. No refactors, no new
+features, no schema changes.
+
+1. **JobDetailPage / JobHeaderCard header button multi-invoice regression.**
+   `jobInvoice` (primary pointer) was null when primary was deleted
+   even if siblings still existed. The header button prompted "Create
+   Invoice" while `JobInvoicesCard` on the same page showed the
+   remaining invoices — a contradictory UX. Now fetches the canonical
+   plural feed (`invoices/list?jobId`) in parallel, and:
+   - Primary set → "View Invoice" navigates to primary (unchanged).
+   - No primary but siblings exist → "View Invoices" navigates to the
+     first sibling (never prompts Create).
+   - Zero invoices → "Create Invoice" opens the create dialog.
+   - `JobHeaderCard` gained an optional `jobInvoices?: Invoice[]` prop;
+     internal `existingInvoice` falls back to the first sibling when
+     `jobInvoice` is null, so both close-dialog surfaces render a
+     valid "View Invoice" link even when the primary was deleted.
+
+2. **PMWorkspacePage billing-exception multi-invoice regression.**
+   `getPmBillingExceptionState` used `!job.invoiceId` as "no invoice"
+   and `job.invoiceId` as "has invoice" — blind to non-primary
+   siblings. Now fetches the canonical invoice feed once, builds a
+   `Set<jobId>` of jobs with ≥1 invoice, and threads `hasAnyInvoice`
+   into the exception check. The "invoiced" bucket categorization
+   also uses the plural signal.
+
+3. **Portal magic-link single-use race.** Prior flow was
+   `SELECT … WHERE consumed_at IS NULL` then `UPDATE`, which allowed
+   two concurrent verify requests to both pass the null check and both
+   mint sessions — violating single-use. Replaced with a single atomic
+   conditional UPDATE … RETURNING that matches on
+   `consumedAt IS NULL AND expiresAt > now`; only the winner gets the
+   row back and proceeds.
+
+4. **Portal Stripe payment-intent rate limit.** Authenticated customer
+   could hammer PaymentIntent creation with no guard. Added
+   `portal-payment-intent` limiter (6/min/IP) on
+   `POST /api/portal/invoices/:id/stripe/payment-intent`.
+
+5. **`sendPaymentReceiptEmail` duplicate-delivery parity.** Receipt
+   path now calls `assertNoActiveQueuedDelivery` before
+   `createQueuedDelivery`, matching the invoice/quote/job send paths.
+   Defence-in-depth against concurrent receipts bypassing the upstream
+   `payments.providerEventId` unique index.
+
+**Files changed**
+- `client/src/pages/JobDetailPage.tsx`
+- `client/src/components/JobHeaderCard.tsx`
+- `client/src/pages/PMWorkspacePage.tsx`
+- `server/routes/portal.ts`
+- `server/services/emailDispatchService.ts`
+
+**Verified:** `npm run check` passes clean.
+
+### Added
+
+#### Phase 12 — Invoice email payment conversion + activity timeline (2026-04-19)
+
+Drives customers from invoice emails to the portal Pay Now flow, and
+gives staff a read-only invoice lifecycle view. No new write paths —
+every new surface is derived from existing canonical sources.
+
+**Pay Now in invoice + reminder emails**
+- `PAYMENT_URL` and `PAY_NOW_CTA` registered in
+  `INVOICE_TEMPLATE_VARIABLES` (no schema change; TS-only).
+- `templateDataBuilder.buildInvoiceTemplateData` populates both vars
+  only when the invoice is payable (`canAcceptInvoicePayment`), the
+  outstanding balance is > 0, and the tenant has
+  `customerPortalPaymentsEnabled=true`. Otherwise both render as
+  empty strings so the default template's CTA paragraph disappears
+  cleanly.
+- `PAY_NOW_CTA` is a multi-line self-contained block
+  (`"Pay securely online: <url>\n\n"`) so templates can splice it
+  as one line without leaving orphan whitespace on paid/voided sends.
+- `PAYMENT_URL` is the raw portal invoice URL; tenants can use it in
+  custom template copy.
+- System default templates `invoice:email` and
+  `invoice_reminder:email` updated to include `{{PAY_NOW_CTA}}`.
+  Tenants with saved templates keep their override (can opt in by
+  adding the variable).
+- `buildPortalInvoiceUrl` (new `server/lib/portalUrls.ts`) is the
+  single source of truth for `${APP_URL}/portal/invoices/:id`.
+- `bodyToHtml` in `emailDispatchService.ts` now auto-linkifies
+  http(s) URLs so the Pay Now URL renders clickable in email clients.
+  Templates stay plain-text (SMS-portable).
+- Recipient receipt emails intentionally leave PAYMENT_URL /
+  PAY_NOW_CTA empty on the receipt template since there is no
+  outstanding balance at receipt time.
+
+**Invoice activity timeline (read-only)**
+- New `server/storage/invoiceTimeline.ts` — pure read-model
+  assembling events from:
+  - `invoices.createdAt` / `issuedAt` / `viewedAt`
+  - `email_deliveries` (one event per outbound send, with current
+    provider status — delivered / opened / bounced / complained /
+    failed surfaced as a badge)
+  - `payments` (payment / refund / reversal)
+- `GET /api/invoices/:id/timeline` — staff endpoint returning
+  `{ data: InvoiceTimelineEvent[], count }`, sorted newest-first.
+- `InvoiceTimelineCard` (new
+  `client/src/components/invoice/InvoiceTimelineCard.tsx`) —
+  read-only card rendered on `InvoiceDetailPage` beneath
+  `PaymentHistoryCard`. Lightweight; no mutations, no new state.
+
+**Files affected**
+- `server/lib/portalUrls.ts` (new)
+- `server/constants/templateVariables.ts`
+- `server/services/templateDataBuilder.ts`
+- `server/services/communicationTemplatesService.ts`
+- `server/services/emailDispatchService.ts` (linkifyEscapedHtml)
+- `server/storage/invoiceTimeline.ts` (new)
+- `server/routes/invoices.ts` (timeline route)
+- `client/src/components/invoice/InvoiceTimelineCard.tsx` (new)
+- `client/src/pages/InvoiceDetailPage.tsx` (mount)
+
+**Verified:** `npm run check` passes clean.
+
+### Added
+
+#### Phase 11 — Customer portal payments + portal PDF access (2026-04-19)
+
+Completes the customer-facing layer on top of the already-built Stripe
+backend, Resend email delivery, canonical PDF generator, and portal
+magic-link auth. No new writer paths — the Stripe webhook remains the
+single ledger-row writer; the PDF generator and template pipeline are
+reused unchanged.
+
+**Portal PDF download**
+- `GET /api/portal/invoices/:invoiceId/pdf` (server/routes/portal.ts).
+  Reuses `invoicePdfService.generateInvoicePdf` verbatim. Scope/
+  visibility guardrails match the existing portal invoice-detail
+  route (customerCompanyId isolation, draft/voided 404).
+- Download button on `PortalInvoiceDetail.tsx`.
+
+**Portal Pay Now flow**
+- `POST /api/portal/invoices/:invoiceId/stripe/payment-intent` —
+  portal-scoped PaymentIntent creation. Mirrors the staff route;
+  gates on `customerPortalPaymentsEnabled`, `canAcceptInvoicePayment`,
+  and current outstanding balance. Same `prospectivePaymentId` /
+  `idempotencyKey` pattern as the staff path; webhook remains the
+  sole ledger writer.
+- New `PortalPayInvoiceForm.tsx` using `@stripe/stripe-js` +
+  `@stripe/react-stripe-js` (added as dependencies). Stripe Elements
+  `PaymentElement` with `redirect: "if_required"`.
+- `PortalInvoiceDetail.tsx` — Pay Now button visible only when
+  balance > 0, status is payable, and `paymentsEnabled` is true.
+  Short refetch cadence (1.5s / 3.5s / 7.5s) picks up the webhook-
+  written balance change; no client-side trust in payment success.
+
+**Portal status messaging polish**
+- Paid / Partial / Past Due / Due Soon banners on
+  `PortalInvoiceDetail.tsx`. Derived purely from already-returned
+  invoice fields (`status`, `balance`, `dueDate`). 7-day Due Soon
+  window consistent with canonical `getInvoiceStatusBadge`.
+
+**Payment receipt email**
+- New `payment_receipt` entry in `communicationTemplateEntityTypeEnum`
+  (TypeScript enum only — `entity_type` is a `text` column, no DB
+  migration).
+- System default template in `communicationTemplatesService.ts`.
+- `PAYMENT_RECEIPT_TEMPLATE_VARIABLES` extends invoice vars with
+  `PAYMENT_AMOUNT`.
+- `templateDataBuilder.buildPaymentReceiptTemplateData` layers the
+  payment amount on top of canonical invoice data.
+- `emailDispatchService.sendPaymentReceiptEmail` — no PDF, no status
+  transition; delivery row recorded under entityType="invoice" so
+  receipts roll up with sends + reminders in one history stream.
+- `recipientResolverStrategies.payment_receipt` delegates to the
+  canonical invoice strategy (billing-first).
+- Trigger: `handlePaymentIntentSucceeded` fires the receipt AFTER the
+  canonical `paymentRepository.createPayment` call. Receipt failures
+  are anomaly-logged and do not break webhook acknowledgement.
+
+**Env var added**
+- `STRIPE_PUBLISHABLE_KEY` — required for portal Pay Now. Returned
+  by the portal payment-intent route so Stripe.js can initialize.
+
+**Files affected**
+- `server/routes/portal.ts`
+- `server/routes/stripeWebhook.ts`
+- `server/services/emailDispatchService.ts`
+- `server/services/templateDataBuilder.ts`
+- `server/services/communicationTemplatesService.ts`
+- `server/services/recipientResolverStrategies.ts`
+- `server/services/deliveryNotificationService.ts`
+- `server/constants/templateVariables.ts`
+- `shared/schema.ts` (enum; no DB migration)
+- `client/src/pages/portal/PortalInvoiceDetail.tsx` (rewrite)
+- `client/src/pages/portal/PortalPayInvoiceForm.tsx` (new)
+- `package.json` (Stripe Elements deps)
+
+**Verified:** `npm run check` passes clean.
+
+### Changed
+
+#### Client Detail page — left-rail default per mode + de-duplicated single-loc header + More in action cluster (2026-04-19)
+
+Four corrections on top of today's earlier shell refactor.
+
+**1. Left rail: always visible, mode-based default**
+- Drops the `!isSingleLocation` hide-guard so the locations strip
+  renders for every client, preserving the structural left boundary.
+- Default collapsed state: **expanded** for multi-location,
+  **collapsed** for single-location. Hydrates from
+  `syntraro.client-detail.left-rail.collapsed` when the user has
+  explicitly toggled; a `userToggled` ref prevents the mode-default
+  from being persisted so one mode's default doesn't leak into the
+  other's.
+
+**2. Duplicated location block removed from the center (single-loc)**
+- For single-location clients the workspace card's scope-header row
+  (name, tags, edit button, address, site code) is suppressed — the
+  page header already owns the client identity + service address.
+  Center begins with the tab bar.
+- Location tags move into the page header (appended after company
+  tags) so they keep a surface once the workspace scope header hides.
+- Multi-location behavior unchanged.
+
+**3. Billing vs service address differentiation**
+- New `hasDistinctBillingAddress` memo compares the sole location's
+  service address against the parent company's billing address
+  (trimmed + lowercased). Empty billing block → treated as "bills to
+  service address".
+- When they **differ**, a compact labeled two-column block renders
+  above the tabs: **Service Address** | **Billing Address**.
+- When they **match**, nothing renders (no duplication). If the
+  client has a Site Code but no distinct billing, the code is
+  surfaced inline as a single compact line.
+- All data is from the already-loaded `/api/clients/:id/overview`
+  payload. No new queries, no schema change.
+
+**4. More (overflow) menu moved into the action cluster**
+- Was a standalone far-right column of the header flex row. Now
+  appended to the Create-actions row (after Create Invoice) so it
+  reads as part of the primary header action cluster.
+- Menu items unchanged.
+
+**Verification**
+- `npm run check` — zero new errors in `ClientDetailPage.tsx`. The
+  five errors TypeScript reports are all in `InvoiceDetailPage.tsx`
+  (unrelated concurrent work: `portalCtasAvailable`,
+  `handleCopyPaymentLink`, `handleOpenClientPortal`).
+- Multi-location: left rail expanded by default; scope header still
+  renders for selected locations; no dual-address block; More menu
+  in action cluster.
+- Single-location: left rail collapsed by default but present; no
+  duplicated location block; Site Code shown inline when addresses
+  match; Service/Billing dual block when they differ; auto-scope to
+  sole location continues to expose Equipment/PM/Parts.
+- Right rail, tabs, filter chips, queries, mutations: unchanged.
+
+**Files**
+- `client/src/pages/ClientDetailPage.tsx`
+
+**Migrations** — none. **Breaking changes** — none. **Backend** — not
+touched.
+
+#### Client Detail page — full-width header + single-location tab parity (2026-04-19)
+
+Layout refinement and a functional bug fix.
+
+**1. Full-width top zone (shell refactor)**
+- Outer root reverted to `flex h-full flex-col`. The page header (client
+  name, subtitle, Create Job / Quote / Invoice actions, KPI strip,
+  overflow menu) now spans full page width as a single cohesive
+  command/header zone above the body — matching the target hierarchy.
+- A new body flex-row `<div flex-1 min-h-0 flex lg:flex-row flex-col>`
+  below the header holds the three columns as siblings:
+  **locations strip** (flush-left structural column, not a floating
+  card) | **center workspace** (owns the page) | **right utility rail**
+  (collapsible, visually subordinate).
+- Resize handle and right-rail aside moved inside the body row (they
+  were previously page-outer siblings under the 2-column-root
+  structure). Rail collapse/resize behavior and canonical
+  `syntraro.detail.rail.{width,collapsed}` persistence unchanged.
+- Locations strip kept `border-r` only, no rounded corners or side
+  padding, so it remains visually attached as a structural column.
+
+**2. Single-location clients now see the full workspace tab set**
+- Bug: `isSingleLocation` hides the left strip (correct), but
+  `scopeType` stayed at `"company"` by default → rendered
+  `COMPANY_TABS` (Active Work / Jobs / Invoices / Quotes), so
+  Equipment / PM / Parts were unreachable for single-location clients.
+- Fix: a new effect in `ClientDetailPage` auto-selects the sole
+  location when `locations.length === 1` **and** no `?location=` / 
+  `?scope=company` URL override is present. `scopeType` becomes
+  `"location"`, `selectedLocationId` becomes the sole id, and
+  `LOCATION_TABS` (Jobs / Invoices / Quotes / Equipment / PM / Parts)
+  renders. Deep links (`?scope=company` or `?location=...`) are still
+  honored — the auto-select only runs when no explicit scope is set.
+- Multi-location clients are unaffected.
+
+**Verification**
+- `npm run check` passes.
+- Multi-location: All Locations view still renders `COMPANY_TABS` and
+  aggregates. Selecting a location in the left strip still renders
+  `LOCATION_TABS` for that location.
+- Single-location: on load, auto-scopes to the sole location and
+  renders `LOCATION_TABS` including Equipment/PM/Parts.
+- Right rail still collapses (chevron / edge tab) and still resizes
+  (drag + keyboard); persistence unchanged.
+- Contacts / Notes / Billing tabs in the right rail function as
+  before.
+- No changes to jobs / invoices / quotes tab content or data sources.
+
+**Files**
+- `client/src/pages/ClientDetailPage.tsx`
+
+**Migrations** — none. **Breaking changes** — none. **Backend** — not
+touched. No new queries or endpoints.
+
+#### Client Detail page — rail collapse/resize + header info/action separation (2026-04-19)
+
+Two-part refinement on top of the 2-column outer restructure earlier
+today.
+
+**1. Right rail collapse + drag-resize**
+
+The right page column now supports the same behaviors as the rail in
+`DetailPageShell` (which powers Job / Invoice / Quote detail pages):
+- Click the in-rail chevron to collapse to a slim vertical edge tab
+  with a "Details" label.
+- Click the collapsed edge tab to expand.
+- Drag the 1px divider between the left and right page columns to
+  resize the rail; clamped to `[300px, min(520px, 45% of viewport)]`.
+- Keyboard support on the focused divider: `ArrowLeft` widens,
+  `ArrowRight` shrinks (Shift = 32px step, otherwise 8px).
+- Width and collapsed state persist across reloads via the
+  **canonical** localStorage keys:
+  - `syntraro.detail.rail.width` — integer pixels as string
+  - `syntraro.detail.rail.collapsed` — `"1"` or `"0"`
+  These are the same keys `DetailPageShell` writes, so the user's rail
+  preference carries between Client Detail and the other detail pages.
+
+**Implementation note:** the state / effects / pointer + keyboard
+handlers are inlined in `ClientDetailPage.tsx` rather than forked into
+a new shared primitive. Shared localStorage contract, not a shared
+component. Kept this pass surgical; follow-up consolidation (extract
+to a shared primitive, migrate `DetailPageShell` to consume it) is
+noted as a product-decision item for a later pass.
+
+**2. Header: info block separated from action row**
+
+The client-info block (name + badges + tags + subtitle) and the
+Create-action row (Create Job / Quote / Invoice) now read as two
+distinct header sections:
+- Header wrapper padding bumped `pt-3 pb-3` → `pt-4 pb-5`.
+- Action row spacing: previously `mt-2`; now
+  `mt-4 pt-3 border-t border-slate-100`. 16px margin + 12px inner
+  padding + a hairline divider separate the two sections.
+- All three action buttons and their existing click handlers are
+  unchanged.
+
+**Unchanged (per spec)**
+- 2-column page structure.
+- Right rail content model (Contacts / Notes / Billing tabs).
+- Locations strip behaviour + collapse persistence at
+  `syntraro.client-detail.left-rail.collapsed`.
+- Workspace tabs, KPI strip, Recent Activity placement,
+  single-vs-multi-location logic.
+
+**Files**
+- `client/src/pages/ClientDetailPage.tsx`
+
+**Migrations** — none. **Breaking changes** — none. **Backend** — not
+touched.
+
+#### Client Detail page — outer 2-column restructure (2026-04-19)
+
+The previous passes nested the right utility rail *inside* a shell that
+also contained the page header, so the rail always began below the
+header. The approved layout is a page-level 2-column split:
+
+```
+[ LEFT PAGE COLUMN                     ][ RIGHT PAGE COLUMN ]
+  page header                            utility rail
+  locations strip + workspace + activity (full page height)
+```
+
+The right column now runs from the top of the page content area down,
+independent of the left column's internal stacking.
+
+**ClientDetailPage (`pages/ClientDetailPage.tsx`)**
+- Outer page root changed from `flex h-full flex-col` to
+  `flex h-full lg:flex-row flex-col` (row at `lg+`, stacked below).
+- Everything that used to sit above/inside the shell — the page
+  header, the mobile location `<Select>`, the locations strip, the
+  workspace card, the recent activity card — is now wrapped in a
+  single **LEFT PAGE COLUMN** `<div className="flex-1 min-w-0 lg:h-full flex flex-col overflow-hidden">`.
+- Inside the left page column, a new **body row**
+  `<div className="flex-1 min-h-0 flex lg:flex-row flex-col overflow-hidden">`
+  hosts the locations strip (flush left) and the workspace scroll
+  area (flex-1, `p-4 space-y-3`, own vertical scroll at lg+).
+- A new **RIGHT PAGE COLUMN** `<aside className="lg:shrink-0 lg:w-[360px] lg:h-full flex flex-col border-t lg:border-t-0 lg:border-l border-slate-200 bg-white">`
+  holds the existing `<UtilityRail>`. The aside is a sibling of the
+  left page column, not a descendant, so its top edge starts at the
+  very top of the page content area — above the page header's left-
+  side region. Below `lg`, the aside stacks under the left column
+  (same responsive behaviour the shell used to give).
+- **DetailPageShell is no longer used by this page.** Its fixed
+  `px-4 lg:px-6 py-4` wrapper prevented the locations strip from
+  being flush against the left edge of its column, and its shape made
+  a true page-level 2-column split impossible without margin/padding
+  hacks. The shell is untouched and still powers Job / Invoice / Quote
+  detail pages. Import removed from this file.
+- **Locations strip now flush left:** the strip wrapper dropped
+  `rounded-md border` + the shell's surrounding padding; it uses
+  `border-r border-slate-200` only, so its left edge sits directly on
+  the left page column's left edge (i.e., immediately next to the app
+  chrome). Collapse state still persists at
+  `syntraro.client-detail.left-rail.collapsed`.
+- **UtilityRail outer stripped** of its own `rounded-md border` —
+  the rail now fills the aside flush, since the aside's `border-l`
+  already provides the visual separation.
+
+**What was incorrectly nesting the right rail before**
+The rail was being passed as `DetailPageShell.rightRail`. The shell
+renders header-aware padding (`px-4 lg:px-6 py-4`) and groups the
+right rail in the same inner flex row as its left column. The page
+header on Client Detail lives *above* the shell, so when the shell
+packed header + leftColumn + rightRail together, the rail couldn't
+escape the shell's vertical frame. Moving to a page-outer `flex-row`
+root decouples the rail from the shell's frame entirely.
+
+**Unchanged**
+- Header actions, Create Job / Quote / Invoice layout, KPI block,
+  overflow menu.
+- Workspace tab list (Active Work / Jobs / Invoices / Quotes /
+  Equipment / PM / Parts).
+- UtilityRail contents (Contacts / Notes / Billing).
+- All data hooks, mutations, dialogs.
+- DetailPageShell itself (consumed by other detail pages).
+
+**Files**
+- `client/src/pages/ClientDetailPage.tsx`
+
+**Migrations** — none. **Breaking changes** — none. **Backend** — not
+touched.
+
+#### Client Detail page — right-rail top alignment fix (2026-04-18)
+
+Fixes a visual regression where the right utility rail appeared to
+start lower than the center workspace card. Rail was correct at
+`y=py-4`; the **workspace was the column actually offset** by 10px,
+and the user perceived the rail as "dropped lower" relative to it.
+
+**Root cause**
+The `lg:hidden` mobile location `<Select>` was rendered as the first
+child of `leftColumn`. At `lg+` its class sets `display: none`, but it
+has no HTML `hidden` attribute, so Tailwind's `space-y-2.5` selector
+(`:not([hidden]) ~ :not([hidden])`) still treats it as a visible
+sibling, applying `margin-top: 10px` to the workspace card. Same class
+of bug JobDetailPage avoided via its "kept outside the shell" comment
+at `JobDetailPage.tsx:908`.
+
+**Fix (`pages/ClientDetailPage.tsx`)**
+- Mobile location `<Select>` moved **out** of `leftColumn` and placed
+  as a direct sibling of `DetailPageShell` (above it, wrapped in
+  `lg:hidden bg-white border-b px-4 py-2`). Below `lg` it still sits
+  between the page header and the stacked body. At `lg+` it is
+  completely out of layout, so the workspace card renders at the same
+  top y as the left strip and the right rail.
+- Right-rail card upgraded to `lg:h-full lg:flex lg:flex-col`, with
+  `lg:flex-1 lg:min-h-0 lg:flex lg:flex-col` on the inner `<Tabs>`, so
+  the card visually fills the full column height rather than shrinking
+  to content. Matches the user's "full-height separate right column"
+  intent and the Jobs detail page pattern.
+
+**Unchanged**
+- No `DetailPageShell` API changes.
+- No backend / query changes.
+- All other layout, header, actions, and tab content stay as-is.
+
+**Files**
+- `client/src/pages/ClientDetailPage.tsx`
+
+**Migrations** — none. **Breaking changes** — none.
+
+#### Client Detail page — drift correction: restore right utility rail (2026-04-18)
+
+Reverses the 2-column simplification from Pass 1 (same day). The
+approved layout is 3-column: slim left Locations strip (multi-location
+only) + main center column + full right utility rail. Pass 1 had
+dropped the right rail and folded Contacts/Notes into workspace tabs;
+this commit restores the original intent.
+
+**ClientDetailPage (`pages/ClientDetailPage.tsx`, 2421 → 2594 lines)**
+- **Right utility rail restored.** `DetailPageShell` is now called
+  with `rightRail={<UtilityRail …/>}` again. `UtilityRail` tabs:
+  **Contacts / Notes / Billing** (no Details — that removal from the
+  earlier refinement stands).
+- **Contacts and Notes pulled back out of the workspace tab bar.**
+  `WorkspaceTab` type and both `COMPANY_TABS` / `LOCATION_TABS` lists
+  dropped the two entries. Workspace tab dispatch cleared of
+  `"contacts"` and `"notes"` branches. Center card is operational only:
+  - Company scope: Active Work / Jobs / Invoices / Quotes
+  - Location scope: Active Work / Jobs / Invoices / Quotes / Equipment / PM / Parts
+- **Header restructured.** Create Job / Create Quote / Create Invoice
+  now live in a row directly under the client name + subtitle — no
+  longer a detached top-right action row. **Add Location moved into
+  the overflow menu** (with Edit/Delete) so it doesn't visually
+  dominate. KPI block stays to the right of identity; overflow
+  dropdown docks far right. All canonical modals reused:
+  `QuickAddJobDialog`, `NewQuoteModal`, `NewInvoiceModal`.
+- **Restored in-file components and state:** `UtilityRail`,
+  `BillingSummary`, `AgingRow`, `DetailRow`; `UtilityTab` type;
+  `utilityTab` state; `paidYtd` / `agingBuckets` derivations.
+  Imports: `Tabs / TabsList / TabsTrigger / TabsContent` back in.
+- **Left Locations strip unchanged.** Still rendered only for
+  multi-location clients via `DetailPageShell.leftSidebar`,
+  slim+collapsible, persisted at
+  `syntraro.client-detail.left-rail.collapsed`. Top alignment with the
+  workspace card and the utility rail is by construction — all three
+  are direct flex-row siblings inside the shell's single `py-4`
+  wrapper. Inter-column gap stays at `gap-3` (12px).
+- **Recent Activity unchanged.** Still below the workspace card inside
+  the center `leftColumn` slot.
+
+**DetailPageShell** — not modified in this pass. The optional
+`rightRail` + `leftSidebar` + `columnGapClassName` props added earlier
+this day are reused as-is; no API change.
+
+**Migrations** — none. **Breaking changes** — none. **Backend** — not
+touched.
+
+#### Client Detail page — Layout Refinement Pass 1: 2-column simplification (2026-04-18)
+
+Drops the right utility rail to collapse the page to a clean 2-column
+layout: left Locations rail + main content. The left rail keeps its
+slim / collapsible / persisted behavior.
+
+**DetailPageShell (`components/layout/DetailPageShell.tsx`)**
+- `rightRail` is now **optional**. When omitted, the shell skips the
+  resize handle, the collapse button, and the `<aside>` entirely —
+  giving pages a 1- or 2-column layout (with or without `leftSidebar`).
+  Backwards-compatible: Job / Invoice / Quote detail pages still pass
+  `rightRail` and are unchanged.
+
+**ClientDetailPage (`pages/ClientDetailPage.tsx`)**
+- Right utility rail removed. `DetailPageShell` now receives
+  `leftSidebar` + `leftColumn` only.
+- Header gains **Create Quote** and **Create Invoice** primary actions
+  next to the existing Create Job. Both reuse canonical modals:
+  - Create Job → `QuickAddJobDialog` (unchanged; location-preselect).
+  - Create Quote → `NewQuoteModal`.
+  - Create Invoice → `NewInvoiceModal`.
+  `Add Location` preserved. Edit / Delete dropdown preserved.
+- Contacts and Notes absorbed into the workspace tab bar (end of list)
+  so their canonical components (`CompanyContactsCompact`,
+  `LocContactsCompact`, `NotesPanel`) remain reachable without a
+  second rail. The workspace tab bar is:
+  - Company scope: Active Work / Jobs / Invoices / Quotes / Contacts / Notes
+  - Location scope: adds Equipment / PM / Parts before Contacts / Notes
+- Billing (the utility-rail derived summary) dropped from this page —
+  flagged as a product decision.
+- Removed in-file components and state (all dead after the rail drop):
+  `UtilityRail`, `BillingSummary`, `AgingRow`, `DetailRow`,
+  `UtilityTab` type, `utilityTab` state, and the `paidYtd` /
+  `agingBuckets` derivations. Imports pruned: `Tabs / TabsList /
+  TabsTrigger / TabsContent`.
+- Left rail unchanged: still shown only for multi-location clients,
+  collapse state persisted at
+  `syntraro.client-detail.left-rail.collapsed`. Small-screen location
+  `<Select>` dropdown preserved (below `lg`).
+
+**Files**
+- `client/src/pages/ClientDetailPage.tsx` (2576 → 2421 lines)
+- `client/src/components/layout/DetailPageShell.tsx` (+7 lines)
+
+**Migrations** — none. **Breaking changes** — none. **Backend** — not
+touched. No new queries / endpoints.
+
+#### Hygiene pass — dead-code removal + unpaid-status consolidation (2026-04-18)
+
+Small cleanup pass following the Phase 0–10 drift audit. No feature
+work, no route changes, no schema changes, no behavior changes.
+
+**Removed (dead code, zero importers):**
+- `client/src/components/client-billing/ClientBillingTab.tsx`
+- `client/src/hooks/useClientBilling.ts` (only consumer was the tab above)
+- Empty `client/src/components/client-billing/` folder
+
+**Consolidated canonical unpaid-status constant:**
+- New `shared/invoiceStatus.ts` — single source of truth for
+  `UNPAID_INVOICE_STATUSES = ["awaiting_payment", "sent", "partial_paid"]`,
+  importable from both server and client via `@shared/invoiceStatus`.
+- `server/storage/invoicesFeed.ts` — imports the shared constant and
+  re-exports it (all server callers unchanged). Inline redeclaration
+  inside `computeIsPastDue` replaced with the module constant.
+- `client/src/lib/statusBadges.ts` — inline `UNPAID` array replaced
+  with the shared import.
+- `client/src/pages/InvoicesListPage.tsx` — inline `UNPAID_STATUSES`
+  Set replaced with `new Set(UNPAID_INVOICE_STATUSES)`.
+- `client/src/pages/ClientDetailPage.tsx` — two inline declarations
+  (outstanding filter + aging-bucket filter) replaced with the shared
+  import.
+
+No behavior change — all sites had identical values previously.
+`server/lib/invoicePredicates.ts::ISSUED_INVOICE_STATUSES` left alone
+(distinct semantic concept, not the unpaid set).
+
+**Verified:** `npm run check` passes clean.
+
+### Added
+
+#### Phase 10 — Payments clarity + reconciliation workflow (2026-04-18)
+
+Improves payment visibility across multi-invoice jobs and surfaces
+invoices whose status / money fields have drifted. No changes to
+accounting or canonical balance math — `recalculateInvoiceBalance`
+remains the single writer; new surfaces are read-only.
+
+**Invoice Detail — Payment History card**
+- New `components/invoice/PaymentHistoryCard.tsx` renders the per-
+  invoice payment stream with distinct tones + icons for
+  `payment` / `refund` / `reversal`, method icons, and provider
+  badges (Stripe / QuickBooks). Consumes the already-fetched
+  `payments` array on `InvoiceDetailPage` that was previously
+  unrendered — no new query.
+
+**Job Detail — Recent Payments footer**
+- `client/src/components/JobInvoicesCard.tsx` now aggregates
+  payments across every invoice on the job via client-side
+  `useQueries` over the existing `/api/invoices/:id/payments`
+  route. Shows the 5 newest payments with signed amounts, method,
+  date, and invoice number. No new backend roll-up route (typical
+  job has 1–3 invoices, bounded parallel fetch).
+
+**Backend — reconciliation signals**
+- `server/storage/invoicesFeed.ts` adds `getReconciliationIssues`
+  detecting three suspicious shapes:
+  1. `status = 'paid'` but `balance > 0`
+  2. `status IN unpaid` but `balance <= 0 && amountPaid > 0`
+  3. `status = 'partial_paid'` but `amountPaid <= 0`
+- `server/routes/invoices.ts` adds `GET /api/invoices/reconciliation`
+  (manager-gated, read-only) returning the issues with a kind
+  discriminator.
+
+**Invoice list — reconciliation banner**
+- `client/src/pages/InvoicesListPage.tsx` shows an amber banner
+  above the filter row when reconciliation issues exist. Banner
+  lists up to 6 clickable invoice numbers with a short drift
+  label so the user can jump directly into each row to correct it.
+  Silently hidden for non-managers (endpoint returns 403 → empty).
+
+**Files affected**
+- `client/src/components/invoice/PaymentHistoryCard.tsx` (new)
+- `client/src/pages/InvoiceDetailPage.tsx`
+- `client/src/components/JobInvoicesCard.tsx`
+- `client/src/pages/InvoicesListPage.tsx`
+- `server/storage/invoicesFeed.ts`
+- `server/routes/invoices.ts`
+
+No migrations. No breaking changes.
+
+### Changed
+
+#### Client Detail page — redesign refinement pass (2026-04-18)
+
+Adjustments on top of the 3-column redesign, scoped to the same
+`/clients/:clientId` page.
+
+**DetailPageShell (`components/layout/DetailPageShell.tsx`)**
+- Added optional `leftSidebar?: ReactNode` prop — rendered as the first
+  child of the inner flex row, with the caller owning its width,
+  border, and responsive visibility. Enables 3-column pages without
+  forking the canonical shell. Backwards-compatible (Job / Invoice /
+  Quote detail pages omit the prop and get the same 2-column layout
+  as before).
+- Added optional `columnGapClassName?: string` prop (default `"gap-4"`).
+  Client Detail passes `"gap-3"` for a tighter 3-column rhythm; other
+  detail pages are unchanged.
+
+**Workspace tabs (center card)**
+- Added **Active Work** as the first tab and default landing tab. It is
+  a cross-entity operational view built entirely from canonical
+  datasets already loaded by the page:
+  - Active Jobs: `Job.status === "open"` (canonical), sorted overdue
+    first using `isJobOverdue`, then by `getJobStatusDisplay` priority.
+  - Unpaid Invoices: statuses `awaiting_payment | sent | partial_paid`
+    plus any invoice whose `dueDate` has passed (overdue shown first).
+  - Open Quotes: statuses `draft` and `sent` (client action pending).
+- Removed the experimental workspace "Billing" tab wired in a parallel
+  commit. Billing now lives only in the utility rail, matching the
+  approved tab list. `ClientBillingTab.tsx` + `useClientBilling.ts` are
+  preserved on disk (no deletions) — flagged as currently unreferenced,
+  pending product decision on whether to drop them or surface elsewhere.
+- `LocJobsTab` and `ClientAllJobsTab` filter defaults shifted from
+  `"active"` → `"all"` (Active Work has its own tab now).
+- Default URL param for the workspace tab is now `active`; the URL
+  parameter is omitted when it matches the default.
+
+**Utility rail (right sidebar)**
+- Removed the **Details** tab. The tab list is now Contacts / Notes /
+  Billing. Company metadata (name, tags, active/inactive, address for
+  single-location clients) is already presented in the page header and
+  the workspace-card scope header — a separate Details tab was
+  redundant.
+- Deleted `CompanyDetailsPanel` and `LocationDetailsPanel` (dead after
+  the tab removal). `DetailRow` kept (shared with `BillingSummary`).
+- Removed the `EntityDocumentsSection` import from the page (it was
+  only surfaced inside the deleted `LocationDetailsPanel`). **This
+  drops the Documents affordance from Client Detail entirely** —
+  flagged in the deliverables as a product decision.
+
+**Layout / alignment**
+- Left rail moved into `DetailPageShell.leftSidebar` instead of
+  wrapping the shell. All three cards are now direct siblings of the
+  shell's inner flex row, which means their top edges align by
+  construction (single `py-4` wraps all three).
+- Column gap tightened via `columnGapClassName="gap-3"` — applies only
+  to this page.
+
+**Files**
+- `client/src/pages/ClientDetailPage.tsx`
+- `client/src/components/layout/DetailPageShell.tsx`
+
+**Migrations** — none. **Breaking changes** — none. **Backend** — not
+touched.
+
+#### Client Detail page — 3-column redesign with collapsible rails (2026-04-18)
+
+UI-only redesign of `/clients/:clientId`. No backend change, no new
+queries, no new endpoints. All data flows through existing canonical
+hooks and services.
+
+**Layout**
+- Adopted the canonical `DetailPageShell` for the right (utility) rail —
+  collapse / drag-resize / localStorage persistence now shared with the
+  Job / Invoice / Quote detail pages (keys `syntraro.detail.rail.width`,
+  `syntraro.detail.rail.collapsed`).
+- Introduced a left Locations Navigator rail, rendered **only when the
+  client has more than one location**. Single-location clients show the
+  sole location's full address in the header subtitle and the center
+  fills the full width.
+- Left rail has its own collapse state persisted under
+  `syntraro.client-detail.left-rail.collapsed`.
+- Below `lg`, the left rail hides and a `<Select>` in the center column
+  becomes the location switcher (spec: "stacked layout, location
+  selector becomes dropdown").
+
+**Header**
+- Subtitle is conditional: full billing address for single-location
+  clients, "N locations" otherwise.
+- `Create Job` and `Add Location` actions preserved. Delete / archive /
+  edit menu preserved.
+
+**Center workspace**
+- Removed the standalone "Overview" tab. Default tab is now **Jobs**,
+  which carries an Active / All / Complete filter chip row. URL param
+  `tab=` now omits `jobs` (default) instead of `overview`.
+- Invoices tab: All / Draft / Awaiting / Paid / Overdue chips.
+- Quotes tab: All / Draft / Sent / Approved chips.
+- Equipment / PM / Parts tabs unchanged (location scope only).
+- Recent Activity moved from the right rail into a second card below
+  the workspace card.
+
+**Utility rail (right)**
+- New tabbed card: **Details / Contacts / Notes / Billing**.
+- Details: company-scope shows phone/email/billing address/QBO sync/tags;
+  location-scope shows address/primary/site code/notes/tags, with the
+  existing `EntityDocumentsSection` folded in at the bottom (previously
+  a standalone right-rail section — feature preserved).
+- Contacts: reuses canonical `CompanyContactsCompact` and
+  `LocContactsCompact`.
+- Notes: reuses canonical `NotesPanel`.
+- Billing: Outstanding / Overdue / Paid YTD / Lifetime Revenue plus
+  aging buckets (Current / 1-30 / 31-60 / 60+). All aggregates derived
+  in-page from the already-loaded `allInvoices` array — no new queries.
+
+**Removed (dead code elimination)**
+- `CompanyOverviewTab`, `LocOverviewTab`, `ActiveWorkSection` — obsolete
+  after dropping the Overview tab.
+- Page-local `rightRailCollapsed` state and inline collapse UI —
+  replaced by `DetailPageShell`'s canonical behavior.
+
+**Files**
+- `client/src/pages/ClientDetailPage.tsx` — the redesign is in-place in
+  this single file (2076 → 2503 lines). New in-file components:
+  `UtilityRail`, `CompanyDetailsPanel`, `LocationDetailsPanel`,
+  `DetailRow`, `BillingSummary`, `AgingRow`, `FilterChips`.
+
+**Migrations** — none. **Breaking changes** — none. **Backend** — not
+touched.
+
+### Added
+
+#### Client billing workspace tab — UI (2026-04-18)
+
+Frontend-only. Surfaces the canonical billing backend (same-day) inside
+`ClientDetailPage` as a new workspace tab. Native extension of the
+existing tab bar — no new page, no new module boundary.
+
+**Files**
+- `client/src/hooks/useClientBilling.ts` (new) — `useClientBillingSummary`,
+  `useClientBillingHistory`, `useClientOpenInvoices`. Reuses the
+  canonical `["invoices","feed",{...}]` query-key family so cache
+  invalidations from other invoice flows propagate here.
+- `client/src/components/client-billing/ClientBillingTab.tsx` (new) —
+  workspace tab: summary cards (outstanding / overdue / credits / last
+  payment), open-invoices list with click-through to invoice detail,
+  billing history ledger (invoice_issued + payment/refund/reversal
+  rows with signed deltas + server-computed running balance), pay-now
+  placeholder. Per-section loading / empty / error states.
+- `client/src/pages/ClientDetailPage.tsx` — adds `"billing"` to
+  `WorkspaceTab` + `COMPANY_TABS` + `LOCATION_TABS`; renders
+  `<ClientBillingTab>` in both scope branches. No other tab behavior
+  changed. Utility-rail `"billing"` tab (compact aggregates) untouched.
+
+**Pay-now** — placeholder only. Button appears when outstanding > 0;
+opens a dialog explaining that online payments are not yet enabled and
+showing the current balance. No Stripe / payment-provider code.
+
+**Not touched** — backend (routes / storage / schema), provider
+integrations, `JobExpensesCard`, `PartsBillingCard`, all job/visit and
+tech-hub surfaces, existing Invoices / Quotes / Jobs workspace tabs,
+utility-rail billing summary.
+
+#### Client-level billing backend (2026-04-18)
+
+Backend-only phase. Introduces the canonical data paths for the upcoming
+client billing / account page. No UI. No schema change. No provider-
+specific logic in storage or routes (Stripe / QBO appear only as
+display-only flags).
+
+**Files**
+- `server/storage/invoicesFeed.ts`
+  - New `ClientBillingSummary`, `ClientBillingHistoryRow`,
+    `ClientBillingScope` types.
+  - New `getClientBillingSummary(ctx, scope)` — parallel aggregate queries
+    returning outstanding / overdue / open count / last payment /
+    `providerHints.{hasStripe,hasQboSync}`. `credits` is intentionally
+    `null` (no credits table exists).
+  - New `getClientBillingHistory(ctx, scope, { limit? })` — unified
+    invoice_issued + payment/refund/reversal event stream with server-
+    computed `runningBalance`; DESC order, clamped [1,500], default 200.
+  - Scope is a discriminated union keyed on `customerCompanyId` vs
+    `locationId`. Tenant isolation enforced on every query via
+    `companyId = ctx.tenantId`.
+- `server/routes/invoices.ts` — `GET /api/invoices/list` now plumbs
+  `customerCompanyId`, `locationId`, `unpaidOnly` query params into the
+  existing `getInvoicesFeed` filters. Legacy callers that omit them see
+  identical behavior.
+- `server/routes/customer-companies.ts` — two new company-scope routes:
+  `GET /:companyId/billing-summary`, `GET /:companyId/billing-history`.
+  Both verify scope ownership via the existing
+  `customerCompanyRepository.getCustomerCompany` before aggregating.
+- `server/routes/clients.ts` — two new location-scope routes:
+  `GET /:id/billing-summary`, `GET /:id/billing-history`. Same DTO as
+  company-scope. Ownership verified via `storage.getClient`.
+
+**Migrations** — none.
+**Breaking changes** — none.
+**Not touched** — `server/qbo/*`, `server/services/stripe*`,
+`server/storage/invoices.ts` mutation paths, `server/storage/payments.ts`,
+schema, and all frontend files.
+
+### Changed
+
 #### Job Detail — view-mode row shows catalog description (2026-04-18)
 
 Parity fix. Edit-mode rows already surfaced the catalog description

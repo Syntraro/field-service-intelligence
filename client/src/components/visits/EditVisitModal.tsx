@@ -50,6 +50,7 @@ import { detectScheduleConflict } from "@/lib/scheduleOverlapCheck";
 import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import { AddEquipmentDialog } from "@/components/AddEquipmentDialog";
+import { EquipmentPicker } from "@/components/EquipmentPicker";
 import { VisitTeamAssignment } from "@/components/visits/VisitTeamAssignment";
 import type { JobVisit } from "@shared/schema";
 import type { LineItemDraft } from "@shared/lineItem";
@@ -61,6 +62,7 @@ import {
   getProductLabel,
   getProductDescription,
   productOptionToCatalogItem,
+  normalizeProductRow,
   type ProductOption,
 } from "@/lib/entities/productEntity";
 import {
@@ -145,15 +147,10 @@ function initScheduleForm(visit: JobVisit): ScheduleFormState {
  */
 interface JobPartReadRow { id: string; description: string; quantity: string; unitPrice: string | null; unitCost: string | null; productId: string | null; itemType?: string | null; sortOrder: number; }
 
-/** Location equipment record — used for the equipment selector */
-interface LocationEquipmentRecord {
-  id: string;
-  name: string;
-  equipmentType?: string | null;
-  manufacturer?: string | null;
-  modelNumber?: string | null;
-  serialNumber?: string | null;
-}
+// 2026-04-19 follow-up: equipment selector consolidated onto the canonical
+// `EquipmentPicker`. The modal-local `LocationEquipmentRecord` type, the
+// duplicate location-equipment query, and the inline popover have all been
+// removed — `EquipmentPicker` owns search/selection/render for equipment.
 
 // Follow-up reason options — maps to canonical holdReasonEnum
 const FOLLOWUP_REASONS = [
@@ -182,9 +179,9 @@ export function EditVisitModal({
   const [schedule, setSchedule] = useState<ScheduleFormState>({ date: "", startTime: "", endTime: "", assignedTechnicianIds: [] });
   const [visitNotes, setVisitNotes] = useState("");
 
-  // Equipment selection state — stores location_equipment IDs for this visit
+  // Equipment selection state — stores location_equipment IDs for this visit.
+  // Selection UI is owned by the canonical EquipmentPicker (see Row 2 Left).
   const [selectedEquipmentIds, setSelectedEquipmentIds] = useState<string[]>([]);
-  const [equipmentSearch, setEquipmentSearch] = useState("");
   const [showAddEquipmentDialog, setShowAddEquipmentDialog] = useState(false);
 
   // Line items section — collapsed by default
@@ -215,13 +212,10 @@ export function EditVisitModal({
   // 2026-04-10 Phase B: catalog is now per-row via useProductSearch (fires
   // after 2 chars). The previous /api/items?limit=1000 lazy prefetch is gone.
 
-  // Location equipment — full equipment set at this site (broader than job-linked subset)
-  const { data: locationEquipmentRaw } = useQuery<LocationEquipmentRecord[]>({
-    queryKey: ["/api/clients", locationId, "equipment"],
-    queryFn: async () => { const r = await fetch(`/api/clients/${locationId}/equipment`, { credentials: "include" }); if (!r.ok) return []; return r.json(); },
-    enabled: open && !!locationId,
-  });
-  const locationEquipment: LocationEquipmentRecord[] = locationEquipmentRaw ?? [];
+  // 2026-04-19 follow-up: the modal-local location-equipment query was
+  // removed when the equipment selector was consolidated onto EquipmentPicker.
+  // EquipmentPicker fetches the same `["/api/clients", locationId, "equipment"]`
+  // key, so React Query dedupes the network call automatically.
 
   const effectiveLocationId = locationId;
 
@@ -249,7 +243,7 @@ export function EditVisitModal({
       }
     }
   }, [visit, jobEquipmentFallback]);
-  useEffect(() => { if (!open) { setAddingItem(false); setNewDraft(null); setEquipmentSearch(""); } }, [open]);
+  useEffect(() => { if (!open) { setAddingItem(false); setNewDraft(null); } }, [open]);
 
   // ── Invalidation ──
   const invalidateVisitQueries = () => { queryClient.invalidateQueries({ queryKey: ["visit-detail", visitId] }); queryClient.invalidateQueries({ queryKey: ["visits"] }); queryClient.invalidateQueries({ queryKey: ["jobs"] }); queryClient.invalidateQueries({ queryKey: ["/api/calendar"] }); queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] }); queryClient.invalidateQueries({ queryKey: ["dashboard"] }); };
@@ -265,7 +259,32 @@ export function EditVisitModal({
 
   const deleteMutation = useMutation({
     mutationFn: async () => apiRequest(`/api/jobs/${jobId}/visits/${visitId}`, { method: "DELETE" }),
-    onSuccess: () => { queryClient.setQueriesData<{ events?: any[] }>({ queryKey: ["/api/calendar"] }, (old) => old?.events ? { ...old, events: old.events.filter((e: any) => e.id !== visitId) } : old); queryClient.setQueriesData<any[]>({ queryKey: ["/api/calendar/unscheduled"] }, (old) => Array.isArray(old) ? old.filter((j: any) => j.activeVisitId !== visitId) : old); invalidateVisitQueries(); onAfterMutation?.(); toast({ title: "Visit Deleted" }); onOpenChange(false); },
+    onSuccess: () => {
+      // Calendar cache: each event is a visit, remove the row whose id matches.
+      queryClient.setQueriesData<{ events?: any[] }>({ queryKey: ["/api/calendar"] }, (old) =>
+        old?.events ? { ...old, events: old.events.filter((e: any) => e.id !== visitId) } : old,
+      );
+      // 2026-04-18 Phase 2 (multi-visit): backlog cache now carries
+      // `visitIds: string[]`. On delete, strip the deleted visit from each
+      // card's `visitIds`; drop the whole card only when it has no
+      // remaining active visit ids. This preserves siblings when the
+      // deleted visit was one of several on the same backlog job.
+      queryClient.setQueriesData<any[]>({ queryKey: ["/api/calendar/unscheduled"] }, (old) => {
+        if (!Array.isArray(old)) return old;
+        return old
+          .map((j: any) => {
+            const ids = Array.isArray(j.visitIds) ? j.visitIds : [];
+            if (!ids.includes(visitId)) return j;
+            const nextIds = ids.filter((id: string) => id !== visitId);
+            return { ...j, visitIds: nextIds };
+          })
+          .filter((j: any) => Array.isArray(j.visitIds) && j.visitIds.length > 0);
+      });
+      invalidateVisitQueries();
+      onAfterMutation?.();
+      toast({ title: "Visit Deleted" });
+      onOpenChange(false);
+    },
     onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
@@ -314,34 +333,10 @@ export function EditVisitModal({
     addLineItemMutation.mutate(newDraft);
   };
 
-  // ── Equipment helpers ──
-  const equipmentSearchTerm = equipmentSearch.trim().toLowerCase();
-  const availableEquipment = useMemo(() => {
-    const unselected = locationEquipment.filter(eq => !selectedEquipmentIds.includes(eq.id));
-    if (!equipmentSearchTerm) return unselected;
-    return unselected.filter(eq =>
-      eq.name.toLowerCase().includes(equipmentSearchTerm) ||
-      (eq.modelNumber?.toLowerCase().includes(equipmentSearchTerm) ?? false) ||
-      (eq.serialNumber?.toLowerCase().includes(equipmentSearchTerm) ?? false) ||
-      (eq.manufacturer?.toLowerCase().includes(equipmentSearchTerm) ?? false)
-    );
-  }, [locationEquipment, selectedEquipmentIds, equipmentSearchTerm]);
-
-  const selectedEquipment = useMemo(
-    () => locationEquipment.filter(eq => selectedEquipmentIds.includes(eq.id)),
-    [locationEquipment, selectedEquipmentIds],
-  );
-
-  const handleSelectEquipment = useCallback((equipmentId: string) => {
-    setSelectedEquipmentIds(prev => prev.includes(equipmentId) ? prev : [...prev, equipmentId]);
-    setEquipmentSearch("");
-  }, []);
-
-  const handleRemoveEquipment = useCallback((equipmentId: string) => {
-    setSelectedEquipmentIds(prev => prev.filter(id => id !== equipmentId));
-  }, []);
-
-  // After creating new equipment at the location, refresh list and auto-select
+  // 2026-04-19 follow-up: search/select/remove are all owned by EquipmentPicker.
+  // Only the cross-cutting "+ New Equipment" handler stays here because the
+  // section header exposes its own external Add button (the picker is
+  // mounted with showAddButton={false}).
   const handleEquipmentCreated = useCallback((created: { id: string; name: string }) => {
     if (!created?.id) return;
     invalidateEquipment();
@@ -410,9 +405,9 @@ export function EditVisitModal({
             <div className="min-w-0">
               <div className="flex items-baseline gap-2">
                 {customerName && customerCompanyId ? (
-                  <Link href={`/clients/${customerCompanyId}`} className="text-[18px] font-semibold text-slate-900 hover:text-emerald-700 hover:underline truncate" onClick={(e) => { e.stopPropagation(); onOpenChange(false); }}>{customerName}</Link>
+                  <Link href={`/clients/${customerCompanyId}`} className="text-xl font-semibold text-slate-900 hover:text-emerald-700 hover:underline truncate" onClick={(e) => { e.stopPropagation(); onOpenChange(false); }}>{customerName}</Link>
                 ) : (
-                  <span className="text-[18px] font-semibold text-slate-900 truncate">{customerName || jobSummary || `Job #${jobNumber || ""}`}</span>
+                  <span className="text-xl font-semibold text-slate-900 truncate">{customerName || jobSummary || `Job #${jobNumber || ""}`}</span>
                 )}
                 {jobNumber && (
                   <Link href={`/jobs/${jobId}`} className="text-sm font-medium text-slate-500 hover:text-[#76B054] hover:underline whitespace-nowrap" onClick={(e) => { e.stopPropagation(); onOpenChange(false); }}>Job #{jobNumber}</Link>
@@ -507,71 +502,17 @@ export function EditVisitModal({
                     </div>
 
                     <div className="px-4 py-2">
-                      {/* Multi-select combobox — options appear only inside dropdown */}
-                      <Popover>
-                        <PopoverTrigger asChild>
-                          <Button variant="outline" size="sm" className="w-full justify-start h-8 text-xs gap-1.5 px-2.5 text-slate-400 font-normal">
-                            <Search className="h-3 w-3 shrink-0" />
-                            Select equipment for this visit
-                          </Button>
-                        </PopoverTrigger>
-                        <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
-                          <div className="flex items-center border-b px-2 py-1.5">
-                            <Search className="h-3.5 w-3.5 text-muted-foreground mr-2 shrink-0" />
-                            <input
-                              value={equipmentSearch}
-                              onChange={(e) => setEquipmentSearch(e.target.value)}
-                              placeholder="Search by name, model, serial..."
-                              className="flex-1 text-xs bg-transparent outline-none placeholder:text-muted-foreground"
-                              autoFocus
-                            />
-                          </div>
-                          <div className="max-h-[200px] overflow-y-auto p-1" style={{ scrollbarWidth: "thin" }}>
-                            {availableEquipment.length === 0 ? (
-                              <div className="text-xs text-slate-400 text-center py-3">
-                                {locationEquipment.length === 0 ? "No equipment at this location" : "No matches"}
-                              </div>
-                            ) : (
-                              availableEquipment.map(eq => (
-                                <button key={eq.id} onClick={() => handleSelectEquipment(eq.id)}
-                                  className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-xs hover:bg-emerald-50 cursor-pointer text-left">
-                                  <Wrench className="h-3 w-3 text-slate-400 mt-0.5 shrink-0" />
-                                  <span className="min-w-0 truncate">
-                                    {eq.name}
-                                    {eq.modelNumber && <span className="text-slate-400 ml-1">— {eq.modelNumber}</span>}
-                                    {eq.serialNumber && <span className="text-slate-400 ml-1">S/N: {eq.serialNumber}</span>}
-                                  </span>
-                                </button>
-                              ))
-                            )}
-                          </div>
-                        </PopoverContent>
-                      </Popover>
-
-                      {/* Selected for this visit — shown below the selector */}
-                      {selectedEquipment.length > 0 && (
-                        <div className="space-y-1 mt-2">
-                          {selectedEquipment.map(eq => (
-                            <div key={eq.id} className="flex items-center justify-between gap-2 rounded bg-emerald-50/60 px-2.5 py-1.5 text-xs">
-                              <div className="min-w-0">
-                                <span className="font-medium text-slate-700">{eq.name}</span>
-                                {eq.equipmentType && <span className="ml-1.5 text-xs text-slate-500 bg-slate-100 rounded px-1 py-0.5">{eq.equipmentType}</span>}
-                                {(eq.manufacturer || eq.modelNumber) && (
-                                  <span className="text-slate-400 ml-1">
-                                    {[eq.manufacturer, eq.modelNumber].filter(Boolean).join(" ")}
-                                  </span>
-                                )}
-                              </div>
-                              <button onClick={() => handleRemoveEquipment(eq.id)} className="text-slate-400 hover:text-red-500 shrink-0">
-                                <X className="h-3 w-3" />
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {locationEquipment.length === 0 && selectedEquipment.length === 0 && (
-                        <p className="text-xs text-slate-400 italic py-1 mt-1">No equipment at this location{effectiveLocationId ? " — create with + New Equipment" : ""}</p>
-                      )}
+                      {/* 2026-04-19 follow-up: canonical EquipmentPicker.
+                          Section header owns the "+ New Equipment" affordance,
+                          so the picker is mounted with showAddButton={false}.
+                          The picker also fetches the same location-equipment
+                          query key, so React Query dedupes the network call. */}
+                      <EquipmentPicker
+                        locationId={effectiveLocationId ?? null}
+                        selectedEquipmentIds={selectedEquipmentIds}
+                        onChange={setSelectedEquipmentIds}
+                        showAddButton={false}
+                      />
                     </div>
                   </div>
 
@@ -610,14 +551,14 @@ export function EditVisitModal({
                 </div>
               </div>
 
-              {/* ══════ PARTS & WORK LOGGED (JOB) — collapsible ══════ */}
+              {/* ══════ PARTS & LABOR — collapsible ══════ */}
               <div className="px-5 pb-3">
                 <div className="rounded-lg border border-slate-200 bg-white">
                   {/* Header — always visible, shows count + total, toggles expand */}
                   <div className="flex items-center justify-between px-4 py-2">
                     <button onClick={() => setLineItemsExpanded(e => !e)} className="flex items-center gap-1.5 group">
                       <ChevronDown className={cn("h-3.5 w-3.5 text-slate-400 transition-transform", !lineItemsExpanded && "-rotate-90")} />
-                      <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Parts & Work Logged (Job)</h3>
+                      <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Parts &amp; Labor</h3>
                       <span className="text-xs text-slate-400 font-medium">
                         {lineItems.length > 0 ? `${lineItems.length} item${lineItems.length !== 1 ? "s" : ""} · $${lineItemsTotal.toFixed(2)}` : "0 items"}
                       </span>
@@ -743,8 +684,47 @@ function QuickAddProductCell({
   onDescriptionChange: (value: string) => void;
   onClear: () => void;
 }) {
+  const { toast } = useToast();
   const [searchText, setSearchText] = useState("");
   const { data: results = [], isLoading } = useProductSearch(searchText);
+
+  // 2026-04-19: inline create-on-the-fly via the canonical CreateOrSelectField.
+  // Uses POST /api/items (the canonical catalog endpoint also used by
+  // PartsBillingCard, JobTemplateModal, QuoteTemplateModal, and the tech app).
+  //
+  // Multi-action create (2026-04-19 follow-up): the row offers two typed
+  // create actions — Part (type="product") and Labor (type="service") —
+  // because Parts & Labor is exactly the surface that needs both. Default
+  // visual order puts Part first to match the more common case in this
+  // section, but the user picks per-row at create time. Type stays
+  // editable from the items management page after the fact.
+  const createMutation = useMutation({
+    mutationFn: async ({ name, type }: { name: string; type: "product" | "service" }) => {
+      const created = await apiRequest<any>("/api/items", {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          type,
+          isActive: true,
+          isTaxable: true,
+        }),
+      });
+      return normalizeProductRow(created);
+    },
+    onSuccess: (product) => {
+      // Refresh search caches so the new item appears in subsequent searches.
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
+      onSelect(product);
+      setSearchText("");
+    },
+    onError: () => {
+      toast({
+        title: "Could not create item",
+        description: "Try again or pick an existing item.",
+        variant: "destructive",
+      });
+    },
+  });
 
   const selectedValue: ProductOption | null = draft.productId
     ? {
@@ -755,6 +735,23 @@ function QuickAddProductCell({
         cost: draft.unitCost,
       }
     : null;
+
+  const trimmed = searchText.trim();
+  const exactMatch = useMemo(
+    () => trimmed.length > 0 && results.some(r => r.name.toLowerCase() === trimmed.toLowerCase()),
+    [trimmed, results],
+  );
+
+  // Build typed create actions only when the search is non-empty, has no
+  // exact catalog match, and no create is in flight. Same dedupe pattern
+  // as EquipmentTypeCombobox.
+  const createOptions = useMemo(() => {
+    if (trimmed.length === 0 || exactMatch || createMutation.isPending) return undefined;
+    return [
+      { label: `Create "${trimmed}" as Part`, onCreate: () => createMutation.mutate({ name: trimmed, type: "product" }) },
+      { label: `Create "${trimmed}" as Labor`, onCreate: () => createMutation.mutate({ name: trimmed, type: "service" }) },
+    ];
+  }, [trimmed, exactMatch, createMutation]);
 
   return (
     <CreateOrSelectField<ProductOption>
@@ -771,7 +768,7 @@ function QuickAddProductCell({
         }
       }}
       searchResults={results}
-      searchLoading={isLoading}
+      searchLoading={isLoading || createMutation.isPending}
       searchText={searchText || (selectedValue ? "" : draft.description)}
       onSearchTextChange={(text) => {
         setSearchText(text);
@@ -781,6 +778,7 @@ function QuickAddProductCell({
       getKey={getProductKey}
       getLabel={getProductLabel}
       getDescription={getProductDescription}
+      createOptions={createOptions}
       placeholder="Search products/services..."
     />
   );

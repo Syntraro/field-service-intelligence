@@ -36,10 +36,13 @@ interface AddVisitDialogProps {
   defaultTechnicianIds?: string[] | null;
   /** Callback when visit is successfully created - receives new visit ID for highlighting */
   onVisitCreated?: (visitId: string) => void;
-  /** Visit Reschedule Architecture: conflict resolution mode from parent */
-  conflictMode?: 'replace' | 'complete_and_new';
-  /** Visit Reschedule Architecture: ID of the conflicting visit */
-  conflictVisitId?: string;
+  /** 2026-04-18 Phase 2 (multi-visit): optional explicit visit to update
+   *  in place instead of creating a new one. When absent, the canonical
+   *  backend path creates a brand-new visit (the dialog's default use).
+   *  Replaces the pre-multi-visit `conflictMode` / `conflictVisitId`
+   *  pair, which modeled a singular "the other visit" assumption that
+   *  no longer exists. */
+  targetVisitId?: string;
 }
 
 export function AddVisitDialog({
@@ -50,8 +53,7 @@ export function AddVisitDialog({
   defaultTechnicianId,
   defaultTechnicianIds,
   onVisitCreated,
-  conflictMode,
-  conflictVisitId,
+  targetVisitId,
 }: AddVisitDialogProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -158,7 +160,9 @@ export function AddVisitDialog({
     // then toISOString() converts to correct UTC (matches EditVisitModal pattern)
     const startAt = new Date(`${scheduledDate}T${scheduledTime}:00`).toISOString();
 
-    // 2026-04-12 final cleanup: canonical crew input only.
+    // 2026-04-18 Phase 2 (multi-visit): `targetVisitId` is the canonical
+    // way to ask the backend to update an existing visit in place. When
+    // omitted, the backend creates a new visit (the default flow).
     createMutation.mutate({
       jobId,
       startAt,
@@ -166,8 +170,7 @@ export function AddVisitDialog({
       assignedTechnicianIds,
       notes: visitNotes.trim() || undefined,
       version: jobVersion,
-      ...(conflictMode && { conflictMode }),
-      ...(conflictVisitId && { conflictVisitId }),
+      ...(targetVisitId && { targetVisitId }),
     });
   };
 

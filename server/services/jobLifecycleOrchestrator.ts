@@ -23,7 +23,7 @@
 
 import { db } from "../db";
 import { and, eq, ne, notInArray, isNull, isNotNull, or, sql } from "drizzle-orm";
-import { jobVisits, jobs, jobNotes } from "@shared/schema";
+import { jobVisits, jobs, jobNotes, invoices } from "@shared/schema";
 import type {
   Job,
   JobVisit,
@@ -758,12 +758,35 @@ export async function reopenVisit(
 
 /**
  * Undo a recent job close within the 20-second undo window.
+ *
+ * 2026-04-18 Phase 7 (billing semantics cleanup): under multi-invoice,
+ * `jobs.invoiceId` is only the primary pointer — it may be NULL while
+ * sibling invoices still exist (e.g., if the primary was deleted).
+ * The pure lifecycle check at `applyUndoCloseTransition` can only see
+ * the primary pointer. We pre-check the authoritative side (`invoices.jobId`)
+ * here in the orchestrator, where we have DB access, so a close that
+ * spawned any invoice — primary or otherwise — cannot be undone.
  */
 export async function undoCloseJob(
   intent: UndoCloseJobIntent
 ): Promise<UndoCloseJobResult> {
   assertWritableSupportContext("job.undoClose");
   const { companyId, jobId, version, actor } = intent;
+
+  // Authoritative check: any invoice referencing this job (including
+  // siblings whose parent job.invoiceId has been cleared by a prior
+  // primary-invoice deletion) blocks undo-close.
+  const [anyInvoice] = await db
+    .select({ id: invoices.id })
+    .from(invoices)
+    .where(and(eq(invoices.companyId, companyId), eq(invoices.jobId, jobId)))
+    .limit(1);
+  if (anyInvoice) {
+    throw new LifecycleTransitionError(
+      "INVOICED_JOB",
+      "Cannot undo close for a job that has one or more invoices. Delete the invoices first, or reopen the job explicitly.",
+    );
+  }
 
   const lifecycleIntent: LifecycleIntent = { type: "UNDO_CLOSE" };
   const job = await jobRepository.transitionJobStatus(
@@ -1544,6 +1567,30 @@ async function reconcileJobAfterVisitCompletion(input: {
 
   const hasRemainingVisits = actionableVisits.length > 0;
 
+  // 2026-04-19 Task A: Canonical outcome → holdReason mapping.
+  // The tech-app complete endpoint (server/routes/techField.ts) does not
+  // prompt techs for a separate hold-reason dropdown — it passes
+  // holdReason=null and lets the domain decide. Previously both branches
+  // below fell back to `holdReason || "other"`, which meant a tech
+  // marking a visit as `needs_parts` persisted `jobs.hold_reason = "other"`
+  // and surfaced on the dashboard drilldown as a generic "Hold: other".
+  //
+  // Fix is surgical and lives here because this is the single canonical
+  // writer of `jobs.hold_reason` on visit completion. The office
+  // completion route (routes/jobVisits.routes.ts) still supplies an
+  // explicit canonical HoldReason and is unaffected — the caller-supplied
+  // value wins whenever present.
+  //
+  // Mapping (per shared/schema.ts holdReasonEnum):
+  //   outcome="needs_parts"    → holdReason "parts"    (label "Needs Parts")
+  //   outcome="needs_followup" → holdReason "other"    (preserves prior
+  //                              behavior — there is no canonical follow-up
+  //                              enum value and the tech app doesn't choose
+  //                              a reason)
+  //   caller-supplied          → used verbatim
+  const effectiveHoldReason: HoldReason =
+    holdReason ?? (outcome === "needs_parts" ? "parts" : "other");
+
   // 2026-03-20: Diagnostic logging for reconciliation debugging.
   // Logs when unexpected remaining visits prevent job closure.
   if (hasRemainingVisits && outcome === "completed") {
@@ -1623,10 +1670,10 @@ async function reconcileJobAfterVisitCompletion(input: {
       toStatus: "open",
       changedBy: completedByUserId,
       note: `Visit reconciliation: outcome=${outcome} — placed on hold (no remaining visits)`,
-      meta: { action: "reconcile_hold", outcome, holdReason: holdReason || "other" },
+      meta: { action: "reconcile_hold", outcome, holdReason: effectiveHoldReason },
       additionalUpdates: {
         openSubStatus: "on_hold",
-        holdReason: holdReason || "other",
+        holdReason: effectiveHoldReason,
         holdNotes: holdNotes || null,
         onHoldAt: new Date(),
       },
@@ -1645,10 +1692,10 @@ async function reconcileJobAfterVisitCompletion(input: {
       toStatus: "open",
       changedBy: completedByUserId,
       note: `Visit reconciliation: outcome=${outcome} — placed on hold (other visits remain)`,
-      meta: { action: "reconcile_hold_partial", outcome, holdReason: holdReason || "other" },
+      meta: { action: "reconcile_hold_partial", outcome, holdReason: effectiveHoldReason },
       additionalUpdates: {
         openSubStatus: "on_hold",
-        holdReason: holdReason || "other",
+        holdReason: effectiveHoldReason,
         holdNotes: holdNotes || null,
         onHoldAt: new Date(),
       },

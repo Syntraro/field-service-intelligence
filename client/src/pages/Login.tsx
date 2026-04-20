@@ -10,8 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { AlertCircle } from "lucide-react";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { AuthLayout } from "@/components/AuthLayout";
 
 const loginSchema = z.object({
   email: z.string().email("Please enter a valid email address"),
@@ -45,8 +44,18 @@ export default function Login() {
     setIsLoading(true);
     try {
       const userData = await login(data.email, data.password);
+      const params = new URLSearchParams(window.location.search);
+      const returnTo = params.get("returnTo");
       // Role-aware destination, computed at the moment of success.
       if (userData.role === "technician") {
+        // Honor returnTo only when it's a /tech/* path — prevents a tech
+        // session-expiry from the tech app losing context (e.g., an open
+        // visit detail) on re-auth. Office returnTo values are ignored so
+        // techs don't land in pages they have no permission to view.
+        if (returnTo && returnTo.startsWith("/tech/")) {
+          setLocation(returnTo);
+          return;
+        }
         setLocation("/tech/today");
         return;
       }
@@ -55,8 +64,6 @@ export default function Login() {
         setLocation("/platform/tenants");
         return;
       }
-      const params = new URLSearchParams(window.location.search);
-      const returnTo = params.get("returnTo");
       setLocation(returnTo && returnTo.startsWith("/") ? returnTo : "/");
     } catch (error: any) {
       toast({
@@ -70,26 +77,15 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-muted/30 p-4">
-      <div className="w-full max-w-md space-y-4">
-        <Alert className="border-yellow-500 bg-yellow-50 dark:bg-yellow-950/20">
-          <AlertCircle className="h-4 w-4 text-yellow-600 dark:text-yellow-500" />
-          <AlertDescription className="text-sm text-yellow-800 dark:text-yellow-200">
-            <p className="font-semibold mb-2">Beta Test Mode</p>
-            <p className="mb-2">This is a beta app in test mode, functions are being updated daily.</p>
-            <p className="mb-2">Email password reset does not function and can only be changed by the admin. Also the Import client list is in beta.</p>
-            <p className="mb-2">Recommendation is to export all your data once entered in the system as a precaution.</p>
-            <p>For the completed build please email <a href="mailto:service@samcor.ca" className="underline font-medium">service@samcor.ca</a>.</p>
-          </AlertDescription>
-        </Alert>
-        <Card>
-          <CardHeader>
-            <CardTitle>Login</CardTitle>
+    <AuthLayout>
+      <Card>
+          <CardHeader className="space-y-1 pb-3">
+            <CardTitle className="text-xl">Login</CardTitle>
             <CardDescription>Enter your credentials to access your account</CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="pt-0">
           <Form {...form}>
-            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-3">
               <FormField
                 control={form.control}
                 name="email"
@@ -159,7 +155,6 @@ export default function Login() {
           </div>
         </CardContent>
       </Card>
-      </div>
-    </div>
+    </AuthLayout>
   );
 }

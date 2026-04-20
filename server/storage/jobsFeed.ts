@@ -31,6 +31,7 @@ import {
   jobs,
   clients,
   customerCompanies,
+  invoices,
 } from "@shared/schema";
 import type { QueryCtx } from "../lib/queryCtx";
 import { activeJobFilter } from "./jobFilters";
@@ -57,6 +58,11 @@ export interface JobFeedFilters {
   unscheduledOnly?: boolean;
   openSubStatus?: string;
   overdue?: boolean;
+  // 2026-04-19 Fix A: canonical "ready to invoice" filter — jobs that
+  // are status='completed' AND have zero invoices attached. Mirrors
+  // the dashboard `requiresInvoicingCount` predicate so the count tile
+  // and the action-modal list agree row-for-row.
+  readyToInvoiceOnly?: boolean;
   dateRange?: { start: string; end: string };
   limit?: number;
   offset?: number;
@@ -94,6 +100,18 @@ export interface JobFeedItem {
   onHoldAt: string | null;
   holdReason: string | null;
   holdNotes: string | null;
+  // 2026-04-18 Phase 3 (multi-visit): active non-terminal visit ids on this job,
+  // ordered by visit_number asc. Canonical array form; siblings on the same job
+  // all appear. Consumers doing bulk visit operations should read this instead
+  // of making a per-job /api/jobs/:id/visits request.
+  visitIds: string[];
+  // 2026-04-19 Fix A: canonical count of invoices on this job (any status).
+  // Single-source-of-truth signal for "does this job have any invoices?".
+  // Consumers (dashboard requires_invoicing count, PM billing exception
+  // detection, ready-to-invoice modal) must prefer this over the primary
+  // pointer `jobs.invoiceId`, which is only the "preferred" invoice and
+  // can be null while siblings still exist.
+  invoiceCount: number;
 }
 
 /** Canonical single-job detail header. Extends feed item with detail-only fields.
@@ -180,6 +198,32 @@ const feedSelectFields = {
   onHoldAt: jobs.onHoldAt,
   holdReason: jobs.holdReason,
   holdNotes: jobs.holdNotes,
+  // 2026-04-18 Phase 3 (multi-visit): ordered array of active non-terminal
+  // visit ids for this job. Added so callers doing bulk visit operations
+  // (e.g. the DashboardActionModal overdue → bulk-unschedule flow) can
+  // skip a per-job /api/jobs/:id/visits round-trip. Single subquery per
+  // feed row; Postgres evaluates efficiently with the canonical
+  // (company_id, job_id, visit_number) index.
+  visitIds: sql<string[]>`COALESCE((
+    SELECT ARRAY_AGG(jv.id ORDER BY jv.visit_number ASC)
+    FROM job_visits jv
+    WHERE jv.job_id = ${jobs.id}
+      AND jv.company_id = ${jobs.companyId}
+      AND jv.is_active = true
+      AND jv.archived_at IS NULL
+      AND jv.status NOT IN ('completed','cancelled')
+  ), ARRAY[]::varchar[])`.as("visit_ids"),
+  // 2026-04-19 Fix A: canonical invoice count per job. Correlated
+  // subquery scoped to the same tenant; returns 0 when no invoices
+  // exist. Lets callers distinguish "has any invoice" from "has a
+  // primary invoice" without needing a secondary fetch. Uses an FK
+  // index on invoices.job_id for efficient aggregation.
+  invoiceCount: sql<number>`COALESCE((
+    SELECT COUNT(*)::int
+    FROM ${invoices}
+    WHERE ${invoices.jobId} = ${jobs.id}
+      AND ${invoices.companyId} = ${jobs.companyId}
+  ), 0)`.as("invoice_count"),
 };
 
 /** Detail-level select fields (extends feed fields).
@@ -267,6 +311,11 @@ function mapFeedRow(row: any): JobFeedItem {
     onHoldAt: toISOOrNull(row.onHoldAt),
     holdReason: row.holdReason ?? null,
     holdNotes: row.holdNotes ?? null,
+    // 2026-04-18 Phase 3: active non-terminal visit ids for this job.
+    // Subquery defaults to an empty array, so always a string[].
+    visitIds: Array.isArray(row.visitIds) ? row.visitIds : [],
+    // 2026-04-19 Fix A: canonical invoice count for this job.
+    invoiceCount: Number(row.invoiceCount ?? 0),
   };
 }
 
@@ -433,6 +482,17 @@ export async function getJobsFeed(
     conditions.push(
       sql`(${jobs.openSubStatus} IS NULL OR ${jobs.openSubStatus} != 'on_hold')`
     );
+  }
+
+  // 2026-04-19 Fix A: canonical "ready to invoice" predicate. Matches
+  // the dashboard tile exactly (getJobCounts.requiresInvoicingCount).
+  if (filters.readyToInvoiceOnly) {
+    conditions.push(eq(jobs.status, "completed"));
+    conditions.push(sql`NOT EXISTS (
+      SELECT 1 FROM ${invoices}
+      WHERE ${invoices.jobId} = ${jobs.id}
+        AND ${invoices.companyId} = ${jobs.companyId}
+    )`);
   }
 
   // Date range

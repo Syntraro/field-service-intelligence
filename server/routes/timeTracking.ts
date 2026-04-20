@@ -121,24 +121,6 @@ timeRouter.post(
   })
 );
 
-/**
- * GET /api/time/me/today
- * Get today's status for the current technician
- * Returns: open session, running entry, today's entries, summary
- */
-timeRouter.get(
-  "/me/today",
-  requireRole(TECH_ROLES),
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const status = await timeTrackingRepository.getTechnicianTodayStatus(
-      req.companyId!,
-      req.user!.id
-    );
-
-    res.json(status);
-  })
-);
-
 // ============================================================================
 // TIME ENTRIES - Start/Stop/Create
 // ============================================================================

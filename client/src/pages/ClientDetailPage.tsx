@@ -28,16 +28,23 @@ import {
 import {
   ArrowLeft, Plus, Briefcase, FileText, MapPin, MoreHorizontal, Search,
   Wrench, Receipt, Phone, Mail, Star, Trash2, Pencil,
-  Clock, Package, StickyNote, Tag, Building2, AlertTriangle, Archive, PanelRightClose, PanelRightOpen, Loader2,
+  Clock, Package, StickyNote, Tag, Building2, AlertTriangle, Archive, PanelLeftClose, PanelLeftOpen, Loader2,
+  ChevronLeft, ChevronRight,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import {
+  Select, SelectTrigger, SelectContent, SelectItem, SelectValue,
+} from "@/components/ui/select";
+import { cn } from "@/lib/utils";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
+import { NewQuoteModal } from "@/components/NewQuoteModal";
+import { NewInvoiceModal } from "@/components/NewInvoiceModal";
 import LocationFormModal from "@/components/LocationFormModal";
 import NotesPanel, { type NotesPanelRef } from "@/components/NotesPanel";
-import { EntityDocumentsSection } from "@/components/attachments/EntityDocumentsSection";
 import PMScheduleCard from "@/components/PMScheduleCard";
 import { PartsSelectorModal } from "@/components/PartsSelectorModal";
 import EditTagsModal from "@/components/EditTagsModal";
@@ -59,14 +66,26 @@ import { useJobsFeed } from "@/hooks/useJobsFeed";
 import { getJobStatusDisplay } from "@/components/job/jobUtils";
 import { getInvoiceStatusBadge } from "@/lib/statusBadges";
 import { getClientDisplayName } from "@shared/clientDisplayName";
+import { UNPAID_INVOICE_STATUSES } from "@shared/invoiceStatus";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 /** Scope model: company overview or a specific location */
 type ScopeType = "company" | "location";
 
-/** Workspace tabs — company scope has fewer tabs (no equipment/pm/parts) */
-type WorkspaceTab = "overview" | "jobs" | "invoices" | "quotes" | "equipment" | "pm" | "parts";
+/** Workspace tabs — operational only. Contacts / Notes / Billing live
+ *  in the right utility rail, not here (drift correction 2026-04-18). */
+type WorkspaceTab =
+  | "active"
+  | "jobs"
+  | "invoices"
+  | "quotes"
+  | "equipment"
+  | "pm"
+  | "parts";
+
+/** Utility-rail tabs in the right sidebar (Contacts / Notes / Billing). */
+type UtilityTab = "contacts" | "notes" | "billing";
 
 // ContactScope type and STANDARD_CONTACT_ROLES imported from @/components/ContactFormDialog
 
@@ -99,6 +118,15 @@ type CompanyOverview = {
   jobs: Job[];
   invoices: Invoice[];
   stats?: { totalLocations: number; openJobs: number; openInvoices: number };
+  // 2026-04-19 Fix B: server-computed aggregates over the FULL
+  // invoice set. UI must prefer these over deriving totals from the
+  // truncated `invoices` list (which is capped at ~100 rows).
+  billingAggregates?: {
+    lifetimeRevenue: string;
+    paidYtd: string;
+    outstanding: { count: number; total: string; overdueTotal: string };
+    agingBuckets: { current: string; d30: string; d60: string; d90: string };
+  } | null;
 };
 
 interface EnrichedQuote extends Quote {
@@ -112,17 +140,18 @@ interface PMPartWithItem extends LocationPMPartTemplate {
   itemCost: string | null;
 }
 
-/** Company scope: Overview, Jobs, Invoices, Quotes only.
- *  Location scope adds Equipment, PM, Parts (site-level assets). */
+/** Company scope: operational tabs only. Contacts / Notes / Billing
+ *  live in the right utility rail. Location scope adds Equipment, PM,
+ *  Parts (site-level assets). */
 const COMPANY_TABS: { key: WorkspaceTab; label: string }[] = [
-  { key: "overview", label: "Overview" },
+  { key: "active", label: "Active Work" },
   { key: "jobs", label: "Jobs" },
   { key: "invoices", label: "Invoices" },
   { key: "quotes", label: "Quotes" },
 ];
 
 const LOCATION_TABS: { key: WorkspaceTab; label: string }[] = [
-  { key: "overview", label: "Overview" },
+  { key: "active", label: "Active Work" },
   { key: "jobs", label: "Jobs" },
   { key: "invoices", label: "Invoices" },
   { key: "quotes", label: "Quotes" },
@@ -132,6 +161,10 @@ const LOCATION_TABS: { key: WorkspaceTab; label: string }[] = [
 ];
 
 const WORKSPACE_TAB_KEYS = new Set(LOCATION_TABS.map(t => t.key));
+
+/** Left-rail collapse persistence (2026-04-18).
+ *  Only applies when the client has multiple locations. */
+const LS_LEFT_RAIL_KEY = "syntraro.client-detail.left-rail.collapsed";
 
 // ─── Currency formatter ──────────────────────────────────────────────────────
 const fmt = new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" });
@@ -188,44 +221,67 @@ function JobRow({ job, locationLabel, onNavigate }: {
   );
 }
 
-/** Canonical active-work section — single owner of filter + sort + render.
- *  Used by both CompanyOverviewTab and LocOverviewTab. */
-function ActiveWorkSection({ jobs, locationMap, emptyLabel, onNavigate, limit = 25 }: {
-  jobs: Job[];
-  locationMap?: Map<string, string>;
-  emptyLabel?: string;
-  onNavigate: (p: string) => void;
-  limit?: number;
+/** Filter chip row — shared UI for Jobs/Invoices/Quotes tab filters.
+ *  Keeps the chip styling consistent across all workspace tabs. */
+function FilterChips<T extends string>({
+  options, value, onChange,
+}: {
+  options: { key: T; label: string; count?: number }[];
+  value: T;
+  onChange: (key: T) => void;
 }) {
-  const sorted = useMemo(() => {
-    return jobs
-      .filter(j => j.status === "open")
-      .sort((a, b) => {
-        const pa = getJobStatusDisplay(a).priority;
-        const pb = getJobStatusDisplay(b).priority;
-        if (pa !== pb) return pa - pb;
-        return new Date(b.updatedAt ?? b.createdAt).getTime() - new Date(a.updatedAt ?? a.createdAt).getTime();
-      })
-      .slice(0, limit);
-  }, [jobs, limit]);
-
   return (
-    <div>
-      <div className="flex items-center justify-between mb-1.5">
-        <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">Active Work</h3>
-        <span className="text-xs text-slate-400">{sorted.length} jobs</span>
-      </div>
-      {sorted.length === 0 ? (
-        <p className="text-xs text-slate-400 py-4 text-center">{emptyLabel || "No active work"}</p>
-      ) : (
-        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-          {sorted.map(j => (
-            <JobRow key={j.id} job={j} locationLabel={locationMap?.get(j.locationId)} onNavigate={onNavigate} />
-          ))}
-        </div>
-      )}
+    <div className="flex items-center gap-1 flex-wrap mb-2" data-testid="workspace-filter-chips">
+      {options.map(opt => (
+        <button
+          key={opt.key}
+          type="button"
+          onClick={() => onChange(opt.key)}
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors",
+            value === opt.key
+              ? "bg-[#76B054] text-white"
+              : "bg-slate-100 text-slate-600 hover:bg-slate-200",
+          )}
+        >
+          {opt.label}
+          {typeof opt.count === "number" && (
+            <span className={cn(
+              "tabular-nums",
+              value === opt.key ? "text-white/80" : "text-slate-400",
+            )}>
+              {opt.count}
+            </span>
+          )}
+        </button>
+      ))}
     </div>
   );
+}
+
+type JobFilter = "active" | "all" | "completed";
+type InvoiceFilter = "all" | "draft" | "awaiting" | "paid" | "overdue";
+type QuoteFilter = "all" | "draft" | "sent" | "approved";
+
+function isJobActive(j: Job): boolean { return j.status === "open"; }
+function isJobCompleted(j: Job): boolean { return j.status === "completed" || j.status === "invoiced"; }
+
+function matchInvoiceFilter(inv: Invoice, f: InvoiceFilter): boolean {
+  if (f === "all") return inv.status !== "voided";
+  if (f === "draft") return inv.status === "draft";
+  if (f === "paid") return inv.status === "paid";
+  if (f === "awaiting") return inv.status === "awaiting_payment" || inv.status === "sent" || inv.status === "partial_paid";
+  // overdue
+  if (inv.status === "paid" || inv.status === "voided" || inv.status === "draft") return false;
+  return Boolean(inv.dueDate && new Date(inv.dueDate) < new Date());
+}
+
+function matchQuoteFilter(q: EnrichedQuote, f: QuoteFilter): boolean {
+  if (f === "all") return true;
+  if (f === "draft") return q.status === "draft";
+  if (f === "sent") return q.status === "sent";
+  if (f === "approved") return q.status === "approved" || q.status === "converted";
+  return true;
 }
 
 // ─── Main Page ───────────────────────────────────────────────────────────────
@@ -238,8 +294,104 @@ export default function ClientDetailPage() {
   // ── Scope state ──
   const [scopeType, setScopeType] = useState<ScopeType>("company");
   const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null);
-  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("overview");
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("active");
+  const [utilityTab, setUtilityTab] = useState<UtilityTab>("contacts");
   const [locationSearch, setLocationSearch] = useState("");
+
+  // ── Left rail (locations strip) collapse state ──
+  // Only meaningful for multi-location clients; persists locally.
+  const [leftRailCollapsed, setLeftRailCollapsed] = useState(false);
+  const [leftRailHydrated, setLeftRailHydrated] = useState(false);
+  // Track whether the user has explicitly toggled, so the mode-based
+  // default doesn't get persisted and then override the other mode's
+  // default on a later navigation.
+  const leftRailUserToggled = useRef(false);
+  const setLeftRailCollapsedExplicit = useCallback((v: boolean | ((p: boolean) => boolean)) => {
+    leftRailUserToggled.current = true;
+    setLeftRailCollapsed(v);
+  }, []);
+
+  // ── Right rail (utility rail) collapse + resize state ──
+  // Reuses the same localStorage keys as DetailPageShell so preferences
+  // carry over between this page and Job / Invoice / Quote detail pages.
+  // Implementation inlined here rather than forked into a new primitive
+  // to keep this pass surgical — the shared key contract is the canonical
+  // part that matters for UX. TODO: consolidate with DetailPageShell's
+  // inline copy in a follow-up extraction.
+  const RAIL_DEFAULT_WIDTH = 400;
+  const RAIL_MIN_WIDTH = 300;
+  const RAIL_MAX_WIDTH_PX = 520;
+  const RAIL_MAX_WIDTH_RATIO = 0.45;
+  const RAIL_COLLAPSED_TAB_WIDTH = 32;
+  const LS_RAIL_WIDTH_KEY = "syntraro.detail.rail.width";
+  const LS_RAIL_COLLAPSED_KEY = "syntraro.detail.rail.collapsed";
+
+  const [rightRailCollapsed, setRightRailCollapsed] = useState(false);
+  const [rightRailWidth, setRightRailWidth] = useState<number>(RAIL_DEFAULT_WIDTH);
+  const [rightRailHydrated, setRightRailHydrated] = useState(false);
+  useEffect(() => {
+    try {
+      const rawWidth = localStorage.getItem(LS_RAIL_WIDTH_KEY);
+      if (rawWidth !== null) {
+        const parsed = parseInt(rawWidth, 10);
+        if (Number.isFinite(parsed) && parsed >= RAIL_MIN_WIDTH && parsed <= RAIL_MAX_WIDTH_PX) {
+          setRightRailWidth(parsed);
+        }
+      }
+      const rawCollapsed = localStorage.getItem(LS_RAIL_COLLAPSED_KEY);
+      if (rawCollapsed === "1" || rawCollapsed === "true") setRightRailCollapsed(true);
+    } catch { /* noop */ }
+    setRightRailHydrated(true);
+  }, []);
+  useEffect(() => {
+    if (!rightRailHydrated) return;
+    try { localStorage.setItem(LS_RAIL_WIDTH_KEY, String(rightRailWidth)); } catch { /* noop */ }
+  }, [rightRailWidth, rightRailHydrated]);
+  useEffect(() => {
+    if (!rightRailHydrated) return;
+    try { localStorage.setItem(LS_RAIL_COLLAPSED_KEY, rightRailCollapsed ? "1" : "0"); } catch { /* noop */ }
+  }, [rightRailCollapsed, rightRailHydrated]);
+
+  const handleRailPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = rightRailWidth;
+    const maxByRatio = Math.floor(window.innerWidth * RAIL_MAX_WIDTH_RATIO);
+    const maxW = Math.min(RAIL_MAX_WIDTH_PX, maxByRatio);
+    const prevUserSelect = document.body.style.userSelect;
+    const prevCursor = document.body.style.cursor;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+    const onMove = (ev: PointerEvent) => {
+      // Rail is on the right — cursor moving right shrinks the rail.
+      const delta = ev.clientX - startX;
+      const next = startWidth - delta;
+      const clamped = Math.max(RAIL_MIN_WIDTH, Math.min(maxW, next));
+      setRightRailWidth(clamped);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.userSelect = prevUserSelect;
+      document.body.style.cursor = prevCursor;
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [rightRailWidth]);
+
+  const handleRailKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = e.shiftKey ? 32 : 8;
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      setRightRailWidth(w => {
+        const maxByRatio = Math.floor(window.innerWidth * RAIL_MAX_WIDTH_RATIO);
+        return Math.min(Math.min(RAIL_MAX_WIDTH_PX, maxByRatio), w + step);
+      });
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      setRightRailWidth(w => Math.max(RAIL_MIN_WIDTH, w - step));
+    }
+  }, []);
 
   // Read URL query params for deep-linking
   const routerSearch = useSearch();
@@ -259,11 +411,12 @@ export default function ClientDetailPage() {
     }
   }, [routerSearch]);
 
-  // Push URL state when scope/tab changes
+  // Push URL state when scope/tab changes. "active" (Active Work) is the
+  // default tab as of the 2026-04-18 refinement.
   const updateUrlParams = useCallback((scope: ScopeType, locId: string | null, tab: WorkspaceTab) => {
     const params = new URLSearchParams();
     if (scope === "location" && locId) params.set("location", locId);
-    if (tab !== "overview") params.set("tab", tab);
+    if (tab !== "active") params.set("tab", tab);
     const qs = params.toString();
     const newUrl = `/clients/${clientId}${qs ? `?${qs}` : ""}`;
     window.history.replaceState(null, "", newUrl);
@@ -272,16 +425,15 @@ export default function ClientDetailPage() {
   const handleSelectCompany = useCallback(() => {
     setScopeType("company");
     setSelectedLocationId(null);
-    // Reset to overview — company scope doesn't have equipment/pm/parts tabs
-    setWorkspaceTab("overview");
-    updateUrlParams("company", null, "overview");
+    setWorkspaceTab("active");
+    updateUrlParams("company", null, "active");
   }, [updateUrlParams]);
 
   const handleSelectLocation = useCallback((locId: string) => {
     setScopeType("location");
     setSelectedLocationId(locId);
-    setWorkspaceTab("overview");
-    updateUrlParams("location", locId, "overview");
+    setWorkspaceTab("active");
+    updateUrlParams("location", locId, "active");
   }, [updateUrlParams]);
 
   const handleTabChange = useCallback((tab: WorkspaceTab) => {
@@ -291,6 +443,8 @@ export default function ClientDetailPage() {
 
   // ── Dialogs ──
   const [jobDialogOpen, setJobDialogOpen] = useState(false);
+  const [quoteDialogOpen, setQuoteDialogOpen] = useState(false);
+  const [invoiceDialogOpen, setInvoiceDialogOpen] = useState(false);
   const [addLocationDialogOpen, setAddLocationDialogOpen] = useState(false);
   const [editClientDialogOpen, setEditClientDialogOpen] = useState(false);
   const [newLocationForm, setNewLocationForm] = useState({
@@ -303,9 +457,6 @@ export default function ClientDetailPage() {
   const [editLocationTagsOpen, setEditLocationTagsOpen] = useState(false);
   const [equipmentModalOpen, setEquipmentModalOpen] = useState(false);
   const [partsModalOpen, setPartsModalOpen] = useState(false);
-
-  // Right rail collapse state (page-local UI only)
-  const [rightRailCollapsed, setRightRailCollapsed] = useState(false);
 
   // Delete dialog state
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -359,6 +510,49 @@ export default function ClientDetailPage() {
       return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
     });
   }, [overview?.locations]);
+
+  // ── Left rail hydration: saved preference wins, else mode default ──
+  // Deferred until `locations` has loaded so we can pick the right mode
+  // default (single-loc → collapsed, multi-loc → expanded).
+  useEffect(() => {
+    if (leftRailHydrated) return;
+    if (locations.length === 0) return;
+    try {
+      const raw = localStorage.getItem(LS_LEFT_RAIL_KEY);
+      if (raw === "0" || raw === "1") {
+        setLeftRailCollapsed(raw === "1");
+        leftRailUserToggled.current = true; // past explicit preference
+      } else {
+        setLeftRailCollapsed(locations.length === 1);
+      }
+    } catch { /* noop */ }
+    setLeftRailHydrated(true);
+  }, [locations.length, leftRailHydrated]);
+  // Persist only on an explicit user toggle — not on the mode default —
+  // so the default for one mode doesn't leak into the other.
+  useEffect(() => {
+    if (!leftRailHydrated) return;
+    if (!leftRailUserToggled.current) return;
+    try { localStorage.setItem(LS_LEFT_RAIL_KEY, leftRailCollapsed ? "1" : "0"); } catch { /* noop */ }
+  }, [leftRailCollapsed, leftRailHydrated]);
+
+  // ── Single-location auto-select ──
+  // When a client has exactly one location and there is no explicit
+  // `?location=` URL override, auto-scope to that sole location so the
+  // user gets the full LOCATION_TABS (Jobs / Invoices / Quotes /
+  // Equipment / PM / Parts) instead of the reduced COMPANY_TABS set.
+  // Runs only once per load (no selectedLocationId yet) — does not
+  // fight manual scope changes afterward.
+  useEffect(() => {
+    if (locations.length !== 1) return;
+    if (selectedLocationId) return;
+    const params = new URLSearchParams(routerSearch);
+    if (params.get("location")) return;
+    if (params.get("scope") === "company") return;
+    const sole = locations[0];
+    setSelectedLocationId(sole.id);
+    setScopeType("location");
+  }, [locations, selectedLocationId, routerSearch]);
 
   const allJobs: Job[] = overview?.jobs ?? [];
   const allInvoices: Invoice[] = overview?.invoices ?? [];
@@ -599,26 +793,36 @@ export default function ClientDetailPage() {
   const locJobs = selectedLocationId ? jobsByLocation.get(selectedLocationId) ?? [] : [];
   const locInvoices = selectedLocationId ? invoicesByLocation.get(selectedLocationId) ?? [] : [];
   const locQuotes = selectedLocationId ? quotesByLocation.get(selectedLocationId) ?? [] : [];
-  // locJobs passed directly to LocOverviewTab → ActiveWorkSection (canonical filter owner)
 
   // ── KPI metrics derived from already-loaded data ──
   // These useMemo hooks MUST be above the early returns to preserve hook order.
-  // Lifetime revenue: all-time paid invoices
+  // 2026-04-19 Fix B: prefer server-computed aggregates (full invoice
+  // set); fall back to client-side derivation only if the server
+  // payload omitted them (e.g. legacy cached response during rollout).
+  const serverAggregates = overview?.billingAggregates ?? null;
+
   const lifetimeRevenue = useMemo(() => {
+    if (serverAggregates) return Number(serverAggregates.lifetimeRevenue);
     return allInvoices
       .filter(i => i.status === "paid")
       .reduce((sum, i) => sum + Number(i.total || 0), 0);
-  }, [allInvoices]);
+  }, [serverAggregates, allInvoices]);
 
   // Outstanding: excludes drafts and voided — matches canonical UNPAID_INVOICE_STATUSES
   const outstandingInvoices = useMemo(() => {
-    const UNPAID = ["awaiting_payment", "sent", "partial_paid"];
-    const outstanding = allInvoices.filter(i => UNPAID.includes(i.status));
+    if (serverAggregates) {
+      return {
+        count: serverAggregates.outstanding.count,
+        total: Number(serverAggregates.outstanding.total),
+        overdueTotal: Number(serverAggregates.outstanding.overdueTotal),
+      };
+    }
+    const outstanding = allInvoices.filter(i => UNPAID_INVOICE_STATUSES.includes(i.status));
     const overdueTotal = outstanding
       .filter(i => i.dueDate && new Date(i.dueDate) < new Date())
       .reduce((sum, i) => sum + Number(i.balance ? Number(i.balance) : Number(i.total || 0)), 0);
     return { count: outstanding.length, total: outstanding.reduce((s, i) => s + Number(i.balance ? Number(i.balance) : Number(i.total || 0)), 0), overdueTotal };
-  }, [allInvoices]);
+  }, [serverAggregates, allInvoices]);
 
   // Active jobs per location for location list badges
   const activeJobCountByLocation = useMemo(() => {
@@ -628,6 +832,93 @@ export default function ClientDetailPage() {
     }
     return m;
   }, [companyJobs]);
+
+  // ── Layout flags (2026-04-18 redesign) ──
+  // A client with exactly one location hides the left rail entirely; the
+  // single location's full address becomes the header subtitle.
+  const isSingleLocation = locations.length === 1;
+  const soleLocation = isSingleLocation ? locations[0] : null;
+
+  // Compare the sole location's service address to the parent company's
+  // billing address. Used only in single-location view to decide whether
+  // to surface both addresses explicitly (when they differ) or suppress
+  // the duplicated address block entirely (when they match, or when the
+  // parent company has no billing address set, which is the common case
+  // where billing = service).
+  const hasDistinctBillingAddress = useMemo(() => {
+    if (!isSingleLocation || !soleLocation || !parentCompany) return false;
+    const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase();
+    const service = [
+      norm(soleLocation.address),
+      norm(soleLocation.address2),
+      norm(soleLocation.city),
+      norm(soleLocation.province),
+      norm(soleLocation.postalCode),
+    ].join("|");
+    const billing = [
+      norm(parentCompany.billingStreet),
+      norm(parentCompany.billingStreet2),
+      norm(parentCompany.billingCity),
+      norm(parentCompany.billingProvince),
+      norm(parentCompany.billingPostalCode),
+    ].join("|");
+    // Empty billing block → treat as "bills to service address".
+    if (billing.replace(/\|/g, "") === "") return false;
+    return service !== billing;
+  }, [isSingleLocation, soleLocation, parentCompany]);
+
+  // Render helper for the compact dual-address block (single-loc only).
+  const billingAddressLines = useMemo(() => {
+    if (!parentCompany) return [] as string[];
+    return [
+      parentCompany.billingStreet,
+      parentCompany.billingStreet2,
+      [parentCompany.billingCity, parentCompany.billingProvince, parentCompany.billingPostalCode]
+        .filter(Boolean)
+        .join(", "),
+    ].filter(Boolean) as string[];
+  }, [parentCompany]);
+
+  // ── Billing tab aggregates ──
+  // 2026-04-19 Fix B: prefer server aggregate (full invoice set);
+  // fall back to the truncated client derivation during rollout.
+  const paidYtd = useMemo(() => {
+    if (serverAggregates) return Number(serverAggregates.paidYtd);
+    const year = new Date().getFullYear();
+    return allInvoices
+      .filter(i => i.status === "paid")
+      .filter(i => {
+        const d = i.issueDate ? new Date(i.issueDate) : null;
+        return d && d.getFullYear() === year;
+      })
+      .reduce((sum, i) => sum + Number(i.total || 0), 0);
+  }, [serverAggregates, allInvoices]);
+
+  const agingBuckets = useMemo(() => {
+    // 2026-04-19 Fix B: prefer server aggregate (full invoice set).
+    if (serverAggregates) {
+      return {
+        current: Number(serverAggregates.agingBuckets.current),
+        d30: Number(serverAggregates.agingBuckets.d30),
+        d60: Number(serverAggregates.agingBuckets.d60),
+        d90: Number(serverAggregates.agingBuckets.d90),
+      };
+    }
+    const UNPAID = new Set(UNPAID_INVOICE_STATUSES);
+    const now = Date.now();
+    const buckets = { current: 0, d30: 0, d60: 0, d90: 0 };
+    for (const i of allInvoices) {
+      if (!UNPAID.has(i.status)) continue;
+      const amt = Number(i.balance ? i.balance : i.total || 0);
+      if (!i.dueDate) { buckets.current += amt; continue; }
+      const daysPast = Math.floor((now - new Date(i.dueDate).getTime()) / 86_400_000);
+      if (daysPast <= 0) buckets.current += amt;
+      else if (daysPast <= 30) buckets.d30 += amt;
+      else if (daysPast <= 60) buckets.d60 += amt;
+      else buckets.d90 += amt;
+    }
+    return buckets;
+  }, [serverAggregates, allInvoices]);
 
   // ── Loading / Error states ──
   if (clientLoading) {
@@ -659,56 +950,18 @@ export default function ClientDetailPage() {
   const scopeTags = scopeType === "company" ? companyTags : locationTags;
 
   return (
-    <div className="flex h-full flex-col bg-[#F4F8F4]">
+    <div className="flex h-full flex-col bg-[#F4F8F4]" data-testid="client-detail-root">
 
-      {/* ═══ PAGE HEADER: TITLE + ACTIONS + KPI ═══ */}
-      <div className="bg-white border-b border-slate-200 px-6 pt-3 pb-3">
-        {/* Row 1: Actions top-right */}
-        <div className="flex items-center justify-end mb-1">
-          <div className="flex items-center gap-1.5">
-            <Button size="sm" className="h-8 text-xs" onClick={() => setJobDialogOpen(true)}>
-              <Plus className="mr-1 h-3 w-3" />Create Job
-            </Button>
-            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setAddLocationDialogOpen(true)}>
-              <Plus className="mr-1 h-3 w-3" />Add Location
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8">
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => setEditClientDialogOpen(true)}>
-                  <Pencil className="h-3.5 w-3.5 mr-2" /> Edit Client
-                </DropdownMenuItem>
-                {scopeType === "location" && selectedLoc && (
-                  <>
-                    <DropdownMenuItem onClick={() => setEditLocationModalOpen(true)}>
-                      <Pencil className="h-3.5 w-3.5 mr-2" /> Edit Location
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setEditLocationTagsOpen(true)}>
-                      <Tag className="h-3.5 w-3.5 mr-2" /> Edit Tags
-                    </DropdownMenuItem>
-                  </>
-                )}
-                <DropdownMenuSeparator />
-                {scopeType === "location" && selectedLoc && (
-                  <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => openDeleteDialog("location")}>
-                    <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete Location
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => openDeleteDialog("company")}>
-                  <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete Client
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </div>
-
-        {/* Row 2: Company title left + KPI block centered over workspace */}
-        <div className="flex items-end">
-          {/* Company identity */}
+      {/* ═══ PAGE HEADER: IDENTITY + CREATE ACTIONS + KPI + OVERFLOW ═══
+           Create actions (Job / Quote / Invoice) live directly under the
+           client name/subtitle — not in a detached top-right row. The
+           info block (name + subtitle) and the action row are visually
+           separated by extra spacing + a hairline divider so they read
+           as two distinct header sections. Add Location lives in the
+           overflow dropdown so it doesn't visually dominate. */}
+      <div className="bg-white border-b border-slate-200 px-6 pt-4 pb-5">
+        <div className="flex items-start gap-4">
+          {/* Left block: name, subtitle, create actions */}
           <div className="min-w-0 flex-shrink-0">
             <div className="flex items-center gap-2.5">
               <h1 className="text-2xl font-bold text-slate-900 truncate">{companyName}</h1>
@@ -718,13 +971,74 @@ export default function ClientDetailPage() {
               {companyTags.length > 0 && companyTags.map(tag => (
                 <span key={tag.id} className="inline-flex items-center rounded-full px-1.5 py-0 text-xs font-medium text-white" style={{ backgroundColor: tag.color }}>{tag.name}</span>
               ))}
+              {/* Single-loc: surface location tags here since the
+                  workspace card's scope header (their usual home) is
+                  suppressed to avoid duplication. */}
+              {isSingleLocation && locationTags.length > 0 && locationTags.map(tag => (
+                <span key={tag.id} className="inline-flex items-center rounded-full px-1.5 py-0 text-xs font-medium text-white" style={{ backgroundColor: tag.color }}>{tag.name}</span>
+              ))}
             </div>
-            <p className="text-xs text-slate-500 mt-0.5">{locations.length} location{locations.length !== 1 ? "s" : ""}</p>
+            <p className="text-xs text-slate-500 mt-0.5 truncate">
+              {isSingleLocation && soleLocation
+                ? (locationAddress(soleLocation) || locationDisplayName(soleLocation))
+                : `${locations.length} location${locations.length !== 1 ? "s" : ""}`}
+            </p>
+
+            {/* Create-actions row — distinct from the info block above.
+                `mt-4 pt-3 border-t border-slate-100` separates it with
+                a hairline divider + 28px of vertical breathing room so
+                the client info and the actions read as two sections.
+                The More (overflow) menu lives in this cluster, not at
+                the far-right page edge. */}
+            <div className="flex items-center gap-1.5 mt-4 pt-3 border-t border-slate-100">
+              <Button size="sm" className="h-8 text-xs" onClick={() => setJobDialogOpen(true)} data-testid="header-create-job">
+                <Plus className="mr-1 h-3 w-3" />Create Job
+              </Button>
+              <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setQuoteDialogOpen(true)} data-testid="header-create-quote">
+                <Plus className="mr-1 h-3 w-3" />Create Quote
+              </Button>
+              <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setInvoiceDialogOpen(true)} data-testid="header-create-invoice">
+                <Plus className="mr-1 h-3 w-3" />Create Invoice
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="header-overflow">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  <DropdownMenuItem onClick={() => setAddLocationDialogOpen(true)}>
+                    <Plus className="h-3.5 w-3.5 mr-2" /> Add Location
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setEditClientDialogOpen(true)}>
+                    <Pencil className="h-3.5 w-3.5 mr-2" /> Edit Client
+                  </DropdownMenuItem>
+                  {scopeType === "location" && selectedLoc && (
+                    <>
+                      <DropdownMenuItem onClick={() => setEditLocationModalOpen(true)}>
+                        <Pencil className="h-3.5 w-3.5 mr-2" /> Edit Location
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setEditLocationTagsOpen(true)}>
+                        <Tag className="h-3.5 w-3.5 mr-2" /> Edit Tags
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                  <DropdownMenuSeparator />
+                  {scopeType === "location" && selectedLoc && (
+                    <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => openDeleteDialog("location")}>
+                      <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete Location
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => openDeleteDialog("company")}>
+                    <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete Client
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
 
-          {/* KPI positioned left-of-center in remaining space */}
-          <div className="flex-1 flex justify-start pl-12">
-            {/* Contained KPI block */}
+          {/* KPI block — fills remaining space; vertically centered */}
+          <div className="flex-1 flex justify-start items-center pl-12 pt-1">
             <div className="flex items-center gap-5 rounded-md border border-slate-200 bg-slate-50/80 px-5 py-2.5">
               <div className="flex items-baseline gap-1.5">
                 <span className="text-slate-600 text-xs">Active Jobs</span>
@@ -751,303 +1065,501 @@ export default function ClientDetailPage() {
               )}
             </div>
           </div>
+
         </div>
       </div>
 
-      {/* ═══ 3-COLUMN MASTER-DETAIL WORKSPACE ═══ */}
-      <div className="flex flex-1 overflow-hidden p-3 gap-3">
-
-        {/* ── LEFT: LOCATION INDEX ── */}
-        <div className="w-[256px] flex-shrink-0 rounded-md border border-slate-200 bg-white flex flex-col overflow-hidden">
-          {/* Search / label */}
-          <div className="px-3 py-2 border-b border-slate-100">
-            {locations.length > 3 ? (
-              <div className="relative">
-                <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-slate-400" />
-                <Input
-                  placeholder="Search locations..."
-                  value={locationSearch}
-                  onChange={e => setLocationSearch(e.target.value)}
-                  className="h-7 pl-7 text-xs bg-slate-50/80 border-slate-200 focus:bg-white"
-                />
-              </div>
-            ) : (
-              <div className="flex items-center justify-between">
-                <span className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">Locations</span>
-                <span className="text-xs text-slate-500 tabular-nums">{locations.length}</span>
-              </div>
-            )}
-          </div>
-
-          {/* Company overview row */}
-          <button
-            onClick={handleSelectCompany}
-            className={`w-full text-left px-3 py-2 border-b border-slate-100 flex items-center gap-2.5 transition-colors ${
-              scopeType === "company"
-                ? "bg-[rgba(118,176,84,0.08)] border-l-2 border-l-[#76B054]"
-                : "hover:bg-slate-50 border-l-2 border-l-transparent"
-            }`}
+      {/* Small-screen location selector (below lg, multi-location only).
+          Sits between the full-width header and the body; `lg:hidden`
+          so desktop users use the locations strip instead. */}
+      {!isSingleLocation && (
+        <div className="lg:hidden bg-white border-b border-slate-200 px-4 py-2">
+          <Select
+            value={scopeType === "location" && selectedLocationId ? selectedLocationId : "__all__"}
+            onValueChange={(v) => v === "__all__" ? handleSelectCompany() : handleSelectLocation(v)}
           >
-            <Building2 className={`h-3.5 w-3.5 flex-shrink-0 ${scopeType === "company" ? "text-[#76B054]" : "text-slate-400"}`} />
-            <span className={`text-xs font-medium truncate ${scopeType === "company" ? "text-[#5F9442]" : "text-slate-700"}`}>All Locations</span>
-          </button>
+            <SelectTrigger className="h-8 text-xs" data-testid="client-location-select">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">All Locations</SelectItem>
+              {locations.map(l => (
+                <SelectItem key={l.id} value={l.id}>{locationDisplayName(l)}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
 
-          {/* Location rows */}
-          <div className="flex-1 overflow-y-auto">
-            {filteredLocations.length > 0 ? filteredLocations.map(loc => {
-              const isSelected = scopeType === "location" && selectedLocationId === loc.id;
-              const locActiveCount = activeJobCountByLocation.get(loc.id) ?? 0;
-              return (
+      {/* ═══ BODY — left locations strip | center workspace | right rail ═══
+           Sits below the full-width page header as a 3-column body row.
+           - Locations strip: `flex-shrink-0`, `border-r` only (no
+             rounded corners, no side padding) so it stays flush-left as
+             a structural column, not a floating card.
+           - Workspace scroll area: `flex-1 min-w-0` with its own `p-4`
+             breathing room; scrolls vertically at lg+.
+           - Right rail: collapsible, resizable, visually subordinate.
+           - Collapse state for the locations strip persists at
+             `syntraro.client-detail.left-rail.collapsed`. */}
+      <div className="flex-1 min-h-0 flex lg:flex-row flex-col overflow-hidden" data-testid="client-detail-body">
+
+        {/* ── LOCATIONS STRIP — flush against the left edge of the body.
+             Always rendered (even for single-location clients) to
+             preserve the structural left boundary so the center
+             workspace doesn't feel like a floating card. Default state:
+             expanded for multi-location, collapsed for single-location;
+             explicit user toggles persist via
+             `syntraro.client-detail.left-rail.collapsed`. ── */}
+        {locations.length > 0 && (
+            <div
+              className={cn(
+                "hidden lg:flex shrink-0 flex-col bg-white border-r border-slate-200 overflow-hidden",
+                "transition-[width] duration-150",
+                leftRailCollapsed ? "lg:w-10" : "lg:w-[256px]",
+              )}
+              data-testid="client-left-rail"
+            >
+              {leftRailCollapsed ? (
                 <button
-                  key={loc.id}
-                  onClick={() => handleSelectLocation(loc.id)}
-                  className={`w-full text-left px-3 py-2 border-b border-slate-100/80 transition-colors ${
-                    isSelected
-                      ? "bg-[rgba(118,176,84,0.08)] border-l-2 border-l-[#76B054]"
-                      : "hover:bg-slate-50 border-l-2 border-l-transparent"
-                  }`}
+                  type="button"
+                  onClick={() => setLeftRailCollapsedExplicit(false)}
+                  className="flex h-full w-full flex-col items-center justify-start pt-2.5 gap-2 text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-colors"
+                  aria-label="Expand locations rail"
+                  title="Expand locations"
+                  data-testid="client-left-rail-expand"
                 >
-                  <div className="flex items-center justify-between gap-1">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1">
-                        <span className={`text-xs font-medium truncate ${isSelected ? "text-[#5F9442]" : "text-slate-800"}`}>
-                          {locationDisplayName(loc)}
-                        </span>
-                        {loc.isPrimary && <Star className="h-2.5 w-2.5 text-amber-500 fill-amber-500 flex-shrink-0" />}
+                  <PanelLeftOpen className="h-3.5 w-3.5" />
+                  <span
+                    className="select-none text-[11px] font-bold uppercase tracking-[0.18em]"
+                    style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}
+                  >
+                    Locations
+                  </span>
+                </button>
+              ) : (
+                <>
+                  {/* Search / label + collapse button */}
+                  <div className="px-3 py-2 border-b border-slate-100 flex items-center gap-2">
+                    {locations.length > 3 ? (
+                      <div className="relative flex-1">
+                        <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-slate-400" />
+                        <Input
+                          placeholder="Search locations..."
+                          value={locationSearch}
+                          onChange={e => setLocationSearch(e.target.value)}
+                          className="h-7 pl-7 text-xs bg-slate-50/80 border-slate-200 focus:bg-white"
+                        />
                       </div>
-                      {loc.address && (
-                        <p className="text-xs text-slate-500 truncate mt-0.5">
-                          {[loc.address, loc.city].filter(Boolean).join(", ")}
-                        </p>
-                      )}
-                    </div>
-                    {locActiveCount > 0 && (
-                      <span className={`text-xs font-medium px-1.5 py-0 rounded flex-shrink-0 ${
- isSelected ? "bg-[#C2E974] text-[#5F9442]" : "bg-slate-100 text-slate-500"
- }`}>
-                        {locActiveCount}
-                      </span>
+                    ) : (
+                      <div className="flex items-center justify-between flex-1">
+                        <span className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">Locations</span>
+                        <span className="text-xs text-slate-500 tabular-nums">{locations.length}</span>
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setLeftRailCollapsedExplicit(true)}
+                      className="flex items-center justify-center h-5 w-5 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors flex-shrink-0"
+                      aria-label="Collapse locations rail"
+                      title="Collapse locations"
+                      data-testid="client-left-rail-collapse"
+                    >
+                      <PanelLeftClose className="h-3 w-3" />
+                    </button>
+                  </div>
+
+                  {/* Company overview row */}
+                  <button
+                    onClick={handleSelectCompany}
+                    className={`w-full text-left px-3 py-2 border-b border-slate-100 flex items-center gap-2.5 transition-colors ${
+                      scopeType === "company"
+                        ? "bg-[rgba(118,176,84,0.08)] border-l-2 border-l-[#76B054]"
+                        : "hover:bg-slate-50 border-l-2 border-l-transparent"
+                    }`}
+                  >
+                    <Building2 className={`h-3.5 w-3.5 flex-shrink-0 ${scopeType === "company" ? "text-[#76B054]" : "text-slate-400"}`} />
+                    <span className={`text-xs font-medium truncate ${scopeType === "company" ? "text-[#5F9442]" : "text-slate-700"}`}>All Locations</span>
+                  </button>
+
+                  {/* Location rows */}
+                  <div className="flex-1 overflow-y-auto">
+                    {filteredLocations.length > 0 ? filteredLocations.map(loc => {
+                      const isSelected = scopeType === "location" && selectedLocationId === loc.id;
+                      const locActiveCount = activeJobCountByLocation.get(loc.id) ?? 0;
+                      return (
+                        <button
+                          key={loc.id}
+                          onClick={() => handleSelectLocation(loc.id)}
+                          className={`w-full text-left px-3 py-2 border-b border-slate-100/80 transition-colors ${
+                            isSelected
+                              ? "bg-[rgba(118,176,84,0.08)] border-l-2 border-l-[#76B054]"
+                              : "hover:bg-slate-50 border-l-2 border-l-transparent"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1">
+                                <span className={`text-xs font-medium truncate ${isSelected ? "text-[#5F9442]" : "text-slate-800"}`}>
+                                  {locationDisplayName(loc)}
+                                </span>
+                                {loc.isPrimary && <Star className="h-2.5 w-2.5 text-amber-500 fill-amber-500 flex-shrink-0" />}
+                              </div>
+                              {loc.address && (
+                                <p className="text-xs text-slate-500 truncate mt-0.5">
+                                  {[loc.address, loc.city].filter(Boolean).join(", ")}
+                                </p>
+                              )}
+                            </div>
+                            {locActiveCount > 0 && (
+                              <span className={`text-xs font-medium px-1.5 py-0 rounded flex-shrink-0 ${
+                                isSelected ? "bg-[#C2E974] text-[#5F9442]" : "bg-slate-100 text-slate-500"
+                              }`}>
+                                {locActiveCount}
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    }) : (
+                      <div className="px-3 py-6 text-center text-xs text-slate-400">
+                        {locationSearch ? `No match for "${locationSearch}"` : (
+                          <div className="space-y-2">
+                            <p>No locations yet</p>
+                            <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setAddLocationDialogOpen(true)}>
+                              <Plus className="mr-1 h-3 w-3" />Add Location
+                            </Button>
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
-                </button>
-              );
-            }) : (
-              <div className="px-3 py-6 text-center text-xs text-slate-400">
-                {locationSearch ? `No match for "${locationSearch}"` : (
-                  <div className="space-y-2">
-                    <p>No locations yet</p>
-                    <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setAddLocationDialogOpen(true)}>
-                      <Plus className="mr-1 h-3 w-3" />Add Location
-                    </Button>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* ── CENTER: WORKSPACE ── */}
-        <div className="flex flex-1 flex-col overflow-hidden min-w-0 rounded-md border border-slate-200 bg-white">
-          {/* Workspace header + tabs */}
-          <div className="border-b border-slate-200 px-5 pt-2.5 pb-0">
-            <div className="flex items-center justify-between gap-3 mb-1">
-              <div className="flex items-center gap-2 min-w-0 flex-1">
-                {scopeType === "company" && (
-                  <Building2 className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
-                )}
-                {scopeType === "location" && (
-                  <MapPin className="h-3.5 w-3.5 text-[#76B054] flex-shrink-0" />
-                )}
-                <h2 className="text-base font-bold text-slate-900 truncate">{scopeEntityName}</h2>
-                {selectedLoc?.isPrimary && scopeType === "location" && (
-                  <Badge className="bg-amber-50 text-amber-700 border border-amber-200 text-xs px-1.5 py-0 hover:bg-amber-50">Primary</Badge>
-                )}
-                {scopeTags.length > 0 && scopeTags.map(tag => (
-                  <span key={tag.id} className="inline-flex items-center rounded-full px-1.5 py-0 text-xs font-medium text-white" style={{ backgroundColor: tag.color }}>{tag.name}</span>
-                ))}
-                {scopeType === "location" && selectedLoc && (
-                  <button onClick={() => setEditLocationTagsOpen(true)} className="text-slate-400 hover:text-slate-600" title="Edit tags">
-                    <Tag className="h-3 w-3" />
-                  </button>
-                )}
-              </div>
-              {scopeType === "location" && selectedLoc && (
-                <Button variant="ghost" size="sm" className="h-6 text-xs text-slate-500" onClick={() => setEditLocationModalOpen(true)}>
-                  <Pencil className="mr-1 h-3 w-3" />Edit
-                </Button>
+                </>
               )}
             </div>
-            {scopeType === "location" && selectedLoc ? (
-              <div className="mb-1 pl-6">
-                <p className="text-xs text-slate-700 mt-1">{locationAddress(selectedLoc)}</p>
-                {selectedLoc.roofLadderCode && (
-                  <p className="text-xs font-medium text-slate-700 mt-0.5">Site Code: {selectedLoc.roofLadderCode}</p>
-                )}
-              </div>
-            ) : scopeType === "company" ? (
-              <p className="text-xs text-slate-600 mb-1 pl-6">{companyName} &middot; Across {locations.length} location{locations.length !== 1 ? "s" : ""}</p>
-            ) : null}
-            {/* Tab bar */}
-            <div className="flex -mb-px">
-              {(scopeType === "company" ? COMPANY_TABS : LOCATION_TABS).map(t => (
-                <button key={t.key} onClick={() => handleTabChange(t.key)}
-                  className={`relative px-3 py-2 text-xs font-medium transition-colors ${
-                    workspaceTab === t.key
-                      ? "text-[#76B054] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-[#76B054]"
-                      : "text-slate-500 hover:text-slate-700"
-                  }`}>{t.label}</button>
-              ))}
-            </div>
-          </div>
+        )}
 
-          {/* Tab content */}
-          <div className="flex-1 overflow-y-auto p-4">
-            {scopeType === "company" ? (
-              <>
-                {workspaceTab === "overview" && (
-                  <CompanyOverviewTab
-                    jobs={companyJobs}
-                    invoices={allInvoices}
-                    quotes={clientQuotes}
-                    locations={locations}
-                    onNavigate={setLocation}
-                  />
-                )}
-                {workspaceTab === "jobs" && <ClientAllJobsTab jobs={companyJobs} locations={locations} onNavigate={setLocation} />}
-                {workspaceTab === "invoices" && <ClientAllInvoicesTab invoices={allInvoices} locations={locations} onNavigate={setLocation} />}
-                {workspaceTab === "quotes" && <ClientAllQuotesTab quotes={clientQuotes} locations={locations} onNavigate={setLocation} />}
-              </>
-            ) : selectedLoc ? (
-              <>
-                {workspaceTab === "overview" && (
-                  <LocOverviewTab
-                    jobs={locJobs}
-                    equipment={locationEquipment}
-                    onNavigate={setLocation}
-                  />
-                )}
-                {workspaceTab === "jobs" && <LocJobsTab jobs={locJobs} onNavigate={setLocation} />}
-                {workspaceTab === "invoices" && <LocInvoicesTab invoices={locInvoices} onNavigate={setLocation} />}
-                {workspaceTab === "quotes" && <LocQuotesTab quotes={locQuotes} onNavigate={setLocation} />}
-                {workspaceTab === "equipment" && (
-                  <LocEquipmentTab
-                    equipment={locationEquipment}
-                    locationId={selectedLocationId!}
-                    onAdd={() => setEquipmentModalOpen(true)}
-                    onDelete={(eqId) => deleteEquipmentMutation.mutate(eqId)}
-                  />
-                )}
-                {workspaceTab === "pm" && (
-                  <PMScheduleCard
-                    locationId={selectedLocationId!}
-                    locationName={locationDisplayName(selectedLoc)}
-                    companyId={client.companyId || ""}
-                    clientId={companyId || undefined}
-                    open={true}
-                    onOpenChange={() => {}}
-                  />
-                )}
-                {workspaceTab === "parts" && (
-                  <LocPartsTab pmParts={pmParts} onAdd={() => setPartsModalOpen(true)} />
-                )}
-              </>
-            ) : (
-              <p className="text-sm text-slate-400 text-center py-12">Select a location from the list</p>
-            )}
-          </div>
-        </div>
-
-        {/* ── RIGHT: SUPPORT SIDEBAR ── */}
-        <div className={`flex-shrink-0 rounded-md border border-slate-200 bg-white transition-[width] duration-150 overflow-hidden ${
-          rightRailCollapsed ? "w-10" : "w-[320px]"
-        }`}>
-          {rightRailCollapsed ? (
-            <div className="flex flex-col items-center pt-2.5">
-              <button
-                onClick={() => setRightRailCollapsed(false)}
-                className="flex items-center justify-center h-6 w-6 rounded text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
-                title="Expand sidebar"
-              >
-                <PanelRightOpen className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ) : (
-            <div className="flex flex-col h-full overflow-hidden">
-              {/* Collapse toggle — top-right of rail */}
-              <div className="flex justify-end px-1.5 pt-1.5 pb-0">
-                <button
-                  onClick={() => setRightRailCollapsed(true)}
-                  className="flex items-center justify-center h-5 w-5 rounded text-slate-300 hover:text-slate-500 hover:bg-slate-100 transition-colors"
-                  title="Collapse sidebar"
-                >
-                  <PanelRightClose className="h-3 w-3" />
-                </button>
-              </div>
-              {/* Rail content */}
-              <div className="overflow-y-auto flex-1">
-                {scopeType === "company" ? (
-                  <>
-                    <div className="px-4 pt-2.5 pb-2 border-b border-slate-100">
-                      <CompanyContactsCompact
-                        companyContacts={clientLevelContacts}
-                        locationContacts={allLocationContacts}
-                        locations={locations}
-                        companyId={companyId}
-                      />
-                    </div>
-                    <div className="px-4 pt-2.5 pb-2 border-b border-slate-100">
-                      <h3 className="text-xs font-semibold text-slate-700 mb-1.5">Notes</h3>
-                      <NotesPanel scope="company" companyId={companyId || ""} hideAddButton={false} />
-                    </div>
-                    <div className="px-4 pt-2.5 pb-2">
-                      <h3 className="text-xs font-semibold text-slate-700 mb-1.5">Activity</h3>
-                      <ClientActivityCompact companyId={companyId} />
-                    </div>
-                  </>
-                ) : selectedLoc && selectedLocationId ? (
-                  <>
-                    <div className="px-4 pt-2.5 pb-2 border-b border-slate-100">
-                      <LocContactsCompact
-                        locationContacts={locContacts}
-                        companyContacts={locCompanyContacts}
-                        locationId={selectedLocationId}
-                        parentCompanyId={companyId}
-                      />
-                    </div>
-                    <div className="px-4 pt-2.5 pb-2 border-b border-slate-100">
-                      <h3 className="text-xs font-semibold text-slate-700 mb-1.5">Notes</h3>
-                      <NotesPanel scope="location" companyId={client.companyId || ""} locationId={selectedLocationId} hideAddButton={false} />
-                    </div>
-                    <div className="px-4 pt-2.5 pb-2 border-b border-slate-100">
-                      <EntityDocumentsSection
-                        entityType="client_document"
-                        entityId={selectedLocationId}
-                        listUrl={`/api/clients/${selectedLocationId}/files`}
-                      />
-                    </div>
-                    {(selectedLoc.roofLadderCode || selectedLoc.notes) && (
-                      <div className="px-4 pt-2.5 pb-2">
-                        <h3 className="text-xs font-semibold text-slate-700 mb-1.5">Site Info</h3>
-                        <div className="text-xs space-y-1">
-                          {selectedLoc.roofLadderCode && (
-                            <div className="flex items-center justify-between">
-                              <span className="text-slate-500">Site Code</span>
-                              <span className="font-medium text-slate-700">{selectedLoc.roofLadderCode}</span>
-                            </div>
+        {/* ── WORKSPACE SCROLL AREA — workspace card + recent activity ── */}
+        <div className="flex-1 min-w-0 lg:min-h-0 lg:overflow-y-auto p-4 space-y-3">
+                {/* ═══ MAIN WORKSPACE CARD ═══ */}
+                <div className="flex flex-col rounded-md border border-slate-200 bg-white overflow-hidden">
+                  {/* Workspace header + tabs.
+                      For single-location clients the page header already owns
+                      the client identity + address context, so we suppress
+                      the whole scope-header row and the address block here
+                      to avoid duplication. The one exception is when billing
+                      and service addresses differ — in that case we surface
+                      a compact labeled dual-address block above the tabs. */}
+                  <div className="border-b border-slate-200 px-5 pt-2.5 pb-0">
+                    {!isSingleLocation && (
+                      <>
+                        <div className="flex items-center justify-between gap-3 mb-1">
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
+                            {scopeType === "company" && (
+                              <Building2 className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                            )}
+                            {scopeType === "location" && (
+                              <MapPin className="h-3.5 w-3.5 text-[#76B054] flex-shrink-0" />
+                            )}
+                            <h2 className="text-base font-bold text-slate-900 truncate">{scopeEntityName}</h2>
+                            {selectedLoc?.isPrimary && scopeType === "location" && (
+                              <Badge className="bg-amber-50 text-amber-700 border border-amber-200 text-xs px-1.5 py-0 hover:bg-amber-50">Primary</Badge>
+                            )}
+                            {scopeTags.length > 0 && scopeTags.map(tag => (
+                              <span key={tag.id} className="inline-flex items-center rounded-full px-1.5 py-0 text-xs font-medium text-white" style={{ backgroundColor: tag.color }}>{tag.name}</span>
+                            ))}
+                            {scopeType === "location" && selectedLoc && (
+                              <button onClick={() => setEditLocationTagsOpen(true)} className="text-slate-400 hover:text-slate-600" title="Edit tags">
+                                <Tag className="h-3 w-3" />
+                              </button>
+                            )}
+                          </div>
+                          {scopeType === "location" && selectedLoc && (
+                            <Button variant="ghost" size="sm" className="h-6 text-xs text-slate-500" onClick={() => setEditLocationModalOpen(true)}>
+                              <Pencil className="mr-1 h-3 w-3" />Edit
+                            </Button>
                           )}
-                          {selectedLoc.notes && (
-                            <p className="text-slate-500 leading-snug">{selectedLoc.notes}</p>
+                        </div>
+                        {scopeType === "location" && selectedLoc ? (
+                          <div className="mb-1 pl-6">
+                            <p className="text-xs text-slate-700 mt-1">{locationAddress(selectedLoc)}</p>
+                            {selectedLoc.roofLadderCode && (
+                              <p className="text-xs font-medium text-slate-700 mt-0.5">Site Code: {selectedLoc.roofLadderCode}</p>
+                            )}
+                          </div>
+                        ) : scopeType === "company" ? (
+                          <p className="text-xs text-slate-600 mb-1 pl-6">{companyName} &middot; Across {locations.length} location{locations.length !== 1 ? "s" : ""}</p>
+                        ) : null}
+                      </>
+                    )}
+                    {isSingleLocation && hasDistinctBillingAddress && soleLocation && (
+                      <div className="grid grid-cols-2 gap-4 pb-2" data-testid="single-loc-dual-address">
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-0.5">Service Address</p>
+                          <p className="text-xs text-slate-700">{locationAddress(soleLocation) || "—"}</p>
+                          {soleLocation.roofLadderCode && (
+                            <p className="text-xs text-slate-500 mt-0.5">Site Code: {soleLocation.roofLadderCode}</p>
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-0.5">Billing Address</p>
+                          {billingAddressLines.length > 0 ? (
+                            billingAddressLines.map((line, i) => (
+                              <p key={i} className="text-xs text-slate-700 leading-snug">{line}</p>
+                            ))
+                          ) : (
+                            <p className="text-xs text-slate-400">—</p>
                           )}
                         </div>
                       </div>
                     )}
-                  </>
-                ) : null}
-              </div>
-            </div>
-          )}
+                    {/* Site Code alone (single-loc, same address): show compactly so the code isn't lost. */}
+                    {isSingleLocation && !hasDistinctBillingAddress && soleLocation?.roofLadderCode && (
+                      <p className="text-xs text-slate-500 pb-2">Site Code: <span className="font-medium text-slate-700">{soleLocation.roofLadderCode}</span></p>
+                    )}
+                    {/* Tab bar */}
+                    <div className="flex -mb-px overflow-x-auto">
+                      {(scopeType === "company" ? COMPANY_TABS : LOCATION_TABS).map(t => (
+                        <button
+                          key={t.key}
+                          onClick={() => handleTabChange(t.key)}
+                          data-testid={`workspace-tab-${t.key}`}
+                          className={`relative px-3 py-2 text-xs font-medium transition-colors whitespace-nowrap ${
+                            workspaceTab === t.key
+                              ? "text-[#76B054] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-[#76B054]"
+                              : "text-slate-500 hover:text-slate-700"
+                          }`}
+                        >
+                          {t.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Tab content */}
+                  <div className="p-4">
+                    {scopeType === "company" ? (
+                      <>
+                        {workspaceTab === "active" && (
+                          <ActiveWorkTab
+                            jobs={companyJobs}
+                            invoices={allInvoices}
+                            quotes={clientQuotes}
+                            locations={locations}
+                            scopeType="company"
+                            onNavigate={setLocation}
+                          />
+                        )}
+                        {workspaceTab === "jobs" && <ClientAllJobsTab jobs={companyJobs} locations={locations} onNavigate={setLocation} />}
+                        {workspaceTab === "invoices" && <ClientAllInvoicesTab invoices={allInvoices} locations={locations} onNavigate={setLocation} />}
+                        {workspaceTab === "quotes" && <ClientAllQuotesTab quotes={clientQuotes} locations={locations} onNavigate={setLocation} />}
+                      </>
+                    ) : selectedLoc ? (
+                      <>
+                        {workspaceTab === "active" && (
+                          <ActiveWorkTab
+                            jobs={locJobs}
+                            invoices={locInvoices}
+                            quotes={locQuotes}
+                            locations={locations}
+                            scopeType="location"
+                            onNavigate={setLocation}
+                          />
+                        )}
+                        {workspaceTab === "jobs" && <LocJobsTab jobs={locJobs} onNavigate={setLocation} />}
+                        {workspaceTab === "invoices" && <LocInvoicesTab invoices={locInvoices} onNavigate={setLocation} />}
+                        {workspaceTab === "quotes" && <LocQuotesTab quotes={locQuotes} onNavigate={setLocation} />}
+                        {workspaceTab === "equipment" && (
+                          <LocEquipmentTab
+                            equipment={locationEquipment}
+                            locationId={selectedLocationId!}
+                            onAdd={() => setEquipmentModalOpen(true)}
+                            onDelete={(eqId) => deleteEquipmentMutation.mutate(eqId)}
+                          />
+                        )}
+                        {workspaceTab === "pm" && (
+                          <PMScheduleCard
+                            locationId={selectedLocationId!}
+                            locationName={locationDisplayName(selectedLoc)}
+                            companyId={client.companyId || ""}
+                            clientId={companyId || undefined}
+                            open={true}
+                            onOpenChange={() => {}}
+                          />
+                        )}
+                        {workspaceTab === "parts" && (
+                          <LocPartsTab pmParts={pmParts} onAdd={() => setPartsModalOpen(true)} />
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-sm text-slate-400 text-center py-12">Select a location from the list</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* ═══ RECENT ACTIVITY CARD (below workspace) ═══
+                    Activity feed is company-scoped; always shows parent
+                    company activity regardless of scopeType. */}
+                {companyId && (
+                  <div className="rounded-md border border-slate-200 bg-white p-4" data-testid="client-recent-activity">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">Recent Activity</h3>
+                      <Clock className="h-3 w-3 text-slate-400" />
+                    </div>
+                    <ClientActivityCompact companyId={companyId} />
+                  </div>
+                )}
         </div>
+
+      {/* ═══ DRAG-RESIZE HANDLE (between center workspace and right rail) ═══
+           Desktop only, hidden when the rail is collapsed. Width control
+           is a vertical line with a wider invisible hit target for
+           forgiving drags. Keyboard accessibility via arrow keys. */}
+      {!rightRailCollapsed && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize utility rail"
+          tabIndex={0}
+          onPointerDown={handleRailPointerDown}
+          onKeyDown={handleRailKeyDown}
+          className={cn(
+            "hidden lg:block relative w-2 -mx-1 cursor-col-resize",
+            "focus-visible:outline-none group shrink-0",
+          )}
+          data-testid="client-right-column-resize"
+        >
+          <div
+            className={cn(
+              "absolute inset-y-0 left-1/2 w-px -translate-x-1/2",
+              "bg-slate-200/70 group-hover:w-0.5 group-hover:bg-slate-400",
+              "group-focus-visible:w-0.5 group-focus-visible:bg-slate-500",
+              "transition-[background-color,width] duration-150",
+            )}
+          />
+        </div>
+      )}
+
+      {/* ═══ RIGHT PAGE COLUMN — utility rail, full page-content height ═══
+           Sibling of the left page column, not a child of anything in
+           it. Its top edge starts at the top of the page-content area,
+           so it spans [page header + body] as one continuous column.
+           Width and collapse state persist via the canonical
+           `syntraro.detail.rail.{width,collapsed}` localStorage keys —
+           same keys used by DetailPageShell, so preferences carry over
+           between Client Detail and Job / Invoice / Quote detail pages. */}
+      <aside
+        className={cn(
+          "relative lg:shrink-0 lg:h-full flex flex-col bg-white",
+          "border-t lg:border-t-0 lg:border-l border-slate-200",
+        )}
+        style={{
+          width: rightRailCollapsed
+            ? `${RAIL_COLLAPSED_TAB_WIDTH}px`
+            : undefined,
+          // Inline width via style so we don't need arbitrary Tailwind
+          // class values for every possible pixel count.
+          ...(rightRailCollapsed
+            ? {}
+            : { ["--client-rail-width" as any]: `${rightRailWidth}px` }),
+        }}
+        data-testid="client-right-column"
+        data-collapsed={rightRailCollapsed ? "true" : "false"}
+      >
+        {/* Below lg: rail stacks under the left column; always show full
+            content regardless of the desktop collapse flag. */}
+        <div className="lg:hidden">
+          <UtilityRail
+            utilityTab={utilityTab}
+            setUtilityTab={setUtilityTab}
+            scopeType={scopeType}
+            companyId={companyId}
+            selectedLoc={selectedLoc}
+            selectedLocationId={selectedLocationId}
+            clientLevelContacts={clientLevelContacts}
+            allLocationContacts={allLocationContacts}
+            locations={locations}
+            locContacts={locContacts}
+            locCompanyContacts={locCompanyContacts}
+            ownerCompanyId={client.companyId || ""}
+            billing={{
+              lifetimeRevenue,
+              paidYtd,
+              outstanding: outstandingInvoices,
+              aging: agingBuckets,
+            }}
+          />
+        </div>
+
+        {/* Desktop: either the expand-edge-tab (collapsed) or the
+            full rail content + collapse button (expanded). */}
+        {rightRailCollapsed ? (
+          <button
+            type="button"
+            onClick={() => setRightRailCollapsed(false)}
+            className={cn(
+              "hidden lg:flex h-full w-full flex-col items-center justify-center gap-2",
+              "text-slate-700 hover:bg-slate-50 transition-colors",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 focus-visible:ring-inset",
+            )}
+            aria-label="Expand utility rail"
+            title="Expand"
+            data-testid="client-right-column-expand"
+          >
+            <ChevronLeft className="h-4 w-4" />
+            <span
+              className="select-none text-[11px] font-bold uppercase tracking-[0.18em]"
+              style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}
+            >
+              Details
+            </span>
+          </button>
+        ) : (
+          <div
+            className="hidden lg:flex h-full w-[var(--client-rail-width)] flex-col relative"
+          >
+            <button
+              type="button"
+              onClick={() => setRightRailCollapsed(true)}
+              className={cn(
+                "absolute top-1.5 right-1.5 z-20",
+                "h-6 w-6 flex items-center justify-center rounded-md",
+                "text-slate-700 hover:text-slate-950",
+                "bg-white/95 hover:bg-white border border-slate-300 hover:border-slate-400",
+                "shadow-sm backdrop-blur-[1px] transition-colors",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300",
+              )}
+              aria-label="Collapse utility rail"
+              title="Collapse"
+              data-testid="client-right-column-collapse"
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+            <UtilityRail
+              utilityTab={utilityTab}
+              setUtilityTab={setUtilityTab}
+              scopeType={scopeType}
+              companyId={companyId}
+              selectedLoc={selectedLoc}
+              selectedLocationId={selectedLocationId}
+              clientLevelContacts={clientLevelContacts}
+              allLocationContacts={allLocationContacts}
+              locations={locations}
+              locContacts={locContacts}
+              locCompanyContacts={locCompanyContacts}
+              ownerCompanyId={client.companyId || ""}
+              billing={{
+                lifetimeRevenue,
+                paidYtd,
+                outstanding: outstandingInvoices,
+                aging: agingBuckets,
+              }}
+            />
+          </div>
+        )}
+      </aside>
+
       </div>
+      {/* ═══ /BODY ═══ */}
 
       {/* ── Dialogs ── */}
       <QuickAddJobDialog
@@ -1055,6 +1567,15 @@ export default function ClientDetailPage() {
         onOpenChange={setJobDialogOpen}
         preselectedLocationId={scopeType === "location" ? selectedLocationId ?? undefined : undefined}
       />
+
+      {/* Create Quote — canonical NewQuoteModal. Modal has its own
+          location picker; client pre-selection is not supported by the
+          canonical API, so users pick inside the dialog. */}
+      <NewQuoteModal open={quoteDialogOpen} onOpenChange={setQuoteDialogOpen} />
+
+      {/* Create Invoice — canonical NewInvoiceModal. Same pre-selection
+          caveat as NewQuoteModal. */}
+      <NewInvoiceModal open={invoiceDialogOpen} onOpenChange={setInvoiceDialogOpen} />
 
       {/* Delete / Archive Confirmation Dialog */}
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
@@ -1487,6 +2008,155 @@ function LocContactsCompact({
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Utility Rail — right-side card with Contacts / Notes / Billing tabs
+// ═══════════════════════════════════════════════════════════════════════════════
+// Reuses canonical CompanyContactsCompact, LocContactsCompact, NotesPanel.
+// Billing aggregates are derived in the parent page from already-loaded
+// invoices (no new queries).
+
+type UtilityRailProps = {
+  utilityTab: UtilityTab;
+  setUtilityTab: (t: UtilityTab) => void;
+  scopeType: ScopeType;
+  companyId?: string;
+  selectedLoc: Client | null;
+  selectedLocationId: string | null;
+  clientLevelContacts: (ClientContact & { assignmentCount?: number })[];
+  allLocationContacts: ClientContact[];
+  locations: Client[];
+  locContacts: (ClientContact & { contactPersonId?: string })[];
+  locCompanyContacts: ClientContact[];
+  ownerCompanyId: string;
+  billing: {
+    lifetimeRevenue: number;
+    paidYtd: number;
+    outstanding: { count: number; total: number; overdueTotal: number };
+    aging: { current: number; d30: number; d60: number; d90: number };
+  };
+};
+
+function UtilityRail(props: UtilityRailProps) {
+  const {
+    utilityTab, setUtilityTab, scopeType, companyId,
+    selectedLoc, selectedLocationId, clientLevelContacts,
+    allLocationContacts, locations, locContacts, locCompanyContacts,
+    ownerCompanyId, billing,
+  } = props;
+
+  return (
+    <div className="h-full flex flex-col overflow-hidden bg-white" data-testid="client-utility-rail">
+      <Tabs value={utilityTab} onValueChange={(v) => setUtilityTab(v as UtilityTab)} className="flex-1 min-h-0 flex flex-col">
+        <TabsList className="w-full h-auto bg-slate-50 rounded-none border-b border-slate-200 p-0 justify-start">
+          {(["contacts", "notes", "billing"] as UtilityTab[]).map(k => (
+            <TabsTrigger
+              key={k}
+              value={k}
+              className="flex-1 rounded-none px-2 py-2 text-xs font-medium capitalize data-[state=active]:bg-white data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-[#76B054] data-[state=active]:text-[#76B054]"
+              data-testid={`utility-tab-${k}`}
+            >
+              {k}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+
+        <TabsContent value="contacts" className="m-0 p-4">
+          {scopeType === "company" ? (
+            <CompanyContactsCompact
+              companyContacts={clientLevelContacts}
+              locationContacts={allLocationContacts}
+              locations={locations}
+              companyId={companyId}
+            />
+          ) : selectedLoc && selectedLocationId ? (
+            <LocContactsCompact
+              locationContacts={locContacts}
+              companyContacts={locCompanyContacts}
+              locationId={selectedLocationId}
+              parentCompanyId={companyId}
+            />
+          ) : (
+            <p className="text-xs text-slate-400">No contacts.</p>
+          )}
+        </TabsContent>
+
+        <TabsContent value="notes" className="m-0 p-4">
+          {scopeType === "company" && companyId ? (
+            <NotesPanel scope="company" companyId={companyId} hideAddButton={false} />
+          ) : scopeType === "location" && selectedLocationId ? (
+            <NotesPanel scope="location" companyId={ownerCompanyId} locationId={selectedLocationId} hideAddButton={false} />
+          ) : (
+            <p className="text-xs text-slate-400">No notes.</p>
+          )}
+        </TabsContent>
+
+        {/* Billing — derived from already-loaded invoices; same data in both scopes. */}
+        <TabsContent value="billing" className="m-0 p-4">
+          <BillingSummary billing={billing} />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <dt className="text-slate-500">{label}</dt>
+      <dd className="text-slate-700 truncate text-right">{value}</dd>
+    </div>
+  );
+}
+
+function BillingSummary({ billing }: { billing: UtilityRailProps["billing"] }) {
+  const { outstanding, lifetimeRevenue, paidYtd, aging } = billing;
+  return (
+    <div className="text-xs space-y-3">
+      <dl className="space-y-2">
+        <DetailRow label="Outstanding" value={
+          <span className="tabular-nums font-semibold text-slate-900">{fmt.format(outstanding.total)}</span>
+        } />
+        {outstanding.overdueTotal > 0 && (
+          <DetailRow label="Overdue" value={
+            <span className="tabular-nums font-semibold text-red-600">{fmt.format(outstanding.overdueTotal)}</span>
+          } />
+        )}
+        <DetailRow label="Paid YTD" value={
+          <span className="tabular-nums text-slate-700">{fmt.format(paidYtd)}</span>
+        } />
+        <DetailRow label="Lifetime Revenue" value={
+          <span className="tabular-nums text-slate-700">{fmt.format(lifetimeRevenue)}</span>
+        } />
+      </dl>
+      {outstanding.count > 0 && (
+        <div className="pt-1.5 border-t border-slate-100">
+          <dt className="text-slate-500 mb-1.5">Aging</dt>
+          <div className="space-y-1">
+            <AgingRow label="Current" amount={aging.current} />
+            <AgingRow label="1–30d" amount={aging.d30} />
+            <AgingRow label="31–60d" amount={aging.d60} />
+            <AgingRow label="60d+" amount={aging.d90} danger />
+          </div>
+        </div>
+      )}
+      {outstanding.count === 0 && (
+        <p className="text-slate-400 text-xs text-center pt-1">No open balances.</p>
+      )}
+    </div>
+  );
+}
+
+function AgingRow({ label, amount, danger }: { label: string; amount: number; danger?: boolean }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className={cn("text-slate-500", danger && amount > 0 && "text-red-500")}>{label}</span>
+      <span className={cn("tabular-nums", danger && amount > 0 ? "text-red-600 font-medium" : "text-slate-600")}>
+        {fmt.format(amount)}
+      </span>
+    </div>
+  );
+}
+
 /** Compact activity for metadata panel */
 function ClientActivityCompact({ companyId }: { companyId?: string }) {
   const { data: activity = [], isLoading } = useQuery<any[]>({
@@ -1522,157 +2192,327 @@ function ClientActivityCompact({ companyId }: { companyId?: string }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Company-Scope Workspace Tabs
+// Active Work — cross-entity operational view (2026-04-18 refinement)
 // ═══════════════════════════════════════════════════════════════════════════════
+// Aggregates the "what needs action right now" view across Jobs,
+// Invoices, and Quotes for the current scope. All data comes from the
+// already-loaded canonical datasets in ClientDetailPage — no new
+// queries, no fabricated statuses.
+//
+// Sections (only rendered when that section has items):
+//   - Active Jobs         = status === "open" (overdue shown first)
+//   - Unpaid Invoices     = awaiting_payment / sent / partial_paid, and
+//                           any invoice past its due date
+//   - Open Quotes         = draft (not yet sent) and sent (awaiting
+//                           client response)
 
-/** Company overview — delegates to shared ActiveWorkSection. */
-function CompanyOverviewTab({
-  jobs, locations, onNavigate,
+function ActiveWorkTab({
+  jobs, invoices, quotes, locations, scopeType, onNavigate,
 }: {
-  jobs: Job[]; invoices: Invoice[]; quotes: EnrichedQuote[];
-  locations: Client[]; onNavigate: (p: string) => void;
+  jobs: Job[];
+  invoices: Invoice[];
+  quotes: EnrichedQuote[];
+  locations: Client[];
+  scopeType: ScopeType;
+  onNavigate: (p: string) => void;
 }) {
-  const locMap = useMemo(() => new Map(locations.map(l => [l.id, locationDisplayName(l)])), [locations]);
+  const locMap = useMemo(
+    () => new Map(locations.map(l => [l.id, locationDisplayName(l)])),
+    [locations],
+  );
+
+  // ── Active jobs (status === "open"), overdue first, then most recent ──
+  const activeJobs = useMemo(() => {
+    return jobs
+      .filter(isJobActive)
+      .sort((a, b) => {
+        const oa = isJobOverdue(a) ? 0 : 1;
+        const ob = isJobOverdue(b) ? 0 : 1;
+        if (oa !== ob) return oa - ob;
+        const pa = getJobStatusDisplay(a).priority;
+        const pb = getJobStatusDisplay(b).priority;
+        if (pa !== pb) return pa - pb;
+        return new Date(b.updatedAt ?? b.createdAt).getTime()
+             - new Date(a.updatedAt ?? a.createdAt).getTime();
+      });
+  }, [jobs]);
+
+  // ── Unpaid invoices: awaiting + overdue; overdue first ──
+  const unpaidInvoices = useMemo(() => {
+    const list = invoices.filter(inv =>
+      matchInvoiceFilter(inv, "awaiting") || matchInvoiceFilter(inv, "overdue"),
+    );
+    return list.sort((a, b) => {
+      const oa = matchInvoiceFilter(a, "overdue") ? 0 : 1;
+      const ob = matchInvoiceFilter(b, "overdue") ? 0 : 1;
+      if (oa !== ob) return oa - ob;
+      const da = a.dueDate ? new Date(a.dueDate).getTime() : Number.MAX_SAFE_INTEGER;
+      const db = b.dueDate ? new Date(b.dueDate).getTime() : Number.MAX_SAFE_INTEGER;
+      return da - db;
+    });
+  }, [invoices]);
+
+  // ── Open quotes: draft (not sent) and sent (awaiting approval) ──
+  const openQuotes = useMemo(() => {
+    const list = quotes.filter(q => q.status === "draft" || q.status === "sent");
+    return list.sort((a, b) =>
+      new Date(b.updatedAt ?? b.createdAt).getTime()
+      - new Date(a.updatedAt ?? a.createdAt).getTime(),
+    );
+  }, [quotes]);
+
+  const totalCount = activeJobs.length + unpaidInvoices.length + openQuotes.length;
+  if (totalCount === 0) {
+    return <EmptyState label="No active work — everything is current." />;
+  }
+
+  const showLocation = scopeType === "company";
+
   return (
-    <ActiveWorkSection
-      jobs={jobs}
-      locationMap={locMap}
-      emptyLabel="No active jobs across locations"
-      onNavigate={onNavigate}
-    />
+    <div className="space-y-4" data-testid="active-work-tab">
+      {activeJobs.length > 0 && (
+        <section>
+          <div className="flex items-center justify-between mb-1.5">
+            <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">
+              Active Jobs
+            </h3>
+            <span className="text-xs text-slate-400">{activeJobs.length}</span>
+          </div>
+          <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
+            {activeJobs.map(j => (
+              <JobRow
+                key={j.id}
+                job={j}
+                locationLabel={showLocation ? locMap.get(j.locationId) : undefined}
+                onNavigate={onNavigate}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {unpaidInvoices.length > 0 && (
+        <section>
+          <div className="flex items-center justify-between mb-1.5">
+            <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">
+              Unpaid Invoices
+            </h3>
+            <span className="text-xs text-slate-400">{unpaidInvoices.length}</span>
+          </div>
+          <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
+            {unpaidInvoices.map(inv => {
+              const badge = getInvoiceStatusBadge(inv.status, false);
+              const overdue = matchInvoiceFilter(inv, "overdue");
+              return (
+                <div
+                  key={inv.id}
+                  className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
+                  onClick={() => onNavigate(`/invoices/${inv.id}`)}
+                >
+                  <div className="min-w-0 flex-1">
+                    <span className="font-medium text-slate-700">
+                      INV #{inv.invoiceNumber || inv.id.slice(0, 6)}
+                    </span>
+                    <span className="text-slate-500 ml-2">
+                      {fmt.format(Number(inv.total ?? 0))}
+                    </span>
+                    {showLocation && locMap.get(inv.locationId) && (
+                      <p className="text-slate-400 text-xs truncate">{locMap.get(inv.locationId)}</p>
+                    )}
+                    {inv.dueDate && (
+                      <p className={cn("text-xs", overdue ? "text-red-500" : "text-slate-400")}>
+                        Due {format(new Date(inv.dueDate), "MMM dd, yyyy")}
+                      </p>
+                    )}
+                  </div>
+                  <Badge
+                    variant={overdue ? "destructive" : badge.variant}
+                    className="text-xs flex-shrink-0 ml-2"
+                  >
+                    {overdue ? "Overdue" : badge.label}
+                  </Badge>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {openQuotes.length > 0 && (
+        <section>
+          <div className="flex items-center justify-between mb-1.5">
+            <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">
+              Open Quotes
+            </h3>
+            <span className="text-xs text-slate-400">{openQuotes.length}</span>
+          </div>
+          <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
+            {openQuotes.map(q => (
+              <div
+                key={q.id}
+                className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
+                onClick={() => onNavigate(`/quotes/${q.id}`)}
+              >
+                <div className="min-w-0 flex-1">
+                  <span className="font-medium text-slate-700">
+                    {(q as any).quoteNumber || `Q-${q.id.slice(0, 6)}`}
+                  </span>
+                  {q.title && <span className="text-slate-500 ml-1">— {q.title}</span>}
+                  <span className="text-slate-500 ml-2">{fmt.format(Number(q.total ?? 0))}</span>
+                  {showLocation && q.locationId && locMap.get(q.locationId) && (
+                    <p className="text-slate-400 text-xs truncate">{locMap.get(q.locationId)}</p>
+                  )}
+                </div>
+                <Badge variant="outline" className="text-xs capitalize flex-shrink-0 ml-2">
+                  {q.status}
+                </Badge>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
   );
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Location-Scope Workspace Tab Components
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function LocOverviewTab({
-  jobs, equipment, onNavigate,
-}: {
-  jobs: Job[]; equipment: LocationEquipment[];
-  onNavigate: (path: string) => void;
-}) {
-  return (
-    <div className="space-y-4">
-      <ActiveWorkSection
-        jobs={jobs}
-        emptyLabel="No active work at this location"
-        onNavigate={onNavigate}
-      />
+{/* Part C: Unified job rows via shared JobRow component */}
+function LocJobsTab({ jobs, onNavigate }: { jobs: Job[]; onNavigate: (p: string) => void }) {
+  // Default filter is "all" — Active Work has its own dedicated tab
+  // (2026-04-18 refinement).
+  const [filter, setFilter] = useState<JobFilter>("all");
+  const counts = useMemo(() => ({
+    active: jobs.filter(isJobActive).length,
+    all: jobs.length,
+    completed: jobs.filter(isJobCompleted).length,
+  }), [jobs]);
+  const filtered = useMemo(() => {
+    if (filter === "active") return jobs.filter(isJobActive);
+    if (filter === "completed") return jobs.filter(isJobCompleted);
+    return jobs;
+  }, [jobs, filter]);
 
-      {/* Equipment summary */}
-      {equipment.length > 0 && (
-        <div>
-          <div className="flex items-center justify-between mb-1.5">
-            <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">Equipment</h3>
-            <span className="text-xs text-slate-400">{equipment.length} units</span>
-          </div>
-          <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-            {equipment.slice(0, 5).map(e => (
-              <div key={e.id} className="flex items-center justify-between text-xs px-3 py-2">
-                <span className="font-medium text-slate-700">{e.name} {e.equipmentType && <span className="text-slate-400 font-normal">· {e.equipmentType}</span>}</span>
-                <span className="text-slate-400 text-xs">{e.manufacturer || ""}</span>
-              </div>
-            ))}
-            {equipment.length > 5 && (
-              <p className="text-xs text-slate-400 py-1.5 text-center">+{equipment.length - 5} more</p>
-            )}
-          </div>
+  if (jobs.length === 0) return <EmptyState label="No jobs for this location" />;
+  return (
+    <div>
+      <FilterChips<JobFilter>
+        value={filter}
+        onChange={setFilter}
+        options={[
+          { key: "active", label: "Active", count: counts.active },
+          { key: "all", label: "All", count: counts.all },
+          { key: "completed", label: "Complete", count: counts.completed },
+        ]}
+      />
+      {filtered.length === 0 ? (
+        <p className="text-xs text-slate-400 py-4 text-center">No jobs in this filter</p>
+      ) : (
+        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
+          {filtered.map(j => (
+            <JobRow key={j.id} job={j} onNavigate={onNavigate} />
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-{/* Part C: Unified job rows via shared JobRow component */}
-function LocJobsTab({ jobs, onNavigate }: { jobs: Job[]; onNavigate: (p: string) => void }) {
-  if (jobs.length === 0) return <EmptyState label="No jobs for this location" />;
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-1.5">
-        <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">Jobs</h3>
-        <span className="text-xs text-slate-400">{jobs.length} total</span>
-      </div>
-      <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-        {jobs.map(j => (
-          <JobRow key={j.id} job={j} onNavigate={onNavigate} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function LocInvoicesTab({ invoices, onNavigate }: { invoices: Invoice[]; onNavigate: (p: string) => void }) {
+  const [filter, setFilter] = useState<InvoiceFilter>("all");
+  const counts = useMemo(() => ({
+    all: invoices.filter(i => matchInvoiceFilter(i, "all")).length,
+    draft: invoices.filter(i => matchInvoiceFilter(i, "draft")).length,
+    awaiting: invoices.filter(i => matchInvoiceFilter(i, "awaiting")).length,
+    paid: invoices.filter(i => matchInvoiceFilter(i, "paid")).length,
+    overdue: invoices.filter(i => matchInvoiceFilter(i, "overdue")).length,
+  }), [invoices]);
+  const filtered = useMemo(() => invoices.filter(i => matchInvoiceFilter(i, filter)), [invoices, filter]);
+
   if (invoices.length === 0) return <EmptyState label="No invoices for this location" />;
-  const statusCls = (s: string) => {
-    const map: Record<string, string> = {
-      paid: "bg-emerald-100 text-emerald-700",
-      sent: "bg-blue-100 text-blue-700",
-      draft: "bg-slate-100 text-slate-700",
-      voided: "bg-slate-100 text-slate-500",
-    };
-    return map[s] ?? "bg-red-100 text-red-700";
-  };
   return (
     <div>
-      <div className="flex items-center justify-between mb-1.5">
-        <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">Invoices</h3>
-        <span className="text-xs text-slate-400">{invoices.length} total</span>
-      </div>
-      <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-        {invoices.map(inv => (
-          <div key={inv.id} className="flex items-center justify-between py-2 px-3 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
-            onClick={() => onNavigate(`/invoices/${inv.id}`)}>
-            <div>
-              <div className="font-medium text-slate-700">INV #{inv.invoiceNumber || inv.id.slice(0, 6)}</div>
-              <div className="text-slate-400 text-xs">{inv.issueDate ? format(new Date(inv.issueDate), "MMM dd, yyyy") : ""}</div>
+      <FilterChips<InvoiceFilter>
+        value={filter}
+        onChange={setFilter}
+        options={[
+          { key: "all", label: "All", count: counts.all },
+          { key: "draft", label: "Draft", count: counts.draft },
+          { key: "awaiting", label: "Awaiting", count: counts.awaiting },
+          { key: "paid", label: "Paid", count: counts.paid },
+          { key: "overdue", label: "Overdue", count: counts.overdue },
+        ]}
+      />
+      {filtered.length === 0 ? (
+        <p className="text-xs text-slate-400 py-4 text-center">No invoices in this filter</p>
+      ) : (
+        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
+          {filtered.map(inv => (
+            <div key={inv.id} className="flex items-center justify-between py-2 px-3 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
+              onClick={() => onNavigate(`/invoices/${inv.id}`)}>
+              <div>
+                <div className="font-medium text-slate-700">INV #{inv.invoiceNumber || inv.id.slice(0, 6)}</div>
+                <div className="text-slate-400 text-xs">{inv.issueDate ? format(new Date(inv.issueDate), "MMM dd, yyyy") : ""}</div>
+              </div>
+              <div className="text-right">
+                {(() => {
+                  const badge = getInvoiceStatusBadge(inv.status, false);
+                  return <Badge variant={badge.variant} className="text-xs flex-shrink-0">{badge.label}</Badge>;
+                })()}
+                <p className="text-slate-500 text-xs">{fmt.format(Number(inv.total ?? 0))}</p>
+              </div>
             </div>
-            <div className="text-right">
-              <span className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${statusCls(inv.status)}`}>{inv.status}</span>
-              <p className="text-slate-500 text-xs">{fmt.format(Number(inv.total ?? 0))}</p>
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
 function LocQuotesTab({ quotes, onNavigate }: { quotes: EnrichedQuote[]; onNavigate: (p: string) => void }) {
+  const [filter, setFilter] = useState<QuoteFilter>("all");
+  const counts = useMemo(() => ({
+    all: quotes.length,
+    draft: quotes.filter(q => matchQuoteFilter(q, "draft")).length,
+    sent: quotes.filter(q => matchQuoteFilter(q, "sent")).length,
+    approved: quotes.filter(q => matchQuoteFilter(q, "approved")).length,
+  }), [quotes]);
+  const filtered = useMemo(() => quotes.filter(q => matchQuoteFilter(q, filter)), [quotes, filter]);
+
   if (quotes.length === 0) return <EmptyState label="No quotes for this location" />;
-  const statusCls = (s: string) => {
-    const map: Record<string, string> = {
-      approved: "bg-emerald-100 text-emerald-700",
-      sent: "bg-blue-100 text-blue-700",
-      draft: "bg-slate-100 text-slate-700",
-      declined: "bg-red-100 text-red-700",
-      converted: "bg-purple-100 text-purple-700",
-    };
-    return map[s] ?? "bg-slate-100 text-slate-600";
-  };
   return (
     <div>
-      <div className="flex items-center justify-between mb-1.5">
-        <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">Quotes</h3>
-        <span className="text-xs text-slate-400">{quotes.length} total</span>
-      </div>
-      <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-        {quotes.map(q => (
-          <div key={q.id} className="flex items-center justify-between py-2 px-3 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
-            onClick={() => onNavigate(`/quotes/${q.id}`)}>
-            <div>
-              <div className="font-medium text-slate-700">{(q as any).quoteNumber || `Q-${q.id.slice(0, 6)}`}{q.title ? ` — ${q.title}` : ""}</div>
-              <div className="text-slate-400 text-xs">{q.updatedAt ? format(new Date(q.updatedAt), "MMM dd, yyyy") : ""}</div>
+      <FilterChips<QuoteFilter>
+        value={filter}
+        onChange={setFilter}
+        options={[
+          { key: "all", label: "All", count: counts.all },
+          { key: "draft", label: "Draft", count: counts.draft },
+          { key: "sent", label: "Sent", count: counts.sent },
+          { key: "approved", label: "Approved", count: counts.approved },
+        ]}
+      />
+      {filtered.length === 0 ? (
+        <p className="text-xs text-slate-400 py-4 text-center">No quotes in this filter</p>
+      ) : (
+        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
+          {filtered.map(q => (
+            <div key={q.id} className="flex items-center justify-between py-2 px-3 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
+              onClick={() => onNavigate(`/quotes/${q.id}`)}>
+              <div>
+                <div className="font-medium text-slate-700">{(q as any).quoteNumber || `Q-${q.id.slice(0, 6)}`}{q.title ? ` — ${q.title}` : ""}</div>
+                <div className="text-slate-400 text-xs">{q.updatedAt ? format(new Date(q.updatedAt), "MMM dd, yyyy") : ""}</div>
+              </div>
+              <div className="text-right">
+                <Badge variant="outline" className="text-xs capitalize flex-shrink-0">{q.status}</Badge>
+                <p className="text-slate-500 text-xs">{fmt.format(Number(q.total ?? 0))}</p>
+              </div>
             </div>
-            <div className="text-right">
-              <span className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${statusCls(q.status)}`}>{q.status}</span>
-              <p className="text-slate-500 text-xs">{fmt.format(Number(q.total ?? 0))}</p>
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1870,41 +2710,42 @@ function LocPartsTab({ pmParts, onAdd }: { pmParts: PMPartWithItem[]; onAdd: () 
 // Client-Wide Tab Components (used by company scope)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-{/* Part C: Unified job rows via shared JobRow component */}
-/** Bug fix: split jobs into Active and Archived groups on company Jobs tab */
+/** Company-wide Jobs tab with Active/All/Complete filters (2026-04-18).
+ *  Default filter is "all" — Active Work has its own dedicated tab. */
 function ClientAllJobsTab({ jobs, locations, onNavigate }: { jobs: Job[]; locations: Client[]; onNavigate: (p: string) => void }) {
+  const [filter, setFilter] = useState<JobFilter>("all");
   const locMap = useMemo(() => new Map(locations.map(l => [l.id, locationDisplayName(l)])), [locations]);
-  const activeJobs = useMemo(() => jobs.filter(j => j.status !== "archived"), [jobs]);
-  const archivedJobs = useMemo(() => jobs.filter(j => j.status === "archived"), [jobs]);
+  const nonArchived = useMemo(() => jobs.filter(j => j.status !== "archived"), [jobs]);
+  const counts = useMemo(() => ({
+    active: nonArchived.filter(isJobActive).length,
+    all: nonArchived.length,
+    completed: nonArchived.filter(isJobCompleted).length,
+  }), [nonArchived]);
+  const filtered = useMemo(() => {
+    if (filter === "active") return nonArchived.filter(isJobActive);
+    if (filter === "completed") return nonArchived.filter(isJobCompleted);
+    return nonArchived;
+  }, [nonArchived, filter]);
+
   if (jobs.length === 0) return <EmptyState label="No jobs for this client" />;
   return (
-    <div className="space-y-4">
-      <div>
-        <div className="flex items-center justify-between mb-1.5">
-          <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">Active</h3>
-          <span className="text-xs text-slate-400">{activeJobs.length} jobs</span>
-        </div>
-        {activeJobs.length === 0 ? (
-          <p className="text-xs text-slate-400 py-4 text-center">No active jobs</p>
-        ) : (
-          <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-            {activeJobs.map(j => (
-              <JobRow key={j.id} job={j} locationLabel={locMap.get(j.locationId)} onNavigate={onNavigate} />
-            ))}
-          </div>
-        )}
-      </div>
-      {archivedJobs.length > 0 && (
-        <div>
-          <div className="flex items-center justify-between mb-1.5">
-            <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">Archived</h3>
-            <span className="text-xs text-slate-400">{archivedJobs.length} jobs</span>
-          </div>
-          <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-            {archivedJobs.map(j => (
-              <JobRow key={j.id} job={j} locationLabel={locMap.get(j.locationId)} onNavigate={onNavigate} />
-            ))}
-          </div>
+    <div>
+      <FilterChips<JobFilter>
+        value={filter}
+        onChange={setFilter}
+        options={[
+          { key: "active", label: "Active", count: counts.active },
+          { key: "all", label: "All", count: counts.all },
+          { key: "completed", label: "Complete", count: counts.completed },
+        ]}
+      />
+      {filtered.length === 0 ? (
+        <p className="text-xs text-slate-400 py-4 text-center">No jobs in this filter</p>
+      ) : (
+        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
+          {filtered.map(j => (
+            <JobRow key={j.id} job={j} locationLabel={locMap.get(j.locationId)} onNavigate={onNavigate} />
+          ))}
         </div>
       )}
     </div>
@@ -1912,57 +2753,97 @@ function ClientAllJobsTab({ jobs, locations, onNavigate }: { jobs: Job[]; locati
 }
 
 function ClientAllInvoicesTab({ invoices, locations, onNavigate }: { invoices: Invoice[]; locations: Client[]; onNavigate: (p: string) => void }) {
+  const [filter, setFilter] = useState<InvoiceFilter>("all");
   const locMap = useMemo(() => new Map(locations.map(l => [l.id, locationDisplayName(l)])), [locations]);
+  const counts = useMemo(() => ({
+    all: invoices.filter(i => matchInvoiceFilter(i, "all")).length,
+    draft: invoices.filter(i => matchInvoiceFilter(i, "draft")).length,
+    awaiting: invoices.filter(i => matchInvoiceFilter(i, "awaiting")).length,
+    paid: invoices.filter(i => matchInvoiceFilter(i, "paid")).length,
+    overdue: invoices.filter(i => matchInvoiceFilter(i, "overdue")).length,
+  }), [invoices]);
+  const filtered = useMemo(() => invoices.filter(i => matchInvoiceFilter(i, filter)), [invoices, filter]);
+
   if (invoices.length === 0) return <EmptyState label="No invoices for this client" />;
   return (
     <div>
-      <div className="flex items-center justify-between mb-1.5">
-        <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">Invoices</h3>
-        <span className="text-xs text-slate-400">{invoices.length} total</span>
-      </div>
-      <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-        {invoices.map(inv => (
-          <div key={inv.id} className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
-            onClick={() => onNavigate(`/invoices/${inv.id}`)}>
-            <div>
-              <span className="font-medium text-slate-700">INV #{inv.invoiceNumber || inv.id.slice(0, 6)}</span>
-              <span className="text-slate-500 ml-2">{fmt.format(Number(inv.total ?? 0))}</span>
-              <p className="text-slate-400 text-xs">{locMap.get(inv.locationId) || ""}</p>
+      <FilterChips<InvoiceFilter>
+        value={filter}
+        onChange={setFilter}
+        options={[
+          { key: "all", label: "All", count: counts.all },
+          { key: "draft", label: "Draft", count: counts.draft },
+          { key: "awaiting", label: "Awaiting", count: counts.awaiting },
+          { key: "paid", label: "Paid", count: counts.paid },
+          { key: "overdue", label: "Overdue", count: counts.overdue },
+        ]}
+      />
+      {filtered.length === 0 ? (
+        <p className="text-xs text-slate-400 py-4 text-center">No invoices in this filter</p>
+      ) : (
+        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
+          {filtered.map(inv => (
+            <div key={inv.id} className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
+              onClick={() => onNavigate(`/invoices/${inv.id}`)}>
+              <div>
+                <span className="font-medium text-slate-700">INV #{inv.invoiceNumber || inv.id.slice(0, 6)}</span>
+                <span className="text-slate-500 ml-2">{fmt.format(Number(inv.total ?? 0))}</span>
+                <p className="text-slate-400 text-xs">{locMap.get(inv.locationId) || ""}</p>
+              </div>
+              {(() => {
+                const badge = getInvoiceStatusBadge(inv.status, false);
+                return <Badge variant={badge.variant} className="text-xs flex-shrink-0">{badge.label}</Badge>;
+              })()}
             </div>
-            {(() => {
-              const badge = getInvoiceStatusBadge(inv.status, false);
-              return <Badge variant={badge.variant} className="text-xs flex-shrink-0">{badge.label}</Badge>;
-            })()}
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
 function ClientAllQuotesTab({ quotes, locations, onNavigate }: { quotes: EnrichedQuote[]; locations: Client[]; onNavigate: (p: string) => void }) {
+  const [filter, setFilter] = useState<QuoteFilter>("all");
   const locMap = useMemo(() => new Map(locations.map(l => [l.id, locationDisplayName(l)])), [locations]);
+  const counts = useMemo(() => ({
+    all: quotes.length,
+    draft: quotes.filter(q => matchQuoteFilter(q, "draft")).length,
+    sent: quotes.filter(q => matchQuoteFilter(q, "sent")).length,
+    approved: quotes.filter(q => matchQuoteFilter(q, "approved")).length,
+  }), [quotes]);
+  const filtered = useMemo(() => quotes.filter(q => matchQuoteFilter(q, filter)), [quotes, filter]);
+
   if (quotes.length === 0) return <EmptyState label="No quotes for this client" />;
   return (
     <div>
-      <div className="flex items-center justify-between mb-1.5">
-        <h3 className="text-[13px] font-semibold uppercase tracking-wider text-slate-600">Quotes</h3>
-        <span className="text-xs text-slate-400">{quotes.length} total</span>
-      </div>
-      <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
-        {quotes.map(q => (
-          <div key={q.id} className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
-            onClick={() => onNavigate(`/quotes/${q.id}`)}>
-            <div>
-              <span className="font-medium text-slate-700">{(q as any).quoteNumber || `Q-${q.id.slice(0, 6)}`}</span>
-              {q.title && <span className="text-slate-500 ml-1">— {q.title}</span>}
-              <span className="text-slate-500 ml-2">{fmt.format(Number(q.total ?? 0))}</span>
-              <p className="text-slate-400 text-xs">{q.locationId ? locMap.get(q.locationId) || "" : ""}</p>
+      <FilterChips<QuoteFilter>
+        value={filter}
+        onChange={setFilter}
+        options={[
+          { key: "all", label: "All", count: counts.all },
+          { key: "draft", label: "Draft", count: counts.draft },
+          { key: "sent", label: "Sent", count: counts.sent },
+          { key: "approved", label: "Approved", count: counts.approved },
+        ]}
+      />
+      {filtered.length === 0 ? (
+        <p className="text-xs text-slate-400 py-4 text-center">No quotes in this filter</p>
+      ) : (
+        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
+          {filtered.map(q => (
+            <div key={q.id} className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
+              onClick={() => onNavigate(`/quotes/${q.id}`)}>
+              <div>
+                <span className="font-medium text-slate-700">{(q as any).quoteNumber || `Q-${q.id.slice(0, 6)}`}</span>
+                {q.title && <span className="text-slate-500 ml-1">— {q.title}</span>}
+                <span className="text-slate-500 ml-2">{fmt.format(Number(q.total ?? 0))}</span>
+                <p className="text-slate-400 text-xs">{q.locationId ? locMap.get(q.locationId) || "" : ""}</p>
+              </div>
+              <Badge variant="outline" className="text-xs capitalize flex-shrink-0">{q.status}</Badge>
             </div>
-            <Badge variant="outline" className="text-xs capitalize flex-shrink-0">{q.status}</Badge>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1971,8 +2852,11 @@ function ClientAllQuotesTab({ quotes, locations, onNavigate }: { quotes: Enriche
 // Shared Components
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Contact card — compact layout: Name + Primary → Phone/Email → Location labels / Role badges.
- *  Hierarchy: identity first, contact info second, locations/roles third. */
+/** Contact card — compact layout. Hierarchy: name (primary) →
+ *  phone/email (secondary) → location labels / role badges (tertiary).
+ *  Initials avatar removed in 2026-04-19 refinement; Primary shown as a
+ *  star icon (matches the locations rail's primary-location indicator),
+ *  not a word badge. */
 function ContactCard({
   contact, onEdit, onEditRoles, onDelete, showScope = false, assignedLocationNames, deleteLabel,
 }: {
@@ -1986,7 +2870,6 @@ function ContactCard({
   deleteLabel?: string;
 }) {
   const nc = normalizeContact(contact);
-  const initials = [contact.firstName, contact.lastName].filter(Boolean).map(n => n![0]).join("");
 
   // Format location names for display: "Oakville, RBC Plaza" or "Oakville, RBC Plaza +1 more"
   const MAX_VISIBLE_LOCATIONS = 2;
@@ -1997,16 +2880,16 @@ function ContactCard({
     : null;
 
   return (
-    <div className="text-xs p-1.5 border rounded group">
-      {/* Row 1: Name + Primary badge + actions */}
+    <div className="text-xs px-2 py-1.5 border border-slate-200 rounded-md group hover:bg-slate-50/60 transition-colors">
+      {/* Row 1: Name + primary star + actions */}
       <div className="flex items-center justify-between gap-1">
         <div className="flex items-center gap-1.5 min-w-0">
-          <div className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-100 text-xs font-medium text-slate-600 flex-shrink-0">
-            {initials || "?"}
-          </div>
-          <span className="font-medium truncate">{nc.displayName}</span>
+          <span className="font-semibold text-slate-900 truncate">{nc.displayName}</span>
           {nc.isPrimary && (
-            <Badge className="bg-yellow-100 text-yellow-700 text-xs px-1 py-0 flex-shrink-0 hover:bg-yellow-100">Primary</Badge>
+            <Star
+              className="h-2.5 w-2.5 text-amber-500 fill-amber-500 flex-shrink-0"
+              aria-label="Primary"
+            />
           )}
           {showScope && nc.scope === "company" && (
             <Badge variant="secondary" className="text-xs px-1 py-0 flex-shrink-0">Company</Badge>
@@ -2032,25 +2915,36 @@ function ContactCard({
           </div>
         )}
       </div>
-      {/* Row 2: Phone / Email — compact inline */}
+      {/* Row 2: Phone / Email — compact inline. Icons dimmed to
+          slate-400 so the text is the signal, not the glyph. */}
       {(nc.phone || nc.email) && (
-        <div className="flex items-center gap-3 text-muted-foreground pl-[26px] mt-0.5">
-          {nc.phone && <span className="flex items-center gap-1"><Phone className="h-2.5 w-2.5" />{nc.phone}</span>}
-          {nc.email && <span className="flex items-center gap-1 truncate"><Mail className="h-2.5 w-2.5" />{nc.email}</span>}
+        <div className="flex items-center gap-3 text-muted-foreground mt-1">
+          {nc.phone && <span className="flex items-center gap-1"><Phone className="h-2.5 w-2.5 text-slate-400" />{nc.phone}</span>}
+          {nc.email && <span className="flex items-center gap-1 truncate"><Mail className="h-2.5 w-2.5 text-slate-400" />{nc.email}</span>}
         </div>
       )}
       {/* Row 3a: Assigned location labels (company cards) */}
       {locationLabel && (
-        <div className="flex items-center gap-1 text-muted-foreground pl-[26px] mt-0.5">
-          <MapPin className="h-2.5 w-2.5 flex-shrink-0" />
+        <div className="flex items-center gap-1 text-muted-foreground mt-1">
+          <MapPin className="h-2.5 w-2.5 text-slate-400 flex-shrink-0" />
           <span className="truncate">{locationLabel}</span>
         </div>
       )}
-      {/* Row 3b: Role badges — only if roles exist */}
+      {/* Row 3b: Role chips — only if roles exist. Styled to match the
+          note association chips (Jobs / Invoices / Quotes) for a
+          consistent "secondary tag" treatment across the right rail:
+          light tinted background + softer text color + compact pill.
+          Neutral slate tint so the chips don't pull attention from the
+          contact name. */}
       {nc.roles.length > 0 && (
-        <div className="flex flex-wrap gap-0.5 pl-[26px] mt-0.5">
+        <div className="flex flex-wrap gap-1 mt-1">
           {nc.roles.map(r => (
-            <Badge key={r} variant="outline" className="text-xs px-1 py-0 capitalize">{r}</Badge>
+            <span
+              key={r}
+              className="text-xs px-1.5 py-0.5 rounded bg-slate-50 text-slate-600 capitalize"
+            >
+              {r}
+            </span>
           ))}
         </div>
       )}

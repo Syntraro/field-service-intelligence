@@ -134,7 +134,10 @@ export default function DispatchMapPanel({
     // Group by technician — skip unassigned visits
     const byTech = new Map<string, PlottableVisit[]>();
     for (const p of plottable) {
-      const tid = p.visit.technicianId;
+      // 2026-04-19: derive the route-anchor tech from the canonical crew array.
+      // Route plotting is a single-line-per-tech view; multi-tech visits use
+      // their primary (first) tech as the anchor, matching prior behavior.
+      const tid = p.visit.technicianIds[0] ?? null;
       if (!tid) continue; // Skip unassigned
       if (!byTech.has(tid)) byTech.set(tid, []);
       byTech.get(tid)!.push(p);
@@ -186,8 +189,11 @@ export default function DispatchMapPanel({
 
         {/* Visit markers — completed visits excluded at source (mapVisits in DispatchPreview) */}
         {plottable.map(({ visit, lat, lng }) => {
-          const techColor = visit.technicianId
-            ? techColorMap.get(visit.technicianId) ?? "#6b7280"
+          // 2026-04-19: marker color anchors on primary tech derived from the
+          // canonical crew array (technicianIds[0]). Unassigned → neutral gray.
+          const primaryTechId = visit.technicianIds[0] ?? null;
+          const techColor = primaryTechId
+            ? techColorMap.get(primaryTechId) ?? "#6b7280"
             : "#6b7280";
           const isHovered = hoveredVisitId === visit.id;
           const timeStr = visit.scheduledStart

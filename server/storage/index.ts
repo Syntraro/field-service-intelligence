@@ -124,7 +124,6 @@ export interface IStorage {
   // 2026-03-20: createJobStatusEvent DELETED — zero callers via barrel; events created internally by transitionJobStatus/updateJobStatusWithEvent
   getJobStatusEvents: typeof jobRepository.getJobStatusEvents;
   getJobScheduleHistory: typeof jobRepository.getJobScheduleHistory;
-  getActionRequiredJobs: typeof jobRepository.getActionRequiredJobs;
   updateJobStatusWithEvent: typeof jobRepository.updateJobStatusWithEvent;
   transitionJobStatus: typeof jobRepository.transitionJobStatus;
   createJobWithExplicitNumber: typeof jobRepository.createJobWithExplicitNumber;
@@ -133,7 +132,15 @@ export interface IStorage {
   // Invoice operations
   getInvoices: typeof invoiceRepository.getInvoices;
   getInvoice: typeof invoiceRepository.getInvoice;
-  getInvoiceByJobId: typeof invoiceRepository.getInvoiceByJobId;
+  // 2026-04-18 Phase 5 (multi-invoice-per-job): singular "by-job" renamed
+  // to a primary-pointer read; new plural method lists every invoice on
+  // a job. The old `getInvoiceByJobId` name was removed to force callers
+  // to decide explicitly between primary and plural semantics.
+  getPrimaryInvoiceByJobId: typeof invoiceRepository.getPrimaryInvoiceByJobId;
+  listInvoicesByJobId: typeof invoiceRepository.listInvoicesByJobId;
+  // 2026-04-18 Phase 6: dedupe guard + explicit primary reassignment.
+  findRecentInvoiceByJob: typeof invoiceRepository.findRecentInvoiceByJob;
+  setPrimaryInvoiceForJob: typeof invoiceRepository.setPrimaryInvoiceForJob;
   // 2026-03-20: getInvoiceStats DELETED — zero callers; canonical version in invoicesFeed.ts
   // 2026-03-20: getDashboardInvoices DELETED — zero callers; dashboard uses invoicesFeed.ts
   getInvoiceLines: typeof invoiceRepository.getInvoiceLines;
@@ -154,6 +161,7 @@ export interface IStorage {
   getItems: typeof itemRepository.getItems;
   getItem: typeof itemRepository.getItem;
   createItem: typeof itemRepository.createItem;
+  createOrGetItem: typeof itemRepository.createOrGet;
   updateItem: typeof itemRepository.updateItem;
   deleteItem: typeof itemRepository.deleteItem;
   restoreItem: typeof itemRepository.restoreItem;
@@ -329,7 +337,6 @@ export const storage: IStorage = {
   createRecurringJobPhase: jobRepository.createRecurringJobPhase.bind(jobRepository),
   getJobStatusEvents: jobRepository.getJobStatusEvents.bind(jobRepository),
   getJobScheduleHistory: jobRepository.getJobScheduleHistory.bind(jobRepository),
-  getActionRequiredJobs: jobRepository.getActionRequiredJobs.bind(jobRepository),
   updateJobStatusWithEvent: jobRepository.updateJobStatusWithEvent.bind(jobRepository),
   transitionJobStatus: jobRepository.transitionJobStatus.bind(jobRepository),
   createJobWithExplicitNumber: jobRepository.createJobWithExplicitNumber.bind(jobRepository),
@@ -338,7 +345,10 @@ export const storage: IStorage = {
   // Invoice operations
   getInvoices: invoiceRepository.getInvoices.bind(invoiceRepository),
   getInvoice: invoiceRepository.getInvoice.bind(invoiceRepository),
-  getInvoiceByJobId: invoiceRepository.getInvoiceByJobId.bind(invoiceRepository),
+  getPrimaryInvoiceByJobId: invoiceRepository.getPrimaryInvoiceByJobId.bind(invoiceRepository),
+  listInvoicesByJobId: invoiceRepository.listInvoicesByJobId.bind(invoiceRepository),
+  findRecentInvoiceByJob: invoiceRepository.findRecentInvoiceByJob.bind(invoiceRepository),
+  setPrimaryInvoiceForJob: invoiceRepository.setPrimaryInvoiceForJob.bind(invoiceRepository),
   getInvoiceLines: invoiceRepository.getInvoiceLines.bind(invoiceRepository),
   createInvoiceLine: invoiceRepository.createInvoiceLine.bind(invoiceRepository),
   updateInvoiceLine: invoiceRepository.updateInvoiceLine.bind(invoiceRepository),
@@ -356,6 +366,7 @@ export const storage: IStorage = {
   getItems: itemRepository.getItems.bind(itemRepository),
   getItem: itemRepository.getItem.bind(itemRepository),
   createItem: itemRepository.createItem.bind(itemRepository),
+  createOrGetItem: itemRepository.createOrGet.bind(itemRepository),
   updateItem: itemRepository.updateItem.bind(itemRepository),
   deleteItem: itemRepository.deleteItem.bind(itemRepository),
   restoreItem: itemRepository.restoreItem.bind(itemRepository),

@@ -148,13 +148,15 @@ function WeekCalendarVisitBlock({ visit, top, height, left, width, isSelected, i
   const setHoveredVisitId = useHoverSetter();
   const isMapHovered = useIsVisitHovered(visit.id);
   const isCompleted = isCompletedStatus(visit.status);
-  const isUnassigned = !visit.technicianId && visit.technicianIds.length === 0;
+  // 2026-04-19: unassigned and source-tech derive from canonical crew array.
+  const primaryTechId = visit.technicianIds[0] ?? null;
+  const isUnassigned = visit.technicianIds.length === 0;
   const dragData: DispatchDragData = {
     type: "scheduled-visit",
     visitId: visit.id,
     jobId: visit.jobId,
     jobNumber: visit.jobNumber,
-    technicianId: visit.technicianId,
+    technicianId: primaryTechId,
     durationMinutes: visit.durationMinutes,
     version: visit.version,
     isMultiTech: visit.technicianIds.length > 1,
@@ -179,18 +181,17 @@ function WeekCalendarVisitBlock({ visit, top, height, left, width, isSelected, i
   // Week view merges all techs visually, but resize must not clamp against other techs' items.
   const sameTechVisits = useMemo(() => {
     if (isUnassigned) {
-      return laneVisits.filter(v => !v.technicianId && v.technicianIds.length === 0);
+      return laneVisits.filter(v => v.technicianIds.length === 0);
     }
-    const techId = visit.technicianId;
-    return laneVisits.filter(v => v.technicianId === techId || v.technicianIds.includes(techId!));
-  }, [laneVisits, visit.technicianId, isUnassigned]);
+    return laneVisits.filter(v => v.technicianIds.includes(primaryTechId!));
+  }, [laneVisits, primaryTechId, isUnassigned]);
 
   const sameTechTasks = useMemo(() => {
     if (isUnassigned) {
       return laneTasks.filter(t => !t.assignedToUserId);
     }
-    return laneTasks.filter(t => t.assignedToUserId === visit.technicianId);
-  }, [laneTasks, visit.technicianId, isUnassigned]);
+    return laneTasks.filter(t => t.assignedToUserId === primaryTechId);
+  }, [laneTasks, primaryTechId, isUnassigned]);
 
   // Compute clamped duration from a raw pixel height during resize
   const clampedDurationFromHeight = useCallback((rawHeight: number): number => {
@@ -480,7 +481,7 @@ export default function WeekDayColumn({
             endHour={endHour}
             laneVisits={visits}
             laneTasks={tasks}
-            techColor={v.technicianId ? techColorMap?.get(v.technicianId) : UNASSIGNED_COLOR}
+            techColor={(v.technicianIds[0] ?? null) ? techColorMap?.get(v.technicianIds[0]) : UNASSIGNED_COLOR}
           />
         );
       })}

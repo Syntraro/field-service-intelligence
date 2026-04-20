@@ -52,7 +52,9 @@ function DispatchVisitBlockImpl({ visit, left, width, techColor, isSaving, isSel
     visitId: visit.id,
     jobId: visit.jobId,
     jobNumber: visit.jobNumber,
-    technicianId: visit.technicianId,
+    // 2026-04-19: source-tech on drag data is derived from the canonical
+    // crew array; matches prior scalar behavior (primary = first assigned).
+    technicianId: visit.technicianIds[0] ?? null,
     durationMinutes: visit.durationMinutes,
     version: visit.version,
     isMultiTech: isTeamVisit,

@@ -69,7 +69,9 @@ function linkForEntity(entityType: CommunicationTemplateEntityType, entityId: st
   switch (entityType) {
     case "invoice":
     case "invoice_reminder":
+    case "payment_receipt":
       // 2026-04-16: reminder notifications deep-link to the same invoice detail.
+      // 2026-04-18 Phase 11: payment receipts deep-link to the same invoice too.
       return `/invoices/${entityId}`;
     case "quote":   return `/quotes/${entityId}`;
     case "job":     return `/jobs/${entityId}`;

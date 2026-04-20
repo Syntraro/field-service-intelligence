@@ -55,6 +55,15 @@ import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
 interface JobHeaderCardProps {
   job: JobHeaderDetail;
   jobInvoice: Invoice | null;
+  /**
+   * 2026-04-19 audit fix: plural invoice list for the job. Used as a
+   * fallback when `jobInvoice` (primary pointer) is null but siblings
+   * exist — e.g. the primary was deleted without reassignment. The
+   * existing "View Invoice" dialog buttons prefer the primary and
+   * fall back to the first entry in this list so the user is never
+   * stranded without a navigation target.
+   */
+  jobInvoices?: Invoice[];
   onEdit: () => void;
   onDelete: () => void;
   /** When false, hides Edit/More Actions buttons but keeps all dialog/mutation logic active */
@@ -73,6 +82,7 @@ const OFFICE_ROLES = ["owner", "admin", "manager", "dispatcher"];
 export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>(function JobHeaderCard({
   job,
   jobInvoice,
+  jobInvoices,
   onEdit,
   onDelete,
   showActions = true,
@@ -116,7 +126,12 @@ export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>
   const fullAddress = job.location ?
     [job.location.address, job.location.address2, job.location.city, job.location.province, job.location.postalCode].filter(Boolean).join(", ") : "";
 
-  const existingInvoice = jobInvoice;
+  // 2026-04-19 audit fix: prefer the primary pointer (jobInvoice) but
+  // fall back to the first invoice in the plural feed when primary is
+  // null. Prevents dialogs from hiding navigation when the primary was
+  // deleted without reassignment but siblings still exist.
+  const existingInvoice: Invoice | null =
+    jobInvoice ?? (jobInvoices && jobInvoices.length > 0 ? jobInvoices[0] : null);
 
   // createInvoiceMutation removed (2026-03-22) — dead code, showActions always false.
   // Invoice creation canonicalized in CreateInvoiceFromJobDialog.

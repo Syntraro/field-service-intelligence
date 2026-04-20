@@ -2,6 +2,7 @@ import { Router } from "express";
 import passport from "passport";
 import rateLimit from "express-rate-limit";
 import bcrypt from "bcryptjs";
+import { z } from "zod";
 import type { Request, Response } from "express";
 import { storage } from "../storage/index";
 import { asyncHandler, createError } from "../middleware/errorHandler";
@@ -9,6 +10,7 @@ import {
   requestPasswordReset,
   confirmPasswordReset,
 } from "../services/passwordResetService";
+import { createCompanyWithOwner } from "../services/onboardingService";
 
 declare module "express-serve-static-core" {
   interface Request {
@@ -131,6 +133,8 @@ router.post(
           email: user.email,
           role: user.role,
           companyId: user.companyId,
+          onboardingCompletedAt: user.onboardingCompletedAt ?? null,
+          isImpersonating: false,
         });
       });
     })(req, res, next);
@@ -152,7 +156,13 @@ router.post("/logout", (req: Request, res: Response) => {
 
 /**
  * GET /api/auth/me
- * Get current authenticated user
+ * Get current authenticated user.
+ *
+ * 2026-04-19 Hybrid SaaS onboarding: additionally surfaces
+ *   - `onboardingCompletedAt` (null until the owner finishes the wizard)
+ *   - `isImpersonating` (true when a platform admin is using this session
+ *     via the impersonation middleware — used to bypass the onboarding
+ *     route guard so support sessions never get trapped in the wizard)
  */
 router.get("/me", (req: Request, res: Response) => {
   if (!req.user) {
@@ -163,17 +173,114 @@ router.get("/me", (req: Request, res: Response) => {
     email: req.user.email,
     role: req.user.role,
     companyId: req.user.companyId,
+    onboardingCompletedAt: (req.user as any).onboardingCompletedAt ?? null,
+    isImpersonating: Boolean((req as any).isImpersonating),
   });
 });
 
 /**
+ * Rate limiter for signup (invite + public paths).
+ * 2026-04-19 Hybrid SaaS: caps self-serve tenant creation per IP.
+ */
+const signupLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many signup attempts. Please try again later." },
+  handler: (req, res) => {
+    console.warn(`[SECURITY] Signup rate limit hit for IP: ${req.ip}`);
+    res.status(429).json({ error: "Too many signup attempts. Please try again later." });
+  },
+});
+
+/**
+ * Empty → undefined helper so downstream `?? null` and fallback logic
+ * treats blank strings the same as omitted fields. Max-length caps come
+ * from the longest values observed in the companies/users tables.
+ */
+const optionalTrimmed = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .optional()
+    .transform((v) => (v ? v : undefined));
+
+/** Public (tokenless) signup payload — Hybrid SaaS owner + company trial. */
+const publicSignupSchema = z.object({
+  companyName: optionalTrimmed(120),
+  companyPhone: optionalTrimmed(40),
+  firstName: z.string().trim().min(1, "First name is required").max(60),
+  lastName: z.string().trim().min(1, "Last name is required").max(60),
+  email: z.string().trim().toLowerCase().email("Valid email is required"),
+  password: z.string().min(8, "Password must be at least 8 characters"),
+});
+
+/**
  * POST /api/auth/signup
- * Create new user account
+ * Create new user account.
+ *
+ * Two paths, selected by presence of `invitationToken`:
+ *  - invite   → join existing company (unchanged legacy flow)
+ *  - public   → create company + owner in one transaction (Hybrid SaaS, 2026-04-19)
  *
  * POLICY: Each email can only belong to one company globally.
  */
-router.post("/signup", asyncHandler(async (req: Request, res: Response) => {
-  const { email, password, firstName, lastName, invitationToken } = req.body;
+router.post("/signup", signupLimiter, asyncHandler(async (req: Request, res: Response) => {
+  const { invitationToken } = req.body ?? {};
+
+  // ──────────────────────────────────────────────────────────────────────
+  // PUBLIC PATH — no invitation token → create company + owner
+  // ──────────────────────────────────────────────────────────────────────
+  if (!invitationToken) {
+    const parsed = publicSignupSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw createError(400, parsed.error.issues[0]?.message ?? "Invalid signup payload");
+    }
+    const { companyName, companyPhone, firstName, lastName, email, password } = parsed.data;
+
+    const globalCheck = await storage.isEmailGloballyAvailable(email);
+    if (!globalCheck.available) {
+      throw createError(
+        400,
+        "This email is already in use. Each email can only belong to one company.",
+      );
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const { user, company } = await createCompanyWithOwner({
+      companyName,
+      companyPhone,
+      firstName,
+      lastName,
+      email,
+      passwordHash: hashedPassword,
+    });
+
+    req.logIn(user, (err) => {
+      if (err) {
+        return res.status(500).json({ error: "Account created but login failed" });
+      }
+      res.status(201).json({
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        companyId: user.companyId,
+        // null by design for a brand-new public-signup tenant — client
+        // route guard will redirect this owner to /onboarding.
+        onboardingCompletedAt: company.onboardingCompletedAt ?? null,
+        isImpersonating: false,
+      });
+    });
+    return;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // INVITE PATH — existing flow, unchanged behavior
+  // ──────────────────────────────────────────────────────────────────────
+  const { email, password, firstName, lastName } = req.body;
 
   if (!email || !password) {
     throw createError(400, "Email and password are required");
@@ -181,17 +288,12 @@ router.post("/signup", asyncHandler(async (req: Request, res: Response) => {
 
   const normalizedEmail = email.trim().toLowerCase();
 
-  // Check global email uniqueness via identity table
   const globalCheck = await storage.isEmailGloballyAvailable(normalizedEmail);
   if (!globalCheck.available) {
-    throw createError(400,
-      "This email is already in use. Each email can only belong to one company."
+    throw createError(
+      400,
+      "This email is already in use. Each email can only belong to one company.",
     );
-  }
-
-  // ✅ Production safety: require invitation for signup
-  if (!invitationToken) {
-    throw createError(403, "Signup requires an invitation. Contact support to get started.");
   }
 
   const invitation = await storage.getInvitationByToken(invitationToken);
@@ -214,26 +316,31 @@ router.post("/signup", asyncHandler(async (req: Request, res: Response) => {
     lastName,
   });
 
-  // Create email identity for the new user
   await storage.createEmailIdentity(
     companyId,
     user.id,
     normalizedEmail,
     hashedPassword,
-    true // verified
+    true, // verified
   );
+
+  // Invitees are never owners (role enum in invitations.ts restricts to
+  // admin/technician/dispatcher) and the onboarding guard only gates
+  // role === "owner", so any value here is safe. Fetched before logIn so
+  // the callback stays synchronous.
+  const companyRow = await storage.getCompanyById(user.companyId);
 
   req.logIn(user, (err) => {
     if (err) {
-      return res
-        .status(500)
-        .json({ error: "Account created but login failed" });
+      return res.status(500).json({ error: "Account created but login failed" });
     }
     res.status(201).json({
       id: user.id,
       email: user.email,
       role: user.role,
       companyId: user.companyId,
+      onboardingCompletedAt: companyRow?.onboardingCompletedAt ?? null,
+      isImpersonating: false,
     });
   });
 }));

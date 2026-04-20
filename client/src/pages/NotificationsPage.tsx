@@ -19,7 +19,6 @@ import {
   AlertTriangle,
   ExternalLink,
   BellOff,
-  Settings,
   MoreVertical,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -438,15 +437,6 @@ export default function NotificationsPage() {
               </CardDescription>
             </div>
             <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setLocation("/settings/time-alerts")}
-                className="gap-2"
-              >
-                <Settings className="h-4 w-4" />
-                Alert Settings
-              </Button>
               {unreadCount > 0 && (
                 <Button
                   variant="outline"

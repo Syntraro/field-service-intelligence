@@ -127,12 +127,12 @@ export function MidnightRolloverBanner() {
           type="button"
           onClick={() => dismissMutation.mutate()}
           disabled={dismissMutation.isPending}
-          className="shrink-0 -mr-1 p-1 rounded-md text-amber-700 hover:text-amber-950 hover:bg-amber-100"
+          className="shrink-0 -mr-2 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-md text-amber-700 hover:text-amber-950 hover:bg-amber-100 disabled:opacity-60"
           aria-label="Dismiss"
           title="Dismiss"
           data-testid="midnight-rollover-dismiss"
         >
-          <X className="h-3.5 w-3.5" />
+          <X className="h-4 w-4" />
         </button>
       </div>
     </div>

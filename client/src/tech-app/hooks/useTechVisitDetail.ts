@@ -145,12 +145,22 @@ export interface DetailVisit {
   locationId: string;
   status: string;
   jobTitle: string;
+  /** Human-facing job number (`jobs.job_number`, int, unique per company,
+   *  6-digit default). Surfaced here so the tech-app Visit Overview can
+   *  display a "Job #10452" reference chip without reconstructing the
+   *  fallback that jobTitle uses when summary is missing. Null when the
+   *  visit has no linked job (defensive — jobs.job_number is NOT NULL). */
+  jobNumber: number | null;
   jobDescription: string | null;
   accessInstructions: string | null;
   /** Visit-level instructions from dispatch/office (job_visits.visit_notes) */
   visitNotes: string | null;
   company: string;
   address: string;
+  /** Site phone from backend location row. Surfaced so the visit detail
+   *  can offer a one-tap `tel:` call action. Null when the location has
+   *  no phone on file. */
+  locationPhone: string | null;
   /** 2026-04-10: Raw ISO scheduledStart — SSoT for "is this visit scheduled?"
    *  Null means unscheduled placeholder. Used by VisitDetailPage to gate actions. */
   scheduledStart: string | null;
@@ -189,6 +199,11 @@ export interface DetailPart {
   quantity: string;
   unitPrice: string | null;
   equipmentId: string | null;
+  /** Catalog product id — already returned by the backend on `BackendPart`.
+   *  Surfaced so the tech-app's "Recent on this visit" chips can re-add the
+   *  same product in a single tap without re-running a catalog search.
+   *  Null for legacy/manually-described parts. */
+  productId: string | null;
   createdAt: string;
 }
 
@@ -203,11 +218,13 @@ function toDetailVisit(data: VisitDetailResponse): DetailVisit {
     locationId: data.location?.id ?? "",
     status: data.visit.status,
     jobTitle: data.job?.summary || `Job #${data.job?.jobNumber ?? "?"}`,
+    jobNumber: data.job?.jobNumber ?? null,
     jobDescription: data.job?.description ?? null,
     accessInstructions: data.job?.accessInstructions ?? null,
     visitNotes: data.visit.visitNotes ?? null,
     company: loc?.companyName || UNKNOWN_LOCATION,
     address: locationParts.length > 0 ? locationParts.join(", ") : NO_ADDRESS,
+    locationPhone: loc?.phone ?? null,
     scheduledStart: data.visit.scheduledStart ?? null,
     scheduledTime: formatClockTime(data.visit.scheduledStart),
     scheduledEnd: formatClockTime(data.visit.scheduledEnd),
@@ -242,6 +259,7 @@ function toDetailVisit(data: VisitDetailResponse): DetailVisit {
       quantity: p.quantity,
       unitPrice: p.unitPrice,
       equipmentId: p.equipmentId,
+      productId: p.productId,
       createdAt: p.createdAt,
     })),
   };

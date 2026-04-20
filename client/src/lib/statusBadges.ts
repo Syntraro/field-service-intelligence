@@ -3,6 +3,7 @@
  *
  * Single source of truth for entity-specific status badge rendering.
  */
+import { UNPAID_INVOICE_STATUSES } from "@shared/invoiceStatus";
 
 /**
  * Get display badge for an invoice status.
@@ -17,14 +18,37 @@
  */
 export function getInvoiceStatusBadge(
   status: string,
-  isPastDue: boolean
+  isPastDue: boolean,
+  /** 2026-04-18 Phase 9 (aging clarity): optional due date. When present,
+   *  an unpaid non-past-due invoice within DUE_SOON_WINDOW_DAYS gets a
+   *  "Due Soon" badge. Omitting the argument preserves the pre-Phase-9
+   *  signature behavior exactly (no Due Soon detection). */
+  dueDate?: string | Date | null,
 ): {
   label: string;
   variant: "default" | "destructive" | "secondary" | "outline";
   isOverdue?: boolean;
+  isDueSoon?: boolean;
 } {
   if (isPastDue) {
     return { label: "Past Due", variant: "destructive", isOverdue: true };
+  }
+  // Due Soon — only meaningful for awaiting-payment-ish statuses with a
+  // dueDate in the near future. Matches the same unpaid set that
+  // `computeIsPastDue` uses on the server.
+  const DUE_SOON_WINDOW_DAYS = 7;
+  if (dueDate && UNPAID_INVOICE_STATUSES.includes(status)) {
+    const d = typeof dueDate === "string" ? new Date(dueDate) : dueDate;
+    if (!isNaN(d.getTime())) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const threshold = new Date(today.getTime() + DUE_SOON_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+      const dueMidnight = new Date(d);
+      dueMidnight.setHours(0, 0, 0, 0);
+      if (dueMidnight >= today && dueMidnight <= threshold) {
+        return { label: "Due Soon", variant: "secondary", isDueSoon: true };
+      }
+    }
   }
   switch (status) {
     case "draft":            return { label: "Draft", variant: "outline" };

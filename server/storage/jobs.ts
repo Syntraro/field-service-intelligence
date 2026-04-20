@@ -1635,66 +1635,6 @@ export class JobRepository extends BaseRepository {
   }
 
   /**
-   * Get action required jobs queue for office/dispatch view
-   * Sorted by: nextActionDate ASC NULLS LAST, onHoldAt ASC (oldest first)
-   * NOTE: This function is kept for backward compatibility, now queries on_hold status
-   */
-  async getActionRequiredJobs(companyId: string) {
-    this.assertCompanyId(companyId);
-
-    const rows = await db
-      .select({
-        id: jobs.id,
-        companyId: jobs.companyId,
-        locationId: jobs.locationId,
-        jobNumber: jobs.jobNumber,
-        status: jobs.status,
-        priority: jobs.priority,
-        jobType: jobs.jobType,
-        summary: jobs.summary,
-        scheduledStart: jobs.scheduledStart,
-        scheduledEnd: jobs.scheduledEnd,
-        // New hold fields
-        holdReason: jobs.holdReason,
-        holdNotes: jobs.holdNotes,
-        nextActionDate: jobs.nextActionDate,
-        onHoldAt: jobs.onHoldAt,
-        // 2026-04-12 (Option A): primaryTechnicianId derived from visits below.
-        createdAt: jobs.createdAt,
-        // Location info
-        locationName: clients.location,
-        locationCompanyName: locationDisplayNameExpr,
-        locationAddress: clients.address,
-        locationCity: clients.city,
-      })
-      .from(jobs)
-      .leftJoin(clients, eq(jobs.locationId, clients.id))
-      .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
-      .where(
-        and(
-          eq(jobs.companyId, companyId),
-          isNull(jobs.deletedAt),
-          eq(jobs.isActive, true),
-          eq(jobs.status, "open"),
-          eq(jobs.openSubStatus, "on_hold")
-        )
-      )
-      .orderBy(
-        sql`${jobs.nextActionDate} ASC NULLS LAST`,
-        asc(jobs.onHoldAt)
-      );
-
-    const crewMap = await getVisitCrewsForJobs(
-      companyId,
-      rows.map((r) => r.id),
-    );
-    return rows.map((r) => ({
-      ...r,
-      assignedTechnicianIds: crewMap.get(r.id)?.assignedTechnicianIds ?? [],
-    }));
-  }
-
-  /**
    * Get job schedule audit history
    * Returns recent scheduling changes with user info and change summaries
    */

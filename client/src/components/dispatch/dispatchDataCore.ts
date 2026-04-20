@@ -15,7 +15,7 @@ import type { CalendarRangeResponseDto, UnscheduledJobDto } from "@shared/types/
 import type { DispatchVisit, DispatchTask, Technician } from "./dispatchPreviewTypes";
 import {
   mapEventToDispatchVisit,
-  mapUnscheduledToDispatchVisit,
+  mapUnscheduledToDispatchVisits,
   mapRawTask,
   buildTechnicianRoster,
 } from "./dispatchPreviewMappers";
@@ -108,7 +108,12 @@ export function useDispatchRangeData(
   const rawTasks = tasksQuery.data ? normalizeTasks(tasksQuery.data) : [];
 
   const scheduledVisits = useMemo(() => events.map(mapEventToDispatchVisit), [events]);
-  const unscheduledVisits = useMemo(() => unscheduledJobs.map(mapUnscheduledToDispatchVisit), [unscheduledJobs]);
+  // 2026-04-18 Phase 3: flatMap — one backlog card per unscheduled visit
+  // (not per job). Multi-visit jobs intentionally surface multiple cards.
+  const unscheduledVisits = useMemo(
+    () => unscheduledJobs.flatMap(mapUnscheduledToDispatchVisits),
+    [unscheduledJobs],
+  );
   const scheduledTasks = useMemo(() => rawTasks.map(mapRawTask), [rawTasks]);
 
   const technicians = useMemo(

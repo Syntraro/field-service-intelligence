@@ -450,7 +450,7 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
           </div>
         ) : (
           notes.map((note) => (
-            <div key={note.id} className="px-3 py-2.5 border rounded-md text-sm overflow-hidden" data-testid={`note-${note.id}`}>
+            <div key={note.id} className="px-3 py-2.5 border border-slate-200 border-l-2 border-l-slate-300 rounded-md text-sm overflow-hidden group" data-testid={`note-${note.id}`}>
               {editingNoteId === note.id ? (
                 /* ── Inline Edit ─── */
                 <div className="space-y-3">
@@ -567,11 +567,11 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
               ) : (
                 /* ── Read View ──── */
                 <>
-                  <p className="whitespace-pre-wrap break-words text-xs" style={{ overflowWrap: "anywhere" }}>{note.noteText}</p>
+                  <p className="whitespace-pre-wrap break-words text-xs leading-relaxed" style={{ overflowWrap: "anywhere" }}>{note.noteText}</p>
 
                   {/* Visibility badges */}
                   {(note.showOnJobs || note.showOnInvoices || note.showOnQuotes) && (
-                    <div className="flex gap-1.5 mt-2">
+                    <div className="flex gap-1.5 mt-2.5">
                       {note.showOnJobs && <span className="text-xs px-1.5 py-0.5 rounded bg-blue-50 text-blue-700">Jobs</span>}
                       {note.showOnInvoices && <span className="text-xs px-1.5 py-0.5 rounded bg-green-50 text-green-700">Invoices</span>}
                       {note.showOnQuotes && <span className="text-xs px-1.5 py-0.5 rounded bg-purple-50 text-purple-700">Quotes</span>}
@@ -580,17 +580,20 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
 
                   {/* Compact Jobber-style attachment strip — images as 56px thumbs + lightbox, non-images as chips */}
                   {note.attachments && note.attachments.length > 0 && (
-                    <div className="mt-2">
+                    <div className="mt-2.5">
                       <NoteAttachmentStrip attachments={note.attachments} />
                     </div>
                   )}
 
-                  {/* Compact metadata: "Author · Date, Time" + actions */}
-                  <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
+                  {/* Compact metadata: "Author · Date, Time" + actions.
+                      Footer is smaller and more muted; the action buttons
+                      sit at idle opacity-50 and reach full opacity on card
+                      hover so they don't compete with the body at rest. */}
+                  <div className="flex items-center justify-between mt-3 text-[11px] text-muted-foreground">
                     <span className="truncate mr-2">
                       {note.createdByName || "Unknown"} · {note.createdAt && format(new Date(note.createdAt), "MMM d, h:mm a")}
                     </span>
-                    <div className="flex gap-1 flex-shrink-0">
+                    <div className="flex gap-1 flex-shrink-0 opacity-50 group-hover:opacity-100 transition-opacity">
                       <Button variant="ghost" size="sm" className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground" onClick={() => startEdit(note)} data-testid={`button-edit-note-${note.id}`}>
                         <Pencil className="h-3 w-3" />
                       </Button>

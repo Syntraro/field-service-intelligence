@@ -19,7 +19,7 @@ const PLATFORM_ROLES = [
 
 export default function ProtectedRoute({ children, requireAdmin = false, requirePlatformAdmin = false, requirePlatformRole = false }: ProtectedRouteProps) {
   const { user, isLoading } = useAuth();
-  const [location, setLocation] = useLocation();
+  const [, setLocation] = useLocation();
   const hasCheckedAuth = useRef(false);
 
   useEffect(() => {
@@ -39,6 +39,16 @@ export default function ProtectedRoute({ children, requireAdmin = false, require
       setLocation("/tech/today");
       return;
     }
+
+    // 2026-04-19 post-login-friction removal: the owner-onboarding
+    // redirect was forcing every owner with NULL onboarding_completed_at
+    // to /onboarding on every login — a stray friction screen for
+    // returning users. The wizard is now reached ONLY via the explicit
+    // setLocation("/onboarding") in Signup.tsx's final-submit handler,
+    // not via any route guard. Business hours are already seeded
+    // silently in onboardingService; timezone defaults to
+    // "America/Toronto" in the company_settings schema. Owners who want
+    // to set their own timezone do so in Settings, not as a login gate.
 
     // Platform admin check (most restrictive)
     if (requirePlatformAdmin && user.role !== "platform_admin") {

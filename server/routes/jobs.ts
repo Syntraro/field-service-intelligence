@@ -118,6 +118,8 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const openSubStatus = req.query.openSubStatus ? String(req.query.openSubStatus) : undefined;
   const unscheduledOnly = req.query.unscheduledOnly === "true";
   const overdue = req.query.overdue === "true";
+  // 2026-04-19 Fix A: canonical "ready to invoice" filter passthrough.
+  const readyToInvoiceOnly = req.query.readyToInvoiceOnly === "true";
 
   const filters: JobFeedFilters = {
     status: isHistoryMode ? undefined : status, // History searches all statuses
@@ -128,6 +130,7 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
     openSubStatus: isHistoryMode ? undefined : openSubStatus,
     unscheduledOnly: isHistoryMode ? false : unscheduledOnly,
     overdue: isHistoryMode ? false : overdue,
+    readyToInvoiceOnly: isHistoryMode ? false : readyToInvoiceOnly,
     sortBy,
     sortOrder,
     limit: effectiveLimit,
@@ -156,20 +159,6 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
       hasMore: result.items.length >= effectiveLimit,
     }));
   }
-}));
-
-// GET /api/jobs/action-required - Get action required jobs queue
-// Prioritized by nextActionDate ASC, then by onHoldAt ASC (oldest first)
-// Bounded: uses lenient pagination (default offset=0, limit=50, max 200)
-router.get("/action-required", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const companyId = req.companyId;
-  const { params, explicit } = parsePaginationLenient(req.query);
-  const offset = params.offset ?? 0;
-
-  const allJobs = await storage.getActionRequiredJobs(companyId);
-  const result = applyOffsetPagination(allJobs, offset, params.limit);
-
-  res.json(paginatedCompat(result.items, result.meta, explicit));
 }));
 
 // GET /api/jobs/:id - Get single job
@@ -1379,6 +1368,48 @@ router.post("/:id/reconcile-invoice-links", requireRole(MANAGER_ROLES), asyncHan
  */
 
 import { jobNotesRepository } from "../storage/jobNotes";
+
+// =====================================================================
+// Billable preview (Phase 8: invoice composition control)
+// =====================================================================
+//
+// GET /api/jobs/:jobId/billable-preview
+//
+// Returns every item on a job that is eligible to be billed on the NEXT
+// invoice — i.e., time entries that haven't been invoiced yet (filtered
+// by the canonical `invoicedAt IS NULL` + `isNotNull(endAt)` + `billable`
+// predicates) and job parts that aren't already on any sibling invoice's
+// `source='job'` lines (using the same `jobLineItemId` allocation
+// signal as `refreshInvoiceFromJob`).
+//
+// Labor amounts are computed through the canonical billing-rules engine
+// (`applyBillingRulesToEntries`) so the preview totals match what the
+// server will actually write at invoice-creation time.
+//
+// Response shape:
+//   {
+//     labor: [{ id, startAt, technicianId, technicianName, type,
+//                billedMinutes, billedRate, billedAmount }],
+//     parts: [{ id, description, quantity, unitPrice, lineSubtotal }],
+//     laborSubtotal: string,   // money string, e.g. "123.45"
+//     partsSubtotal: string,
+//     subtotal: string,
+//   }
+//
+// Tax is NOT computed here — that's per-invoice via the existing tax
+// engine applied at create time. The client previews tax optimistically
+// using the job's default tax group; the server remains the source of
+// truth at create time.
+router.get(
+  "/:jobId/billable-preview",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const jobId = req.params.jobId;
+    const { invoiceRepository } = await import("../storage/invoices");
+    const preview = await invoiceRepository.getBillablePreviewForJob(companyId, jobId);
+    res.json(preview);
+  }),
+);
 
 // GET /api/jobs/:jobId/notes - List job notes + inherited client notes (showOnJobs).
 // 2026-04-18: dynamic read-time inheritance. Merges entity-owned job_notes with

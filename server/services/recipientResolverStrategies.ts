@@ -122,6 +122,13 @@ export const recipientResolverStrategies = {
     return recipientResolverStrategies.invoice(tenantId, entityId);
   },
 
+  // 2026-04-18 Phase 11: payment receipts go to the same billing-first
+  // recipient list as the original invoice send — the customer who owes
+  // is the customer who needs the receipt. entityId is the invoiceId.
+  async payment_receipt(tenantId: string, entityId: string): Promise<(string | null | undefined)[]> {
+    return recipientResolverStrategies.invoice(tenantId, entityId);
+  },
+
   async quote(tenantId: string, entityId: string): Promise<(string | null | undefined)[]> {
     const quote = await quoteRepository.getQuote(tenantId, entityId);
     if (!quote) throw createError(404, "Quote not found");
