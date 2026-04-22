@@ -40,8 +40,8 @@ import { canonicalLineItemInput } from "@shared/lineItem";
 
 const router = Router();
 
-// Feature gate: require quotesEnabled for all quotes routes
-router.use(requireFeature("quotesEnabled"));
+// Feature gate: require the canonical `quotes` entitlement for all quotes routes.
+router.use(requireFeature("quotes"));
 
 // ========================================
 // VALIDATION SCHEMAS

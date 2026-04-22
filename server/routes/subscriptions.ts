@@ -41,24 +41,14 @@ const renewAnnualSchema = z.object({
 });
 
 // ============================================================================
-// Existing Routes (Usage)
+// Existing Routes
 // ============================================================================
-
-/**
- * GET /api/subscriptions/usage
- * Get subscription usage info for the current company
- */
-router.get(
-  "/usage",
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const companyId = req.companyId;
-    if (!companyId) {
-      throw createError(401, "Unauthorized");
-    }
-    const usage = await subscriptionRepository.getSubscriptionUsage(companyId);
-    res.json(usage);
-  })
-);
+//
+// 2026-04-21 Phase 3: GET /api/subscriptions/usage removed. The canonical
+// surface is `GET /api/me/entitlements`, which exposes the same account
+// state (subscriptionStatus, entitled, reason, trialEndsAt) plus feature
+// + limit state in a single round-trip. Consumed by the useEntitlements
+// client hook.
 
 /**
  * GET /api/subscriptions/can-add-location

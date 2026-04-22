@@ -97,6 +97,9 @@ export type NormalizedWebhookEvent =
   | {
       kind: "payment_succeeded";
       eventId: string;
+      /** Raw provider event-type string (e.g. `payment_intent.succeeded`).
+       *  Stored on the ops log for grep-ability; not used for dispatch. */
+      eventType: string;
       providerPaymentId: string;
       amountCents: number;
       /** Provider's charge id (Stripe `ch_...`); becomes `payments.reference`. */
@@ -106,12 +109,14 @@ export type NormalizedWebhookEvent =
   | {
       kind: "payment_failed";
       eventId: string;
+      eventType: string;
       providerPaymentId: string;
       lastErrorMessage: string | null;
     }
   | {
       kind: "refund_created";
       eventId: string;
+      eventType: string;
       providerRefundId: string;
       /** The provider charge the refund was issued against. */
       providerChargeId: string;

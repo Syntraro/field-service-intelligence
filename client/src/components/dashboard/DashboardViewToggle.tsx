@@ -22,6 +22,20 @@ const VIEW_PATHS: Record<DashboardView, string> = {
   financial: "/financials",
 };
 
+/**
+ * 2026-04-22: localStorage key for the last-used dashboard view.
+ * Exported so `Dashboard.tsx` can read it on mount and redirect when
+ * the user's previous session ended on the Financial view. Written
+ * here on every deliberate toggle click; writing synchronously before
+ * navigation avoids the Dashboard-mount redirect from bouncing the
+ * user straight back to the view they just left.
+ */
+export const DASHBOARD_VIEW_KEY = "syntraro:dashboard-view";
+
+export function isDashboardView(value: unknown): value is DashboardView {
+  return value === "operations" || value === "financial";
+}
+
 interface DashboardViewToggleProps {
   /** Which segment should render as active. */
   active: DashboardView;
@@ -32,6 +46,13 @@ export function DashboardViewToggle({ active }: DashboardViewToggleProps) {
 
   const go = (view: DashboardView) => {
     if (view === active) return;
+    try {
+      window.localStorage.setItem(DASHBOARD_VIEW_KEY, view);
+    } catch {
+      // localStorage may be disabled (private mode, quota) — silent fallback.
+      // Missing persistence just means the next Dashboard load defaults
+      // to Operations, which is the documented no-preference behavior.
+    }
     setLocation(VIEW_PATHS[view]);
   };
 

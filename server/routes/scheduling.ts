@@ -205,7 +205,7 @@ async function buildRangeResponse(
 }
 
 const router = express.Router();
-router.use(requireFeature("calendarEnabled"));
+router.use(requireFeature("scheduling_calendar"));
 
 // ============================================================================
 // Validation Schemas
@@ -1100,7 +1100,7 @@ export const assignCrewSchema = z.object({
 router.patch(
   "/visit/:visitId/assign-crew",
   requireRole(MANAGER_ROLES),
-  requireFeature("multiTechEnabled"), // Multi-tech crew assignment requires premium feature
+  requireFeature("multi_tech_scheduling"), // Multi-tech crew assignment requires the canonical entitlement
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
     const { visitId } = validateSchema(visitIdParamSchema, req.params);

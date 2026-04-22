@@ -1,25 +1,24 @@
 /**
- * Invoice Reminder settings — tenant-facing (2026-04-16 product correction).
+ * Invoice Reminder settings — tenant-facing.
  *
  * Two-column layout:
  *   Left  — reminder behavior (enable toggle, first-delay, repeat cadence)
  *   Right — overdue reminder template editor + live preview
  *
- * Both columns bind to existing canonical endpoints — no new routes:
+ * 2026-04-21 Phase 3 canonical policy architecture: reminder cadence moved
+ * from the legacy tenant_features boolean-column table to the canonical
+ * `company_settings` row. Behavior reads/writes now go through the existing
+ * /api/company-settings endpoints (the same ones every other tenant
+ * preference uses) — no admin-only round-trip required.
  *
  *   Behavior:
- *     GET   /api/admin/tenants/:companyId/billing-features
- *     PATCH /api/admin/tenants/:companyId/features
+ *     GET /api/company-settings
+ *     PUT /api/company-settings
  *
  *   Template (specifically (invoice_reminder, email)):
  *     GET  /api/communication-templates/invoice_reminder/email
  *     POST /api/communication-templates          (upsert)
  *     POST /api/communication-templates/preview/invoice_reminder
- *
- * Tone + Maximum-reminders fields were removed per locked product
- * decision. Reminders continue on cadence until an invoice is paid,
- * voided, paused, or snoozed. The underlying DB columns are
- * deprecated but preserved for safe rollback.
  */
 
 import { useEffect, useState } from "react";
@@ -43,12 +42,11 @@ import {
 } from "@/components/ui/dialog";
 import { Bell, Loader2, Eye, ArrowLeft } from "lucide-react";
 
-interface FeaturesResponse {
-  features: {
-    invoiceRemindersEnabled?: boolean;
-    invoiceReminderFirstDelayDays?: number;
-    invoiceReminderRepeatEveryDays?: number;
-  };
+interface CompanySettingsResponse {
+  invoiceRemindersEnabled?: boolean;
+  invoiceReminderFirstDelayDays?: number;
+  invoiceReminderRepeatEveryDays?: number;
+  [key: string]: unknown;
 }
 
 interface TemplateResponse {
@@ -77,9 +75,12 @@ export default function InvoiceRemindersSettingsPage() {
   const companyId = user?.companyId;
 
   // ─────────────── Left column: behavior ───────────────
-  const { data: featuresData, isLoading: featuresLoading } = useQuery<FeaturesResponse>({
-    queryKey: ["/api/admin/tenants", companyId, "billing-features"],
-    queryFn: () => apiRequest(`/api/admin/tenants/${companyId}/billing-features`),
+  // 2026-04-21 Phase 3: reminder cadence is a tenant preference on
+  // company_settings, not a policy feature flag — read + write through the
+  // canonical /api/company-settings endpoint the rest of Settings uses.
+  const { data: settingsData, isLoading: settingsLoading } = useQuery<CompanySettingsResponse>({
+    queryKey: ["/api/company-settings"],
+    queryFn: () => apiRequest(`/api/company-settings`),
     enabled: !!companyId,
   });
 
@@ -88,12 +89,11 @@ export default function InvoiceRemindersSettingsPage() {
   const [repeatEvery, setRepeatEvery] = useState(7);
 
   useEffect(() => {
-    const f = featuresData?.features;
-    if (!f) return;
-    setEnabled(f.invoiceRemindersEnabled ?? true);
-    setFirstDelay(f.invoiceReminderFirstDelayDays ?? 3);
-    setRepeatEvery(f.invoiceReminderRepeatEveryDays ?? 7);
-  }, [featuresData?.features]);
+    if (!settingsData) return;
+    setEnabled(settingsData.invoiceRemindersEnabled ?? true);
+    setFirstDelay(settingsData.invoiceReminderFirstDelayDays ?? 3);
+    setRepeatEvery(settingsData.invoiceReminderRepeatEveryDays ?? 7);
+  }, [settingsData]);
 
   const firstDelayError =
     firstDelay < 1 ? "Minimum 1 day" : firstDelay > 90 ? "Maximum 90 days" : null;
@@ -103,8 +103,8 @@ export default function InvoiceRemindersSettingsPage() {
 
   const saveBehavior = useMutation({
     mutationFn: () =>
-      apiRequest(`/api/admin/tenants/${companyId}/features`, {
-        method: "PATCH",
+      apiRequest(`/api/company-settings`, {
+        method: "PUT",
         body: JSON.stringify({
           invoiceRemindersEnabled: enabled,
           invoiceReminderFirstDelayDays: firstDelay,
@@ -112,7 +112,7 @@ export default function InvoiceRemindersSettingsPage() {
         }),
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["/api/admin/tenants", companyId, "billing-features"] });
+      qc.invalidateQueries({ queryKey: ["/api/company-settings"] });
       toast({ title: "Reminder behavior saved" });
     },
     onError: (err: unknown) => {
@@ -216,7 +216,7 @@ export default function InvoiceRemindersSettingsPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
-            {featuresLoading ? (
+            {settingsLoading ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" /> Loading…
               </div>

@@ -61,10 +61,10 @@ export function TeamMetricsStrip() {
         tone: inactiveMembers > 0 ? "muted" : "default",
       },
       {
-        label: "Schedulable",
+        label: "On calendar",
         value: schedulableTechs,
         icon: Users,
-        hint: "On dispatch",
+        hint: "Shown on dispatch",
       },
       {
         label: "Company hours",

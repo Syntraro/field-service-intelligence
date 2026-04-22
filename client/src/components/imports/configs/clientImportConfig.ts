@@ -1,6 +1,7 @@
 import { Users } from "lucide-react";
 import type { ImportWizardConfig } from "../types";
 import { CLIENT_FIELD_DEFS } from "@shared/importPipeline/zod/client";
+import { jobberClientsPreset } from "../presets";
 
 const TEMPLATE_CSV = [
   "Company Name,Legal Name,Company Phone,Company Email,Billing Street,Billing City,Billing Province,Billing Postal Code,Location Name,Service Street,Service City,Service Province,Service Postal Code,Site Code,Contact First Name,Contact Last Name,Contact Email,Contact Phone",
@@ -20,4 +21,13 @@ export const clientImportConfig: ImportWizardConfig = {
     "One CSV row = one company + one location + one optional contact. Existing companies (matched by normalized name) gain the location/contact without duplicating; matching addresses are skipped.",
   commitBanner:
     "This creates companies, locations, and contacts in your tenant. Subscription location limits are enforced server-side. Duplicates detected in the preview won't be committed.",
+  presets: [jobberClientsPreset],
+  // 2026-04-22 Phase 2b: Clients import writes one row into up to three
+  // canonical entities (customer_company + client_location + client_contact).
+  // Custom fields can target the Client or Location; column-name heuristics
+  // (roof|gate|alarm|filter|PM|building|access) default to Location.
+  customFieldEntities: [
+    { id: "customer_company", label: "Client" },
+    { id: "client_location", label: "Location" },
+  ],
 };

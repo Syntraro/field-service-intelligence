@@ -808,6 +808,13 @@ export const companySettings = pgTable("company_settings", {
   weekStartsOn: text("week_starts_on").notNull().default("monday"),
   // Invoice defaults
   defaultPaymentTermsDays: integer("default_payment_terms_days").notNull().default(30),
+  // 2026-04-21 Phase 3 canonical policy architecture: invoice reminder cadence
+  // relocated here from the legacy tenant_features table. These are functional
+  // tenant configuration — NOT policy, NOT a feature entitlement — so they
+  // belong with the other company-level preferences.
+  invoiceRemindersEnabled: boolean("invoice_reminders_enabled").notNull().default(true),
+  invoiceReminderFirstDelayDays: integer("invoice_reminder_first_delay_days").notNull().default(3),
+  invoiceReminderRepeatEveryDays: integer("invoice_reminder_repeat_every_days").notNull().default(7),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
@@ -1885,6 +1892,104 @@ export const updatePaymentSchema = z.object({
 export type InsertPayment = z.infer<typeof insertPaymentSchema>;
 export type UpdatePayment = z.infer<typeof updatePaymentSchema>;
 export type Payment = typeof payments.$inferSelect;
+
+// ============================================================================
+// PAYMENT WEBHOOK EVENTS (Payment Ops Dashboard — PR1, 2026-04-22)
+// ============================================================================
+// Persistent log of inbound provider-webhook deliveries. Provider-neutral
+// column names so any adapter (Stripe today, future Square/etc.) writes
+// to the same table. Mirrors the qbo_webhook_events pattern in spirit:
+// one row per natural event-key with UPSERT semantics on replay.
+//
+// This table is a DIAGNOSTIC sidecar — the canonical payment ledger is
+// still `payments`. The log answers operator questions ("which webhooks
+// were 500'd last hour?", "show config-drift events for tenant X") that
+// the ledger can't by itself. Writes are best-effort: a log-write
+// failure must never block the real webhook decision.
+//
+// Redaction: `raw_metadata` is an ALLOWLIST of our own metadata keys
+// (companyId, invoiceId, invoiceNumber, prospectivePaymentId,
+// refundLedgerId, source). No Stripe-native payload fields are stored
+// here — those could carry customer PII (emails, addresses, card-last4)
+// and are not needed for ops triage.
+export const paymentWebhookEventKindEnum = [
+  "payment_succeeded",
+  "payment_failed",
+  "refund_created",
+  "unsupported",
+  "signature_failed",
+] as const;
+export type PaymentWebhookEventKind =
+  (typeof paymentWebhookEventKindEnum)[number];
+
+export const paymentWebhookEventOutcomeEnum = [
+  "accepted",         // handler wrote the canonical ledger row
+  "replayed",         // redelivery of an already-recorded event (200 ACK)
+  "ignored",          // terminal event the dispatcher intentionally does not act on
+  "config_error",     // metadata drift / tenant mismatch; 200 ACK, no row
+  "transient_failure",// DB / network / unexpected error; 500, Stripe retries
+  "signature_failed", // payload did not pass signature verification; 400
+] as const;
+export type PaymentWebhookEventOutcome =
+  (typeof paymentWebhookEventOutcomeEnum)[number];
+
+export const paymentWebhookEvents = pgTable(
+  "payment_webhook_events",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    // Provider id of the adapter that produced this event ('stripe' today).
+    providerId: text("provider_id").notNull(),
+    // Provider's own event id (Stripe evt_...). Nullable because signature
+    // failures happen BEFORE the event can be parsed.
+    providerEventId: text("provider_event_id"),
+    // Raw provider event type string (e.g. 'payment_intent.succeeded'),
+    // preserved for grep-ability when debugging unusual deliveries.
+    eventType: text("event_type"),
+    // Normalized kind used by the dispatcher.
+    eventKind: text("event_kind").notNull(),
+    outcome: text("outcome").notNull(),
+    // HTTP status we returned to the provider. Lets operators answer
+    // "was Stripe told to retry?" without replaying container logs.
+    httpStatus: integer("http_status").notNull(),
+    // Resolved tenant context when available. Null for signature failures
+    // and config drift where we couldn't determine the tenant safely.
+    companyId: varchar("company_id").references(() => companies.id, {
+      onDelete: "set null",
+    }),
+    invoiceId: varchar("invoice_id"),
+    parentPaymentId: varchar("parent_payment_id"),
+    // Provider-level ids for cross-reference with the provider dashboard.
+    providerPaymentId: text("provider_payment_id"),
+    providerRefundId: text("provider_refund_id"),
+    amountCents: integer("amount_cents"),
+    errorMessage: text("error_message"),
+    // Allowlist-redacted metadata. See service-layer logger for the
+    // allowlist. NEVER the full provider event payload.
+    rawMetadata: jsonb("raw_metadata"),
+    // Natural dedupe key — `{providerId}:{eventId}` for payment/unsupported,
+    // `{providerId}:{eventId}:{refundId}` for refund sub-events. Null for
+    // signature failures (no stable key exists pre-verification).
+    dedupeKey: text("dedupe_key"),
+    attempts: integer("attempts").notNull().default(1),
+    receivedAt: timestamp("received_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+  },
+  (table) => ({
+    dedupeKeyUq: uniqueIndex("payment_webhook_events_dedupe_key_uq")
+      .on(table.dedupeKey)
+      .where(sql`dedupe_key IS NOT NULL`),
+    companyReceivedIdx: index("payment_webhook_events_company_received_idx")
+      .on(table.companyId, table.receivedAt),
+    outcomeReceivedIdx: index("payment_webhook_events_outcome_received_idx")
+      .on(table.outcome, table.receivedAt),
+    providerEventIdx: index("payment_webhook_events_provider_event_idx")
+      .on(table.providerId, table.providerEventId),
+  }),
+);
+
+export type PaymentWebhookEvent = typeof paymentWebhookEvents.$inferSelect;
 
 // ============================================
 // JOBS SYSTEM
@@ -3917,86 +4022,15 @@ export const session = pgTable("session", {
 });
 
 // ============================================================================
-// TENANT FEATURE FLAGS
-// Feature gates for tenant-level functionality enablement
+// TENANT FEATURE FLAGS — DELETED 2026-04-21 Phase 3
 // ============================================================================
-export const tenantFeatures = pgTable("tenant_features", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }).unique(),
-  // Core feature flags
-  quotesEnabled: boolean("quotes_enabled").notNull().default(true),
-  invoicesEnabled: boolean("invoices_enabled").notNull().default(true),
-  calendarEnabled: boolean("calendar_enabled").notNull().default(true),
-  qboEnabled: boolean("qbo_enabled").notNull().default(true),
-  // Future feature flags (placeholders)
-  routeOptimizationEnabled: boolean("route_optimization_enabled").notNull().default(true),
-  multiTechEnabled: boolean("multi_tech_enabled").notNull().default(true),
-  // Live Map feature flag — gated separately due to map tile / real-time infrastructure costs
-  liveMapEnabled: boolean("live_map_enabled").notNull().default(true),
-  // Customer portal feature flags
-  customerPortalEnabled: boolean("customer_portal_enabled").notNull().default(false),
-  customerPortalPaymentsEnabled: boolean("customer_portal_payments_enabled").notNull().default(false),
-  // Invoice reminder settings (2026-04-16). Reminders default ON for both
-  // new and existing tenants. Cadence fields configure the sweep worker
-  // and the manual reminder path alike.
-  invoiceRemindersEnabled: boolean("invoice_reminders_enabled").notNull().default(true),
-  invoiceReminderFirstDelayDays: integer("invoice_reminder_first_delay_days").notNull().default(3),
-  invoiceReminderRepeatEveryDays: integer("invoice_reminder_repeat_every_days").notNull().default(7),
-  // DEPRECATED 2026-04-16: product decision — reminders now continue
-  // on cadence until paid/voided/paused/snoozed. These columns are no
-  // longer read anywhere in server code and not accepted by the update
-  // schema. Kept in the DB for safe rollback; a future migration may drop.
-  invoiceReminderMaxCount: integer("invoice_reminder_max_count").notNull().default(3),
-  invoiceReminderTone: text("invoice_reminder_tone").notNull().default("friendly"),
-  // Metadata
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: timestamp("updated_at"),
-});
-
-export const insertTenantFeaturesSchema = createInsertSchema(tenantFeatures).omit({
-  id: true,
-  createdAt: true,
-  updatedAt: true,
-});
-
-export const updateTenantFeaturesSchema = z.object({
-  quotesEnabled: z.boolean().optional(),
-  invoicesEnabled: z.boolean().optional(),
-  calendarEnabled: z.boolean().optional(),
-  qboEnabled: z.boolean().optional(),
-  routeOptimizationEnabled: z.boolean().optional(),
-  multiTechEnabled: z.boolean().optional(),
-  liveMapEnabled: z.boolean().optional(),
-  customerPortalEnabled: z.boolean().optional(),
-  customerPortalPaymentsEnabled: z.boolean().optional(),
-  // 2026-04-16 invoice reminders.
-  // `invoiceReminderMaxCount` and `invoiceReminderTone` were removed
-  // per locked product decision (reminders continue on cadence until
-  // paid/voided/paused/snoozed). The underlying columns are kept in the
-  // DB as deprecated; this schema deliberately does NOT accept them so
-  // the UI cannot write them.
-  invoiceRemindersEnabled: z.boolean().optional(),
-  invoiceReminderFirstDelayDays: z.number().int().min(0).max(90).optional(),
-  invoiceReminderRepeatEveryDays: z.number().int().min(1).max(90).optional(),
-});
-
-export type InsertTenantFeatures = z.infer<typeof insertTenantFeaturesSchema>;
-export type UpdateTenantFeatures = z.infer<typeof updateTenantFeaturesSchema>;
-export type TenantFeatures = typeof tenantFeatures.$inferSelect;
-
-// Feature key type for type-safe feature checks
-export const featureKeys = [
-  "quotesEnabled",
-  "invoicesEnabled",
-  "calendarEnabled",
-  "qboEnabled",
-  "routeOptimizationEnabled",
-  "multiTechEnabled",
-  "liveMapEnabled",
-  "customerPortalEnabled",
-  "customerPortalPaymentsEnabled",
-] as const;
-export type FeatureKey = typeof featureKeys[number];
+//
+// The `tenant_features` table is gone. The canonical path for feature
+// entitlements is the `subscription_features` + `subscription_plan_features`
+// + `tenant_feature_overrides` catalog, resolved by `entitlementService`.
+// Invoice reminder cadence (the only non-policy field that lived on the
+// old table) moved to `company_settings`. See migration
+// `2026_04_21c_drop_tenant_features.sql`.
 
 // ============================================================================
 // NOTIFICATIONS
@@ -5706,7 +5740,17 @@ export type LeadNote = typeof leadNotes.$inferSelect;
 export const referenceFieldTypeEnum = ["text"] as const;
 export type ReferenceFieldType = typeof referenceFieldTypeEnum[number];
 
-export const referenceFieldEntityTypeEnum = ["job", "quote", "invoice"] as const;
+// 2026-04-22 Phase 2b: extended to cover Clients (customer_company),
+// Locations (client_location), and Products / Services (item) so the Import
+// Center can create custom fields inline for every entity type.
+export const referenceFieldEntityTypeEnum = [
+  "job",
+  "quote",
+  "invoice",
+  "customer_company",
+  "client_location",
+  "item",
+] as const;
 export type ReferenceFieldEntityType = typeof referenceFieldEntityTypeEnum[number];
 
 // ── Definitions ──
@@ -5723,6 +5767,10 @@ export const referenceFieldDefinitions = pgTable("reference_field_definitions", 
   appliesToJobs: boolean("applies_to_jobs").notNull().default(false),
   appliesToQuotes: boolean("applies_to_quotes").notNull().default(false),
   appliesToInvoices: boolean("applies_to_invoices").notNull().default(false),
+  // 2026-04-22 Phase 2b: added to cover custom fields on clients, locations, products
+  appliesToCustomers: boolean("applies_to_customers").notNull().default(false),
+  appliesToLocations: boolean("applies_to_locations").notNull().default(false),
+  appliesToProducts: boolean("applies_to_products").notNull().default(false),
 
   searchable: boolean("searchable").notNull().default(true),
   active: boolean("active").notNull().default(true),
@@ -5734,10 +5782,10 @@ export const referenceFieldDefinitions = pgTable("reference_field_definitions", 
 }, (table) => ({
   // Unique key per tenant
   companyKeyUq: uniqueIndex("ref_field_defs_company_key_uq").on(table.companyId, table.key),
-  // At least one applies-to must be true
+  // At least one applies-to must be true (extended to 6 entities in Phase 2b)
   appliesToCheck: check(
     "ref_field_defs_applies_to_check",
-    sql`${table.appliesToJobs} = true OR ${table.appliesToQuotes} = true OR ${table.appliesToInvoices} = true`
+    sql`${table.appliesToJobs} = true OR ${table.appliesToQuotes} = true OR ${table.appliesToInvoices} = true OR ${table.appliesToCustomers} = true OR ${table.appliesToLocations} = true OR ${table.appliesToProducts} = true`
   ),
   // Type must be a valid enum value
   typeCheck: check(
@@ -5759,11 +5807,21 @@ export const insertReferenceFieldDefinitionSchema = createInsertSchema(reference
   appliesToJobs: z.boolean().default(false),
   appliesToQuotes: z.boolean().default(false),
   appliesToInvoices: z.boolean().default(false),
+  // 2026-04-22 Phase 2b
+  appliesToCustomers: z.boolean().default(false),
+  appliesToLocations: z.boolean().default(false),
+  appliesToProducts: z.boolean().default(false),
   searchable: z.boolean().default(true),
   active: z.boolean().default(true),
   displayOrder: z.number().int().min(0).default(0),
 }).refine(
-  (data) => data.appliesToJobs || data.appliesToQuotes || data.appliesToInvoices,
+  (data) =>
+    data.appliesToJobs ||
+    data.appliesToQuotes ||
+    data.appliesToInvoices ||
+    data.appliesToCustomers ||
+    data.appliesToLocations ||
+    data.appliesToProducts,
   { message: "At least one 'applies to' option must be selected", path: ["appliesToJobs"] }
 );
 
@@ -5772,6 +5830,10 @@ export const updateReferenceFieldDefinitionSchema = z.object({
   appliesToJobs: z.boolean().optional(),
   appliesToQuotes: z.boolean().optional(),
   appliesToInvoices: z.boolean().optional(),
+  // 2026-04-22 Phase 2b
+  appliesToCustomers: z.boolean().optional(),
+  appliesToLocations: z.boolean().optional(),
+  appliesToProducts: z.boolean().optional(),
   searchable: z.boolean().optional(),
   active: z.boolean().optional(),
   displayOrder: z.number().int().min(0).optional(),
@@ -5790,7 +5852,7 @@ export const referenceFieldValues = pgTable("reference_field_values", {
 
   fieldDefinitionId: varchar("field_definition_id").notNull().references(() => referenceFieldDefinitions.id, { onDelete: "cascade" }),
 
-  entityType: varchar("entity_type", { length: 20 }).notNull(), // job | quote | invoice
+  entityType: varchar("entity_type", { length: 20 }).notNull(), // job | quote | invoice | customer_company | client_location | item
   entityId: varchar("entity_id").notNull(),
 
   textValue: varchar("text_value", { length: 500 }),
@@ -5811,10 +5873,10 @@ export const referenceFieldValues = pgTable("reference_field_values", {
   definitionIdx: index("ref_field_vals_definition_idx").on(
     table.companyId, table.fieldDefinitionId
   ),
-  // Entity type constraint
+  // Entity type constraint (2026-04-22 Phase 2b: extended to 6 entities)
   entityTypeCheck: check(
     "ref_field_vals_entity_type_check",
-    sql`${table.entityType} IN ('job', 'quote', 'invoice')`
+    sql`${table.entityType} IN ('job', 'quote', 'invoice', 'customer_company', 'client_location', 'item')`
   ),
   // 2026-04-10: singleValueCheck removed — only text_value column remains
 }));

@@ -39,6 +39,7 @@ import {
   AlertTriangle,
   Briefcase,
   Check,
+  ChevronLeft,
   ChevronRight,
   Clock,
   ExternalLink,
@@ -46,6 +47,17 @@ import {
   Settings2,
   Users,
 } from "lucide-react";
+
+/**
+ * 2026-04-21: Operational-alerts rail collapse.
+ *
+ * The rail compacts to a 64px vertical strip so the Team Workload panel
+ * can reclaim the horizontal space on dense dashboards. Preference is
+ * persisted per-browser (same tenant/user) via localStorage, and the
+ * mobile/tablet initial default is "collapsed" so touch users aren't
+ * buried in four alert rows before they see their schedule.
+ */
+const ALERTS_COLLAPSED_KEY = "syntraro:dash-alerts-collapsed";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { resolveDashboardNav } from "@/lib/dashboardNavigation";
@@ -411,14 +423,43 @@ export function TodaysOperationsCard({
   const selectAllTechs = () => setSelectedTechIds(null);
   const clearAllTechs = () => setSelectedTechIds(new Set());
 
+  // ---------------------------------------------------------------------
+  // 2026-04-21: Operational-alerts collapse state + persistence.
+  // Initial value: localStorage (if set), otherwise viewport-based default
+  // (collapsed on anything below Tailwind's `lg` breakpoint = 1024px).
+  // ---------------------------------------------------------------------
+  const [alertsCollapsed, setAlertsCollapsed] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    const stored = window.localStorage.getItem(ALERTS_COLLAPSED_KEY);
+    if (stored === "1") return true;
+    if (stored === "0") return false;
+    return window.matchMedia("(max-width: 1023px)").matches;
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(ALERTS_COLLAPSED_KEY, alertsCollapsed ? "1" : "0");
+    } catch {
+      // localStorage may be unavailable (private mode, quota) — silent fallback.
+    }
+  }, [alertsCollapsed]);
+
+  const totalAlertCount =
+    unscheduledCount + pastDueCount + actionRequiredCount + readyToInvoiceCount;
+  const isUrgent = actionRequiredCount > 0;
+
   return (
     <div
       className="bg-white rounded-md border border-[#e2e8f0] overflow-hidden"
       style={{ boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}
     >
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-0">
-        {/* LEFT — Technician workload rail (75%) */}
-        <div className="lg:col-span-3 p-4 border-b lg:border-b-0 lg:border-r border-[#e2e8f0]">
+      {/* 2026-04-21: Grid replaced by flex so the right rail can animate
+          its width smoothly between expanded (~320px) and collapsed
+          (64px). The left panel uses `flex-1 min-w-0` to reclaim space
+          automatically as the rail collapses. */}
+      <div className="flex flex-col lg:flex-row">
+        {/* LEFT — Technician workload panel (auto-expands as alerts rail collapses) */}
+        <div className="flex-1 min-w-0 p-4 border-b lg:border-b-0 lg:border-r border-[#e2e8f0]">
           <div className="flex items-center justify-between mb-3 gap-3">
             <div className="flex items-center gap-2 min-w-0">
               <Users className="h-3.5 w-3.5 text-[#4b5563] shrink-0" />
@@ -572,53 +613,123 @@ export function TodaysOperationsCard({
           )}
         </div>
 
-        {/* RIGHT — Operational alerts stack (25%) */}
-        <div className="lg:col-span-1 p-4">
-          <div className="flex items-center gap-2 mb-3">
-            <AlertTriangle className="h-3.5 w-3.5 text-[#4b5563]" />
-            <h4 className="text-sm font-semibold text-[#111827]">Operational alerts</h4>
-          </div>
-          <div className="space-y-1">
-            {/* 2026-04-21: Row order reflects operational triage — Action
-                Required (human-in-the-loop) surfaces first, then Past Due,
-                then Unscheduled backlog, then Ready for Invoice as the
-                cashflow tail. Presentation only; counts, handlers, and
-                modal wiring are unchanged. */}
-            <AlertRow
-              icon={AlertTriangle}
-              label="Action Required"
-              count={actionRequiredCount}
-              onClick={() =>
-                handleAlertClick("action_required", resolveDashboardNav("ops.onHold"))
-              }
-              urgent={actionRequiredCount > 0}
-            />
-            <AlertRow
-              icon={Clock}
-              label="Past Due"
-              count={pastDueCount}
-              onClick={() =>
-                handleAlertClick("scheduling_issues", resolveDashboardNav("alerts.overdueJobs"))
-              }
-              urgent={pastDueCount > 0}
-            />
-            <AlertRow
-              icon={Briefcase}
-              label="Unscheduled"
-              count={unscheduledCount}
-              onClick={() =>
-                handleAlertClick("scheduling_issues", resolveDashboardNav("jobs.unscheduled"))
-              }
-            />
-            <AlertRow
-              icon={Receipt}
-              label="Ready for Invoice"
-              count={readyToInvoiceCount}
-              onClick={() =>
-                handleAlertClick("ready_to_invoice", resolveDashboardNav("jobs.needsInvoicing"))
-              }
-            />
-          </div>
+        {/* RIGHT — Operational alerts. Width transitions smoothly between
+            expanded (lg:w-80) and collapsed (lg:w-16); on mobile/tablet
+            the card stacks vertically so the rail takes full width in
+            either state. `overflow-hidden` clips the swapped inner
+            content during the transition — the width animates, the
+            contents swap on commit (no cross-fade jank). */}
+        <div
+          className={`shrink-0 overflow-hidden transition-[width] duration-300 ease-in-out ${
+            alertsCollapsed ? "w-full lg:w-16" : "w-full lg:w-80"
+          }`}
+          data-testid="alerts-rail"
+          data-collapsed={alertsCollapsed ? "true" : "false"}
+        >
+          {alertsCollapsed ? (
+            <button
+              type="button"
+              onClick={() => setAlertsCollapsed(false)}
+              className={`w-full h-full min-h-[56px] lg:min-h-[180px] flex flex-row lg:flex-col items-center justify-center gap-2.5 px-3 py-3 lg:py-6 transition-colors ${
+                isUrgent ? "bg-red-50/60 hover:bg-red-50" : "hover:bg-slate-50"
+              }`}
+              aria-label={`Expand operational alerts (${totalAlertCount} total)`}
+              aria-expanded="false"
+              data-testid="alerts-expand-toggle"
+            >
+              <AlertTriangle
+                className={`h-4 w-4 shrink-0 ${isUrgent ? "text-red-600" : "text-[#4b5563]"}`}
+              />
+              <span
+                className={`text-xs font-semibold uppercase tracking-wide ${
+                  isUrgent ? "text-red-600" : "text-[#4b5563]"
+                }`}
+              >
+                Alerts
+              </span>
+              <span
+                className={`inline-flex items-center justify-center h-5 min-w-[20px] px-1.5 rounded-full text-[10px] font-bold tabular-nums ${
+                  isUrgent
+                    ? "bg-red-600 text-white"
+                    : totalAlertCount > 0
+                      ? "bg-[#111827] text-white"
+                      : "bg-slate-200 text-slate-600"
+                }`}
+                aria-label={`${totalAlertCount} active alerts`}
+              >
+                {totalAlertCount}
+              </span>
+              <ChevronLeft
+                className="hidden lg:inline h-3.5 w-3.5 text-slate-400 lg:mt-1"
+                aria-hidden="true"
+              />
+            </button>
+          ) : (
+            <div className="p-4">
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <AlertTriangle
+                    className={`h-3.5 w-3.5 shrink-0 ${isUrgent ? "text-red-600" : "text-[#4b5563]"}`}
+                  />
+                  <h4 className="text-sm font-semibold text-[#111827] truncate">
+                    Operational alerts
+                  </h4>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAlertsCollapsed(true)}
+                  className="shrink-0 inline-flex items-center justify-center h-6 w-6 rounded text-slate-500 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                  aria-label="Collapse operational alerts"
+                  aria-expanded="true"
+                  data-testid="alerts-collapse-toggle"
+                  title="Collapse"
+                >
+                  <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                </button>
+              </div>
+              <div className="space-y-1">
+                {/* 2026-04-21: Row order reflects operational triage — Action
+                    Required (human-in-the-loop) surfaces first, then Past Due,
+                    then Unscheduled backlog, then Ready for Invoice as the
+                    cashflow tail. Presentation only; counts, handlers, and
+                    modal wiring are unchanged. */}
+                <AlertRow
+                  icon={AlertTriangle}
+                  label="Action Required"
+                  count={actionRequiredCount}
+                  onClick={() =>
+                    handleAlertClick("action_required", resolveDashboardNav("ops.onHold"))
+                  }
+                  urgent={actionRequiredCount > 0}
+                />
+                <AlertRow
+                  icon={Clock}
+                  label="Past Due"
+                  count={pastDueCount}
+                  onClick={() =>
+                    handleAlertClick("scheduling_issues", resolveDashboardNav("alerts.overdueJobs"))
+                  }
+                  urgent={pastDueCount > 0}
+                />
+                <AlertRow
+                  icon={Briefcase}
+                  label="Unscheduled"
+                  count={unscheduledCount}
+                  onClick={() =>
+                    handleAlertClick("scheduling_issues", resolveDashboardNav("jobs.unscheduled"))
+                  }
+                />
+                <AlertRow
+                  icon={Receipt}
+                  label="Ready for Invoice"
+                  count={readyToInvoiceCount}
+                  onClick={() =>
+                    handleAlertClick("ready_to_invoice", resolveDashboardNav("jobs.needsInvoicing"))
+                  }
+                />
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

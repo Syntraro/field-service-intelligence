@@ -67,7 +67,7 @@ router.get(
     if (req.query.active === "false") options.activeOnly = false;
     if (req.query.entityType) {
       const parsed = entityTypeParam.safeParse(req.query.entityType);
-      if (!parsed.success) throw createError(400, "Invalid entityType. Must be job, quote, or invoice.");
+      if (!parsed.success) throw createError(400, "Invalid entityType. Must be one of: job, quote, invoice, customer_company, client_location, item.");
       options.entityType = parsed.data;
     }
 
@@ -143,7 +143,7 @@ router.get(
 
     // Validate entityType
     const parsedType = entityTypeParam.safeParse(entityType);
-    if (!parsedType.success) throw createError(400, "Invalid entityType. Must be job, quote, or invoice.");
+    if (!parsedType.success) throw createError(400, "Invalid entityType. Must be one of: job, quote, invoice, customer_company, client_location, item.");
 
     const entityFields = await service.getEntityFields(companyId, parsedType.data, entityId);
 
@@ -159,6 +159,9 @@ router.get(
       appliesToJobs: ef.definition.appliesToJobs,
       appliesToQuotes: ef.definition.appliesToQuotes,
       appliesToInvoices: ef.definition.appliesToInvoices,
+      appliesToCustomers: ef.definition.appliesToCustomers,
+      appliesToLocations: ef.definition.appliesToLocations,
+      appliesToProducts: ef.definition.appliesToProducts,
       textValue: ef.value?.textValue ?? null,
     }));
 
@@ -180,7 +183,7 @@ router.put(
 
     // Validate entityType
     const parsedType = entityTypeParam.safeParse(entityType);
-    if (!parsedType.success) throw createError(400, "Invalid entityType. Must be job, quote, or invoice.");
+    if (!parsedType.success) throw createError(400, "Invalid entityType. Must be one of: job, quote, invoice, customer_company, client_location, item.");
 
     const body = validateSchema(saveValuesBodySchema, req.body);
 
@@ -205,6 +208,9 @@ router.put(
       appliesToJobs: ef.definition.appliesToJobs,
       appliesToQuotes: ef.definition.appliesToQuotes,
       appliesToInvoices: ef.definition.appliesToInvoices,
+      appliesToCustomers: ef.definition.appliesToCustomers,
+      appliesToLocations: ef.definition.appliesToLocations,
+      appliesToProducts: ef.definition.appliesToProducts,
       textValue: ef.value?.textValue ?? null,
     }));
 

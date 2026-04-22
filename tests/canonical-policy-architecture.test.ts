@@ -35,10 +35,6 @@ import {
   subscriptionLifecycleService,
   SUBSCRIPTION_STATES,
 } from "../server/services/subscriptionLifecycleService";
-import {
-  LEGACY_TO_CANONICAL_KEY,
-  resolveCanonicalFeatureKey,
-} from "../server/auth/requireFeature";
 import { assertFeatureCapacity } from "../server/services/entitlementEnforcement";
 import { entitlementService } from "../server/services/entitlementService";
 import { permissionRepository, clearPermissionCache } from "../server/storage/permissions";
@@ -46,26 +42,6 @@ import { permissionRepository, clearPermissionCache } from "../server/storage/pe
 // ============================================================================
 // Pure-unit tests — no DB
 // ============================================================================
-
-describe("LEGACY_TO_CANONICAL_KEY", () => {
-  it("covers the full legacy FeatureKey surface", () => {
-    // Each key MUST map to a non-empty snake_case canonical key.
-    for (const [legacy, canonical] of Object.entries(LEGACY_TO_CANONICAL_KEY)) {
-      expect(typeof legacy).toBe("string");
-      expect(canonical).toMatch(/^[a-z][a-z0-9_]*$/);
-    }
-  });
-
-  it("maps quotesEnabled → quotes and invoicesEnabled → invoices", () => {
-    expect(LEGACY_TO_CANONICAL_KEY.quotesEnabled).toBe("quotes");
-    expect(LEGACY_TO_CANONICAL_KEY.invoicesEnabled).toBe("invoices");
-  });
-
-  it("resolveCanonicalFeatureKey is idempotent on already-canonical keys", () => {
-    expect(resolveCanonicalFeatureKey("quotes")).toBe("quotes");
-    expect(resolveCanonicalFeatureKey("scheduling_calendar")).toBe("scheduling_calendar");
-  });
-});
 
 describe("SUBSCRIPTION_STATES", () => {
   it("contains the five canonical states used by the admin PATCH schema", () => {

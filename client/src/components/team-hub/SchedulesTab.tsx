@@ -71,8 +71,15 @@ export function SchedulesTab({ selectedMemberId, onSelectMember }: Props) {
   const dirty = useUnsavedChanges();
   const [search, setSearch] = useState("");
 
+  // Request the Schedules-tab variant: active members regardless of calendar
+  // visibility (isSchedulable=false). Without includeHidden=true, toggling
+  // "Show on calendar" off would remove the member from this list and leave
+  // the admin no way to toggle it back on. The key still has
+  // "/api/team/technicians" as its prefix so existing invalidations on that
+  // key (with exact: false) continue to refresh this query too.
   const { data: technicians = [], isLoading: techsLoading } = useQuery<TeamTechnicianRow[]>({
-    queryKey: ["/api/team/technicians"],
+    queryKey: ["/api/team/technicians", { includeHidden: true }],
+    queryFn: () => apiRequest<TeamTechnicianRow[]>("/api/team/technicians?includeHidden=true"),
   });
 
   const { data: companyHoursResp } = useQuery<CompanyBusinessHoursResponse>({
@@ -253,7 +260,7 @@ export function SchedulesTab({ selectedMemberId, onSelectMember }: Props) {
             <p className="p-3 text-sm text-muted-foreground">Loading…</p>
           ) : filteredTechs.length === 0 ? (
             <p className="p-3 text-sm text-muted-foreground">
-              {search ? "No matches." : "No schedulable team members yet."}
+              {search ? "No matches." : "No team members yet."}
             </p>
           ) : (
             <ul className="space-y-1">
@@ -318,7 +325,7 @@ export function SchedulesTab({ selectedMemberId, onSelectMember }: Props) {
                   variant={isSchedulable && !member.disabled ? "default" : "secondary"}
                   className={isSchedulable && !member.disabled ? "bg-green-600 hover:bg-green-600" : ""}
                 >
-                  {member.disabled ? "Disabled" : isSchedulable ? "Schedulable" : "Hidden"}
+                  {member.disabled ? "Disabled" : isSchedulable ? "On calendar" : "Hidden from calendar"}
                 </Badge>
               </CardHeader>
               <CardContent className="space-y-3 pt-2">
@@ -326,7 +333,7 @@ export function SchedulesTab({ selectedMemberId, onSelectMember }: Props) {
                   <div>
                     <Label className="text-sm">Show on calendar</Label>
                     <p className="text-xs text-muted-foreground">
-                      Include this person in scheduling and assignment dropdowns.
+                      Controls dispatch calendar visibility and assignment dropdowns. Hidden members keep their working hours and can still be edited here.
                     </p>
                   </div>
                   <Switch

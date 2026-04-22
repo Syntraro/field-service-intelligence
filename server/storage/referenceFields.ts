@@ -45,6 +45,12 @@ export class ReferenceFieldRepository extends BaseRepository {
       conditions.push(eq(referenceFieldDefinitions.appliesToQuotes, true));
     } else if (options?.entityType === "invoice") {
       conditions.push(eq(referenceFieldDefinitions.appliesToInvoices, true));
+    } else if (options?.entityType === "customer_company") {
+      conditions.push(eq(referenceFieldDefinitions.appliesToCustomers, true));
+    } else if (options?.entityType === "client_location") {
+      conditions.push(eq(referenceFieldDefinitions.appliesToLocations, true));
+    } else if (options?.entityType === "item") {
+      conditions.push(eq(referenceFieldDefinitions.appliesToProducts, true));
     }
 
     return db
@@ -103,6 +109,9 @@ export class ReferenceFieldRepository extends BaseRepository {
       appliesToJobs: boolean;
       appliesToQuotes: boolean;
       appliesToInvoices: boolean;
+      appliesToCustomers: boolean;
+      appliesToLocations: boolean;
+      appliesToProducts: boolean;
       searchable: boolean;
       active: boolean;
       displayOrder: number;
@@ -126,6 +135,9 @@ export class ReferenceFieldRepository extends BaseRepository {
       appliesToJobs: boolean;
       appliesToQuotes: boolean;
       appliesToInvoices: boolean;
+      appliesToCustomers: boolean;
+      appliesToLocations: boolean;
+      appliesToProducts: boolean;
       searchable: boolean;
       active: boolean;
       displayOrder: number;

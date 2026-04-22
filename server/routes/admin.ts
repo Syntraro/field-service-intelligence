@@ -13,7 +13,10 @@ import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { adminRepository } from "../storage/admin";
 import { adminQboRepository } from "../storage/adminQbo";
-import { tenantFeaturesRepository } from "../storage/tenantFeatures";
+// 2026-04-21 Phase 3 canonical policy architecture: billing reads / writes
+// live in the dedicated billingRepository (module name no longer misleads —
+// the underlying columns are on `companies`, not `tenant_features`).
+import { billingRepository } from "../storage/billing";
 // 2026-04-21 Phase 1: reject PATCH billing requests that reference an
 // unknown subscription plan name (guard against silent orphan state).
 import { entitlementStorage } from "../storage/entitlements";
@@ -21,7 +24,6 @@ import { customerCompanyRepository } from "../storage/customerCompanies";
 import { impersonationService } from "../impersonationService";
 import { userRepository } from "../storage/users";
 import { platformAuditService } from "../services/platformAuditService";
-import { updateTenantFeaturesSchema } from "@shared/schema";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 import { invalidateCompanyCache } from "../services/cache";
 // 2026-04-21 Phase 1 canonical policy architecture: subscriptionStatus +
@@ -540,77 +542,22 @@ router.get(
 );
 
 // ============================================================================
-// Billing & Features Routes (Tenant Configuration)
+// Billing Routes (Tenant Configuration)
 // ============================================================================
-
-/**
- * GET /api/admin/tenants/:companyId/billing-features
- * Get billing and features configuration for a specific tenant
- *
- * Returns:
- * - Billing info (subscription status, plan, trial dates, etc.)
- * - Feature flags (quotesEnabled, invoicesEnabled, etc.)
- */
-router.get(
-  "/tenants/:companyId/billing-features",
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const { companyId } = req.params;
-
-    const data = await tenantFeaturesRepository.getFeaturesWithBilling(companyId);
-    if (!data) {
-      throw createError(404, "Tenant not found");
-    }
-
-    res.json(data);
-  })
-);
-
-/**
- * PATCH /api/admin/tenants/:companyId/features
- * Update feature flags for a specific tenant
- *
- * Body: Partial update of feature flags
- * - quotesEnabled?: boolean
- * - invoicesEnabled?: boolean
- * - calendarEnabled?: boolean
- * - qboEnabled?: boolean
- * - routeOptimizationEnabled?: boolean
- * - multiTechEnabled?: boolean
- */
-router.patch(
-  "/tenants/:companyId/features",
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const { companyId } = req.params;
-    const owner = (req as any).isImpersonating ? (req as any).realUser : req.user!;
-
-    // Validate request body
-    const updates = validateSchema(updateTenantFeaturesSchema, req.body);
-
-    // Check tenant exists
-    const existing = await tenantFeaturesRepository.getBilling(companyId);
-    if (!existing) {
-      throw createError(404, "Tenant not found");
-    }
-
-    // Update features
-    const updated = await tenantFeaturesRepository.updateFeatures(companyId, updates);
-
-    // Audit log the change
-    await platformAuditService.log({
-      platformAdminId: owner.id,
-      platformAdminEmail: owner.email || "unknown",
-      action: "company_status_change",
-      targetCompanyId: companyId,
-      req,
-      details: {
-        changeType: "features_update",
-        updates,
-      },
-    });
-
-    res.json({ success: true, features: updated });
-  })
-);
+//
+// 2026-04-21 Phase 3 canonical policy architecture:
+//   The legacy feature-flag admin endpoints (
+//     GET  /api/admin/tenants/:id/billing-features,
+//     PATCH /api/admin/tenants/:id/features
+//   ) have been deleted. Feature entitlements are read / written through
+//   the canonical resolver + platform override endpoints:
+//     GET /api/me/entitlements        (per-user, auth-scoped)
+//     GET /api/platform/tenants/:id/entitlements
+//     PUT /api/platform/tenants/:id/overrides/:featureKey
+//     DELETE /api/platform/tenants/:id/overrides/:featureKey
+//   The billing PATCH below is retained — it writes canonical fields on
+//   `companies` (subscription plan, interval, period-end, cancel-at-period-end)
+//   plus lifecycle state via subscriptionLifecycleService.
 
 // Billing update schema
 const updateBillingSchema = z.object({
@@ -646,7 +593,7 @@ router.patch(
     const data = validateSchema(updateBillingSchema, req.body);
 
     // Check tenant exists
-    const existing = await tenantFeaturesRepository.getBilling(companyId);
+    const existing = await billingRepository.getBilling(companyId);
     if (!existing) {
       throw createError(404, "Tenant not found");
     }
@@ -683,7 +630,7 @@ router.patch(
       });
     }
 
-    const nonLifecycleUpdates: Parameters<typeof tenantFeaturesRepository.updateBilling>[1] = {
+    const nonLifecycleUpdates: Parameters<typeof billingRepository.updateBilling>[1] = {
       ...(data.subscriptionPlan !== undefined && { subscriptionPlan: data.subscriptionPlan }),
       ...(data.billingInterval !== undefined && { billingInterval: data.billingInterval }),
       ...(data.currentPeriodEnd !== undefined && {
@@ -693,12 +640,12 @@ router.patch(
     };
 
     if (Object.keys(nonLifecycleUpdates).length > 0) {
-      await tenantFeaturesRepository.updateBilling(companyId, nonLifecycleUpdates);
+      await billingRepository.updateBilling(companyId, nonLifecycleUpdates);
     }
 
     // Re-read canonical billing row so the response reflects BOTH the
     // lifecycle-service write and the plan/interval writes.
-    const updated = await tenantFeaturesRepository.getBilling(companyId);
+    const updated = await billingRepository.getBilling(companyId);
 
     // Invalidate subscription cache so limit checks use fresh plan data immediately
     invalidateCompanyCache(companyId);

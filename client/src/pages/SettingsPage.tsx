@@ -179,9 +179,9 @@ const SECTIONS: SettingsSection[] = [
     type: "links",
     preview: "Import clients, jobs, products",
     cards: [
-      { title: "Import Clients", description: "Import clients from CSV", href: "/settings/import-clients", icon: Upload },
-      { title: "Import Jobs", description: "Import historical jobs from CSV", href: "/settings/import-jobs", icon: Upload },
-      { title: "Import Products", description: "Import products and services from CSV", href: "/settings/import-products", icon: Upload },
+      // 2026-04-22 Import Center consolidation: one entry covers all
+      // three entity imports. Pick the type inside the wizard.
+      { title: "Import Center", description: "Import clients, historical jobs, or products & services from CSV", href: "/settings/import", icon: Upload },
     ],
   },
 ];

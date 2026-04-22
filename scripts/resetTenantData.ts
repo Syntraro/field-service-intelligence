@@ -1,21 +1,39 @@
 /**
- * resetTenantData.ts — Wipe all sandbox operational data for a tenant.
+ * resetTenantData.ts — Per-tenant hard wipe of operational data.
  *
- * Preserves: companies, users, user_identities, password_reset_tokens,
- *   roles, permissions, role_permissions, user_permission_overrides,
- *   tenant_features, company_settings, company_business_hours,
- *   subscription_plans, tenant_subscriptions, subscription_events,
- *   time_alert_settings, time_billing_rules, session, qbo_connections,
- *   notification_snoozes, technician_profiles, working_hours.
+ * Scope: exactly one tenant (companyId). Preserves the tenant row and
+ * everything platform/system-level (see `docs/TENANT_RESET.md`).
+ *
+ * Use the global sibling `server/scripts/resetBusinessData.ts` when you
+ * want to wipe every tenant at once; this script is for surgical resets
+ * where a specific tenant needs to be re-tested without touching others.
+ *
+ * Safety guardrails — ALL must be satisfied:
+ *   1. `NODE_ENV` must not be "production"
+ *   2. `RESET_TENANT_DATA=true` must be explicitly set.
  *
  * Usage:
- *   npx tsx scripts/resetTenantData.ts <companyId>
+ *   RESET_TENANT_DATA=true npx tsx --env-file=.env scripts/resetTenantData.ts [companyId]
  *
- * If no companyId is provided, the script queries the first company found
- * in the database and prompts for confirmation.
+ * If no companyId is provided, the script targets the first company in the DB.
+ *
+ * 2026-04-22: Added the RESET_TENANT_DATA env gate to match the global
+ *             reset script. No behavioral change to the deletion manifest.
  */
 
 import pg from "pg";
+
+if (process.env.NODE_ENV === "production") {
+  console.error("FATAL: resetTenantData cannot run in production.");
+  process.exit(1);
+}
+if (process.env.RESET_TENANT_DATA !== "true") {
+  console.error(
+    "FATAL: Set RESET_TENANT_DATA=true to confirm you want to hard-wipe tenant data.\n" +
+    "Usage: RESET_TENANT_DATA=true npx tsx --env-file=.env scripts/resetTenantData.ts [companyId]"
+  );
+  process.exit(1);
+}
 
 const { Pool } = pg;
 
@@ -83,9 +101,15 @@ const DELETION_ORDER: Array<[string, string]> = [
 
   // Client notes / contacts / files / attachments
   ["note_attachments", "company_id"],
+  ["client_files", "company_id"],
+  ["contract_files", "company_id"],
+  ["technician_files", "company_id"],
   ["files", "company_id"],
   ["client_notes", "company_id"],
-  ["client_contacts", "company_id"],
+  // 2026-04-22: canonical contact table is `contact_persons` (the
+  // `client_contacts` entry was a stale alias from the pre-unification era).
+  ["contact_assignments", "company_id"],
+  ["contact_persons", "company_id"],
 
   // Client locations (FK to customer_companies)
   ["client_locations", "company_id"],
@@ -120,8 +144,10 @@ const DELETION_ORDER: Array<[string, string]> = [
   ["attention_items", "tenant_id"],
   ["events", "tenant_id"],
 
-  // Notifications
+  // Notifications + email deliveries
+  ["notification_targets", "company_id"],
   ["notifications", "company_id"],
+  ["email_deliveries", "company_id"],
 
   // Audit / activity
   ["company_audit_logs", "company_id"],
@@ -160,6 +186,16 @@ const DELETION_ORDER: Array<[string, string]> = [
 
   // Notification snoozes (operational)
   ["notification_snoozes", "company_id"],
+
+  // Reference field values (tenant-owned data; definitions preserved)
+  ["reference_field_values", "company_id"],
+
+  // Leads + lead notes
+  ["lead_notes", "company_id"],
+  ["leads", "company_id"],
+
+  // Quote notes (tenant annotations on quotes)
+  ["quote_notes", "company_id"],
 ];
 
 // Tables to verify are preserved (spot-check counts after reset)

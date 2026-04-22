@@ -3,7 +3,6 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { PlatformLayout } from "./PlatformLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -12,18 +11,18 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+// 2026-04-22 Admin Phase A1: canonical per-tenant timeline.
+import { TenantTimeline } from "./TenantTimeline";
 
-const FLAG_KEYS = [
-  "quotesEnabled", "invoicesEnabled", "calendarEnabled", "qboEnabled",
-  "routeOptimizationEnabled", "multiTechEnabled", "liveMapEnabled",
-  "customerPortalEnabled", "customerPortalPaymentsEnabled",
-] as const;
+// 2026-04-21 Phase 3 canonical policy architecture: the "Legacy" feature-flag
+// card + FLAG_KEYS + patchFlag mutation that wrote to PATCH /api/platform/tenants/:id/features
+// were deleted. Platform admins now manage features entirely through the
+// `EntitlementsSection` below (plan assignment + tenant overrides via
+// /api/platform/tenants/:id/overrides/:featureKey).
 
 export default function PlatformTenantDetail() {
   const [, params] = useRoute("/platform/tenants/:id");
   const tenantId = params?.id as string;
-  const { toast } = useToast();
-  const qc = useQueryClient();
   const [sessionDialogOpen, setSessionDialogOpen] = useState(false);
 
   const { data, isLoading } = useQuery<any>({
@@ -32,22 +31,9 @@ export default function PlatformTenantDetail() {
     enabled: !!tenantId,
   });
 
-  const patchFlag = useMutation({
-    mutationFn: (body: Record<string, unknown>) =>
-      apiRequest(`/api/platform/tenants/${tenantId}/features`, {
-        method: "PATCH",
-        body: JSON.stringify(body),
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: [`/api/platform/tenants/${tenantId}`] });
-      toast({ title: "Feature flags updated" });
-    },
-    onError: (e: any) => toast({ title: "Update failed", description: e.message, variant: "destructive" }),
-  });
-
   if (isLoading || !data) return <PlatformLayout><p>Loading…</p></PlatformLayout>;
 
-  const { tenant, features } = data;
+  const { tenant, health } = data;
   // Phase 7 identity fix: the backend returns a nested shape
   // { company, owner, users, qbo } — read from there, not from flat `tenant.*`.
   const company = tenant?.company ?? {};
@@ -78,7 +64,7 @@ export default function PlatformTenantDetail() {
           <div className="mt-1 flex gap-2 items-center flex-wrap">
             <Badge variant="outline">{company.subscriptionStatus ?? "—"}</Badge>
             {company.subscriptionPlan && <Badge variant="secondary">{company.subscriptionPlan}</Badge>}
-            {company.qboEnabled && <Badge variant="secondary">QBO</Badge>}
+{/* QBO badge removed with the legacy tenant_features column drop (Phase 3). */}
           </div>
         </div>
         <Button onClick={() => setSessionDialogOpen(true)} data-testid="btn-new-support-session">
@@ -86,7 +72,12 @@ export default function PlatformTenantDetail() {
         </Button>
       </div>
 
-      <div className="grid gap-6 md:grid-cols-2">
+      {/* 2026-04-22 Admin Phase A4.1: canonical tenant health summary.
+          Consumes the `health` field already returned by getTenantDetail —
+          no client-side scoring, no extra request. */}
+      <TenantHealthSummary health={health} />
+
+      <div className="mb-6">
         <Card>
           <CardHeader><CardTitle>Overview</CardTitle></CardHeader>
           <CardContent className="space-y-1 text-sm">
@@ -100,47 +91,16 @@ export default function PlatformTenantDetail() {
             <Row label="Users" value={String(usersBlock?.total ?? "—")} />
           </CardContent>
         </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              Feature Flags
-              {/* 2026-04-21 Phase 1 canonical policy architecture:
-                  The legacy tenant_features boolean-column table is kept
-                  alive during the migration as a compat surface, but the
-                  canonical read/write path is the Entitlements section
-                  below (plan assignment + tenant_feature_overrides).
-                  Toggles here no longer drive requireFeature() gates —
-                  they only update the legacy row for downstream readers
-                  that have not yet been migrated. */}
-              <Badge variant="outline" className="text-xs" data-testid="legacy-flags-badge">
-                Legacy
-              </Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <p className="text-xs text-muted-foreground mb-2">
-              Legacy per-tenant flags. The canonical enforcement path is plan + overrides below.
-            </p>
-            {FLAG_KEYS.map((k) => (
-              <div key={k} className="flex items-center justify-between">
-                <Label htmlFor={k}>{k}</Label>
-                <Switch
-                  id={k}
-                  checked={!!features[k]}
-                  onCheckedChange={(v) => patchFlag.mutate({ [k]: v })}
-                  data-testid={`flag-${k}`}
-                />
-              </div>
-            ))}
-          </CardContent>
-        </Card>
       </div>
 
-      {/* 2026-04-19 Entitlement system surfaces. Parallel to legacy feature
-          flag switches above — new canonical system for plan assignment and
-          per-tenant overrides. */}
+      {/* Canonical entitlement surface — plan assignment + per-tenant feature
+          overrides. Sole policy read/write path after Phase 3. */}
       <EntitlementsSection tenantId={tenantId} />
+
+      {/* 2026-04-22 Admin Phase A1: unified chronological event stream
+          (subscription state, support sessions, entitlement overrides,
+          audit log, feedback, issues) backed by /timeline. */}
+      <TenantTimeline tenantId={tenantId} />
 
       <NewSupportSessionDialog
         tenantId={tenantId}
@@ -148,6 +108,189 @@ export default function PlatformTenantDetail() {
         onOpenChange={setSessionDialogOpen}
       />
     </PlatformLayout>
+  );
+}
+
+// ============================================================================
+// 2026-04-22 Admin Phase A4.1 — Tenant Health Summary
+// ============================================================================
+//
+// Pure presentation over the canonical `TenantHealth` shape returned by
+// `server/services/tenantHealthService.ts` and surfaced on the tenant
+// detail payload. No client-side scoring; the server owns the formula.
+
+type HealthStatus = "healthy" | "watch" | "at_risk" | "critical";
+
+interface HealthReason {
+  code: string;
+  message: string;
+  penalty: number;
+}
+
+interface TenantHealth {
+  companyId: string;
+  score: number;
+  status: HealthStatus;
+  reasons: HealthReason[];
+  lastActivityAt: string | null;
+  daysSinceLastActivity: number | null;
+  onboardingSteps: number;
+  onboardingTotal: number;
+}
+
+const HEALTH_TONE: Record<HealthStatus, { card: string; badge: string; score: string }> = {
+  healthy:  { card: "border-emerald-200 bg-emerald-50/40", badge: "bg-emerald-100 text-emerald-800 border-emerald-200", score: "text-emerald-700" },
+  watch:    { card: "border-amber-200 bg-amber-50/40",     badge: "bg-amber-100 text-amber-800 border-amber-200",       score: "text-amber-700" },
+  at_risk:  { card: "border-orange-200 bg-orange-50/40",   badge: "bg-orange-100 text-orange-800 border-orange-200",    score: "text-orange-700" },
+  critical: { card: "border-red-200 bg-red-50/40",         badge: "bg-red-100 text-red-800 border-red-200",             score: "text-red-700" },
+};
+
+const HEALTH_LABEL: Record<HealthStatus, string> = {
+  healthy: "Healthy",
+  watch: "Watch",
+  at_risk: "At risk",
+  critical: "Critical",
+};
+
+function TenantHealthSummary({ health }: { health: TenantHealth | null | undefined }) {
+  if (!health) {
+    // Service returned no health row (e.g. tenant just created and not yet
+    // scored). Render a small placeholder so the slot is visible but
+    // non-alarming.
+    return (
+      <div className="mb-6">
+        <Card data-testid="tenant-health-summary-empty">
+          <CardContent className="p-4 text-sm text-muted-foreground">
+            Health score not yet available for this tenant.
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  const tone = HEALTH_TONE[health.status];
+  const topReasons = health.reasons.slice(0, 3);
+
+  const lastActivityLabel = (() => {
+    if (!health.lastActivityAt) return "never";
+    const d = new Date(health.lastActivityAt);
+    const days = health.daysSinceLastActivity;
+    if (days === 0) return "today";
+    if (days === 1) return "1 day ago";
+    if (days !== null) return `${days} days ago`;
+    return d.toLocaleDateString();
+  })();
+
+  const lastActivityTitle =
+    health.lastActivityAt ? new Date(health.lastActivityAt).toLocaleString() : undefined;
+
+  return (
+    <div className="mb-6">
+      <Card
+        className={`border ${tone.card}`}
+        data-testid="tenant-health-summary"
+        data-health-status={health.status}
+      >
+        <CardContent className="p-4">
+          <div className="flex items-start gap-6 flex-wrap">
+            {/* Score + status */}
+            <div className="flex items-baseline gap-3">
+              <span
+                className={`text-4xl font-semibold tabular-nums leading-none ${tone.score}`}
+                data-testid="tenant-health-score"
+              >
+                {health.score}
+              </span>
+              <span className="text-xs text-muted-foreground leading-none pb-1">/ 100</span>
+              <span
+                className={`inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium ${tone.badge}`}
+                data-testid="tenant-health-status"
+              >
+                {HEALTH_LABEL[health.status]}
+              </span>
+            </div>
+
+            {/* Last activity */}
+            <div className="flex flex-col">
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                Last activity
+              </span>
+              <span
+                className="text-sm font-medium"
+                title={lastActivityTitle}
+                data-testid="tenant-health-last-activity"
+              >
+                {lastActivityLabel}
+              </span>
+            </div>
+
+            {/* Onboarding chip */}
+            <div className="flex flex-col">
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                Onboarding
+              </span>
+              <span className="text-sm font-medium tabular-nums">
+                {health.onboardingSteps}/{health.onboardingTotal}
+              </span>
+            </div>
+
+            {/* Top reasons */}
+            <div className="flex-1 min-w-[240px]">
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
+                Top reasons
+              </div>
+              {topReasons.length === 0 ? (
+                <span className="text-xs text-muted-foreground">No penalties.</span>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {topReasons.map((r) => (
+                    <span
+                      key={r.code}
+                      className="inline-flex items-center gap-1 rounded border border-dashed px-1.5 py-0.5 text-[11px]"
+                      title={`Penalty: -${r.penalty}`}
+                      data-testid={`tenant-health-reason-${r.code}`}
+                    >
+                      <span>{r.message}</span>
+                      <span className="text-muted-foreground tabular-nums">-{r.penalty}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Collapsible: full scoring breakdown — only shown if there are more
+              reasons than the top-3 chip row surfaces. */}
+          {health.reasons.length > 0 && (
+            <details className="mt-3 text-xs" data-testid="tenant-health-details">
+              <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+                View full health logic ({health.reasons.length} reason{health.reasons.length === 1 ? "" : "s"})
+              </summary>
+              <ul className="mt-2 space-y-1">
+                {health.reasons.map((r) => (
+                  <li
+                    key={r.code}
+                    className="flex items-center justify-between gap-3 rounded px-2 py-1 bg-muted/30"
+                  >
+                    <span>
+                      <span className="font-mono text-[10px] text-muted-foreground mr-2">
+                        {r.code}
+                      </span>
+                      {r.message}
+                    </span>
+                    <span className="tabular-nums text-muted-foreground">-{r.penalty}</span>
+                  </li>
+                ))}
+                <li className="flex items-center justify-between gap-3 pt-1 border-t font-medium">
+                  <span>Score</span>
+                  <span className="tabular-nums">{health.score} / 100</span>
+                </li>
+              </ul>
+            </details>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 

@@ -8,10 +8,6 @@ import { requireRole } from "../auth/requireRole";
 import { RESTRICTED_MANAGER_ROLES } from "../auth/roles";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { AuthedRequest } from "../auth/tenantIsolation";
-// 2026-04-19 Portal activation: expose the tenant's own feature flags
-// (read-only) so the office UI can render portal-aware CTAs + show the
-// customerPortalEnabled / customerPortalPaymentsEnabled status.
-import { tenantFeaturesRepository } from "../storage/tenantFeatures";
 
 // Note: requireAuth and ensureTenantContext middleware already applied globally in routes/index.ts
 const router = Router();
@@ -49,6 +45,11 @@ const updateCompanySettingsSchema = z.object({
     defaultTermsDays: z.number().int().min(0).max(365).optional(),
   }).optional(),
   defaultPaymentTermsDays: z.number().int().min(0).max(365).optional(),
+  // 2026-04-21 Phase 3: invoice reminder cadence (moved from the legacy
+  // tenant_features table — functional config, not policy).
+  invoiceRemindersEnabled: z.boolean().optional(),
+  invoiceReminderFirstDelayDays: z.number().int().min(1).max(90).optional(),
+  invoiceReminderRepeatEveryDays: z.number().int().min(1).max(90).optional(),
 });
 
 const PROFILE_KEYS = [
@@ -69,6 +70,10 @@ const PREFERENCE_KEYS = [
   "weekStartsOn",
   "defaultPaymentTermsDays",
   "timezoneConfirmedAt",
+  // 2026-04-21 Phase 3: invoice reminder cadence lives here now.
+  "invoiceRemindersEnabled",
+  "invoiceReminderFirstDelayDays",
+  "invoiceReminderRepeatEveryDays",
 ] as const;
 
 type ProfileKey = (typeof PROFILE_KEYS)[number];
@@ -108,22 +113,6 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   if (!companyId) throw createError(401, "Unauthorized");
   res.json(await buildSettingsResponse(companyId));
-}));
-
-/**
- * GET /api/company-settings/features
- * Read-only tenant feature flags for the authenticated office user.
- *
- * 2026-04-19 Portal activation: lets the office UI render portal-aware
- * surfaces (pay-link CTAs, template-variable status, etc.) without
- * round-tripping through admin-only endpoints. Tenant-scoped by the
- * standard `ensureTenantContext` middleware — no cross-tenant leakage.
- */
-router.get("/features", asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const companyId = req.companyId;
-  if (!companyId) throw createError(401, "Unauthorized");
-  const features = await tenantFeaturesRepository.getFeatures(companyId);
-  res.json(features);
 }));
 
 // Handler for both PUT and POST (upsert)

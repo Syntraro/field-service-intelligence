@@ -3,14 +3,20 @@
  *
  * One CSV row = a "client package": one customer company (created or
  * matched), one service location (created or matched), and one optional
- * contact. Every field is nullable except the company name.
+ * contact.
+ *
+ * 2026-04-22: companyName is no longer strictly required. The row is
+ * valid when at least ONE of companyName / contactFirstName /
+ * contactLastName has a non-empty value so residential / person
+ * customers can be imported without a company name — the adapter uses
+ * "FirstName LastName" as the customer_company.name in that case.
  */
 
 import { z } from "zod";
 
 export const clientImportRowSchema = z.object({
   // Company
-  companyName: z.string().min(1, "Company name is required"),
+  companyName: z.string().nullable(),
   legalName: z.string().nullable(),
   companyPhone: z.string().nullable(),
   companyEmail: z.string().nullable(),
@@ -41,6 +47,21 @@ export const clientImportRowSchema = z.object({
   contactLastName: z.string().nullable(),
   contactEmail: z.string().nullable(),
   contactPhone: z.string().nullable(),
+}).superRefine((row, ctx) => {
+  // 2026-04-22: a client row must carry at least one identifier so we can
+  // create the canonical customer_company record. Residential / person-only
+  // imports fall back to the first/last name for that record's `name`.
+  const hasCompany = !!row.companyName?.trim();
+  const hasFirst = !!row.contactFirstName?.trim();
+  const hasLast = !!row.contactLastName?.trim();
+  if (!hasCompany && !hasFirst && !hasLast) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["companyName"],
+      message:
+        "Client requires at least one identifier: company name, first name, or last name.",
+    });
+  }
 });
 
 export type ClientImportRow = z.infer<typeof clientImportRowSchema>;
@@ -63,7 +84,10 @@ export const clientCommitRequestSchema = z.object({
 
 /** Field defs — shared by the backend adapter and the frontend config. */
 export const CLIENT_FIELD_DEFS = [
-  { key: "companyName", label: "Company name", group: "Company", required: true },
+  // 2026-04-22: companyName no longer hard-required — a row with a first
+  // or last name alone is valid (residential / person customer). The
+  // adapter enforces the "at least one identifier" rule per row.
+  { key: "companyName", label: "Company name", group: "Company", required: false },
   { key: "legalName", label: "Legal name", group: "Company", required: false },
   { key: "companyPhone", label: "Company phone", group: "Company", required: false },
   { key: "companyEmail", label: "Company email", group: "Company", required: false },

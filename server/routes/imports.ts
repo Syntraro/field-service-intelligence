@@ -1,14 +1,9 @@
 /**
  * Canonical import routes — `/api/imports/:entity/{preview,commit}`.
  *
- * One handler template per verb; entity-specific code lives in the
- * adapters wired up below. The legacy per-entity routes
- * (`/api/product-import`, `/api/job-import`, `/api/client-import`) are
- * retired in the same refactor and their files are removed.
- *
- * 2026-04-21: Phase 1 wires Product. Job and Client adapters are added
- * in the same PR as their per-page frontend conversions; until then the
- * legacy endpoints remain mounted in `routes/index.ts`.
+ * One handler template per verb; entity-specific code lives in adapters
+ * registered below. Replaced the three legacy per-entity routes
+ * (retired 2026-04-21); see `docs/REFACTORING_LOG.md` for the full record.
  */
 
 import { Router, Response } from "express";

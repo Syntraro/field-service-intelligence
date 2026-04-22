@@ -54,8 +54,8 @@ import { canonicalLineItemInput, moneyString, parseMoney, formatMoney } from "@s
 
 const router = Router();
 
-// Gate all invoice endpoints behind feature flag
-router.use(requireFeature("invoicesEnabled"));
+// Gate all invoice endpoints behind the canonical `invoices` entitlement.
+router.use(requireFeature("invoices"));
 
 // ========================================
 // VALIDATION SCHEMAS

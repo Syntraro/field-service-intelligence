@@ -45,6 +45,8 @@ import { NewQuoteModal } from "@/components/NewQuoteModal";
 import { NewInvoiceModal } from "@/components/NewInvoiceModal";
 import LocationFormModal from "@/components/LocationFormModal";
 import NotesPanel, { type NotesPanelRef } from "@/components/NotesPanel";
+// 2026-04-22 Phase 2b: mount canonical Reference-Fields UI on Client / Location scope.
+import { ReferenceFieldsSection } from "@/components/shared/ReferenceFieldsSection";
 import PMScheduleCard from "@/components/PMScheduleCard";
 import { PartsSelectorModal } from "@/components/PartsSelectorModal";
 import EditTagsModal from "@/components/EditTagsModal";
@@ -84,8 +86,12 @@ type WorkspaceTab =
   | "pm"
   | "parts";
 
-/** Utility-rail tabs in the right sidebar (Contacts / Notes / Billing). */
-type UtilityTab = "contacts" | "notes" | "billing";
+/** Utility-rail tabs in the right sidebar (Contacts / Notes / Billing / Fields). */
+// 2026-04-22 Phase 2b: "fields" tab surfaces the canonical Reference-Fields
+// system for the Client / Location scope so Import-Center–created custom
+// fields have a place to live. Read/write UI is the shared
+// ReferenceFieldsSection used by Job / Quote / Invoice detail pages.
+type UtilityTab = "contacts" | "notes" | "billing" | "fields";
 
 // ContactScope type and STANDARD_CONTACT_ROLES imported from @/components/ContactFormDialog
 
@@ -2048,7 +2054,7 @@ function UtilityRail(props: UtilityRailProps) {
     <div className="h-full flex flex-col overflow-hidden bg-white" data-testid="client-utility-rail">
       <Tabs value={utilityTab} onValueChange={(v) => setUtilityTab(v as UtilityTab)} className="flex-1 min-h-0 flex flex-col">
         <TabsList className="w-full h-auto bg-slate-50 rounded-none border-b border-slate-200 p-0 justify-start">
-          {(["contacts", "notes", "billing"] as UtilityTab[]).map(k => (
+          {(["contacts", "notes", "billing", "fields"] as UtilityTab[]).map(k => (
             <TabsTrigger
               key={k}
               value={k}
@@ -2093,6 +2099,21 @@ function UtilityRail(props: UtilityRailProps) {
         {/* Billing — derived from already-loaded invoices; same data in both scopes. */}
         <TabsContent value="billing" className="m-0 p-4">
           <BillingSummary billing={billing} />
+        </TabsContent>
+
+        {/* 2026-04-22 Phase 2b: canonical Reference-Fields UI.
+            Scope-aware — writes into customer_company when scope is the
+            Client card, into client_location when a specific site is
+            selected. Hidden when no entity id is resolvable (e.g. "All
+            Locations" with no companyId). */}
+        <TabsContent value="fields" className="m-0 p-4">
+          {scopeType === "company" && companyId ? (
+            <ReferenceFieldsSection entityType="customer_company" entityId={companyId} />
+          ) : scopeType === "location" && selectedLocationId ? (
+            <ReferenceFieldsSection entityType="client_location" entityId={selectedLocationId} />
+          ) : (
+            <p className="text-xs text-slate-400">Select a client or location to view custom fields.</p>
+          )}
         </TabsContent>
       </Tabs>
     </div>

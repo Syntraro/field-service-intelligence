@@ -17,12 +17,13 @@
  */
 
 import { format, parseISO, isValid } from "date-fns";
-import { eq } from "drizzle-orm";
-import { db } from "../db";
-import { tenantFeatures } from "@shared/schema";
 import { storage } from "../storage/index";
 import { companyRepository } from "../storage/company";
 import { createError } from "../middleware/errorHandler";
+// 2026-04-21 Phase 3 canonical policy architecture: pay-link gating resolves
+// through the entitlement resolver instead of the legacy tenant_features
+// boolean columns (which are being dropped).
+import { entitlementService } from "./entitlementService";
 import { calculateDueDate } from "./invoiceCreationService";
 import { canAcceptInvoicePayment } from "../lib/invoicePredicates";
 import { buildPortalInvoiceUrl } from "../lib/portalUrls";
@@ -228,12 +229,11 @@ export const templateDataBuilder = {
     let paymentUrl = "";
     let payNowCta = "";
     if (canAcceptInvoicePayment(invoice.status) && balanceCents > 0) {
-      const [features] = await db
-        .select({ paymentsEnabled: tenantFeatures.customerPortalPaymentsEnabled })
-        .from(tenantFeatures)
-        .where(eq(tenantFeatures.companyId, tenantId))
-        .limit(1);
-      if (features?.paymentsEnabled) {
+      const paymentsEnt = await entitlementService.getEntitlement(
+        tenantId,
+        "customer_portal_payments",
+      );
+      if (paymentsEnt?.enabled) {
         paymentUrl = buildPortalInvoiceUrl(invoiceId);
         payNowCta = `Pay securely online: ${paymentUrl}\n\n`;
       }

@@ -50,7 +50,11 @@ export function ReferenceFieldsSection({
   entityId,
   readOnly = false,
 }: {
-  entityType: "job" | "quote" | "invoice";
+  // 2026-04-22 Phase 2b: extended from job/quote/invoice to cover the three
+  // new entity targets supported by the Import Center (customer_company,
+  // client_location, item). Backend validates against the canonical
+  // referenceFieldEntityTypeEnum — the union here just keeps callers honest.
+  entityType: "job" | "quote" | "invoice" | "customer_company" | "client_location" | "item";
   entityId: string;
   readOnly?: boolean;
 }) {

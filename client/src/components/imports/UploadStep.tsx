@@ -1,21 +1,37 @@
 /**
- * UploadStep — canonical drag/drop + file-picker surface used by every
- * entity import. Reads the chosen file as UTF-8 text and hands it to the
- * wizard via `onFile`.
+ * UploadStep — canonical Upload-step surface.
+ *
+ * 2026-04-22 — refactored for explicit source selection. The step now
+ * has two visible stages on the same page:
+ *
+ *   1. SourceSelector — user picks Jobber / Housecall Pro / Generic CSV.
+ *      The file dropzone is hidden until a source is picked.
+ *   2. File dropzone + template download — shown only after source is
+ *      picked, with a compact "Source: X [Change]" chip above it.
+ *
+ * No automatic detection anywhere in this component. The parent
+ * ImportWizard owns the selected-source state and passes it down.
  */
 
 import { useRef, useState } from "react";
 import { Upload, FileSpreadsheet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TemplateDownloadLink } from "./TemplateDownloadLink";
+import { SourceSelector, SourceChip } from "./SourceSelector";
 import type { ImportWizardConfig } from "./types";
+import type { SourceId } from "./presets/types";
 
 interface UploadStepProps {
   config: ImportWizardConfig;
+  /** User's explicit source choice — null until they pick one. */
+  source: SourceId | null;
+  onSelectSource: (source: SourceId) => void;
+  /** Clears source so the user can pick again. Parent should also reset any state derived from the previous source. */
+  onResetSource: () => void;
   onFile: (csvText: string, filename: string) => void;
 }
 
-export function UploadStep({ config, onFile }: UploadStepProps) {
+export function UploadStep({ config, source, onSelectSource, onResetSource, onFile }: UploadStepProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,19 +46,31 @@ export function UploadStep({ config, onFile }: UploadStepProps) {
     onFile(text, file.name);
   };
 
+  // Stage 1 — user hasn't picked a source yet. Show only the selector.
+  if (source === null) {
+    return (
+      <div className="space-y-4">
+        <SourceSelector value={source} onChange={onSelectSource} />
+      </div>
+    );
+  }
+
+  // Stage 2 — source picked. Show the chip + file dropzone.
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h2 className="text-lg font-semibold text-[#111827]">Upload CSV</h2>
-          <p className="text-sm text-[#4b5563] mt-1">{config.description}</p>
-          {config.uploadBanner && (
-            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mt-3">
-              {config.uploadBanner}
-            </p>
-          )}
-        </div>
+      <div className="flex items-center justify-between gap-3">
+        <SourceChip source={source} onChange={onResetSource} />
         <TemplateDownloadLink template={config.template} />
+      </div>
+
+      <div>
+        <h2 className="text-lg font-semibold text-[#111827]">Upload CSV</h2>
+        <p className="text-sm text-[#4b5563] mt-1">{config.description}</p>
+        {config.uploadBanner && (
+          <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mt-3">
+            {config.uploadBanner}
+          </p>
+        )}
       </div>
 
       <button

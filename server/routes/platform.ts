@@ -17,6 +17,10 @@ import platformFeedbackRouter from "./platformFeedback";
 import platformIssuesRouter from "./platformIssues";
 import supportSessionsRouter from "./supportSessions";
 import platformEntitlementsRouter from "./platformEntitlements";
+// 2026-04-22 Admin Phase A2: trial pipeline dashboard.
+import platformTrialsRouter from "./platformTrials";
+// 2026-04-22 Admin Phase A3: platform-wide KPI strip.
+import platformKpisRouter from "./platformKpis";
 
 const platformRouter = Router();
 
@@ -37,6 +41,13 @@ platformRouter.use("/issues", platformIssuesRouter);
 
 // Phase 4 (Support Sessions).
 platformRouter.use("/support-sessions", supportSessionsRouter);
+
+// 2026-04-22 Admin Phase A2 — operator trial pipeline dashboard.
+// Mounts GET /trials/pipeline.
+platformRouter.use("/trials", platformTrialsRouter);
+
+// 2026-04-22 Admin Phase A3 — platform-wide KPI strip. Mounts GET /kpis.
+platformRouter.use("/kpis", platformKpisRouter);
 
 // 2026-04-19 Entitlement system — plans, features, plan-feature matrix,
 // tenant subscription assignment, tenant overrides, entitlements + usage.

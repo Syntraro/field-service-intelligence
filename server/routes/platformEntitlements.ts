@@ -18,7 +18,12 @@ import { entitlementStorage } from "../storage/entitlements";
 import { entitlementService } from "../services/entitlementService";
 import { usageMetricsService } from "../services/usageMetricsService";
 import { platformAuditService } from "../services/platformAuditService";
-import { tenantFeaturesRepository } from "../storage/tenantFeatures";
+// 2026-04-22 Admin Phase A1: canonical per-tenant timeline reader.
+import { tenantTimelineService, TIMELINE_GROUPS } from "../services/tenantTimelineService";
+// 2026-04-21 Phase 3: billing reads/writes on the `companies` table now live
+// in the dedicated billingRepository (previously misnamed half of
+// tenantFeaturesRepository).
+import { billingRepository } from "../storage/billing";
 // 2026-04-21 Phase 1 canonical policy architecture: subscriptionStatus +
 // trialEndsAt writes route through the lifecycle service.
 import { subscriptionLifecycleService } from "../services/subscriptionLifecycleService";
@@ -290,7 +295,7 @@ const assignPlanSchema = z.object({
 });
 
 router.get("/tenants/:tenantId/subscription", asyncHandler(async (req: Request, res: Response) => {
-  const billing = await tenantFeaturesRepository.getBilling(req.params.tenantId);
+  const billing = await billingRepository.getBilling(req.params.tenantId);
   if (!billing) throw createError(404, "Tenant not found");
   res.json(billing);
 }));
@@ -303,13 +308,13 @@ router.patch(
     const data = validateSchema(assignPlanSchema, req.body);
     const plan = await entitlementStorage.getPlanByName(data.subscriptionPlan);
     if (!plan) throw createError(400, `Unknown plan '${data.subscriptionPlan}'`);
-    const before = await tenantFeaturesRepository.getBilling(tenantId);
+    const before = await billingRepository.getBilling(tenantId);
     if (!before) throw createError(404, "Tenant not found");
 
     // 2026-04-21 Phase 1 canonical policy architecture:
     //   subscriptionStatus + trialEndsAt go through the lifecycle service.
-    //   subscriptionPlan (plan assignment) continues through the
-    //   tenant-features repo — it is NOT a subscription-state write.
+    //   subscriptionPlan (plan assignment) is a non-lifecycle field and
+    //   writes through the billingRepository.
     const trialEndsAtValue = data.trialEndsAt !== undefined
       ? (data.trialEndsAt ? new Date(data.trialEndsAt) : null)
       : undefined;
@@ -325,11 +330,11 @@ router.patch(
       });
     }
 
-    await tenantFeaturesRepository.updateBilling(tenantId, {
+    await billingRepository.updateBilling(tenantId, {
       subscriptionPlan: data.subscriptionPlan,
     });
 
-    const after = await tenantFeaturesRepository.getBilling(tenantId);
+    const after = await billingRepository.getBilling(tenantId);
     entitlementService.invalidateEntitlementsCache(tenantId);
     await platformAuditService.log({
       ...auditActor(req),
@@ -410,5 +415,52 @@ router.get("/tenants/:tenantId/usage", asyncHandler(async (req: Request, res: Re
   const usage = await usageMetricsService.getUsageSummary(req.params.tenantId);
   res.json(usage);
 }));
+
+// ---------------------------------------------------------------------------
+// Canonical per-tenant timeline (2026-04-22 Admin Phase A1)
+// ---------------------------------------------------------------------------
+//
+// Unifies subscription_events + audit_logs + impersonation_sessions +
+// tenant_feature_overrides + feedback + issue_reports into one chronological
+// stream. See server/services/tenantTimelineService.ts for the normalized
+// event shape. Read-only; mounted here (not on a new router) because it's a
+// platform-admin tenant-detail read and shares auth / params with its
+// siblings.
+
+const timelineQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  before: z.string().datetime().optional(),
+  // Express delivers repeated `?kinds[]=subscription&kinds[]=audit` as a
+  // string[], a bare `?kinds=subscription` as a string. Accept either +
+  // comma-separated for operator convenience; normalize in the handler.
+  kinds: z.union([z.string(), z.array(z.string())]).optional(),
+});
+
+router.get(
+  "/tenants/:tenantId/timeline",
+  asyncHandler(async (req: Request, res: Response) => {
+    const params = validateSchema(timelineQuerySchema, req.query);
+
+    const rawKinds = params.kinds;
+    const kindsArr: string[] =
+      rawKinds === undefined ? []
+        : Array.isArray(rawKinds) ? rawKinds
+        : rawKinds.split(",");
+    const kinds = kindsArr
+      .map((s) => s.trim())
+      .filter((k): k is (typeof TIMELINE_GROUPS)[number] =>
+        (TIMELINE_GROUPS as readonly string[]).includes(k),
+      );
+
+    const result = await tenantTimelineService.getTimeline({
+      companyId: req.params.tenantId,
+      limit: params.limit,
+      before: params.before ? new Date(params.before) : undefined,
+      kinds: kinds.length > 0 ? kinds : undefined,
+    });
+
+    res.json(result);
+  }),
+);
 
 export default router;

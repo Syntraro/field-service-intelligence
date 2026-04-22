@@ -13,7 +13,6 @@ import {
   FileCheck,
   LayoutGrid,
   Wrench,
-  DollarSign,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
@@ -100,17 +99,10 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       isActive: location === "/invoices" || location.startsWith("/invoices/"),
       testId: "nav-invoices"
     });
-    // 2026-04-21: Financial Dashboard — sits next to Invoices inside the
-    // Work Management section. Linked from the Operations Dashboard header
-    // button and from GET /api/dashboard/financial KPIs.
-    menuItems.push({
-      title: "Financials",
-      icon: DollarSign,
-      href: "/financials",
-      isActive: location === "/financials" || location.startsWith("/financials/"),
-      testId: "nav-financials",
-      hoverText: "Financial Dashboard — revenue, A/R, billing workflow"
-    });
+    // 2026-04-22: Financials sidebar entry removed — Financial Dashboard
+    // is now reachable exclusively through the Dashboard view toggle
+    // (Operations ↔ Financial). The `/financials` route is still live and
+    // used by the toggle; only the redundant sidebar entry was retired.
     menuItems.push({
       title: "Quotes",
       icon: FileCheck,

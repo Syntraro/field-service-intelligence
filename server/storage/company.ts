@@ -17,6 +17,11 @@ const PREFERENCE_KEYS = new Set([
   "weekStartsOn",
   "calendarStartHour",
   "defaultPaymentTermsDays",
+  // 2026-04-21 Phase 3: invoice reminder cadence moved here from the legacy
+  // tenant_features table. These are tenant configuration, not policy.
+  "invoiceRemindersEnabled",
+  "invoiceReminderFirstDelayDays",
+  "invoiceReminderRepeatEveryDays",
 ]);
 
 export interface CompanyProfile {
@@ -127,9 +132,22 @@ export class CompanyRepository extends BaseRepository {
    * read profile fields via `getCompanyProfile` and treat this row as
    * preferences-only.
    */
-  async getCompanySettings(companyId: string) {
+  async getCompanySettings(companyId: string): Promise<typeof companySettings.$inferSelect | null> {
     const cacheKey = CacheKeys.companySettings(companyId);
-    const cached = cache.get(cacheKey);
+    // 2026-04-22 bug fix: `cache.get` returns `null` for BOTH cache-miss and
+    // explicit-null-cached. The prior `cached !== undefined` check therefore
+    // short-circuited every cold-cache call to `null`, so the DB query was
+    // never reached. Effect: GET /api/company-settings omitted `timezone` /
+    // `timezoneConfirmedAt` from the response (null settings → loop skipped
+    // in the route's `buildSettingsResponse`), which made the TimezoneSetup
+    // dialog show for already-onboarded tenants. PUT then also failed: the
+    // upsert below re-read null from the same broken path, took the INSERT
+    // branch, and hit `company_settings_company_id_unique`. Fix: treat null
+    // from cache as a miss (matching the `if (cached)` pattern used by the
+    // other `cache.get` caller in storage/team.ts) and only cache non-null
+    // reads. Rare callers with a genuinely empty settings row pay one DB
+    // round-trip per call — acceptable; onboarding seeds the row.
+    const cached = cache.get<typeof companySettings.$inferSelect>(cacheKey);
     if (cached) {
       return cached;
     }
@@ -141,7 +159,9 @@ export class CompanyRepository extends BaseRepository {
       .limit(1);
 
     const result = rows[0] ?? null;
-    cache.set(cacheKey, result, CacheTTL.LONG);
+    if (result) {
+      cache.set(cacheKey, result, CacheTTL.LONG);
+    }
     return result;
   }
 

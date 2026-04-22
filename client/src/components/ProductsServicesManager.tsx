@@ -17,7 +17,7 @@ export default function ProductsServicesManager() {
   // POST /api/items/seed). Removed in-page Import dialog (called non-existent
   // POST /api/items/import). The toolbar Import button now navigates to the
   // canonical /settings/import-products page which uses the implemented
-  // /api/product-import/* flow.
+  // /api/imports/products/{preview,commit} flow.
 
   const [, setLocation] = useLocation();
 
@@ -168,7 +168,7 @@ export default function ProductsServicesManager() {
         onStatusFilterChange={setStatusFilter}
         uniqueCategories={uniqueCategories}
         itemCount={filteredAndSortedParts.length}
-        onImportClick={() => setLocation("/settings/import-products")}
+        onImportClick={() => setLocation("/settings/import?type=products")}
         onExportClick={handleExport}
         onAddClick={handleOpenAddDialog}
         selectedCount={selectedIds.size}

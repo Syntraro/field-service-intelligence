@@ -261,33 +261,45 @@ router.post(
   })
 );
 
-// GET /api/team/technicians - Get schedulable users for calendar/assignment dropdowns
-// Uses canonical isTechnicianSchedulable() from domain layer
-// Does NOT filter by role or status - schedulability is an explicit per-user setting
+// GET /api/team/technicians - Technician projection for calendar/assignment dropdowns.
+// Default behavior: canonical filterSchedulableTechnicians() — excludes disabled
+// users AND users where isSchedulable=false (hidden from calendar).
+// ?includeHidden=true: also include isSchedulable=false members (but still exclude
+// disabled). The Schedules tab uses this so admins can edit and re-enable calendar
+// visibility for members they have hidden — without this escape hatch, toggling
+// "Show on calendar" off would remove the member from the Schedules UI and leave
+// no way to toggle visibility back on. Does NOT filter by role or status.
 router.get(
   "/technicians",
   asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const includeHidden = req.query.includeHidden === "true";
+
     const members = await storage.getTeamMembers(req.companyId!);
     // 2026-03-31: Fetch canonical technician colors from technicianProfiles
     const colorMap = await storage.getTechnicianColors(req.companyId!);
     // 2026-04-03: Fetch labour cost rates for Add Time modal cost-per-hour field
     const rateMap = await storage.getTechnicianRates(req.companyId!);
 
-    // Use canonical filter with diagnostics
-    const { schedulable, excluded } = filterSchedulableTechnicians(
-      members,
-      "GET /api/team/technicians"
-    );
-
-    // Log excluded count in development
-    if (process.env.NODE_ENV === "development" && excluded.length > 0) {
-      console.log(
-        `[/api/team/technicians] Excluded ${excluded.length} technicians from dropdown:`,
-        excluded.map(e => ({ id: e.user.id, name: e.user.fullName, reason: e.reason }))
+    let visibleMembers: typeof members;
+    if (includeHidden) {
+      // Schedules-tab view: active members regardless of calendar visibility.
+      visibleMembers = members.filter((m) => m.disabled !== true);
+    } else {
+      // Dispatch/calendar dropdowns: canonical filter with diagnostics.
+      const { schedulable, excluded } = filterSchedulableTechnicians(
+        members,
+        "GET /api/team/technicians"
       );
+      if (process.env.NODE_ENV === "development" && excluded.length > 0) {
+        console.log(
+          `[/api/team/technicians] Excluded ${excluded.length} technicians from dropdown:`,
+          excluded.map(e => ({ id: e.user.id, name: e.user.fullName, reason: e.reason }))
+        );
+      }
+      visibleMembers = schedulable;
     }
 
-    const result = schedulable.map(m => ({
+    const result = visibleMembers.map(m => ({
       id: m.id,
       fullName: m.fullName || `${m.firstName ?? ""} ${m.lastName ?? ""}`.trim() || m.email,
       email: m.email,

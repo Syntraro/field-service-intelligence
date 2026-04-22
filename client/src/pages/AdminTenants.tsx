@@ -392,7 +392,7 @@ export default function AdminTenants() {
                   <TableRow
                     key={tenant.company.id}
                     className="cursor-pointer"
-                    onClick={() => setLocation(`/admin/tenants/${tenant.company.id}`)}
+                    onClick={() => setLocation(`/platform/tenants/${tenant.company.id}`)}
                   >
                     <TableCell>
                       <div>

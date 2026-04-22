@@ -228,9 +228,9 @@ export function useProductsServices(options: UseProductsServicesOptions = {}) {
 
   // 2026-04-08: P5 — Removed broken `importMutation` (called non-existent
   // POST /api/items/import). The canonical CSV import flow lives at the
-  // dedicated /settings/import-products page (server: /api/product-import/*).
-  // The toolbar Import button now navigates there instead of opening an
-  // in-page dialog.
+  // dedicated /settings/import-products page (server:
+  // /api/imports/products/{preview,commit}). The toolbar Import button now
+  // navigates there instead of opening an in-page dialog.
 
   // Export handler — client-side CSV over the currently filtered rows.
   // 2026-04-08: P5 — Replaced broken server-side `/api/items/export` (which

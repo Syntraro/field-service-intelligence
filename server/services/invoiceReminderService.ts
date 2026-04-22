@@ -18,13 +18,15 @@
  *     "invoice_reminder" so rendering picks up the reminder template.
  *   - invoiceRepository.recordReminderSent → atomic counter bump.
  *   - invoicesFeed.getInvoicesDueForReminder → sweep predicate.
- *   - tenantFeaturesRepository.getFeatures → per-tenant cadence settings.
+ *   - companyRepository.getCompanySettings → per-tenant cadence settings.
  *   - storage.getInvoice → fetch + gate checks.
  */
 
 import { storage } from "../storage/index";
 import { invoiceRepository } from "../storage/invoices";
-import { tenantFeaturesRepository } from "../storage/tenantFeatures";
+// 2026-04-21 Phase 3 canonical policy architecture: invoice reminder cadence
+// lives on company_settings (functional tenant config, not policy).
+import { companyRepository } from "../storage/company";
 import { getInvoicesDueForReminder } from "../storage/invoicesFeed";
 import { emailDispatchService } from "./emailDispatchService";
 import { computeIsPastDue } from "../storage/invoicesFeed";
@@ -146,15 +148,15 @@ async function sweepTenant(tenantId: string): Promise<{
   skipped: number;
   errors: number;
 }> {
-  const features = await tenantFeaturesRepository.getFeatures(tenantId);
-  const enabled = features.invoiceRemindersEnabled !== false;
+  const settings = await companyRepository.getCompanySettings(tenantId);
+  const enabled = settings?.invoiceRemindersEnabled !== false;
   if (!enabled) {
     return { tenantId, enabled: false, attempted: 0, sent: 0, skipped: 0, errors: 0 };
   }
 
   const candidates = await getInvoicesDueForReminder(tenantId, {
-    firstDelayDays: features.invoiceReminderFirstDelayDays ?? 3,
-    repeatEveryDays: features.invoiceReminderRepeatEveryDays ?? 7,
+    firstDelayDays: settings?.invoiceReminderFirstDelayDays ?? 3,
+    repeatEveryDays: settings?.invoiceReminderRepeatEveryDays ?? 7,
   });
 
   let sent = 0, skipped = 0, errors = 0;

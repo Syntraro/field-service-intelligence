@@ -223,7 +223,7 @@ export default function DispatchTimeline({
                 })()
               ) : (
                 <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
-                  No schedulable technicians found
+                  No technicians on the calendar
                 </div>
               )}
             </div>

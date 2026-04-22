@@ -6,7 +6,491 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### Payment Ops dashboard PR1 — persistent webhook event log (feature, 2026-04-22)
+
+First backend layer for the internal Payment Operations dashboard. Persists every inbound payment-provider webhook delivery decision to a queryable table so operators can answer questions the ephemeral `[payments-webhook]` console logs can't: "how many webhooks 500'd last hour?", "show config-drift events for tenant X", "was this specific Stripe event id recorded?"
+
+**New table `payment_webhook_events`** (`migrations/2026_04_22_payment_webhook_events.sql`):
+- Provider-neutral column names (`provider_id`, `provider_event_id`, `provider_payment_id`, `provider_refund_id`) so future adapters write to the same table.
+- `outcome` enum: `accepted | replayed | ignored | config_error | transient_failure | signature_failed`.
+- `http_status` records what we returned to the provider (200 / 400 / 500) — lets ops answer "was Stripe told to retry?" without replaying container logs.
+- `attempts` integer increments on redeliveries via UPSERT on `dedupe_key`.
+- `dedupe_key` is `{providerId}:{eventId}` for payment/unsupported and `{providerId}:{eventId}:{refundId}` for refund sub-events. Null for signature failures (no stable key exists pre-verification).
+- Indexes: partial unique on `dedupe_key`, `(company_id, received_at DESC)`, `(outcome, received_at DESC)`, `(provider_id, provider_event_id)`.
+
+**PII-safe metadata persistence:**
+- `raw_metadata` stores ONLY allowlisted keys (`companyId`, `invoiceId`, `invoiceNumber`, `prospectivePaymentId`, `refundLedgerId`, `source`).
+- No Stripe-native payload fields enter the table — those can carry customer emails, addresses, card metadata.
+- Allowlist is defense-in-depth: we already control what we put on Stripe metadata; the filter catches future regressions.
+
+**Call-sites wired (all fire-and-forget via `safeRecordPaymentWebhookEvent`):**
+- `handlePaymentSucceeded` → `accepted` (success), `replayed` (23505), `config_error` (metadata drift / 4xx from repo), `transient_failure` (before rethrow).
+- `handleRefundCreated` → same classification plus `skipped`/`config_error` for refund-for-unknown-charge.
+- `applyVerifiedWebhookBatch` → `ignored` for `payment_failed` and `unsupported`.
+- `stripeWebhook.ts` route → `signature_failed` with `http_status=400`.
+
+**Reliability guarantee:** a log-write failure never blocks a real webhook decision. `safeRecordPaymentWebhookEvent` catches and logs `[payments-webhook] log_write_failed`; the handler continues with whatever outcome it already determined. The canonical `payments` ledger remains the source of truth.
+
+**Files created:**
+- `migrations/2026_04_22_payment_webhook_events.sql`
+- `server/storage/paymentWebhookEvents.ts`
+
+**Files modified:**
+- `shared/schema.ts` — table + enums + `PaymentWebhookEvent` type.
+- `server/services/payments/paymentApplicationService.ts` — log call-sites at every decision point.
+- `server/services/payments/providers/types.ts` — added `eventType: string` to every `NormalizedWebhookEvent` variant (was only on `unsupported`).
+- `server/services/payments/providers/stripeAdapter.ts` — populates `eventType` on every normalized event.
+- `server/routes/stripeWebhook.ts` — records signature failures.
+
+**Migration file:** `migrations/2026_04_22_payment_webhook_events.sql`. Additive; run with `npm run db:migrate:one -- migrations/2026_04_22_payment_webhook_events.sql`.
+
+**Breaking changes:** none. No existing table is modified; no response shape changes; webhook ACK semantics unchanged.
+
+**Verification:** `npm run check` passes.
+
+### Fixed
+
+#### Client import — accept residential / person customers without a company name (bug fix, 2026-04-22)
+
+Client import preview blocked every residential row with `"companyName: Company name is required"`, making mixed books of commercial + residential customers unimportable. Residential clients are first-class — they live on the same `customer_company` / `client_location` / `contact_person` backbone as commercial clients, just with a person's name as the company's `name`.
+
+**New rule.** A client row is valid when **at least one** of `companyName`, `contactFirstName`, `contactLastName` has a non-empty trimmed value. Only all-three-blank rows are blocked, now with the message *"Client requires at least one identifier: company name, first name, or last name."*
+
+**Effective name fallback (new helper, `resolveEffectiveCompanyName`).** When `companyName` is blank, the adapter composes the effective customer-company name from `FirstName LastName` (either alone also works: `John`, `Smith`, or `John Smith`). This name feeds everything downstream that previously keyed on `row.companyName` — match lookup (`normalizeForMatch`), within-CSV dedupe, location-name fallback, and the commit row's `entityLabel`. Company dedupe semantics are unchanged for commercial rows; residential rows now dedupe correctly against the same person entered twice (e.g. `John Smith` as company vs. `John` + `Smith` as contact fields collide and match).
+
+**Files:**
+- `shared/importPipeline/zod/client.ts` — `companyName` relaxed to `z.string().nullable()`, new top-level `.superRefine` enforces the 3-identifier rule at commit time. `CLIENT_FIELD_DEFS.companyName.required` flipped to `false`.
+- `server/services/importPipeline/adapters/ClientImportAdapter.ts` — `FIELD_DEFS.companyName.required` flipped to `false`; `normalizeRow` uses `trimOrNull`; new `resolveEffectiveCompanyName(row)` helper; `validateRow` replaces the single-field check with the 3-identifier check and threads the effective name through match lookup + warnings; `classifyWithinCsv` dedupes on the effective name; `applyRow` creates the `customer_company` with the effective name (throws with a clear message if somehow called on a blank row — defense in depth behind Zod + validateRow).
+
+**Verification:**
+- ✅ Row with company only → valid
+- ✅ Row with first + last only → valid, customer_company.name = "John Smith"
+- ✅ Row with first only → valid, customer_company.name = "John"
+- ✅ Row with last only → valid, customer_company.name = "Smith"
+- ✅ Row with company + person → valid, customer_company.name = companyName (person becomes the primary contact as today)
+- ✅ Row with all three blank → blocked with the new message
+- ✅ `npm run check` clean
+- ✅ Company dedupe unchanged for commercial rows; residential rows dedupe against same-person appearances across the CSV
+
+---
+
+#### Team Management — decouple "Show on calendar" from Schedules tab visibility (bug fix, 2026-04-22)
+
+Turning a team member's **Show on calendar** toggle off correctly hid them from the dispatch calendar but also removed them from the **Team Management → Schedules** tab entirely, leaving no path to re-enable calendar visibility. Calendar visibility (`users.isSchedulable`) is a display flag and must not be coupled to schedule-membership/editability.
+
+**Root cause.** `client/src/components/team-hub/SchedulesTab.tsx` read its member list from `GET /api/team/technicians`, which runs the canonical `filterSchedulableTechnicians()` helper (`server/domain/scheduling.ts:507`). That filter excludes `isSchedulable === false` users — correct for dispatch dropdowns, wrong for the admin edit surface.
+
+**Fix.** Added an `?includeHidden=true` query flag to the same canonical endpoint:
+- Default behaviour (no flag) unchanged: `filterSchedulableTechnicians()` — dispatch board, `ViewingScopePicker`, `live-state`, and `working-hours` endpoints all keep their current projection.
+- `includeHidden=true`: keeps `isSchedulable=false` members, still excludes `disabled=true`. Used ONLY by the Schedules tab so admins can edit/re-enable hidden members.
+
+Client query key is `["/api/team/technicians", { includeHidden: true }]` — existing `invalidateQueries({ queryKey: ["/api/team/technicians"], exact: false })` mutations continue to refresh it via prefix match. Empty-state copy tightened from "No schedulable team members yet." to "No team members yet." now that the list no longer pre-filters by schedulability.
+
+**Domain separation preserved.** The four concerns stay distinct: (1) active/inactive = `users.disabled`; (2) schedule membership / custom hours = `users.useCustomSchedule` + `workingHours[]`; (3) calendar visibility = `users.isSchedulable`; (4) assignability follows (1)+(3) via the canonical filter. No schema change.
+
+**Files changed:**
+- MODIFIED — `server/routes/team.ts` (`GET /api/team/technicians` accepts `includeHidden=true`)
+- MODIFIED — `client/src/components/team-hub/SchedulesTab.tsx` (opt in to `includeHidden=true`; empty-state copy)
+
+---
+
+#### Team Management — copy cleanup for the "Show on calendar" flag (copy-only, 2026-04-22)
+
+Follow-up to the decoupling fix above. The underlying column is `users.isSchedulable` but the actual behavior is "show this person on the dispatch calendar / in assignment dropdowns" — the legacy "Schedulable" wording incorrectly implied the flag controlled whether a member could have or edit a schedule. Copy-only pass; no behavior, schema, route, or storage changes.
+
+Before → after:
+- SchedulesTab member badge: `"Schedulable"` → `"On calendar"`; `"Hidden"` → `"Hidden from calendar"`.
+- SchedulesTab toggle helper: `"Include this person in scheduling and assignment dropdowns."` → `"Controls dispatch calendar visibility and assignment dropdowns. Hidden members keep their working hours and can still be edited here."`
+- CompensationTab empty state: `"No schedulable team members yet."` → `"No technicians on the calendar yet."`
+- TeamMetricsStrip tile: label `"Schedulable"` → `"On calendar"`, hint `"On dispatch"` → `"Shown on dispatch"`.
+- DispatchTimeline empty state: `"No schedulable technicians found"` → `"No technicians on the calendar"`.
+
+Variable names, types, `data-testid` attributes, column names, API fields, and internal comments (`filterSchedulableTechnicians`, `isSchedulable`, `SchedulableBlock`, etc.) are intentionally untouched — renaming the data model was explicitly out of scope.
+
+**Files changed:**
+- MODIFIED — `client/src/components/team-hub/SchedulesTab.tsx`
+- MODIFIED — `client/src/components/team-hub/CompensationTab.tsx`
+- MODIFIED — `client/src/components/team-hub/TeamMetricsStrip.tsx`
+- MODIFIED — `client/src/components/dispatch/DispatchTimeline.tsx`
+
+---
+
+#### Settings → Data Import — drop the redundant card-chooser (UX fix, 2026-04-22)
+
+`/settings/import` used to render a three-card chooser (Clients / Historical Jobs / Products & Services) when no `?type=` was in the URL. Clicking a card set `?type=<key>` and re-rendered the same page with a tab strip + the wizard. Since the tab strip already lets the user switch record types at any time, the chooser was a wasted click — every visit from Settings → Data Import required two clicks to reach the wizard.
+
+**Root cause.** `ImportCenterPage.tsx`'s `TypeSelector` branched on `hasActiveType`: true → tab strip, false → card chooser. `activeType` was `TypeKey | null`, and null was the "no selection yet" state.
+
+**Fix (single file, `client/src/pages/ImportCenterPage.tsx`).** Missing/invalid `?type=` now defaults to `"clients"` (new `DEFAULT_TYPE` constant). `activeType` is now `TypeKey` (never null), `active` always resolves to a config, and the page always renders "tab strip + wizard". The card-chooser JSX branch was removed entirely; `TypeSelector` is now just the tab strip. The unused `ChevronRight` import was dropped. `setType` no longer takes `null` (the "deselect" affordance went away with the cards).
+
+**What did NOT change.** No route changes in `App.tsx` — `/settings/import` still lands on `ImportCenterPage`, and the three legacy `<Redirect>` routes (`/settings/import-clients|jobs|products`) keep working because they still push `?type=<key>` into the URL. `SettingsPage` and `ProductsServicesManager` links are unchanged. The `ImportWizard` component, the three entity configs (`clientImportConfig`, `jobImportConfig`, `productImportConfig`), and the Upload/Map/Preview/Done flow are untouched. The wizard still remounts via `key={entity}` on type change. Nothing was orphaned — the three configs are still imported by this same file.
+
+**Before vs after navigation.**
+- Before: Settings → Data Import → card chooser page → click "Clients" → wizard.
+- After: Settings → Data Import → wizard (Clients tab pre-selected). Deep link `/settings/import?type=jobs` still lands on the Jobs tab directly.
+
+**Files changed:**
+- MODIFIED — `client/src/pages/ImportCenterPage.tsx` (default `?type=clients`; removed card-chooser branch; removed `ChevronRight` import; header docstring updated)
+
 ### Changed
+
+#### Import Center — Phase 2b: multi-entity custom-field imports (feature, 2026-04-22)
+
+Broadens inline custom-field creation beyond Jobs so the **Clients** and **Products / Services** imports can create Reference-Fields definitions and write per-row values. The Clients import splits targets between the customer company (Client) and the service site (Location) — HVAC roof codes, gate codes, filter sizes, alarm codes etc. land on the Location where they're physically relevant; franchise groups, credit terms, etc. land on the Client.
+
+**Scope of this pass:**
+- **Clients import**: custom fields can target `customer_company` or `client_location`. Default target is picked by column-name heuristic (`roof|gate|alarm|filter|pm|building|access|ladder|site|elevator|key|lock` → Location; anything else → Client).
+- **Products / Services import**: custom fields target `item` (catalog entry).
+- **Jobs import**: unchanged Job-targeting behaviour preserved. Job→Location targeting was deferred in line with the brief's "preserve current Job support first" guardrail.
+- **Field types**: still text-only. The canonical Reference-Fields system's value storage is text-only since 2026-04-10 (`number_value`/`date_value` dropped). Reintroducing multi-typed values is deferred to a future phase.
+- **Detail-page surface**: Client-scope and Location-scope custom fields surface in a new **Fields** utility-rail tab on ClientDetailPage. Product/Service detail-page surface is deferred (no canonical detail page exists yet).
+
+**Backend extensions (canonical Reference-Fields system):**
+
+1. **`referenceFieldEntityTypeEnum`** extended from `[job, quote, invoice]` to `[job, quote, invoice, customer_company, client_location, item]` (`shared/schema.ts`).
+2. **`reference_field_definitions`** gains three boolean columns: `applies_to_customers`, `applies_to_locations`, `applies_to_products`. The "at least one applies-to" CHECK constraint is rewritten to allow any of the 6 flags.
+3. **`reference_field_values.entity_type`** CHECK is rewritten to accept the 6-entity set.
+4. Migration: `migrations/2026_04_22_ref_fields_phase2b.sql` (idempotent: `ADD COLUMN IF NOT EXISTS`, `DROP CONSTRAINT IF EXISTS`, wrapped in `BEGIN;`/`COMMIT;`).
+5. **`server/services/referenceFieldsService.ts`**: `definitionAppliesToEntity` switch extended to the 3 new entities; create/update validators now check the 6-flag OR; `CreateDefinitionInput` / `UpdateDefinitionInput` widened accordingly.
+6. **`server/storage/referenceFields.ts`**: `listDefinitions` entityType filter handles the 3 new entities; `createDefinition` / `updateDefinition` Drizzle payloads accept the new columns.
+7. **`server/routes/referenceFields.ts`**: error messages updated; GET/PUT response shapes now surface `appliesToCustomers/Locations/Products` alongside the existing three flags. The route-level `entityTypeParam` is driven by the enum so it auto-accepts the new values.
+
+**Wire contract extension:**
+
+- **`RowOutcome`** (`shared/importPipeline/contracts.ts`) gets an optional `relatedEntities?: { customerCompanyId?, locationId?, contactId?, itemId?, jobId? }`. Single-entity adapters (Jobs, Products) leave it undefined — `entityId` remains the single write target. Multi-entity adapters populate it so the commit orchestrator can fan-out custom-field values to the correct entity type per row.
+- **`ClientImportAdapter.applyRow`** now returns `relatedEntities: { customerCompanyId, locationId?, contactId? }` so the Import Center can write Client-scoped values to the company id and Location-scoped values to the location id from the same CSV row.
+
+**Frontend orchestration:**
+
+1. **`customFieldEntity?: "job"`** replaced with **`customFieldEntities?: Array<{id, label}>`** on `ImportWizardConfig`. Single-entry configs are locked targets (Jobs, Products); multi-entry configs (Clients) show a target picker in the Map step form.
+2. **`importPlan.ts`**: `ColumnAction.create_custom` gained an `entity: CustomFieldEntityId` field. `CustomFieldPlan.entity` widened to the 4-entity union. New helper `defaultEntityForHeader(csvHeader, available)` implements the Location-keyword heuristic. `validatePlan` duplicate-label detection is now scoped per-entity (same label can legitimately target Client + Location as two distinct defs). `customFieldPlansFromPlan` no longer takes an entity parameter — entity is carried per-column now.
+3. **`ColumnMapper.tsx`**: forwards `existingDefinitionKeys` (the `{entity}::{normalizedLabel}` set of active tenant-scoped defs) so the inline form can flag "Will reuse existing field" before the user hits commit. Seeds each new `create_custom` action with the heuristic's default target.
+4. **`CustomFieldConfigForm.tsx`**: adds a target `Select` when more than one target is available (Clients import); single-target configs still show a read-only pill. Shows a `Recycle` icon + "Will reuse existing field" headline when the parent detects a matching existing definition.
+5. **`CustomFieldPlanSummary.tsx`**: groups plans by entity and shows per-entity counts ("Client: 1 new field · 2 reused · Location: 1 new field"). Distinguishes new vs reused plans with Sparkles / Recycle icons and a "reuse" tag.
+6. **`ImportWizard.tsx`** commit orchestration rewritten:
+   - New `useQuery` against `GET /api/reference-fields?active=true` when the wizard enters the Map step. Result keyed into a `{entity}::{normalizedLabel}` → defId map used for inline reuse detection and Stage-1 skip.
+   - **Stage 1 (`creating_fields`)**: per plan, if a matching existing definition is in the map → reuse its id (no POST). Else POST `/api/reference-fields` with exactly one `appliesTo<Entity>: true` flag, keyed off `plan.entity`.
+   - **Stage 2 (`importing_rows`)**: unchanged — POST `/api/imports/:entity/commit` with the normalized rows.
+   - **Stage 3 (`writing_values`)**: per successful row outcome, group resolved plans by target entity; per group, resolve the correct entity id via the new `resolveEntityId(entity, outcome)` helper (prefers `relatedEntities`, falls back to `entityId` for single-entity imports); PUT `/api/reference-fields/entities/:entityType/:entityId` once per group. Per-row/per-entity write failures are logged, not fatal.
+7. **Detail-page surface**: `ClientDetailPage` utility rail gains a **Fields** tab alongside Contacts / Notes / Billing. Mounts `ReferenceFieldsSection` with `entityType="customer_company"` when the scope is the Client card, `entityType="client_location"` when a specific site is selected. `ReferenceFieldsSection`'s `entityType` prop widened from 3 to 6 values (backend validates the canonical enum — the union here just keeps callers honest).
+
+**Files changed:**
+- NEW — `migrations/2026_04_22_ref_fields_phase2b.sql`
+- MODIFIED — `shared/schema.ts` (enum + 3 boolean columns + Drizzle + Zod insert/update schemas)
+- MODIFIED — `shared/importPipeline/contracts.ts` (RowOutcome.relatedEntities)
+- MODIFIED — `server/services/referenceFieldsService.ts`
+- MODIFIED — `server/storage/referenceFields.ts`
+- MODIFIED — `server/routes/referenceFields.ts`
+- MODIFIED — `server/services/importPipeline/adapters/ClientImportAdapter.ts`
+- MODIFIED — `client/src/components/imports/types.ts`
+- MODIFIED — `client/src/components/imports/importPlan.ts`
+- MODIFIED — `client/src/components/imports/ColumnMapper.tsx`
+- MODIFIED — `client/src/components/imports/CustomFieldConfigForm.tsx`
+- MODIFIED — `client/src/components/imports/CustomFieldPlanSummary.tsx`
+- MODIFIED — `client/src/components/imports/ImportWizard.tsx`
+- MODIFIED — `client/src/components/imports/configs/{jobImportConfig,clientImportConfig,productImportConfig}.ts`
+- MODIFIED — `client/src/components/shared/ReferenceFieldsSection.tsx`
+- MODIFIED — `client/src/pages/ClientDetailPage.tsx`
+
+**Run migration:**
+```
+npm run db:migrate:one -- migrations/2026_04_22_ref_fields_phase2b.sql
+```
+
+**Typecheck:** `npm run check` clean.
+
+---
+
+#### Import Center — Phase 2a: inline custom-field creation during mapping (feature, 2026-04-22)
+
+Extends the canonical Import Center Map step so the user can do three things with each CSV column instead of one: **Map to existing field**, **Create custom field**, **Ignore**. Custom fields are created on commit via the existing canonical Reference-Fields system; imported cell values land on each created entity's custom-field slot automatically.
+
+**Scope (Phase 2a — this pass):**
+- Inline custom-field creation for **Jobs imports** only. Clients and Products imports get the full three-way action UI, but the "Create custom field" option is hidden because the backend Reference-Fields system doesn't cover `customer_company` / `client_location` / `item` yet (see Phase 2b below).
+- Field type: **text only**. Matches the Reference-Fields system's current constraint (`referenceFieldTypeEnum = ["text"]`, `shared/schema.ts:5642` — number/date were dropped 2026-04-10). The inline form pins the type to Text with no picker.
+- Zero backend contract changes. The existing `POST /api/reference-fields` and `PUT /api/reference-fields/entities/:entityType/:entityId` routes are reused verbatim. The existing `POST /api/imports/:entity/{preview,commit}` contract is unchanged — custom-field columns are simply stripped from the `mappings` array the import backend sees.
+
+**Architecture additions (all frontend):**
+
+1. **`client/src/components/imports/importPlan.ts` (new)** — types + pure helpers for the three-way column model:
+   - `ColumnAction` = `{ kind: "ignore" } | { kind: "map_existing"; targetField } | { kind: "create_custom"; label }`
+   - `ColumnPlan` = `{ csvHeader, csvIndex, action }` — what the Map step now renders off of.
+   - `CustomFieldPlan` = derived per-row plan carrying `{ label, entity, type, createdDefinitionId? }` — the `createdDefinitionId` is stamped post-creation during commit orchestration.
+   - `mappingsFromPlan(plans)` — derives the `ColumnMapping[]` the backend expects (only `map_existing` rows).
+   - `columnPlansFromMappings(mappings)` / `mergeBackendMappings(existing, backendMappings)` — conversion helpers that preserve user-set `create_custom` actions across backend preview round-trips.
+   - `customFieldPlansFromPlan(plans, entity)` — extracts the creation queue for commit orchestration.
+   - `validatePlan(plans, requiredBuiltInKeys)` — runs before enabling the Continue button. Catches empty custom-field labels, duplicates within the same session, and missing required built-in fields.
+   - `deriveCustomFieldLabel(csvHeader)` — cleans up source column names into sensible defaults (e.g. `PFT[Roof Code]` → `Roof Code`, `Supplier Invoice #` → `Supplier Invoice`).
+
+2. **`client/src/components/imports/CustomFieldConfigForm.tsx` (new)** — the inline per-row config block that appears when the user picks "Create custom field" on a column. Label input + read-only entity chip + read-only type chip ("Text"). Per-row duplicate-label error rendered inline.
+
+3. **`client/src/components/imports/CustomFieldPlanSummary.tsx` (new)** — Preview-step pre-commit summary. *"N custom fields will be created on import — Roof Code (Job, text) from 'PFT[Roof Code]'"*. Renders only when the plan is non-empty.
+
+4. **`client/src/components/imports/ColumnMapper.tsx` (rewritten)** — now works off `ColumnPlan[]`. Each row exposes a single dropdown offering: `— Ignore —`, `+ Create custom field` (only when the entity supports it), then the existing grouped built-in fields. When "Create custom field" is picked, `CustomFieldConfigForm` renders directly below the dropdown in the same row.
+
+5. **`client/src/components/imports/ImportWizard.tsx` (extended)**:
+   - Replaced `mappings` state with `plans: ColumnPlan[]`. `mappings` is derived via `useMemo(() => mappingsFromPlan(plans))` for backend calls.
+   - `customFieldPlans` is derived the same way and passed to `PreviewStage` for the summary card.
+   - The `previewMutation` no longer carries a default `onSuccess` — every call site passes its own so plan-merge semantics stay explicit. First-load (`handleFile` with Generic CSV or HCP) overwrites plans from backend mappings; mid-session (`handleContinueFromMap`) uses `mergeBackendMappings` to preserve user-set `create_custom` actions.
+   - New `commitMutation` orchestrates three stages when custom-field plans exist:
+     1. **`creating_fields`** — `POST /api/reference-fields` per pending definition. Fail-closed: if any creation fails, the whole pass aborts before touching entity rows.
+     2. **`importing_rows`** — unchanged existing `POST /api/imports/:entity/commit` call.
+     3. **`writing_values`** — per successful import result row (`outcome.entityId` present, `disposition !== "failed"`), extracts the source-cell value from the original CSV and `PUT /api/reference-fields/entities/:entityType/:entityId` writes it. Per-row value-write failures are logged and continued (the entity row is already created; the user can add the missing value manually from the entity detail page).
+   - Preview step shows a live stage label during commit: "Creating custom fields…" → "Importing rows…" → "Saving custom-field values…".
+
+6. **`client/src/components/imports/types.ts`** — `ImportWizardConfig.customFieldEntity?: "job"` added. Presence enables the "Create custom field" action; absence hides it.
+
+7. **`client/src/components/imports/configs/jobImportConfig.ts`** — registers `customFieldEntity: "job"`. Clients and Products configs do not.
+
+**Transactional-integrity notes (documented, not claimed to be atomic):**
+- Stage 1 definition creation is not atomic across definitions. If definition 3 of 5 fails, definitions 1-2 have been created. The surfaced error lists what was created so the user can either retry (existing same-label definitions match by normalized key) or clean up manually from `/settings/custom-fields`.
+- Stage 3 value writes are per-entity PUT calls. If one row's value write fails, other rows continue. This matches the existing best-effort pattern used elsewhere in the import pipeline and keeps the import request bounded.
+- The user's brief called this out: "preserve transactional integrity as much as the current architecture allows" — acknowledged; not introducing a new server-side orchestration endpoint for this pass.
+
+**Files changed:**
+- NEW — `client/src/components/imports/importPlan.ts`
+- NEW — `client/src/components/imports/CustomFieldConfigForm.tsx`
+- NEW — `client/src/components/imports/CustomFieldPlanSummary.tsx`
+- Modified — `client/src/components/imports/ColumnMapper.tsx` (now works off `ColumnPlan[]`)
+- Modified — `client/src/components/imports/ImportWizard.tsx` (plan state + commit orchestration)
+- Modified — `client/src/components/imports/types.ts` (optional `customFieldEntity` field)
+- Modified — `client/src/components/imports/configs/jobImportConfig.ts` (registers `customFieldEntity: "job"`)
+- Modified — `CHANGELOG.md` (this entry)
+
+**Backend: zero files changed.**
+
+**Breaking changes:** none.
+- `ColumnMapper` props changed (`mappings`/`onChange(mappings)` → `plans`/`onChange(plans)`), but the component is only consumed inside `ImportWizard.MapStage` which was updated in lockstep.
+- `ImportWizard` config is strictly additive (`customFieldEntity?` is optional).
+
+**Explicitly deferred to Phase 2b (separate pass):**
+- Broaden `referenceFieldEntityTypeEnum` from `["job", "quote", "invoice"]` to include `customer_company`, `client_location`, `item`. This is a schema migration + `appliesToCustomers` / `appliesToLocations` / `appliesToProducts` booleans on `reference_field_definitions` + the `referenceFieldValues` check constraint relax.
+- Frontend: mount `ReferenceFieldsSection` on `ClientDetailPage` / (future) Location detail / `ProductsServicesManager` item row so imported custom-field values are visible and editable.
+- Non-text types (`number`, `date`, `boolean`, `select`) — require `number_value` / `date_value` / `bool_value` columns or a generic typed-value column on `reference_field_values` + type coercion in the service layer.
+- Housecall Pro custom-field preset defaults — covered by the preset system; the import UI now handles them whether or not a preset is active.
+
+#### Import Center — explicit source selection, auto-detection removed (UX, 2026-04-22)
+
+Product decision: provider is a user choice, not something the system guesses. Replaces the Phase-1 header-signature detection with an explicit "Where is this file from?" selector. If the user picks the wrong source, the system does NOT silently correct or switch — that's a user-correctable mistake, and the column mapper surfaces it clearly (most columns unmapped).
+
+**What happens now:**
+1. User opens an entity tab at `/settings/import?type=…` (Clients / Historical Jobs / Products & Services).
+2. Upload step opens on a source picker — three cards: **Jobber**, **Housecall Pro**, **Generic CSV**. No upload widget, no progress beyond this, until a source is picked.
+3. Source picked → dropzone appears with a persistent "Source: X [Change]" chip above it. Template download moves into this same row.
+4. File uploaded:
+   - **Jobber** + preset exists for this entity → preset mappings applied client-side, no preview round-trip. Map step shows an emerald "Preset applied: Jobber X export" notice with the preset's known limitations.
+   - **Housecall Pro** (preset not yet shipped for any entity in this pass) → falls through to the backend header-suggestion path. Map step shows a slate "Preset mapping for Housecall Pro is not available yet for this import type. Continue with manual mapping below." notice. Non-blocking; import still works.
+   - **Generic CSV** → backend header suggestions (existing behavior). No notice on Map step.
+5. Map → Preview → Commit — unchanged.
+
+**Removed (dead code after this pass):**
+- `client/src/components/imports/presets/detection.ts` — deleted. Scoring, `requiredHeaders` / `signalHeaders` / `disqualifyingHeaders` vetoes, the whole `detectPreset()` function. Gone.
+- `client/src/components/imports/PresetBanner.tsx` — deleted. Replaced by `SourceChip` on the Upload step + `MapStepNotice` above the column mapper.
+- `PresetDetection`, `PresetDetectionResult` types — deleted from `presets/types.ts`.
+- `countCoveredRequiredFields` — deleted (never wired anyway).
+- All "Detected: …" strings and the override dropdown flow they required.
+
+**Preserved (still needed for explicit preset application):**
+- `normalizeHeader` and `applyPresetMappings` — moved from `detection.ts` to a new `applyPresetMappings.ts`. Pure functions, no change in behavior.
+- Each Jobber preset's `fieldAliases` — the heart of preset value. Now carries `source: "jobber"` + `entity: "…"` fields so the wizard can look presets up by the (source, entity) pair instead of running a scoring algorithm.
+- Backend import contract: unchanged. `POST /api/imports/:entity/{preview,commit}` still accepts the same payload. Adapters, Zod schemas, normalizers, pipeline orchestrator all untouched.
+
+**New source options (UI-only for Housecall Pro):**
+- `SourceId = "jobber" | "housecall_pro" | "generic_csv"` — provider-level (not per-entity).
+- Housecall Pro is exposed now even though no HCP preset ships this pass. Picking it routes the user through manual mapping with a clear notice; this avoids a chicken-and-egg UX where users can't signal intent. When HCP presets land later, they'll be added as new `ProviderPreset` entries with `source: "housecall_pro"` on the relevant entity configs — zero other code change.
+
+**Files changed:**
+- NEW — `client/src/components/imports/SourceSelector.tsx` (`SourceSelector` + `SourceChip`).
+- NEW — `client/src/components/imports/presets/applyPresetMappings.ts` (pure helpers extracted from the deleted detection module).
+- Deleted — `client/src/components/imports/presets/detection.ts`.
+- Deleted — `client/src/components/imports/PresetBanner.tsx`.
+- Modified — `client/src/components/imports/presets/types.ts` (simplified `ProviderPreset`, removed detection types, provider-level `SourceId`).
+- Modified — `client/src/components/imports/presets/index.ts` (updated exports).
+- Modified — `client/src/components/imports/presets/jobberClientsPreset.ts` / `jobberJobsPreset.ts` / `jobberProductsPreset.ts` (removed `detection` blocks, added `source: "jobber"` + `entity` fields).
+- Modified — `client/src/components/imports/UploadStep.tsx` (two-stage: source selector → file picker with chip).
+- Modified — `client/src/components/imports/ImportWizard.tsx` (removed `detectPreset` call + `detection` state; added `source: SourceId | null` state; new `handleSelectSource` / `handleResetSource`; `MapStepNotice` helper; reset + handleFile rewritten to route by source).
+
+**Breaking changes:** none.
+- Backend: zero changes.
+- `ImportWizardConfig.presets?: ProviderPreset[]` still works; the preset shape changed (removed `detection` field, added `source` field) but all three bundled Jobber presets were updated in lockstep.
+- `ImportWizard` behavior without presets: identical — source picker still renders the three options; Generic CSV falls through to the existing backend-suggestion flow.
+
+**Deferred (still Phase-2 schema work, unchanged by this refactor):**
+- External-ID column on `customer_companies` / `client_locations` / `jobs` / `items` for J-ID preservation.
+- Custom-fields JSONB column for PFT[…] / Supplier Invoice # / etc.
+- Transform layer in the backend pipeline for multi-email/phone row expansion, archived→isActive inversion, Bookable→type derivation, category normalization.
+- Housecall Pro presets for any entity.
+
+#### Import Center — provider-aware imports, Phase 1: Jobber presets (feature, 2026-04-22)
+
+Extends the canonical Import Center with provider-aware imports. Phase 1 ships three Jobber presets (Clients / Jobs / Products & Services) as a **purely frontend** layer — zero backend contract changes, zero schema work. The existing generic CSV workflow is unchanged when no preset matches.
+
+**Architecture — new preset layer at `client/src/components/imports/presets/`:**
+- `types.ts` — `ProviderPreset`, `PresetDetection`, `PresetDetectionResult`, `SourceFormatId`.
+- `detection.ts` — header-signature scoring (`detectPreset`), mapping computation (`applyPresetMappings`), shared `normalizeHeader` that mirrors the server-side normalizer.
+- `jobberClientsPreset.ts` / `jobberJobsPreset.ts` / `jobberProductsPreset.ts` — one file per known CSV shape.
+- `index.ts` — barrel export.
+
+**Detection — how presets match:**
+- Scoring = `requiredHeaders` (all must be present, else 0) + half-weight of `signalHeaders` hit-rate. Default threshold 0.6.
+- `disqualifyingHeaders` veto list — used on the Jobs preset to refuse a Jobber **Visits** export masquerading as a Jobs export (blocks `Visit status`, `Start at`, `End at`).
+- Matching is case- and whitespace-tolerant via `normalizeHeader`, which mirrors the server normalizer (strips `#$%`, converts `_-.` to spaces, lowercases, collapses whitespace). Frontend and backend must stay in sync; both live as pure functions.
+
+**UI — where the user experiences this:**
+- `PresetBanner` component renders ABOVE the column mapper on the Map step.
+  - Emerald "Detected: Jobber X export" banner when a preset matched.
+  - Slate "Source format: Generic CSV" banner when no preset matched or the user explicitly overrode to Generic.
+  - Lists each preset's `limitations` as small bullet points so Phase-2 caveats are visible where the user is about to act.
+  - Right-side Override dropdown — Generic CSV + every preset registered on the config. Single source of truth for switching formats.
+- `ImportWizard.handleFile` now runs detection client-side BEFORE calling the preview endpoint. On preset hit: mappings computed from the preset and the user lands on the Map step immediately (no round-trip). On miss: existing fallback — backend header-suggestion flow unchanged.
+- `ImportWizard.handleSourceFormatChange` lets the user flip between formats without re-uploading. Generic → re-seed via backend suggestions. Preset → re-apply that preset's aliases client-side.
+
+**Backend contract: unchanged.**
+- `POST /api/imports/:entity/preview` and `/commit` accept the same payloads as before.
+- Each entity adapter's `headerAliases` continues to be the fallback suggestion engine. Presets are NOT backend-aware in Phase 1; they just pre-compute the `mappings` array that the backend already accepted.
+- Zod schemas (`shared/importPipeline/zod/{client,job,product}.ts`), adapters, normalizers, pipeline: untouched.
+
+**Dedupe strategy — confirmed and documented (unchanged from existing adapters):**
+- **Clients**: company dedupe by normalized name; location dedupe by composite address key (street+city+province+postal); contact dedupe cascade email → name+phone → name. Parent customer row can gain additional locations on re-import without duplicating the customer.
+- **Jobs**: dedupe by `jobNumber` (within CSV and within tenant). Client match is strict: company must pre-exist (error if not found); location match uses the existing 4-tier strategy (full address → street+city → location-name → field-swap). Location auto-create only when address is complete; no auto-create of companies.
+- **Products**: dedupe cascade SKU → (name+type).
+
+**Files changed:**
+- NEW — `client/src/components/imports/presets/types.ts`
+- NEW — `client/src/components/imports/presets/detection.ts`
+- NEW — `client/src/components/imports/presets/jobberClientsPreset.ts`
+- NEW — `client/src/components/imports/presets/jobberJobsPreset.ts`
+- NEW — `client/src/components/imports/presets/jobberProductsPreset.ts`
+- NEW — `client/src/components/imports/presets/index.ts`
+- NEW — `client/src/components/imports/PresetBanner.tsx`
+- Modified — `client/src/components/imports/types.ts` (optional `presets[]` on `ImportWizardConfig`)
+- Modified — `client/src/components/imports/configs/clientImportConfig.ts` (registers Jobber Clients preset)
+- Modified — `client/src/components/imports/configs/jobImportConfig.ts` (registers Jobber Jobs preset)
+- Modified — `client/src/components/imports/configs/productImportConfig.ts` (registers Jobber Products preset)
+- Modified — `client/src/components/imports/ImportWizard.tsx` (detection on upload, override handler, banner render on Map step, reset-clears-detection)
+- `CHANGELOG.md` — this entry.
+
+**Breaking changes:** none.
+- `ImportWizardConfig.presets` is optional; existing callers render identically.
+- `ImportWizard` behavior without presets: byte-identical to before.
+
+**Explicitly deferred — Phase 2 work (requires schema / adapter change, not in this pass):**
+- **External-ID preservation** (Jobber `J-ID`, Jobber `Job #` as a separate external anchor): needs one nullable `external_import_id` TEXT column on `customer_companies`, `client_locations`, `jobs`, and `items`, plus adapter write-through. One migration + four adapter edits.
+- **Custom fields** (`PFT[Location Name]`, `PFT[Roof Code]`, `PFT[PM Info]`, Jobber Jobs `Supplier Invoice #`, `Location Name`, etc.): needs a `custom_fields JSONB` column per imported entity table + adapter support for passing them through. No UI surface planned in Phase 2 — just preserved-on-record for reporting/auditability.
+- **Multi-value row expansion** (pipe-delimited `E-mails`, `Main Phone #s`, etc.): needs a transform layer in `ImportPipeline` between `normalizeRow` and `validateRow`, plus contact-repo support for multiple contacts per customer.
+- **Archived-vs-Active inversion** (Jobber `Archived` → our `isActive`): needs the same transform layer. Today, `Archived` is NOT auto-mapped by the Clients preset so imports don't silently corrupt active flags.
+- **Category normalization for products** (currently `ProductImportAdapter.applyRow` hard-sets `category: null`): needs an adapter-level category resolver that can reuse or create categories on demand.
+- **Bookable-vs-type derivation for products** (Jobber `Bookable: true` → our `type: "service"`): same transform layer.
+- **Future Jobber Visits enrichment import**: the Jobber Visits report is intentionally NOT the primary Jobs source (historical Jobs export is canonical). A future optional flow could use it to attach visit-level detail to already-imported archived jobs. Architecture shape: new adapter `VisitEnrichmentAdapter`, matches rows to existing imported jobs by `jobNumber`, creates `job_visits` rows with `isActive=false` so they don't show in dispatch. No code this pass — just architectural placeholder.
+
+#### Import Center — three pages consolidated into one canonical surface (UX + cleanup, 2026-04-22)
+
+**Before:** three independent routes (`/settings/import-clients`, `/settings/import-jobs`, `/settings/import-products`), each a 3-line page wrapping the same `ImportWizard` with a different config. Users navigated back to Settings between imports; Settings showed three cards for the same underlying tool.
+
+**After:** one canonical route `/settings/import` with type tabs. Switching from Clients to Jobs is a tab click; wizard state (CSV, mappings, preview, commit) resets cleanly on switch via React `key={entity}` remount. Settings exposes a single "Import Center" card.
+
+**Canonical reuse, zero backend change.**
+- All per-entity behavior continues to live in `client/src/components/imports/configs/{client,job,product}ImportConfig.ts` — those files are untouched.
+- Backend adapters (`server/services/importPipeline/adapters/*`) untouched. Routes untouched: `POST /api/imports/:entity/preview` and `POST /api/imports/:entity/commit` still dispatch by entity path.
+- Upload, column mapper, preview table, summary cards, commit dialog, results screen — all shared components continue as the single source of truth.
+
+**ImportWizard gains a non-breaking `variant` prop:**
+- `variant="standalone"` (default) — renders its own full-page wrapper + header. Identical to previous behavior; no caller-side change required.
+- `variant="embedded"` — renders body only (step indicator + active step + dialogs + a small "Start over" action on non-first steps). Host page owns the page chrome.
+
+**New page — `client/src/pages/ImportCenterPage.tsx`:**
+- Own page header ("Import Center" + "Back to Settings").
+- Type selector: on first load shows 3 large clickable cards (Clients / Historical Jobs / Products & Services); once a type is picked, collapses to a compact 3-tab strip so switching is one click.
+- Selected type persisted in `?type=<clients|jobs|products>` query param — deep-links, browser back/forward, and legacy URL redirects all work natively.
+- Wizard body renders below the tabs via `<ImportWizard key={activeType} variant="embedded" …>`. The `key` forces a fresh wizard instance on type change, so CSV from a Clients import never leaks into a subsequent Jobs import.
+
+**Routing:**
+- Added `Route path="/settings/import"` → `ImportCenterPage` (lazy-loaded, same `ProtectedRoute requireAdmin` gate as the legacy routes).
+- Legacy URLs redirect to the new route preserving the type:
+  - `/settings/import-clients` → `/settings/import?type=clients`
+  - `/settings/import-jobs` → `/settings/import?type=jobs`
+  - `/settings/import-products` → `/settings/import?type=products`
+- Every in-app caller updated: `SettingsPage` card list collapsed 3 → 1; `ProductsServicesManager`'s import button navigates to the new URL.
+
+**Files changed:**
+- NEW — `client/src/pages/ImportCenterPage.tsx`
+- Modified — `client/src/components/imports/ImportWizard.tsx` (added `variant` prop + body extraction; default behavior unchanged)
+- Modified — `client/src/App.tsx` (one import + four route entries updated)
+- Modified — `client/src/pages/SettingsPage.tsx` (three cards → one)
+- Modified — `client/src/components/ProductsServicesManager.tsx` (import-button URL)
+- Deleted — `client/src/pages/ClientImportPage.tsx`, `client/src/pages/JobImportPage.tsx`, `client/src/pages/ProductImportPage.tsx`
+
+**Breaking changes:** none. Legacy URLs redirect; backend contract unchanged; `ImportWizard` standalone behavior unchanged for any outside caller that might pass just `{ config }`.
+
+**Deferred — intentionally not in this pass:**
+- Persisting in-progress imports across type switches (current reset-on-switch is the correct default).
+- Bulk multi-type imports in one session.
+- Tracking historical import runs (no `import_jobs` log table exists yet).
+
+#### Sidebar cleanup + Dashboard opens on last-used view + tenant data reset hardening (UX + tooling, 2026-04-22)
+
+Three surgical changes around the dashboard surface and the dev reset workflow.
+
+**1. Financials sidebar entry removed.** The Financial Dashboard is now reached exclusively through the Operations ↔ Financial toggle in the Dashboard header. The `/financials` route stays live (the toggle navigates to it); only the redundant left-nav item was retired. `AppSidebar.tsx` drops the menu push block and the now-unused `DollarSign` lucide import.
+
+**2. Dashboard opens on the user's last-used view.** The `DashboardViewToggle` writes the clicked view (`operations` or `financial`) to `localStorage["syntraro:dashboard-view"]` synchronously before navigating. The Operations page (`/`) reads the same key at mount time and, if it says `financial`, redirects to `/financials` with `replace: true`. The read is a synchronous `useState` initializer, so the Operations layout doesn't flash before the bounce. Fresh localStorage defaults to Operations. No backend changes, no schema changes.
+
+**3. Tenant data reset scripts hardened + documented.**
+- `server/scripts/resetBusinessData.ts` (global, all tenants) now requires `RESET_TENANT_DATA=true` (legacy `CONFIRM_DEV_RESET=yes` still accepted). Wipe and keep lists were re-aligned against the current `shared/schema.ts` inventory (114 tables): added `client_files`, `contract_files`, `technician_files`, `notification_targets`, `reference_field_values`, `email_deliveries`, `quote_notes` to the wipe set; added `subscription_features`, `subscription_plan_features`, `subscription_plan_metadata`, `tenant_feature_overrides`, `equipment_types`, `reference_field_definitions`, `communication_templates`, `notification_preferences`, `issue_reports`, `internal_support_notes`, `payroll_settings` to the keep set; dropped the stale `tenant_features` reference (now `tenant_feature_overrides`).
+- `scripts/resetTenantData.ts` (per-tenant) gained the same `RESET_TENANT_DATA=true` gate plus `NODE_ENV !== "production"` guard, and the deletion manifest was rounded out with the missing tables above. Fixed the stale `client_contacts` reference (canonical name is `contact_persons`).
+- New doc at `docs/TENANT_RESET.md` covers usage, the wipe-vs-preserve manifest, post-reset behavior, and the R2 orphan-blob caveat.
+
+**Files affected:**
+- `client/src/components/AppSidebar.tsx`
+- `client/src/components/dashboard/DashboardViewToggle.tsx`
+- `client/src/pages/Dashboard.tsx`
+- `server/scripts/resetBusinessData.ts`
+- `scripts/resetTenantData.ts`
+- `docs/TENANT_RESET.md` *(new)*
+
+**Command to run a hard wipe:**
+```
+RESET_TENANT_DATA=true npm run db:reset:business
+```
+
+**Migration:** none required. **Breaking changes:** none.
+
+#### Company timezone read/write — cache-miss sentinel fix (bug fix, 2026-04-22)
+
+**Symptom:** after the Phase 3 refactor restart, already-onboarded tenants were being shown the "Set Your Company Timezone" modal, and clicking Confirm returned "Failed to save timezone". No error surfaced in server logs with a status code.
+
+**Root cause chain (two bugs, one masking the other):**
+
+1. **Missing migration.** `migrations/2026_04_21c_drop_tenant_features.sql` was authored as part of Phase 3 but never applied to the live Neon DB. It adds three `invoice_reminder_*_*` columns to `company_settings` that the Drizzle schema declares as `NOT NULL`. A `SELECT *` on `company_settings` would have failed with Postgres 42703 — but didn't, because of bug #2 masking it.
+
+2. **Cache-miss sentinel mismatch in `server/storage/company.ts:getCompanySettings`.** `server/services/cache.ts:CacheService.get` returns `null` for both a cache miss AND an explicitly-cached-null. `getCompanySettings` checked `if (cached !== undefined)`, which was always true — every cold-cache call short-circuited to `null` without ever reaching the DB. Effect: `GET /api/company-settings` returned `{ companyName, …, timezoneConfirmed: false }` with no `timezone` field, and the frontend dialog gated on `!settings.timezoneConfirmed` showed for every tenant on first cold load. `PUT /api/company-settings` then called `upsertCompanySettings` which calls the same broken `getCompanySettings`, got `null`, took the INSERT branch, and hit `company_settings_company_id_unique` → 500 → toast "Failed to save timezone".
+
+**Fixes applied:**
+
+1. Ran `npm run db:migrate:one -- migrations/2026_04_21c_drop_tenant_features.sql`. Adds the three missing columns, backfills from `tenant_features` (one pre-existing row for this tenant), drops the legacy `tenant_features` table. Idempotent + transactional per the migration header.
+
+2. `server/storage/company.ts:getCompanySettings` — changed cache check from `if (cached !== undefined)` to `if (cached)`, matching the pattern already used by the sibling caller in `server/storage/team.ts:301`. Non-null cache reads return cached value; null is treated as a miss and re-queries. `cache.set` now only fires when the DB returned a row, so null is never cached. Added a comment explaining the sentinel mismatch so future edits don't regress.
+
+**Why this preserves canonical architecture:**
+- Source of truth unchanged: `company_settings.timezone` + `company_settings.timezone_confirmed_at` are the canonical read/write target.
+- Read path (GET) and write path (PUT) both route through the same `companyRepository.getCompanySettings` / `upsertCompanySettings` pair.
+- No duplicate timezone storage introduced. No fallback logic. No bypass.
+- Scope confined to the two true root causes.
+
+**Files changed:**
+- `server/storage/company.ts` — cache-miss sentinel fix + clarifying comment.
+- DB state — `tenant_features` table dropped; three invoice-reminder columns added to `company_settings` (via pre-existing migration).
+- `CHANGELOG.md` — this entry.
+
+**Verification (in-repo diagnostic, removed after):**
+- Direct `db.select()` on `company_settings` succeeds post-migration.
+- `companyRepository.getCompanySettings` now returns the real row on cold-cache call (was returning null).
+- `companyRepository.upsertCompanySettings` with `{ timezone, timezoneConfirmedAt }` completes OK (was hitting UNIQUE violation).
+- `npm run check` — zero type errors on touched files.
+
+**Follow-up risk:** none real. If a tenant mid-onboarding has no `company_settings` row, `getCompanySettings` will now hit the DB on every call instead of returning a cached null — one extra query per request until the row is created. `onboardingService.createCompanyWithOwner` inserts the row as step one, so this window is effectively zero in practice.
 
 #### Canonical import pipeline — one engine, one wizard, all three entities (architecture, 2026-04-21)
 
@@ -131,6 +615,338 @@ Second category to come online on top of the Phase 1/2 notification triptych. Pa
 - Reminder emitter (brief explicitly out of scope).
 - Notifying newly-assigned techs inside a reschedule call where both schedule AND crew changed (the assignment-notification emitter is tied to the `assign-crew` route today; cross-route coordination is future work).
 - "Removed from visit" schedule notifications to techs taken off a visit during reschedule (only current crew gets schedule notifications in v1).
+
+#### SaaS Admin / Tenant Operations — Phase A6.1 Bulk Tenant Actions (feature, 2026-04-22)
+
+Row selection + bulk operator actions inside `/platform/tenants`. Every bulk write delegates to the canonical single-tenant writer (lifecycle service, billing repo, entitlement storage) — no new write paths. Each tenant gets its own success/error line so partial failures surface instead of hiding.
+
+**Server — `server/services/bulkTenantOpsService.ts` (NEW).** Thin batcher over existing canonical writers. Six actions, each iterating `tenantIds` inside a per-tenant try/catch:
+
+| Action | Per-tenant call |
+|---|---|
+| `extend_trial` (+7 / +14d) | `subscriptionLifecycleService.transition({ to: currentStatus, trialEndsAt: base + extension })` where base = max(current trialEndsAt, now) |
+| `assign_plan` | `billingRepository.updateBilling({ subscriptionPlan })` + `subscriptionLifecycleService.transition({ to: "active" })` |
+| `pause_subscription` | `subscriptionLifecycleService.transition({ to: "paused" })` |
+| `reactivate_subscription` | `subscriptionLifecycleService.transition({ to: "active" })` |
+| `add_override` | `entitlementStorage.upsertOverride` + `entitlementService.invalidateEntitlementsCache` |
+| `remove_override` | `entitlementStorage.deleteOverride` + cache invalidation |
+
+Validation runs once before the loop: `assign_plan` resolves + rejects unknown plan names at 400 (same guard as single-tenant); override actions resolve + reject unknown feature keys at 400 and block disabling core features. Per-tenant failure does not short-circuit the batch — each tenant reports `{ status: "ok" | "error", message? | error? }` in the result.
+
+Per-tenant audit: each successful write emits a `platformAuditService.log` row with `action = bulk_<op>`, `targetCompanyId = <tenantId>`, and the write's details. Because the canonical writers already emit their own audits (`subscription_events` for lifecycle transitions, entitlement route audits for overrides), the Phase A1 timeline shows both the per-tenant audit AND the lifecycle event without special-casing.
+
+**Server — `POST /api/platform/tenants/bulk` (NEW).** Thin route on `platformTenants.ts` gated by `requirePlatformRole(["platform_admin","platform_support","platform_billing"])` — the same write-roles set the Support Sessions router already uses (read-only auditors cannot mutate). Body validated via a Zod discriminated union on `action`; up to 200 `tenantIds` per request. Response shape: `{ action, total, succeeded, failed, results: BulkItemResult[] }`.
+
+**Client — `client/src/pages/platform/BulkTenantActions.tsx` (NEW).** Sticky bottom bar that appears only when `selectedIds.length > 0`. Six buttons open a single `BulkActionDialog` that morphs by action:
+- **Extend trial** — +7 / +14 day quick buttons.
+- **Assign plan** — plan dropdown sourced from `GET /api/platform/plans`, filtered to `active && name !== "trial"`.
+- **Pause / Reactivate** — optional reason textarea.
+- **Add override** — feature dropdown from `GET /api/platform/features`, enabled toggle, optional limit override (numeric input appears only when the "Override limit" toggle is on), optional reason. Matches the single-tenant `limitProvided` semantics.
+- **Remove override** — feature dropdown only.
+
+Every dialog shows the preview count in the description (`"Preview: N tenants will be affected."`). Confirm button label: `"Run on N"`. After submission, success invalidates three query caches (`/api/platform/tenants`, `/api/platform/kpis`, `/api/platform/trials/pipeline`) so the list, KPI strip, and trial pipeline refresh without manual refetch.
+
+**Client — `BulkResultDialog` (inline).** Opens automatically after every bulk run. Shows `succeeded / total (%)` header and one row per tenant — green tint for `ok`, red for `error`, with the tenant name (not id) and the server's per-tenant `message` or `error`. If every tenant succeeded, the selection is auto-cleared; if any failed, selection stays so the operator can retry.
+
+**Client — `PlatformTenantsList.tsx` (MODIFIED).** New checkbox column as first table column. Header checkbox is tri-state (checked / indeterminate / unchecked) driven by whether all/some/none of the current page's rows are selected — clicking toggles the whole page. Row checkbox toggles the individual tenant. Selection state lives in the page component and is NOT reset on search / sort / page refetch, so operators can build multi-page selections. Selected rows get a subtle `bg-muted/40` highlight.
+
+**Architecture rules preserved:**
+- Every bulk action is a thin batcher over the Phase 1 canonical writers. `subscriptionLifecycleService.transition` remains the sole writer of `companies.subscriptionStatus` + `trialEndsAt`. Plan name writes go through `billingRepository.updateBilling`. Entitlement overrides go through `entitlementStorage.upsertOverride`.
+- Per-tenant audit rows are written via the existing `platformAuditService` — no new audit table. Phase A1 timeline consumes them unchanged.
+- Client owns NO policy logic. Validation of plan names / feature keys / core-feature constraints lives entirely in the server. The client sends the request, displays the result.
+
+**Files changed:**
+- New — `server/services/bulkTenantOpsService.ts`, `client/src/pages/platform/BulkTenantActions.tsx`.
+- Modified — `server/routes/platformTenants.ts` (POST /bulk endpoint + Zod discriminated union), `client/src/pages/platform/PlatformTenantsList.tsx` (checkbox column + selection state + bar mount), `CHANGELOG.md`.
+
+**Verification:** `npm run check` passes.
+
+**Follow-up (Phase A6.2+):**
+- Size limit surfacing: 200-tenant per-request cap is server-enforced; add a client-side guard + warning toast if an operator has >200 selected.
+- Chunked execution for very large operator batches (the per-tenant try/catch already makes this safe, but 1000+ tenants in one request would hold an HTTP connection for a long time). Easy addition: process in chunks of 50 with a streaming response or a job-queue handoff.
+- "Undo last bulk action" — reconstructable from `subscription_events` and `audit_logs` entries tagged with the same bulk run id. Would need a bulk-run id column added to the audit details.
+- Pre-flight dry run: service-side `dryRun: true` param that walks the validation + per-tenant preconditions and returns the would-be result without writing. Useful for high-impact batches (pause everyone on Pro → oops).
+- Additional actions if operator demand surfaces (cancel_subscription, end_trial_now). Deliberately not built here to keep the surface narrow and the audit types recognizable.
+
+#### SaaS Admin / Tenant Operations — Phase A4 Tenant Health Score + Last Activity (feature, 2026-04-22)
+
+Fourth build on the operator control center. Turns the platform tenant list into a prioritized action queue: every row now carries a deterministic 0–100 health score, a status (`healthy` / `watch` / `at_risk` / `critical`), an ordered list of `reasons`, a `lastActivityAt` timestamp, and an onboarding snapshot. The list is sortable worst-first so operators triage from the top.
+
+**Server — `server/services/tenantHealthService.ts` (NEW).** Single canonical place where tenant health is scored. Pure function `computeTenantHealth(inputs)` is testable in isolation. Batch API `getHealthForCompanies(companyIds)` executes eight parallel batch queries (company identity, `MAX(lastLoginAt)` per company, `MAX(jobs.createdAt)`, `MAX(invoices.createdAt)`, 3× `SELECT DISTINCT` existence checks, `MIN(impersonation_sessions.createdAt)` for open sessions) and assembles health rows.
+
+**Score formula — deterministic, documented in service header.** Start at 100, apply penalties in a fixed order, clamp to `[0,100]`. Reasons sorted by penalty magnitude so `reasons[0]` is the top driver:
+
+| Bucket | Trigger | Penalty | Reason code |
+|---|---|---|---|
+| Subscription | `cancelled` | −70 | `sub_cancelled` |
+|  | `past_due` | −50 | `sub_past_due` |
+|  | `trial` + expired | −60 | `trial_expired` |
+|  | `trial` + ≤3d left | −30 | `trial_ending_soon` |
+|  | `paused` | −25 | `sub_paused` |
+|  | `trial` + ≤7d left | −12 | `trial_ending_this_week` |
+| Activity | never active, signup >3d | −18 | `never_active` |
+|  | gap >30d | −22 | `inactive_30` |
+|  | gap >14d | −12 | `inactive_14` |
+|  | gap >7d | −5 | `inactive_7` |
+| Onboarding | 0/5 + signup ≥2d | −15 | `onboarding_not_started` |
+|  | ≤2/5 + signup ≥7d | −8 | `onboarding_stalled` |
+| Support | open session >7d old | −5 | `long_support_session` |
+
+Subscription penalties are mutually exclusive by precedence. Activity penalties are mutually exclusive (take the strongest one that matches).
+
+Status thresholds: `score >= 80 → healthy`, `>= 60 → watch`, `>= 30 → at_risk`, else `critical`.
+
+`lastActivityAt` is computed as `max(users.lastLoginAt, jobs.createdAt, invoices.createdAt)` across the tenant. Onboarding is the same 5-step snapshot used by Phase A2 trial pipeline (`hasClient` / `hasJob` / `hasInvoice` / `hasTechnician` / `hasQboConnected`).
+
+**Server — `platformTenantsService.searchTenants` enriched.** Every list row now includes a `health` field. When the caller passes `sortBy=health`, the service overfetches up to 500 tenants (`SORT_OVERFETCH_CAP`), scores the whole set, sorts ascending by score, tie-breaks newest-first, and then slices by `limit` / `offset` in memory. Default ordering stays createdAt-desc. Storage layer is unchanged; sort happens in service after enrichment so storage has no knowledge of health.
+
+**Server — `GET /api/platform/tenants` accepts `sortBy=health`** (added to `listQuerySchema`). Response type grows a `sortBy` echo field and each row grows a `health` object. Existing callers not passing `sortBy` see no semantic change.
+
+**Server — `GET /api/platform/tenants/:tenantId/health` (NEW).** Thin endpoint that returns the canonical `TenantHealth` for one tenant. Used by the tenant detail page and any future caller needing health independent of the list. Gated by the parent `requirePlatformRole()`.
+
+**Server — `platformTenantsService.getTenantDetail` also returns `health`.** The single round-trip that hydrates `PlatformTenantDetail` now includes health, so the detail page can render without a follow-up request.
+
+**Client — `PlatformTenantsList.tsx` (REWRITTEN).** Three new columns added — Health (colored badge `score · status` with reasons in tooltip), Last activity (relative time, "never" fallback, timestamp tooltip), Top reason (first reason, truncated with full list in tooltip). A new "Sort by worst health" button in the header toggles the `sortBy` query param; React Query re-keys and re-fetches automatically. Health badges color-tone by status: emerald / amber / orange / red.
+
+**Architecture rules preserved:**
+- No new tables, no new writers, no duplicate scoring logic anywhere on the client — the client renders what the service returns.
+- The scoring function is pure and deterministic; given the same inputs at the same `now`, it produces identical outputs.
+- The onboarding definition is lifted from Phase A2 rather than re-derived. Phase A2's stalled-trial bucket and Phase A3's KPI strip and Phase A4's inactivity penalty all agree on the same activity signal.
+
+**Files changed:**
+- New — `server/services/tenantHealthService.ts`.
+- Modified — `server/services/platformTenantsService.ts` (health enrichment + sortBy=health path), `server/routes/platformTenants.ts` (sortBy in query schema + new `/:tenantId/health` endpoint), `client/src/pages/platform/PlatformTenantsList.tsx` (Health / Last activity / Top reason columns + sort toggle), `CHANGELOG.md`.
+
+**Verification:** `npm run check` passes.
+
+**Follow-up (Phase A5+):**
+- Render a health badge + reasons strip on `PlatformTenantDetail` — the hook is already there (`detail.health` in the response).
+- Cache invalidation on canonical lifecycle writes (shared concern with Phase A3 KPI cache): one-liner in `subscriptionLifecycleService.transition` + `billingRepository.updateBilling` + trial-extend / plan-assign mutations.
+- QBO sync-health penalty: add a `-10` penalty when `qboEnabled && qboRealmId` but the most recent QBO sync failed or the sync queue is >N items. Data exists; wiring is an additive reason code.
+- "Billing warning" penalty: add when `subscription_events` shows a recent `renewal_notice_7` with no subsequent `status_changed`. Requires reading subscription_events — skipped in A4 to keep the batch narrow.
+- Snapshot/history: capture a daily health score per tenant into a `tenant_health_snapshots` table so churn-risk trend lines become possible. Explicitly out-of-scope here (Phase A4 is all read-only).
+
+#### SaaS Admin / Tenant Operations — Phase A3 Platform KPI Strip (feature, 2026-04-22)
+
+Third build on the operator control center. Adds top-of-page platform-wide KPIs to `/platform/tenants` and `/platform/trials` via a single canonical service. One endpoint, one query, one render — zero derivation in the client.
+
+**Server — `server/services/platformKpiService.ts` (NEW).** Canonical read service computing all 11 metrics in one call. Reads existing tables only; 60s cached via the shared `cache` service.
+
+| Metric | Formula |
+|---|---|
+| `active_tenants` | `COUNT companies WHERE subscription_status='active'` |
+| `trial_tenants` | `COUNT companies WHERE subscription_status='trial'` |
+| `trials_ending_7d` | `COUNT companies WHERE subscription_status='trial' AND trialEndsAt ∈ (now, now+7d]` |
+| `converted_30d` | DISTINCT `companyId` from `subscription_events` with `type='status_changed'`, metadata.from=`'trial'`, metadata.to=`'active'`, `createdAt > now-30d` |
+| `expired_not_converted_30d` | `COUNT companies WHERE subscription_status='trial' AND trialEndsAt ∈ (now-30d, now)` — still on trial after expiry = did not convert |
+| `churned_30d` | DISTINCT `companyId` from `subscription_events` with `type='status_changed'`, metadata.to=`'cancelled'`, `createdAt > now-30d` |
+| `estimated_mrr_cents` | `SUM(subscription_plans.monthlyPriceCents)` across active tenants LEFT JOINed on `subscription_plan`. Normalized monthly run-rate — billing interval does not affect MRR. Unresolvable plan names and NULL prices contribute 0 |
+| `estimated_arr_cents` | `estimated_mrr_cents × 12` |
+| `stalled_trials` | Delegates to `trialPipelineService.getTrialPipeline()` → `buckets.stalled_trial.count`. One canonical definition of "stalled" shared by the dashboard and the KPI strip |
+| `support_sessions_open` | `COUNT impersonation_sessions WHERE accessMode='read_only' AND status IN ('pending','active')` |
+| `impersonations_open` | `COUNT impersonation_sessions WHERE accessMode='impersonation' AND status IN ('pending','active')` |
+
+All 10 queries run in `Promise.all`; stalled piggybacks on the Phase A2 trial-pipeline cache so the first caller warms both. Result shape:
+```
+{ generatedAt, active_tenants, trial_tenants, trials_ending_7d, converted_30d,
+  expired_not_converted_30d, churned_30d, estimated_mrr_cents, estimated_arr_cents,
+  stalled_trials, support_sessions_open, impersonations_open }
+```
+
+**Server — `server/routes/platformKpis.ts` + `GET /api/platform/kpis` (NEW).** Thin router mounted at `/api/platform/kpis` via `server/routes/platform.ts`. Read-only. Gated by parent `requirePlatformRole()` + in-file defense-in-depth.
+
+**Client — `client/src/pages/platform/PlatformKpiStrip.tsx` (NEW).** Compact KPI band rendered above the primary content on every operator surface.
+- Single `useQuery(["/api/platform/kpis"])` with a 60s `staleTime` matching the server cache. React Query de-dupes across multiple mounts, so navigating Tenants ↔ Trials reuses the same cached response.
+- 10 tiles on `xl` screens (2 × 5 grid), collapsing to 2 × 4 on `md`, 2 × N on mobile. Each tile: icon + uppercase micro-label + large tabular-numeric value, color-toned by severity (green for growth metrics, amber for watch-items, red for churn/expired).
+- MRR tile shows `$Xk` / `$X.YM` short-form; hover tooltip includes ARR.
+- Every tile has a `title=` explaining the exact formula so an operator hovering on "Stalled" or "Expired 30d" sees the definition without leaving the page.
+- Skeleton shimmer on first load.
+
+**Client — mounted on two pages.** `PlatformTenantsList.tsx` and `PlatformTrialsPipeline.tsx` each render `<PlatformKpiStrip />` immediately under `<PlatformLayout>`. No other UI changes to either page.
+
+**Architecture notes:**
+- No new tables. No new writers. No client-side derivation of any KPI.
+- Stalled-trials count is read from the Phase A2 service, not recomputed — there is exactly one definition of "stalled" across the platform.
+- MRR uses `monthlyPriceCents` uniformly: annual subscribers contribute `monthlyPriceCents` per month toward run-rate, not `monthlyPriceCents × 12 / 12` (which is the same number but computed via a different path — the uniform formula avoids billing_interval branching that would drift).
+- `expired_not_converted_30d` uses a direct `companies` predicate (trial + trialEndsAt in window) rather than `subscription_events.trial_expired` — simpler, no false positives from legacy event backfills, and the metric reflects current state rather than historical event count.
+- `converted_30d` and `churned_30d` rely on the metadata written by `subscriptionLifecycleService.transition`, which is Phase 1's sole writer of status transitions.
+
+**Files changed:**
+- New — `server/services/platformKpiService.ts`, `server/routes/platformKpis.ts`, `client/src/pages/platform/PlatformKpiStrip.tsx`.
+- Modified — `server/routes/platform.ts` (mount `/kpis` router), `client/src/pages/platform/PlatformTenantsList.tsx` + `client/src/pages/platform/PlatformTrialsPipeline.tsx` (mount the strip), `CHANGELOG.md`.
+
+**Verification:** `npm run check` passes.
+
+**Follow-up (Phase A4+):**
+- Cache invalidation on canonical lifecycle writes. Today `platform_kpis:v1` and `trial_pipeline:v1` rely on 60s expiry; extending a trial or assigning a plan doesn't bust the KPI cache immediately. Acceptable on this cadence; upgrade path is a single `cache.delete("platform_kpis:v1")` in `subscriptionLifecycleService.transition` + `billingRepository.updateBilling`.
+- Historical series (MRR trend line, trial-conversion funnel over time) requires a time-series rollup table — out of scope here, natural Phase B work.
+- ARR tile is computed on client (`mrr_cents × 12`) after the single server round-trip to keep the server payload minimal; if the formula ever needs currency rounding rules, pre-compute on the server.
+- Stripe-linked MRR (once webhooks are live) replaces the `monthlyPriceCents` approximation with the actual recognized revenue. Same service, same endpoint — just the formula inside `computeEstimatedMrrCents` changes.
+
+#### SaaS Admin / Tenant Operations — Phase A2 Trial Pipeline Dashboard (feature, 2026-04-22)
+
+Second build on the operator control center. Turns silent trial data into actionable workflow: `/platform/trials` surfaces every trial tenant, bucketed by urgency, with one-click extend and plan-assign actions. Read-heavy by design. All writes flow through the Phase 1 canonical lifecycle + billing endpoints — no new write routes.
+
+**Server — `server/services/trialPipelineService.ts` (NEW).** Canonical read service. Queries `companies` for trial tenants + recently-converted tenants (via `subscription_events` `status_changed` with `from='trial'`, `to='active'` in last 30 days), enriches each row with:
+- `lastLoginAt` from `MAX(users.lastLoginAt)` batch query grouped by company.
+- Onboarding snapshot — five parallel existence checks: `client_locations`, `jobs`, `invoices`, `users WHERE role='technician'`, `companies.qboEnabled AND qboRealmId IS NOT NULL`.
+- `daysUntilEnd` (negative = expired days ago) and `daysSinceLogin` derived client-neutrally.
+
+Classification runs after enrichment with strict precedence — a tenant belongs to exactly one bucket:
+1. `converted_recently` — trial→active transition in the last 30 days.
+2. `expired_not_converted` — `status='trial' AND trialEndsAt < now`.
+3. `ending_soon` — 0–3 days remaining.
+4. `stalled_trial` — any remaining trial where max user `lastLoginAt` is ≥7 days ago (not already in ending_soon).
+5. `ending_this_week` — 4–7 days remaining, not stalled.
+
+Healthy long trials (>7 days out AND recent login) are excluded from the dashboard — the goal is actionable rows only. The full matrix is cached 60s via the existing `cache` service; one round-trip hydrates the whole page.
+
+**Server — `server/routes/platformTrials.ts` + `GET /api/platform/trials/pipeline` (NEW).** Thin route: validate nothing (no params), delegate to service, return. Gated by the parent `requirePlatformRole()` + in-file defense-in-depth. Mounted under `/api/platform/trials` via `server/routes/platform.ts`.
+
+Response shape:
+```
+{
+  generatedAt: ISO,
+  buckets: {
+    ending_soon:           { count, rows: TrialRow[] },
+    ending_this_week:      { count, rows },
+    expired_not_converted: { count, rows },
+    stalled_trial:         { count, rows },
+    converted_recently:    { count, rows },
+  }
+}
+```
+
+Each `TrialRow`: `companyId`, `companyName`, `plan`, `subscriptionStatus`, `trialEndsAt`, `daysUntilEnd`, `lastLoginAt`, `daysSinceLogin`, `onboarding: { hasClient, hasJob, hasInvoice, hasTechnician, hasQboConnected, stepsCompleted, stepsTotal }`, `convertedAt`, `createdAt`.
+
+**Client — `client/src/pages/platform/PlatformTrialsPipeline.tsx` (NEW).** Single page at `/platform/trials`:
+- Five color-coded bucket tiles across the top showing live counts. Click a tile to select its bucket.
+- Below: a compact operator table — Tenant (link to `/platform/tenants/:id`), Plan, Days (left or since expired), Last login, Onboarding (`N/5` plus a progress bar colored by completion tier), Actions.
+- **Extend dialog** — date-picker pre-filled to `trialEndsAt + 14 days` (or `today + 14` if no end set). Confirms via `PATCH /api/admin/tenants/:id/billing` with `trialEndsAt`. Lifecycle service owns the underlying write; audit event auto-lands on `subscription_events`.
+- **Assign plan dialog** — plan dropdown fetched from `GET /api/platform/plans` (filters out inactive + the `trial` plan). Confirms via `PATCH /api/platform/tenants/:id/subscription` with `{ subscriptionPlan, subscriptionStatus: 'active' }`. Lifecycle service handles the trial→active transition.
+- Both dialogs invalidate the `/api/platform/trials/pipeline` query on success for immediate re-bucketing.
+
+**Client — `PlatformLayout.tsx` (MODIFIED).** Added "Trials" nav entry between Tenants and Plans with the `Clock` icon.
+
+**Client — `App.tsx` (MODIFIED).** Lazy route `/platform/trials` → `PlatformTrialsPipeline` gated by `requirePlatformRole`.
+
+**Architecture notes:**
+- No new tables. No new writers. Actions reuse the Phase 1 canonical lifecycle + billing endpoints verbatim.
+- `converted_recently` reads from `subscription_events` (written by `subscriptionLifecycleService.transition`) — not from a derived `subscriptions` view or duplicate event source.
+- The service's five existence checks are separate `SELECT DISTINCT` batch queries (one per table, filtered with `IN (...)` over the merged company-id set). On a few hundred tenants this is negligible; under larger scale the pattern generalizes to a single CTE, no architectural rework.
+- Onboarding steps are derived on-read — no `tenant_onboarding_state` table. A Phase A3/A4 upgrade can lift this to a cached signal if the aggregate read ever becomes a hotspot.
+
+**Files changed:**
+- New — `server/services/trialPipelineService.ts`, `server/routes/platformTrials.ts`, `client/src/pages/platform/PlatformTrialsPipeline.tsx`.
+- Modified — `server/routes/platform.ts` (mount `/trials` router), `client/src/pages/platform/PlatformLayout.tsx` (nav entry), `client/src/App.tsx` (lazy route), `CHANGELOG.md`.
+
+**Verification:** `npm run check` passes. No migrations (pure read).
+
+**Follow-up (Phase A3+):**
+- Per-bucket "Load more" pagination if bucket counts routinely exceed one screen (today buckets return the full list unbounded — acceptable on current tenant-count scale).
+- Trial conversion rate KPI strip on the page header: `converted / (converted + expired_not_converted)` over a 30-day window — same data, new derivation.
+- Proactive nudges: when `stalled_trial` count grows, feed that into a future PlatformKPIs dashboard (Phase A3) for a single operator home page.
+
+#### SaaS Admin / Tenant Operations — Phase A1 Tenant Timeline (feature, 2026-04-22)
+
+First build on top of the canonical policy architecture. Adds a single chronological event stream per tenant, surfaced on `PlatformTenantDetail`. Pure read path — no new tables, no new writers, no duplicated sources.
+
+**Server — `server/services/tenantTimelineService.ts` (NEW).** Canonical read service that unions six existing event streams into one normalized `TimelineEvent` shape (`id`, `timestamp`, `kind`, `title`, `subtitle`, `actor`, `severity`, `metadata`, `sourceTable`):
+- `subscription_events` → `subscription.{type}` (status_changed, trial_expired, cancelled, signup, renewed, renewal notices, etc.). Metadata includes from/to, actorUserId, reason, subscriptionId.
+- `audit_logs` (filtered by `targetCompanyId`) → `audit.{action}`. Parses stringified JSON details; actor = platform admin.
+- `impersonation_sessions` → both `support.session_{created,started,ended,revoked}` and `impersonation.session_{...}` discriminated by the row's `accessMode`. Each session can emit up to 4 events — one per visible state transition (`createdAt`, `startedAt` if distinct, `revokedAt` priority over `endedAt`).
+- `tenant_feature_overrides` joined with `subscription_features` → `entitlement.override_created` (at `createdAt`) and, if the row was later updated (updatedAt drift >1s), an additional `entitlement.override_updated` (at `updatedAt`). Subtitle shows the effect (`enabled/disabled, limit=N, reason`).
+- `feedback` → `feedback.submitted`. Severity escalates on `priority=high|urgent`.
+- `issue_reports` → `issue.reported`. Severity maps from `severity` field (`critical|high` → danger; `medium` → warning; else info).
+
+Events are fetched in parallel per source (limit-capped), merged in memory, sorted by timestamp desc with id-tiebreak, and paged via `before` cursor. No schema changes — every source table already has appropriate company/tenant-id indexes for this query shape.
+
+**Server — `GET /api/platform/tenants/:tenantId/timeline` (NEW).** Mounted on the existing `platformEntitlements` router (same auth + routing context as the sibling `entitlements` / `usage` / `overrides` reads). Filters:
+- `limit` (1–100, default 50)
+- `before` (ISO datetime — keyset cursor over the merged stream)
+- `kinds[]` (group filter — any of `subscription`, `audit`, `support`, `impersonation`, `entitlement`, `feedback`, `issue`; accepts repeated query params, comma-separated, or a single value)
+
+Response shape: `{ tenantId, events: TimelineEvent[], hasMore: boolean, nextBefore: string | null }`.
+
+Gated by the existing `requirePlatformRole()` middleware (defense-in-depth + parent router).
+
+**Client — `client/src/pages/platform/TenantTimeline.tsx` (NEW).**
+- `useInfiniteQuery` with `{ pageParam: before }` — initial page is newest-first; "Load older" appends the next page using `nextBefore`.
+- Seven group filter chips (Subscription / Audit / Support / Impersonation / Overrides / Feedback / Issues) + a "Clear" chip. Toggling chips re-keys the query (new cache entry, automatic refetch).
+- Compact vertical list: severity dot + group badge + title + optional subtitle + relative time + actor + raw `kind`. Click row to expand; expanded row shows pretty-printed metadata JSON.
+- Severity color palette: `info` slate, `success` emerald, `warning` amber, `danger` red.
+- Skeleton shimmer on first load; inline spinner on refetch.
+
+**Client — `PlatformTenantDetail.tsx` (MODIFIED).** Mounts `<TenantTimeline tenantId={...} />` immediately below `EntitlementsSection`. No other UI changes.
+
+**Architecture notes:**
+- No new tables. No new writers. No duplicate roots.
+- `support_sessions` and `impersonation_sessions` in the audit originally called out as two sources share one physical table (`impersonation_sessions` with `accessMode` discriminator); the service produces distinct event kinds for each accessMode, so the timeline UI can filter them separately.
+- Per-source fan-out for `impersonation_sessions` and `tenant_feature_overrides` is handled in service code (not SQL UNION) so each source's natural ordering can drive a narrow, indexed read.
+- Pagination uses the merged stream's timestamp as the cursor. Strict `<` boundary means duplicate events at identical millisecond timestamps are possible on page boundaries — client dedupes on `id` (composite stable form `sourceTable:rowId[:phase]`).
+
+**Files changed:**
+- New — `server/services/tenantTimelineService.ts`, `client/src/pages/platform/TenantTimeline.tsx`.
+- Modified — `server/routes/platformEntitlements.ts` (timeline endpoint + import), `client/src/pages/platform/PlatformTenantDetail.tsx` (mounts the component), `CHANGELOG.md`.
+
+**Verification:** `npm run check` passes.
+
+**Follow-up (Phase A2+):**
+- Per-row actor join: resolve `actor.id` to `email` for audit-log sub-event transitions (created/started/ended/revoked) where only the owner id is stored. `audit_logs` already has email on the row.
+- Pagination hardening: when page-boundary duplicates surface in practice, add a composite `(timestamp,id)` cursor. Today the client-side id dedupe covers it.
+- Unified bulk-events source: when `tenantSignals` (Phase B, unified feedback+issues) lands, the timeline merges down to one feedback/issue source instead of two.
+
+#### Canonical Policy Architecture — Phase 3 (refactor, 2026-04-21)
+
+Final cleanup pass. With the DB about to be wiped, legacy compatibility scaffolding is removed — no coexistence layers preserved, no migration shims for old tenant rows, no endpoints kept "just in case". The canonical architecture is now the only one.
+
+**Legacy feature-key translation removed.** `server/auth/requireFeature.ts` no longer carries a `LEGACY_TO_CANONICAL_KEY` map or `resolveCanonicalFeatureKey()` helper. The five `requireFeature()` callsites were migrated to canonical snake_case keys directly:
+- `requireFeature("quotesEnabled")` → `requireFeature("quotes")` in `server/routes/quotes.ts`
+- `requireFeature("invoicesEnabled")` → `requireFeature("invoices")` in `server/routes/invoices.ts`
+- `requireFeature("calendarEnabled")` → `requireFeature("scheduling_calendar")` in `server/routes/scheduling.ts`
+- `requireFeature("multiTechEnabled")` → `requireFeature("multi_tech_scheduling")` in `server/routes/scheduling.ts`
+- `requireFeature("qboEnabled")` → `requireFeature("quickbooks_online")` in `server/routes/qbo.ts`
+
+The `canonical-policy-architecture.test.ts` assertions for the legacy map were deleted.
+
+**Direct `tenant_features` column reads migrated to the resolver.** The five remaining sites that queried the legacy boolean columns directly (four in `server/routes/portal.ts`, one in `server/services/templateDataBuilder.ts`) now call `entitlementService.getEntitlement(companyId, "customer_portal")` / `"customer_portal_payments"`. Portal magic-link issuance, `GET /api/portal/me`, invoice detail, checkout creation, and template pay-link expansion all go through the same canonical resolver as every other feature gate.
+
+**Reminder cadence moved to `company_settings`.** `invoiceRemindersEnabled`, `invoiceReminderFirstDelayDays`, `invoiceReminderRepeatEveryDays` are tenant configuration — not policy — and now live on `company_settings` alongside timezone and other preferences. `invoiceReminderService.ts` reads from `companyRepository.getCompanySettings()`. The tenant-facing `InvoiceRemindersSettingsPage` reads / writes via the canonical `GET` / `PUT /api/company-settings` endpoints (same pattern every other tenant preference uses) — the admin-only `/api/admin/tenants/:id/billing-features` round-trip is gone.
+
+**`tenantFeaturesRepository` split and deleted.** The billing half (`getBilling` / `updateBilling`) always operated on the `companies` table — the `tenant_features` name was misleading — so it moved to a dedicated `server/storage/billing.ts` (`billingRepository`). The feature half (`getFeatures`, `isFeatureEnabled`, `getFeaturesWithBilling`, `updateFeatures`, `getAllTenantsFeaturesSummary`, `DEFAULT_FEATURES`) plus the cache-key helper and the whole file `server/storage/tenantFeatures.ts` are deleted.
+
+**Legacy endpoints removed** — no in-app callers confirmed pre-delete:
+- `GET /api/company-settings/features` (superseded by `GET /api/me/entitlements`).
+- `GET /api/admin/tenants/:id/billing-features` (superseded by `GET /api/me/entitlements` + `/api/platform/tenants/:id/entitlements`).
+- `PATCH /api/admin/tenants/:id/features` (superseded by `PUT /api/platform/tenants/:id/overrides/:featureKey`).
+- `GET /api/platform/tenants/:id/features` (superseded by `/api/platform/tenants/:id/entitlements`).
+- `PATCH /api/platform/tenants/:id/features` (superseded by the override endpoints).
+- `GET /api/subscriptions/usage` (superseded by `GET /api/me/entitlements`).
+- `platformTenantsService.getTenantFeatures` + `updateTenantFeatures` methods are deleted; the service now owns only search + tenant detail.
+
+**`tenant_features` table dropped.** Schema entries `tenantFeatures`, `insertTenantFeaturesSchema`, `updateTenantFeaturesSchema`, `featureKeys`, type `FeatureKey`, type `TenantFeatures`, type `InsertTenantFeatures`, type `UpdateTenantFeatures` all removed from `shared/schema.ts`. SQL migration `2026_04_21c_drop_tenant_features.sql` (a) adds reminder cadence columns to `company_settings` (ADD IF NOT EXISTS), (b) defensively backfills them from `tenant_features` when the old table still exists, (c) `DROP TABLE IF EXISTS tenant_features CASCADE`. Idempotent and transactional.
+
+**Legacy admin UI removed.** `client/src/pages/AdminTenantDetail.tsx` (tenant-admin feature-toggle page) is deleted entirely — it was bound to the deleted `/api/admin/tenants/:id/features` endpoints. The `/admin/tenants/:companyId` route is removed from `App.tsx`. The `AdminTenants` list now navigates to `/platform/tenants/:id` (the canonical surface for platform-admin tenant management). In `client/src/pages/platform/PlatformTenantDetail.tsx`, the "Legacy" feature-flag card + `FLAG_KEYS` array + `patchFlag` mutation are deleted; platform admins manage features entirely via the existing `EntitlementsSection` (plan assignment + `/overrides/:featureKey` PUT/DELETE).
+
+**Final canonical model:**
+- **Reads:** `entitlementService.getEntitlement(companyId, key)` / `getTenantEntitlements(companyId)` (server); `useEntitlements` / `useFeatureEnabled` / `useEffectivePermissions` / `useHasPermission` (client).
+- **Writes — feature state:** `entitlementStorage.upsertOverride` via `PUT /api/platform/tenants/:id/overrides/:featureKey`.
+- **Writes — subscription lifecycle:** `subscriptionLifecycleService.transition()` — sole writer of `companies.subscriptionStatus` + `trialEndsAt`.
+- **Writes — billing (plan / interval / period-end):** `billingRepository.updateBilling` on `companies`.
+- **Writes — permissions:** `userPermissionOverrides` grant/revoke/inherit via `PATCH /api/team/:userId/permissions`; role-permission mappings via `PUT /api/roles/:roleId/permissions`.
+- **Seeding:** migration-driven only (`2026_04_21_seed_rbac_catalog.sql` + `2026_04_21_feature_catalog_alignment.sql`).
+
+**Files changed:**
+- New — `server/storage/billing.ts`, `migrations/2026_04_21c_drop_tenant_features.sql`.
+- Modified — `server/auth/requireFeature.ts`, `server/routes/quotes.ts`, `server/routes/invoices.ts`, `server/routes/scheduling.ts`, `server/routes/qbo.ts`, `server/routes/portal.ts`, `server/services/templateDataBuilder.ts`, `server/routes/companySettings.ts`, `server/routes/admin.ts`, `server/routes/platformTenants.ts`, `server/routes/platformEntitlements.ts`, `server/routes/subscriptions.ts`, `server/services/invoiceReminderService.ts`, `server/services/platformTenantsService.ts`, `server/storage/company.ts`, `shared/schema.ts` (drops legacy table + adds reminder cadence to company_settings), `client/src/pages/InvoiceRemindersSettingsPage.tsx`, `client/src/pages/platform/PlatformTenantDetail.tsx`, `client/src/pages/AdminTenants.tsx` (link target), `client/src/App.tsx` (route removed), `tests/canonical-policy-architecture.test.ts` (legacy-map assertions removed), `CHANGELOG.md`.
+- Deleted — `server/storage/tenantFeatures.ts`, `client/src/pages/AdminTenantDetail.tsx`.
+
+**Verification:** `npm run check` passes. One SQL migration pending: `2026_04_21c_drop_tenant_features.sql`.
+
+**Risks / follow-up:**
+- Any external (non-in-app) API consumer that hit the deleted endpoints will 404 at the routing layer. None known — Phase 2 verified no in-app callers, and no public API consumers of these endpoints have been identified. If one surfaces, the canonical replacements are listed above.
+- `platformAuditService.logTenantFeaturesUpdated` is now unreachable dead code (its only caller was the deleted `platformTenantsService.updateTenantFeatures`). Safe to delete in a cleanup pass; not blocking.
+- `companies.qboEnabled` column remains — this is NOT a feature-entitlement flag; it tracks whether QBO is actually connected for a tenant (driven by OAuth token presence). Distinct from the canonical `quickbooks_online` entitlement.
 
 #### Canonical Policy Architecture — Phase 2 (refactor, 2026-04-21)
 

@@ -99,13 +99,12 @@ export const cache = new CacheService();
 process.on('SIGTERM', () => cache.destroy());
 process.on('SIGINT', () => cache.destroy());
 
-export async function cached<T>(key: string, fn: () => Promise<T>, ttl?: number): Promise<T> {
-  const cachedValue = cache.get<T>(key);
-  if (cachedValue !== null) return cachedValue;
-  const result = await fn();
-  cache.set(key, result, ttl);
-  return result;
-}
+// 2026-04-22 removed: the `cached<T>()` wrapper helper. Zero consumers
+// across the codebase (grep-confirmed) and its `if (cachedValue !== null)`
+// check reused the same null-is-both-miss-and-value sentinel that caused
+// the company.ts cold-cache bug. Deleting it prevents future callers from
+// picking up a broken-by-default pattern. All current callers use
+// `cache.get` + `if (cached) return cached;` directly.
 
 export function invalidateCompanyCache(companyId: string): void {
   const pattern = CacheKeys.companyPattern(companyId);

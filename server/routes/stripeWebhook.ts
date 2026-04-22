@@ -41,6 +41,10 @@ import {
   WebhookTransientFailureError,
 } from "../services/payments/paymentApplicationService";
 import { resolveById } from "../services/payments/providers/resolver";
+// 2026-04-22 Payment Ops PR1: persist signature-verification failures
+// to the webhook event log alongside the normal delivery outcomes.
+// Safe-wrapped — log-write failure never affects the HTTP response.
+import { safeRecordPaymentWebhookEvent } from "../storage/paymentWebhookEvents";
 
 const NEUTRAL_PATH = "/api/webhooks/:provider";
 const LEGACY_STRIPE_PATH = "/api/webhooks/stripe";
@@ -91,6 +95,18 @@ async function handle(
       logAnomaly("signature_verification_failed", {
         providerId,
         message: err.message,
+      });
+      // No stable event id pre-verification — dedupeKey null means each
+      // signature failure is its own row (useful for rate-watching).
+      void safeRecordPaymentWebhookEvent({
+        providerId,
+        providerEventId: null,
+        eventType: null,
+        eventKind: "signature_failed",
+        outcome: "signature_failed",
+        httpStatus: 400,
+        errorMessage: err.message,
+        dedupeKey: null,
       });
       res.status(400).json({ error: "Invalid signature" });
       return;

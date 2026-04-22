@@ -55,7 +55,10 @@ import type {
 // ============================================================================
 
 const FIELD_DEFS: readonly AdapterFieldDef[] = [
-  { key: "companyName", label: "Company name", group: "Company", required: true },
+  // 2026-04-22: company name not strictly required — residential/person
+  // rows can identify themselves via first/last name. Per-row identity
+  // enforcement lives in validateRow.
+  { key: "companyName", label: "Company name", group: "Company", required: false },
   { key: "legalName", label: "Legal name", group: "Company", required: false },
   { key: "companyPhone", label: "Company phone", group: "Company", required: false },
   { key: "companyEmail", label: "Company email", group: "Company", required: false },
@@ -158,6 +161,28 @@ const GARBAGE_NAMES = new Set([
   "", "-", ".", "..", "...", "--", "n/a", "na", "none", "unknown", "tbd", "tba",
   "null", "undefined", "test", "xxx", "x",
 ]);
+
+/**
+ * 2026-04-22: resolve the effective customer_company.name for a row.
+ *
+ *   - commercial rows: trimmed companyName (as before)
+ *   - residential rows: "FirstName LastName" fallback, or just one of
+ *     the names when the other is blank
+ *   - all-blank rows: null — validateRow blocks these before commit
+ *
+ * The customer_company table is the canonical root for both commercial
+ * and residential clients; using the person's name as the company name
+ * preserves the existing architecture without introducing a parallel
+ * "is_person" dimension.
+ */
+function resolveEffectiveCompanyName(row: ClientImportRow): string | null {
+  const company = row.companyName?.trim();
+  if (company) return company;
+  const first = row.contactFirstName?.trim() ?? "";
+  const last = row.contactLastName?.trim() ?? "";
+  const combined = `${first} ${last}`.trim();
+  return combined || null;
+}
 
 function classifyContactIdentity(row: ClientImportRow): { meaningful: boolean; reason?: string } {
   const firstName = row.contactFirstName?.trim() ?? "";
@@ -296,7 +321,7 @@ export const clientImportAdapter: ImportAdapter<
     }
 
     return {
-      companyName: (raw.companyName ?? "").trim(),
+      companyName: trimOrNull(raw.companyName),
       legalName: trimOrNull(raw.legalName),
       companyPhone: trimOrNull(raw.companyPhone),
       companyEmail: extractFirstEmail(raw.companyEmail),
@@ -345,8 +370,16 @@ export const clientImportAdapter: ImportAdapter<
     let existingCompanyName: string | undefined;
     let billingConflicts: { field: string; existing: string; incoming: string }[] | undefined;
 
-    if (!row.companyName) {
-      errors.push({ field: "companyName", message: "Company name is required" });
+    // 2026-04-22: accept residential/person rows — require at least one
+    // identifier (company name OR first name OR last name). The customer
+    // company record still exists for residential rows, using the
+    // effective name resolved below.
+    const effectiveCompanyName = resolveEffectiveCompanyName(row);
+    if (!effectiveCompanyName) {
+      errors.push({
+        field: "companyName",
+        message: "Client requires at least one identifier: company name, first name, or last name.",
+      });
     }
     if (row.companyEmail && !isValidEmailShape(row.companyEmail)) {
       errors.push({ field: "companyEmail", message: "Invalid email format" });
@@ -385,7 +418,7 @@ export const clientImportAdapter: ImportAdapter<
       }
     }
 
-    if (!row.locationName && row.companyName) {
+    if (!row.locationName && effectiveCompanyName) {
       warnings.push("Location name blank — will use address or company name");
     }
     if (!hasAnyContactField) {
@@ -395,8 +428,8 @@ export const clientImportAdapter: ImportAdapter<
       warnings.push("No service address provided");
     }
 
-    if (row.companyName) {
-      const norm = normalizeForMatch(row.companyName);
+    if (effectiveCompanyName) {
+      const norm = normalizeForMatch(effectiveCompanyName);
       const entry = await loadCompanyCacheEntry(ctx.companyId, norm, previewCtx);
       if (entry.exists) {
         existingCompanyName = entry.name;
@@ -479,9 +512,13 @@ export const clientImportAdapter: ImportAdapter<
       const details = row.details;
       if (!details) continue;
       const n = row.normalized;
-      if (!n.companyName) continue;
+      // 2026-04-22: use effective name (commercial or residential) as the
+      // within-CSV dedupe key. Rows with no identifier at all are already
+      // flagged "failed" in validateRow and can be skipped here.
+      const effective = resolveEffectiveCompanyName(n);
+      if (!effective) continue;
 
-      const normalizedCompany = normalizeForMatch(n.companyName);
+      const normalizedCompany = normalizeForMatch(effective);
 
       // Company: if a prior row creates the same-name company, this row matches.
       if (details.companyAction === "create") {
@@ -572,7 +609,19 @@ export const clientImportAdapter: ImportAdapter<
   async applyRow(row, rowIndex, ctx, commitCtx): Promise<RowOutcome> {
     const tx = commitCtx.tx;
 
-    const companyName = row.companyName.trim();
+    // 2026-04-22: effective company name falls back to "FirstName LastName"
+    // for residential/person rows. Zod + validateRow guarantee at least
+    // one identifier is present by the time we reach applyRow, but guard
+    // defensively so a future caller mistake throws a clear error instead
+    // of a null-pointer deref.
+    const effective = resolveEffectiveCompanyName(row);
+    if (!effective) {
+      throw new Error(
+        "Client row reached commit without any identifier (company/first/last name). " +
+        "Preview validation should have blocked this row.",
+      );
+    }
+    const companyName = effective;
     const normalizedName = normalizeForMatch(companyName);
 
     // 1. Resolve (create or match) the customer company via the canonical repo.
@@ -708,13 +757,14 @@ export const clientImportAdapter: ImportAdapter<
 
     // 3. Contact — same identity cascade as the legacy importer.
     let contactCreated = false;
+    let contactId: string | undefined;
     const hasAnyContactField = !!(
       row.contactFirstName?.trim() || row.contactLastName?.trim() ||
       row.contactEmail?.trim() || row.contactPhone?.trim()
     );
     const contactIdentity = hasAnyContactField ? classifyContactIdentity(row) : null;
     if (hasAnyContactField && contactIdentity?.meaningful) {
-      const { created } = await clientContactRepository.createOrGetPersonTx(tx, ctx.companyId, {
+      const { contact, created } = await clientContactRepository.createOrGetPersonTx(tx, ctx.companyId, {
         customerCompanyId: companyId,
         firstName: row.contactFirstName?.trim() || "",
         lastName: row.contactLastName?.trim() || "",
@@ -723,14 +773,22 @@ export const clientImportAdapter: ImportAdapter<
         isPrimary: true,
       });
       contactCreated = created;
+      contactId = contact.id;
     }
 
     const anythingCreated = companyCreated || locationCreated || contactCreated;
+    // 2026-04-22 Phase 2b: expose customer/location/contact ids so the
+    // Import Center's custom-field writer can target the correct entity.
     return {
       rowIndex,
       disposition: anythingCreated ? "created" : "matched",
       entityId: companyId,
       entityLabel: companyName,
+      relatedEntities: {
+        customerCompanyId: companyId,
+        ...(locationId ? { locationId } : {}),
+        ...(contactId ? { contactId } : {}),
+      },
     };
   },
 };

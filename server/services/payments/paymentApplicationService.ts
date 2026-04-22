@@ -27,6 +27,13 @@ import { paymentRepository } from "../../storage/payments";
 import { canAcceptInvoicePayment } from "../../lib/invoicePredicates";
 import { createError } from "../../middleware/errorHandler";
 import { emailDispatchService } from "../emailDispatchService";
+// 2026-04-22 Payment Ops PR1: persistent webhook-event log. Calls are
+// fire-and-forget — a log-write failure must never block the canonical
+// webhook decision path.
+import {
+  buildDedupeKey,
+  safeRecordPaymentWebhookEvent,
+} from "../../storage/paymentWebhookEvents";
 import {
   resolveForCompany,
   resolveById,
@@ -574,6 +581,20 @@ async function applyVerifiedWebhookBatch(
             providerPaymentId: event.providerPaymentId,
             lastError: event.lastErrorMessage,
           });
+          void safeRecordPaymentWebhookEvent({
+            providerId,
+            providerEventId: event.eventId,
+            eventType: event.eventType,
+            eventKind: "payment_failed",
+            outcome: "ignored",
+            httpStatus: 200,
+            providerPaymentId: event.providerPaymentId,
+            errorMessage: event.lastErrorMessage ?? null,
+            dedupeKey: buildDedupeKey({
+              providerId,
+              providerEventId: event.eventId,
+            }),
+          });
           out.ignored.push(event);
           break;
         case "unsupported":
@@ -581,6 +602,18 @@ async function applyVerifiedWebhookBatch(
             providerId,
             eventId: event.eventId,
             eventType: event.eventType,
+          });
+          void safeRecordPaymentWebhookEvent({
+            providerId,
+            providerEventId: event.eventId,
+            eventType: event.eventType,
+            eventKind: "unsupported",
+            outcome: "ignored",
+            httpStatus: 200,
+            dedupeKey: buildDedupeKey({
+              providerId,
+              providerEventId: event.eventId,
+            }),
           });
           out.ignored.push(event);
           break;
@@ -611,6 +644,22 @@ async function handlePaymentSucceeded(
   providerId: string,
   event: Extract<NormalizedWebhookEvent, { kind: "payment_succeeded" }>,
 ): Promise<"accepted" | "replay"> {
+  // Shared base for every log call in this handler. We fill in outcome +
+  // http_status + optional error_message at each decision point below.
+  const logBase = {
+    providerId,
+    providerEventId: event.eventId,
+    eventType: event.eventType,
+    eventKind: "payment_succeeded" as const,
+    providerPaymentId: event.providerPaymentId,
+    amountCents: event.amountCents,
+    rawMetadata: event.metadata as Record<string, unknown>,
+    dedupeKey: buildDedupeKey({
+      providerId,
+      providerEventId: event.eventId,
+    }),
+  };
+
   const meta = readTenantMetadata(event.metadata);
   if (!meta) {
     logAnomaly("metadata_missing_or_malformed", {
@@ -618,6 +667,15 @@ async function handlePaymentSucceeded(
       eventId: event.eventId,
       providerPaymentId: event.providerPaymentId,
       providedMetadata: event.metadata,
+    });
+    // Config drift: the provider accepted the charge but the metadata
+    // we set on the PaymentIntent doesn't carry a resolvable tenant.
+    // 200 ACK — retry cannot help — but log so ops can investigate.
+    void safeRecordPaymentWebhookEvent({
+      ...logBase,
+      outcome: "config_error",
+      httpStatus: 200,
+      errorMessage: "metadata_missing_or_malformed",
     });
     return "accepted";
   }
@@ -643,6 +701,13 @@ async function handlePaymentSucceeded(
       invoiceId: meta.invoiceId,
       paymentId: meta.prospectivePaymentId,
       amount: amountDollars,
+    });
+    void safeRecordPaymentWebhookEvent({
+      ...logBase,
+      outcome: "accepted",
+      httpStatus: 200,
+      companyId: meta.companyId,
+      invoiceId: meta.invoiceId,
     });
 
     // Post-payment receipt email — runs AFTER the canonical ledger
@@ -671,11 +736,19 @@ async function handlePaymentSucceeded(
     // Transient errors must propagate so Stripe retries — swallowing
     // them was the previous behavior and caused silent payment loss.
     const klass = classifyWebhookError(err);
+    const errMessage = err instanceof Error ? err.message : String(err);
     if (klass === "final_replay") {
       logInfo("replay_already_ingested", {
         providerId,
         eventId: event.eventId,
         providerPaymentId: event.providerPaymentId,
+        companyId: meta.companyId,
+        invoiceId: meta.invoiceId,
+      });
+      void safeRecordPaymentWebhookEvent({
+        ...logBase,
+        outcome: "replayed",
+        httpStatus: 200,
         companyId: meta.companyId,
         invoiceId: meta.invoiceId,
       });
@@ -688,7 +761,15 @@ async function handlePaymentSucceeded(
         providerPaymentId: event.providerPaymentId,
         companyId: meta.companyId,
         invoiceId: meta.invoiceId,
-        message: err instanceof Error ? err.message : String(err),
+        message: errMessage,
+      });
+      void safeRecordPaymentWebhookEvent({
+        ...logBase,
+        outcome: "config_error",
+        httpStatus: 200,
+        companyId: meta.companyId,
+        invoiceId: meta.invoiceId,
+        errorMessage: errMessage,
       });
       return "accepted"; // 200-ACK — retry cannot help a config mismatch
     }
@@ -701,7 +782,15 @@ async function handlePaymentSucceeded(
       providerPaymentId: event.providerPaymentId,
       companyId: meta.companyId,
       invoiceId: meta.invoiceId,
-      message: err instanceof Error ? err.message : String(err),
+      message: errMessage,
+    });
+    void safeRecordPaymentWebhookEvent({
+      ...logBase,
+      outcome: "transient_failure",
+      httpStatus: 500,
+      companyId: meta.companyId,
+      invoiceId: meta.invoiceId,
+      errorMessage: errMessage,
     });
     throw err;
   }
@@ -711,6 +800,21 @@ async function handleRefundCreated(
   providerId: string,
   event: Extract<NormalizedWebhookEvent, { kind: "refund_created" }>,
 ): Promise<"accepted" | "replay" | "skipped"> {
+  // Shared base for every log call in this handler.
+  const logBase = {
+    providerId,
+    providerEventId: event.eventId,
+    eventType: event.eventType,
+    eventKind: "refund_created" as const,
+    providerRefundId: event.providerRefundId,
+    amountCents: event.amountCents,
+    dedupeKey: buildDedupeKey({
+      providerId,
+      providerEventId: event.eventId,
+      providerRefundId: event.providerRefundId,
+    }),
+  };
+
   // Locate the parent payment by its provider charge id. Tenant-less
   // lookup is safe: the resulting row carries `companyId`.
   const parent = await paymentRepository.findByProviderReference(
@@ -722,6 +826,13 @@ async function handleRefundCreated(
       providerId,
       eventId: event.eventId,
       chargeId: event.providerChargeId,
+    });
+    void safeRecordPaymentWebhookEvent({
+      ...logBase,
+      outcome: "config_error",
+      httpStatus: 200,
+      providerPaymentId: event.providerChargeId,
+      errorMessage: "refund_for_unknown_charge",
     });
     return "skipped";
   }
@@ -748,17 +859,36 @@ async function handleRefundCreated(
       parentPaymentId: parent.id,
       amount: refundDollars,
     });
+    void safeRecordPaymentWebhookEvent({
+      ...logBase,
+      outcome: "accepted",
+      httpStatus: 200,
+      companyId: parent.companyId,
+      invoiceId: parent.invoiceId,
+      parentPaymentId: parent.id,
+      providerPaymentId: event.providerChargeId,
+    });
     return "accepted";
   } catch (err: unknown) {
     // 2026-04-21 Patch C1: same classification as the payment handler.
     // Transient errors propagate → 500 → Stripe retries.
     const klass = classifyWebhookError(err);
+    const errMessage = err instanceof Error ? err.message : String(err);
     if (klass === "final_replay") {
       logInfo("refund_replay_already_ingested", {
         providerId,
         eventId: event.eventId,
         chargeId: event.providerChargeId,
         refundId: event.providerRefundId,
+      });
+      void safeRecordPaymentWebhookEvent({
+        ...logBase,
+        outcome: "replayed",
+        httpStatus: 200,
+        companyId: parent.companyId,
+        invoiceId: parent.invoiceId,
+        parentPaymentId: parent.id,
+        providerPaymentId: event.providerChargeId,
       });
       return "replay";
     }
@@ -770,7 +900,17 @@ async function handleRefundCreated(
         refundId: event.providerRefundId,
         companyId: parent.companyId,
         invoiceId: parent.invoiceId,
-        message: err instanceof Error ? err.message : String(err),
+        message: errMessage,
+      });
+      void safeRecordPaymentWebhookEvent({
+        ...logBase,
+        outcome: "config_error",
+        httpStatus: 200,
+        companyId: parent.companyId,
+        invoiceId: parent.invoiceId,
+        parentPaymentId: parent.id,
+        providerPaymentId: event.providerChargeId,
+        errorMessage: errMessage,
       });
       return "accepted";
     }
@@ -781,7 +921,17 @@ async function handleRefundCreated(
       refundId: event.providerRefundId,
       companyId: parent.companyId,
       invoiceId: parent.invoiceId,
-      message: err instanceof Error ? err.message : String(err),
+      message: errMessage,
+    });
+    void safeRecordPaymentWebhookEvent({
+      ...logBase,
+      outcome: "transient_failure",
+      httpStatus: 500,
+      companyId: parent.companyId,
+      invoiceId: parent.invoiceId,
+      parentPaymentId: parent.id,
+      providerPaymentId: event.providerChargeId,
+      errorMessage: errMessage,
     });
     throw err;
   }

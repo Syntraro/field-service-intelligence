@@ -131,7 +131,7 @@ export function CompensationTab({ selectedMemberId, onSelectMember }: Props) {
             <p className="p-3 text-sm text-muted-foreground">Loading…</p>
           ) : filtered.length === 0 ? (
             <p className="p-3 text-sm text-muted-foreground">
-              {search ? "No matches." : "No schedulable team members yet."}
+              {search ? "No matches." : "No technicians on the calendar yet."}
             </p>
           ) : (
             <ul className="space-y-1">

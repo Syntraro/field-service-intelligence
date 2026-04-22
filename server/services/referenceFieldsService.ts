@@ -35,6 +35,10 @@ interface CreateDefinitionInput {
   appliesToJobs?: boolean;
   appliesToQuotes?: boolean;
   appliesToInvoices?: boolean;
+  // 2026-04-22 Phase 2b
+  appliesToCustomers?: boolean;
+  appliesToLocations?: boolean;
+  appliesToProducts?: boolean;
   searchable?: boolean;
   displayOrder?: number;
 }
@@ -44,6 +48,10 @@ interface UpdateDefinitionInput {
   appliesToJobs?: boolean;
   appliesToQuotes?: boolean;
   appliesToInvoices?: boolean;
+  // 2026-04-22 Phase 2b
+  appliesToCustomers?: boolean;
+  appliesToLocations?: boolean;
+  appliesToProducts?: boolean;
   searchable?: boolean;
   active?: boolean;
   displayOrder?: number;
@@ -81,6 +89,10 @@ function definitionAppliesToEntity(def: ReferenceFieldDefinition, entityType: Re
   if (entityType === "job") return def.appliesToJobs;
   if (entityType === "quote") return def.appliesToQuotes;
   if (entityType === "invoice") return def.appliesToInvoices;
+  // 2026-04-22 Phase 2b
+  if (entityType === "customer_company") return def.appliesToCustomers;
+  if (entityType === "client_location") return def.appliesToLocations;
+  if (entityType === "item") return def.appliesToProducts;
   return false;
 }
 
@@ -130,8 +142,19 @@ export async function createDefinition(
   const appliesToJobs = input.appliesToJobs ?? false;
   const appliesToQuotes = input.appliesToQuotes ?? false;
   const appliesToInvoices = input.appliesToInvoices ?? false;
+  // 2026-04-22 Phase 2b
+  const appliesToCustomers = input.appliesToCustomers ?? false;
+  const appliesToLocations = input.appliesToLocations ?? false;
+  const appliesToProducts = input.appliesToProducts ?? false;
 
-  if (!appliesToJobs && !appliesToQuotes && !appliesToInvoices) {
+  if (
+    !appliesToJobs &&
+    !appliesToQuotes &&
+    !appliesToInvoices &&
+    !appliesToCustomers &&
+    !appliesToLocations &&
+    !appliesToProducts
+  ) {
     throw makeError(400, "At least one 'applies to' option must be selected");
   }
 
@@ -148,6 +171,9 @@ export async function createDefinition(
     appliesToJobs,
     appliesToQuotes,
     appliesToInvoices,
+    appliesToCustomers,
+    appliesToLocations,
+    appliesToProducts,
     searchable: input.searchable ?? true,
     active: true,
     displayOrder: input.displayOrder ?? 0,
@@ -166,8 +192,19 @@ export async function updateDefinition(
   const effectiveJobs = input.appliesToJobs ?? existing.appliesToJobs;
   const effectiveQuotes = input.appliesToQuotes ?? existing.appliesToQuotes;
   const effectiveInvoices = input.appliesToInvoices ?? existing.appliesToInvoices;
+  // 2026-04-22 Phase 2b
+  const effectiveCustomers = input.appliesToCustomers ?? existing.appliesToCustomers;
+  const effectiveLocations = input.appliesToLocations ?? existing.appliesToLocations;
+  const effectiveProducts = input.appliesToProducts ?? existing.appliesToProducts;
 
-  if (!effectiveJobs && !effectiveQuotes && !effectiveInvoices) {
+  if (
+    !effectiveJobs &&
+    !effectiveQuotes &&
+    !effectiveInvoices &&
+    !effectiveCustomers &&
+    !effectiveLocations &&
+    !effectiveProducts
+  ) {
     throw makeError(400, "At least one 'applies to' option must remain selected");
   }
 
@@ -177,6 +214,9 @@ export async function updateDefinition(
   if (input.appliesToJobs !== undefined) update.appliesToJobs = input.appliesToJobs;
   if (input.appliesToQuotes !== undefined) update.appliesToQuotes = input.appliesToQuotes;
   if (input.appliesToInvoices !== undefined) update.appliesToInvoices = input.appliesToInvoices;
+  if (input.appliesToCustomers !== undefined) update.appliesToCustomers = input.appliesToCustomers;
+  if (input.appliesToLocations !== undefined) update.appliesToLocations = input.appliesToLocations;
+  if (input.appliesToProducts !== undefined) update.appliesToProducts = input.appliesToProducts;
   if (input.searchable !== undefined) update.searchable = input.searchable;
   if (input.active !== undefined) update.active = input.active;
   if (input.displayOrder !== undefined) update.displayOrder = input.displayOrder;

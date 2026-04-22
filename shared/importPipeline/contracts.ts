@@ -148,6 +148,23 @@ export interface RowOutcome {
   entityLabel?: string;
   /** Populated when `disposition === "failed"`. */
   error?: string;
+  /**
+   * 2026-04-22 Phase 2b: multi-entity write targets for the Import Center's
+   * inline custom-field writer. When one CSV row produces multiple canonical
+   * entities (e.g. Client import creates a customer_company + client_location
+   * + client_contact), the adapter populates the ids here so the commit
+   * orchestrator can fan out custom-field values to the correct entity type.
+   *
+   * Single-entity adapters (Jobs, Products) leave this undefined — the
+   * existing `entityId` is the sole write target.
+   */
+  relatedEntities?: {
+    customerCompanyId?: string;
+    locationId?: string;
+    contactId?: string;
+    itemId?: string;
+    jobId?: string;
+  };
 }
 
 export interface CommitSummary {

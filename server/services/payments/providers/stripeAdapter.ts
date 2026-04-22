@@ -144,6 +144,7 @@ export const stripeAdapter: PaymentProvider = {
           {
             kind: "payment_succeeded",
             eventId: event.id,
+            eventType: event.type,
             providerPaymentId: intent.id,
             amountCents: amountReceived,
             chargeId: extractChargeId(intent.latest_charge),
@@ -158,6 +159,7 @@ export const stripeAdapter: PaymentProvider = {
           {
             kind: "payment_failed",
             eventId: event.id,
+            eventType: event.type,
             providerPaymentId: intent.id,
             lastErrorMessage: intent.last_payment_error?.message ?? null,
           },
@@ -179,6 +181,7 @@ export const stripeAdapter: PaymentProvider = {
         return refunds.map<NormalizedWebhookEvent>((r) => ({
           kind: "refund_created",
           eventId: event.id,
+          eventType: event.type,
           providerRefundId: r.id,
           providerChargeId: charge.id,
           amountCents: r.amount ?? 0,

@@ -174,7 +174,10 @@
       "Bash(jobs -l)",
       "Bash(python -c \"import json,sys; r=json.load\\(sys.stdin\\)['routes']; [print\\(f\\\\\"{x['method']:6} {x['path']}\\\\\"\\) for x in r if 'team' in x['path'] or 'dashboard' in x['path']]\")",
       "Bash(disown)",
-      "Bash(DATABASE_URL=\"postgres://localhost:5432/no_such_db\" SESSION_SECRET=test NODE_ENV=test npx vitest run tests/import-normalizers.test.ts)"
+      "Bash(DATABASE_URL=\"postgres://localhost:5432/no_such_db\" SESSION_SECRET=test NODE_ENV=test npx vitest run tests/import-normalizers.test.ts)",
+      "Bash(awk '{print $1}')",
+      "Bash(taskkill *)",
+      "Bash(RESET_TENANT_DATA=true npm run *)"
     ]
   }
 }

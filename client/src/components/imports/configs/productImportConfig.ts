@@ -1,6 +1,7 @@
 import { Package } from "lucide-react";
 import type { ImportWizardConfig } from "../types";
 import { PRODUCT_FIELD_DEFS } from "@shared/importPipeline/zod/product";
+import { jobberProductsPreset } from "../presets";
 
 const TEMPLATE_CSV = [
   "Name,Description,Category,Unit Price,Unit Cost,Taxable,Active,Duration (minutes),Track Inventory,SKU",
@@ -20,4 +21,8 @@ export const productImportConfig: ImportWizardConfig = {
     "Products default to taxable = yes and active = yes when the column is not mapped. Map the Taxable/Active columns explicitly if your catalog has non-default values.",
   commitBanner:
     "This will create catalog items in your tenant. Existing items with the same name+type or SKU are matched (not duplicated).",
+  presets: [jobberProductsPreset],
+  // 2026-04-22 Phase 2b: Products / Services import can attach custom fields
+  // to the catalog item (item entity on the canonical Reference-Fields system).
+  customFieldEntities: [{ id: "item", label: "Product / Service" }],
 };

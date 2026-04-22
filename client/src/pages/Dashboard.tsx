@@ -14,7 +14,7 @@
  * Worklist-style phrasing: every row reads as "object + condition + implied action"
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import {
   FileText, ChevronRight,
@@ -27,7 +27,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { DashboardActionModal, type DashboardActionMode } from "@/components/DashboardActionModal";
 import { MidnightRolloverCard } from "@/components/MidnightRolloverCard";
 import { TodaysOperationsCard } from "@/components/TodaysOperationsCard";
-import { DashboardViewToggle } from "@/components/dashboard/DashboardViewToggle";
+import {
+  DashboardViewToggle,
+  DASHBOARD_VIEW_KEY,
+} from "@/components/dashboard/DashboardViewToggle";
 import {
   VisitEditorLauncher,
   type VisitEditorState,
@@ -207,6 +210,24 @@ export default function Dashboard() {
   // has been dropped; the panel is now opened from the header popover
   // with transient open/close state.
 
+  // 2026-04-22: Dashboard is the single sidebar entry point for both views.
+  // When the user's last-used view was Financial, redirect to /financials
+  // so clicking the sidebar "Dashboard" link reopens where they left off.
+  // Initial state is read synchronously from localStorage so the conditional
+  // return (placed AFTER every other hook to honor the rules of hooks)
+  // suppresses the Operations layout before the bounce happens.
+  // The toggle writes `financial` BEFORE it navigates, so an explicit
+  // "Operations" click from /financials never re-bounces to /financials.
+  const [, setLocation] = useLocation();
+  const [redirectingToFinancial] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(DASHBOARD_VIEW_KEY) === "financial";
+    } catch {
+      return false;
+    }
+  });
+
   // Dashboard action modal state
   const [actionModalOpen, setActionModalOpen] = useState(false);
   // 2026-04-19 Task B: default mode aligned with the first Jobs card row after
@@ -234,6 +255,19 @@ export default function Dashboard() {
     staleTime: 30_000,
     refetchOnWindowFocus: true,
   });
+
+  // 2026-04-22: redirect effect must sit AFTER every hook above so the
+  // rules-of-hooks invariant holds. `redirectingToFinancial` is captured
+  // once at mount and never flips — the component is short-lived when it
+  // kicks in (React unmounts on route change) so there's no stale-closure
+  // concern.
+  useEffect(() => {
+    if (redirectingToFinancial) {
+      setLocation("/financials", { replace: true });
+    }
+  }, [redirectingToFinancial, setLocation]);
+
+  if (redirectingToFinancial) return null;
 
   // 2026-04-21: /api/invoices/stats query + derived Invoices-card counts
   // were removed. Invoice metrics now live on the Financial Dashboard

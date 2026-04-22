@@ -23,11 +23,14 @@ import {
   invoiceLines,
   invoiceTaxLines,
   portalMagicTokens,
-  tenantFeatures,
   companies,
 } from "@shared/schema";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { getResendClient } from "../resendClient";
+// 2026-04-21 Phase 3 canonical policy architecture: portal feature gates
+// resolve through the entitlement service, not the legacy tenant_features
+// boolean columns (which are being dropped alongside this change).
+import { entitlementService } from "../services/entitlementService";
 import { rateLimitPerTenant } from "../auth/tenantIsolation";
 import { isInvoiceDraft, isInvoiceVoided } from "../lib/invoicePredicates";
 import { generateInvoicePdf } from "../services/invoicePdfService";
@@ -166,13 +169,9 @@ router.post(
       return res.json({ message: safeMessage, sent: true });
     }
 
-    // Check customerPortalEnabled feature flag for the tenant
-    const [portalFeature] = await db
-      .select({ enabled: tenantFeatures.customerPortalEnabled })
-      .from(tenantFeatures)
-      .where(eq(tenantFeatures.companyId, contact.companyId))
-      .limit(1);
-    if (portalFeature && !portalFeature.enabled) {
+    // Check the canonical `customer_portal` entitlement for the tenant.
+    const portalEnt = await entitlementService.getEntitlement(contact.companyId, "customer_portal");
+    if (portalEnt && !portalEnt.enabled) {
       // 2026-04-19 Portal login debug: previously threw a 403 with no
       // machine-readable code, so PortalLogin rendered the generic
       // "Something went wrong" message and nobody knew the tenant flag
@@ -415,14 +414,12 @@ router.get(
   asyncHandler(async (req: Request, res: Response) => {
     const portal = (req as PortalRequest).portal;
 
-    // Check payments feature flag
-    const [features] = await db
-      .select({
-        paymentsEnabled: tenantFeatures.customerPortalPaymentsEnabled,
-      })
-      .from(tenantFeatures)
-      .where(eq(tenantFeatures.companyId, portal.companyId))
-      .limit(1);
+    // Check the canonical `customer_portal_payments` entitlement.
+    const paymentsEnt = await entitlementService.getEntitlement(
+      portal.companyId,
+      "customer_portal_payments",
+    );
+    const paymentsEnabled = paymentsEnt?.enabled === true;
 
     // 2026-04-19 Portal polish: surface company contact info so the
     // portal header/footer can display a trustworthy "call us / email us"
@@ -439,7 +436,7 @@ router.get(
 
     return res.json({
       ...portal,
-      paymentsEnabled: features?.paymentsEnabled ?? false,
+      paymentsEnabled,
       companyPhone: companyContact?.phone ?? null,
       companyEmail: companyContact?.email ?? null,
     });
@@ -574,14 +571,12 @@ router.get(
         )
       );
 
-    // Check feature flag
-    const [features] = await db
-      .select({
-        paymentsEnabled: tenantFeatures.customerPortalPaymentsEnabled,
-      })
-      .from(tenantFeatures)
-      .where(eq(tenantFeatures.companyId, companyId))
-      .limit(1);
+    // Check the canonical `customer_portal_payments` entitlement.
+    const paymentsEnt = await entitlementService.getEntitlement(
+      companyId,
+      "customer_portal_payments",
+    );
+    const paymentsEnabled = paymentsEnt?.enabled === true;
 
     // Respect visibility toggles
     const visibleLines = invoice.showLineItems ? lines : [];
@@ -610,7 +605,7 @@ router.get(
       },
       lines: visibleLines,
       taxLines,
-      paymentsEnabled: features?.paymentsEnabled ?? false,
+      paymentsEnabled,
     });
   })
 );
@@ -697,13 +692,13 @@ async function portalCheckoutHandler(req: Request, res: Response) {
   const { companyId, customerCompanyId } = (req as PortalRequest).portal;
   const { invoiceId } = req.params;
 
-  // Feature flag gate — tenant must have customer-portal payments enabled.
-  const [features] = await db
-    .select({ paymentsEnabled: tenantFeatures.customerPortalPaymentsEnabled })
-    .from(tenantFeatures)
-    .where(eq(tenantFeatures.companyId, companyId))
-    .limit(1);
-  if (!features?.paymentsEnabled) {
+  // Feature-gate — tenant must have the canonical `customer_portal_payments`
+  // entitlement enabled.
+  const paymentsEnt = await entitlementService.getEntitlement(
+    companyId,
+    "customer_portal_payments",
+  );
+  if (!paymentsEnt?.enabled) {
     throw createError(403, "Online payments are not enabled for this account");
   }
 

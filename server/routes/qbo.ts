@@ -48,10 +48,11 @@ declare module "express-session" {
 
 const router = Router();
 
-// Feature gate: require qboEnabled for all QBO routes EXCEPT OAuth callback.
-// The callback is an Intuit redirect that must be reachable without req.user/req.companyId;
-// it reads tenant context from the session-stored OAuth state instead.
-const qboFeatureGate = requireFeature("qboEnabled");
+// Feature gate: require the canonical `quickbooks_online` entitlement for all
+// QBO routes EXCEPT OAuth callback. The callback is an Intuit redirect that
+// must be reachable without req.user / req.companyId; it reads tenant context
+// from the session-stored OAuth state instead.
+const qboFeatureGate = requireFeature("quickbooks_online");
 router.use((req, res, next) => {
   if (req.path === "/oauth/callback") return next();
   return qboFeatureGate(req, res, next);

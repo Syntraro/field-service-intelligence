@@ -32,7 +32,9 @@ import Admin from "@/pages/Admin";
 // PERF-008 (2026-04-08): Lazy-load rarely visited platform-admin / QBO / one-time
 // import pages to shrink the initial main bundle for normal users.
 const AdminTenants = lazy(() => import("@/pages/AdminTenants"));
-const AdminTenantDetail = lazy(() => import("@/pages/AdminTenantDetail"));
+// AdminTenantDetail removed 2026-04-21 Phase 3: feature-toggle UI was bound to
+// the legacy tenant_features endpoints which no longer exist. Platform-admin
+// tenant management lives at /platform/tenants/:id (PlatformTenantDetail).
 const AdminQboOverview = lazy(() => import("@/pages/AdminQboOverview"));
 const AdminQboRuns = lazy(() => import("@/pages/AdminQboRuns"));
 const AdminQboRunDetail = lazy(() => import("@/pages/AdminQboRunDetail"));
@@ -44,6 +46,8 @@ const PlatformTenantDetail = lazy(() => import("@/pages/platform/PlatformTenantD
 const PlatformFeedbackPage = lazy(() => import("@/pages/platform/PlatformFeedbackPage"));
 const PlatformIssuesPage = lazy(() => import("@/pages/platform/PlatformIssuesPage"));
 const PlatformSupportSessionsPage = lazy(() => import("@/pages/platform/PlatformSupportSessionsPage"));
+// 2026-04-22 Admin Phase A2: trial pipeline dashboard.
+const PlatformTrialsPipeline = lazy(() => import("@/pages/platform/PlatformTrialsPipeline"));
 // 2026-04-19 Entitlement system — plans + features + feature-matrix surfaces.
 const PlatformPlansList = lazy(() => import("@/pages/platform/PlatformPlansList"));
 const PlatformPlanDetail = lazy(() => import("@/pages/platform/PlatformPlanDetail"));
@@ -83,9 +87,12 @@ import TimeBillingRulesPage from "@/pages/TimeBillingRulesPage";
 import BusinessHoursSettingsPage from "@/pages/BusinessHoursSettingsPage";
 // Phase 11 (2026-04-12): tenant-facing communication template editor.
 import CommunicationSettingsPage from "@/pages/CommunicationSettingsPage";
-const ClientImportPage = lazy(() => import("@/pages/ClientImportPage"));
-const JobImportPage = lazy(() => import("@/pages/JobImportPage"));
-const ProductImportPage = lazy(() => import("@/pages/ProductImportPage"));
+// 2026-04-22 Import Center consolidation: the three per-entity pages
+// (ClientImportPage, JobImportPage, ProductImportPage) were merged into
+// one canonical ImportCenterPage at /settings/import?type=<clients|jobs|
+// products>. Legacy URLs redirect via the Route entries below so any
+// bookmarked links still land on the right tab.
+const ImportCenterPage = lazy(() => import("@/pages/ImportCenterPage"));
 import TagsSettingsPage from "@/pages/TagsSettingsPage";
 import { TimezoneSetupBanner } from "@/components/TimezoneSetupBanner";
 import { TimezoneSetupDialog } from "@/components/TimezoneSetupDialog";
@@ -299,11 +306,6 @@ function Router() {
           <AdminTenants />
         </ProtectedRoute>
       </Route>
-      <Route path="/admin/tenants/:companyId">
-        <ProtectedRoute requireAdmin>
-          <AdminTenantDetail />
-        </ProtectedRoute>
-      </Route>
       <Route path="/admin/qbo">
         <ProtectedRoute requireAdmin>
           <AdminQboOverview />
@@ -359,6 +361,12 @@ function Router() {
       <Route path="/platform/support-sessions">
         <ProtectedRoute requirePlatformRole>
           <PlatformSupportSessionsPage />
+        </ProtectedRoute>
+      </Route>
+      {/* 2026-04-22 Admin Phase A2: trial pipeline dashboard. */}
+      <Route path="/platform/trials">
+        <ProtectedRoute requirePlatformRole>
+          <PlatformTrialsPipeline />
         </ProtectedRoute>
       </Route>
       {/* 2026-04-19 Entitlement system routes. */}
@@ -505,20 +513,25 @@ function Router() {
           <BusinessHoursSettingsPage />
         </ProtectedRoute>
       </Route>
-      <Route path="/settings/import-clients">
+      {/* 2026-04-22 canonical Import Center. Replaces the three legacy
+          per-entity pages; type is passed via ?type query param. */}
+      <Route path="/settings/import">
         <ProtectedRoute requireAdmin>
-          <ClientImportPage />
+          <ImportCenterPage />
         </ProtectedRoute>
+      </Route>
+      {/* Legacy URL redirects — preserved so existing bookmarks / email
+          links / in-app setLocation calls still land on the right tab.
+          Wouter's <Redirect> pushes onto history before the next render,
+          so the ImportCenterPage mounts with the right ?type. */}
+      <Route path="/settings/import-clients">
+        <Redirect to="/settings/import?type=clients" />
       </Route>
       <Route path="/settings/import-jobs">
-        <ProtectedRoute requireAdmin>
-          <JobImportPage />
-        </ProtectedRoute>
+        <Redirect to="/settings/import?type=jobs" />
       </Route>
       <Route path="/settings/import-products">
-        <ProtectedRoute requireAdmin>
-          <ProductImportPage />
-        </ProtectedRoute>
+        <Redirect to="/settings/import?type=products" />
       </Route>
       {/* /company-settings redirect removed 2026-04-10: legacy path with zero navigation entries */}
       {/* /manage-technicians route removed 2026-04-10: duplicate of /settings/team, zero navigation entries */}
