@@ -25,6 +25,20 @@ import { createError } from "../middleware/errorHandler";
  * Wrapping all inserts in one `db.transaction` here is the surgical way
  * to satisfy "single transaction for company + owner + membership" without
  * forking the invite flow or adding a parallel createUser path.
+ *
+ * 2026-04-21 Phase 1 canonical policy architecture:
+ *   This is the ONE authorized direct writer of `companies.subscriptionStatus`
+ *   and `companies.trialEndsAt` — birth-state seeding for a newly-created
+ *   tenant. All POST-CREATION writes go through
+ *   `subscriptionLifecycleService.transition()`. A trial-state transition
+ *   cannot be routed through the lifecycle service here because:
+ *     (a) no companies row exists yet for it to read the "from" state from,
+ *     (b) the lifecycle service also writes a `subscription_events` audit
+ *         row whose FK requires a `tenant_subscriptions` row; no billing
+ *         ledger exists for trial-only tenants until the first Stripe
+ *         checkout.
+ *   Every other code path that changes `subscriptionStatus` MUST go through
+ *   the lifecycle service — see audit Finding #5.
  */
 
 /** 2026-04-19 Hybrid SaaS: trial length for new self-serve tenants. */

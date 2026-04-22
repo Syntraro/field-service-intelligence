@@ -29,10 +29,12 @@ import {
   CalendarDays, ChevronRight, Clock, Truck,
   LogIn, LogOut, Navigation, Phone,
   Loader2, RefreshCw, Plus, Briefcase, UserPlus, FileText, X, CheckSquare,
-  Users, User as UserIcon,
+  Users, User as UserIcon, Bell,
 } from "lucide-react";
 import { useLocation } from "wouter";
 import { useTechTasks } from "../hooks/useTechTasks";
+// 2026-04-21 Phase 1 push notifications — subtle CTA on first load.
+import { usePushRegistration } from "../hooks/usePushRegistration";
 import { toEpochMsSafe, toLocalDateKey } from "../utils/safeDateTime";
 import { toTelHref, toMapsHref } from "../utils/externalLinks";
 import type { Task } from "@shared/schema";
@@ -483,6 +485,12 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
     return () => clearInterval(id);
   }, []);
 
+  // 2026-04-21 Phase 1 push notifications — state only. The CTA below is
+  // rendered purely from this state. The hook does NOT auto-prompt; a tap
+  // on the CTA is the only trigger.
+  const push = usePushRegistration();
+  const [pushCtaDismissed, setPushCtaDismissed] = useState(false);
+
   // Partition the pre-sorted timeline into three render buckets so the
   // page reads as "past-due → Now → upcoming → completed history". Done
   // items stay in chronological order within their own bucket at the
@@ -770,6 +778,47 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
           </div>
         )}
       </div>
+
+      {/* 2026-04-21 Phase 1 push notifications — subtle enable CTA.
+          Shows only when:
+            - the browser supports push
+            - permission hasn't been granted OR denied yet
+            - the tech is looking at their own schedule
+            - the tech hasn't dismissed the CTA this session
+          One tap → permission prompt → subscribe → POST to backend. If
+          anything fails, the hook surfaces the error in its own state. */}
+      {isSelfScope && push.supported && push.permission === "default" && !pushCtaDismissed && (
+        <div
+          className="mx-3 mt-2 flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 shadow-sm"
+          data-testid="push-cta"
+        >
+          <Bell className="h-4 w-4 text-[#22c55e] shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="text-xs font-semibold text-slate-800">Enable notifications</div>
+            <div className="text-[11px] text-slate-500 truncate">
+              Get alerted when a new visit is assigned to you.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => { void push.requestAndSubscribe(); }}
+            disabled={push.busy}
+            className="px-2.5 py-1 rounded-md bg-[#22c55e] text-white text-xs font-semibold disabled:opacity-60"
+            data-testid="button-enable-push"
+          >
+            {push.busy ? "…" : "Enable"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setPushCtaDismissed(true)}
+            aria-label="Dismiss"
+            className="p-1 text-slate-400"
+            data-testid="button-dismiss-push-cta"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* One-line day summary — visible as soon as the timeline is ready.
           Kept outside the sticky block so it scrolls with content and

@@ -95,10 +95,16 @@ interface InvoiceDetailResponse {
   paymentsEnabled: boolean;
 }
 
-interface PaymentIntentResponse {
-  clientSecret: string;
-  paymentIntentId: string;
-  publishableKey: string;
+// 2026-04-21 provider-neutral response from the canonical checkout route.
+// `clientToken` is the opaque token the provider SDK consumes (for Stripe:
+// the PaymentIntent clientSecret). Other fields are passthrough — the UI
+// never reads provider-specific names.
+interface CheckoutResponse {
+  providerId: "stripe";
+  clientToken: string;
+  providerPaymentId: string;
+  publishableKey?: string;
+  prospectivePaymentId: string;
 }
 
 // Cache Stripe.js loads across invoice pages — loading the script once
@@ -116,7 +122,7 @@ function getStripePromise(publishableKey: string): Promise<Stripe | null> {
 export default function PortalInvoiceDetail() {
   const { invoiceId } = useParams<{ invoiceId: string }>();
   const [payModalOpen, setPayModalOpen] = useState(false);
-  const [intent, setIntent] = useState<PaymentIntentResponse | null>(null);
+  const [intent, setIntent] = useState<CheckoutResponse | null>(null);
   const [intentError, setIntentError] = useState<string | null>(null);
   const [justPaid, setJustPaid] = useState(false);
   const queryClient = useQueryClient();
@@ -128,9 +134,12 @@ export default function PortalInvoiceDetail() {
   });
 
   const createIntentMutation = useMutation({
-    mutationFn: async (): Promise<PaymentIntentResponse> => {
+    mutationFn: async (): Promise<CheckoutResponse> => {
+      // 2026-04-21 provider-neutral endpoint. Response uses `clientToken`
+      // + `providerId`; the Stripe-specific names stay inside the
+      // provider-adapter layer and the Stripe Elements call below.
       const res = await fetch(
-        `/api/portal/invoices/${invoiceId}/stripe/payment-intent`,
+        `/api/portal/invoices/${invoiceId}/payments/checkout`,
         { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" } },
       );
       if (!res.ok) {
@@ -528,7 +537,7 @@ export default function PortalInvoiceDetail() {
             stripePromise && (
               <Elements
                 stripe={stripePromise}
-                options={{ clientSecret: intent.clientSecret }}
+                options={{ clientSecret: intent.clientToken }}
               >
                 <PortalPayInvoiceForm
                   onSucceeded={() => {

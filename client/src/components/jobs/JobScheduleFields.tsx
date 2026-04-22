@@ -407,7 +407,7 @@ export function JobScheduleFields({
             </PopoverTrigger>
             <PopoverContent className="w-48 p-1" align="start">
               <div className="text-xs font-medium text-muted-foreground px-2 py-1.5 border-b mb-1">
-                Select Technician
+                Select team member
               </div>
               {(() => {
                 const available = technicianOptions.filter(
@@ -416,7 +416,7 @@ export function JobScheduleFields({
                 if (available.length === 0) {
                   return (
                     <div className="text-xs text-muted-foreground px-2 py-2">
-                      No available technicians
+                      No available team members
                     </div>
                   );
                 }

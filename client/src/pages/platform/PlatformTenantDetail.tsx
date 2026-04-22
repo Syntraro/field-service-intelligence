@@ -102,8 +102,26 @@ export default function PlatformTenantDetail() {
         </Card>
 
         <Card>
-          <CardHeader><CardTitle>Feature Flags</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              Feature Flags
+              {/* 2026-04-21 Phase 1 canonical policy architecture:
+                  The legacy tenant_features boolean-column table is kept
+                  alive during the migration as a compat surface, but the
+                  canonical read/write path is the Entitlements section
+                  below (plan assignment + tenant_feature_overrides).
+                  Toggles here no longer drive requireFeature() gates —
+                  they only update the legacy row for downstream readers
+                  that have not yet been migrated. */}
+              <Badge variant="outline" className="text-xs" data-testid="legacy-flags-badge">
+                Legacy
+              </Badge>
+            </CardTitle>
+          </CardHeader>
           <CardContent className="space-y-2">
+            <p className="text-xs text-muted-foreground mb-2">
+              Legacy per-tenant flags. The canonical enforcement path is plan + overrides below.
+            </p>
             {FLAG_KEYS.map((k) => (
               <div key={k} className="flex items-center justify-between">
                 <Label htmlFor={k}>{k}</Label>

@@ -72,7 +72,7 @@ import {
   type JobScheduleValue,
   createDefaultScheduleValue,
 } from "@/components/jobs/JobScheduleFields";
-import { createJobWithSchedule, applyJobSchedule } from "@/lib/jobScheduling";
+import { createJobWithSchedule } from "@/lib/jobScheduling";
 import { TechnicianSelector } from "@/components/TechnicianSelector";
 
 // ============================================================================

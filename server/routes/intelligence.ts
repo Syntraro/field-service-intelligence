@@ -20,13 +20,18 @@ import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { computeVisitStatusSignals, fetchRemainderVisits } from "../lib/visitIntelligence";
 import { suggestVisitSlots } from "../lib/autoGapScheduling";
-import { jobVisitsRepository } from "../storage/jobVisits";
+import { jobVisitsRepository, isVisitActioned } from "../storage/jobVisits";
 import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
 import { routeOptimizationService } from "../routeOptimizationService";
 import { db } from "../db";
 import { sql } from "drizzle-orm";
 import { JOB_ACTIVE_SQL_J } from "../storage/jobFilters";
+// 2026-04-21 Phase 1.5 canonicalization: bulk schedule-rewrites on the
+// intelligence routes route through the orchestrator so actioned-visit
+// protection and optimistic-locking plumbing fire uniformly with single-
+// visit reschedules.
+import * as lifecycle from "../services/jobLifecycleOrchestrator";
 
 const router = Router();
 
@@ -95,9 +100,18 @@ router.post(
       throw createError(400, `${missing.length} visit(s) missing scheduledStart`);
     }
 
-    // Shift each visit forward by driftMinutes
+    // 2026-04-21 Phase 1.5: each visit shift routes through
+    // `lifecycle.rescheduleVisit(mode:"replace")` so the same invariants
+    // that guard single-visit reschedules apply. Actioned visits are
+    // skipped with a stable reason — shifting an in-progress or en-route
+    // visit silently would erase real-world state.
     let shifted = 0;
+    const skipped: { visitId: string; reason: string }[] = [];
     for (const v of remainder) {
+      if (isVisitActioned(v as any)) {
+        skipped.push({ visitId: v.visitId, reason: `Visit is actioned (status=${v.status})` });
+        continue;
+      }
       const oldStart = new Date(v.scheduledStart!);
       const newStart = new Date(oldStart.getTime() + drift * 60_000);
       const durMin = v.estimatedDurationMinutes ?? 60;
@@ -105,11 +119,19 @@ router.post(
         ? new Date(new Date(v.scheduledEnd).getTime() + drift * 60_000)
         : new Date(newStart.getTime() + durMin * 60_000);
 
-      await jobVisitsRepository.updateJobVisit(tenantId, v.visitId, undefined, {
-        scheduledStart: newStart,
-        scheduledEnd: newEnd,
-      });
-      shifted++;
+      try {
+        await lifecycle.rescheduleVisit({
+          type: "RESCHEDULE_VISIT",
+          companyId: tenantId,
+          visitId: v.visitId,
+          startAt: newStart,
+          endAt: newEnd,
+          mode: "replace",
+        });
+        shifted++;
+      } catch (err: any) {
+        skipped.push({ visitId: v.visitId, reason: err?.message || "Reschedule failed" });
+      }
     }
 
     // Log event
@@ -118,15 +140,16 @@ router.post(
       eventType: "schedule.shift_remainder",
       entityType: "visit",
       entityId: visitId,
-      summary: `Shifted ${shifted} visit(s) forward by ${drift}m for technician`,
-      meta: { technicianId, driftMinutes: drift, shiftedCount: shifted },
+      summary: `Shifted ${shifted} visit(s) forward by ${drift}m for technician (${skipped.length} skipped)`,
+      meta: { technicianId, driftMinutes: drift, shiftedCount: shifted, skippedCount: skipped.length, skipped },
     });
 
     res.json({
       shifted,
+      skipped,
       driftMinutes: drift,
       technicianId,
-      message: `Shifted ${shifted} visit(s) forward by ${drift} minutes`,
+      message: `Shifted ${shifted} visit(s) forward by ${drift} minutes${skipped.length ? ` (${skipped.length} skipped)` : ""}`,
     });
   }),
 );
@@ -194,8 +217,12 @@ router.post(
         );
     let cursor = now > plannedEnd ? now : plannedEnd;
 
-    // Apply optimized order with recomputed times
+    // 2026-04-21 Phase 1.5: route each per-visit reschedule through
+    // `lifecycle.rescheduleVisit(mode:"replace")`. Actioned visits are
+    // skipped — rewriting an in-progress visit's schedule from a route
+    // optimizer would erase real-world state.
     let applied = 0;
+    const skipped: { visitId: string; reason: string }[] = [];
     for (const idx of optimized.order) {
       const v = remainder[idx];
       const durMin = v.estimatedDurationMinutes ?? 60;
@@ -218,13 +245,25 @@ router.post(
       const newStart = new Date(cursor);
       const newEnd = new Date(newStart.getTime() + durMin * 60_000);
 
-      await jobVisitsRepository.updateJobVisit(tenantId, v.visitId, undefined, {
-        scheduledStart: newStart,
-        scheduledEnd: newEnd,
-      });
+      if (isVisitActioned(v as any)) {
+        skipped.push({ visitId: v.visitId, reason: `Visit is actioned (status=${v.status})` });
+        continue;
+      }
 
-      cursor = newEnd;
-      applied++;
+      try {
+        await lifecycle.rescheduleVisit({
+          type: "RESCHEDULE_VISIT",
+          companyId: tenantId,
+          visitId: v.visitId,
+          startAt: newStart,
+          endAt: newEnd,
+          mode: "replace",
+        });
+        cursor = newEnd;
+        applied++;
+      } catch (err: any) {
+        skipped.push({ visitId: v.visitId, reason: err?.message || "Reschedule failed" });
+      }
     }
 
     // Log event
@@ -233,10 +272,12 @@ router.post(
       eventType: "schedule.optimize_remainder",
       entityType: "visit",
       entityId: visitId,
-      summary: `Optimized ${applied} remaining visit(s) for technician`,
+      summary: `Optimized ${applied} remaining visit(s) for technician (${skipped.length} skipped)`,
       meta: {
         technicianId,
         optimizedCount: applied,
+        skippedCount: skipped.length,
+        skipped,
         totalDistanceMeters: optimized.totalDistance,
         totalDurationSeconds: optimized.totalDuration,
       },
@@ -244,10 +285,11 @@ router.post(
 
     res.json({
       optimized: applied,
+      skipped,
       technicianId,
       totalDistanceMeters: optimized.totalDistance,
       totalDurationSeconds: optimized.totalDuration,
-      message: `Optimized ${applied} remaining visit(s)`,
+      message: `Optimized ${applied} remaining visit(s)${skipped.length ? ` (${skipped.length} skipped)` : ""}`,
     });
   }),
 );

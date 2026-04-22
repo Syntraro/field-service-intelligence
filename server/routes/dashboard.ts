@@ -9,6 +9,7 @@ import { Router } from "express";
 import type { Response } from "express";
 import { getWorkflowSummary, getNeedsAttentionJobs, getFinancialSummary } from "../storage/dashboard";
 import { getTodayVisitSummary } from "../storage/todaySummary";
+import { getTodayCapacity } from "../storage/capacity";
 import { getQueryCtx } from "../lib/queryCtx";
 import { asyncHandler } from "../middleware/errorHandler";
 import type { AuthedRequest } from "../auth/tenantIsolation";
@@ -67,6 +68,23 @@ router.get("/today-summary", asyncHandler(async (req: AuthedRequest, res: Respon
   const companyId = req.companyId!;
   const summary = await getTodayVisitSummary(companyId);
   res.json(summary);
+}));
+
+/**
+ * GET /api/dashboard/capacity
+ *
+ * Returns per-technician "remaining capacity today" — one primary open slot
+ * per active technician plus total remaining available minutes. Powers the
+ * "Today's Capacity" card on the dashboard.
+ *
+ * Reuses canonical sources (no duplicate scheduling logic): workingHours
+ * table, companyBusinessHours fallback, schedulable-tech filter, and the
+ * same visit query the calendar + dispatch board use.
+ */
+router.get("/capacity", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const capacity = await getTodayCapacity(companyId);
+  res.json(capacity);
 }));
 
 export default router;

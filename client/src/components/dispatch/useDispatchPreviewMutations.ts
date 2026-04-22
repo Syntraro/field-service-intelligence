@@ -110,9 +110,15 @@ interface RescheduleTaskParams {
   assignedToUserId?: string;
 }
 
+/**
+ * 2026-04-21 Phase 1 canonical visit mutation architecture: field name is
+ * `assignedTechnicianIds` everywhere. The legacy `technicianUserIds` was a
+ * gratuitous divergence between the assign-crew endpoint and the rest of
+ * the visit API surface — it has been removed from both server and client.
+ */
 interface UpdateCrewParams {
   visitId: string;
-  technicianUserIds: string[];
+  assignedTechnicianIds: string[];
 }
 
 // ============================================================================
@@ -889,21 +895,14 @@ export function useDispatchPreviewMutations() {
             body: JSON.stringify({ version }),
           });
         } catch (newErr: any) {
-          // Graceful recovery for not-found and version conflicts
-          if (isNotFoundError(newErr) || isVersionConflict(newErr)) {
-            restoreDispatchCache(queryClient, snapshot);
-            handleMutationError(newErr, "Unschedule failed");
-            return;
-          }
-          // Fallback to legacy endpoint
-          if (newErr?.message?.includes("Not found") || newErr?.status === 404) {
-            resp = await apiRequest(`/api/calendar/unschedule/${jobId}`, {
-              method: "POST",
-              body: JSON.stringify({ version }),
-            });
-          } else {
-            throw newErr;
-          }
+          // 2026-04-21 Phase 1.5: the pre-visit-centric fallback to
+          // `/api/calendar/unschedule/:jobId` was removed — that endpoint
+          // no longer exists server-side, so any retry only produced a
+          // 404. Every error here is now handled by the canonical
+          // recovery path.
+          restoreDispatchCache(queryClient, snapshot);
+          handleMutationError(newErr, "Unschedule failed");
+          return;
         }
         if (resp?.version != null) await cancelAndPatchVersion(visitId, resp.version);
         backgroundInvalidate();
@@ -941,24 +940,13 @@ export function useDispatchPreviewMutations() {
             body: JSON.stringify({ newEndTime, version }),
           });
         } catch (newErr: any) {
-          // Graceful recovery for not-found and version conflicts
-          if (isNotFoundError(newErr) || isVersionConflict(newErr)) {
-            restoreDispatchCache(queryClient, snapshot);
-            handleMutationError(newErr, "Resize failed");
-            return;
-          }
-          // Fallback to legacy endpoint
-          if (newErr?.message?.includes("Not found") || newErr?.status === 404) {
-            resp = await apiRequest("/api/calendar/resize", {
-              method: "POST",
-              body: JSON.stringify({
-                job: { id: jobId, scheduledStart, scheduledEnd },
-                newEndTime,
-              }),
-            });
-          } else {
-            throw newErr;
-          }
+          // 2026-04-21 Phase 1.5: the pre-visit-centric fallback to
+          // `POST /api/calendar/resize` was removed — that endpoint no
+          // longer exists server-side. Every error here routes through
+          // the canonical recovery path.
+          restoreDispatchCache(queryClient, snapshot);
+          handleMutationError(newErr, "Resize failed");
+          return;
         }
         // Cancel pending refetches then patch version to prevent stale-refetch overwrites
         const patchVer = resp?.version ?? resp?.visitVersion;
@@ -999,9 +987,13 @@ export function useDispatchPreviewMutations() {
     }
   }, [queryClient, backgroundInvalidate, handleMutationError]);
 
-  /** Update visit crew roster (multi-tech assignment). PATCH /api/calendar/visit/:visitId/assign-crew */
+  /** Update visit crew roster (multi-tech assignment). PATCH /api/calendar/visit/:visitId/assign-crew
+   *
+   *  2026-04-21 Phase 1: canonical field name is `assignedTechnicianIds` on
+   *  the wire (matches `rescheduleVisit`, `scheduleVisit`, and the shared
+   *  schema column). The legacy `technicianUserIds` shape has been removed. */
   const updateVisitCrew = useCallback(async (params: UpdateCrewParams) => {
-    const { visitId, technicianUserIds } = params;
+    const { visitId, assignedTechnicianIds } = params;
 
     markSaving(visitId);
 
@@ -1010,14 +1002,14 @@ export function useDispatchPreviewMutations() {
       const version = freshVersion(visitId);
 
       if (process.env.NODE_ENV !== "production") {
-        console.log(`[DISPATCH] updateVisitCrew visitId=${visitId} version=${version} techs=${technicianUserIds.join(",")}`);
+        console.log(`[DISPATCH] updateVisitCrew visitId=${visitId} version=${version} techs=${assignedTechnicianIds.join(",")}`);
       }
 
       inflightRef.current++;
       try {
         const resp = await apiRequest<{ version?: number }>(`/api/calendar/visit/${visitId}/assign-crew`, {
           method: "PATCH",
-          body: JSON.stringify({ technicianUserIds, version }),
+          body: JSON.stringify({ assignedTechnicianIds, version }),
         });
         if (resp?.version != null) await cancelAndPatchVersion(visitId, resp.version);
         backgroundInvalidate();

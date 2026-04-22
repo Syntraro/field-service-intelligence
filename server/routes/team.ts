@@ -23,11 +23,20 @@ import {
   logUserDisabled,
 } from "../services/auditService";
 import { getRolesWithPermissions } from "../permissions";
-import { ensureRolesAndPermissionsSeeded } from "./roles";
 import { filterSchedulableTechnicians } from "../domain/scheduling";
 import { timeTrackingRepository } from "../storage/timeTracking";
 import { identityRepository } from "../storage/identities";
 import { requestPasswordReset } from "../services/passwordResetService";
+// 2026-04-21 Phase 1 canonical policy architecture: per-tenant seat limits
+// on the create path read the canonical entitlement resolver.
+import { assertFeatureCapacityAuto } from "../services/entitlementEnforcement";
+// 2026-04-21 Phase 1 canonical policy architecture: per-user permission
+// override API. Coarse+fine gate (owner/admin role → permissions.manage).
+import { db } from "../db";
+import { eq, and } from "drizzle-orm";
+import { permissions, userPermissionOverrides } from "@shared/schema";
+import { requirePermission } from "../permissions";
+import { clearPermissionCache } from "../storage/permissions";
 
 const router = Router();
 
@@ -162,9 +171,9 @@ router.get(
   "/roles",
   requireRole(RESTRICTED_MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
-    // Ensure roles and permissions are seeded
-    await ensureRolesAndPermissionsSeeded();
-
+    // 2026-04-21 Phase 2: catalog lives in the DB (seeded by the
+    // 2026_04_21_seed_rbac_catalog.sql migration). The runtime
+    // ensureRolesAndPermissionsSeeded() helper was deleted.
     const rolesWithPermissions = await getRolesWithPermissions();
 
     // Return stable shape: { id, name, displayName, hierarchy }
@@ -216,6 +225,14 @@ router.post(
       // Map role name to legacy role field (admin/owner/manager/dispatcher/technician)
       resolvedRole = selectedRole.name;
     }
+
+    // 2026-04-21 Phase 1 canonical policy architecture: enforce per-plan
+    // seat caps (technician_users vs office_users) against the canonical
+    // entitlement resolver. The resolver returns `isCore`/`isUnlimited`
+    // so enforcement no-ops for plans that do not cap these features.
+    const capacityFeatureKey =
+      resolvedRole === "technician" ? "technician_users" : "office_users";
+    await assertFeatureCapacityAuto(companyId, capacityFeatureKey, 1);
 
     // Create the team member
     const user = await storage.createTeamMember(companyId, {
@@ -863,6 +880,110 @@ router.post(
     res.json({
       success: true,
       message: "A password reset email has been sent to the user.",
+    });
+  }),
+);
+
+/**
+ * PATCH /api/team/:userId/permissions
+ *
+ * 2026-04-21 Phase 1 canonical policy architecture: per-user permission
+ * override write path.
+ *
+ * Body: { permissionKey: string, action: "grant" | "revoke" | "inherit" }
+ *   - "grant"   → upsert user_permission_overrides row with override="grant"
+ *   - "revoke"  → upsert user_permission_overrides row with override="revoke"
+ *   - "inherit" → DELETE override row (user inherits role permission again)
+ *
+ * Two-layer gate:
+ *   - Coarse: requireRole(ADMIN_ROLES) — owner / admin only.
+ *   - Fine:   requirePermission("permissions.manage") — REVOKING this from
+ *             an admin blocks this write without disabling any other admin
+ *             capability (principle of least privilege for permission
+ *             administration).
+ *
+ * Self-write block: an admin cannot edit their OWN overrides. Anti-lockout
+ * guard — otherwise a revoke of `permissions.manage` becomes irreversible
+ * without DB access.
+ *
+ * Invalidates the per-user permission cache so the next request reflects
+ * the new effective set.
+ */
+const patchUserPermissionSchema = z.object({
+  permissionKey: z.string().min(1),
+  action: z.enum(["grant", "revoke", "inherit"]),
+});
+
+router.patch(
+  "/:userId/permissions",
+  requireRole(ADMIN_ROLES),
+  requirePermission("permissions.manage"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId } = req.params;
+    const companyId = req.companyId!;
+    const actorUserId = req.user!.id;
+
+    if (userId === actorUserId) {
+      throw createError(
+        400,
+        "You cannot edit your own permission overrides. Ask another admin to change your permissions.",
+      );
+    }
+
+    const { permissionKey, action } = validateSchema(patchUserPermissionSchema, req.body);
+
+    // Tenant scope: target user must belong to the same company.
+    const member = await storage.getTeamMember(companyId, userId);
+    if (!member) {
+      throw createError(404, "Team member not found");
+    }
+
+    // Resolve permission ID from the canonical key.
+    const [perm] = await db
+      .select({ id: permissions.id })
+      .from(permissions)
+      .where(eq(permissions.key, permissionKey))
+      .limit(1);
+    if (!perm) {
+      throw createError(400, `Unknown permission: '${permissionKey}'`);
+    }
+
+    if (action === "inherit") {
+      await db
+        .delete(userPermissionOverrides)
+        .where(
+          and(
+            eq(userPermissionOverrides.userId, userId),
+            eq(userPermissionOverrides.permissionId, perm.id),
+          ),
+        );
+    } else {
+      // Upsert: delete any existing row, then insert the new one. Simple
+      // and consistent with the rest of the override table; no unique
+      // index exists for ON CONFLICT here.
+      await db
+        .delete(userPermissionOverrides)
+        .where(
+          and(
+            eq(userPermissionOverrides.userId, userId),
+            eq(userPermissionOverrides.permissionId, perm.id),
+          ),
+        );
+      await db.insert(userPermissionOverrides).values({
+        userId,
+        permissionId: perm.id,
+        override: action, // "grant" | "revoke"
+      });
+    }
+
+    // Evict the in-memory effective-permission cache for this user so the
+    // next requirePermission() read sees the change immediately.
+    clearPermissionCache(userId);
+
+    res.json({
+      userId,
+      permissionKey,
+      action,
     });
   }),
 );

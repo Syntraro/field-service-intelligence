@@ -9,8 +9,10 @@
 import type { CalendarEventDto, UnscheduledJobDto, CalendarTechnicianDto } from "@shared/types/scheduling";
 import type { TeamMember } from "@/hooks/useTechnicians";
 import type { DispatchVisit, DispatchTask, Technician, VisitStatus } from "./dispatchPreviewTypes";
-// Phase 1 Map Convergence: shared color palette
-import { TECHNICIAN_COLORS } from "@shared/colors";
+// Phase 1 Map Convergence: shared color palette.
+// 2026-04-20 Phase 3: use resolveTechnicianColor so dispatch, team hub, profile
+// page and selectors agree without depending on roster order.
+import { resolveTechnicianColor } from "@shared/colors";
 
 // 2026-03-18: Removed "open" (not a real visit status), added "on_hold" and "cancelled"
 const VALID_VISIT_STATUSES = new Set<VisitStatus>([
@@ -29,9 +31,6 @@ function getInitials(name: string): string {
     .map(w => w[0]?.toUpperCase() ?? "")
     .join("");
 }
-
-// Phase 1 Map Convergence: Use shared palette (was local DEFAULT_COLORS with 8 entries)
-const DEFAULT_COLORS = TECHNICIAN_COLORS;
 
 /** Map CalendarEventDto → DispatchVisit */
 export function mapEventToDispatchVisit(event: CalendarEventDto): DispatchVisit {
@@ -181,11 +180,11 @@ export function mapRawTask(task: any): DispatchTask {
 export function buildTechnicianRoster(
   teamMembers: TeamMember[],
 ): Technician[] {
-  return teamMembers.map((m, i) => ({
+  return teamMembers.map((m) => ({
     id: m.id,
     name: m.fullName,
     initials: getInitials(m.fullName),
-    color: m.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length],
+    color: resolveTechnicianColor(m.id, m.color),
     status: "available" as const,
   }));
 }

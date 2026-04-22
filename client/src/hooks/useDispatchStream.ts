@@ -38,6 +38,7 @@ interface DispatchSignal {
 //   Dashboard:
 //     - ["dashboard","workflow"]      Jobs widget (incl. live overdueCount), invoices/quotes/PM
 //     - ["dashboard","today-summary"] Today's Operations live counts
+//     - ["/api/dashboard/capacity"]   Technician workload rail schedule rows
 //     - ["dashboard-action"]          Modal action lists (overdue/on_hold/unscheduled/ready_to_invoice)
 //     - /api/tasks* (URL-style key)   Tasks panel (predicate-matched, see below)
 //   JobDetailPage: ["jobs", "detail", jobId], ["visits", jobId, "all"],
@@ -62,6 +63,11 @@ const VISIT_JOB_KEYS: readonly (readonly string[])[] = [
   // dashboard queries are fallbacks only.
   ["dashboard", "workflow"],         // Jobs widget + invoices/quotes/PM bundled
   ["dashboard", "today-summary"],    // Today's Operations cards
+  // 2026-04-20: Capacity drives the technician workload rail's schedule
+  // rows (booked + ≥2h open gaps). Any visit/job mutation shifts tile
+  // content, so it belongs in the canonical visit/job invalidation set —
+  // not wired as a per-surface onAfterMutation hack on Dashboard.
+  ["/api/dashboard/capacity"],
   // Modal action lists still keyed broadly (modal opens on demand)
   ["dashboard-action"],
   // Attention API stays for non-dashboard consumers (per-entity badges, etc.)

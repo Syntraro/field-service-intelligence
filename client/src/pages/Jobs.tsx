@@ -150,8 +150,16 @@ export default function Jobs() {
   const urlParams = useMemo(() => new URLSearchParams(searchString), [searchString]);
   const schedulingParam = urlParams.get("scheduling");
   const subStatusParam = urlParams.get("subStatus");
+  // 2026-04-21 Financial Dashboard deep-link: `readyToInvoiceOnly=true`
+  // scopes the feed to completed jobs with no existing invoice. Server
+  // filter does the work; we preserve the flag to drive UI affordance.
+  const readyToInvoiceParam = urlParams.get("readyToInvoiceOnly") === "true";
 
   const initialLifecycle = (): LifecycleStatusFilter => {
+    // When arriving from Financial Dashboard with readyToInvoiceOnly=true,
+    // pre-select the "completed" lifecycle tab so the filter state matches
+    // the visible rows.
+    if (urlParams.get("readyToInvoiceOnly") === "true") return "completed";
     const v = urlParams.get("lifecycle");
     if (v && ["all", "open", "completed", "invoiced", "archived"].includes(v)) return v as LifecycleStatusFilter;
     return "all";
@@ -194,7 +202,10 @@ export default function Jobs() {
     offset: 0,
     ...(sortField === "priority" ? { sortBy: "priority" as const } : {}),
     includeCounts: true,
-  }), [sortField]);
+    // 2026-04-21: pass-through from URL so Financial Dashboard deep-link
+    // narrows the server-side feed.
+    ...(readyToInvoiceParam ? { readyToInvoiceOnly: true } : {}),
+  }), [sortField, readyToInvoiceParam]);
   const { jobs, isLoading, counts: serverCounts } = useJobsFeed(feedParams);
 
   const isOfficeUser = Boolean(user?.role && OFFICE_ROLES.includes(user.role));

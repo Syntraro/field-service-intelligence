@@ -286,6 +286,47 @@ export interface RescheduleVisitIntent {
   mode?: "replace" | "complete_and_new";
 }
 
+/**
+ * Assign a crew to an existing visit WITHOUT changing the schedule.
+ *
+ * 2026-04-21 Phase 1 canonical visit mutation architecture: replaces the
+ * legacy direct-storage `schedulingRepository.updateVisitCrew()` path. Crew
+ * is an operational field, not metadata, because:
+ *   - single-active-visit invariants apply to the tech being assigned
+ *   - actioned visits (en_route / in_progress / paused / on_site) should not
+ *     silently have their crew replaced without lifecycle consideration
+ *   - crew changes emit dispatch SSE + event log entries the orchestrator owns
+ *
+ * Canonical field name: `assignedTechnicianIds` (matches shared schema
+ * column + every other visit mutation). The legacy `technicianUserIds`
+ * naming used by the old `schedulingRepository.updateVisitCrew` contract
+ * is no longer part of any surface.
+ */
+export interface AssignVisitCrewIntent {
+  type: "ASSIGN_VISIT_CREW";
+  companyId: string;
+  visitId: string;
+  /** Canonical crew: `[]` clears, `[id, ...]` replaces. */
+  assignedTechnicianIds: string[];
+  expectedVersion: number;
+}
+
+/**
+ * Unschedule an existing visit — return it to the backlog.
+ *
+ * 2026-04-21 Phase 1 canonical visit mutation architecture: wraps the
+ * legacy `schedulingRepository.unscheduleVisit()` storage path with the
+ * actioned-visit guard that was previously missing. Unscheduling a visit
+ * that a tech has already checked into (or is en-route to) would erase
+ * real-world state; the orchestrator rejects that class of mutation.
+ */
+export interface UnscheduleVisitIntent {
+  type: "UNSCHEDULE_VISIT";
+  companyId: string;
+  visitId: string;
+  expectedVersion?: number;
+}
+
 /** Union of all orchestrator intents. */
 export type OrchestratorIntent =
   | CompleteVisitIntent
@@ -306,7 +347,9 @@ export type OrchestratorIntent =
   | PauseVisitIntent
   | ResumeVisitIntent
   | RescheduleVisitIntent
-  | ReopenVisitIntent;
+  | ReopenVisitIntent
+  | AssignVisitCrewIntent
+  | UnscheduleVisitIntent;
 
 // ============================================================================
 // Result Types
@@ -398,6 +441,41 @@ export interface ReopenVisitResult {
 
 /** Return shape matches the original storage method: { ...job, visitId, visitVersion } */
 export type RescheduleVisitResult = Record<string, any> & {
+  visitId: string;
+  visitVersion: number;
+  /**
+   * 2026-04-21 Phase 2 push notifications: visit state BEFORE the write.
+   * Captured from the `visit` row the orchestrator already had to fetch
+   * for the terminal-status guard. Exposed so the route handler can
+   * compute a meaningful-datetime delta without a second round-trip.
+   * ISO strings for consistency with wire shapes; null when the previous
+   * visit had no scheduled time (e.g. backlog → first schedule).
+   */
+  previousScheduledStart: string | null;
+  previousScheduledEnd: string | null;
+  previousIsAllDay: boolean;
+};
+
+export interface AssignVisitCrewResult {
+  visit: JobVisit;
+  /** Mirror of `visit.jobId` for caller convenience (parity with legacy storage return). */
+  jobId: string;
+  /**
+   * 2026-04-21 Phase 1 push notifications: the visit's crew BEFORE this write.
+   * Exposed so the route handler can compute the newly-assigned delta
+   * without a second DB round-trip.
+   */
+  previousAssignedTechnicianIds: string[];
+  /**
+   * 2026-04-21 Phase 1 push notifications: parent job's job_number for use in
+   * the notification title/body. Free-of-charge since the orchestrator has
+   * to fetch the job anyway for the terminal-status guard.
+   */
+  jobNumber: number;
+}
+
+/** Unschedule result matches the legacy storage shape so route handlers need no changes. */
+export type UnscheduleVisitResult = Record<string, any> & {
   visitId: string;
   visitVersion: number;
 };
@@ -1879,6 +1957,17 @@ export async function rescheduleVisit(
     throw new Error("Visit not found");
   }
 
+  // 2026-04-21 Phase 2 push notifications: snapshot pre-write datetime state
+  // from the visit row we already have in scope. Used by the route handler
+  // to drive meaningful-delta detection for the schedule-change emitter.
+  const previousScheduledStart = visit.scheduledStart
+    ? (visit.scheduledStart instanceof Date ? visit.scheduledStart.toISOString() : String(visit.scheduledStart))
+    : null;
+  const previousScheduledEnd = visit.scheduledEnd
+    ? (visit.scheduledEnd instanceof Date ? visit.scheduledEnd.toISOString() : String(visit.scheduledEnd))
+    : null;
+  const previousIsAllDay = visit.isAllDay === true;
+
   // Step 2: Load parent job for terminal-status check
   const existingJob = await schedulingRepository.getJobById(companyId, visit.jobId);
   if (!existingJob) {
@@ -1971,5 +2060,132 @@ export async function rescheduleVisit(
   // Re-fetch visit to get updated visit version
   const updatedVisit = await jobVisitsRepository.getJobVisit(companyId, visitId);
 
-  return { ...result, visitId, visitVersion: updatedVisit?.version ?? result?.version };
+  return {
+    ...result,
+    visitId,
+    visitVersion: updatedVisit?.version ?? result?.version,
+    // 2026-04-21 Phase 2: pre-write snapshot for schedule-change emitter.
+    previousScheduledStart,
+    previousScheduledEnd,
+    previousIsAllDay,
+  };
+}
+
+// ============================================================================
+// ASSIGN_VISIT_CREW (2026-04-21)
+// ============================================================================
+
+/**
+ * Replace the crew on a scheduled visit without touching its schedule.
+ *
+ * Phase 1 canonical visit mutation architecture: the sole crew write path
+ * for any office/dispatch surface. The route handler at
+ * `PATCH /api/calendar/visit/:visitId/assign-crew` is a thin delegator.
+ *
+ * Invariants enforced here (previously absent on the direct-storage path):
+ *   - terminal job → reject (mirrors `rescheduleVisit` terminal guard)
+ *   - terminal visit (completed / cancelled) → reject; use reopen instead
+ *   - version check → optimistic locking
+ *
+ * Actioned-visit policy: we DO allow crew replacement on an actioned visit
+ * (e.g., en_route / in_progress). Swapping a tech mid-visit is a legitimate
+ * dispatcher action and does not carry the same identity-destruction risk
+ * as rescheduling an actioned visit. If that policy ever needs to tighten,
+ * the spawn-on-action logic from `rescheduleVisit` is the pattern to reuse.
+ */
+export async function assignVisitCrew(
+  intent: AssignVisitCrewIntent,
+): Promise<AssignVisitCrewResult> {
+  assertWritableSupportContext("visit.assignCrew");
+  const { companyId, visitId, assignedTechnicianIds, expectedVersion } = intent;
+
+  const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
+  if (!visit) {
+    throw new Error("Visit not found");
+  }
+
+  const existingJob = await schedulingRepository.getJobById(companyId, visit.jobId);
+  if (!existingJob) {
+    throw new Error("Parent job not found");
+  }
+  if (JOB_TERMINAL_STATUSES.includes(existingJob.status as any)) {
+    throw new TerminalJobImmutableError(visit.jobId, existingJob.status);
+  }
+
+  if (visit.status === "completed" || visit.status === "cancelled") {
+    throw new Error(`Cannot assign crew to a ${visit.status} visit. Reopen first.`);
+  }
+
+  if (visit.version !== expectedVersion) {
+    throw new VersionMismatchError(expectedVersion, visit.version);
+  }
+
+  const { assignedTechnicianIds: normalized } = normalizeVisitCrewWrite(assignedTechnicianIds);
+
+  // 2026-04-21 Phase 1: capture the crew BEFORE the write. The orchestrator
+  // is the only place in the system with a clean before/after pair — we
+  // return both so the route can compute the newly-assigned delta for
+  // push notifications without re-fetching the visit.
+  const previousAssignedTechnicianIds = Array.isArray(visit.assignedTechnicianIds)
+    ? [...visit.assignedTechnicianIds]
+    : [];
+
+  await jobVisitsRepository.updateJobVisit(companyId, visit.id, visit.version, {
+    assignedTechnicianIds: normalized,
+  });
+
+  const updatedVisit = await jobVisitsRepository.getJobVisit(companyId, visitId);
+  if (!updatedVisit) {
+    throw new Error("Visit disappeared during crew assignment");
+  }
+
+  return {
+    visit: updatedVisit,
+    jobId: visit.jobId,
+    previousAssignedTechnicianIds,
+    jobNumber: existingJob.jobNumber,
+  };
+}
+
+// ============================================================================
+// UNSCHEDULE_VISIT (2026-04-21)
+// ============================================================================
+
+/**
+ * Unschedule a visit — return it to the backlog.
+ *
+ * Phase 1 canonical visit mutation architecture: single orchestrator entry
+ * point for any "clear schedule fields on a visit" operation. Delegates the
+ * actual write to `schedulingRepository.unscheduleVisit()` (which owns
+ * terminal-job + terminal-visit + version-check guards already) after
+ * adding the actioned-visit guard the direct path does not enforce.
+ *
+ * Actioned-visit rejection rationale: once a tech has checked in, started
+ * travel, or any other non-"scheduled" progression, the visit reflects
+ * real-world state that cannot be silently discarded. The office must
+ * explicitly cancel the visit (orchestrator `cancelVisit`) or reopen /
+ * reschedule it — not "unschedule" it.
+ */
+export async function unscheduleVisit(
+  intent: UnscheduleVisitIntent,
+): Promise<UnscheduleVisitResult> {
+  assertWritableSupportContext("visit.unschedule");
+  const { companyId, visitId, expectedVersion } = intent;
+
+  const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
+  if (!visit) {
+    throw new Error("Visit not found");
+  }
+
+  if (isVisitActioned(visit)) {
+    const err: any = new Error(
+      `Cannot unschedule an actioned visit (status=${visit.status}). ` +
+      `Cancel or reschedule the visit instead.`,
+    );
+    err.status = 409;
+    err.code = "VISIT_ACTIONED";
+    throw err;
+  }
+
+  return await schedulingRepository.unscheduleVisit(companyId, visitId, expectedVersion);
 }

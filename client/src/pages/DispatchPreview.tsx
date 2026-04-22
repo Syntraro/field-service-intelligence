@@ -6,7 +6,7 @@
  */
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { addDays, subDays, addWeeks, subWeeks, addMonths, subMonths, startOfWeek, endOfWeek, eachDayOfInterval, addMinutes, format } from "date-fns";
-import { AlertCircle, Loader2, CalendarPlus, ClipboardList, Truck, X as XIcon } from "lucide-react";
+import { AlertCircle, Loader2, X as XIcon } from "lucide-react";
 import {
   DndContext,
   DragOverlay,
@@ -36,9 +36,6 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
-} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
 import DispatchBoardHeader, { type DispatchView } from "@/components/dispatch/DispatchBoardHeader";
@@ -53,13 +50,20 @@ import WeekDispatchGrid, { WEEK_START_HOUR, WEEK_HOUR_HEIGHT_PX } from "@/compon
 import MonthDispatchGrid from "@/components/dispatch/MonthDispatchGrid";
 import DispatchMapPanel from "@/components/dispatch/DispatchMapPanel";
 import { useLiveTechnicians } from "@/hooks/useLiveTechnicians";
-// 2026-03-21: Canonical visit-edit modal — used for lifecycle actions (complete, reopen, delete)
-// instead of duplicating that logic in the dispatch panel. See REFACTORING_LOG.md.
-import { EditVisitModal } from "@/components/visits/EditVisitModal";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+// 2026-04-20 canonicalization: Dispatch now mounts the shared launcher
+// components that encapsulate EditVisitModal state and the quick-create
+// chooser + QuickAddJobDialog + TaskDialog orchestration. Dashboard uses
+// the exact same pair — one implementation, two entry points.
+import {
+  VisitEditorLauncher,
+  type VisitEditorState,
+} from "@/components/dispatch/VisitEditorLauncher";
+import {
+  SlotQuickCreateLauncher,
+  type QuickCreateSlot,
+} from "@/components/dispatch/SlotQuickCreateLauncher";
+import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
-import { TaskDialog } from "@/components/TaskDialog";
 
 // Local pxToSnappedMinutes and computeDropTime removed — unified into
 // dispatchPlacementResolver.ts resolvePlacement() (shared by drag + click modes)
@@ -274,8 +278,11 @@ export default function DispatchPreview() {
 
   // ── Mutations ──
   // 2026-03-21: reopenVisit, completeVisitWithOutcome, deleteVisit removed — lifecycle
-  // actions now routed through canonical EditVisitModal via handleOpenVisitEditor.
-  const { scheduleVisit, rescheduleVisit, unscheduleVisit, resizeVisit, rescheduleTask, completeTask, reopenTask, deleteTask, updateVisitCrew, updateVisitStatus, savingIds } =
+  // actions now routed through canonical EditVisitModal.
+  // 2026-04-21 Phase 1: updateVisitCrew, updateVisitStatus removed from this
+  // destructure — dispatch board no longer performs those quick-actions. Crew
+  // and status changes go through EditVisitModal (canonical visit editor).
+  const { scheduleVisit, rescheduleVisit, unscheduleVisit, resizeVisit, rescheduleTask, completeTask, reopenTask, deleteTask, savingIds } =
     useDispatchPreviewMutations();
 
   // ── Timeline scroll ref (for computing drop positions) ──
@@ -955,30 +962,17 @@ export default function DispatchPreview() {
     });
   }, [scheduleVisit]);
 
-  // ── Visit status change handler (non-terminal transitions only) ──
-  const handleUpdateStatus = useCallback((visit: DispatchVisit, status: string) => {
-    if (visit.kind !== "visit") return; // Guard: backlog items have no real visitId
-    updateVisitStatus({ visitId: visit.id, jobId: visit.jobId, status });
-  }, [updateVisitStatus]);
-
   // 2026-03-22: handleOpenVisitEditor removed — visits now open EditVisitModal
   // directly from handleSelectVisit. No intermediate dispatch panel for real visits.
-
-  // Update visit notes via PATCH /api/jobs/:jobId/visits/:visitId
-  const handleUpdateVisitNotes = useCallback(async (visit: DispatchVisit, notes: string) => {
-    if (visit.kind !== "visit") return; // Guard: backlog items have no real visitId
-    try {
-      await apiRequest(`/api/jobs/${visit.jobId}/visits/${visit.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ visitNotes: notes, version: visit.version }),
-      });
-      // Refresh calendar data so the detail panel sees the updated notes
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
-      toast({ title: "Notes saved" });
-    } catch (err: any) {
-      toast({ title: "Error", description: err.message || "Failed to save notes", variant: "destructive" });
-    }
-  }, [toast]);
+  //
+  // 2026-04-21 Phase 1 canonical visit mutation architecture:
+  // handleUpdateStatus, handleUpdateCrew, handleUpdateVisitNotes removed.
+  // DispatchDetailPanel does not mount for visits (visit-read-only rule),
+  // so those callbacks had zero callers. All visit mutation surfaces now
+  // flow through EditVisitModal (via VisitEditorLauncher), which consumes
+  // `useDispatchPreviewMutations` directly. Adding a new "quick visit
+  // action" on the dispatch board must go through that single engine —
+  // do NOT reintroduce inline apiRequest mutations here.
 
   // ── Resize handlers ──
   const handleResize = useCallback((visit: DispatchVisit, newEndTime: string) => {
@@ -1093,54 +1087,37 @@ export default function DispatchPreview() {
     executeMutation();
   }, [rescheduleTask, sortedTechnicians]);
 
-  // ── Crew update from detail panel (with off-shift confirmation) ──
-  // Stabilization: version resolved internally by mutation from fresh cache
-  const handleUpdateCrew = useCallback((visit: DispatchVisit, technicianIds: string[]) => {
-    if (visit.kind !== "visit") return; // Guard: backlog items have no real visitId for crew update
-    const executeMutation = () => {
-      updateVisitCrew({
-        visitId: visit.id,
-        technicianUserIds: technicianIds,
-      });
-    };
-
-    // Check if any newly-added technician is off-shift
-    const currentIds = new Set(visit.technicianIds);
-    const newlyAdded = technicianIds.filter(id => !currentIds.has(id));
-    const offShiftNew = newlyAdded.filter(id => {
-      const tech = sortedTechnicians.find(t => t.id === id);
-      return tech && tech.isWorking === false;
-    });
-
-    if (offShiftNew.length > 0) {
-      const names = offShiftNew.map(id => sortedTechnicians.find(t => t.id === id)?.name ?? id).join(", ");
-      setOffShiftConfirm({ action: executeMutation, techName: names, count: offShiftNew.length });
-    } else {
-      executeMutation();
-    }
-  }, [updateVisitCrew, sortedTechnicians]);
-
-  // ── Item 6: Quick-create from empty slot click ──
-  const [quickCreate, setQuickCreate] = useState<{ techId: string; minuteOfDay: number } | null>(null);
-  const [quickCreateJobOpen, setQuickCreateJobOpen] = useState(false);
-  // 2026-04-12 (Option A): seed crew goes on `assignedTechnicianIds` (visit
-  // owns crew). `primaryTechnicianId` removed — no job-level primary concept.
-  const [quickCreateJobSchedule, setQuickCreateJobSchedule] = useState<{
-    date?: Date; time?: string; durationMinutes?: number; assignedTechnicianIds?: string[];
-  } | undefined>(undefined);
-  // Task quick-create via TaskDialog modal (replaces inline apiRequest)
-  const [quickCreateTaskOpen, setQuickCreateTaskOpen] = useState(false);
-  const [quickCreateTaskPrefill, setQuickCreateTaskPrefill] = useState<{
-    assignedToUserId?: string; startDate?: string; startTime?: string; taskType?: "GENERAL" | "SUPPLIER_VISIT";
-  } | undefined>(undefined);
+  // ── Quick-create from empty slot click (canonical: SlotQuickCreateLauncher) ──
+  // 2026-04-20 canonicalization: the prior 5-variable inline state
+  // (`quickCreate`, `quickCreateJobOpen`, `quickCreateJobSchedule`,
+  // `quickCreateTaskOpen`, `quickCreateTaskPrefill`) plus the inline
+  // chooser Dialog + QuickAddJobDialog + TaskDialog mounts collapsed to
+  // a single controlled `quickCreateSlot` fed into SlotQuickCreateLauncher.
+  // The launcher owns all dialog state; Dispatch is now purely an entry
+  // point that hands off {techId, tech name, date, start time, duration}.
+  const [quickCreateSlot, setQuickCreateSlot] = useState<QuickCreateSlot | null>(null);
   const handleEmptySlotClick = useCallback((techId: string, minuteOfDay: number) => {
-    // Guard: block quick-create from the unassigned lane — no valid tech to assign to
     if (techId === UNASSIGNED_TECH_ID) {
-      toast({ title: "Choose a technician lane", description: "Quick-create requires a specific technician lane." });
+      toast({
+        title: "Choose a technician lane",
+        description: "Quick-create requires a specific technician lane.",
+      });
       return;
     }
-    setQuickCreate({ techId, minuteOfDay });
-  }, [toast]);
+    const tech = sortedTechnicians.find(t => t.id === techId);
+    const hh = String(Math.floor(minuteOfDay / 60)).padStart(2, "0");
+    const mm = String(minuteOfDay % 60).padStart(2, "0");
+    setQuickCreateSlot({
+      technicianId: techId,
+      technicianName: tech?.name,
+      date: selectedDate,
+      startTime: `${hh}:${mm}`,
+      // Explicitly pass 60min default to match prior Dispatch behavior; the
+      // launcher also defaults to 60, but making it explicit here keeps
+      // Dispatch's intent visible at the call site.
+      durationMinutes: 60,
+    });
+  }, [toast, sortedTechnicians, selectedDate]);
 
   // ── Selection (detail panel) — supports both visits and tasks ──
   // Fix 5: Ref for detecting clicks outside the detail panel
@@ -1148,20 +1125,11 @@ export default function DispatchPreview() {
   const [selectedVisitId, setSelectedVisitId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
-  // 2026-03-22: Canonical visit editor modal state — opens EditVisitModal directly
-  // when user clicks a real visit on the dispatch board (no intermediate panel).
-  const [visitEditorState, setVisitEditorState] = useState<{
-    open: boolean;
-    visitId: string;
-    jobId: string;
-    customerName?: string;
-    customerCompanyId?: string;
-    jobNumber?: number;
-    jobSummary?: string;
-    locationName?: string;
-    locationAddress?: string;
-    locationId?: string;
-  } | null>(null);
+  // 2026-04-20 canonicalization: state shape lifted to the shared
+  // `VisitEditorState` consumed by `VisitEditorLauncher`. Non-null =
+  // modal visible; null = closed. Both Dispatch and Dashboard feed this
+  // same shape into the launcher.
+  const [visitEditorState, setVisitEditorState] = useState<VisitEditorState | null>(null);
 
   // Draggable floating panel: offset from center (user can drag the panel around)
   const [panelDragOffset, setPanelDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -1179,7 +1147,6 @@ export default function DispatchPreview() {
       // 2026-03-23: Include location context for modal header
       const addressParts = [visit.locationAddress, visit.locationCity, visit.locationProvinceState].filter(Boolean);
       setVisitEditorState({
-        open: true,
         visitId: effectiveVisitId,
         jobId: visit.jobId,
         customerName: visit.customerName,
@@ -1418,37 +1385,13 @@ export default function DispatchPreview() {
     </div>
   ) : null;
 
-  // 2026-03-23: Canonical visit editor modal — opens directly when user clicks a
-  // real visit on the dispatch board. Delegates scheduling to canonical dispatch
-  // mutation system so modal and drag-drop share the same optimistic cache logic.
-  const visitEditorModal = visitEditorState?.open ? (
-    <EditVisitModal
-      open={true}
-      onOpenChange={(open) => {
-        if (!open) {
-          setVisitEditorState(null);
-          handleCloseDetail();
-        }
-      }}
-      jobId={visitEditorState.jobId}
-      visitId={visitEditorState.visitId}
-      customerName={visitEditorState.customerName}
-      customerCompanyId={visitEditorState.customerCompanyId}
-      jobNumber={visitEditorState.jobNumber}
-      jobSummary={visitEditorState.jobSummary}
-      locationName={visitEditorState.locationName}
-      locationAddress={visitEditorState.locationAddress}
-      locationId={visitEditorState.locationId}
-      onDispatchSchedule={scheduleVisit}
-      onDispatchReschedule={rescheduleVisit}
-      onDispatchUpdateCrew={updateVisitCrew}
-      onAfterMutation={() => {
-        // Ensure dispatch board refreshes after lifecycle action
-        queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      }}
-    />
-  ) : null;
+  // 2026-04-20 canonicalization: inline EditVisitModal mount removed —
+  // the render block below uses <VisitEditorLauncher/> which wraps the
+  // same modal with the same props. Dispatch-specific optimistic-cache
+  // callbacks (scheduleVisit / rescheduleVisit / updateVisitCrew) are
+  // threaded through the launcher as before. Dashboard mounts the exact
+  // same launcher without those callbacks, matching the JobDetailPage
+  // pattern.
 
   return (
     <DndContext
@@ -1647,8 +1590,21 @@ export default function DispatchPreview() {
       {/* Floating detail panel — centered draggable overlay for visit/task inspection */}
       {floatingEditor}
 
-      {/* 2026-03-21: Canonical visit editor modal for lifecycle actions */}
-      {visitEditorModal}
+      {/* 2026-04-21 Phase 1: Canonical Edit Visit launcher — shared with Dashboard.
+          The launcher + modal consume `useDispatchPreviewMutations` internally;
+          pages never pass callbacks. Every mounting surface gets the same save
+          behavior by construction. */}
+      <VisitEditorLauncher
+        state={visitEditorState}
+        onClose={() => {
+          setVisitEditorState(null);
+          handleCloseDetail();
+        }}
+        onAfterMutation={() => {
+          queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+        }}
+      />
 
       {/* Drag overlay — Phase 8: suppress floating ghost when in-grid preview is active
           to avoid redundant dual visuals (pale-blue ghost + green grid preview).
@@ -1712,115 +1668,14 @@ export default function DispatchPreview() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Item 6: Quick-create from empty slot click — Job Visit + Task.
-       * Uses Dialog (not AlertDialog) so buttons don't auto-close the modal.
-       * This allows the async task creation to show loading state while open. */}
-      {quickCreate && (() => {
-        const tech = sortedTechnicians.find(t => t.id === quickCreate.techId);
-        const h = Math.floor(quickCreate.minuteOfDay / 60);
-        const m = quickCreate.minuteOfDay % 60;
-        const slotDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), h, m, 0, 0);
-        const timeLabel = format(slotDate, "h:mm a");
-        const timeStr = format(slotDate, "HH:mm");
-        return (
-          <Dialog open onOpenChange={(open) => { if (!open) setQuickCreate(null); }}>
-            <DialogContent className="max-w-[280px] p-5 gap-0">
-              <DialogHeader className="space-y-1.5 pb-3">
-                <DialogTitle className="text-base font-semibold">Quick Create</DialogTitle>
-                <DialogDescription asChild>
-                  <div className="space-y-0.5">
-                    <p className="text-sm text-foreground font-medium">{tech?.name ?? "Technician"} · {timeLabel}</p>
-                    <p className="text-xs text-muted-foreground">{format(selectedDate, "EEEE, MMM d, yyyy")}</p>
-                  </div>
-                </DialogDescription>
-              </DialogHeader>
-              <div className="flex flex-col gap-1.5 pt-1">
-                <Button
-                  className="w-full justify-start gap-2"
-                  onClick={() => {
-                    setQuickCreateJobSchedule({
-                      date: selectedDate,
-                      time: timeStr,
-                      durationMinutes: 60,
-                      assignedTechnicianIds: [quickCreate.techId],
-                    });
-                    setQuickCreate(null);
-                    setQuickCreateJobOpen(true);
-                  }}
-                >
-                  <CalendarPlus className="h-4 w-4" />
-                  New Job Visit
-                </Button>
-                <Button
-                  variant="outline"
-                  className="w-full justify-start gap-2"
-                  onClick={() => {
-                    const dateStr = format(selectedDate, "yyyy-MM-dd");
-                    setQuickCreateTaskPrefill({
-                      assignedToUserId: quickCreate.techId,
-                      startDate: dateStr,
-                      startTime: timeStr,
-                      taskType: "GENERAL",
-                    });
-                    setQuickCreate(null);
-                    setQuickCreateTaskOpen(true);
-                  }}
-                >
-                  <ClipboardList className="h-4 w-4" />
-                  General Task
-                </Button>
-                <Button
-                  variant="outline"
-                  className="w-full justify-start gap-2"
-                  onClick={() => {
-                    const dateStr = format(selectedDate, "yyyy-MM-dd");
-                    setQuickCreateTaskPrefill({
-                      assignedToUserId: quickCreate.techId,
-                      startDate: dateStr,
-                      startTime: timeStr,
-                      taskType: "SUPPLIER_VISIT",
-                    });
-                    setQuickCreate(null);
-                    setQuickCreateTaskOpen(true);
-                  }}
-                >
-                  <Truck className="h-4 w-4" />
-                  Supplier Visit
-                </Button>
-                <Button variant="ghost" className="w-full text-muted-foreground" size="sm" onClick={() => setQuickCreate(null)}>
-                  Cancel
-                </Button>
-              </div>
-            </DialogContent>
-          </Dialog>
-        );
-      })()}
-
-      {/* Quick-create job dialog — opened from quick-create modal */}
-      <QuickAddJobDialog
-        open={quickCreateJobOpen}
-        onOpenChange={(open) => {
-          setQuickCreateJobOpen(open);
-          if (!open) setQuickCreateJobSchedule(undefined);
-        }}
-        initialSchedule={quickCreateJobSchedule}
-        onSuccess={() => {
-          setQuickCreateJobOpen(false);
-          setQuickCreateJobSchedule(undefined);
-        }}
-      />
-
-      {/* Quick-create task dialog — opened from quick-create modal */}
-      <TaskDialog
-        open={quickCreateTaskOpen}
-        onOpenChange={(open) => {
-          setQuickCreateTaskOpen(open);
-          if (!open) setQuickCreateTaskPrefill(undefined);
-        }}
-        initialData={quickCreateTaskPrefill}
-        onChanged={() => {
-          queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
-        }}
+      {/* 2026-04-20: Canonical quick-create launcher — shared with
+          Dashboard. Owns the chooser Dialog + QuickAddJobDialog +
+          TaskDialog mounts and all their state. Dispatch only feeds it
+          a slot context via `handleEmptySlotClick`. */}
+      <SlotQuickCreateLauncher
+        slot={quickCreateSlot}
+        onClose={() => setQuickCreateSlot(null)}
+        onTaskChanged={() => queryClient.invalidateQueries({ queryKey: ["/api/tasks"] })}
       />
     </DndContext>
   );

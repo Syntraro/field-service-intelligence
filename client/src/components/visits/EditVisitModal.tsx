@@ -30,6 +30,12 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { format, parseISO } from "date-fns";
+// 2026-04-21 Phase 1 canonical visit mutation architecture: every operational
+// visit write (schedule / crew / unschedule / complete / delete) routes
+// through the canonical dispatch mutations hook. This modal is the sole
+// editing surface for visits in the office app; no page-specific callback
+// plumbing, no duplicate orchestration per entry point.
+import { useDispatchPreviewMutations } from "@/components/dispatch/useDispatchPreviewMutations";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -90,18 +96,6 @@ export interface EditVisitModalProps {
   locationPhone?: string;
   /** Location ID for equipment creation — enables "Add equipment to job" action */
   locationId?: string;
-  // 2026-04-12 final cleanup: canonical crew inputs for dispatch callbacks.
-  onDispatchSchedule?: (params: {
-    jobId: string; visitId: string; assignedTechnicianIds: string[];
-    startAt: string; endAt: string; visitNotes?: string | null;
-  }) => void;
-  onDispatchReschedule?: (params: {
-    visitId: string; jobId: string; assignedTechnicianIds?: string[] | null;
-    startAt: string; endAt: string; visitNotes?: string | null;
-  }) => void;
-  onDispatchUpdateCrew?: (params: {
-    visitId: string; technicianUserIds: string[];
-  }) => void;
 }
 
 // ============================================================================
@@ -169,8 +163,17 @@ export function EditVisitModal({
   open, onOpenChange, jobId, visitId, onAfterMutation,
   customerName, customerCompanyId, jobNumber, jobSummary,
   locationName, locationAddress, locationPhone, locationId,
-  onDispatchSchedule, onDispatchReschedule, onDispatchUpdateCrew,
 }: EditVisitModalProps) {
+  // Canonical visit mutation hook. Every operational mutation this modal
+  // fires goes through this — no inline apiRequest, no bespoke payload
+  // assembly, no page-level callback plumbing.
+  const {
+    scheduleVisit,
+    rescheduleVisit,
+    unscheduleVisit,
+    completeVisitWithOutcome,
+    deleteVisit,
+  } = useDispatchPreviewMutations();
   const { toast } = useToast();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showConflictAlert, setShowConflictAlert] = useState(false);
@@ -251,47 +254,31 @@ export function EditVisitModal({
   const invalidateEquipment = () => { queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "equipment"] }); queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "equipment"] }); };
 
   // ── Mutations ──
-  const editMutation = useMutation({
-    mutationFn: async (payload: Record<string, unknown>) => apiRequest(`/api/jobs/${jobId}/visits/${visitId}`, { method: "PATCH", body: JSON.stringify({ ...payload, version: visit?.version }) }),
-    onSuccess: () => { invalidateVisitQueries(); toast({ title: "Visit Updated" }); if (pendingConflictRef.current) { pendingConflictRef.current = false; setShowConflictAlert(true); } else onOpenChange(false); },
-    onError: (err: Error) => { if ((isApiError(err) && err.status === 409) || /version|optimistic/i.test(err.message)) { toast({ title: "Conflict", description: "Refreshing..." }); invalidateVisitQueries(); return; } toast({ title: "Error", description: err.message, variant: "destructive" }); },
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: async () => apiRequest(`/api/jobs/${jobId}/visits/${visitId}`, { method: "DELETE" }),
+  //
+  // 2026-04-21 Phase 1 canonical visit mutation architecture:
+  // The ONLY mutation this modal owns directly is the narrow metadata
+  // PATCH (`visitNotes` + `equipmentIds`). Every operational mutation
+  // (schedule / reschedule / unschedule / complete / delete) goes through
+  // `useDispatchPreviewMutations` so the modal and the dispatch board share
+  // a single save engine with consistent invalidation + optimistic patching.
+  const metadataMutation = useMutation({
+    mutationFn: async (payload: { visitNotes?: string | null; equipmentIds?: string[] | null }) =>
+      apiRequest(`/api/jobs/${jobId}/visits/${visitId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ ...payload, version: visit?.version }),
+      }),
     onSuccess: () => {
-      // Calendar cache: each event is a visit, remove the row whose id matches.
-      queryClient.setQueriesData<{ events?: any[] }>({ queryKey: ["/api/calendar"] }, (old) =>
-        old?.events ? { ...old, events: old.events.filter((e: any) => e.id !== visitId) } : old,
-      );
-      // 2026-04-18 Phase 2 (multi-visit): backlog cache now carries
-      // `visitIds: string[]`. On delete, strip the deleted visit from each
-      // card's `visitIds`; drop the whole card only when it has no
-      // remaining active visit ids. This preserves siblings when the
-      // deleted visit was one of several on the same backlog job.
-      queryClient.setQueriesData<any[]>({ queryKey: ["/api/calendar/unscheduled"] }, (old) => {
-        if (!Array.isArray(old)) return old;
-        return old
-          .map((j: any) => {
-            const ids = Array.isArray(j.visitIds) ? j.visitIds : [];
-            if (!ids.includes(visitId)) return j;
-            const nextIds = ids.filter((id: string) => id !== visitId);
-            return { ...j, visitIds: nextIds };
-          })
-          .filter((j: any) => Array.isArray(j.visitIds) && j.visitIds.length > 0);
-      });
       invalidateVisitQueries();
-      onAfterMutation?.();
-      toast({ title: "Visit Deleted" });
-      onOpenChange(false);
+      invalidateEquipment();
     },
-    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
-  });
-
-  const completeMutation = useMutation({
-    mutationFn: async (payload: { outcome: string; holdReason?: string; holdNotes?: string }) => apiRequest(`/api/jobs/${jobId}/visits/${visitId}/complete`, { method: "POST", body: JSON.stringify(payload) }),
-    onSuccess: () => { invalidateVisitQueries(); onAfterMutation?.(); toast({ title: "Visit Completed" }); onOpenChange(false); },
-    onError: (err: Error) => { if (isApiError(err) && (err as any).status === 409) { invalidateVisitQueries(); toast({ title: "Already Completed" }); onOpenChange(false); return; } toast({ title: "Error", description: err.message, variant: "destructive" }); },
+    onError: (err: Error) => {
+      if ((isApiError(err) && err.status === 409) || /version|optimistic/i.test(err.message)) {
+        toast({ title: "Conflict", description: "Refreshing..." });
+        invalidateVisitQueries();
+        return;
+      }
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
   });
 
   // ── Line item Quick Add mutation ──
@@ -344,48 +331,185 @@ export function EditVisitModal({
   }, []);
 
   // ── Save ──
+  //
+  // 2026-04-21 Phase 1 canonical visit mutation architecture:
+  // Save is split along the operational/metadata seam. Per-change routing:
+  //   • schedule change / crew change / promote-from-backlog → canonical
+  //     dispatch hook (→ PATCH /api/calendar/visit/:id/reschedule or
+  //     POST /api/calendar/schedule, both orchestrator-backed, with spawn
+  //     protection for actioned visits).
+  //   • clear-schedule (unschedule)   → canonical dispatch hook
+  //     (→ POST /api/calendar/visit/:id/unschedule → orchestrator).
+  //   • visitNotes / equipmentIds     → narrow metadata PATCH
+  //     (→ PATCH /api/jobs/:jobId/visits/:id, metadata-only contract).
+  //
+  // When both operational AND metadata fields changed, the operational
+  // mutation carries notes into the orchestrator and equipment is saved
+  // by a trailing metadata PATCH. The trailing PATCH reads the freshly
+  // patched visit version from cache so the optimistic-locking contract
+  // is preserved.
+  const [isSavingOperational, setIsSavingOperational] = useState(false);
+  const sameStringArray = (a: string[], b: string[]) =>
+    a.length === b.length && a.every((v, i) => v === b[i]);
+
   const handleSave = async () => {
-    let startAt: string | null = null, endAt: string | null = null;
-    const isScheduled = schedule.date && schedule.startTime;
+    if (!visit) return;
+
+    const isScheduled = !!(schedule.date && schedule.startTime);
+    const wasUnscheduled = !visit.scheduledStart;
+    const crew = schedule.assignedTechnicianIds;
+
+    // Compute target schedule times up front so we can compare to the visit.
+    let startAt: string | null = null;
+    let endAt: string | null = null;
     if (isScheduled) {
       const start = new Date(`${schedule.date}T${schedule.startTime}:00`);
-      const end = schedule.endTime ? new Date(`${schedule.date}T${schedule.endTime}:00`) : new Date(start.getTime() + 3600000);
+      const end = schedule.endTime
+        ? new Date(`${schedule.date}T${schedule.endTime}:00`)
+        : new Date(start.getTime() + 3600000);
       if (end <= start) end.setDate(end.getDate() + 1);
-      startAt = start.toISOString(); endAt = end.toISOString();
-      const techId = schedule.assignedTechnicianIds[0] || null;
-      if (techId) { const dur = timeDiffMinutes(schedule.startTime, schedule.endTime || addMinutesToTime(schedule.startTime, 60)); if (await detectScheduleConflict(techId, schedule.date, startAt, endAt, dur, visit?.id)) pendingConflictRef.current = true; }
-    }
-    const wasUnscheduled = !visit?.scheduledStart;
+      startAt = start.toISOString();
+      endAt = end.toISOString();
 
-    // visitNotes flows through dispatch callbacks (visitNotes param → backend notes field).
-    // Equipment mutations go through canonical job_equipment routes, NOT the visit PATCH.
-    const visitPayload = { visitNotes: visitNotes || null };
-
-    if (startAt && endAt) {
-      // 2026-04-12 final cleanup: dispatch callbacks receive the full canonical crew.
-      const crew = schedule.assignedTechnicianIds;
-      if (wasUnscheduled && onDispatchSchedule && crew.length > 0) {
-        onDispatchSchedule({ jobId, visitId, assignedTechnicianIds: crew, startAt, endAt, visitNotes: visitNotes || null });
-        if (!pendingConflictRef.current) onOpenChange(false); else { pendingConflictRef.current = false; setShowConflictAlert(true); }
-        return;
-      }
-      if (!wasUnscheduled && onDispatchReschedule) {
-        onDispatchReschedule({ visitId, jobId, assignedTechnicianIds: crew, startAt, endAt, visitNotes: visitNotes || null });
-        if (!pendingConflictRef.current) onOpenChange(false); else { pendingConflictRef.current = false; setShowConflictAlert(true); }
-        return;
+      // Conflict detection (preserves existing UX)
+      const techId = crew[0] || null;
+      if (techId) {
+        const dur = timeDiffMinutes(
+          schedule.startTime,
+          schedule.endTime || addMinutesToTime(schedule.startTime, 60),
+        );
+        if (await detectScheduleConflict(techId, schedule.date, startAt, endAt, dur, visit.id)) {
+          pendingConflictRef.current = true;
+        }
       }
     }
-    const payload: Record<string, unknown> = { ...visitPayload };
-    if (!isScheduled) { payload.scheduledStart = null; payload.scheduledEnd = null; payload.isAllDay = false; payload.estimatedDurationMinutes = null; }
-    else if (startAt && endAt) { payload.scheduledStart = startAt; payload.scheduledEnd = endAt; payload.isAllDay = false; payload.estimatedDurationMinutes = timeDiffMinutes(schedule.startTime, schedule.endTime || addMinutesToTime(schedule.startTime, 60)); }
-    payload.assignedTechnicianIds = schedule.assignedTechnicianIds;
-    payload.visitNotes = visitNotes || null;
-    editMutation.mutate(payload);
+
+    // Change detection — only fire the mutations we need.
+    const oldStartIso = visit.scheduledStart
+      ? new Date(visit.scheduledStart as any).toISOString()
+      : null;
+    const oldEndIso = visit.scheduledEnd
+      ? new Date(visit.scheduledEnd as any).toISOString()
+      : null;
+    const scheduleChanged = startAt !== oldStartIso || endAt !== oldEndIso;
+
+    const oldCrew: string[] = Array.isArray((visit as any).assignedTechnicianIds)
+      ? (visit as any).assignedTechnicianIds
+      : [];
+    const crewChanged = !sameStringArray(oldCrew, crew);
+
+    const notesChanged = (visit.visitNotes || "") !== (visitNotes || "");
+    const oldEquipIds: string[] = Array.isArray((visit as any).equipmentIds)
+      ? (visit as any).equipmentIds
+      : [];
+    const equipmentChanged = !sameStringArray(oldEquipIds, selectedEquipmentIds);
+
+    const clearingSchedule = !isScheduled && !wasUnscheduled;
+    const operationalChanged =
+      clearingSchedule ||
+      (isScheduled && (wasUnscheduled || scheduleChanged || crewChanged));
+
+    setIsSavingOperational(true);
+    let notesCarriedByOperational = false;
+    try {
+      if (operationalChanged) {
+        if (clearingSchedule) {
+          // Unschedule. The hook call clears schedule + crew on the server.
+          await unscheduleVisit({ visitId, jobId });
+        } else if (wasUnscheduled) {
+          // Promote from backlog → scheduled. scheduleVisit carries notes
+          // so they land atomically with the first schedule.
+          await scheduleVisit({
+            jobId,
+            visitId,
+            assignedTechnicianIds: crew,
+            startAt: startAt!,
+            endAt: endAt!,
+            visitNotes: visitNotes || null,
+          });
+          if (notesChanged) notesCarriedByOperational = true;
+        } else {
+          // Reschedule / crew change on an existing scheduled visit. Notes
+          // are bundled only when explicitly changed (rescheduleVisit
+          // treats undefined as "leave unchanged").
+          await rescheduleVisit({
+            jobId,
+            visitId,
+            assignedTechnicianIds: crewChanged ? crew : undefined,
+            startAt: startAt!,
+            endAt: endAt!,
+            visitNotes: notesChanged ? (visitNotes || null) : undefined,
+          });
+          if (notesChanged) notesCarriedByOperational = true;
+        }
+      }
+
+      // Metadata PATCH: equipment always routes here (operational path
+      // does not accept it); notes only when operational didn't carry it.
+      const metaPayload: Record<string, unknown> = {};
+      if (equipmentChanged) metaPayload.equipmentIds = selectedEquipmentIds;
+      if (notesChanged && !notesCarriedByOperational) {
+        metaPayload.visitNotes = visitNotes || null;
+      }
+      if (Object.keys(metaPayload).length > 0) {
+        await metadataMutation.mutateAsync(metaPayload);
+      }
+
+      if (operationalChanged || Object.keys(metaPayload).length > 0) {
+        toast({ title: "Visit Updated" });
+      }
+
+      onAfterMutation?.();
+
+      if (pendingConflictRef.current) {
+        pendingConflictRef.current = false;
+        setShowConflictAlert(true);
+      } else {
+        onOpenChange(false);
+      }
+    } catch {
+      // Hook-level errors surface their own toast; metadataMutation's onError
+      // also toasts. No further user-facing action required here.
+    } finally {
+      setIsSavingOperational(false);
+    }
   };
 
-  const handleUnschedule = () => editMutation.mutate({ scheduledStart: null, scheduledEnd: null });
+  const handleUnschedule = async () => {
+    if (!visit) return;
+    setIsSavingOperational(true);
+    try {
+      await unscheduleVisit({ visitId, jobId });
+      onAfterMutation?.();
+      onOpenChange(false);
+    } finally {
+      setIsSavingOperational(false);
+    }
+  };
 
-  const isPending = editMutation.isPending || completeMutation.isPending;
+  const handleComplete = async (payload: { outcome: "completed" | "needs_parts" | "needs_followup"; holdReason?: string; holdNotes?: string }) => {
+    setIsSavingOperational(true);
+    try {
+      await completeVisitWithOutcome({ visitId, jobId, ...payload });
+      onAfterMutation?.();
+      onOpenChange(false);
+    } finally {
+      setIsSavingOperational(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    setIsSavingOperational(true);
+    try {
+      await deleteVisit({ visitId, jobId });
+      onAfterMutation?.();
+      onOpenChange(false);
+    } finally {
+      setIsSavingOperational(false);
+    }
+  };
+
+  const isPending = metadataMutation.isPending || isSavingOperational;
   const selectedDate = schedule.date ? parseISO(schedule.date) : undefined;
   const isVisitCompleted = visit?.status === "completed";
   const isVisitCancelled = visit?.status === "cancelled";
@@ -433,7 +557,7 @@ export function EditVisitModal({
               )}
               {!isVisitCompleted && !isVisitCancelled && (
                 <>
-                  <Button size="sm" onClick={() => completeMutation.mutate({ outcome: "completed" })} disabled={isPending} className="h-8 px-3 text-xs bg-emerald-500 hover:bg-emerald-600 text-white font-semibold">
+                  <Button size="sm" onClick={() => handleComplete({ outcome: "completed" })} disabled={isPending} className="h-8 px-3 text-xs bg-emerald-500 hover:bg-emerald-600 text-white font-semibold">
                     <CheckCircle2 className="h-3.5 w-3.5 mr-1" />Complete
                   </Button>
                   {/* Follow-up: popover with reason selection before submit */}
@@ -444,7 +568,7 @@ export function EditVisitModal({
                     <PopoverContent className="w-52 p-1" align="end">
                       <div className="text-[13px] font-semibold text-slate-500 px-2 py-1.5 border-b mb-1 uppercase tracking-wider">Follow-up reason</div>
                       {FOLLOWUP_REASONS.map(r => (
-                        <button key={r.holdReason} onClick={() => completeMutation.mutate({ outcome: r.outcome, holdReason: r.holdReason })}
+                        <button key={r.holdReason} onClick={() => handleComplete({ outcome: r.outcome, holdReason: r.holdReason })}
                           className="w-full text-left text-sm px-3 py-1.5 rounded hover:bg-amber-50 text-slate-700">{r.label}</button>
                       ))}
                     </PopoverContent>
@@ -657,10 +781,10 @@ export function EditVisitModal({
       )}
 
       <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
-        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete Visit</AlertDialogTitle><AlertDialogDescription>Are you sure? This cannot be undone.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => deleteMutation.mutate()} className="bg-red-600 hover:bg-red-700">Delete</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete Visit</AlertDialogTitle><AlertDialogDescription>Are you sure? This cannot be undone.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={handleDelete} className="bg-red-600 hover:bg-red-700">Delete</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
       </AlertDialog>
       <AlertDialog open={showConflictAlert} onOpenChange={setShowConflictAlert}>
-        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Schedule Overlap</AlertDialogTitle><AlertDialogDescription>This technician already has a visit at this time.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogAction onClick={() => { setShowConflictAlert(false); onOpenChange(false); }}>OK</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Schedule Overlap</AlertDialogTitle><AlertDialogDescription>This team member already has a visit at this time.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogAction onClick={() => { setShowConflictAlert(false); onOpenChange(false); }}>OK</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
       </AlertDialog>
     </>
   );

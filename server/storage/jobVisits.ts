@@ -805,9 +805,16 @@ export class JobVisitsRepository extends BaseRepository {
     // 2026-04-12: assignedTechnicianIds handled in the canonical paired
     // crew-write block above — do NOT re-assign here or the scalar lead
     // column would stay stale.
-    // equipmentIds intentionally NOT written here. Equipment mutations go through
-    // canonical job_equipment service (jobRepository.createJobEquipment / deleteJobEquipment).
-    // job_visits.equipmentIds is a read-only snapshot set at visit creation only.
+    //
+    // 2026-04-21 Phase 1 canonical visit mutation architecture: equipmentIds
+    // on `job_visits` IS writable through this storage method. It is the
+    // visit-scoped equipment selection that pre-loads the tech's mobile view
+    // (metadata, not a lifecycle field). The `job_equipment` join table is a
+    // separate, orthogonal concern — tech-app adds equipment to the JOB from
+    // the field; this array records which of those the office wants
+    // highlighted for the current VISIT. Writing `null` here means "no
+    // explicit selection"; writing `[]` means "explicitly empty selection".
+    if ("equipmentIds" in input) updates.equipmentIds = input.equipmentIds;
 
     // 4) Compute scheduledEnd when we have a start but no explicit end yet
     // Skip if scheduledStart was explicitly cleared (unschedule path already handled above)

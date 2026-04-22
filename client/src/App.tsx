@@ -9,6 +9,7 @@ import { AuthProvider, useAuth } from "@/lib/auth";
 import { isPlatformRole } from "@/lib/platformRoles";
 import { useToast } from "@/hooks/use-toast";
 import { useDispatchStream } from "@/hooks/useDispatchStream";
+import { useServiceWorkerNavigator } from "@/hooks/useServiceWorkerNavigator";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import Dashboard from "@/pages/Dashboard";
 import Jobs from "@/pages/Jobs";
@@ -23,7 +24,10 @@ import QuoteDetailPage from "@/pages/QuoteDetailPage";
 import Reports from "@/pages/Reports";
 import TimesheetReportPage from "@/pages/TimesheetReportPage";
 import AccountsReceivablePage from "@/pages/AccountsReceivablePage";
-// FinancialDashboard import removed 2026-04-10: page + route were dead (zero navigation entries)
+// 2026-04-21: Financial Dashboard reintroduced with full nav + header-button wiring.
+// The prior page (removed 2026-04-10 for zero navigation entries) has been replaced
+// by a canonical build that consumes GET /api/dashboard/financial.
+import FinancialDashboard from "@/pages/FinancialDashboard";
 import Admin from "@/pages/Admin";
 // PERF-008 (2026-04-08): Lazy-load rarely visited platform-admin / QBO / one-time
 // import pages to shrink the initial main bundle for normal users.
@@ -51,8 +55,10 @@ const InvoiceRemindersSettingsPage = lazy(() => import("@/pages/InvoiceReminders
 import Clients from "@/pages/Clients";
 import ClientDetailPage from "@/pages/ClientDetailPage";
 import PartsManagementPage from "@/pages/PartsManagementPage";
-import TechnicianManagementPage from "@/pages/TechnicianManagementPage";
-import ManageTeam from "@/pages/ManageTeam";
+// 2026-04-20 Phase 2 Team Hub: TechnicianManagementPage import removed.
+// The legacy /settings/team page now resolves to TeamHubPage. The file still
+// exists on disk as a Phase-2 safety net; it will be deleted after verification.
+import TeamHubPage from "@/pages/TeamHubPage";
 import ManageRoles from "@/pages/ManageRoles";
 import TeamMemberDetail from "@/pages/TeamMemberDetail";
 // Technician and DailyParts imports removed — pages call non-existent endpoints (UI-001)
@@ -275,7 +281,14 @@ function Router() {
           <AccountsReceivablePage />
         </ProtectedRoute>
       </Route>
-      {/* /financial-dashboard route removed 2026-04-10: zero navigation entries, page never linked */}
+      {/* 2026-04-21: Financial Dashboard — canonical financial command center.
+          Backed by GET /api/dashboard/financial (getFinancialSummary). Linked
+          from the Operations Dashboard header button and the sidebar. */}
+      <Route path="/financials">
+        <ProtectedRoute requireAdmin>
+          <FinancialDashboard />
+        </ProtectedRoute>
+      </Route>
       <Route path="/admin">
         <ProtectedRoute requireAdmin>
           <Admin />
@@ -410,8 +423,11 @@ function Router() {
         </ProtectedRoute>
       </Route>
       <Route path="/settings/team">
+        {/* 2026-04-20 Phase 2: canonical Team Management hub (tabs: Members,
+            Schedules, Compensation, Roles & Access). Replaced the legacy
+            TechnicianManagementPage which called dead /api/technicians/* paths. */}
         <ProtectedRoute requireAdmin>
-          <TechnicianManagementPage />
+          <TeamHubPage />
         </ProtectedRoute>
       </Route>
       <Route path="/settings/custom-fields">
@@ -506,10 +522,11 @@ function Router() {
       </Route>
       {/* /company-settings redirect removed 2026-04-10: legacy path with zero navigation entries */}
       {/* /manage-technicians route removed 2026-04-10: duplicate of /settings/team, zero navigation entries */}
+      {/* 2026-04-20 Phase 2: /manage-team now redirects to the canonical hub.
+          The individual-member page at /manage-team/:userId is preserved as the
+          personal-detail surface (see TEAM_MANAGEMENT_AUDIT.md §7.4). */}
       <Route path="/manage-team">
-        <ProtectedRoute requireAdmin>
-          <ManageTeam />
-        </ProtectedRoute>
+        <Redirect to="/settings/team" />
       </Route>
       <Route path="/manage-team/:userId">
         <ProtectedRoute requireAdmin>
@@ -659,6 +676,14 @@ function AppContent() {
   // 2026-04-08: Mounted once at app shell instead of per-page to give all office
   // surfaces (Payroll, Invoices, Leads, Clients, etc.) realtime cross-tab freshness.
   useDispatchStream();
+
+  // 2026-04-21 Phase 1.1: service-worker → React navigation bridge. When a
+  // push notification is clicked while the app is already open, the SW
+  // focuses this client and posts `{ type: "navigate", url }`; this hook
+  // consumes the message and routes via wouter. If the app was closed,
+  // the SW's `clients.openWindow()` fallback handles navigation directly
+  // and this hook is simply not involved — no duplicate-navigation risk.
+  useServiceWorkerNavigator();
 
   // Company settings for header display — shared query key, TanStack deduplicates
   // Architecture rule: app shell must NOT fetch dispatch/calendar/scheduling data.

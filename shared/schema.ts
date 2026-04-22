@@ -4027,6 +4027,16 @@ export const notificationTypeEnum = [
   // rollover worker when a running time entry is auto-closed at tenant-
   // local 23:59:59.999. Rendered as an in-app banner by the tech app.
   "time_entry_auto_paused",
+  // 2026-04-21 Phase 1 push notifications: technician newly assigned to a
+  // visit. Emitted by notificationService.emitVisitAssignmentChange from
+  // the canonical PATCH /api/calendar/visit/:id/assign-crew handler.
+  "visit_assigned",
+  // 2026-04-21 Phase 2 push notifications: assigned tech notified when a
+  // visit's scheduled date/time meaningfully changes. Emitted by
+  // notificationService.emitVisitScheduleChange from the canonical
+  // PATCH /api/calendar/visit/:id/reschedule handler. Governed by the
+  // `visitScheduleChangesEnabled` preference.
+  "visit_schedule_changed",
 ] as const;
 export type NotificationType = typeof notificationTypeEnum[number];
 
@@ -4065,6 +4075,113 @@ export const insertNotificationSchema = createInsertSchema(notifications).omit({
 
 export type InsertNotification = z.infer<typeof insertNotificationSchema>;
 export type Notification = typeof notifications.$inferSelect;
+
+// ============================================================================
+// NOTIFICATION TARGETS (2026-04-21 Phase 1)
+//
+// Canonical registry of delivery endpoints per user/device. Sibling to the
+// `notifications` table:
+//   - `notifications`         = what to say (channel-agnostic)
+//   - `notification_targets`  = where to send it (one row per device/browser)
+//
+// The (platform, channel, provider) triple is shaped so future native apps
+// (iOS/Android) slot in as new rows with no schema change — Phase 3 work.
+// Phase 1 writes only ("web", "web_push", "webpush") rows from the tech PWA.
+// ============================================================================
+
+export const notificationPlatformEnum = ["web", "ios", "android"] as const;
+export type NotificationPlatform = typeof notificationPlatformEnum[number];
+
+export const notificationChannelEnum = ["web_push", "native_push"] as const;
+export type NotificationChannel = typeof notificationChannelEnum[number];
+
+export const notificationProviderEnum = ["webpush", "apns", "fcm"] as const;
+export type NotificationProvider = typeof notificationProviderEnum[number];
+
+export const notificationTargets = pgTable("notification_targets", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  platform: text("platform").notNull(),                         // NotificationPlatform
+  channel: text("channel").notNull(),                           // NotificationChannel
+  provider: text("provider").notNull(),                         // NotificationProvider
+  endpoint: text("endpoint").notNull(),                         // web-push URL | native token
+  keyP256dh: text("key_p256dh"),                                // web-push only
+  keyAuth: text("key_auth"),                                    // web-push only
+  userAgent: text("user_agent"),                                // diagnostic
+  appVersion: text("app_version"),                              // future native
+  lastSeenAt: timestamp("last_seen_at"),                        // updated on every successful delivery
+  revokedAt: timestamp("revoked_at"),                           // soft-revoke on stale endpoint (410/404)
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  endpointUniqueIdx: uniqueIndex("notification_targets_unique_endpoint_idx")
+    .on(table.tenantId, table.userId, table.endpoint),
+  tenantIdx: index("notification_targets_tenant_idx").on(table.tenantId),
+  // The live-targets lookup runs on every delivery fan-out; having a
+  // (tenant_id, user_id) index is enough — the WHERE revoked_at IS NULL
+  // partial condition is enforced in the migration.
+  userLiveIdx: index("notification_targets_user_live_idx").on(table.tenantId, table.userId),
+}));
+
+export const insertNotificationTargetSchema = createInsertSchema(notificationTargets).omit({
+  id: true,
+  createdAt: true,
+  lastSeenAt: true,
+  revokedAt: true,
+});
+
+export type InsertNotificationTarget = z.infer<typeof insertNotificationTargetSchema>;
+export type NotificationTarget = typeof notificationTargets.$inferSelect;
+
+// ============================================================================
+// NOTIFICATION PREFERENCES (2026-04-21 Phase 2, v1)
+//
+// User-level notification policy — completes the Phase 1 triptych:
+//   - `notifications`            = what to say           (content)
+//   - `notification_targets`     = where to send it      (delivery endpoints)
+//   - `notification_preferences` = whether to send it    (user policy)
+//
+// Row absence semantics: if no row exists for a (tenant_id, user_id) pair,
+// the repository read treats every category as TRUE. This preserves Phase 1
+// behavior for existing users with zero backfill.
+//
+// Extension pattern: future categories are added as additional boolean
+// columns (NOT NULL DEFAULT TRUE). No JSON blobs; no key/value table.
+// ============================================================================
+
+export const notificationPreferences = pgTable("notification_preferences", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  // Phase 1 category (enforced in emitVisitAssignmentChange).
+  visitAssignmentsEnabled: boolean("visit_assignments_enabled").notNull().default(true),
+  // Forward-ready categories — UI can persist intent; no emitter reads them yet.
+  visitScheduleChangesEnabled: boolean("visit_schedule_changes_enabled").notNull().default(true),
+  visitCancellationsEnabled: boolean("visit_cancellations_enabled").notNull().default(true),
+  visitRemindersEnabled: boolean("visit_reminders_enabled").notNull().default(true),
+  updatedAt: timestamp("updated_at"),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  tenantUserIdx: uniqueIndex("notification_preferences_tenant_user_idx")
+    .on(table.tenantId, table.userId),
+}));
+
+export const insertNotificationPreferencesSchema = createInsertSchema(notificationPreferences).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertNotificationPreferences = z.infer<typeof insertNotificationPreferencesSchema>;
+export type NotificationPreferences = typeof notificationPreferences.$inferSelect;
+
+/** Client-safe default shape (matches column defaults). Use this when a row is absent. */
+export const DEFAULT_NOTIFICATION_PREFERENCES = {
+  visitAssignmentsEnabled: true,
+  visitScheduleChangesEnabled: true,
+  visitCancellationsEnabled: true,
+  visitRemindersEnabled: true,
+} as const;
 
 // ============================================================================
 // TENANT SUBSCRIPTIONS - Billing cycle management (Monthly/Annual)
@@ -4135,6 +4252,10 @@ export const subscriptionEventTypeEnum = [
   "cancelled",
   "signup",
   "manual_renewal",
+  // 2026-04-21 Phase 1 canonical policy architecture: two new event types
+  // written by the canonical subscriptionLifecycleService.
+  "status_changed",   // runtime-state transition (e.g., trial→active, active→past_due)
+  "trial_expired",    // one-shot event written when trialEndsAt first passes
 ] as const;
 export type SubscriptionEventType = typeof subscriptionEventTypeEnum[number];
 

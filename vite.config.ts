@@ -28,6 +28,16 @@ export default defineConfig({
       // + skipWaiting + clientsClaim + cleanupOutdatedCaches guarantees each
       // deploy takes over all clients atomically and drops stale precaches.
       registerType: "autoUpdate",
+      // 2026-04-21 Phase 1 push notifications: flipped from the default
+      // `generateSW` strategy to `injectManifest` with a custom source at
+      // `client/src/sw.ts`. The custom SW preserves the previous Workbox
+      // precache + runtime-cache behavior AND adds `push` / `notificationclick`
+      // listeners. Nothing about the update-prompt flow changes — the same
+      // `virtual:pwa-register` contract (used by PwaUpdatePrompt.tsx) still
+      // applies.
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.ts",
       includeAssets: ["favicon.png", "apple-touch-icon.png"],
       manifest: {
         name: "Syntraro Field Service",
@@ -44,52 +54,10 @@ export default defineConfig({
           { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
         ],
       },
-      workbox: {
-        // 2026-04-14 cache-staleness fix:
-        //   skipWaiting + clientsClaim — the new SW activates immediately
-        //     instead of waiting for all tabs to close. Paired with the
-        //     controllerchange reload in PwaUpdatePrompt, this guarantees
-        //     every client runs the latest build after a deploy.
-        //   cleanupOutdatedCaches — drops precache entries from previous
-        //     builds so an orphaned index.html from an old SW can never
-        //     reference chunk hashes that no longer exist on the server.
-        skipWaiting: true,
-        clientsClaim: true,
-        cleanupOutdatedCaches: true,
-        // Only precache built static assets + offline fallback
+      injectManifest: {
+        // Only precache built static assets.
         maximumFileSizeToCacheInBytes: 3 * 1024 * 1024, // 3 MB — main bundle is ~2.2 MB
         globPatterns: ["**/*.{js,css,html,woff2,png,svg,ico}"],
-        // Never intercept API calls, SSE, or auth endpoints
-        // SPA: serve cached index.html for all navigation requests (except /api/)
-        navigateFallback: "/index.html",
-        navigateFallbackDenylist: [/^\/api\//],
-        // offline.html is precached as a fallback for the app shell to use when truly offline
-        runtimeCaching: [
-          {
-            // Google Fonts stylesheets
-            urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
-            handler: "CacheFirst",
-            options: {
-              cacheName: "google-fonts-stylesheets",
-              expiration: { maxEntries: 10, maxAgeSeconds: 60 * 60 * 24 * 365 },
-            },
-          },
-          {
-            // Google Fonts webfont files
-            urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
-            handler: "CacheFirst",
-            options: {
-              cacheName: "google-fonts-webfonts",
-              expiration: { maxEntries: 30, maxAgeSeconds: 60 * 60 * 24 * 365 },
-              cacheableResponse: { statuses: [0, 200] },
-            },
-          },
-          {
-            // API calls — never cache, always network
-            urlPattern: /^\/api\/.*/i,
-            handler: "NetworkOnly",
-          },
-        ],
       },
     }),
   ],

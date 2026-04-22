@@ -1,64 +1,58 @@
 /**
  * TodaysOperationsCard — Live operational command center.
  *
- * Full-width card that replaces the Dashboard's legacy four-tile KPI
- * strip. Two compositions in one surface:
+ * Full-width card with two compositions:
  *
- *   LEFT (≈75%) — horizontally scrollable technician workload rail. Per
- *   technician: avatar + name, today's job count + scheduled hours, a
- *   derived status badge (Available / On Job / Heavy Load / Completed /
- *   Unscheduled Gap), a load bar, and up to three upcoming job preview
- *   rows (scheduled time · customer). "+N more" when a tech has more
- *   than three. Clicking a tech card → /dispatch (canonical destination;
- *   no URL tech-filter scheme exists yet, per lib/dashboardNavigation.ts).
+ *   LEFT (≈75%) — horizontally scrollable technician workload rail. Each
+ *   tile is a compact day-at-a-glance: avatar + name, "N jobs · ~Xh"
+ *   summary, and a chronological list of the tech's schedule rows
+ *   (booked visits + ≥2h open gaps). Click → /dispatch.
  *
- *   RIGHT (≈25%) — operational alerts stack. Four rows, each a
- *   quick-glance mirror of a canonical destination already reachable
- *   from the lower Jobs card:
- *     1. Unscheduled       → DashboardActionModal(scheduling_issues)
- *     2. Past Due          → DashboardActionModal(scheduling_issues)
- *     3. Action Required   → DashboardActionModal(action_required)
- *     4. Ready for Invoice → DashboardActionModal(ready_to_invoice)
- *   Splitting Unscheduled from Past Due (instead of the lower card's
- *   combined "Scheduling Issues" row) is intentional — each row maps to
- *   a distinct operator decision ("assign it" vs "fix the calendar").
- *   Clicking either opens the same modal where both sections are
- *   labelled; the lower Jobs card is the canonical collapsed view.
+ *   RIGHT (≈25%) — operational alerts stack. Four rows mirroring the
+ *   canonical workflow counts (Unscheduled / Past Due / Action Required /
+ *   Ready for Invoice). Click opens the canonical DashboardActionModal.
  *
- *   2026-04-20: Waiting Parts / Emergency Jobs / Open Schedule Gaps were
- *   removed — the first two were not today-scoped and duplicated info
- *   already surfaced per-row inside the Action Required modal; the
- *   third used an arbitrary client-side threshold with weak signal.
+ *   2026-04-20 (row rail refactor): the tile's status badge, load
+ *   percentage, progress bar, and 3-item visit preview were removed —
+ *   the schedule-rows list carries the operational signal cleanly on
+ *   its own. The separate "Today's Capacity" card that previously sat
+ *   below this surface was deleted in the same pass.
  *
- * Data sources (all existing, no new aggregation endpoints):
- *   - GET /api/calendar?start=X&end=Y   — today's visits (shared cache
- *     key with the dispatch board)
- *   - GET /api/team/technicians         — schedulable roster
- *   - GET /api/team/technicians/live-state — canonical activity projection
- *   - GET /api/dashboard/workflow       — Unscheduled / Past Due /
- *     Action Required / Ready for Invoice counts (shared cache with
- *     Dashboard.tsx's own workflow query and with the Jobs card)
+ * Data sources:
+ *   - GET /api/dashboard/capacity   — per-tech schedule blocks, visit
+ *     count, booked minutes, state. Server-side computation reuses the
+ *     canonical visit query + workingHours + companyBusinessHours
+ *     already used by dispatch/calendar. Authoritative source for the
+ *     tech rail.
+ *   - GET /api/team/technicians     — directory lookup for avatar color.
+ *   - GET /api/dashboard/workflow   — right-panel alert counts (shared
+ *     cache with Dashboard.tsx and the lower Invoices card).
  *
- * SSE invalidation: every query key used here is already covered by
- * useDispatchStream's VISIT_JOB_KEYS / TIME_KEYS prefix sets.
- *
- * Derived selectors (local to this file — no shared business logic
- * introduced for a UI-only concern):
- *   - scheduled minutes / visit count per tech from today's visit list
- *   - status badge priority: On Job > Completed > Heavy Load >
- *     Unscheduled Gap > Available
+ * SSE invalidation: capacity + workflow query keys are covered by
+ * useDispatchStream's prefix sets.
  */
 
-import { useMemo } from "react";
-import { useLocation } from "wouter";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, Briefcase, ChevronRight, Clock, Receipt, Users } from "lucide-react";
+import {
+  AlertTriangle,
+  Briefcase,
+  Check,
+  ChevronRight,
+  Clock,
+  ExternalLink,
+  Receipt,
+  Settings2,
+  Users,
+} from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
-import { useTechnicianLiveStates, type TechnicianLiveState } from "@/hooks/useTechnicians";
 import { resolveDashboardNav } from "@/lib/dashboardNavigation";
 import type { DashboardActionMode } from "@/components/DashboardActionModal";
-import type { CalendarRangeResponseDto, CalendarEventDto } from "@shared/types/scheduling";
+// 2026-04-21: shared dropdown shell (extracted from DispatchFiltersBar) so
+// the dashboard controls mirror the dispatcher interaction pattern.
+import { MultiSelectDropdown } from "@/components/MultiSelectDropdown";
 
 // ============================================================================
 // Types
@@ -74,17 +68,44 @@ interface WorkflowSummaryJobs {
   };
 }
 
-type TechStatusKind =
-  | "on_job"
-  | "completed"
-  | "heavy_load"
-  | "unscheduled_gap"
-  | "available";
+// 2026-04-20: Tech tile is now a day-at-a-glance schedule list. Status
+// badge / load percentage / progress bar were removed — the schedule
+// rows themselves carry the operational signal. Data flows from the
+// canonical /api/dashboard/capacity endpoint (same source that formerly
+// powered the separate Today's Capacity card — now deleted).
 
-interface TechPreviewRow {
-  visitId: string;
-  scheduledStart: string | null;
-  customer: string;
+type CapacityTileState =
+  | "open_now"
+  | "next_opening"
+  | "limited_opening"
+  | "fully_open"
+  | "fully_booked"
+  | "day_over"
+  | "off_today";
+
+interface ScheduleBlock {
+  kind: "booked" | "open";
+  startISO: string;
+  endISO: string;
+  durationMinutes: number;
+  title?: string;
+  visitId?: string;
+  jobId?: string;
+  visitStatus?: string;
+}
+
+interface TechnicianCapacityDto {
+  technicianId: string;
+  name: string;
+  state: CapacityTileState;
+  visitCount: number;
+  bookedMinutes: number;
+  scheduleBlocks: ScheduleBlock[];
+}
+
+interface CapacityResponseDto {
+  timezone: string;
+  technicians: TechnicianCapacityDto[];
 }
 
 interface TechCardData {
@@ -92,29 +113,17 @@ interface TechCardData {
   name: string;
   initials: string;
   color: string | null;
+  state: CapacityTileState;
   visitCount: number;
-  scheduledMinutes: number;
-  status: TechStatusKind;
-  loadPct: number; // 0–100, based on 8h = 480min
-  preview: TechPreviewRow[];
-  moreCount: number;
+  bookedMinutes: number;
+  scheduleBlocks: ScheduleBlock[];
+  /** Company IANA timezone — used to format the schedule block clocks. */
+  timezone: string;
 }
 
 // ============================================================================
 // Helpers
 // ============================================================================
-
-const SHIFT_MINUTES = 480; // 8h reference shift for the load bar
-const HEAVY_THRESHOLD = 540; // >9h → Heavy Load
-const GAP_THRESHOLD = 180; // <3h → Unscheduled Gap (when count > 0)
-
-function getTodayRangeISO(): [string, string] {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
-  return [start.toISOString(), end.toISOString()];
-}
 
 function initialsFromName(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -123,11 +132,17 @@ function initialsFromName(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-function formatClockTime(iso: string | null): string {
-  if (!iso) return "—";
+/**
+ * Format a UTC ISO timestamp as a clock-time string in the supplied IANA
+ * zone. Without `timeZone` passed through, the browser renders in its
+ * local zone — which breaks when a user is browsing in a different zone
+ * than the company. The canonical backend emits company-local wall
+ * clocks as UTC instants; the client must render in the same zone.
+ */
+function formatClockTime(iso: string, timezone: string | undefined): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZone: timezone });
 }
 
 function formatHours(minutes: number): string {
@@ -138,41 +153,51 @@ function formatHours(minutes: number): string {
   return `${h.toFixed(1)}h`;
 }
 
-const STATUS_LABEL: Record<TechStatusKind, string> = {
-  on_job: "On Job",
-  completed: "Completed",
-  heavy_load: "Heavy Load",
-  unscheduled_gap: "Unscheduled Gap",
-  available: "Available",
-};
+/**
+ * "3h 15m" / "45m" / "2h" — used for the Open-row duration suffix.
+ * Distinct from `formatHours` (which returns decimal hours like "1.5h")
+ * because the tile's Open label reads more naturally as "Open (3h 15m)".
+ */
+function formatOpenDuration(minutes: number): string {
+  if (minutes <= 0) return "0m";
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h === 0) return `${m}m`;
+  if (m === 0) return `${h}h`;
+  return `${h}h ${m}m`;
+}
 
-const STATUS_BADGE_CLASS: Record<TechStatusKind, string> = {
-  on_job: "bg-blue-50 text-blue-700 border-blue-200",
-  completed: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  heavy_load: "bg-amber-50 text-amber-700 border-amber-200",
-  unscheduled_gap: "bg-slate-50 text-slate-600 border-slate-200",
-  available: "bg-slate-50 text-slate-700 border-slate-200",
-};
+/**
+ * Extract the company-local YYYY-MM-DD of an ISO instant. The capacity
+ * endpoint already anchors every ISO it emits to the company's timezone,
+ * so this formatter needs only the `timezone` field from that response
+ * to produce the wall-clock date the dispatch board would show.
+ */
+function localYmdFromIso(iso: string, timezone: string | undefined): string {
+  const d = new Date(iso);
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone || undefined,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = fmt.formatToParts(d);
+  const y = parts.find(p => p.type === "year")?.value ?? "0000";
+  const m = parts.find(p => p.type === "month")?.value ?? "01";
+  const day = parts.find(p => p.type === "day")?.value ?? "01";
+  return `${y}-${m}-${day}`;
+}
 
-const STATUS_BAR_CLASS: Record<TechStatusKind, string> = {
-  on_job: "bg-blue-500",
-  completed: "bg-emerald-500",
-  heavy_load: "bg-amber-500",
-  unscheduled_gap: "bg-slate-300",
-  available: "bg-slate-400",
-};
-
-function deriveTechStatus(
-  visitCount: number,
-  scheduledMinutes: number,
-  completedCount: number,
-  liveActivity: TechnicianLiveState["activityStatus"] | null,
-): TechStatusKind {
-  if (liveActivity === "en_route" || liveActivity === "on_site") return "on_job";
-  if (visitCount > 0 && completedCount === visitCount) return "completed";
-  if (scheduledMinutes > HEAVY_THRESHOLD) return "heavy_load";
-  if (visitCount > 0 && scheduledMinutes < GAP_THRESHOLD) return "unscheduled_gap";
-  return "available";
+/** Extract "HH:mm" (24h) in the supplied timezone. */
+function localHmFromIso(iso: string, timezone: string | undefined): string {
+  const d = new Date(iso);
+  const fmt = new Intl.DateTimeFormat("en-GB", {
+    timeZone: timezone || undefined,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  return fmt.format(d);
 }
 
 // ============================================================================
@@ -188,34 +213,57 @@ interface TodaysOperationsCardProps {
    * navigation via resolveDashboardNav (degraded, but functional).
    */
   onOpenActionModal?: (mode: DashboardActionMode) => void;
+  /**
+   * 2026-04-20 — booked-row click handler. Dashboard.tsx hosts the
+   * canonical EditVisitModal; this callback requests it be opened for a
+   * specific visit. Omitted in tests / isolated renders (row becomes a
+   * no-op button).
+   */
+  onEditVisit?: (args: {
+    jobId: string;
+    visitId: string;
+    title?: string;
+  }) => void;
+  /**
+   * 2026-04-20 — open-row click handler. Dashboard.tsx hosts the mini
+   * create chooser + QuickAddJobDialog + TaskDialog; this callback hands
+   * off the slot context (tech + company-local date/time + duration).
+   */
+  onCreateInSlot?: (slot: {
+    technicianId: string;
+    technicianName: string;
+    date: string;            // YYYY-MM-DD (company-local)
+    startTime: string;       // HH:mm (company-local, 24h)
+    endTime: string;         // HH:mm (company-local, 24h)
+    durationMinutes: number;
+  }) => void;
 }
 
-export function TodaysOperationsCard({ onOpenActionModal }: TodaysOperationsCardProps = {}) {
+export function TodaysOperationsCard({
+  onOpenActionModal,
+  onEditVisit,
+  onCreateInSlot,
+}: TodaysOperationsCardProps = {}) {
   const [, setLocation] = useLocation();
-  const [startISO, endISO] = useMemo(() => getTodayRangeISO(), []);
 
-  // 1. Today's visits — shared cache key with the dispatch board.
-  const calendarQuery = useQuery<CalendarRangeResponseDto>({
-    queryKey: ["/api/calendar", startISO, endISO],
+  // 1. Per-tech capacity (schedule blocks + visit counts). Single canonical
+  //    endpoint — server computes schedule blocks from the same visit +
+  //    working-hours sources the dispatch board uses.
+  const capacityQuery = useQuery<CapacityResponseDto>({
+    queryKey: ["/api/dashboard/capacity"],
     queryFn: async () => {
-      const res = await fetch(
-        `/api/calendar?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`,
-        { credentials: "include" },
-      );
-      if (!res.ok) throw new Error("Failed to fetch calendar");
+      const res = await fetch(`/api/dashboard/capacity`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch capacity");
       return res.json();
     },
     staleTime: 30_000,
     refetchOnWindowFocus: true,
   });
 
-  // 2. Technician roster.
+  // 2. Technician directory — only used for avatar color + initials fallback.
   const { teamMembers, isLoading: techLoading } = useTechniciansDirectory();
 
-  // 3. Live per-tech activity.
-  const { states: liveStates } = useTechnicianLiveStates();
-
-  // 4. Workflow counts — shared cache with Dashboard.tsx's own query.
+  // 3. Workflow counts — shared cache with Dashboard.tsx's own query.
   const workflowQuery = useQuery<WorkflowSummaryJobs>({
     queryKey: ["dashboard", "workflow"],
     queryFn: async () => {
@@ -227,101 +275,51 @@ export function TodaysOperationsCard({ onOpenActionModal }: TodaysOperationsCard
     refetchOnWindowFocus: true,
   });
 
-  // 2026-04-20: The dedicated on-hold sample fetch (waiting-parts count)
-  // and the urgent-jobs fetch (emergency count) were removed along with
-  // their right-panel rows. Hold-reason labels (including "Needs Parts")
-  // remain visible inside the DashboardActionModal(action_required)
-  // drill-down, which is the correct home for that detail.
-
-  // ── Derived: per-tech workload data ────────────────────────────────────
+  // ── Derived: per-tech tile data ────────────────────────────────────────
+  // Join capacity (schedule blocks + counts + state) with directory
+  // (avatar color). Capacity is authoritative for the tech list — it
+  // already applies filterSchedulableTechnicians() server-side.
   const techCards: TechCardData[] = useMemo(() => {
-    const events: CalendarEventDto[] = calendarQuery.data?.events ?? [];
-    const liveByTech = new Map<string, TechnicianLiveState>();
-    for (const s of liveStates) liveByTech.set(s.technicianId, s);
-
-    // Bucket today's events per assigned tech id (multi-tech visits count
-    // under each crew member, consistent with getDaySummary).
-    interface Bucket {
-      all: CalendarEventDto[];
-      completed: number;
-      scheduledMinutes: number;
-    }
-    const buckets = new Map<string, Bucket>();
-
-    for (const ev of events) {
-      const assigned = Array.isArray(ev.assignedTechnicianIds) ? ev.assignedTechnicianIds : [];
-      for (const techId of assigned) {
-        let b = buckets.get(techId);
-        if (!b) {
-          b = { all: [], completed: 0, scheduledMinutes: 0 };
-          buckets.set(techId, b);
-        }
-        b.all.push(ev);
-        if (ev.visitStatus === "completed") b.completed++;
-        const dur = ev.durationMinutes;
-        if (typeof dur === "number" && dur > 0) {
-          b.scheduledMinutes += dur;
-        } else if (ev.startAt && ev.endAt) {
-          const diff = (new Date(ev.endAt).getTime() - new Date(ev.startAt).getTime()) / 60_000;
-          if (diff > 0) b.scheduledMinutes += Math.round(diff);
-        }
-      }
+    const caps = capacityQuery.data?.technicians ?? [];
+    const tz = capacityQuery.data?.timezone ?? "";
+    const directoryById = new Map<string, { color: string | null; fullName?: string; email?: string }>();
+    for (const m of teamMembers) {
+      directoryById.set(m.id, { color: m.color ?? null, fullName: m.fullName, email: m.email });
     }
 
-    const cards: TechCardData[] = teamMembers.map((m) => {
-      const bucket = buckets.get(m.id) ?? { all: [], completed: 0, scheduledMinutes: 0 };
-      const sorted = [...bucket.all].sort((a, b) => {
-        const ta = a.startAt ? new Date(a.startAt).getTime() : Number.POSITIVE_INFINITY;
-        const tb = b.startAt ? new Date(b.startAt).getTime() : Number.POSITIVE_INFINITY;
-        return ta - tb;
-      });
-      const preview: TechPreviewRow[] = sorted.slice(0, 3).map((v) => ({
-        visitId: v.visitId ?? v.id,
-        scheduledStart: v.startAt,
-        customer: v.customerCompanyName ?? v.locationName ?? "Unassigned location",
-      }));
-      const moreCount = Math.max(0, sorted.length - preview.length);
-      const live = liveByTech.get(m.id) ?? null;
-      const status = deriveTechStatus(
-        bucket.all.length,
-        bucket.scheduledMinutes,
-        bucket.completed,
-        live?.activityStatus ?? null,
-      );
-      const loadPct = Math.min(100, Math.round((bucket.scheduledMinutes / SHIFT_MINUTES) * 100));
-
+    const cards: TechCardData[] = caps.map((c) => {
+      const dir = directoryById.get(c.technicianId);
       return {
-        id: m.id,
-        name: m.fullName || m.email,
-        initials: initialsFromName(m.fullName || m.email),
-        color: m.color ?? null,
-        visitCount: bucket.all.length,
-        scheduledMinutes: bucket.scheduledMinutes,
-        status,
-        loadPct,
-        preview,
-        moreCount,
+        id: c.technicianId,
+        name: c.name,
+        initials: initialsFromName(c.name),
+        color: dir?.color ?? null,
+        state: c.state,
+        visitCount: c.visitCount,
+        bookedMinutes: c.bookedMinutes,
+        scheduleBlocks: c.scheduleBlocks,
+        timezone: tz,
       };
     });
 
-    // Sort: on-job first, then heavy-load, then by scheduled minutes desc,
-    // then name. Keeps the most operationally relevant techs on the left.
-    const statusRank: Record<TechStatusKind, number> = {
-      on_job: 0,
-      heavy_load: 1,
-      available: 2,
-      unscheduled_gap: 3,
-      completed: 4,
+    // Sort: techs with visits today first (busiest actionable), then
+    // techs with any open block, then off/day-over. Within each group
+    // prefer more booked minutes, then name.
+    const groupRank = (card: TechCardData) => {
+      if (card.state === "off_today") return 3;
+      if (card.state === "day_over") return 2;
+      if (card.visitCount === 0) return 1;
+      return 0;
     };
     cards.sort((a, b) => {
-      const r = statusRank[a.status] - statusRank[b.status];
-      if (r !== 0) return r;
-      if (b.scheduledMinutes !== a.scheduledMinutes) return b.scheduledMinutes - a.scheduledMinutes;
+      const g = groupRank(a) - groupRank(b);
+      if (g !== 0) return g;
+      if (b.bookedMinutes !== a.bookedMinutes) return b.bookedMinutes - a.bookedMinutes;
       return a.name.localeCompare(b.name);
     });
 
     return cards;
-  }, [calendarQuery.data, teamMembers, liveStates]);
+  }, [capacityQuery.data, teamMembers]);
 
   // ── Derived: alerts panel counts ───────────────────────────────────────
   // All four come directly from the canonical workflow summary — same
@@ -343,8 +341,75 @@ export function TodaysOperationsCard({ onOpenActionModal }: TodaysOperationsCard
     else setLocation(fallbackPath);
   };
 
+  // 2026-04-21 UX pass: two header-level filters.
+  //   1. workloadView: "all" | "open" — booked+open rows vs open-only.
+  //   2. selectedTechIds: Set<string> — which techs appear on the rail.
+  //      null means "all techs"; any Set means explicit subset. We never
+  //      persist a subset that's equal to "all" — when the user hits Select
+  //      All we reset to null so the label collapses back to "All technicians".
+  const [workloadView, setWorkloadView] = useState<"all" | "open">("all");
+  const [selectedTechIds, setSelectedTechIds] = useState<Set<string> | null>(null);
+
   // ── Render ─────────────────────────────────────────────────────────────
-  const isLoading = calendarQuery.isLoading || techLoading || workflowQuery.isLoading;
+  const isLoading = capacityQuery.isLoading || techLoading || workflowQuery.isLoading;
+
+  // Prune any persisted selection that no longer maps to a live tech. Runs
+  // whenever the capacity feed refreshes — e.g. a tech was deactivated or
+  // their working hours dropped out from under them. Without this the
+  // dropdown would claim "2 selected" while rendering nothing.
+  useEffect(() => {
+    if (!selectedTechIds) return;
+    const live = new Set(techCards.map((t) => t.id));
+    let changed = false;
+    const next = new Set<string>();
+    selectedTechIds.forEach((id) => {
+      if (live.has(id)) next.add(id);
+      else changed = true;
+    });
+    if (!changed) return;
+    // If pruning collapsed the set to "effectively everyone", fall back to
+    // the null sentinel so the label reads "All technicians".
+    if (next.size === 0 || next.size === techCards.length) setSelectedTechIds(null);
+    else setSelectedTechIds(next);
+  }, [techCards, selectedTechIds]);
+
+  // Apply the two filters in sequence. View mode happens first so the empty-
+  // state wording can distinguish "this tech has no open time" from "you
+  // filtered everyone out".
+  const viewFiltered =
+    workloadView === "open"
+      ? techCards.filter((t) => t.scheduleBlocks.some((b) => b.kind === "open"))
+      : techCards;
+  const visibleTechCards =
+    selectedTechIds === null
+      ? viewFiltered
+      : viewFiltered.filter((t) => selectedTechIds.has(t.id));
+
+  // Concise trigger labels per the UX spec: "All technicians" when nothing
+  // is narrowed, the tech's name for a single pick, else "N selected".
+  const teamFilterLabel =
+    selectedTechIds === null || selectedTechIds.size === techCards.length
+      ? "All team"
+      : selectedTechIds.size === 1
+        ? techCards.find((t) => selectedTechIds.has(t.id))?.name ?? "1 selected"
+        : `${selectedTechIds.size} selected`;
+
+  const toggleTech = (id: string) => {
+    setSelectedTechIds((prev) => {
+      // Expand null ("all") to the full set the first time the user narrows.
+      const base = prev ?? new Set(techCards.map((t) => t.id));
+      const next = new Set(base);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      // Collapse back to the null sentinel when the user lands on "all
+      // selected" — keeps the trigger label at "All technicians" rather
+      // than showing a numeric count that means the same thing.
+      if (next.size === 0 || next.size === techCards.length) return null;
+      return next;
+    });
+  };
+  const selectAllTechs = () => setSelectedTechIds(null);
+  const clearAllTechs = () => setSelectedTechIds(new Set());
 
   return (
     <div
@@ -354,14 +419,118 @@ export function TodaysOperationsCard({ onOpenActionModal }: TodaysOperationsCard
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-0">
         {/* LEFT — Technician workload rail (75%) */}
         <div className="lg:col-span-3 p-4 border-b lg:border-b-0 lg:border-r border-[#e2e8f0]">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <Users className="h-3.5 w-3.5 text-[#4b5563]" />
-              <h4 className="text-sm font-semibold text-[#111827]">Technician workload</h4>
+          <div className="flex items-center justify-between mb-3 gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <Users className="h-3.5 w-3.5 text-[#4b5563] shrink-0" />
+              <h4 className="text-sm font-semibold text-[#111827] truncate">Team workload</h4>
             </div>
-            <span className="text-xs text-[#4b5563] tabular-nums">
-              {techCards.length} {techCards.length === 1 ? "technician" : "technicians"}
-            </span>
+            {/* 2026-04-21 UX refinement: two-dropdown pattern mirrors the
+                Dispatch filter bar. View dropdown owns booked-vs-open; Team
+                dropdown owns the visible-tech subset and carries the
+                Manage team shortcut in its footer. No count text, no
+                loose Manage team link — the dropdowns carry the state. */}
+            <div className="flex items-center gap-2 shrink-0">
+              <MultiSelectDropdown
+                label={workloadView === "all" ? "All" : "Open"}
+                width="w-40"
+                align="right"
+                testId="workload-view-trigger"
+              >
+                <div className="p-1">
+                  <button
+                    type="button"
+                    onClick={() => setWorkloadView("all")}
+                    className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-xs hover:bg-slate-50"
+                    data-testid="workload-view-all"
+                  >
+                    <span>All</span>
+                    {workloadView === "all" && <Check className="h-3 w-3 text-primary" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setWorkloadView("open")}
+                    className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-xs hover:bg-slate-50"
+                    data-testid="workload-view-open"
+                  >
+                    <span>Open</span>
+                    {workloadView === "open" && <Check className="h-3 w-3 text-primary" />}
+                  </button>
+                </div>
+              </MultiSelectDropdown>
+
+              <MultiSelectDropdown
+                label={teamFilterLabel}
+                width="w-60"
+                align="right"
+                testId="workload-team-trigger"
+              >
+                <div className="p-2">
+                  <div className="mb-2 flex gap-1">
+                    <button
+                      onClick={selectAllTechs}
+                      className="text-xs text-primary hover:underline"
+                      data-testid="workload-team-select-all"
+                    >
+                      Select All
+                    </button>
+                    <span className="text-xs text-muted-foreground">|</span>
+                    <button
+                      onClick={clearAllTechs}
+                      className="text-xs text-primary hover:underline"
+                      data-testid="workload-team-clear-all"
+                    >
+                      Clear All
+                    </button>
+                  </div>
+                  {techCards.length === 0 ? (
+                    <p className="px-2 py-1.5 text-xs text-muted-foreground italic">
+                      No team members available.
+                    </p>
+                  ) : (
+                    <div className="max-h-[260px] overflow-y-auto">
+                      {techCards.map((t) => {
+                        // `selectedTechIds === null` means "everyone" — reflect
+                        // that as checked in the UI so Select All looks truthful.
+                        const checked =
+                          selectedTechIds === null || selectedTechIds.has(t.id);
+                        return (
+                          <button
+                            key={t.id}
+                            onClick={() => toggleTech(t.id)}
+                            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-slate-50"
+                            data-testid={`workload-team-toggle-${t.id}`}
+                          >
+                            <div
+                              className={`flex h-4 w-4 items-center justify-center rounded border ${
+                                checked ? "border-primary bg-primary" : "border-slate-300"
+                              }`}
+                            >
+                              {checked && <Check className="h-3 w-3 text-white" />}
+                            </div>
+                            <span
+                              className="h-2 w-2 rounded-full"
+                              style={{ backgroundColor: t.color || "#64748b" }}
+                            />
+                            <span className="truncate">{t.name}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div className="my-1.5 border-t border-slate-100" />
+                  <Link href="/settings/team?tab=schedules">
+                    <a
+                      className="flex items-center gap-2 rounded px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                      data-testid="workload-manage-team-link"
+                    >
+                      <Settings2 className="h-3 w-3" />
+                      <span className="flex-1">Manage team</span>
+                      <ExternalLink className="h-3 w-3 opacity-60" />
+                    </a>
+                  </Link>
+                </div>
+              </MultiSelectDropdown>
+            </div>
           </div>
 
           {isLoading ? (
@@ -371,7 +540,17 @@ export function TodaysOperationsCard({ onOpenActionModal }: TodaysOperationsCard
               ))}
             </div>
           ) : techCards.length === 0 ? (
-            <div className="text-sm text-[#4b5563] italic py-6">No schedulable technicians.</div>
+            <div className="text-sm text-[#4b5563] italic py-6">No available team members.</div>
+          ) : visibleTechCards.length === 0 ? (
+            // Distinguish "nothing selected" from "nobody has open time" so
+            // the fix path is obvious at a glance.
+            <div className="text-sm text-[#4b5563] italic py-6" data-testid="workload-open-empty">
+              {selectedTechIds !== null && selectedTechIds.size === 0
+                ? "No team members selected."
+                : workloadView === "open"
+                  ? "No team members have open availability today."
+                  : "No team members match the current filters."}
+            </div>
           ) : (
             <div
               className="flex gap-3 overflow-x-auto pb-1"
@@ -380,11 +559,13 @@ export function TodaysOperationsCard({ onOpenActionModal }: TodaysOperationsCard
                 scrollbarColor: "#cbd5e1 transparent",
               }}
             >
-              {techCards.map((t) => (
+              {visibleTechCards.map((t) => (
                 <TechnicianWorkloadTile
                   key={t.id}
                   card={t}
-                  onClick={() => setLocation(resolveDashboardNav("ops.activeJobs"))}
+                  view={workloadView}
+                  onEditVisit={onEditVisit}
+                  onCreateInSlot={onCreateInSlot}
                 />
               ))}
             </div>
@@ -398,18 +579,19 @@ export function TodaysOperationsCard({ onOpenActionModal }: TodaysOperationsCard
             <h4 className="text-sm font-semibold text-[#111827]">Operational alerts</h4>
           </div>
           <div className="space-y-1">
-            {/* Each row mirrors a canonical Jobs-card destination — the
-                `handleAlertClick` helper opens the same DashboardActionModal
-                the Jobs card opens (when the parent supplied a handler),
-                so this panel is a quick-glance jump into the same modal
-                rather than a parallel info surface. */}
+            {/* 2026-04-21: Row order reflects operational triage — Action
+                Required (human-in-the-loop) surfaces first, then Past Due,
+                then Unscheduled backlog, then Ready for Invoice as the
+                cashflow tail. Presentation only; counts, handlers, and
+                modal wiring are unchanged. */}
             <AlertRow
-              icon={Briefcase}
-              label="Unscheduled"
-              count={unscheduledCount}
+              icon={AlertTriangle}
+              label="Action Required"
+              count={actionRequiredCount}
               onClick={() =>
-                handleAlertClick("scheduling_issues", resolveDashboardNav("jobs.unscheduled"))
+                handleAlertClick("action_required", resolveDashboardNav("ops.onHold"))
               }
+              urgent={actionRequiredCount > 0}
             />
             <AlertRow
               icon={Clock}
@@ -421,13 +603,12 @@ export function TodaysOperationsCard({ onOpenActionModal }: TodaysOperationsCard
               urgent={pastDueCount > 0}
             />
             <AlertRow
-              icon={AlertTriangle}
-              label="Action Required"
-              count={actionRequiredCount}
+              icon={Briefcase}
+              label="Unscheduled"
+              count={unscheduledCount}
               onClick={() =>
-                handleAlertClick("action_required", resolveDashboardNav("ops.onHold"))
+                handleAlertClick("scheduling_issues", resolveDashboardNav("jobs.unscheduled"))
               }
-              urgent={actionRequiredCount > 0}
             />
             <AlertRow
               icon={Receipt}
@@ -448,15 +629,54 @@ export function TodaysOperationsCard({ onOpenActionModal }: TodaysOperationsCard
 // Technician workload tile
 // ============================================================================
 
-function TechnicianWorkloadTile({ card, onClick }: { card: TechCardData; onClick: () => void }) {
-  const loadColor = STATUS_BAR_CLASS[card.status];
+/**
+ * Tech tile row rendering rules (all driven by canonical capacity data):
+ *
+ *  - Header: avatar + name + summary "N jobs · ~Xh".
+ *  - Body:
+ *      off_today → single muted line "Off today".
+ *      day_over with no blocks → single muted line "Day ended".
+ *      No blocks at all (working hours <2h with no visits) → "No scheduled jobs today".
+ *      Otherwise → chronological schedule blocks, one row each:
+ *        BOOKED: time range · customer/location name (neutral styling).
+ *        OPEN:   time range · "Open" (subtle emerald tint — operationally
+ *                meaningful but not alarming; gaps under 120min are never
+ *                emitted server-side so we never render them here).
+ */
+function TechnicianWorkloadTile({
+  card,
+  view = "all",
+  onEditVisit,
+  onCreateInSlot,
+}: {
+  card: TechCardData;
+  /** 2026-04-21: "all" = booked + open rows with the jobs/hours summary.
+   *  "open" = open rows only, summary replaced with total-available time. */
+  view?: "all" | "open";
+  onEditVisit?: TodaysOperationsCardProps["onEditVisit"];
+  onCreateInSlot?: TodaysOperationsCardProps["onCreateInSlot"];
+}) {
+  // In open-only mode, drop booked rows before deciding the empty-state
+  // branches — otherwise a fully-booked tech would wrongly render the
+  // "day ended" / "no jobs" copy when the user only wants availability.
+  const blocks =
+    view === "open"
+      ? card.scheduleBlocks.filter((b) => b.kind === "open")
+      : card.scheduleBlocks;
+  const showOffToday = card.state === "off_today";
+  const showDayEnded = view === "all" && card.state === "day_over" && blocks.length === 0;
+  const showEmptyFallback = !showOffToday && !showDayEnded && blocks.length === 0;
+  const openMinutesTotal = card.scheduleBlocks
+    .filter((b) => b.kind === "open")
+    .reduce((acc, b) => acc + b.durationMinutes, 0);
+
+  // Outer wrapper is a plain <div>. Per-row <button>s own click handling;
+  // nesting buttons inside a tile-level button was brittle and the
+  // tile-wide "→ /dispatch" behavior is superseded by the richer row-
+  // level actions (edit visit / quick create in slot).
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="shrink-0 w-[260px] text-left rounded-md border border-[#e2e8f0] bg-white px-3 py-3 hover:bg-[#F0F5F0] transition-colors focus:outline-none focus:ring-2 focus:ring-[#76B054]/40"
-    >
-      <div className="flex items-center gap-2.5 mb-1.5">
+    <div className="shrink-0 w-[260px] rounded-md border border-[#e2e8f0] bg-white px-3 py-3">
+      <div className="flex items-center gap-2.5 mb-2">
         <span
           className="h-8 w-8 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0"
           style={{ backgroundColor: card.color || "#64748b" }}
@@ -466,46 +686,123 @@ function TechnicianWorkloadTile({ card, onClick }: { card: TechCardData; onClick
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-[#111827] truncate">{card.name}</p>
-          <p className="text-[11px] text-[#4b5563] tabular-nums">
-            {card.visitCount} {card.visitCount === 1 ? "job" : "jobs"} · ~{formatHours(card.scheduledMinutes)}
-          </p>
+          {/* Open-only mode suppresses the job/hours workload summary and
+              surfaces an availability-first label instead. No new feed —
+              openMinutesTotal sums existing scheduleBlocks of kind "open". */}
+          {view === "open" ? (
+            <p className="text-[11px] text-emerald-700 tabular-nums">
+              {openMinutesTotal > 0
+                ? `${formatOpenDuration(openMinutesTotal)} open today`
+                : "No open time"}
+            </p>
+          ) : (
+            <p className="text-[11px] text-[#4b5563] tabular-nums">
+              {card.visitCount} {card.visitCount === 1 ? "job" : "jobs"} · ~{formatHours(card.bookedMinutes)}
+            </p>
+          )}
         </div>
       </div>
 
-      <div className="flex items-center justify-between gap-2 mb-1.5">
-        <span
-          className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full border ${STATUS_BADGE_CLASS[card.status]}`}
-        >
-          {STATUS_LABEL[card.status]}
-        </span>
-        <span className="text-[10px] text-[#4b5563] tabular-nums">{card.loadPct}%</span>
-      </div>
-
-      <div className="h-1.5 w-full rounded-full bg-[#f1f5f9] overflow-hidden mb-2">
-        <div
-          className={`h-full ${loadColor} transition-all`}
-          style={{ width: `${card.loadPct}%` }}
-        />
-      </div>
-
       <div className="space-y-0.5">
-        {card.preview.length === 0 ? (
-          <p className="text-[11px] text-[#94a3b8] italic">No scheduled jobs today</p>
+        {showOffToday ? (
+          <p className="text-[11px] text-[#94a3b8] italic">Off today</p>
+        ) : showDayEnded ? (
+          <p className="text-[11px] text-[#94a3b8] italic">Day ended</p>
+        ) : showEmptyFallback ? (
+          <p className="text-[11px] text-[#94a3b8] italic">
+            {view === "open" ? "No open time today" : "No scheduled jobs today"}
+          </p>
         ) : (
-          card.preview.map((row) => (
-            <div key={row.visitId} className="flex items-center gap-1 text-[11px]">
-              <span className="text-[#4b5563] tabular-nums shrink-0">
-                {formatClockTime(row.scheduledStart)}
-              </span>
-              <span className="text-[#94a3b8]">·</span>
-              <span className="text-[#111827] truncate">{row.customer}</span>
-            </div>
+          blocks.map((block, idx) => (
+            <ScheduleBlockRow
+              key={`${block.kind}-${block.startISO}-${idx}`}
+              block={block}
+              timezone={card.timezone}
+              technicianId={card.id}
+              technicianName={card.name}
+              onEditVisit={onEditVisit}
+              onCreateInSlot={onCreateInSlot}
+            />
           ))
         )}
-        {card.moreCount > 0 && (
-          <p className="text-[11px] text-[#4b5563] font-medium">+{card.moreCount} more</p>
-        )}
       </div>
+    </div>
+  );
+}
+
+function ScheduleBlockRow({
+  block,
+  timezone,
+  technicianId,
+  technicianName,
+  onEditVisit,
+  onCreateInSlot,
+}: {
+  block: ScheduleBlock;
+  timezone: string;
+  technicianId: string;
+  technicianName: string;
+  onEditVisit?: TodaysOperationsCardProps["onEditVisit"];
+  onCreateInSlot?: TodaysOperationsCardProps["onCreateInSlot"];
+}) {
+  const tz = timezone || undefined;
+  const timeRange = `${formatClockTime(block.startISO, tz)} – ${formatClockTime(block.endISO, tz)}`;
+
+  if (block.kind === "open") {
+    const disabled = !onCreateInSlot;
+    return (
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => {
+          if (!onCreateInSlot) return;
+          onCreateInSlot({
+            technicianId,
+            technicianName,
+            date: localYmdFromIso(block.startISO, tz),
+            startTime: localHmFromIso(block.startISO, tz),
+            endTime: localHmFromIso(block.endISO, tz),
+            durationMinutes: block.durationMinutes,
+          });
+        }}
+        className="w-full text-left flex items-center gap-1 text-[11px] rounded-sm px-1 -mx-1 bg-emerald-50/40 hover:bg-emerald-50 transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:cursor-default disabled:hover:bg-emerald-50/40"
+        data-testid="capacity-open-row"
+        aria-label={`Create in open slot ${timeRange} (${formatOpenDuration(block.durationMinutes)}) for ${technicianName}`}
+      >
+        <span className="text-[#4b5563] tabular-nums shrink-0">{timeRange}</span>
+        <span className="text-[#94a3b8]">·</span>
+        <span className="text-emerald-700 font-medium">Open</span>
+        <span className="text-emerald-700/80 tabular-nums">({formatOpenDuration(block.durationMinutes)})</span>
+      </button>
+    );
+  }
+
+  const dimmed = block.visitStatus === "completed" || block.visitStatus === "cancelled";
+  const hasVisit = Boolean(block.visitId && block.jobId);
+  const disabled = !onEditVisit || !hasVisit;
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => {
+        if (!onEditVisit || !block.visitId || !block.jobId) return;
+        onEditVisit({
+          jobId: block.jobId,
+          visitId: block.visitId,
+          title: block.title,
+        });
+      }}
+      className="w-full text-left flex items-center gap-1 text-[11px] rounded-sm px-1 -mx-1 hover:bg-[#F0F5F0] transition-colors focus:outline-none focus:ring-2 focus:ring-[#76B054]/30 disabled:cursor-default disabled:hover:bg-transparent"
+      data-testid="capacity-booked-row"
+      aria-label={`Open visit ${block.title ?? ""} ${timeRange}`}
+    >
+      <span className={`tabular-nums shrink-0 ${dimmed ? "text-[#9ca3af]" : "text-[#4b5563]"}`}>
+        {timeRange}
+      </span>
+      <span className="text-[#94a3b8]">·</span>
+      <span className={`truncate ${dimmed ? "text-[#9ca3af] line-through" : "text-[#111827]"}`}>
+        {block.title ?? "Scheduled"}
+      </span>
     </button>
   );
 }

@@ -29,6 +29,7 @@ import { startPmAutoGeneration } from "./services/pmAutoGeneration";
 import { startOrphanSweeper } from "./services/fileUploadService";
 import { startQueuedEmailSweeper } from "./services/emailDeliveryTrackingService";
 import { startSubscriptionWorker, stopSubscriptionWorker } from "./services/subscriptionWorker";
+import { startTrialExpireWorker, stopTrialExpireWorker } from "./services/trialExpireWorker";
 import { startInvoiceReminderWorker, stopInvoiceReminderWorker } from "./services/invoiceReminderWorker";
 import { startMidnightRolloverWorker, stopMidnightRolloverWorker } from "./services/midnightRolloverWorker";
 import { stopPmAutoGeneration } from "./services/pmAutoGeneration";
@@ -247,6 +248,12 @@ let queuedEmailSweeperHandle: NodeJS.Timeout | null = null;
       // renewal notices (30/7 day), auto-renew, revert-to-monthly. All
       // operations are idempotent via subscriptionEvents unique key.
       startSubscriptionWorker();
+      // 2026-04-21 Phase 1 canonical policy architecture: daily scan for
+      // tenants whose trialEndsAt just passed. Writes a one-shot
+      // `trial_expired` audit event on subscriptionEvents. Does NOT change
+      // companies.subscriptionStatus — expiration stays compute-on-read at
+      // the entitlement gate. See trialExpireWorker.ts.
+      startTrialExpireWorker();
       // 2026-04-16: overdue invoice reminder sweep. Per-tenant gated via
       // tenant_features.invoice_reminders_enabled. Sweep runs every 4h
       // with a 1-minute startup delay. See invoiceReminderWorker.ts.

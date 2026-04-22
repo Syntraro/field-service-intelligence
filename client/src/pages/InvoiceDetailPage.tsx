@@ -93,7 +93,9 @@ import { SendInvoiceModal } from "@/components/communication/SendInvoiceModal";
 // 2026-04-19 Portal activation: office-side CTAs for the customer portal.
 import { SendPaymentLinkDialog } from "@/components/portal/SendPaymentLinkDialog";
 import { buildPortalInvoiceUrl } from "@/lib/portalUrls";
-import { useTenantFeatures } from "@/hooks/useTenantFeatures";
+// 2026-04-21 Phase 2 canonical policy architecture: portal gating reads
+// through the canonical entitlement resolver.
+import { useEntitlements } from "@/hooks/useEntitlements";
 // 2026-04-14: DeliveryStatusCard retired from this page; send/viewed
 // metadata now lives inline in `InvoiceHeaderCard`'s metadata table.
 import { ActivityCard } from "@/components/activity/ActivityCard";
@@ -996,7 +998,7 @@ export default function InvoiceDetailPage() {
   // a different number of hooks on loading vs. loaded renders
   // ("Rendered more hooks than during the previous render"). Keep
   // co-located with the other invoice-detail queries above.
-  const tenantFeaturesQuery = useTenantFeatures();
+  const entitlementsQuery = useEntitlements();
 
   // Compute current tax label from taxGroupId — single source of truth for display
   // taxGroupId is the canonical reference; invoice_lines.taxRate is calculation-only
@@ -1158,9 +1160,11 @@ export default function InvoiceDetailPage() {
   // send payment-link email) are available when the tenant's portal flag
   // is on and the invoice is past draft. Voided invoices still render the
   // link (customers sometimes need to see voided history), but drafts
-  // never leak outside the office. `tenantFeaturesQuery` is declared at
+  // never leak outside the office. `entitlementsQuery` is declared at
   // top level (above the early returns) to keep hook order stable.
-  const portalEnabled = tenantFeaturesQuery.data?.customerPortalEnabled === true;
+  // 2026-04-21 Phase 2: reads the canonical `customer_portal` entitlement
+  // instead of the legacy camelCase `customerPortalEnabled` flag.
+  const portalEnabled = entitlementsQuery.data?.features["customer_portal"]?.enabled === true;
   const portalCtasAvailable = portalEnabled && !isDraft;
   const handleCopyPaymentLink = async () => {
     const url = buildPortalInvoiceUrl(invoiceId);

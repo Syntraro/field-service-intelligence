@@ -387,7 +387,7 @@ export default function TimesheetReportPage() {
           ) : (
             <>
               {data.summary.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No technicians available.</p>
+                <p className="text-xs text-muted-foreground">No team members available.</p>
               ) : (
                 <table className="w-full text-xs">
                   <thead>

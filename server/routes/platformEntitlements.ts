@@ -19,6 +19,9 @@ import { entitlementService } from "../services/entitlementService";
 import { usageMetricsService } from "../services/usageMetricsService";
 import { platformAuditService } from "../services/platformAuditService";
 import { tenantFeaturesRepository } from "../storage/tenantFeatures";
+// 2026-04-21 Phase 1 canonical policy architecture: subscriptionStatus +
+// trialEndsAt writes route through the lifecycle service.
+import { subscriptionLifecycleService } from "../services/subscriptionLifecycleService";
 import {
   insertSubscriptionFeatureSchema,
   updateSubscriptionFeatureSchema,
@@ -302,13 +305,31 @@ router.patch(
     if (!plan) throw createError(400, `Unknown plan '${data.subscriptionPlan}'`);
     const before = await tenantFeaturesRepository.getBilling(tenantId);
     if (!before) throw createError(404, "Tenant not found");
-    const after = await tenantFeaturesRepository.updateBilling(tenantId, {
+
+    // 2026-04-21 Phase 1 canonical policy architecture:
+    //   subscriptionStatus + trialEndsAt go through the lifecycle service.
+    //   subscriptionPlan (plan assignment) continues through the
+    //   tenant-features repo — it is NOT a subscription-state write.
+    const trialEndsAtValue = data.trialEndsAt !== undefined
+      ? (data.trialEndsAt ? new Date(data.trialEndsAt) : null)
+      : undefined;
+
+    if (data.subscriptionStatus !== undefined || trialEndsAtValue !== undefined) {
+      await subscriptionLifecycleService.transition({
+        companyId: tenantId,
+        to: data.subscriptionStatus ?? (before.subscriptionStatus as any),
+        ...(trialEndsAtValue !== undefined && { trialEndsAt: trialEndsAtValue }),
+        source: "platform_plan_assign",
+        actorUserId: (req as any).user?.id,
+        reason: `Platform plan assignment → ${data.subscriptionPlan}`,
+      });
+    }
+
+    await tenantFeaturesRepository.updateBilling(tenantId, {
       subscriptionPlan: data.subscriptionPlan,
-      ...(data.subscriptionStatus !== undefined && { subscriptionStatus: data.subscriptionStatus }),
-      ...(data.trialEndsAt !== undefined && {
-        trialEndsAt: data.trialEndsAt ? new Date(data.trialEndsAt) : null,
-      }),
     });
+
+    const after = await tenantFeaturesRepository.getBilling(tenantId);
     entitlementService.invalidateEntitlementsCache(tenantId);
     await platformAuditService.log({
       ...auditActor(req),

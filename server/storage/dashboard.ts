@@ -25,7 +25,7 @@
  */
 
 import { jobs, invoices, clientLocations as clients, customerCompanies, recurringJobInstances, recurringJobTemplates, quotes, payments } from "@shared/schema";
-import { eq, and, or, sql, asc, isNull, gte, lt, inArray } from "drizzle-orm";
+import { eq, and, or, sql, asc, desc, isNull, gte, lt, inArray } from "drizzle-orm";
 import type { QueryCtx } from "../lib/queryCtx";
 import { activeJobFilter } from "./jobFilters";
 // 2026-04-09: activeInvoiceFilter dropped (permanent-delete model — no soft delete on invoices)
@@ -420,9 +420,92 @@ export async function getNeedsAttentionJobs(
 export interface FinancialSummary {
   revenue: { today: number; week: number; month: number; lastMonth: number };
   trend: { month: string; total: number }[];
-  ar: { outstandingTotal: number; outstandingCount: number; pastDueTotal: number; pastDueCount: number; sentThisMonth: number };
-  quotes: { sent: number; approved: number; conversionRate: number; avgValue: number };
+  ar: {
+    outstandingTotal: number;
+    outstandingCount: number;
+    pastDueTotal: number;
+    pastDueCount: number;
+    sentThisMonth: number;
+    /**
+     * 2026-04-21 Financial Dashboard: tenant-wide A/R aging buckets.
+     * Amounts sum `invoices.balance` for unpaid invoices (awaiting_payment/
+     * sent/partial_paid) grouped by due-date bucket. Hoisted from the
+     * per-client variant in customerCompanies.getBillingAggregatesForLocations
+     * so the dashboard single-source-of-truths the same aging math.
+     */
+    aging: {
+      current: number;
+      d1_30: number;
+      d31_60: number;
+      d61_90: number;
+      d90plus: number;
+    };
+  };
+  quotes: {
+    sent: number;
+    approved: number;
+    conversionRate: number;
+    avgValue: number;
+    /** 2026-04-21: SUM(total) of status='approved' quotes — "approved-not-converted" pipeline value. */
+    approvedTotal: number;
+  };
   pm: { contractCount: number; totalContractValue: number };
+  /** 2026-04-21 Financial Dashboard: draft invoices (count + SUM(total)). */
+  draft: { count: number; total: number };
+  /** 2026-04-21 Financial Dashboard: workflow pipeline counts — mirrors getWorkflowSummary so the Financial Dashboard can render the same signals without a second round-trip. */
+  pipeline: {
+    /** status='completed' AND no invoices exist — reuses requiresInvoicingCount predicate. */
+    readyToInvoiceCount: number;
+    /** quotes with status='approved' (pre-conversion). */
+    approvedQuotesNotConvertedCount: number;
+  };
+  /** 2026-04-21 Financial Dashboard: top 10 outstanding invoices by balance. */
+  topOutstandingInvoices: {
+    id: string;
+    invoiceNumber: string | null;
+    customerName: string | null;
+    locationName: string | null;
+    dueDate: string | null;
+    balance: number;
+    status: string | null;
+    daysLate: number | null;
+  }[];
+  /** 2026-04-21 Financial Dashboard: top 10 customer balances. */
+  topCustomerBalances: {
+    customerCompanyId: string;
+    name: string | null;
+    outstanding: number;
+    overdue: number;
+    openCount: number;
+  }[];
+  /**
+   * 2026-04-21 V1.1: actionable preview of draft invoices (6 most recent).
+   * Replaces the former Draft KPI tile — users want rows they can click,
+   * not a count. Sourced from status='draft'; server-side limited.
+   */
+  draftInvoicesPreview: {
+    id: string;
+    invoiceNumber: string | null;
+    customerName: string | null;
+    locationName: string | null;
+    total: number;
+    createdAt: string | null;
+  }[];
+  /**
+   * 2026-04-21 V1.1: actionable preview of jobs ready to invoice (6 most
+   * recently completed). Predicate IDENTICAL to getJobCounts.requiresInvoicingCount
+   * and jobsFeed.readyToInvoiceOnly — status='completed' AND no invoice
+   * exists for the job. Single source of truth so the preview, the dashboard
+   * count, and `/jobs?readyToInvoiceOnly=true` all agree row-for-row.
+   */
+  readyToInvoiceJobsPreview: {
+    id: string;
+    jobNumber: number;
+    summary: string | null;
+    customerName: string | null;
+    locationName: string | null;
+    completedAt: string | null;
+  }[];
 }
 
 export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSummary> {
@@ -449,13 +532,17 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
     return parseFloat(rows[0]?.total ?? "0");
   };
 
-  // P3-01: All 10 reads are independent — dispatch concurrently via single Promise.all.
-  // Previously: 4 revenue queries parallel, then 6 stats queries sequential.
+  // P3-01: All reads are independent — dispatch concurrently via single Promise.all.
+  // 2026-04-21 Financial Dashboard: added aging/topInvoices/topCustomers/draft/
+  // readyToInvoice queries. Still one round-trip; each query is indexed.
   const UNPAID = UNPAID_INVOICE_STATUSES;
+  const unpaidRaw = sql.raw(UNPAID_INVOICE_STATUS_SQL);
 
   const [
     revenueToday, revenueWeek, revenueMonth, revenueLastMonth,
     trendRows, arRows, pastDueRows, sentThisMonthRows, quoteRows, pmRows,
+    agingRows, topInvoiceRows, topCustomerRows, draftRows, readyToInvoiceRows,
+    draftPreviewRows, readyToInvoicePreviewRows,
   ] = await Promise.all([
     // Revenue by period (4 queries)
     revenueQuery(todayStart, new Date(todayStart.getTime() + 86400000)),
@@ -528,9 +615,181 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
         eq(recurringJobTemplates.companyId, companyId),
         eq(recurringJobTemplates.isActive, true),
       )),
+
+    // 2026-04-21 A/R aging (tenant-wide, 5 buckets). Same predicate family
+    // as getBillingAggregatesForLocations — unpaid statuses, balance by
+    // due-date bracket. Hoisted here so the financial dashboard single-
+    // round-trips all AR signals.
+    db.select({
+      current: sql<string>`COALESCE(SUM(CAST(${invoices.balance} AS numeric)) FILTER (
+        WHERE ${invoices.status} IN (${unpaidRaw})
+          AND (${invoices.dueDate} IS NULL OR ${invoices.dueDate} >= CURRENT_DATE)
+      ), 0)::text`,
+      d1_30: sql<string>`COALESCE(SUM(CAST(${invoices.balance} AS numeric)) FILTER (
+        WHERE ${invoices.status} IN (${unpaidRaw})
+          AND ${invoices.dueDate} < CURRENT_DATE
+          AND ${invoices.dueDate} >= CURRENT_DATE - INTERVAL '30 days'
+      ), 0)::text`,
+      d31_60: sql<string>`COALESCE(SUM(CAST(${invoices.balance} AS numeric)) FILTER (
+        WHERE ${invoices.status} IN (${unpaidRaw})
+          AND ${invoices.dueDate} < CURRENT_DATE - INTERVAL '30 days'
+          AND ${invoices.dueDate} >= CURRENT_DATE - INTERVAL '60 days'
+      ), 0)::text`,
+      d61_90: sql<string>`COALESCE(SUM(CAST(${invoices.balance} AS numeric)) FILTER (
+        WHERE ${invoices.status} IN (${unpaidRaw})
+          AND ${invoices.dueDate} < CURRENT_DATE - INTERVAL '60 days'
+          AND ${invoices.dueDate} >= CURRENT_DATE - INTERVAL '90 days'
+      ), 0)::text`,
+      d90plus: sql<string>`COALESCE(SUM(CAST(${invoices.balance} AS numeric)) FILTER (
+        WHERE ${invoices.status} IN (${unpaidRaw})
+          AND ${invoices.dueDate} < CURRENT_DATE - INTERVAL '90 days'
+      ), 0)::text`,
+    }).from(invoices)
+      .where(and(
+        eq(invoices.companyId, companyId),
+        sql`CAST(${invoices.balance} AS numeric) > 0`,
+      )),
+
+    // 2026-04-21 Top 10 outstanding invoices (by balance desc). Joins
+    // client_locations + customer_companies for display names. Overdue
+    // is derived client-side from dueDate + daysLate.
+    db.select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      dueDate: invoices.dueDate,
+      balance: invoices.balance,
+      status: invoices.status,
+      customerName: customerCompanies.name,
+      locationCompanyName: clients.companyName,
+      locationName: clients.location,
+    }).from(invoices)
+      .leftJoin(clients, eq(invoices.locationId, clients.id))
+      .leftJoin(customerCompanies, eq(invoices.customerCompanyId, customerCompanies.id))
+      .where(and(
+        eq(invoices.companyId, companyId),
+        inArray(invoices.status, UNPAID),
+        sql`CAST(${invoices.balance} AS numeric) > 0`,
+      ))
+      .orderBy(sql`CAST(${invoices.balance} AS numeric) DESC`)
+      .limit(10),
+
+    // 2026-04-21 Top 10 customer balances. Group by customer_company, sum
+    // unpaid balance per customer. HAVING > 0 excludes zero-balance rows
+    // that would appear for customers whose only invoices are paid.
+    db.select({
+      customerCompanyId: customerCompanies.id,
+      name: customerCompanies.name,
+      outstanding: sql<string>`COALESCE(SUM(CAST(${invoices.balance} AS numeric)) FILTER (
+        WHERE ${invoices.status} IN (${unpaidRaw}) AND CAST(${invoices.balance} AS numeric) > 0
+      ), 0)::text`,
+      overdue: sql<string>`COALESCE(SUM(CAST(${invoices.balance} AS numeric)) FILTER (
+        WHERE ${invoices.status} IN (${unpaidRaw}) AND CAST(${invoices.balance} AS numeric) > 0
+          AND ${invoices.dueDate} IS NOT NULL AND ${invoices.dueDate} < CURRENT_DATE
+      ), 0)::text`,
+      openCount: sql<number>`COUNT(*) FILTER (
+        WHERE ${invoices.status} IN (${unpaidRaw}) AND CAST(${invoices.balance} AS numeric) > 0
+      )::int`,
+    }).from(customerCompanies)
+      .innerJoin(invoices, eq(invoices.customerCompanyId, customerCompanies.id))
+      .where(and(
+        eq(customerCompanies.companyId, companyId),
+        eq(invoices.companyId, companyId),
+      ))
+      .groupBy(customerCompanies.id, customerCompanies.name)
+      .having(sql`COALESCE(SUM(CAST(${invoices.balance} AS numeric)) FILTER (
+        WHERE ${invoices.status} IN (${unpaidRaw}) AND CAST(${invoices.balance} AS numeric) > 0
+      ), 0) > 0`)
+      .orderBy(sql`COALESCE(SUM(CAST(${invoices.balance} AS numeric)) FILTER (
+        WHERE ${invoices.status} IN (${unpaidRaw}) AND CAST(${invoices.balance} AS numeric) > 0
+      ), 0) DESC`)
+      .limit(10),
+
+    // 2026-04-21 Draft invoices — count + sum(total). Draft balance is
+    // typically zero pre-send, so total is the meaningful value.
+    db.select({
+      count: sql<number>`count(*)::int`,
+      total: sql<string>`COALESCE(SUM(CAST(${invoices.total} AS numeric)), 0)::text`,
+    }).from(invoices)
+      .where(and(
+        eq(invoices.companyId, companyId),
+        eq(invoices.status, "draft"),
+      )),
+
+    // 2026-04-21 Ready-to-invoice job count. Predicate IDENTICAL to
+    // getWorkflowSummary.getJobCounts.requiresInvoicingCount — must stay
+    // in lockstep. Bypass activeJobFilter on job lookup of invoices is
+    // fine because NOT EXISTS only checks count, not visibility.
+    db.select({
+      count: sql<number>`COUNT(*) FILTER (WHERE ${jobs.status} = 'completed'
+        AND NOT EXISTS (
+          SELECT 1 FROM ${invoices}
+          WHERE ${invoices.jobId} = ${jobs.id}
+            AND ${invoices.companyId} = ${jobs.companyId}
+        ))::int`,
+    }).from(jobs)
+      .where(and(
+        eq(jobs.companyId, companyId),
+        activeJobFilter(),
+      )),
+
+    // 2026-04-21 V1.1 Draft invoices preview — 6 most recent drafts with
+    // customer + location resolved. Joins match the patterns used by
+    // invoicesFeed + getBillingAggregatesForLocations so display names
+    // follow the canonical COALESCE(customerCompanies.name, clients.companyName).
+    db.select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      total: invoices.total,
+      createdAt: invoices.createdAt,
+      customerName: customerCompanies.name,
+      locationCompanyName: clients.companyName,
+      locationName: clients.location,
+    }).from(invoices)
+      .leftJoin(clients, eq(invoices.locationId, clients.id))
+      .leftJoin(customerCompanies, eq(invoices.customerCompanyId, customerCompanies.id))
+      .where(and(
+        eq(invoices.companyId, companyId),
+        eq(invoices.status, "draft"),
+      ))
+      .orderBy(desc(invoices.createdAt))
+      .limit(6),
+
+    // 2026-04-21 V1.1 Ready-to-invoice preview — up to 6 jobs whose
+    // NOT EXISTS invoice check passes. Predicate byte-identical to
+    // getJobCounts.requiresInvoicingCount (above) and jobsFeed.readyToInvoiceOnly;
+    // only the return shape differs. activeJobFilter() applied so soft-
+    // deleted jobs cannot leak into the preview.
+    // 2026-04-21 V1.2: sort ASC (oldest completion first) so the backlog
+    // surfaces the jobs waiting longest for an invoice — matches the
+    // "work the oldest first" workflow priority. NULLS LAST so rows
+    // without a closedAt/updatedAt don't poison the top.
+    db.select({
+      id: jobs.id,
+      jobNumber: jobs.jobNumber,
+      summary: jobs.summary,
+      closedAt: jobs.closedAt,
+      updatedAt: jobs.updatedAt,
+      customerName: customerCompanies.name,
+      locationCompanyName: clients.companyName,
+      locationName: clients.location,
+    }).from(jobs)
+      .leftJoin(clients, eq(jobs.locationId, clients.id))
+      .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
+      .where(and(
+        eq(jobs.companyId, companyId),
+        activeJobFilter(),
+        eq(jobs.status, "completed"),
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${invoices}
+          WHERE ${invoices.jobId} = ${jobs.id}
+            AND ${invoices.companyId} = ${jobs.companyId}
+        )`,
+      ))
+      .orderBy(sql`COALESCE(${jobs.closedAt}, ${jobs.updatedAt}) ASC NULLS LAST`)
+      .limit(6),
   ]);
 
-  // Post-query derivations (unchanged)
+  // Post-query derivations
   const outstandingTotal = arRows.reduce((s, r) => s + parseFloat(r.totalBalance ?? "0"), 0);
   const outstandingCount = arRows.reduce((s, r) => s + r.count, 0);
 
@@ -543,6 +802,67 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
   const conversionRate = totalQuotes > 0 ? (convertedCount / totalQuotes * 100) : 0;
   const allQuoteTotal = quoteRows.reduce((s, r) => s + parseFloat(r.total ?? "0"), 0);
   const avgQuoteValue = totalQuotes > 0 ? allQuoteTotal / totalQuotes : 0;
+
+  const agingRow = agingRows[0];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const topOutstandingInvoices = topInvoiceRows.map((r: any) => {
+    let daysLate: number | null = null;
+    if (r.dueDate) {
+      const due = new Date(r.dueDate);
+      due.setHours(0, 0, 0, 0);
+      const diff = Math.floor((today.getTime() - due.getTime()) / (1000 * 60 * 60 * 24));
+      daysLate = diff > 0 ? diff : 0;
+    }
+    return {
+      id: r.id,
+      invoiceNumber: r.invoiceNumber ?? null,
+      // Prefer customerCompanies.name, fall back to location's companyName (same
+      // COALESCE rule as `locationDisplayNameExpr` elsewhere in the codebase).
+      customerName: r.customerName ?? r.locationCompanyName ?? null,
+      locationName: r.locationName ?? null,
+      dueDate: r.dueDate ? String(r.dueDate) : null,
+      balance: parseFloat(r.balance ?? "0"),
+      status: r.status ?? null,
+      daysLate,
+    };
+  });
+
+  const topCustomerBalances = topCustomerRows.map((r: any) => ({
+    customerCompanyId: r.customerCompanyId,
+    name: r.name ?? null,
+    outstanding: parseFloat(r.outstanding ?? "0"),
+    overdue: parseFloat(r.overdue ?? "0"),
+    openCount: Number(r.openCount ?? 0),
+  }));
+
+  // 2026-04-21 V1.1: preview list mappers. customerName follows the
+  // canonical COALESCE(customerCompanies.name, clients.companyName) rule.
+  const draftInvoicesPreview = draftPreviewRows.map((r: any) => ({
+    id: r.id,
+    invoiceNumber: r.invoiceNumber ?? null,
+    customerName: r.customerName ?? r.locationCompanyName ?? null,
+    locationName: r.locationName ?? null,
+    total: parseFloat(r.total ?? "0"),
+    createdAt: r.createdAt instanceof Date
+      ? r.createdAt.toISOString()
+      : (r.createdAt ? String(r.createdAt) : null),
+  }));
+
+  const readyToInvoiceJobsPreview = readyToInvoicePreviewRows.map((r: any) => {
+    const completedAt = r.closedAt ?? r.updatedAt ?? null;
+    return {
+      id: r.id,
+      jobNumber: r.jobNumber,
+      summary: r.summary ?? null,
+      customerName: r.customerName ?? r.locationCompanyName ?? null,
+      locationName: r.locationName ?? null,
+      completedAt: completedAt instanceof Date
+        ? completedAt.toISOString()
+        : (completedAt ? String(completedAt) : null),
+    };
+  });
 
   return {
     revenue: {
@@ -558,17 +878,37 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
       pastDueTotal: parseFloat(pastDueRows[0]?.total ?? "0"),
       pastDueCount: pastDueRows[0]?.count ?? 0,
       sentThisMonth: sentThisMonthRows[0]?.count ?? 0,
+      aging: {
+        current: parseFloat(agingRow?.current ?? "0"),
+        d1_30: parseFloat(agingRow?.d1_30 ?? "0"),
+        d31_60: parseFloat(agingRow?.d31_60 ?? "0"),
+        d61_90: parseFloat(agingRow?.d61_90 ?? "0"),
+        d90plus: parseFloat(agingRow?.d90plus ?? "0"),
+      },
     },
     quotes: {
       sent: quotePipeline["sent"]?.count ?? 0,
       approved: quotePipeline["approved"]?.count ?? 0,
       conversionRate: Math.round(conversionRate * 10) / 10,
       avgValue: Math.round(avgQuoteValue * 100) / 100,
+      approvedTotal: quotePipeline["approved"]?.total ?? 0,
     },
     pm: {
       contractCount: pmRows[0]?.count ?? 0,
       totalContractValue: parseFloat(pmRows[0]?.totalContractValue ?? "0"),
     },
+    draft: {
+      count: draftRows[0]?.count ?? 0,
+      total: parseFloat(draftRows[0]?.total ?? "0"),
+    },
+    pipeline: {
+      readyToInvoiceCount: readyToInvoiceRows[0]?.count ?? 0,
+      approvedQuotesNotConvertedCount: quotePipeline["approved"]?.count ?? 0,
+    },
+    topOutstandingInvoices,
+    topCustomerBalances,
+    draftInvoicesPreview,
+    readyToInvoiceJobsPreview,
   };
 }
 

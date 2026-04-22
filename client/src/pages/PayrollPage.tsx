@@ -760,7 +760,7 @@ export default function PayrollPage() {
                   <User className="h-4 w-4 text-muted-foreground" />
                   <Select value={weekTechId} onValueChange={(v) => { setWeekTechId(v); setPendingEdits({}); }}>
                     <SelectTrigger className="w-[200px] h-8 text-sm">
-                      <SelectValue placeholder="Select technician" />
+                      <SelectValue placeholder="Select team member" />
                     </SelectTrigger>
                     <SelectContent>
                       {technicians.map((u) => (
@@ -817,7 +817,7 @@ export default function PayrollPage() {
             <Card>
               <CardContent className="py-8 text-center text-muted-foreground">
                 <User className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                <p>Select a technician to view their weekly timesheet.</p>
+                <p>Select a team member to view their weekly timesheet.</p>
               </CardContent>
             </Card>
           ) : weekLoading ? (
@@ -990,7 +990,7 @@ export default function PayrollPage() {
                 <div className="flex items-center gap-3">
                   <User className="h-4 w-4 text-muted-foreground" />
                   <Select value={dayViewTechId} onValueChange={setDayViewTechId}>
-                    <SelectTrigger className="w-[200px] h-8 text-sm"><SelectValue placeholder="Select technician" /></SelectTrigger>
+                    <SelectTrigger className="w-[200px] h-8 text-sm"><SelectValue placeholder="Select team member" /></SelectTrigger>
                     <SelectContent>
                       {technicians.map((u) => (
                         <SelectItem key={u.id} value={u.id}>
@@ -1018,7 +1018,7 @@ export default function PayrollPage() {
             </CardContent>
           </Card>
           {!dayViewTechId ? (
-            <Card><CardContent className="py-8 text-center text-muted-foreground"><User className="h-8 w-8 mx-auto mb-2 opacity-50" /><p>Select a technician to view their timesheet.</p></CardContent></Card>
+            <Card><CardContent className="py-8 text-center text-muted-foreground"><User className="h-8 w-8 mx-auto mb-2 opacity-50" /><p>Select a team member to view their timesheet.</p></CardContent></Card>
           ) : (
             renderEntryList(dayData?.entries ?? [], dayLoading, "Time Entries")
           )}

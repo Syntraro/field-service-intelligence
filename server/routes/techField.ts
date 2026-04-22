@@ -41,6 +41,11 @@ import { normalizeScheduleTimes } from "../domain/scheduling";
 import { logEventAsync } from "../lib/events";
 import { recomputeAttentionForEntity } from "../lib/attentionRules";
 import { getQueryCtx } from "../lib/queryCtx";
+// 2026-04-21 Phase 1 push notifications: tech-side subscription registration.
+import { notificationTargetsRepository } from "../storage/notificationTargets";
+import { getPublicVapidKey, isWebPushConfigured } from "../services/push/webPushAdapter";
+// 2026-04-21 Phase 2 notification preferences: user-level policy.
+import { notificationPreferencesRepository } from "../storage/notificationPreferences";
 
 const router = Router();
 
@@ -1647,6 +1652,245 @@ router.post(
 
     emitDispatch(companyId, { scope: "calendar", entityType: "task", entityId: req.params.id, ts: new Date().toISOString() });
     res.json({ task, timeEntry });
+  }),
+);
+
+// ============================================================================
+// 2026-04-21 Phase 1 — Push notification subscription registration
+// ============================================================================
+//
+// Three endpoints, all mounted under /api/tech:
+//   GET  /push/public-key        — returns the server's VAPID public key.
+//                                  Client needs it before it can subscribe.
+//   POST /push/subscription      — upsert this browser's push subscription.
+//                                  Idempotent on (tenantId, userId, endpoint).
+//   DELETE /push/subscription/:id — soft-revoke (user turns off notifications).
+//
+// Auth: reuses `requireSchedulable`, which is the existing tech-surface guard.
+// CSRF: state-changing routes go through `apiRequest` on the client, which
+// handles the CSRF header automatically (same as every other tech mutation).
+
+const subscriptionKeysSchema = z.object({
+  p256dh: z.string().min(1).max(200),
+  auth: z.string().min(1).max(200),
+}).strict();
+
+const registerPushSubscriptionSchema = z.object({
+  endpoint: z.string().url().max(2048),
+  keys: subscriptionKeysSchema,
+  // Diagnostic only — not used to gate anything. Clamp length to keep
+  // the column bounded.
+  userAgent: z.string().max(512).optional(),
+}).strict();
+
+// GET /api/tech/push/public-key
+router.get(
+  "/push/public-key",
+  requireSchedulable,
+  asyncHandler(async (_req: AuthedRequest, res: Response) => {
+    const key = getPublicVapidKey();
+    if (!key) {
+      // Web push disabled on this deployment (missing VAPID env). Tell the
+      // client explicitly so it can silently skip the subscribe flow rather
+      // than treating it as an error.
+      return res.json({ enabled: false });
+    }
+    return res.json({ enabled: true, publicKey: key });
+  }),
+);
+
+// POST /api/tech/push/subscription
+router.post(
+  "/push/subscription",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    if (!isWebPushConfigured()) {
+      // Respond cleanly so the client knows not to try again.
+      return res.status(503).json({ error: "Push notifications are not configured on this server." });
+    }
+
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+    const data = validateSchema(registerPushSubscriptionSchema, req.body);
+
+    const target = await notificationTargetsRepository.upsertTarget({
+      tenantId: companyId,
+      userId,
+      platform: "web",
+      channel: "web_push",
+      provider: "webpush",
+      endpoint: data.endpoint,
+      keyP256dh: data.keys.p256dh,
+      keyAuth: data.keys.auth,
+      userAgent: data.userAgent ?? null,
+      appVersion: null,
+    });
+
+    res.status(201).json({ id: target.id, revoked: target.revokedAt !== null });
+  }),
+);
+
+// DELETE /api/tech/push/subscription/:id
+// User-initiated revoke — tech flips notifications off in the PWA.
+router.delete(
+  "/push/subscription/:id",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+    const { id } = req.params;
+
+    const ok = await notificationTargetsRepository.revokeTargetById(companyId, userId, id);
+    if (!ok) throw createError(404, "Push subscription not found");
+
+    res.status(204).end();
+  }),
+);
+
+// ============================================================================
+// 2026-04-21 Phase 2 — Notification preferences (self-service)
+// ============================================================================
+//
+// Two endpoints under /api/tech/me/notification-preferences:
+//   GET   — returns the calling user's current preferences, filling in
+//           defaults (all true) when no row exists yet.
+//   PATCH — upserts a partial booleans body; returns the full post-write
+//           shape.
+//
+// Auth: authenticated self only. Deliberately NOT gated by
+// `requireSchedulable` — a non-schedulable owner/admin using the tech app
+// in field mode must still be able to manage their own notification
+// policy. Global `requireAuth` (mounted at /api) populates req.user before
+// we get here.
+//
+// Tenant isolation: every read/write scopes by `req.companyId`.
+
+const preferencesPatchSchema = z.object({
+  visitAssignmentsEnabled: z.boolean().optional(),
+  visitScheduleChangesEnabled: z.boolean().optional(),
+  visitCancellationsEnabled: z.boolean().optional(),
+  visitRemindersEnabled: z.boolean().optional(),
+}).strict();
+
+// Guard: req.user + req.companyId must be populated by the time we get
+// here. If either is missing, treat as unauthorized — mirrors the inline
+// check in requireSchedulable.
+function assertAuthedSelf(req: AuthedRequest, res: Response): { companyId: string; userId: string } | null {
+  if (!req.user || !req.companyId) {
+    res.status(401).json({ error: "Not authenticated" });
+    return null;
+  }
+  return { companyId: req.companyId, userId: req.user.id };
+}
+
+// GET /api/tech/me/notification-preferences
+router.get(
+  "/me/notification-preferences",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const ctx = assertAuthedSelf(req, res);
+    if (!ctx) return;
+    const prefs = await notificationPreferencesRepository.loadForUser(ctx.companyId, ctx.userId);
+    res.json(prefs);
+  }),
+);
+
+// PATCH /api/tech/me/notification-preferences
+router.patch(
+  "/me/notification-preferences",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const ctx = assertAuthedSelf(req, res);
+    if (!ctx) return;
+    const patch = validateSchema(preferencesPatchSchema, req.body);
+    const prefs = await notificationPreferencesRepository.upsertPreferences(
+      ctx.companyId,
+      ctx.userId,
+      patch,
+    );
+    res.json(prefs);
+  }),
+);
+
+// ============================================================================
+// 2026-04-21 Phase 2 — Notification devices (self-service)
+// ============================================================================
+//
+// Two endpoints under /api/tech/me/notification-devices:
+//   GET      — list active (non-revoked) push targets for the calling user.
+//              Every device/browser they've registered across platforms.
+//   DELETE /:id — soft-revoke a single target by id, scoped to the caller's
+//              (tenant, user). Reuses the canonical
+//              notificationTargetsRepository.revokeTargetById — same path the
+//              tech-PWA internal "disable push" flow uses, just exposed here
+//              under the self-service namespace so non-schedulable managers
+//              can manage their own devices too.
+//
+// Auth: authenticated self only (NOT `requireSchedulable`) — matches the
+// preferences routes above. Tenant-scoped via req.companyId.
+//
+// Design: DTO excludes keyP256dh / keyAuth (secrets) and endpoint URL
+// (treat as opaque, not user-meaningful). Only diagnostic + display fields
+// are returned.
+
+interface DeviceDto {
+  id: string;
+  platform: string;
+  channel: string;
+  provider: string;
+  userAgent: string | null;
+  appVersion: string | null;
+  createdAt: string;
+  lastSeenAt: string | null;
+  revokedAt: string | null;
+}
+
+// GET /api/tech/me/notification-devices
+router.get(
+  "/me/notification-devices",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const ctx = assertAuthedSelf(req, res);
+    if (!ctx) return;
+
+    const targets = await notificationTargetsRepository.listLiveTargetsForUser(
+      ctx.companyId,
+      ctx.userId,
+    );
+
+    const devices: DeviceDto[] = targets.map((t) => ({
+      id: t.id,
+      platform: t.platform,
+      channel: t.channel,
+      provider: t.provider,
+      userAgent: t.userAgent ?? null,
+      appVersion: t.appVersion ?? null,
+      createdAt: t.createdAt instanceof Date ? t.createdAt.toISOString() : String(t.createdAt),
+      lastSeenAt: t.lastSeenAt
+        ? (t.lastSeenAt instanceof Date ? t.lastSeenAt.toISOString() : String(t.lastSeenAt))
+        : null,
+      revokedAt: t.revokedAt
+        ? (t.revokedAt instanceof Date ? t.revokedAt.toISOString() : String(t.revokedAt))
+        : null,
+    }));
+
+    res.json(devices);
+  }),
+);
+
+// DELETE /api/tech/me/notification-devices/:id
+router.delete(
+  "/me/notification-devices/:id",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const ctx = assertAuthedSelf(req, res);
+    if (!ctx) return;
+    const { id } = req.params;
+
+    const ok = await notificationTargetsRepository.revokeTargetById(
+      ctx.companyId,
+      ctx.userId,
+      id,
+    );
+    if (!ok) throw createError(404, "Device not found");
+
+    res.status(204).end();
   }),
 );
 

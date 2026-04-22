@@ -17,7 +17,7 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import {
-  FileText, DollarSign, Briefcase, ChevronRight,
+  FileText, ChevronRight,
   Wrench,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -27,6 +27,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { DashboardActionModal, type DashboardActionMode } from "@/components/DashboardActionModal";
 import { MidnightRolloverCard } from "@/components/MidnightRolloverCard";
 import { TodaysOperationsCard } from "@/components/TodaysOperationsCard";
+import { DashboardViewToggle } from "@/components/dashboard/DashboardViewToggle";
+import {
+  VisitEditorLauncher,
+  type VisitEditorState,
+} from "@/components/dispatch/VisitEditorLauncher";
+import {
+  SlotQuickCreateLauncher,
+  type QuickCreateSlot,
+} from "@/components/dispatch/SlotQuickCreateLauncher";
 import type { Invoice as SchemaInvoice } from "@shared/schema";
 
 // ============================================================================
@@ -69,10 +78,6 @@ interface WorkflowSummary {
 // Shared card primitives
 // ============================================================================
 
-function formatCurrency(amount: number): string {
-  return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD", minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(amount);
-}
-
 function DashCard({ children, className = "", elevated }: { children: React.ReactNode; className?: string; elevated?: boolean }) {
   return (
     <div className={`bg-[#ffffff] dark:bg-gray-900 rounded-md overflow-hidden border border-[#e2e8f0] dark:border-gray-700 ${className}`} style={{ boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
@@ -91,6 +96,9 @@ function DashCard({ children, className = "", elevated }: { children: React.Reac
 // ============================================================================
 
 function TodaysOperationsHeader() {
+  // 2026-04-21: Separate "Financial Dashboard" outline button replaced by
+  // the shared <DashboardViewToggle /> segmented switcher so the two
+  // dashboards share one consistent control.
   return (
     <div
       className="flex items-center justify-between gap-3 mb-2"
@@ -99,6 +107,7 @@ function TodaysOperationsHeader() {
       <h3 className="text-lg font-semibold text-[#111827] dark:text-gray-100 tracking-tight">
         Today's Operations
       </h3>
+      <DashboardViewToggle active="operations" />
     </div>
   );
 }
@@ -206,6 +215,14 @@ export default function Dashboard() {
   const [actionModalMode, setActionModalMode] = useState<DashboardActionMode>("action_required");
   const openActionModal = (mode: DashboardActionMode) => { setActionModalMode(mode); setActionModalOpen(true); };
 
+  // 2026-04-20 — Canonical launchers. Dashboard is an ENTRY POINT for the
+  // same EditVisitModal and QuickCreate flows Dispatch uses; the launcher
+  // components own all dialog/modal mount & state orchestration. No
+  // per-surface onAfterMutation invalidation — the capacity query is now
+  // part of useDispatchStream's canonical VISIT_JOB_KEYS refresh set.
+  const [editorState, setEditorState] = useState<VisitEditorState | null>(null);
+  const [slot, setSlot] = useState<QuickCreateSlot | null>(null);
+
   // 2026-04-08 freshness tier:
   // Workflow now carries the live overdueCount alongside on-hold/unscheduled/
   // ready-to-invoice. SSE (`useDispatchStream`) is the primary refresh path on
@@ -218,27 +235,9 @@ export default function Dashboard() {
     refetchOnWindowFocus: true,
   });
 
-  // 2026-04-11: Invoice metrics from canonical backend stats — no client-side derivation.
-  // Same endpoint used by Invoices page. Single source of truth for Outstanding/PastDue/Draft.
-  const { data: invoiceStats } = useQuery<{
-    outstanding: { amount: number; count: number };
-    overdue: { amount: number; count: number };
-    draftCount: number;
-  }>({
-    queryKey: ["invoices", "stats"],
-    queryFn: async () => {
-      const res = await fetch("/api/invoices/stats", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch invoice stats");
-      return res.json();
-    },
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
-  });
-
-  const outstandingTotal = invoiceStats?.outstanding?.amount ?? 0;
-  const outstandingCount = invoiceStats?.outstanding?.count ?? 0;
-  const pastDueCount = invoiceStats?.overdue?.count ?? 0;
-  const draftInvoiceCount = invoiceStats?.draftCount ?? 0;
+  // 2026-04-21: /api/invoices/stats query + derived Invoices-card counts
+  // were removed. Invoice metrics now live on the Financial Dashboard
+  // (/financials); the Operations Dashboard is operations-only.
 
   // 2026-04-19: The dashboard's top-of-page Today's Operations surface is
   // now rendered by <TodaysOperationsCard />, which fetches its own
@@ -277,70 +276,24 @@ export default function Dashboard() {
                 modal by receiving the same `openActionModal` handler that
                 powers the lower WorklistCard below. One modal instance,
                 one canonical drill-down for both surfaces. */}
-            <TodaysOperationsCard onOpenActionModal={openActionModal} />
+            <TodaysOperationsCard
+              onOpenActionModal={openActionModal}
+              onEditVisit={({ jobId, visitId, title }) =>
+                setEditorState({ jobId, visitId, customerName: title })
+              }
+              onCreateInSlot={(s) => setSlot({
+                technicianId: s.technicianId,
+                technicianName: s.technicianName,
+                date: s.date,
+                startTime: s.startTime,
+                endTime: s.endTime,
+                durationMinutes: s.durationMinutes,
+              })}
+            />
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              {/* 2026-04-19 Task B: Jobs card consolidated from four rows
-                  (past-due / on-hold / unscheduled / ready-to-invoice) into
-                  three operational buckets. The underlying counts still come
-                  from the canonical workflow endpoint (no new aggregation
-                  added) — we just roll overdue + unscheduled into a single
-                  "Scheduling Issues" row, and the drilldown modal renders
-                  both sections with a labelled divider. overdueCount and
-                  unscheduledCount are mutually exclusive by construction in
-                  server/storage/dashboard.ts (overdue requires
-                  scheduledStart IS NOT NULL; unscheduled requires
-                  scheduledStart IS NULL), so summing them is safe. */}
-              <WorklistCard
-                title="Jobs"
-                icon={Briefcase}
-                color="text-blue-600"
-                bg="bg-blue-100 dark:bg-blue-950/30"
-                headerStrength="strong"
-                elevated
-                isLoading={workflowLoading}
-                rows={[
-                  {
-                    label: "Action Required",
-                    value: workflowData?.jobs.onHoldCount ?? 0,
-                    action: "ops.onHold",
-                    warn: true,
-                    onClick: () => openActionModal("action_required"),
-                  },
-                  {
-                    label: "Scheduling Issues",
-                    value: (workflowData?.jobs.overdueCount ?? 0) + (workflowData?.jobs.unscheduledCount ?? 0),
-                    sub: (workflowData?.jobs.overdueCount ?? 0) > 0
-                      ? `${workflowData?.jobs.overdueCount} past due`
-                      : undefined,
-                    action: "alerts.overdueJobs",
-                    warn: (workflowData?.jobs.overdueCount ?? 0) > 0,
-                    urgentBg: (workflowData?.jobs.overdueCount ?? 0) > 0,
-                    onClick: () => openActionModal("scheduling_issues"),
-                  },
-                  {
-                    label: "Ready for Invoice",
-                    value: workflowData?.jobs.requiresInvoicingCount ?? 0,
-                    action: "jobs.needsInvoicing",
-                    onClick: () => openActionModal("ready_to_invoice"),
-                  },
-                ]}
-              />
-              <WorklistCard
-                title="Invoices"
-                icon={DollarSign}
-                color="text-amber-600"
-                bg="bg-amber-100 dark:bg-amber-950/30"
-                headerStrength="medium"
-                isLoading={workflowLoading}
-                rows={[
-                  { label: "Past due invoices", value: pastDueCount, sub: pastDueCount > 0 ? `(${pastDueCount})` : "", action: "invoices.pastDue", warn: true, urgentBg: true },
-                  { label: "Outstanding invoices", value: formatCurrency(outstandingTotal), sub: `(${outstandingCount})`, action: "invoices.outstanding" },
-                  { label: "Draft invoices", value: draftInvoiceCount, action: "invoices.draft" },
-                ]}
-              />
-            </div>
-
+            {/* 2026-04-21: Invoices WorklistCard removed — invoice
+                management is now the Financial Dashboard's concern.
+                The Operations Dashboard is operations-only. */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               <WorklistCard
                 title="Quotes"
@@ -382,6 +335,20 @@ export default function Dashboard() {
         open={actionModalOpen}
         onOpenChange={setActionModalOpen}
         mode={actionModalMode}
+      />
+
+      {/* Canonical launchers. Dashboard passes context only; these
+          components own the modal/chooser/dialog lifecycle. Dispatch
+          mounts the same two launchers. Refresh is driven by
+          useDispatchStream's VISIT_JOB_KEYS set (now includes
+          "/api/dashboard/capacity") — no explicit invalidation here. */}
+      <VisitEditorLauncher
+        state={editorState}
+        onClose={() => setEditorState(null)}
+      />
+      <SlotQuickCreateLauncher
+        slot={slot}
+        onClose={() => setSlot(null)}
       />
     </div>
   );

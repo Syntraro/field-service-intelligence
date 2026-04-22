@@ -780,13 +780,48 @@ router.patch(
       ? (result as any).assignedTechnicianIds
       : [];
 
+    const currentScheduledStart: string | null = result.scheduledStart
+      ? (result.scheduledStart instanceof Date ? result.scheduledStart.toISOString() : String(result.scheduledStart))
+      : null;
+    const currentScheduledEnd: string | null = result.scheduledEnd
+      ? (result.scheduledEnd instanceof Date ? result.scheduledEnd.toISOString() : String(result.scheduledEnd))
+      : null;
+    const currentIsAllDay: boolean = result.isAllDay === true;
+
+    // 2026-04-21 Phase 2 push notifications: schedule-change notification.
+    // Fires only on meaningful datetime delta (start/end/allDay); notes-only
+    // and crew-only saves produce no notification. The emitter owns actor-
+    // skip, preference-gate, dedupe, and best-effort push. Wrapped in try/
+    // catch at the route so a notification failure can never break the
+    // response — the persistent row and push are both already best-effort
+    // inside the service.
+    try {
+      await notificationService.emitVisitScheduleChange({
+        companyId,
+        visitId,
+        jobId: result.id!,
+        jobNumber: result.jobNumber,
+        visitVersion: result.visitVersion ?? result.version ?? 0,
+        previousScheduledStart: result.previousScheduledStart ?? null,
+        previousScheduledEnd: result.previousScheduledEnd ?? null,
+        previousIsAllDay: result.previousIsAllDay === true,
+        currentScheduledStart,
+        currentScheduledEnd,
+        currentIsAllDay,
+        currentAssignedTechnicianIds: updatedCrew,
+        actorUserId: req.user?.id ?? null,
+      });
+    } catch (err) {
+      console.error("[reschedule] emitVisitScheduleChange failed", { visitId, err });
+    }
+
     res.json({
       id: result.id,
       jobId: result.id,
       visitId,
-      scheduledStart: result.scheduledStart?.toISOString() || null,
-      scheduledEnd: result.scheduledEnd?.toISOString() || null,
-      isAllDay: result.isAllDay ?? false,
+      scheduledStart: currentScheduledStart,
+      scheduledEnd: currentScheduledEnd,
+      isAllDay: currentIsAllDay,
       version: result.visitVersion ?? result.version,
       status: result.status,
       assignedTechnicianIds: updatedCrew,
@@ -795,6 +830,10 @@ router.patch(
 );
 
 // POST /api/calendar/visit/:visitId/unschedule - Unschedule existing visit
+// 2026-04-21 Phase 1 canonical visit mutation architecture: delegates to
+// `lifecycle.unscheduleVisit` so the actioned-visit guard is enforced here
+// too (the old direct-storage path silently allowed unscheduling
+// in-progress / en_route visits). Same endpoint, same request shape.
 router.post(
   "/visit/:visitId/unschedule",
   requireRole(MANAGER_ROLES),
@@ -807,8 +846,16 @@ router.post(
 
     let result;
     try {
-      result = await schedulingRepository.unscheduleVisit(companyId, visitId, data.version);
+      result = await lifecycle.unscheduleVisit({
+        type: "UNSCHEDULE_VISIT",
+        companyId,
+        visitId,
+        expectedVersion: data.version,
+      });
     } catch (error: any) {
+      if (error?.code === "VISIT_ACTIONED" || error?.status === 409 && /actioned/i.test(error.message ?? "")) {
+        return res.status(409).json({ error: error.message, code: "VISIT_ACTIONED" });
+      }
       if (error.message?.includes('modified by another user') || error.message?.includes('Expected version')) {
         return res.status(409).json({ error: error.message, code: 'VERSION_MISMATCH' });
       }
@@ -880,6 +927,11 @@ router.post(
     const failed: { visitId: string; reason: string }[] = [];
     const affectedJobIds = new Set<string>();
 
+    // 2026-04-21 Phase 1.5: each visit is unscheduled through the canonical
+    // `lifecycle.unscheduleVisit` intent so actioned-visit protection fires
+    // uniformly with the single-visit path. Actioned visits (en_route /
+    // in_progress / paused / on_site / checkedInAt-present) are routed to
+    // `skipped` with a stable reason — NEVER silently overwritten.
     for (const visitId of visitIds) {
       try {
         const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
@@ -888,7 +940,22 @@ router.post(
           continue;
         }
 
-        await schedulingRepository.unscheduleVisit(companyId, visit.id, visit.version);
+        try {
+          await lifecycle.unscheduleVisit({
+            type: "UNSCHEDULE_VISIT",
+            companyId,
+            visitId: visit.id,
+            expectedVersion: visit.version,
+          });
+        } catch (orchErr: any) {
+          // Orchestrator signals actioned-visit rejection via code VISIT_ACTIONED.
+          // Bulk-unschedule is batch-by-nature: skip, don't fail the whole batch.
+          if (orchErr?.code === "VISIT_ACTIONED") {
+            skipped.push({ visitId, reason: orchErr.message || "Visit is actioned" });
+            continue;
+          }
+          throw orchErr;
+        }
         affectedJobIds.add(visit.jobId);
         succeeded.push(visitId);
 
@@ -932,6 +999,12 @@ router.post(
 );
 
 // POST /api/calendar/visit/:visitId/resize - Resize existing visit
+// 2026-04-21 Phase 1 canonical visit mutation architecture: resize is a
+// schedule-end change, so it routes through the same canonical engine as
+// reschedule (`lifecycle.rescheduleVisit(mode:"replace")`). This closes
+// the actioned-visit gap the direct-storage path silently allowed: resizing
+// an in-progress visit now goes through the same spawn-on-action decision
+// tree as drag-reschedule. Same endpoint + same request shape.
 router.post(
   "/visit/:visitId/resize",
   requireRole(MANAGER_ROLES),
@@ -945,10 +1018,37 @@ router.post(
       throw createError(400, "newEndTime is required");
     }
 
+    // Read existing visit so we can preserve scheduledStart while only
+    // changing the end. The orchestrator will normalize and apply spawn
+    // protection if the visit is already actioned.
+    const existing = await jobVisitsRepository.getJobVisit(companyId, visitId);
+    if (!existing) {
+      throw createError(404, "Visit not found or access denied");
+    }
+    if (!existing.scheduledStart) {
+      throw createError(400, "Cannot resize an unscheduled visit");
+    }
+
     let result;
     try {
-      result = await schedulingRepository.resizeVisit(companyId, visitId, new Date(newEndTime));
+      result = await lifecycle.rescheduleVisit({
+        type: "RESCHEDULE_VISIT",
+        companyId,
+        visitId,
+        // Crew unchanged
+        startAt: existing.scheduledStart instanceof Date ? existing.scheduledStart : new Date(existing.scheduledStart as any),
+        endAt: new Date(newEndTime),
+        allDay: existing.isAllDay ?? false,
+        expectedVersion: existing.version,
+        // Resize is NEVER a "complete this visit and spawn a new one" operation.
+        // If the orchestrator decides the visit is actioned, it will still
+        // spawn per its own policy; `"replace"` is the caller-intent hint.
+        mode: "replace",
+      });
     } catch (error: any) {
+      if (error.message?.includes('modified by another user') || error.message?.includes('Expected version')) {
+        return res.status(409).json({ error: error.message, code: 'VERSION_MISMATCH' });
+      }
       if (error.message?.includes('not found')) {
         throw createError(404, "Visit not found or access denied");
       }
@@ -976,13 +1076,26 @@ router.post(
 );
 
 // ============================================================================
-// PATCH /api/calendar/visit/:visitId/assign-crew — Multi-tech crew assignment
+// PATCH /api/calendar/visit/:visitId/assign-crew — Canonical visit crew assignment
 // ============================================================================
+// 2026-04-21 Phase 1 canonical visit mutation architecture:
+//   - Canonical field name is `assignedTechnicianIds` — matches the DB
+//     column, the shared schema types, every other visit endpoint, and the
+//     client `useDispatchPreviewMutations.updateVisitCrew` body shape.
+//     The legacy `technicianUserIds` name was a gratuitous divergence and
+//     is no longer accepted. Callers that still send it will fail Zod
+//     parsing with a clear 400 — that's the intentional fail-loud signal.
+//   - Handler is a thin delegator to `lifecycle.assignVisitCrew`, which
+//     owns terminal-job / terminal-visit / version guards. No direct
+//     storage write from this route.
+//   - `[]` is now accepted (legacy `.min(1)` was wrong — clearing crew is
+//     a valid operation matching the reschedule contract).
 
-const assignCrewSchema = z.object({
-  technicianUserIds: z.array(z.string().uuid()).min(1, "At least one technician required"),
+// 2026-04-21 Phase 1: exported so tests can pin the canonical crew contract.
+export const assignCrewSchema = z.object({
+  assignedTechnicianIds: z.array(z.string().uuid()),
   version: z.number().int(),
-});
+}).strict();
 
 router.patch(
   "/visit/:visitId/assign-crew",
@@ -995,32 +1108,69 @@ router.patch(
 
     const data = validateSchema(assignCrewSchema, req.body);
 
-    // Update visit with full crew roster (primary = first in array)
-    const result = await schedulingRepository.updateVisitCrew(
-      companyId,
-      visitId,
-      data.technicianUserIds,
-      data.version,
-    );
-
-    if (!result) {
-      throw createError(404, "Visit not found or access denied");
+    let result;
+    try {
+      result = await lifecycle.assignVisitCrew({
+        type: "ASSIGN_VISIT_CREW",
+        companyId,
+        visitId,
+        assignedTechnicianIds: data.assignedTechnicianIds,
+        expectedVersion: data.version,
+      });
+    } catch (error: any) {
+      if (error.message?.includes('modified by another user') || error.message?.includes('Expected version')) {
+        return res.status(409).json({ error: error.message, code: 'VERSION_MISMATCH' });
+      }
+      if (error.message?.includes('not found')) {
+        throw createError(404, "Visit not found or access denied");
+      }
+      throw error;
     }
 
+    const crewEmpty = data.assignedTechnicianIds.length === 0;
     logEventAsync(getQueryCtx(req), {
-      eventType: "job.assigned",
+      eventType: crewEmpty ? "job.unassigned" : "job.assigned",
       entityType: "job",
       entityId: result.jobId,
-      summary: `Updated crew for visit ${visitId}: ${data.technicianUserIds.length} technician(s)`,
-      meta: { visitId, technicianUserIds: data.technicianUserIds },
+      summary: `Updated crew for visit ${visitId}: ${data.assignedTechnicianIds.length} technician(s)`,
+      meta: { visitId, assignedTechnicianIds: data.assignedTechnicianIds },
     });
     emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visitId, ts: new Date().toISOString() });
+
+    // 2026-04-21 Phase 1 push notifications: notify newly-assigned techs.
+    // Wrapped in try/catch + awaited so console errors are captured, but
+    // any failure inside the service is swallowed there — assignment
+    // response is never blocked by a notification/push failure.
+    try {
+      await notificationService.emitVisitAssignmentChange({
+        companyId,
+        visitId,
+        jobId: result.jobId,
+        jobNumber: result.jobNumber,
+        // 2026-04-21 Phase 1.1: post-write version anchors the dedupe key.
+        // Orchestrator bumps visit.version on every successful write, so
+        // two legitimate same-day reassignments get distinct notifications
+        // while a retried duplicate PATCH (same expected version) would
+        // have already been rejected upstream with 409 VERSION_MISMATCH.
+        visitVersion: result.visit.version,
+        scheduledStart: result.visit.scheduledStart
+          ? (result.visit.scheduledStart instanceof Date
+              ? result.visit.scheduledStart.toISOString()
+              : String(result.visit.scheduledStart))
+          : null,
+        previousAssignedTechnicianIds: result.previousAssignedTechnicianIds,
+        currentAssignedTechnicianIds: data.assignedTechnicianIds,
+        actorUserId: req.user?.id ?? null,
+      });
+    } catch (err) {
+      console.error("[assign-crew] emitVisitAssignmentChange failed", { visitId, err });
+    }
 
     res.json({
       visitId,
       jobId: result.jobId,
-      assignedTechnicianIds: data.technicianUserIds,
-      version: result.version,
+      assignedTechnicianIds: data.assignedTechnicianIds,
+      version: result.visit.version,
     });
   })
 );

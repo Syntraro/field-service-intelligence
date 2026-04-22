@@ -21,12 +21,9 @@ import { useEffect, useMemo, useState } from "react";
 import { X, Check, Users, User as UserIcon, Search } from "lucide-react";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { getMemberDisplayName, getMemberInitials } from "@/lib/displayName";
+import { resolveTechnicianColor } from "@shared/colors";
 import type { TodayScope } from "../hooks/useTodayVisits";
-
-const DEFAULT_COLORS = [
-  "#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6",
-  "#EC4899", "#06B6D4", "#F97316", "#14B8A6", "#6366F1",
-];
+// 2026-04-20 Phase 3: local DEFAULT_COLORS removed — use canonical resolver.
 
 interface Props {
   open: boolean;
@@ -114,7 +111,7 @@ export function ViewingScopePicker({ open, initialScope, onClose, onApply, selfI
           />
           <ScopeRow
             icon={<Users className="h-4 w-4 text-slate-600" />}
-            label="All technicians"
+            label="All team"
             selected={mode === "all"}
             onClick={() => { setMode("all"); setSelected([]); }}
             testId="scope-row-all"
@@ -123,7 +120,7 @@ export function ViewingScopePicker({ open, initialScope, onClose, onApply, selfI
 
         {/* Specific techs — search + checkbox list */}
         <div className="mt-2 px-3 pt-2 pb-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-          Specific technicians
+          Specific team members
         </div>
 
         <div className="px-3 pb-2">
@@ -132,7 +129,7 @@ export function ViewingScopePicker({ open, initialScope, onClose, onApply, selfI
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search technicians…"
+              placeholder="Search team…"
               className="flex-1 text-sm bg-transparent outline-none placeholder:text-slate-400"
               data-testid="scope-picker-search"
             />
@@ -143,11 +140,11 @@ export function ViewingScopePicker({ open, initialScope, onClose, onApply, selfI
           {isLoading ? (
             <p className="text-xs text-slate-400 text-center py-6">Loading…</p>
           ) : options.length === 0 ? (
-            <p className="text-xs text-slate-400 text-center py-6">No other technicians found</p>
+            <p className="text-xs text-slate-400 text-center py-6">No other team members found</p>
           ) : (
-            options.map((m, i) => {
+            options.map((m) => {
               const isSelected = selected.includes(m.id);
-              const color = m.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length];
+              const color = resolveTechnicianColor(m.id, m.color);
               return (
                 <button
                   key={m.id}

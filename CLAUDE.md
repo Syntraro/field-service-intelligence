@@ -108,6 +108,35 @@ The app is **multi-tenant by company**. Each HVAC business is a separate company
 - **Rate Limiting:** express-rate-limit on sensitive endpoints
 - **Trust Proxy:** Enabled for deployment behind proxies
 
+### Canonical Policy Architecture (2026-04-21 Phase 1)
+
+The app has ONE canonical answer for "is feature X available for tenant T at limit L?" and ONE canonical writer for subscription state.
+
+**Two-layer permission model.** Both layers enforce server-side on every protected route:
+1. **Coarse role gate** (`requireRole(ADMIN_ROLES)`, etc.) — code-based. Role string on `users.role`. Fast check; no DB read.
+2. **Fine permission gate** (`requirePermission("permissions.manage")`) — DB-backed. Sits BEHIND the coarse gate. Role permissions + per-user `user_permission_overrides` merged into an effective set; overrides support `grant`, `revoke`, `inherit`. Admin cannot edit their own overrides (anti-lockout).
+
+New fine-gates MUST be added BEHIND (not replacing) the existing coarse gate. Never drop `requireRole(...)` in favor of `requirePermission(...)` — they are complementary.
+
+**Canonical entitlement resolver.** `entitlementService.getTenantEntitlements(companyId)` → `{ companyId, planId, planName, entitlements: [{ featureKey, enabled, isCore, isUnlimited, limitValue, source, ... }] }`.
+Precedence: tenant_override → plan_feature → isCore → deny.
+All feature reads go through it:
+- Server middleware: `requireFeature(key)` translates legacy camelCase via `LEGACY_TO_CANONICAL_KEY` → canonical snake_case → resolver. **Fail-closed** — resolver errors return HTTP 500.
+- Server enforcement on create paths: `assertFeatureCapacity(companyId, featureKey, currentCount, 1)` or `assertFeatureCapacityAuto(...)` (auto-counts via `usageMetricsService`).
+- Client foundation: `GET /api/me/entitlements` + `useEntitlements` hook. `GET /api/me/permissions` + `useEffectivePermissions` hook. Phase 2 migrates existing `useTenantFeatures` callers onto these.
+
+**Canonical subscription writer.** `subscriptionLifecycleService.transition({ companyId, to, trialEndsAt, source, reason, actorUserId })` is the SOLE writer of `companies.subscriptionStatus` + `companies.trialEndsAt`. Validates transitions against `ALLOWED_TRANSITIONS`, writes, appends `subscription_events` audit row (`type='status_changed'`), invalidates the resolver cache. Every writer (admin PATCH, platform PATCH, trial-expire worker) routes through it. The ONE carve-out is `onboardingService.createCompanyWithOwner` for birth-state seeding.
+
+**Plan-name guard.** `PATCH /api/admin/tenants/:id/billing` and `PATCH /api/platform/tenants/:id/subscription` reject unknown `subscriptionPlan` at 400. Prevents orphan plan strings on `companies.subscription_plan`.
+
+**Trial expiration.** Compute-on-read at the entitlement gate. `trialExpireWorker` emits a one-shot `trial_expired` audit event per tenant but does NOT mutate `subscriptionStatus`.
+
+**What NOT to do:**
+- Do NOT write `companies.subscriptionStatus` directly. Route through `subscriptionLifecycleService.transition()`.
+- Do NOT read feature state from `tenant_features` columns. Use the resolver (the legacy table is kept alive only as a Phase 1 compat surface; reads there will diverge from overrides).
+- Do NOT drop `requireRole(...)` when adding `requirePermission(...)`. The two-layer contract is intentional.
+- Do NOT silently pass on resolver errors. `requireFeature` fails closed — if you write a new gate, do the same.
+
 ### Frontend Stack
 - **Routing:** wouter (lightweight client-side routing)
 - **State Management:** TanStack Query (React Query) for server state

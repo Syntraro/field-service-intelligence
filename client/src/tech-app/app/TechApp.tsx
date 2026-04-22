@@ -14,6 +14,7 @@ import { useAuth } from "@/lib/auth";
 import { LoginPage } from "../pages/LoginPage";
 import { TodayPage } from "../pages/TodayPage";
 import { VisitDetailPage } from "../pages/VisitDetailPage";
+import MePage from "../pages/MePage";
 import { CreateJobPage } from "../pages/CreateJobPage";
 import { CreateClientPage } from "../pages/CreateClientPage";
 import { CreateTaskPage } from "../pages/CreateTaskPage";
@@ -121,6 +122,13 @@ export default function TechApp() {
 
       <Route path="/tech/visit/:id">
         {(params) => <VisitDetailPage visitId={params.id} />}
+      </Route>
+
+      {/* 2026-04-21 Phase 2: self-service surface hosting notification
+          preferences. Entry point is the top-bar initials circle in
+          MobileShell. */}
+      <Route path="/tech/me">
+        <MePage />
       </Route>
 
       <Route>

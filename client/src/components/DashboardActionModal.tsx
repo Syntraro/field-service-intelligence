@@ -20,9 +20,13 @@
  * canonical /api/jobs query param set (the same params the dashboard widget
  * counters read). No new aggregation endpoint added, no duplicate filter logic.
  *
- * All write actions continue to use existing canonical flows (applyJobSchedule,
- * /api/invoices/from-job, /api/calendar/bulk-unschedule) — this refactor only
- * changes how rows are *grouped* and *labeled*, not how they are acted upon.
+ * All write actions route through canonical flows:
+ *   - Schedule / reschedule → useDispatchPreviewMutations (Phase 1.5)
+ *   - Create invoice from job → /api/invoices/from-job
+ *   - Bulk unschedule → /api/calendar/bulk-unschedule (now delegates to
+ *     lifecycle.unscheduleVisit per-visit with actioned-visit guards)
+ * This module only changes how rows are *grouped* and *labeled*, not how
+ * they are acted upon.
  */
 
 import { useState, useCallback, useMemo } from "react";
@@ -43,7 +47,12 @@ import {
   JobScheduleFields, createDefaultScheduleValue,
   type JobScheduleValue,
 } from "@/components/jobs/JobScheduleFields";
-import { applyJobSchedule } from "@/lib/jobScheduling";
+// 2026-04-21 Phase 1.5 canonicalization: dashboard Action Required rows
+// route their schedule/reschedule writes through the canonical dispatch
+// mutation hook, not the legacy `applyJobSchedule` helper. One operational
+// client root — the hook applies optimistic patching, version caching,
+// per-visit serialization, and canonical invalidation uniformly.
+import { useDispatchPreviewMutations } from "@/components/dispatch/useDispatchPreviewMutations";
 import { resolveDashboardNav, type DashboardAction } from "@/lib/dashboardNavigation";
 import { getHoldReasonLabel } from "@shared/schema";
 
@@ -147,6 +156,10 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
   const config = MODE_CONFIG[mode];
   const [, setLocation] = useLocation();
   const { toast } = useToast();
+  // Canonical visit mutation hook — shared with EditVisitModal / dispatch
+  // board / AddVisitDialog. All schedule/reschedule writes from this modal
+  // go through here.
+  const { scheduleVisit, rescheduleVisit } = useDispatchPreviewMutations();
 
   // Inline-scheduler expansion and per-row action loading state are both
   // keyed on job id, so they continue to work unchanged across composed
@@ -244,6 +257,13 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
   }, [onOpenChange]);
 
   // ── Schedule/Reschedule action (overdue + unscheduled sources) ──
+  //
+  // 2026-04-21 Phase 1.5: routes through `useDispatchPreviewMutations`
+  // exclusively. No parallel helper, no inline `apiRequest` — every path
+  // lands in `lifecycle.rescheduleVisit` (for existing visits) or
+  // `schedulingRepository.scheduleJob` (for new visits on jobs without a
+  // placeholder). Per-visit optimistic patching + invalidation is owned
+  // by the hook, not reconstructed here.
   const handleSchedule = useCallback(async (jobId: string, source: InternalSource) => {
     setActionLoading(jobId);
     try {
@@ -253,23 +273,59 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
         ?? secondaryJobs.find((j) => j.id === jobId);
       const ids = Array.isArray(row?.visitIds) ? row!.visitIds : [];
       const visitId = ids.length > 0 ? ids[0] : undefined;
-      const result = await applyJobSchedule(jobId, scheduleValue, visitId ? { visitId } : undefined);
-      if (result.success) {
-        toast({ title: "Scheduled", description: `Job scheduled successfully.` });
-        setExpandedJobId(null);
-        setScheduleValue(createDefaultScheduleValue({ unscheduled: false }));
-        refetchAll();
-        queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-        queryClient.invalidateQueries({ queryKey: ["attention"] });
-      } else {
-        toast({ title: "Error", description: result.error || "Failed to schedule", variant: "destructive" });
+
+      if (scheduleValue.unscheduled) {
+        // Scheduling a row to "unscheduled" is a logical contradiction for
+        // this handler — bulk unschedule uses its own mutation path below.
+        toast({ title: "Error", description: "Pick a date + time to schedule.", variant: "destructive" });
+        return;
       }
+
+      const time = scheduleValue.time || "09:00";
+      const start = new Date(`${scheduleValue.date}T${time}:00`);
+      const end = new Date(start.getTime() + scheduleValue.durationMinutes * 60_000);
+      const startAt = start.toISOString();
+      const endAt = end.toISOString();
+      const crew = scheduleValue.assignedTechnicianIds ?? [];
+
+      if (visitId) {
+        // Overdue reschedule OR placeholder visit promotion — both go
+        // through the orchestrator-backed reschedule path. The orchestrator
+        // decides spawn-on-actioned vs in-place update.
+        await rescheduleVisit({
+          jobId,
+          visitId,
+          assignedTechnicianIds: crew,
+          startAt,
+          endAt,
+        });
+      } else {
+        // Job has no existing visit row (rare) — create a new one.
+        await scheduleVisit({
+          jobId,
+          assignedTechnicianIds: crew,
+          startAt,
+          endAt,
+        });
+      }
+
+      toast({ title: "Scheduled", description: "Job scheduled successfully." });
+      setExpandedJobId(null);
+      setScheduleValue(createDefaultScheduleValue({ unscheduled: false }));
+      refetchAll();
+      // The hook invalidates calendar + jobs/dashboard already; these two
+      // dashboard-scoped keys are dashboard-action drill-down specific and
+      // not currently in the hook's invalidation set.
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["attention"] });
     } catch (err: any) {
+      // The hook surfaces its own toast for dispatch-level failures; this
+      // catch only fires for pre-hook validation issues.
       toast({ title: "Error", description: err.message || "Failed to schedule", variant: "destructive" });
     } finally {
       setActionLoading(null);
     }
-  }, [scheduleValue, toast, refetchAll, overdueJobs, primaryJobs, secondaryJobs]);
+  }, [scheduleValue, toast, refetchAll, overdueJobs, primaryJobs, secondaryJobs, rescheduleVisit, scheduleVisit]);
 
   // ── Create invoice action (ready_to_invoice) ──
   const handleCreateInvoice = useCallback(async (jobId: string) => {

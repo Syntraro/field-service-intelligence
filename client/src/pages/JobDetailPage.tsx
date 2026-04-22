@@ -2,7 +2,9 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { useJobVisits } from "@/hooks/useJobVisits";
-import { useUnscheduleVisit } from "@/hooks/useSchedulingApi";
+// 2026-04-21 Phase 1.5 canonicalization: visit editing on this page goes
+// through the canonical `VisitEditorLauncher` (same as Dashboard and
+// DispatchPreview) so every office visit-editing surface mounts identically.
 import { useRoute, useLocation, Link, useSearch } from "wouter";
 import { format } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -53,7 +55,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import JobEquipmentSection from "@/components/JobEquipmentSection";
 import { JobInvoicesCard } from "@/components/JobInvoicesCard";
 import { AddVisitDialog } from "@/components/AddVisitDialog";
-import { EditVisitModal } from "@/components/visits/EditVisitModal";
+import { VisitEditorLauncher, type VisitEditorState } from "@/components/dispatch/VisitEditorLauncher";
 import JobNotesSection from "@/components/JobNotesSection";
 import { PartsBillingCard } from "@/components/PartsBillingCard";
 import { JobExpensesCard } from "@/components/JobExpensesCard";
@@ -637,8 +639,13 @@ export default function JobDetailPage() {
   // - Put on Hold: ActionRequiredModal → POST /api/jobs/:id/status
   // - Resume from Hold: Schedule Visit clears hold server-side
 
-  // Unschedule mutation — visit-centric (2026-03-06)
-  const unscheduleMutation = useUnscheduleVisit();
+  // 2026-04-21 Phase 1.5: visit unschedule + schedule on this page are
+  // owned by `EditVisitModal` (via `VisitEditorLauncher`) which consumes
+  // `useDispatchPreviewMutations` internally. There is no per-page
+  // unschedule mutation state — the prior `useUnscheduleVisit` hook that
+  // used to live here was a parallel client orchestration path and has
+  // been removed. Every visit write from this page routes through the
+  // canonical hook via the modal.
 
   // Inline description update — uses existing PATCH /api/jobs/:id endpoint
   const updateDescriptionMutation = useMutation({
@@ -1625,23 +1632,25 @@ export default function JobDetailPage() {
         onOpenChange={setShowScheduleVisitDialog}
       />
 
-      {/* Edit Visit Modal — canonical shared component (replaces VisitDetailDialog)
-          2026-03-23: Pass full location/company context so header is identical to dispatch entry point. */}
-      {selectedVisitId && (
-        <EditVisitModal
-          open={true}
-          onOpenChange={(open) => { if (!open) setSelectedVisitId(null); }}
-          jobId={job.id}
-          visitId={selectedVisitId}
-          customerName={job.parentCompany?.name || job.locationDisplayName || undefined}
-          customerCompanyId={job.parentCompany?.id || job.location?.parentCompanyId || undefined}
-          jobNumber={job.jobNumber}
-          jobSummary={job.summary}
-          locationName={job.location?.companyName || job.locationName || undefined}
-          locationAddress={[job.location?.address || job.locationAddress, job.location?.city || job.locationCity].filter(Boolean).join(", ") || undefined}
-          locationId={job.locationId || undefined}
-        />
-      )}
+      {/* 2026-04-21 Phase 1.5: canonical Edit Visit launcher — identical
+          mount to Dashboard + DispatchPreview. All three surfaces now open
+          visit editing through the same component; there is no per-page
+          mount divergence. The launcher + modal consume
+          `useDispatchPreviewMutations` internally. */}
+      <VisitEditorLauncher
+        state={selectedVisitId ? ({
+          jobId: job.id,
+          visitId: selectedVisitId,
+          customerName: job.parentCompany?.name || job.locationDisplayName || undefined,
+          customerCompanyId: job.parentCompany?.id || job.location?.parentCompanyId || undefined,
+          jobNumber: job.jobNumber,
+          jobSummary: job.summary,
+          locationName: job.location?.companyName || job.locationName || undefined,
+          locationAddress: [job.location?.address || job.locationAddress, job.location?.city || job.locationCity].filter(Boolean).join(", ") || undefined,
+          locationId: job.locationId || undefined,
+        } satisfies VisitEditorState) : null}
+        onClose={() => setSelectedVisitId(null)}
+      />
 
       {/* 2026-04-18 Phase 2: reschedule-conflict AlertDialog removed. Under
           multi-visit there is no "the other open visit" to displace. */}

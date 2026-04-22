@@ -230,10 +230,10 @@ export function TasksPanel({ deferFetch = false, onRequestClose }: TasksPanelPro
           <div className="flex items-center gap-2">
             <Select value={techFilter} onValueChange={setTechFilter}>
               <SelectTrigger className="h-7 text-xs flex-1 bg-[#ffffff] border-[#e2e8f0] text-[#4b5563] dark:bg-gray-700 dark:border-gray-600">
-                <SelectValue placeholder="All Technicians" />
+                <SelectValue placeholder="All team" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Technicians</SelectItem>
+                <SelectItem value="all">All team</SelectItem>
                 {teamMembers.map((tech) => (
                   <SelectItem key={tech.id} value={String(tech.id)}>
                     {tech.fullName}

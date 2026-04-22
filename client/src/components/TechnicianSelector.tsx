@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { Users, ChevronsUpDown, Search, X } from "lucide-react";
 import { useTechniciansDirectory, type TeamMember } from "@/hooks/useTechnicians";
 import { getMemberDisplayName, getMemberInitials } from "@/lib/displayName";
+import { resolveTechnicianColor } from "@shared/colors";
 
 // ── Types ──
 
@@ -53,10 +54,8 @@ interface TechOption {
   color: string | null;
 }
 
-const DEFAULT_COLORS = [
-  "#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6",
-  "#EC4899", "#06B6D4", "#F97316", "#14B8A6", "#6366F1",
-];
+// 2026-04-20 Phase 3: local DEFAULT_COLORS removed — use canonical
+// resolveTechnicianColor so selector matches dispatch + team hub.
 
 // ── Component ──
 
@@ -70,11 +69,11 @@ export function TechnicianSelector(props: TechnicianSelectorProps) {
   const options: TechOption[] = useMemo(() => {
     let members = teamMembers;
     if (filter) members = members.filter(filter);
-    return members.map((m, i) => ({
+    return members.map((m) => ({
       id: m.id,
       displayName: getMemberDisplayName(m),
       initials: getMemberInitials(m),
-      color: m.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length],
+      color: resolveTechnicianColor(m.id, m.color),
     }));
   }, [teamMembers, filter]);
 
@@ -147,7 +146,7 @@ export function TechnicianSelector(props: TechnicianSelectorProps) {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search technicians..."
+            placeholder="Search team..."
             className="flex-1 text-xs bg-transparent outline-none placeholder:text-muted-foreground"
             autoFocus
           />
@@ -170,7 +169,7 @@ export function TechnicianSelector(props: TechnicianSelectorProps) {
           )}
 
           {filtered.length === 0 ? (
-            <div className="text-xs text-muted-foreground text-center py-3">No technicians found</div>
+            <div className="text-xs text-muted-foreground text-center py-3">No team members found</div>
           ) : (
             filtered.map((tech) => {
               const selected = isSelected(tech.id);

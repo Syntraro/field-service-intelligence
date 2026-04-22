@@ -14,6 +14,9 @@ import { validateSchema } from "../utils/validationHelpers";
 import { adminRepository } from "../storage/admin";
 import { adminQboRepository } from "../storage/adminQbo";
 import { tenantFeaturesRepository } from "../storage/tenantFeatures";
+// 2026-04-21 Phase 1: reject PATCH billing requests that reference an
+// unknown subscription plan name (guard against silent orphan state).
+import { entitlementStorage } from "../storage/entitlements";
 import { customerCompanyRepository } from "../storage/customerCompanies";
 import { impersonationService } from "../impersonationService";
 import { userRepository } from "../storage/users";
@@ -21,6 +24,10 @@ import { platformAuditService } from "../services/platformAuditService";
 import { updateTenantFeaturesSchema } from "@shared/schema";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 import { invalidateCompanyCache } from "../services/cache";
+// 2026-04-21 Phase 1 canonical policy architecture: subscriptionStatus +
+// trialEndsAt writes route through the lifecycle service (validated transitions
+// + subscription_events audit row + entitlement cache invalidation).
+import { subscriptionLifecycleService } from "../services/subscriptionLifecycleService";
 import { runTimeAlertsForCompany, runTimeAlertsWorker, getAlertThresholds, runWeeklyDigestWorker } from "../services/timeAlertsWorker";
 // 2026-04-09: Bulk archived-job cleanup tool (admin-only)
 import {
@@ -644,22 +651,54 @@ router.patch(
       throw createError(404, "Tenant not found");
     }
 
-    // Convert datetime strings to Date objects
-    const updates: Parameters<typeof tenantFeaturesRepository.updateBilling>[1] = {
-      ...(data.subscriptionStatus !== undefined && { subscriptionStatus: data.subscriptionStatus }),
+    // 2026-04-21 Phase 1: reject unknown plan names before any write lands.
+    // Prevents `companies.subscription_plan` from drifting into an orphan
+    // string the entitlement resolver cannot match.
+    if (data.subscriptionPlan) {
+      const plan = await entitlementStorage.getPlanByName(data.subscriptionPlan);
+      if (!plan) {
+        throw createError(400, `Unknown subscription plan: '${data.subscriptionPlan}'`);
+      }
+    }
+
+    // 2026-04-21 Phase 1 canonical policy architecture:
+    //   subscriptionStatus + trialEndsAt are routed through
+    //   subscriptionLifecycleService.transition() — it validates the
+    //   transition, writes the canonical state, appends a
+    //   subscription_events audit row, and invalidates the entitlement
+    //   resolver cache. Other billing fields (plan, interval, period-end,
+    //   cancel-at-period-end) continue through the tenant-features repo.
+    const trialEndsAtValue = data.trialEndsAt !== undefined
+      ? (data.trialEndsAt ? new Date(data.trialEndsAt) : null)
+      : undefined;
+
+    if (data.subscriptionStatus !== undefined || trialEndsAtValue !== undefined) {
+      await subscriptionLifecycleService.transition({
+        companyId,
+        to: data.subscriptionStatus ?? (existing.subscriptionStatus as any),
+        ...(trialEndsAtValue !== undefined && { trialEndsAt: trialEndsAtValue }),
+        source: "admin_patch",
+        actorUserId: owner.id,
+        reason: "admin billing PATCH",
+      });
+    }
+
+    const nonLifecycleUpdates: Parameters<typeof tenantFeaturesRepository.updateBilling>[1] = {
       ...(data.subscriptionPlan !== undefined && { subscriptionPlan: data.subscriptionPlan }),
       ...(data.billingInterval !== undefined && { billingInterval: data.billingInterval }),
-      ...(data.trialEndsAt !== undefined && {
-        trialEndsAt: data.trialEndsAt ? new Date(data.trialEndsAt) : null
-      }),
       ...(data.currentPeriodEnd !== undefined && {
         currentPeriodEnd: data.currentPeriodEnd ? new Date(data.currentPeriodEnd) : null
       }),
       ...(data.cancelAtPeriodEnd !== undefined && { cancelAtPeriodEnd: data.cancelAtPeriodEnd }),
     };
 
-    // Update billing
-    const updated = await tenantFeaturesRepository.updateBilling(companyId, updates);
+    if (Object.keys(nonLifecycleUpdates).length > 0) {
+      await tenantFeaturesRepository.updateBilling(companyId, nonLifecycleUpdates);
+    }
+
+    // Re-read canonical billing row so the response reflects BOTH the
+    // lifecycle-service write and the plan/interval writes.
+    const updated = await tenantFeaturesRepository.getBilling(companyId);
 
     // Invalidate subscription cache so limit checks use fresh plan data immediately
     invalidateCompanyCache(companyId);

@@ -3,6 +3,11 @@ import { eq, and, sql } from "drizzle-orm";
 import { clients, companies, subscriptionPlans } from "@shared/schema";
 import { BaseRepository } from "./base";
 import { cache, CacheKeys, CacheTTL } from "../services/cache";
+// 2026-04-21 Phase 1 canonical policy architecture: locations cap is now
+// resolved via the entitlement service so plan-feature overrides and
+// tenant overrides are honored uniformly with the rest of the feature gate.
+import { entitlementService } from "../services/entitlementService";
+import { usageMetricsService } from "../services/usageMetricsService";
 
 // Sentinel value: plans with locationLimit >= this are treated as unlimited
 const UNLIMITED_THRESHOLD = 999999;
@@ -168,86 +173,94 @@ export class SubscriptionRepository extends BaseRepository {
   }
 
   /**
-   * Check if company can add more locations
+   * Check if company can add more locations.
+   *
+   * 2026-04-21 Phase 1 canonical policy architecture:
+   *   Account-state short-circuits (no plan / trial expired / subscription
+   *   inactive) continue to run off `getSubscriptionUsage`, which is the
+   *   canonical entitlement state read for the tenant. The per-feature cap
+   *   check delegates to `entitlementService` + `usageMetricsService` so
+   *   plan_feature overrides and tenant_feature_overrides are honored the
+   *   same way as every other feature gate. This replaces the previous
+   *   `subscription_plans.locationLimit` column lookup which cannot see
+   *   overrides.
+   *
+   * Response shape preserved for existing callers (clients.ts, techField.ts,
+   * clientImport.ts, subscriptions.ts API surface).
    */
   async canAddLocation(companyId: string) {
     const usage = await this.getSubscriptionUsage(companyId);
+    const currentLocations = usage.usage.locations;
 
     if (!usage.plan) {
       return {
         allowed: false,
         reason: "No active plan found",
-        current: usage.usage.locations,
+        current: currentLocations,
         limit: 0,
       };
     }
 
-    // Check if subscription is active
-    const company = await db
-      .select()
-      .from(companies)
-      .where(eq(companies.id, companyId))
-      .limit(1);
-
-    if (!company[0]) {
+    // Entitlement-gate account-state. `entitled=false` means either trial
+    // expired or subscription not active — reuse the canonical entitlement
+    // reason so copy stays consistent with the subscription banner.
+    if (!usage.entitled) {
+      const reason =
+        usage.entitlementReason === "TRIAL_EXPIRED"
+          ? "Your free trial has expired. Please upgrade to continue."
+          : "Your subscription is not active. Please update your payment method.";
       return {
         allowed: false,
-        reason: "Company not found",
-        current: 0,
-        limit: 0,
-      };
-    }
-
-    // Check trial expiration
-    if (
-      company[0].subscriptionStatus === "trial" &&
-      company[0].trialEndsAt &&
-      new Date(company[0].trialEndsAt) < new Date()
-    ) {
-      return {
-        allowed: false,
-        reason: "Your free trial has expired. Please upgrade to continue.",
-        current: usage.usage.locations,
+        reason,
+        current: currentLocations,
         limit: usage.plan.locationLimit,
       };
     }
 
-    // Check active subscription
-    const activeStatuses = ["trial", "trialing", "active"];
-    if (!activeStatuses.includes(company[0].subscriptionStatus)) {
+    // Canonical cap check: resolve via the entitlement service so tenant +
+    // plan overrides apply. Core / unlimited entitlements short-circuit to
+    // allowed.
+    const locationEntitlement = await entitlementService.getEntitlement(
+      companyId,
+      "locations",
+    );
+    if (!locationEntitlement) {
+      // Catalog misconfiguration (feature_key missing). Fail-closed at the
+      // gate; surface a reason the admin can act on.
       return {
         allowed: false,
-        reason:
-          "Your subscription is not active. Please update your payment method.",
-        current: usage.usage.locations,
+        reason: "Location feature is not configured. Please contact support.",
+        current: currentLocations,
         limit: usage.plan.locationLimit,
       };
     }
 
-    // Unlimited plans bypass location limit check
-    if (usage.plan.isUnlimited) {
+    if (locationEntitlement.isCore || locationEntitlement.isUnlimited || locationEntitlement.limitValue === null) {
       return {
         allowed: true,
-        current: usage.usage.locations,
-        limit: usage.plan.locationLimit,
+        current: currentLocations,
+        limit: locationEntitlement.limitValue ?? usage.plan.locationLimit,
         unlimited: true,
       };
     }
 
-    // Check location limit
-    if (usage.usage.locations >= usage.plan.locationLimit) {
+    // Use the canonical usage counter (indexed COUNT, 1-minute cached) so
+    // we don't diverge from the entitlement snapshot the gate enforces.
+    const canonicalCurrent = await usageMetricsService.getUsage(companyId, "locations");
+
+    if (canonicalCurrent >= locationEntitlement.limitValue) {
       return {
         allowed: false,
-        reason: `You've reached your plan limit of ${usage.plan.locationLimit} locations. Upgrade to add more.`,
-        current: usage.usage.locations,
-        limit: usage.plan.locationLimit,
+        reason: `You've reached your plan limit of ${locationEntitlement.limitValue} locations. Upgrade to add more.`,
+        current: canonicalCurrent,
+        limit: locationEntitlement.limitValue,
       };
     }
 
     return {
       allowed: true,
-      current: usage.usage.locations,
-      limit: usage.plan.locationLimit,
+      current: canonicalCurrent,
+      limit: locationEntitlement.limitValue,
     };
   }
 }

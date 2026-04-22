@@ -20,6 +20,9 @@ import { requireRole } from "../auth/requireRole";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
+// 2026-04-21 Phase 1 canonical policy architecture: PM contract cap
+// enforcement routes through the entitlement resolver.
+import { assertFeatureCapacityAuto } from "../services/entitlementEnforcement";
 import {
   generateInstances,
   generateForSingleTemplate,
@@ -216,6 +219,11 @@ router.post(
     if (data.monthsOfYear) {
       data.monthsOfYear = data.monthsOfYear.filter((v, i, arr) => arr.indexOf(v) === i);
     }
+
+    // 2026-04-21 Phase 1 canonical policy architecture: enforce the
+    // `pm_contracts` plan cap against the entitlement resolver before any
+    // write lands. Unlimited / core plans no-op.
+    await assertFeatureCapacityAuto(companyId, "pm_contracts", 1);
 
     const template = await recurringJobsRepository.createTemplate(companyId, data);
 

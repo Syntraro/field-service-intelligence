@@ -117,6 +117,13 @@ export interface JobFeedParams {
   searchMode?: "history";
   /** P3-05: Request true aggregate counts alongside feed data */
   includeCounts?: boolean;
+  /**
+   * 2026-04-21: canonical "ready to invoice" filter — server-side predicate
+   * lives in server/storage/jobsFeed.ts:readyToInvoiceOnly. Returns only
+   * status='completed' jobs with zero existing invoices. Powers the Financial
+   * Dashboard deep-link `/jobs?readyToInvoiceOnly=true`.
+   */
+  readyToInvoiceOnly?: boolean;
 }
 
 /** P3-05: True aggregate job counts (mirrors server JobCounts) */
@@ -163,6 +170,7 @@ function buildJobsFeedKey(params: JobFeedParams): unknown[] {
     params.offset ?? null,
     params.searchMode ?? null,
     params.includeCounts ?? null, // P3-05: cache isolation for counts consumers
+    params.readyToInvoiceOnly ?? null, // 2026-04-21
   ];
 }
 
@@ -177,6 +185,7 @@ function buildJobsFeedUrl(params: JobFeedParams): string {
   if (params.sortOrder) sp.set("sortOrder", params.sortOrder);
   if (params.searchMode) sp.set("searchMode", params.searchMode);
   if (params.includeCounts) sp.set("includeCounts", "true"); // P3-05
+  if (params.readyToInvoiceOnly) sp.set("readyToInvoiceOnly", "true"); // 2026-04-21
   sp.set("offset", String(params.offset ?? 0));
   sp.set("limit", String(params.limit ?? 200));
   const qs = sp.toString();

@@ -220,14 +220,23 @@ const { data: currentRolePermissions = [] } = useQuery<string[]>({
     <div className="min-h-screen bg-background p-4">
       <div className="max-w-6xl mx-auto">
         <div className="flex items-center gap-4 mb-6">
-          <Link href="/manage-team">
+          {/* 2026-04-20 Phase 2: back-link points at the canonical hub. */}
+          <Link href="/settings/team">
             <Button variant="ghost" size="icon" data-testid="button-back-to-team">
               <ArrowLeft className="h-4 w-4" />
             </Button>
           </Link>
           <div className="flex-1">
             <h1 className="text-3xl font-bold" data-testid="text-roles-title">Role Management</h1>
-            <p className="text-muted-foreground mt-1">Define permission templates for your team members</p>
+            {/* 2026-04-21 Phase 1 canonical policy architecture: two-layer
+                model — coarse role gates + fine-grained permissions (this
+                page) + per-user overrides. Roles are enforced server-side
+                on every protected route. */}
+            <p className="text-muted-foreground mt-1">
+              Define which permissions each role grants. Roles are the first layer of access
+              control; per-user overrides (grant or revoke a single permission for one person)
+              are configured from each team member's profile.
+            </p>
           </div>
 {/* Create Role button hidden - roles are predetermined */}
         </div>

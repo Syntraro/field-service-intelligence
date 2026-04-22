@@ -72,7 +72,7 @@ export function VisitTeamAssignment({
           </PopoverTrigger>
           <PopoverContent className="w-48 p-1" align="end">
             <div className="text-xs font-medium text-slate-400 px-2 py-1.5 border-b mb-1">
-              Select Technician
+              Select team member
             </div>
             {available.length === 0 ? (
               <div className="text-xs text-slate-400 px-2 py-2">No available</div>

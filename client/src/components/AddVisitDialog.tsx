@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import {
   Dialog,
@@ -18,51 +17,48 @@ import { Loader2 } from "lucide-react";
 // not the legacy single-select TechnicianSelector. Matches EditVisitModal.
 import { VisitTeamAssignment } from "@/components/visits/VisitTeamAssignment";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest } from "@/lib/queryClient";
-import {
-  invalidateCalendarAndUnscheduledQueries,
-  invalidateJobQueries,
-  invalidateVisitQueries,
-} from "@/hooks/useSchedulingApi";
+// 2026-04-21 Phase 1 canonical visit mutation architecture: new visit
+// creation routes through the canonical `scheduleVisit` hook — same engine
+// EditVisitModal / VisitEditorLauncher use. No bespoke `apiRequest` body
+// assembly, no one-off invalidation helpers, no alternate payload shape.
+import { useDispatchPreviewMutations } from "@/components/dispatch/useDispatchPreviewMutations";
 
 interface AddVisitDialogProps {
   jobId: string;
-  jobVersion: number;
+  /** Optional: only required when `targetVisitId` is set (in-place update of
+   *  a specific placeholder). For the default flow (create-new-visit), the
+   *  canonical `scheduleVisit` hook resolves version from cache. */
+  jobVersion?: number;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Optional default technician crew (e.g., from current visit for follow-up).
    *  2026-04-12: accepts either the legacy single ID or the canonical array. */
   defaultTechnicianId?: string | null;
   defaultTechnicianIds?: string[] | null;
-  /** Callback when visit is successfully created - receives new visit ID for highlighting */
-  onVisitCreated?: (visitId: string) => void;
   /** 2026-04-18 Phase 2 (multi-visit): optional explicit visit to update
    *  in place instead of creating a new one. When absent, the canonical
-   *  backend path creates a brand-new visit (the dialog's default use).
-   *  Replaces the pre-multi-visit `conflictMode` / `conflictVisitId`
-   *  pair, which modeled a singular "the other visit" assumption that
-   *  no longer exists. */
+   *  backend path creates a brand-new visit (the dialog's default use). */
   targetVisitId?: string;
 }
 
 export function AddVisitDialog({
   jobId,
-  jobVersion,
   open,
   onOpenChange,
   defaultTechnicianId,
   defaultTechnicianIds,
-  onVisitCreated,
   targetVisitId,
 }: AddVisitDialogProps) {
   const { toast } = useToast();
-  const queryClient = useQueryClient();
+  // Canonical schedule mutation — same hook EditVisitModal / VisitEditorLauncher use.
+  const { scheduleVisit, savingIds } = useDispatchPreviewMutations();
   const [scheduledDate, setScheduledDate] = useState("");
   const [scheduledTime, setScheduledTime] = useState("09:00");
   const [estimatedDuration, setEstimatedDuration] = useState("60");
   // 2026-04-12: multi-crew state — matches EditVisitModal's `assignedTechnicianIds`.
   const [assignedTechnicianIds, setAssignedTechnicianIds] = useState<string[]>([]);
   const [visitNotes, setVisitNotes] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -84,95 +80,40 @@ export function AddVisitDialog({
     }
   }, [open, defaultTechnicianId, defaultTechnicianIds]);
 
-  // Phase 4: Use canonical calendar schedule endpoint
-  // POST /api/calendar/schedule creates a job_visit and syncs to jobs table
-  // IMPORTANT: This MUST be POST (create new visit), never PATCH (reschedule existing)
-  const SCHEDULE_ENDPOINT = "/api/calendar/schedule";
-  const SCHEDULE_METHOD = "POST";
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
 
-  const createMutation = useMutation({
-    mutationFn: async (data: any) => {
-      // DEV-only assertion: Guarantee we always create NEW visits, never reschedule
-      // This prevents accidental reuse of PATCH /api/calendar/schedule/:jobId
-      if (process.env.NODE_ENV === "development") {
-        console.log(
-          "[AddVisitDialog] Creating new visit via %s %s (jobId=%s)",
-          SCHEDULE_METHOD,
-          SCHEDULE_ENDPOINT,
-          data.jobId
-        );
-        // Assert: endpoint must NOT contain jobId path param (that would be reschedule)
-        if (SCHEDULE_ENDPOINT.includes("/:") || SCHEDULE_ENDPOINT.match(/\/[a-f0-9-]{36}/i)) {
-          console.error(
-            "[AddVisitDialog] ASSERTION FAILED: Endpoint appears to be a reschedule path!",
-            SCHEDULE_ENDPOINT
-          );
-        }
-        // Assert: method must be POST, not PATCH
-        if (SCHEDULE_METHOD !== "POST") {
-          console.error(
-            "[AddVisitDialog] ASSERTION FAILED: Method must be POST, got:",
-            SCHEDULE_METHOD
-          );
-        }
-      }
+    // Combine date and time into ISO datetime strings. Construct Date
+    // without Z suffix so JS interprets as local time, then toISOString()
+    // converts to correct UTC (matches EditVisitModal pattern).
+    const start = new Date(`${scheduledDate}T${scheduledTime}:00`);
+    const durationMinutes = parseInt(estimatedDuration, 10);
+    const end = new Date(start.getTime() + durationMinutes * 60_000);
 
-      // 2026-04-12: full crew persists in a single atomic request. The
-      // schedule endpoint now accepts `assignedTechnicianIds[]` directly;
-      // no follow-up PATCH is needed.
-      return await apiRequest(SCHEDULE_ENDPOINT, {
-        method: SCHEDULE_METHOD,
-        body: JSON.stringify(data),
+    setSubmitting(true);
+    try {
+      await scheduleVisit({
+        jobId,
+        // When `targetVisitId` is set, the hook forwards it as `targetVisitId`
+        // and the backend updates that exact placeholder in place. When
+        // omitted, the backend creates a new visit row.
+        visitId: targetVisitId,
+        assignedTechnicianIds,
+        startAt: start.toISOString(),
+        endAt: end.toISOString(),
+        visitNotes: visitNotes.trim() || null,
       });
-    },
-    onSuccess: (data: any) => {
-      // Use centralized invalidation helpers for consistency and DEV logging
-      // Schedule creates visit: calendar + unscheduled (job may move from backlog)
-      invalidateCalendarAndUnscheduledQueries(queryClient, "schedule-visit", jobId);
-      invalidateJobQueries(queryClient, "schedule-visit", jobId);
-      invalidateVisitQueries(queryClient, "schedule-visit", jobId);
-
       toast({
         title: "Visit Scheduled",
         description: "The visit has been added to the job.",
       });
-      // Notify parent of new visit ID for highlighting/scrolling
-      if (onVisitCreated && data?.visit?.id) {
-        onVisitCreated(data.visit.id);
-      }
       onOpenChange(false);
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to schedule visit.",
-        variant: "destructive",
-      });
-    },
-  });
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-
-    // Build payload matching scheduleJobSchema field names exactly
-    // Combine date and time into ISO datetime string
-    // Fix: Construct Date without Z suffix so JS interprets as local time,
-    // then toISOString() converts to correct UTC (matches EditVisitModal pattern)
-    const startAt = new Date(`${scheduledDate}T${scheduledTime}:00`).toISOString();
-
-    // 2026-04-18 Phase 2 (multi-visit): `targetVisitId` is the canonical
-    // way to ask the backend to update an existing visit in place. When
-    // omitted, the backend creates a new visit (the default flow).
-    createMutation.mutate({
-      jobId,
-      startAt,
-      durationMinutes: parseInt(estimatedDuration, 10),
-      assignedTechnicianIds,
-      notes: visitNotes.trim() || undefined,
-      version: jobVersion,
-      ...(targetVisitId && { targetVisitId }),
-    });
+    } finally {
+      setSubmitting(false);
+    }
   };
+
+  const isPending = submitting || savingIds.has(targetVisitId ?? jobId);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -253,10 +194,10 @@ export function AddVisitDialog({
             </Button>
             <Button
               type="submit"
-              disabled={createMutation.isPending}
+              disabled={isPending}
               data-testid="button-save-visit"
             >
-              {createMutation.isPending && (
+              {isPending && (
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
               )}
               Schedule Visit

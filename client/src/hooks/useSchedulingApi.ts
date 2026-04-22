@@ -247,30 +247,14 @@ export async function fetchCalendarRange(
   return data;
 }
 
-/**
- * Schedule a job (sets scheduledStart/scheduledEnd/isAllDay)
- */
-export async function scheduleJob(
-  payload: ScheduleJobPayload
-): Promise<ScheduleJobResponse> {
-  return apiRequest("/api/calendar/schedule", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-/**
- * Unschedule a visit (2026-03-06: visit-centric endpoint)
- */
-export async function unscheduleVisit(
-  visitId: string,
-  version: number
-): Promise<ScheduleJobResponse> {
-  return apiRequest(`/api/calendar/visit/${visitId}/unschedule`, {
-    method: "POST",
-    body: JSON.stringify({ version }),
-  });
-}
+// ============================================================================
+// 2026-04-21 Phase 1.5 canonicalization: `scheduleJob` and `unscheduleVisit`
+// helpers REMOVED. Every office schedule/unschedule write now routes
+// through `useDispatchPreviewMutations` (canonical client hook). The
+// `ScheduleJobPayload` and `ScheduleJobResponse` types remain for any
+// consumer that needs the wire shape; they are NOT the canonical mutation
+// surface.
+// ============================================================================
 
 // ============================================================================
 // React Query Hooks
@@ -307,43 +291,7 @@ export function useCalendarRange(
   });
 }
 
-/**
- * Hook to schedule a job
- *
- * INVALIDATION: calendar + unscheduled + jobs
- * Reason: Job moves FROM backlog TO calendar
- */
-export function useScheduleJob() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: scheduleJob,
-    onSuccess: (_, variables) => {
-      // Job moves from backlog to calendar - invalidate both
-      invalidateCalendarAndUnscheduledQueries(queryClient, "schedule", variables.jobId);
-      invalidateJobQueries(queryClient, "schedule", variables.jobId);
-    },
-  });
-}
-
-/**
- * Hook to unschedule a visit (2026-03-06: visit-centric)
- *
- * INVALIDATION: calendar + unscheduled + jobs + visits
- * Reason: Job moves FROM calendar TO backlog, visit becomes inactive
- */
-export function useUnscheduleVisit() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: ({ visitId, version, jobId }: { visitId: string; version: number; jobId?: string }) =>
-      unscheduleVisit(visitId, version),
-    onSuccess: (_, variables) => {
-      // Job moves from calendar to backlog - invalidate both
-      invalidateCalendarAndUnscheduledQueries(queryClient, "unschedule", variables.jobId);
-      invalidateJobQueries(queryClient, "unschedule", variables.jobId);
-      // Also invalidate visits since unschedule marks visit as inactive
-      invalidateVisitQueries(queryClient, "unschedule", variables.jobId || variables.visitId);
-    },
-  });
-}
+// 2026-04-21 Phase 1.5: `useScheduleJob` and `useUnscheduleVisit` REMOVED.
+// Every office schedule/unschedule write goes through the canonical
+// `useDispatchPreviewMutations.scheduleVisit` / `.unscheduleVisit`.
+// Do NOT add a new `useSchedule*` hook here — extend the canonical hook.

@@ -4,6 +4,90 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-04-21: Canonical Import Pipeline — One Backend Engine, One Frontend Wizard
+
+### Problem
+Three fully parallel import systems (clients, jobs, products) totaling ~5,800 LOC of backend + ~2,240 LOC of frontend, with no shared orchestrator. Drift had accumulated in ten places documented by the 2026-04-21 `IMPORT_SYSTEM_AUDIT.md`:
+
+- Three header normalizations (Product's failed to strip `_-` or collapse spaces).
+- Two boolean-coercion tables (`coerceBoolean` vs `coerceBool`) with divergent truthy sets.
+- Three row-disposition vocabularies (`new/exists/skip` vs `matched/create/blocked` vs `new/exists`) — incompatible mental models across the three pages.
+- Timezone-naive `new Date(str)` in job import → off-by-one `createdAt`/`closedAt` for non-UTC tenants.
+- Raw `tx.insert(jobNotes)` in job import bypassing the canonical repository.
+- Product dedup re-queried the full tenant catalog once per row (N×M at preview).
+- No subscription gate on job/product imports; client had one.
+- Three response contracts, three preview/execute state machines, three copy-pasted React wizards.
+
+### Solution
+A single canonical import engine with pluggable per-entity adapters. One vocabulary. One set of normalizers. One React wizard. All legacy modules retired.
+
+**Backend — `server/services/importPipeline/`**
+- `ImportPipeline.ts` — orchestrator. Owns parse → mapping suggestion → normalize → validate → within-CSV classify → warning legend → summary aggregation → commit transaction wrapping. Zero per-entity logic.
+- `types.ts` — `ImportAdapter<N, D, P>` interface. Adapters declare only `normalizeRow / buildPreviewContext / validateRow / classifyWithinCsv / applyRow` plus optional `assertCapacity` + `previewBanner`. Pure entity-neutral surface.
+- `normalizers/` — eight canonical primitives consolidating every duplicated helper: `text`, `bool`, `money`, `date` (timezone-aware), `email`, `phone`, `postal`, `headers`, plus a barrel `index.ts`.
+- `parse.ts` — canonical CSV parse + size/row guards wrapping `@shared/csvParser`.
+- `adapters/ProductImportAdapter.ts`, `JobImportAdapter.ts`, `ClientImportAdapter.ts` — faithful ports of the legacy services with the ten drift fixes applied. Each adapter is the single source of truth for its entity.
+
+**Backend — routes**
+- `server/routes/imports.ts` — one route file serving `POST /api/imports/:entity/{preview,commit}` for every entity. Zod-validated request bodies via per-entity schemas in `shared/importPipeline/zod/`.
+
+**Shared — `shared/importPipeline/`**
+- `terminology.ts` — canonical `RowDisposition` enum (`created / matched / skipped / failed`) shared by backend contracts and frontend badges. Single-sourced display labels.
+- `contracts.ts` — generic `PreviewResponse<T,D>` / `CommitResponse` / `ValidatedRow<T,D>`. One shape for every entity.
+- `zod/{client,job,product}.ts` — per-entity request schemas + `FIELD_DEFS` const shared by the backend adapter and the frontend wizard config (zero duplication).
+
+**Frontend — `client/src/components/imports/`**
+- `ImportWizard.tsx` — canonical 5-step wizard (Upload → Map → Preview → Confirm → Results) with irreversibility modal. Driven entirely by an `ImportWizardConfig`.
+- `UploadStep.tsx`, `ColumnMapper.tsx`, `PreviewTable.tsx`, `SummaryCards.tsx`, `TemplateDownloadLink.tsx` — shared primitives with ONE visual language and ONE set of disposition badges.
+- `configs/{client,job,product}ImportConfig.ts` — per-entity labels, CSV templates, and banners. Import field definitions from the shared zod modules so backend and frontend cannot drift.
+
+**Thin pages (~12 LOC each)**
+`ClientImportPage.tsx`, `JobImportPage.tsx`, `ProductImportPage.tsx` each render `<ImportWizard config={...} />` and nothing else.
+
+### Drift fixes landed in the port
+1. **Timezone-aware dates.** `parseDate(val, timezone)` honors tenant IANA timezone (`company_settings.timezone`) for date-only strings; full ISO timestamps with offsets are respected. Replaces `new Date(str)` in the historical-job import.
+2. **Canonical repository routing.** Raw `tx.insert(jobNotes)` → `jobNotesRepository.createSystemNoteTx`. No raw DB writes remain in any adapter's critical path.
+3. **Prefetched preview context.** Adapters declare a `buildPreviewContext` once per request; the tenant catalog (Product) / companies + locations (Job) / company cache (Client) load in constant round-trips instead of per row.
+4. **Consolidated boolean coercion.** `coerceBoolean` / `coerceBool` collapsed into one canonical truthy/falsy set.
+5. **Header normalization uniform.** Client/job/product all normalize via `normalizeHeader()` — Product's header matching now accepts `unit_price` as well as `unit price`.
+6. **Feature-capacity gates.** Client adapter's `assertCapacity` runs `subscriptionRepository.canAddLocation` before commit, same as the legacy route; the orchestrator calls it uniformly.
+7. **One disposition vocabulary.** Preview tables, summary cards, and commit results all use `created / matched / skipped / failed`.
+8. **Template downloads.** Every import page now offers a downloadable CSV template — no more "build one from scratch."
+9. **Irreversibility confirmation.** A confirmation modal guards the commit button, per entity.
+10. **Within-CSV duplicate handling surfaced.** Preview summary explicitly counts within-CSV duplicates; the UI flags them with a dedicated badge.
+
+### Architecture preserved
+- Multi-tenant isolation untouched: every write still flows through a canonical repository method that scopes to `companyId`.
+- Canonical repositories (`customerCompanyRepository`, `clientRepository`, `clientContactRepository`, `jobRepository`, `jobNotesRepository`, `itemRepository`) are the only write paths.
+- Per-row transactional shape preserved for client + job (three-entity and jobs+notes atomicity). Product goes through the same `db.transaction` wrapper for symmetry even when it's a single write.
+- `@shared/csvParser`, `@shared/normalizeForMatch` (postal, business-name, address composite key) unchanged; the new pipeline normalizers re-export them so every import shares one implementation.
+
+### Files retired (net removal)
+
+| Path | LOC | Replaced by |
+|---|---|---|
+| `server/routes/{client,job,product}Import.ts` | 732 | `server/routes/imports.ts` |
+| `server/services/{client,job,product}Import.ts` | 1,893 | `server/services/importPipeline/adapters/*` |
+| `shared/{client,job,product}ImportTypes.ts` | 963 | `shared/importPipeline/zod/*` |
+| `tests/csv-import-{column-safety,hardening,preview-ux}.test.ts` | 938 | `tests/import-{normalizers,adapters}.test.ts` |
+| `tests/address-line2.test.ts` | ~120 | Covered by adapter tests |
+
+Plus the three legacy page files (2,238 LOC) now render `<ImportWizard config={...} />` in ~12 LOC each.
+
+**Net:** ~4,125 LOC of new, coherent code replaces ~5,826 LOC of duplicated legacy code.
+
+### Intentionally out of scope (per requirements)
+- No `import_runs` / `import_history` tables or UI.
+- No async workers or job queue.
+- No QBO adapter migration (QBO imports untouched; they can be ported to the same pipeline in a later phase).
+- No "undo import" tooling.
+
+### Validation
+- `npm run check` (tsc) passes clean.
+- `tests/import-normalizers.test.ts` + `tests/import-adapters.test.ts` compile; the project's vitest setup requires a provisioned test database (`DATABASE_URL`), so run via `DATABASE_URL=... npm test` in a test environment.
+
+---
+
 ## 2026-04-09: Bulk Archived Jobs Cleanup — Destructive Warning Polish + Canonical activeTotal Counts
 
 ### Problem

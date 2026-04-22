@@ -4,6 +4,7 @@ import { createServer, type Server } from "http";
 import jobsRouter from "./jobs";
 import invoicesRouter from "./invoices";
 import teamRouter from "./team";
+import meRouter from "./me";
 import calendarRouter from "./scheduling";
 import clientsRouter from "./clients";
 import techniciansRouter from "./technicians";
@@ -73,12 +74,9 @@ import dispatchStreamRouter from "./dispatch-stream";
 import intelligenceRouter from "./intelligence";
 // Equipment: catalog items, timeline, notes history, parts history
 import equipmentRouter from "./equipment.routes";
-// Client CSV import (v1)
-import clientImportRouter from "./clientImport";
-// Job CSV import (Jobber historical jobs)
-import jobImportRouter from "./jobImport";
-// Product/Service CSV import
-import productImportRouter from "./productImport";
+// 2026-04-21 — Canonical unified import pipeline (client / job / product).
+// Replaces the retired per-entity routes/services/types (see CHANGELOG).
+import importsRouter from "./imports";
 // Feedback tracking (internal, no email)
 import feedbackRouter from "./feedback";
 // PM Templates: reusable job content templates for maintenance plans
@@ -210,6 +208,8 @@ export function registerRoutes(app: Express): Server {
   // BEFORE express.json() at the app level.
   app.use("/api", stripePaymentsRouter);
   app.use("/api/team", teamRouter);
+  // 2026-04-21 Phase 1: canonical per-user entitlement + permission reads.
+  app.use("/api/me", meRouter);
   console.log("[ROUTES] ✓ Mounted /api/team (canonical team router)");
   app.use("/api/calendar", calendarRouter);
   app.use("/api/clients", clientsRouter);
@@ -301,12 +301,9 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/intelligence", intelligenceRouter);
 
 
-  // Client CSV import (v1): preview + execute
-  app.use("/api/client-import", clientImportRouter);
-  // Job CSV import (Jobber historical jobs): preview + execute
-  app.use("/api/job-import", jobImportRouter);
-  // Product/Service CSV import: preview + execute
-  app.use("/api/product-import", productImportRouter);
+  // 2026-04-21 — Canonical import pipeline (preview + commit), one route
+  // file for every entity. `/api/imports/:entity/{preview,commit}`.
+  app.use("/api/imports", importsRouter);
 
   // Admin timesheets: day/week views, edit/delete time entries
   app.use("/api/admin/timesheets", adminTimesheetsRouter);

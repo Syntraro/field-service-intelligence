@@ -29,12 +29,14 @@ import {
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { getResendClient } from "../resendClient";
 import { rateLimitPerTenant } from "../auth/tenantIsolation";
-import { isInvoiceDraft, isInvoiceVoided, canAcceptInvoicePayment } from "../lib/invoicePredicates";
+import { isInvoiceDraft, isInvoiceVoided } from "../lib/invoicePredicates";
 import { generateInvoicePdf } from "../services/invoicePdfService";
 import { storage } from "../storage/index";
 import { invoiceRepository } from "../storage/invoices";
-import { getStripeClient } from "../services/stripeClient";
-import { randomUUID } from "crypto";
+// 2026-04-21 provider-neutral seam — portal payment flow delegates to the
+// canonical application service; the Stripe SDK now lives only behind
+// the Stripe adapter.
+import { paymentApplicationService } from "../services/payments/paymentApplicationService";
 
 // ============================================================================
 // Types
@@ -678,84 +680,73 @@ router.get(
 );
 
 // ------------------------------------------------------------------
-// POST /api/portal/invoices/:invoiceId/stripe/payment-intent
+// Portal checkout — issues a provider-neutral client token for the
+// customer to confirm payment of the outstanding balance.
 // ------------------------------------------------------------------
-// 2026-04-18 Phase 11: portal-scoped PaymentIntent creation. Mirrors
-// the staff route (`server/routes/stripePayments.ts`) but gates on the
-// portal session + the `customerPortalPaymentsEnabled` feature flag.
-// The canonical Stripe webhook remains the only writer of the
-// `payments` ledger row — this route just hands the customer a
-// clientSecret so Stripe Elements can confirm the card on the
-// customer's side.
+// Canonical route:
+//   POST /api/portal/invoices/:invoiceId/payments/checkout
+// Legacy alias (kept for existing clients):
+//   POST /api/portal/invoices/:invoiceId/stripe/payment-intent
+//
+// Both handlers run the exact same guard chain (portal session,
+// `customerPortalPaymentsEnabled` feature flag, invoice scope + payable
+// state) and delegate to `paymentApplicationService.createCheckout`.
+// The Stripe SDK lives only behind the Stripe adapter — routes don't
+// import it.
+async function portalCheckoutHandler(req: Request, res: Response) {
+  const { companyId, customerCompanyId } = (req as PortalRequest).portal;
+  const { invoiceId } = req.params;
+
+  // Feature flag gate — tenant must have customer-portal payments enabled.
+  const [features] = await db
+    .select({ paymentsEnabled: tenantFeatures.customerPortalPaymentsEnabled })
+    .from(tenantFeatures)
+    .where(eq(tenantFeatures.companyId, companyId))
+    .limit(1);
+  if (!features?.paymentsEnabled) {
+    throw createError(403, "Online payments are not enabled for this account");
+  }
+
+  // Scope check — invoice must belong to this customer company. The
+  // payable-state + balance checks live inside the application service
+  // alongside the staff path so the rules can't drift.
+  const invoice = await invoiceRepository.getInvoice(companyId, invoiceId);
+  if (!invoice || invoice.customerCompanyId !== customerCompanyId) {
+    throw createError(404, "Invoice not found");
+  }
+
+  const result = await paymentApplicationService.createCheckout({
+    companyId,
+    invoiceId,
+    source: "portal",
+  });
+  return result;
+}
+
+// Canonical (provider-neutral) route.
+router.post(
+  "/invoices/:invoiceId/payments/checkout",
+  portalPaymentIntentLimiter,
+  requirePortalAuth,
+  asyncHandler(async (req: Request, res: Response) => {
+    const result = await portalCheckoutHandler(req, res);
+    res.status(201).json(result);
+  }),
+);
+
+// Legacy alias — preserves the exact response shape the old portal
+// frontend read (`clientSecret`, `paymentIntentId`, `publishableKey`).
+// Delete once access logs show zero hits for a full release cycle.
 router.post(
   "/invoices/:invoiceId/stripe/payment-intent",
   portalPaymentIntentLimiter,
   requirePortalAuth,
   asyncHandler(async (req: Request, res: Response) => {
-    const { companyId, customerCompanyId } = (req as PortalRequest).portal;
-    const { invoiceId } = req.params;
-
-    if (!process.env.STRIPE_SECRET_KEY) {
-      throw createError(503, "Online payments are not configured");
-    }
-    const publishableKey = process.env.STRIPE_PUBLISHABLE_KEY;
-    if (!publishableKey) {
-      throw createError(503, "Online payments are not configured");
-    }
-
-    // Feature flag gate — tenant must have customer-portal payments enabled.
-    const [features] = await db
-      .select({ paymentsEnabled: tenantFeatures.customerPortalPaymentsEnabled })
-      .from(tenantFeatures)
-      .where(eq(tenantFeatures.companyId, companyId))
-      .limit(1);
-    if (!features?.paymentsEnabled) {
-      throw createError(403, "Online payments are not enabled for this account");
-    }
-
-    // Scope check — invoice must belong to this customer company and be
-    // in a payable state. Draft/voided/paid are rejected.
-    const invoice = await invoiceRepository.getInvoice(companyId, invoiceId);
-    if (!invoice || invoice.customerCompanyId !== customerCompanyId) {
-      throw createError(404, "Invoice not found");
-    }
-    if (!canAcceptInvoicePayment(invoice.status)) {
-      throw createError(400, `Cannot take payment on invoice with status "${invoice.status}".`);
-    }
-
-    // The customer always pays the current outstanding balance — no
-    // partial-amount UI on the portal in this phase.
-    const balanceCents = Math.round(parseFloat(invoice.balance ?? "0") * 100);
-    if (!Number.isFinite(balanceCents) || balanceCents <= 0) {
-      throw createError(400, "Invoice has no outstanding balance");
-    }
-
-    // Pre-generated id doubles as the Stripe Idempotency-Key and becomes
-    // the `payments.id` when the webhook records the ledger row. Same
-    // pattern as the staff path — keeps the webhook canonical.
-    const prospectivePaymentId = randomUUID();
-
-    const stripe = getStripeClient();
-    const intent = await stripe.paymentIntents.create(
-      {
-        amount: balanceCents,
-        currency: "usd",
-        automatic_payment_methods: { enabled: true },
-        metadata: {
-          companyId,
-          invoiceId,
-          prospectivePaymentId,
-          invoiceNumber: String(invoice.invoiceNumber ?? ""),
-          source: "portal",
-        },
-      },
-      { idempotencyKey: prospectivePaymentId },
-    );
-
+    const result = await portalCheckoutHandler(req, res);
     res.status(201).json({
-      clientSecret: intent.client_secret,
-      paymentIntentId: intent.id,
-      publishableKey,
+      clientSecret: result.clientToken,
+      paymentIntentId: result.providerPaymentId,
+      publishableKey: result.publishableKey,
     });
   }),
 );

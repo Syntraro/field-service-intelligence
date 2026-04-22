@@ -111,7 +111,9 @@ const SECTIONS: SettingsSection[] = [
     type: "links",
     preview: "Team management, roles, permissions",
     cards: [
-      { title: "Team Management", description: "Manage technicians and staff", href: "/manage-team", icon: Users },
+      // 2026-04-20 Phase 2: Team Management card points to the canonical hub
+      // at /settings/team. /manage-team is now a redirect to this URL.
+      { title: "Team Management", description: "Manage members, schedules, compensation, access", href: "/settings/team", icon: Users },
       { title: "Roles & Permissions", description: "Configure access levels", href: "/manage-roles", icon: Shield },
       // Phase 7 (Production Readiness): tenant-side approval surface.
       { title: "Support Access", description: "Approve internal support requests and revoke active sessions", href: "/settings/support-access", icon: Shield },

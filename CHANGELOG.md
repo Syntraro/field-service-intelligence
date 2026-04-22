@@ -8,6 +8,1276 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Canonical import pipeline — one engine, one wizard, all three entities (architecture, 2026-04-21)
+
+Replaced the three parallel CSV import systems (clients, jobs, products) with one canonical backend pipeline + adapter-per-entity pattern and one shared React wizard. All legacy modules retired; canonical backend vocabulary (`created / matched / skipped / failed`) is now the single truth from database to UI badges.
+
+**New canonical surface:**
+- Backend: `server/services/importPipeline/` (orchestrator + normalizers + adapters) — 14 files
+- Shared contracts + zod: `shared/importPipeline/{terminology,contracts,zod/*}.ts`
+- Routes: `server/routes/imports.ts` — `POST /api/imports/:entity/{preview,commit}`
+- Frontend: `client/src/components/imports/` (ImportWizard + 5 shared components + 3 configs)
+- Thin pages: `client/src/pages/{Client,Job,Product}ImportPage.tsx` each reduced to ~12 LOC
+
+**Drift fixes landed in the port:**
+1. Timezone-aware date parser — replaces the `new Date(str)` off-by-one bug in historical-job imports. Uses tenant `company_settings.timezone`.
+2. `jobNotesRepository.createSystemNoteTx` — replaces the only remaining raw Drizzle write in job import.
+3. Preview context prefetch — product + job + client adapters load tenant catalogs / companies / locations ONCE per preview instead of per row (fixes N×M scan).
+4. Unified `coerceBoolean` — one truthy/falsy set replaces the legacy `coerceBool` / `coerceBoolean` divergence.
+5. Uniform header normalization — `unit_price` / `unit-price` / `Unit Price` all resolve the same for every entity now.
+6. Feature-capacity gate uniform — `subscriptionRepository.canAddLocation()` runs through the adapter's `assertCapacity` hook (previously only client import had it).
+7. Disposition vocabulary canonicalized — `created / matched / skipped / failed` everywhere.
+8. Template download per entity — every import page now offers a one-click CSV template.
+9. Irreversibility modal — commit button gates behind a confirmation dialog with entity-specific copy.
+10. Within-CSV duplicate count surfaced in the preview summary.
+
+**Files retired:** `server/routes/{client,job,product}Import.ts`, `server/services/{client,job,product}Import.ts`, `shared/{client,job,product}ImportTypes.ts`, `tests/csv-import-*.test.ts`, `tests/address-line2.test.ts`. Net: ~4,125 LOC of new coherent code replaces ~5,826 LOC of duplicated legacy code.
+
+**New endpoints:**
+- `POST /api/imports/products/preview` + `/commit`
+- `POST /api/imports/jobs/preview` + `/commit`
+- `POST /api/imports/clients/preview` + `/commit`
+
+**Retired endpoints (internal UI only — not exposed to integrations):**
+- `POST /api/client-import/{preview,execute}`
+- `POST /api/job-import/{preview,execute}`
+- `POST /api/product-import/{preview,execute}`
+
+**Intentionally out of scope:** import history / audit tables, async workers, QBO adapter migration, undo tooling — all deferred by design. See `docs/REFACTORING_LOG.md` (2026-04-21) for the full architecture record.
+
+**Migration:** none required. No database changes.
+
+**Breaking changes:** The three legacy `/api/*-import/*` endpoints are removed. Only the in-app import wizard called them.
+
+#### Payments webhook C1 — transient DB errors no longer silently ACK'd (fix, 2026-04-21)
+
+Closes the single production-blocker flagged in the payments audit.
+
+**Bug:** Pre-patch, the webhook handler caught every non-unique error from the ledger write and returned HTTP 200 to Stripe. A transient DB outage (connection timeout, pool exhaustion, Postgres restart) during a Stripe traffic spike would lose the payment row permanently — Stripe's retry machinery would see a clean ACK and stop redelivering the event.
+
+**Fix:** Classify webhook errors into three categories at the handler layer and let the route map them to the correct HTTP status:
+
+| Class | Example | Response | Stripe behavior |
+|---|---|---|---|
+| `final_replay` | unique violation on `payments_provider_event_id_uq` | 200 | stop retrying (already recorded) |
+| `final_config` | 4xx from canonical repo (invoice not found, tenant mismatch) | 200 | stop retrying (retry can't help) |
+| `transient` | DB connection error, timeout, unknown throw | **500** | exponential backoff, ~72h |
+| signature failure | bad Stripe-Signature, missing secret | 400 | keep event queued for retry |
+
+**Structural changes:**
+- `paymentApplicationService` now exports two tagged error classes:
+  - `WebhookSignatureError` — from the verify phase.
+  - `WebhookTransientFailureError` — from the apply phase; carries the per-event `failed` array for operator diagnostics.
+- Webhook handling is split into two steps that the route calls independently:
+  - `verifyInboundWebhook(providerId, rawBody, headers)` → `NormalizedWebhookEvent[]` or throws `WebhookSignatureError`.
+  - `applyVerifiedWebhookBatch(providerId, events)` → returns `ApplyWebhookResult` or throws `WebhookTransientFailureError` if any event hit a transient condition.
+- `handlePaymentSucceeded` / `handleRefundCreated` now call `classifyWebhookError(err)` and only return "accepted" for known-final failure modes. Transient errors propagate out of the handler to the batch aggregator.
+- Route (`server/routes/stripeWebhook.ts`) wraps verify + apply in separate try/catch blocks and emits: 400 on `WebhookSignatureError`, 500 on `WebhookTransientFailureError`, 200 on success or non-transient idempotent replay.
+
+**New log channels:**
+- `[payments-webhook] create_payment_transient_failure_will_retry` / `create_refund_transient_failure_will_retry` — per-event transient failure; operators can correlate with DB incidents.
+- `[payments-webhook] handler_transient_failure` — batch-level aggregation record.
+- `[payments-webhook] transient_processing_failure_not_acked` — route-level 500 emitted, with failed event count and first error message.
+- `[payments-webhook] create_payment_config_error` / `create_refund_config_error` — former `create_payment_failed` / `create_refund_failed` renamed to reflect the narrowed scope (metadata drift, tenant mismatch).
+
+**Files changed:**
+- `server/services/payments/paymentApplicationService.ts` — classifier, rethrow, split verify/apply, two error classes.
+- `server/routes/stripeWebhook.ts` — three-way error-class to HTTP-status mapping.
+
+**Files NOT changed:** `paymentRepository`, `stripeAdapter`, schema, frontend.
+
+**Breaking changes:** none. Successful webhook deliveries still return 200; Stripe dashboard URL unchanged; signature-failure still returns 400. The NEW behavior is strictly an additional 500-response path on transient failures, which is the desired Stripe-retry signal.
+
+**Verification:** `npm run check` passes.
+
+#### Schedule Change Notifications v1 — push when a visit's datetime changes (feature, 2026-04-21)
+
+Second category to come online on top of the Phase 1/2 notification triptych. Pattern exactly mirrors `emitVisitAssignmentChange` — same architectural seams, same dedupe semantics, same preference-gate contract. The `visitScheduleChangesEnabled` column shipped with Phase 2 now has a live emitter reading it.
+
+**Canonical trigger point:** `PATCH /api/calendar/visit/:visitId/reschedule` at `server/routes/scheduling.ts:701` → `lifecycle.rescheduleVisit` at `server/services/jobLifecycleOrchestrator.ts:1937`. Single write path in the codebase; zero risk of drift.
+
+**Orchestrator — `server/services/jobLifecycleOrchestrator.ts`:**
+- `RescheduleVisitResult` extended with `previousScheduledStart / previousScheduledEnd / previousIsAllDay` (ISO / boolean). Captured from the visit row the orchestrator already fetches for the terminal-status guard — zero extra DB round-trip.
+
+**Schema — `shared/schema.ts`:**
+- `notificationTypeEnum` gains `"visit_schedule_changed"` (additive).
+
+**New emitter — `server/services/notificationService.ts`: `emitVisitScheduleChange`:**
+- Meaningful-delta gate: compares `(scheduledStart, scheduledEnd, isAllDay)` before/after as ms epochs. If none changed → no-op. Notes-only, crew-only, and no-op saves produce zero notifications by construction.
+- Recipients = post-write `assignedTechnicianIds` minus the actor.
+- Preference gate: batch-fetches `notification_preferences`, filters to `visitScheduleChangesEnabled !== false` (row-absent = permissive).
+- Notification row created first (durable, via `notificationRepository.createNotification` with `ON CONFLICT DO NOTHING`), then push fan-out via `pushDeliveryService.dispatchToUser` (best-effort). Push failure never propagates.
+- Dedupe key: `visit.schedule_changed:<visitId>:<userId>:<visitVersion>`. Canonical monotonic — retries/double-clicks are idempotent at the unique-index level; each meaningful reschedule gets a distinct notification.
+- Push tag: `visit-schedule-<visitId>` — successive reschedules replace the prior tray notification instead of stacking. `renotify` already set globally in `client/src/sw.ts`.
+- Body format: `"Visit rescheduled" / "Job #123 · Today 2:00 PM → Tomorrow 4:00 PM"`. Relative-day label picks "Today" / "Tomorrow" / "Yesterday" for adjacent days and falls back to `"Fri, Apr 25 2:00 PM"` style for everything else; all-day visits drop the time portion. `"Unscheduled"` when previous or current datetime is null.
+- Deep link: `/tech/visit/:visitId`. Service worker `notificationclick` handler (Phase 1) routes through `useServiceWorkerNavigator` to focus an existing tech PWA client, or opens a new window if closed.
+
+**Route wiring — `server/routes/scheduling.ts`:**
+- After existing `logEventAsync` + `emitDispatch`, the route now calls `notificationService.emitVisitScheduleChange(...)` wrapped in try/catch. Assignment-notification route (`assign-crew`) is untouched.
+
+**Preference behavior:**
+- On `/tech/me`, the "Schedule changes" toggle now affects real delivery. Off → no row, no push. On → both. Matches the Phase 2 single-rule-governs-both semantic.
+
+**Files changed:**
+- Modified — `shared/schema.ts` (enum addition)
+- Modified — `server/services/jobLifecycleOrchestrator.ts` (pre-write snapshot + result type)
+- Modified — `server/services/notificationService.ts` (new emitter + exported on service object)
+- Modified — `server/routes/scheduling.ts` (emit call in reschedule handler)
+
+**Breaking changes:** none. `RescheduleVisitResult` extension is strictly additive; response shape on the route is unchanged except the ISO-string projections (previously the route called `.toISOString()` inline on Date values — now cached in locals).
+
+**Deferred — intentionally not in this pass:**
+- Cancellation emitter (brief explicitly out of scope).
+- Reminder emitter (brief explicitly out of scope).
+- Notifying newly-assigned techs inside a reschedule call where both schedule AND crew changed (the assignment-notification emitter is tied to the `assign-crew` route today; cross-route coordination is future work).
+- "Removed from visit" schedule notifications to techs taken off a visit during reschedule (only current crew gets schedule notifications in v1).
+
+#### Canonical Policy Architecture — Phase 2 (refactor, 2026-04-21)
+
+Follow-up pass after Phase 1 stabilized on the live DB (two migrations applied + post-migration audit passed). Removes remaining legacy policy drift on both backend and frontend. No behavior change for tenants.
+
+**Dormant runtime seeder deleted.** `server/routes/roles.ts` previously carried a 45-item `PERMISSION_CATALOG` constant, a 6-item `DEFAULT_ROLES` constant (role → permission-keys lists), and a lazy `ensureRolesAndPermissionsSeeded()` function that wrote them into the DB on first `GET /api/roles` hit. Phase 1 moved canonical seeding to the `2026_04_21_seed_rbac_catalog.sql` migration, and the post-migration audit verified the seeder's guards (`existingPermissions.length === 0`, `existingRoles.length === 0`) made it dead code against a populated catalog. Phase 2 deletes:
+- `PERMISSION_CATALOG` constant (45 rows)
+- `DEFAULT_ROLES` constant (6 role definitions)
+- `ensureRolesAndPermissionsSeeded` function + the `seedingPromise` module state
+- The four `await ensureRolesAndPermissionsSeeded()` call sites (3 in `roles.ts`, 1 in `team.ts`)
+- The `export { ensureRolesAndPermissionsSeeded }` from `roles.ts`
+- The `import { ensureRolesAndPermissionsSeeded } from "./roles"` in `team.ts`
+
+What stays: `ROLE_DISPLAY_NAMES` (human-readable role labels) and `ROLE_HIERARCHY` (sort-order for the roles list page) — display-layer metadata, not policy. The `DEFAULT_ROLES.find(...).hierarchy` lookup in `GET /api/roles` is replaced by a direct `ROLE_HIERARCHY[name]` read. The DB tables (`permissions`, `roles`, `role_permissions`) are now the ONLY source of truth for RBAC catalog data.
+
+**Frontend legacy hook deleted.** `client/src/hooks/useTenantFeatures.ts` (which read the legacy `/api/company-settings/features` boolean-column endpoint) had two remaining callers after Phase 1. Both migrated to the canonical `useEntitlements` hook + `GET /api/me/entitlements`:
+- `client/src/pages/CommunicationSettingsPage.tsx` — portal-feature badges now read `features["customer_portal"]?.enabled` and `features["customer_portal_payments"]?.enabled` from the resolver. Loading state maps to `useEntitlements().isLoading`.
+- `client/src/pages/InvoiceDetailPage.tsx` — the "show pay-link CTA" gate now reads `features["customer_portal"]?.enabled` from the resolver. The hook-order-stable placement above the early-return is preserved.
+
+The hook file itself is deleted now that no callers remain.
+
+**SubscriptionBanner migrated.** `client/src/components/SubscriptionBanner.tsx` was the last in-app consumer of `/api/subscriptions/usage`. It now reads `accountState` from `useEntitlements()`:
+- `entitled`, `reason` (`PAID_ACTIVE | TRIAL_ACTIVE | TRIAL_EXPIRED | SUBSCRIPTION_INACTIVE | NO_PLAN`), and `trialEndsAt` come from `/api/me/entitlements` rather than a separate round-trip. The banner copy and dismiss-state logic are unchanged.
+- The `useQuery<Usage>` manual query definition is replaced by the `useEntitlements()` hook, which owns cache keys + staleness and shares a cache with the new portal-feature surfaces.
+
+**What stayed intentionally legacy.** These surfaces continue reading the legacy `tenant_features` boolean-column table because they are either admin/support tools that display the raw legacy shape as intended, or server-side configuration not covered by the feature catalog:
+- `server/routes/admin.ts` → `GET /api/admin/tenants/:id/billing-features` (admin UI).
+- `server/services/platformTenantsService.ts` reads (platform admin UI — already carries the "Legacy" badge added in Phase 1).
+- `server/routes/companySettings.ts` → `GET /api/company-settings/features` (retained for any external consumers not yet migrated; the two known in-app callers are gone).
+- `server/services/invoiceReminderService.ts` (reads `invoiceRemindersEnabled` / cadence fields — these are reminder configuration, not a feature flag).
+- `client/src/pages/platform/PlatformTenantDetail.tsx`, `AdminTenantDetail.tsx`, `AdminTenants.tsx`, `AdminQboOverview.tsx`, `QboConsolePage.tsx` — admin / support surfaces that render the legacy shape by design. `QboConsolePage` reads `qboEnabled` from a server-computed `PreflightResult` API response, not from the client policy layer.
+
+**Files changed:**
+- Modified — `server/routes/roles.ts` (seeder + constants removed; display metadata preserved), `server/routes/team.ts` (import + call removed), `client/src/pages/CommunicationSettingsPage.tsx` (migrated to useEntitlements), `client/src/pages/InvoiceDetailPage.tsx` (migrated to useEntitlements), `client/src/components/SubscriptionBanner.tsx` (migrated to useEntitlements), `CHANGELOG.md`.
+- Deleted — `client/src/hooks/useTenantFeatures.ts`.
+
+**Verification:** `npm run check` passes. No server migrations required (Phase 2 is code-only).
+
+**Follow-up debt (not done here):**
+- `GET /api/company-settings/features` still returns the legacy boolean-column shape. Safe to retire once external consumers (if any) are audited. Track under Phase 3.
+- Admin / platform-admin tenant detail pages still write through `tenantFeaturesRepository.updateFeatures` on the legacy table. Phase 3 can migrate these to the canonical tenant-override write path (`entitlementStorage.upsertOverride`) and drop the Phase 1 "Legacy" badge.
+- `invoiceReminderService` reads cadence config off `tenant_features`. If reminders get promoted into the catalog as a feature with a limit (e.g. `reminder_cadence`), the service can migrate; otherwise keep it as a config read separate from policy.
+
+#### Canonical Policy Architecture — Phase 1 (refactor, 2026-04-21)
+
+Collapses the four parallel roots (tenant_features column table, subscription_plans column table, subscription_features/plan_features/tenant_feature_overrides catalog, role + user_permission_overrides tables) into ONE canonical enforcement path. Phase 1 is additive — the legacy surfaces stay alive behind compat shims for the full migration, and no feature is removed from the catalog.
+
+**Canonical reads.** `entitlementService.getTenantEntitlements(companyId)` is now the single resolver used by:
+- `requireFeature()` server middleware (translates legacy camelCase keys via `LEGACY_TO_CANONICAL_KEY` → canonical snake_case keys, reads from the catalog). **Fail-closed**: resolver errors now return HTTP 500 instead of silently calling `next()`. Closes audit Finding #7.
+- `assertFeatureCapacity()` limit-enforcement helper on create paths.
+- `GET /api/me/entitlements` — new single-round-trip surface that returns `{ plan, accountState, features, limits, usage }` for the authed user's tenant.
+- `GET /api/me/permissions` — new surface returning the user's effective permission keys.
+- `subscriptionRepository.canAddLocation` — now delegates the cap check to the resolver so plan + tenant overrides are honored the same as every other feature gate.
+
+**Canonical writer.** `subscriptionLifecycleService.transition()` is the sole writer of `companies.subscriptionStatus` + `companies.trialEndsAt`:
+- `PATCH /api/admin/tenants/:id/billing` (admin) — lifecycle fields split out from `tenantFeaturesRepository.updateBilling`.
+- `PATCH /api/platform/tenants/:id/subscription` (platform admin) — same split.
+- `subscriptionLifecycleService.emitTrialExpiredEvent()` — daily trial-expire worker audit path.
+- Birth-state carve-out: `onboardingService.createCompanyWithOwner` is the ONE authorized direct writer for the initial tenant row (no "from" state exists to transition from; `tenant_subscriptions` FK is unavailable mid-signup).
+
+Every transition writes a `subscription_events` row (`type='status_changed'`) and invalidates the entitlement resolver cache for the tenant. Illegal transitions throw `INVALID_SUBSCRIPTION_TRANSITION` (HTTP 400).
+
+**Trial-expire worker.** `server/services/trialExpireWorker.ts` — new daily scan that emits a one-shot `trial_expired` event per tenant the first time `trialEndsAt` crosses into the past. Does NOT mutate `subscriptionStatus`; expiration stays compute-on-read at the entitlement gate.
+
+**Plan-name validation.** `PATCH /api/admin/tenants/:id/billing` now rejects unknown `subscriptionPlan` values at 400 (same guard `PATCH /api/platform/tenants/:id/subscription` already had). Prevents orphan plan strings from landing on `companies.subscription_plan`.
+
+**Limit enforcement on three create routes.** Uses `assertFeatureCapacityAuto` against the canonical resolver (core / unlimited entitlements no-op; plans that cap get standard `FEATURE_LIMIT_REACHED` 403):
+- `POST /api/team` → `technician_users` or `office_users` based on target role.
+- `POST /api/recurring-templates` → `pm_contracts`.
+- `POST /api/clients` (and full-create) → `locations` via rewired `canAddLocation`.
+
+**RBAC catalog migration.** `migrations/2026_04_21_seed_rbac_catalog.sql` promotes permissions + roles + role-permission mappings from the runtime on-demand seeder to a deterministic migration. Adds the new `permissions.manage` permission (the Phase 1 fine-gate demo) to `admin` / `owner`.
+
+**Feature catalog alignment migration.** `migrations/2026_04_21_feature_catalog_alignment.sql` seeds the four missing canonical feature keys (`route_optimization`, `multi_tech_scheduling`, `live_map`, `customer_portal_payments`), seeds default `subscription_plan_features` for every (plan, feature) combo, backfills `tenant_feature_overrides` from the legacy `tenant_features` boolean table where the effective state differs from the plan default, and RAISE NOTICEs any orphan `companies.subscription_plan` names.
+
+**Two-layer permission model.** The DB permissions system is PRESERVED and evolved into the fine-grained layer:
+- Coarse gates (`requireRole(ADMIN_ROLES)`, etc.) stay as-is on every existing protected route.
+- Fine gates (`requirePermission("permissions.manage")`) are added BEHIND the coarse gate on the highest-value surfaces: `POST / PUT / DELETE /api/roles/...` and the new `PATCH /api/team/:userId/permissions`.
+- Per-user overrides (grant / revoke / inherit) live on `user_permission_overrides` and flow through the new PATCH endpoint, which also self-blocks (admins cannot edit their own overrides — anti-lockout).
+
+**Client hooks (not wired into UI yet).** `useEntitlements`, `useFeatureEnabled`, `useEffectivePermissions`, `useHasPermission` — Phase 1 foundation for Phase 2 migration of `useTenantFeatures` callers.
+
+**UI copy.** `PlatformTenantDetail` feature-flag card now carries a "Legacy" badge + disclaimer pointing at the Entitlements section as the canonical path. `ManageRoles` intro copy updated to describe the two-layer model.
+
+**Tests.** New `tests/canonical-policy-architecture.test.ts` covers: lifecycle transition validation, legacy→canonical key mapping, fail-closed resolver behavior, capacity denial / core-bypass / unlimited-bypass / disabled denial / catalog-miss, per-user override write path (grant / revoke / inherit + cache eviction), RBAC seeding verification.
+
+**Files changed:**
+- New — `server/services/subscriptionLifecycleService.ts`, `server/services/trialExpireWorker.ts`, `server/routes/me.ts`, `client/src/hooks/useEntitlements.ts`, `client/src/hooks/useEffectivePermissions.ts`, `migrations/2026_04_21_seed_rbac_catalog.sql`, `migrations/2026_04_21_feature_catalog_alignment.sql`, `tests/canonical-policy-architecture.test.ts`.
+- Modified — `server/auth/requireFeature.ts` (canonical resolver + fail-closed), `server/routes/admin.ts` (lifecycle split + plan-name guard), `server/routes/platformEntitlements.ts` (lifecycle split), `server/routes/team.ts` (seat limit + permission override API), `server/routes/recurringJobs.ts` (pm_contracts limit), `server/routes/roles.ts` (permissions.manage fine-gate + catalog entry), `server/routes/index.ts` (mount /api/me), `server/services/onboardingService.ts` (birth-state doc carve-out), `server/storage/subscriptions.ts` (canAddLocation delegates to resolver), `server/index.ts` (trialExpireWorker startup), `shared/schema.ts` (subscriptionEventTypeEnum adds `status_changed` + `trial_expired`), `client/src/pages/platform/PlatformTenantDetail.tsx` (Legacy badge), `client/src/pages/ManageRoles.tsx` (two-layer copy), `CLAUDE.md` (two-layer permission model + canonical resolver doc).
+
+**Migration files:**
+- `migrations/2026_04_21_seed_rbac_catalog.sql` — idempotent, safe to re-run.
+- `migrations/2026_04_21_feature_catalog_alignment.sql` — idempotent, preserves effective tenant state.
+
+**Breaking changes:** none for route consumers. `requireFeature` returns 500 instead of silently passing on resolver errors (audit Finding #7); this is the intended Phase 1 security fix.
+
+**Verification:** `npm run check` pending CI pass.
+
+#### Payments refund hardening — cap ordering + duplicate-refund prevention (fix, 2026-04-21)
+
+Follow-up patch on the provider-neutral payment seam. Closes the two audit findings (H1, H2) from the post-implementation review.
+
+**H1 — cap check moved before Stripe call.**
+`paymentRepository.assertRefundAmountWithinParent` is now invoked in `paymentApplicationService.refundPayment` BEFORE `stripeAdapter.refundPayment`. Overshoot requests now fail at 400 without ever touching Stripe. Method was already public on the repository; this change is a single added call-site.
+
+**H2 — duplicate-refund prevention via deterministic Stripe idempotency key + 202 reconciliation_pending response.**
+
+1. The Stripe idempotency key is now `stripeRefundIdempotencyKey(companyId, parentPaymentId, amountCents, reason)` — a SHA-256 hash of the request-shape tuple, not a random UUID. Same arguments → same key → Stripe returns the same `re_...` object on every retry. The user clicking refund N times produces exactly one Stripe refund.
+
+2. The ledger row's PK (`refundLedgerId`) remains a random UUID so operator logs can still distinguish retries. Only one row ever lands for a given refund — subsequent attempts collide on the `payments_provider_event_id_uq` partial unique (on `providerRefundId`), and the service returns the existing row.
+
+3. When Stripe has already moved money but our ledger insert fails for a non-unique reason (DB blip), the service returns a discriminated `{ kind: "reconciliation_pending", refundLedgerId, providerRefundId, providerSource }`. The route maps this to HTTP 202 with body `{ status: "reconciliation_pending", message: "Refund issued. Reconciliation pending.", refundLedgerId, providerRefundId, providerSource }`. The `charge.refunded` webhook reconciles the ledger within seconds via the same canonical write path.
+
+4. New structured log channel `[payments-refund]` with lifecycle events: `provider_call_start`, `provider_refund_succeeded`, `provider_refund_failed`, `ledger_write_succeeded`, `ledger_write_replayed`, `ledger_write_failed_after_provider_success` (CRITICAL, alert-target).
+
+**Service contract change:**
+`paymentApplicationService.refundPayment` now returns `RefundPaymentResult = { kind: "settled", row } | { kind: "reconciliation_pending", … }` instead of a raw `Payment`. The route is the only caller; both branches are handled there. No other consumer exists.
+
+**Files changed:**
+- `server/services/payments/paymentApplicationService.ts` — deterministic idempotency key, pre-Stripe cap check, discriminated result type, refund-specific log channel.
+- `server/routes/payments.ts` — route maps `reconciliation_pending` to HTTP 202.
+
+**Not changed:** paymentRepository (method already public), route for manual/QBO branches, provider adapter, schema, frontend.
+
+**Breaking changes:** none for callers that treat 2xx as success — both 201 and 202 are in the response set. Frontend should show 202 as "Refund issued; reconciling" rather than error, and must NOT prompt immediate retry.
+
+**Verification:** `npm run check` passes.
+
+#### Notification Devices v1 — self-service device list + revoke under /tech/me (feature, 2026-04-21)
+
+Extension of the `/tech/me` surface. Lets an authenticated user see every push target they've registered across browsers/devices and revoke any of them. No redesign of the push system — reuses the existing `notification_targets` table and `notificationTargetsRepository` canonical helpers.
+
+**New routes (both authenticated-self, tenant-scoped, not gated by `requireSchedulable`):**
+- `GET /api/tech/me/notification-devices` — returns active targets (`revoked_at IS NULL`) for the calling user. DTO excludes secrets (`keyP256dh`, `keyAuth`) and the raw endpoint URL; only diagnostic/display fields are exposed.
+- `DELETE /api/tech/me/notification-devices/:id` — soft-revokes a single target by id, scoped to `(tenantId, userId)`. Reuses `notificationTargetsRepository.revokeTargetById` — same canonical helper the existing tech-PWA push-disable flow uses.
+
+**Frontend — `DevicesSection` on `client/src/tech-app/pages/MePage.tsx`:**
+- Mounted below the Notifications block with identical visual rhythm (section heading, white card, row list).
+- Each row: a device icon (phone / laptop / tablet) + a derived label ("Chrome on Windows", "iPhone PWA", "Android Chrome", etc.) + "Last active Nm/h/d ago" + a red Remove button.
+- Label derivation is a naive UA-string parse — enough signal for a user to tell their own devices apart. No UA-parsing dependency added.
+- Remove button → DELETE → optimistic cache remove + query invalidation. Busy state per-row (spinner swaps for trash icon).
+- Calm empty state when the user has no active devices: "No active notification devices. Enable notifications on any browser you use to add one."
+- Separation of concerns preserved: removing a device does NOT unsubscribe the browser's `PushSubscription` locally — the next push to a revoked target will return 410 and the browser-side state is cleaned up by the existing stale-subscription flow.
+
+**Files changed:**
+- Modified — `server/routes/techField.ts` (GET + DELETE under `/me/notification-devices` + a local `DeviceDto` shape that excludes push secrets).
+- Modified — `client/src/tech-app/pages/MePage.tsx` (new `DevicesSection`, `describeDevice` UA helper, `formatLastActive`, device icons).
+
+**Breaking changes:** none. Existing `DELETE /api/tech/push/subscription/:id` is unchanged. Legacy and self-service revoke paths both land on the same `revokeTargetById` storage helper.
+
+#### Notification Preferences v1 — user-level policy on top of Phase 1 push (feature, 2026-04-21)
+
+Adds the third corner of the canonical notification triptych. Phase 1 gave us **what to say** (`notifications` table) and **where to send it** (`notification_targets`). Phase 2 adds **whether to send it** (`notification_preferences`).
+
+**New schema — `notification_preferences`:**
+- Migration: `migrations/2026_04_21_notification_preferences.sql`.
+- Drizzle: `shared/schema.ts` — `notificationPreferences` with four boolean columns (`visitAssignmentsEnabled`, `visitScheduleChangesEnabled`, `visitCancellationsEnabled`, `visitRemindersEnabled`), all `NOT NULL DEFAULT TRUE`. Unique on `(tenant_id, user_id)`.
+- `DEFAULT_NOTIFICATION_PREFERENCES` constant exported for "row absent" reads.
+- Forward extension pattern: new categories = `ALTER TABLE ADD COLUMN <x>_enabled bool NOT NULL DEFAULT TRUE`. No JSON blob. No key-value store.
+
+**Row-absent semantics = permissive.** If no row exists for a user, reads return all-true. Preserves Phase 1 behavior for every existing user with zero backfill migration.
+
+**New repository — `server/storage/notificationPreferences.ts`:**
+- `loadForUser(tenantId, userId)` — single-user read; defaults when row absent.
+- `loadForUsers(tenantId, userIds[])` — batch read used by the emit service. Returns `Map<userId, ResolvedPreferences>` prefilled with defaults.
+- `upsertPreferences(tenantId, userId, patch)` — `ON CONFLICT (tenant_id, user_id) DO UPDATE SET`; fields omitted from the patch are left untouched on existing rows.
+
+**Enforcement — single source of truth in `emitVisitAssignmentChange`:**
+- After actor-skip + delta computation, batch-fetch preferences for all recipients and filter to `visitAssignmentsEnabled !== false`. Empty eligible set → early return (no notification row, no push).
+- v1 rule per approved audit: one toggle governs both the durable notification row AND the push delivery. Adapters do not decide eligibility; the route doesn't know about preferences; the SW doesn't know about preferences. **Single enforcement point.**
+
+**New self-service routes under `/api/tech/me/notification-preferences`:**
+- `GET` — returns the calling user's preferences (with defaults filled in).
+- `PATCH` — partial booleans body; upserts; returns full post-write shape.
+- **Auth: authenticated self only** (deliberately NOT `requireSchedulable`). A non-schedulable owner/admin using the tech app in field mode can still manage their own preferences. Tenant isolation scoped by `req.companyId`.
+
+**New tech surface — `/tech/me`:**
+- `client/src/tech-app/pages/MePage.tsx` — four toggles (New assignments / Schedule changes / Cancellations / Reminders) + a push-device status block that reuses the existing `usePushRegistration` hook. React Query owns fetch + mutation; no local pretend-persistence.
+- Entry point: the top-bar initials circle in `MobileShell.tsx` is now tappable → `/tech/me`. Visually identical to the prior static avatar; zero bottom-nav churn.
+- Route registered in `client/src/tech-app/app/TechApp.tsx`.
+
+**Preference-vs-device separation preserved:**
+- `notification_preferences` = user-level policy (per tenant).
+- `notification_targets` = per-device endpoints.
+- Turning off "New assignments" does NOT unregister any device. Re-enabling does NOT require re-subscribing. Both live their own lifecycles.
+
+**Files changed:**
+- NEW — `migrations/2026_04_21_notification_preferences.sql`
+- NEW — `server/storage/notificationPreferences.ts`
+- NEW — `client/src/tech-app/pages/MePage.tsx`
+- Modified — `shared/schema.ts` (table + types + `DEFAULT_NOTIFICATION_PREFERENCES`)
+- Modified — `server/services/notificationService.ts` (preference filter in `emitVisitAssignmentChange`)
+- Modified — `server/routes/techField.ts` (GET/PATCH `/api/tech/me/notification-preferences`)
+- Modified — `client/src/tech-app/app/TechApp.tsx` (`/tech/me` route)
+- Modified — `client/src/tech-app/components/MobileShell.tsx` (initials circle → button)
+
+**Breaking changes:** none.
+- `notifications` / `notification_targets` shapes unchanged.
+- `emitVisitAssignmentChange` signature unchanged.
+- Route responses strictly additive.
+- Tech auth and SSE freshness flows untouched.
+
+**Deferred — intentionally not in v1:**
+- Separate in-app vs push toggles (single-rule simplicity for v1 per brief).
+- Quiet hours / Do Not Disturb.
+- Admin / tenant-wide notification overrides.
+- Emitters for schedule changes / cancellations / reminders (columns ready, no emitters yet — building them was explicitly out of scope).
+- Per-device preference overrides.
+- Email/SMS preference columns.
+
+#### Dashboard header: segmented Operations | Financial switcher + alert-rail reorder (UI, 2026-04-21)
+
+Surgical UI refinement pass on the two dashboards. No backend, route, query, schema, or metric changes — presentation only.
+
+**1. Operations alert rail row order.** The right-side operational alerts stack on `TodaysOperationsCard` now reads top-to-bottom as `Action Required → Past Due → Unscheduled → Ready for Invoice`. Previously `Unscheduled → Past Due → Action Required → Ready to Invoice`. Row order reflects operational triage: human-in-the-loop items first, time-critical next, backlog, then cashflow tail. Counts, click handlers, modal wiring, styling, and icons are unchanged.
+
+**2. Shared segmented dashboard switcher.** Replaced the two standalone outline buttons (Operations dashboard → "Financial Dashboard" / Financial dashboard → "Operations Dashboard") with a single shared `<DashboardViewToggle />` segmented control rendered in both page headers. Active segment reflects the current route; inactive segment navigates. Clicking the active segment is a no-op. Compact h-8, rounded-md, subtle border, white active background — matches the existing header rhythm.
+
+**Files affected:**
+- `client/src/components/dashboard/DashboardViewToggle.tsx` — **new** reusable segmented toggle
+- `client/src/components/TodaysOperationsCard.tsx` — alert rows reordered
+- `client/src/pages/Dashboard.tsx` — `TodaysOperationsHeader` now renders `<DashboardViewToggle active="operations" />`; dropped the `TrendingUp` icon + `Button` imports it no longer uses
+- `client/src/pages/FinancialDashboard.tsx` — page header now renders `<DashboardViewToggle active="financial" />`; dropped the `Button` import it no longer uses
+
+**Migration:** none. **Breaking changes:** none.
+
+#### Payments: provider-neutral seam + Stripe refund gap closed (refactor + fix, 2026-04-21)
+
+The invoice and payment flows now sit behind a provider-neutral application service. The Stripe SDK is contained to two files (`server/services/stripeClient.ts` factory + the new `stripeAdapter.ts`). Routes are thin; the canonical payment ledger (`server/storage/payments.ts`) is unchanged and remains the single source of truth for money state.
+
+**New canonical route contracts:**
+- `POST /api/invoices/:invoiceId/payments/checkout` (staff)
+- `POST /api/portal/invoices/:invoiceId/payments/checkout` (portal)
+- `POST /api/webhooks/:provider` (provider dispatcher; legacy `/api/webhooks/stripe` is matched by this same route with `provider='stripe'`)
+
+**Legacy aliases preserved** (delete once access logs show zero hits for one release):
+- `POST /api/invoices/:invoiceId/stripe/payment-intent` — thin forwarder
+- `POST /api/portal/invoices/:invoiceId/stripe/payment-intent` — thin forwarder
+- `POST /api/webhooks/stripe` — matched by `/api/webhooks/:provider`
+
+**Refund gap closed.** `POST /api/payments/:id/refund` now:
+1. Loads the parent payment and branches on `providerSource`.
+2. For `stripe`-linked rows: calls `stripeAdapter.refundPayment` with an idempotency key that also becomes the new ledger row's PK, THEN writes the ledger (provider-first ordering). Prior to this pass, Stripe-linked refunds were only recorded locally and never issued at Stripe — accounting silently diverged.
+3. For `manual` rows: ledger-only, behavior unchanged.
+4. For `qbo` rows: 409 (refunds flow through the QBO sync lifecycle, out of scope here).
+5. Webhook replay safe: `payments_provider_event_id_uq` catches double-writes when `charge.refunded` lands after our insert; the service returns the existing row on unique-violation.
+
+**Response shapes** (provider-neutral):
+```
+{ providerId: "stripe", clientToken, providerPaymentId, publishableKey?, prospectivePaymentId }
+```
+The Stripe-named aliases translate to the legacy `{ clientSecret, paymentIntentId, publishableKey }` shape so existing callers keep working during the cutover.
+
+**Files created:**
+- `server/services/payments/providers/types.ts` — `PaymentProvider` contract + normalized event union
+- `server/services/payments/providers/stripeAdapter.ts` — Stripe SDK isolation (createCheckout, refundPayment, verifyWebhook)
+- `server/services/payments/providers/resolver.ts` — `resolveForCompany`, `resolveById`, `resolveForProviderSource`
+- `server/services/payments/paymentApplicationService.ts` — orchestration: `createCheckout`, `refundPayment`, `handleInboundWebhook`
+
+**Files modified:**
+- `server/routes/payments.ts` — new neutral checkout route; `/refund` now calls the application service
+- `server/routes/stripePayments.ts` — now a thin forwarder
+- `server/routes/portal.ts` — neutral route added; legacy Stripe path is a thin forwarder; no Stripe SDK import
+- `server/routes/stripeWebhook.ts` — now a thin dispatcher over `:provider`; no SDK calls in file
+- `server/storage/payments.ts` — added `findByProviderReference(providerSource, reference)` helper used by the webhook parent lookup (moved the DB query out of the route file into the repository)
+- `client/src/pages/portal/PortalInvoiceDetail.tsx` — calls `/payments/checkout`; reads `clientToken` / `providerId`; Stripe Elements integration otherwise unchanged
+
+**Invariants preserved:**
+- `payments_ledger_shape_chk`, `payments_provider_event_id_uq`, `payments_company_invoice_reference_uq`, `payments_company_parent_reference_uq` — all untouched
+- `recalculateInvoiceBalance` remains the only writer of invoice financial state
+- QBO sync path (`maybeSyncPaymentToQbo`) unchanged
+- Stripe dashboard webhook URL stays valid (no reconfiguration required)
+- Frontend Stripe Elements mount is identical — only the fetch URL + response field name changed
+- `npm run check` passes
+
+**Breaking changes:** none. All legacy URLs respond with their legacy response shapes.
+
+#### Technician assignment push notifications — Phase 1 (feature, 2026-04-21)
+
+Future-safe, channel-agnostic notification architecture. Phase 1 ships web push for the tech PWA; Phase 3 will slot APNS/FCM in as peer adapters with zero schema or orchestration changes. The canonical in-app `notifications` table and `notificationService` were extended, not duplicated.
+
+**New canonical schema — `notification_targets`:**
+- Migration: `migrations/2026_04_21_notification_targets.sql`.
+- Drizzle table: `shared/schema.ts` — `notificationTargets` with `(platform, channel, provider, endpoint, keyP256dh, keyAuth, userAgent, appVersion, lastSeenAt, revokedAt)`. The `(platform, channel, provider)` triple is the future-native slot — Phase 3 adds APNS/FCM rows without schema change.
+- Unique index on `(tenantId, userId, endpoint)` + partial index on live rows (`WHERE revoked_at IS NULL`).
+- `notificationTypeEnum` extended with `"visit_assigned"`.
+
+**New storage — `server/storage/notificationTargets.ts`:**
+- `upsertTarget` (idempotent on endpoint — re-registration refreshes `lastSeenAt` + clears `revokedAt`).
+- `listLiveTargetsForUser` (fan-out read).
+- `revokeTargetByEndpoint` (soft-revoke on 404/410 from push service).
+- `revokeTargetById` (user-initiated revoke, tenant-scoped).
+- `markDelivered` (touches `lastSeenAt`).
+
+**New delivery layer:**
+- `server/services/push/types.ts` — `DeliveryAdapter` interface + `PushPayload` shape. One interface, N adapters.
+- `server/services/push/webPushAdapter.ts` — `WebPushAdapter` using the `web-push` npm package. VAPID config from env (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`). Missing config → warn + return `{ ok: false }` (never crash). 404/410 → `{ revoke: true }` so the service soft-revokes stale targets. Exports `getPublicVapidKey()` and `isWebPushConfigured()` for route-level checks.
+- `server/services/pushDeliveryService.ts` — thin façade. `dispatchToUser(tenantId, userId, payload)` loads live targets, parallelizes delivery across adapters, soft-revokes stale endpoints, never throws. Short-circuits when push is unconfigured (no DB hit).
+
+**Canonical service extended — `server/services/notificationService.ts`:**
+- New `emitVisitAssignmentChange({ companyId, visitId, jobId, jobNumber, scheduledStart, previousAssignedTechnicianIds, currentAssignedTechnicianIds, actorUserId })`.
+- Rules enforced in the service (not the route):
+  - Only notify the **delta** (`current − previous`). Empty delta → no-op (same-crew re-save = silent).
+  - Actor always excluded from recipients (schedulable owner assigning themselves).
+  - Dedupe key `visit.assigned:<visitId>:<YYYY-MM-DD>` — `notifications.(user_id, dedupe_key)` unique index makes a same-day repeat idempotent.
+  - Durable `notifications` row created FIRST, then best-effort push. Push failure never breaks the in-app record.
+  - Notification `tag: "visit-assigned-<visitId>"` — replaces any prior tray notification for the same visit with `renotify: true`.
+
+**Orchestrator extended — `server/services/jobLifecycleOrchestrator.ts`:**
+- `assignVisitCrew` result shape gains `previousAssignedTechnicianIds` (captured pre-UPDATE from the visit we already had to fetch for the terminal-status guard) + `jobNumber`. No extra DB round-trips.
+
+**Route wiring — `server/routes/scheduling.ts`:**
+- `PATCH /api/calendar/visit/:visitId/assign-crew` now calls `notificationService.emitVisitAssignmentChange(...)` AFTER the existing `logEventAsync` + `emitDispatch` SSE signal. Wrapped in try/catch at the route — push failure cannot fail the assignment response.
+
+**New tech-side routes — `server/routes/techField.ts`:**
+- `GET /api/tech/push/public-key` — returns VAPID public key (or `{ enabled: false }` when not configured).
+- `POST /api/tech/push/subscription` — upsert browser subscription (platform="web", channel="web_push", provider="webpush"). Idempotent on endpoint.
+- `DELETE /api/tech/push/subscription/:id` — user-initiated soft-revoke. Tenant-scoped; 404 on other tenants' ids.
+- All three guarded by the existing `requireSchedulable` middleware — no new auth surface.
+
+**PWA service worker — `client/src/sw.ts` (NEW) + `vite.config.ts`:**
+- `vite-plugin-pwa` flipped from `generateSW` to `strategies: "injectManifest", srcDir: "src", filename: "sw.ts"`.
+- Custom SW **preserves every cache behavior** the previous config had: precache all built static assets, cleanup outdated caches, skipWaiting + clientsClaim, SPA navigation fallback to `/index.html` with `/api/*` denylisted, Google Fonts CacheFirst for both stylesheets and webfonts, API routes NetworkOnly.
+- New `push` listener parses `{ title, body, type, data: { linkUrl, entityType, entityId }, tag }` and calls `showNotification` with the icon + badge from the manifest set.
+- New `notificationclick` listener focuses an existing Syntraro client if one is open (via `postMessage({ type: "navigate", url })`) or opens a new window on `/tech/visit/<visitId>`.
+- `registerType: "autoUpdate"` unchanged → no regression to the existing update-prompt flow.
+
+**Tech app — `client/src/tech-app/hooks/usePushRegistration.ts` (NEW) + `client/src/tech-app/pages/TodayPage.tsx`:**
+- Hook: support detection, reactive `Notification.permission`, `requestAndSubscribe()` (permission → VAPID key fetch → `pushManager.subscribe` → POST to backend), `unsubscribe()`, `refresh()`. **Does not auto-prompt** — tap-only. All logic in the hook; zero business logic in the rendering component.
+- TodayPage CTA: subtle bell-icon banner rendered only when `supported && permission === "default" && isSelfScope && !dismissed`. One tap enables; an "X" dismisses for the session. No modals, no repeated prompts, no logic beyond state → render.
+
+**Package:**
+- `package.json` — added `web-push` + `@types/web-push`.
+
+**New env vars (production):**
+- `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` — required to enable web push. Generate with `npx web-push generate-vapid-keys`. Dev / CI without them keeps the rest of the app working; the tech CTA stays hidden because `/api/tech/push/public-key` returns `{ enabled: false }`.
+- `VAPID_SUBJECT` — optional. Falls back to `mailto:${RESEND_FROM_EMAIL}`.
+
+**Files changed:**
+- NEW — `migrations/2026_04_21_notification_targets.sql`
+- NEW — `server/storage/notificationTargets.ts`
+- NEW — `server/services/push/types.ts`
+- NEW — `server/services/push/webPushAdapter.ts`
+- NEW — `server/services/pushDeliveryService.ts`
+- NEW — `client/src/sw.ts`
+- NEW — `client/src/tech-app/hooks/usePushRegistration.ts`
+- Modified — `shared/schema.ts` (notificationTypeEnum + notificationTargets table/types)
+- Modified — `server/services/notificationService.ts` (emitVisitAssignmentChange)
+- Modified — `server/services/jobLifecycleOrchestrator.ts` (AssignVisitCrewResult +previousAssignedTechnicianIds/jobNumber)
+- Modified — `server/routes/scheduling.ts` (emit call in assign-crew handler)
+- Modified — `server/routes/techField.ts` (3 push subscription routes)
+- Modified — `vite.config.ts` (injectManifest strategy)
+- Modified — `client/src/tech-app/pages/TodayPage.tsx` (Enable-notifications CTA)
+- Modified — `package.json` (web-push + types)
+
+**Breaking changes:** none.
+- `notifications` table shape unchanged — new type value `"visit_assigned"` is additive.
+- `GET /api/dashboard/financial` and every other existing endpoint unchanged.
+- Orchestrator return type extension is strictly additive (extra fields); existing callers are unaffected.
+- Tech `useDispatchStream` / `useTechRealtimeSync` flows untouched — SSE continues to handle in-app freshness exactly as before.
+
+**Deferred — intentionally not in Phase 1:**
+- In-app notification inbox UI in the tech PWA (the `notifications` rows are written; rendering them is Phase 2).
+- "Removed from visit" notifications to previously-assigned techs (only newly-assigned notified per brief).
+- APNS / FCM adapters (Phase 3 — zero schema change when we add them, only new rows in `notification_targets` and new modules under `server/services/push/`).
+- Manage-devices UI (`/api/tech/push/subscription/:id` DELETE exists and works; no surface yet).
+- Per-role notification preferences / quiet hours.
+
+#### Canonical visit mutation architecture — Phase 1.5 (refactor, 2026-04-21)
+
+Closes the last reachable bypass paths identified in the Phase 1 post-implementation verification. After Phase 1.5, every office visit mutation goes through `jobLifecycleOrchestrator` on the server and `useDispatchPreviewMutations` on the client — no exceptions.
+
+**Server bypass paths eliminated:**
+- `POST /api/calendar/bulk-unschedule` (`server/routes/scheduling.ts`) — now delegates per-visit to `lifecycle.unscheduleVisit`. Actioned visits (in_progress / en_route / on_site / paused / checkedInAt-present) are added to `skipped` with a stable reason instead of silently overwritten. Parity with single-visit `/unschedule` restored.
+- `POST /api/intelligence/visits/:id/shift-remainder` (`server/routes/intelligence.ts`) — each shifted visit routes through `lifecycle.rescheduleVisit(mode:"replace")`. Actioned visits short-circuit with an `isVisitActioned` check before the orchestrator call. Response now carries `skipped[]` summary.
+- `POST /api/intelligence/visits/:id/optimize-remainder` — same pattern as shift-remainder. The route can no longer rewrite an in-progress visit's schedule from a route-optimization run.
+
+**Client parallel paths eliminated:**
+- `client/src/lib/jobScheduling.ts` — removed `applyJobSchedule`, `unscheduleVisit`, `scheduleValueToPayload`, `ScheduleJobPayload`. File now contains only `createJobWithSchedule` (job creation, not a visit mutation) and a `ScheduleJobResult` type.
+- `client/src/hooks/useSchedulingApi.ts` — removed `scheduleJob`, `unscheduleVisit`, `useScheduleJob`, `useUnscheduleVisit`. File now hosts only the canonical query helpers (`useCalendarRange`, invalidation helpers, DTO types).
+- `client/src/components/DashboardActionModal.tsx` — `handleSchedule` migrated from `applyJobSchedule` helper to `useDispatchPreviewMutations.scheduleVisit` / `.rescheduleVisit`. Bulk-unschedule mutation kept (same endpoint now server-safe).
+- `client/src/pages/JobDetailPage.tsx` — removed unused `useUnscheduleVisit` call; migrated `<EditVisitModal>` mount to `<VisitEditorLauncher>` for uniformity with Dashboard + DispatchPreview.
+- `client/src/components/QuickAddJobDialog.tsx` — dropped dead `applyJobSchedule` import.
+- `client/src/components/dispatch/useDispatchPreviewMutations.ts` — removed two dead fallback branches (`/api/calendar/unschedule/:jobId`, `/api/calendar/resize`) that referenced removed server endpoints.
+
+**Launcher uniformity:** Dashboard, DispatchPreview, and JobDetailPage all now mount visit editing through `VisitEditorLauncher`. No page-specific mount path remains.
+
+**Tests:** `tests/visit-mutation-phase1_5.test.ts` — 8 new integration tests covering bulk unschedule (batch success + in_progress/en_route/missing-visit skip) and intelligence per-visit loops (shift through orchestrator, actioned skip, preserved scheduledStart on skipped visits, mixed-batch routing). All 8 pass alongside the 24 Phase 1 tests (32/32 green).
+
+#### Canonical visit mutation architecture — Phase 1 (refactor, 2026-04-21)
+
+One source of truth in backend logic, one source of truth in UI orchestration. Every operational visit write now goes through `jobLifecycleOrchestrator`; one narrow direct PATCH route remains only for two lightweight metadata fields (`visitNotes`, `equipmentIds`). No duplicate write paths, no route-specific UI forks, no shadow inline mutations.
+
+**Backend route ownership:**
+- `PATCH /api/jobs/:jobId/visits/:visitId` (`server/routes/jobVisits.routes.ts`) — narrowed. Schema now rejects every operational field (`scheduledStart`, `scheduledEnd`, `isAllDay`, `estimatedDurationMinutes`, `assignedTechnicianIds`, `status`, `scheduledDate`) and accepts only `{visitNotes?, equipmentIds?, version}`. Handler body simplified; time normalization moved out.
+- `POST /api/jobs/:jobId/visits/:visitId/status` — now a thin orchestrator delegator. Maps target status to the correct lifecycle method (`setVisitEnRoute` / `startVisit` / `pauseVisit` / `cancelVisitRoute` / `cancelVisitStart` / `cancelVisit`). Rejects `completed` (use `/complete`), `on_hold` (job-level), and `dispatched` (not exposed).
+- `PATCH /api/calendar/visit/:visitId/assign-crew` (`server/routes/scheduling.ts`) — field rename `technicianUserIds` → `assignedTechnicianIds` (breaking, no shim). Handler delegates to new `lifecycle.assignVisitCrew`. Empty crew array now accepted (clearing assignment). `.strict()` Zod validation.
+- `POST /api/calendar/visit/:visitId/resize` — delegates to `lifecycle.rescheduleVisit(mode: "replace")` so actioned-visit spawn protection applies uniformly (closes the gap where drag-resize could silently overwrite an in-progress visit).
+- `POST /api/calendar/visit/:visitId/unschedule` — delegates to new `lifecycle.unscheduleVisit`. Adds actioned-visit guard the direct-storage path silently lacked (unscheduling `en_route` / `in_progress` / `checkedInAt`-present visits now returns 409 `VISIT_ACTIONED`).
+- **Unchanged:** `POST /api/calendar/visit/:visitId/reschedule`, `POST /api/calendar/schedule`, `POST /api/jobs/:jobId/visits/:visitId/complete`, `POST /api/jobs/:jobId/visits/:visitId/reopen`, all `/api/tech/visits/:id/*` lifecycle routes (already orchestrator-backed).
+
+**New orchestrator methods:**
+- `lifecycle.assignVisitCrew({ companyId, visitId, assignedTechnicianIds, expectedVersion })` — enforces terminal-job / terminal-visit / version guards and canonical crew normalization. Single crew write path.
+- `lifecycle.unscheduleVisit({ companyId, visitId, expectedVersion })` — enforces actioned-visit protection via `isVisitActioned`, then delegates to `schedulingRepository.unscheduleVisit`.
+
+**Storage fix (enables persistence of a feature UI claimed to offer):**
+- `jobVisitsRepository.updateJobVisit` (`server/storage/jobVisits.ts`) — now writes `equipmentIds` when present in the input. Previously stripped silently, so visit-level equipment selection from EditVisitModal was ephemeral. The `job_equipment` join table remains the separate, orthogonal concern managed by tech-app endpoints.
+
+**Client orchestration — single root:**
+- `client/src/components/visits/EditVisitModal.tsx` — removed `onDispatchSchedule` / `onDispatchReschedule` / `onDispatchUpdateCrew` props. Modal now consumes `useDispatchPreviewMutations` directly. `handleSave` split along the operational/metadata seam: schedule/crew/unschedule route through the dispatch hook; notes + equipment route through the narrow metadata PATCH. `completeMutation` and `deleteMutation` removed — replaced by `completeVisitWithOutcome` and `deleteVisit` from the hook. Equipment selection now persists.
+- `client/src/components/dispatch/VisitEditorLauncher.tsx` — callback props removed. Launcher is now a pure mount point; every mounting page (Dashboard, DispatchPreview, JobDetailPage) gets identical save behavior by construction.
+- `client/src/pages/DispatchPreview.tsx` — removed shadow inline mutation `handleUpdateVisitNotes` (was a duplicate apiRequest with partial invalidation). Removed dead `handleUpdateCrew` / `handleUpdateStatus` handlers (0 callers). Launcher mount no longer passes dispatch callbacks. `apiRequest` import dropped.
+- `client/src/components/dispatch/DispatchDetailPanel.tsx` — panel is now TASK-ONLY (existing intent, now enforced at the code level). `VisitProps` type removed; `VisitDetail`, `CrewPicker`, and `UnscheduledScheduleForm` functions deleted (~800 LOC of dead visit-editing code). Default export always renders `TaskDetail`.
+- `client/src/components/AddVisitDialog.tsx` — bespoke `createMutation` + `apiRequest` + `invalidate*` helpers replaced by `useDispatchPreviewMutations.scheduleVisit`. One hook, every create-visit surface.
+- `client/src/components/dispatch/useDispatchPreviewMutations.ts` — `UpdateCrewParams` + request body renamed `technicianUserIds` → `assignedTechnicianIds` to match the server canonical contract.
+
+**Files affected:**
+- `server/services/jobLifecycleOrchestrator.ts` (+ `AssignVisitCrewIntent`, `UnscheduleVisitIntent`, `assignVisitCrew`, `unscheduleVisit`)
+- `server/routes/jobVisits.routes.ts` (schema narrowing, status delegator, exported schema for tests)
+- `server/routes/scheduling.ts` (resize + unschedule + assign-crew → orchestrator, field rename, exported schema for tests)
+- `server/storage/jobVisits.ts` (equipmentIds persistence fix)
+- `client/src/components/visits/EditVisitModal.tsx` (save split, hook consumption)
+- `client/src/components/dispatch/VisitEditorLauncher.tsx` (pure mount point)
+- `client/src/components/dispatch/useDispatchPreviewMutations.ts` (crew field rename)
+- `client/src/components/dispatch/DispatchDetailPanel.tsx` (visit branch deleted)
+- `client/src/pages/DispatchPreview.tsx` (dead handlers removed, launcher mount simplified)
+- `client/src/components/AddVisitDialog.tsx` (migrated to canonical hook)
+
+**Tests:** `tests/visit-mutation-canonical-paths.test.ts` — 24 integration tests pinning: narrow PATCH schema accept/reject matrix, canonical crew field rename (accepts `assignedTechnicianIds`, rejects legacy `technicianUserIds`), `lifecycle.assignVisitCrew` positive/negative matrix, `lifecycle.unscheduleVisit` actioned-visit rejection across `in_progress` / `en_route` / `checkedInAt`-present states, equipment persistence round-trip via narrow PATCH. All 24 pass.
+
+**Breaking contract changes:** `PATCH /api/calendar/visit/:visitId/assign-crew` now requires `assignedTechnicianIds` (was `technicianUserIds`). `PATCH /api/jobs/:jobId/visits/:visitId` rejects every operational field. Callers updated in lockstep in this PR; no external consumers exist.
+
+#### Terminology: user-facing "Technician" → "Team" in generic contexts (feature, 2026-04-21)
+
+The product serves multiple field-service verticals (HVAC, plumbing, electrical, landscaping, fire protection) and "Technician" is too narrow for generic workforce surfaces. Surgical label pass — only changed user-visible strings where meaning is "any staff member". No backend renames, no schema changes, no type renames, no route renames, no role-catalog changes.
+
+**Generic surfaces (changed to Team / Team member / Team members):**
+- `client/src/components/TodaysOperationsCard.tsx` — card title "Technician workload" → "Team workload"; team-filter label "All technicians" → "All team"; empty-dropdown copy; four empty-state strings.
+- `client/src/components/dispatch/DispatchFiltersBar.tsx` — tech filter label "Technicians" → "Team".
+- `client/src/components/TechnicianSelector.tsx` — placeholder "Search technicians…" → "Search team…"; "No technicians found" → "No team members found". Component name kept because it's referenced by internal types.
+- `client/src/components/visits/VisitTeamAssignment.tsx` — dialog label "Select Technician" → "Select team member".
+- `client/src/components/dispatch/DispatchDetailPanel.tsx` — "Search technicians…" (×2), "Assign technician" (×2), section title "Technician" → "Assignee".
+- `client/src/components/tasks/TasksPanel.tsx` — "All Technicians" → "All team" (trigger + item).
+- `client/src/pages/PayrollPage.tsx` — 3 strings: "Select technician" placeholder + two "Select a technician to view …" lines.
+- `client/src/pages/TimesheetReportPage.tsx` — "No technicians available." → "No team members available."
+- `client/src/components/visits/EditVisitModal.tsx` — "This technician already has a visit at this time." → "This team member …"
+- `client/src/components/help/HelpPanel.tsx` — help topic label "Managing technicians" → "Managing team". Topic id kept so existing deep links still resolve.
+- `client/src/components/jobs/JobScheduleFields.tsx` — "Select Technician" → "Select team member"; "No available technicians" → "No available team members".
+- `client/src/components/team-hub/SchedulesTab.tsx` — left-rail card title "Technicians" → "Team"; "No schedulable technicians yet." → "No schedulable team members yet."; "Select a technician to edit their schedule." + "…so new technicians have a default schedule."
+- `client/src/components/team-hub/CompensationTab.tsx` — card title "Technicians" → "Team"; two adjacent strings.
+- `client/src/components/team-hub/TeamMetricsStrip.tsx` — metric tile "Schedulable techs" → "Schedulable" (hint tightened to "On dispatch").
+- `client/src/tech-app/components/ViewingScopePicker.tsx` — "All technicians" → "All team"; "Specific technicians" → "Specific team members"; "Search technicians…" → "Search team…"; "No other technicians found" → "No other team members found".
+
+**Role-specific / internal — deliberately preserved:**
+- `AppSidebar.tsx` nav item "Technician" → the tech PWA product surface (routes to `/tech/login`). Kept.
+- `InviteMemberDialog.tsx` role option `{ value: "technician", label: "Technician" }` → canonical role in the permission model. Kept.
+- `MembersTab.tsx` role-filter option "Technicians only" and role-badge "Technician" → role-specific. Kept.
+- `RolesAccessTab.tsx` role display fallback "Technician" → canonical role name. Kept.
+- Every `@/hooks/useTechnicians`, `TechnicianSelector` component name, `TeamTechnicianRow` type, `resolveTechnicianColor`, `filterSchedulableTechnicians`, `/api/team/technicians` route, `assignedTechnicianIds` DB field, `useTechniciansDirectory` hook, test IDs like `option-technician-*` / `chip-technician-*` / `button-assign-technician` — untouched.
+
+**Verification:** `npm run check` passes. No layout regressions visible — shortened strings fit existing width allowances; the two added "member" suffixes only lengthen empty-state copy which has generous space.
+
+**Breaking changes:** none. Help topic ID stayed `"managing-technicians"` so existing deep links still land on the article; only the rendered label changed.
+
+#### Dashboards — Operations/Financial separation + A/R Aging top-row promotion (refinement, 2026-04-21)
+
+Surgical structural correction across the two dashboards so each page has a clear purpose.
+
+**Operations Dashboard (`client/src/pages/Dashboard.tsx`):**
+- Removed the **Invoices** WorklistCard entirely (Past due / Outstanding / Draft invoices rows). Invoice management now lives on the Financial Dashboard; the Operations Dashboard is operations-only.
+- Removed the `/api/invoices/stats` `useQuery` hook and the four derived counts (`outstandingTotal`, `outstandingCount`, `pastDueCount`, `draftInvoiceCount`) that only powered the removed card.
+- Removed now-unused `DollarSign` lucide import and the local `formatCurrency` helper.
+- Removed the single-column wrapper grid around the former Invoices card. The Quotes + PM Health row below rises up with natural spacing — no dead separator, no empty gap. Team workload, operational alerts, Quotes, PM Health all untouched.
+
+**Financial Dashboard (`client/src/pages/FinancialDashboard.tsx`):**
+- KPI strip promoted from 3 tiles to **4 tiles**: Payments Received This Month, Outstanding A/R, Overdue A/R, **A/R Aging**. Grid: `sm:grid-cols-3` → `sm:grid-cols-2 lg:grid-cols-4`.
+- Removed the large A/R Aging card that previously sat at the top of the right-column oversight stack. No duplicate A/R Aging anywhere on the page.
+- New `AgingKpiTile` subcomponent built to match the KPI visual rhythm: icon + label, total outstanding (`text-2xl` matching sibling KPIs), thin 5-segment stacked proportion bar (emerald → amber → orange → red → dark-red), and an oldest-bucket callout line ("$X in 90+ days" in red when the oldest tier has balance, or "No aging balance" when empty). Click routes to `/invoices?filter=overdue`.
+- Removed the now-dead `AgingRow` subcomponent it replaced.
+- Right column below the KPIs is now just Top Outstanding Invoices + Top Customer Balances. Left column unchanged (Ready to Invoice → Draft Invoices).
+
+**Files changed:**
+- `client/src/pages/Dashboard.tsx` — Invoices card + query + derived consts + `DollarSign`/`formatCurrency` removed.
+- `client/src/pages/FinancialDashboard.tsx` — KPI grid widened to 4 cols, `AgingKpiTile` added, large A/R Aging card + `AgingRow` subcomponent removed.
+
+**Breaking changes:** none. No backend changes. No route changes. All existing links preserved.
+
+#### Financial Dashboard — workflow-vs-oversight two-column hierarchy (refinement, 2026-04-21)
+
+Layout + priority pass. The page had the right data but the wrong hierarchy — every section stacked full-width, which buried the daily workflow under the oversight cards. Restructured into a stable two-column grid keyed to user intent.
+
+**Layout:**
+- KPI strip (Payments Received This Month / Outstanding A/R / Overdue A/R) stays full-width.
+- Below the KPI strip, a `grid-cols-1 lg:grid-cols-2 gap-3` container with two equal columns, each a `space-y-3` stack.
+- **Left column = billing workflow / action queue** (what staff works on now): Ready to Invoice → Draft Invoices.
+- **Right column = financial oversight** (what ownership monitors): A/R Aging → Top Outstanding Invoices → Top Customer Balances.
+- A/R Aging moved out of the former dominant wide row into the right-column summary stack — it's informational, not workflow.
+
+**Rename:**
+- "Jobs Ready to Invoice" → **"Ready to Invoice"** everywhere on the page (title, empty state: "Nothing ready to invoice."). Backend field name `readyToInvoiceJobsPreview` and URL param `readyToInvoiceOnly` unchanged — presentation-only rename.
+
+**Row enhancements:**
+- **Ready to Invoice rows** — new relative age badge (Today / 1d ago / Nd ago) computed from `completedAt`. Badge flips from slate to amber once the job has sat > 7 days, so old backlog is visually louder. Removed the redundant "Completed {date}" text from the secondary line (the badge carries that signal more succinctly).
+- **Draft Invoice rows + Top Outstanding rows + Top Customer Balances** — amount column bumped from `text-sm` to `text-base` and wrapped in `whitespace-nowrap`. Customer stays primary label; date/invoice number stays secondary metadata.
+
+**Backend — `server/storage/dashboard.ts`:**
+- Flipped `readyToInvoiceJobsPreview` ORDER BY from `DESC` (newest completed first) to `ASC NULLS LAST` on `COALESCE(closedAt, updatedAt)` — the oldest-waiting jobs now surface at the top of the backlog, matching "work the oldest first" workflow priority. Predicate unchanged — still byte-identical to `getJobCounts.requiresInvoicingCount` and `jobsFeed.readyToInvoiceOnly`.
+
+**Files changed:**
+- `client/src/pages/FinancialDashboard.tsx` — full main-body restructure, age-badge helper (`computeAgeBadge`), rename, amount emphasis.
+- `server/storage/dashboard.ts` — sort flip only.
+
+**Breaking changes:** none. Response shape unchanged.
+
+#### Financial Dashboard — replace count KPIs with actionable preview lists (refinement, 2026-04-21)
+
+Follow-up pass on the Financial Dashboard V1. The Draft Invoices and Jobs Ready to Invoice count tiles were low-signal — users want rows they can click, not a number. Replaced with two list sections that show the actual underlying records.
+
+**Backend — `server/storage/dashboard.ts` (extended `getFinancialSummary`):**
+- Added `draftInvoicesPreview` — 6 most recent drafts (`status='draft'`), ordered by `createdAt DESC`, joined to customer + location. Server-side limit.
+- Added `readyToInvoiceJobsPreview` — 6 most recently completed jobs whose NOT-EXISTS-invoice check passes. Predicate **byte-identical** to `getJobCounts.requiresInvoicingCount` and `jobsFeed.readyToInvoiceOnly` — single source of truth so preview rows, dashboard count, and `/jobs?readyToInvoiceOnly=true` all agree row-for-row. `activeJobFilter()` applied so soft-deleted jobs cannot leak through.
+- Both queries join the same `Promise.all` — still one round-trip.
+- Added `desc` to the drizzle-orm import set.
+
+**Frontend — `client/src/pages/FinancialDashboard.tsx`:**
+- Top KPI strip trimmed from 5 tiles to 3: **Payments Received This Month**, **Outstanding A/R**, **Overdue A/R**. Grid: `lg:grid-cols-5` → `sm:grid-cols-3`.
+- Removed the Draft Invoices + Jobs Ready to Invoice count tiles.
+- Added two new list sections below Top Customer Balances in a two-column row (same `DashCard` + `CardHeader` rhythm as the A/R Aging + Top Outstanding Invoices row above). Each section: up to 6 rows; row click → detail page; `View all` header link → canonical filtered list (`/invoices?filter=draft`, `/jobs?readyToInvoiceOnly=true`); skeleton loader + calm empty state.
+- `pipeline.readyToInvoiceCount` and `draft.count`/`draft.total` remain on the DTO for backwards compatibility but are unconsumed on this page — kept intentionally to avoid churn.
+
+**Files changed:**
+- `server/storage/dashboard.ts` — extended `FinancialSummary` interface + 2 new queries in `Promise.all` + `desc` import.
+- `client/src/pages/FinancialDashboard.tsx` — KPI strip trimmed + 2 new preview sections + local type sync.
+
+**Breaking changes:** none. Response shape strictly additive.
+
+#### Financial Dashboard — V1 cleanup pass (refinement, 2026-04-21)
+
+Surgical content/layout cleanup on the V1 Financial Dashboard — no rebuild.
+
+- Removed the **Approved Quotes Not Converted** KPI tile — it's a sales/workflow signal, not a financial control signal.
+- Removed the entire lower **Billing Workflow** row (three cards duplicating the top KPI strip).
+- Removed the now-dead `WorkflowCard` subcomponent and unused `FileText` / `FileCheck` imports.
+- Top KPI grid shrunk from 6 columns to 5 (this pass — later trimmed to 3 in the V1.1 preview-list pass).
+- Container wrapper aligned byte-for-byte with the Operations Dashboard: stripped `max-w-7xl` from both `<main>` branches so both pages share `<main className="mx-auto px-4 sm:px-5 lg:px-6 py-4">` exactly.
+- `pipeline.approvedQuotesNotConvertedCount` and `quotes.approvedTotal` remain on the DTO (unconsumed) — kept to avoid churn per brief.
+
+**Files changed:** `client/src/pages/FinancialDashboard.tsx` only. Backend unchanged. No breaking changes.
+
+#### Financial Dashboard — canonical financial command center (feature, 2026-04-21)
+
+Built a new Financial Dashboard at `/financials`, wired end-to-end with zero mock data and zero parallel finance logic. Every metric comes from canonical sources already in the codebase — this feature is 90% "plumbing to surfaces that already exist" and 10% new aggregation SQL.
+
+**Backend — `server/storage/dashboard.ts` (extended `getFinancialSummary`):**
+- Added tenant-wide A/R aging buckets (current / 1–30 / 31–60 / 61–90 / 90+). Hoisted the per-client SQL pattern from `customerCompanies.getBillingAggregatesForLocations` so the predicate family (unpaid statuses × due-date bracket × `balance > 0`) stays single-sourced.
+- Added `topOutstandingInvoices` (top 10 by balance, joined to customer + location names, server-limited, days-late derived).
+- Added `topCustomerBalances` (top 10 by outstanding, grouped on `customer_companies`, `HAVING SUM > 0` to exclude zero-balance customers).
+- Added `draft: { count, total }` (status='draft' aggregate).
+- Added `pipeline.readyToInvoiceCount` — predicate **byte-identical** to `getJobCounts.requiresInvoicingCount` (status='completed' + `NOT EXISTS invoice on job`), so the Financial Dashboard card and the Operations Dashboard dashboard-action modal never diverge.
+- Added `pipeline.approvedQuotesNotConvertedCount` — derived from the existing quotes pipeline query (`quotes.status='approved'` is by definition "not converted", since conversion flips status to `'converted'`).
+- Added `quotes.approvedTotal` — SUM(total) of approved quotes for the pipeline-value label.
+- All 15 aggregates dispatch concurrently through the same `Promise.all` — one round-trip.
+
+**Backend — no new endpoint.** `GET /api/dashboard/financial` already existed (dead route since 2026-04-10, zero consumers); extending its return shape is strictly additive and zero-drift.
+
+**Frontend — new page `client/src/pages/FinancialDashboard.tsx`:**
+- KPI strip: Payments Received This Month, Outstanding A/R, Overdue A/R, Draft Invoices, Jobs Ready to Invoice, Approved Quotes Not Converted. All tiles clickable to canonical filtered lists.
+- A/R aging section with proportional bars.
+- Top 10 Outstanding Invoices table — each row links to `/invoices/:id`.
+- Top Customer Balances table — each row links to `/clients/:customerCompanyId`.
+- Billing Workflow cards (Ready to Invoice / Draft / Approved Quotes).
+- "Revenue" relabeled as **Payments Received This Month** (cash-basis from `payments.receivedAt`) to match the underlying data — no misrepresented accrual metric.
+- No charts in v1 — correctness before decoration.
+
+**Navigation wiring:**
+- `/financials` route registered in `client/src/App.tsx` (replaces the 2026-04-10 stub that was deleted for having zero navigation entries).
+- Sidebar entry "Financials" added to `client/src/components/AppSidebar.tsx`, adjacent to Invoices in the Work Management section, `DollarSign` lucide icon.
+- Right-side **Financial Dashboard** button in the Today's Operations header on `client/src/pages/Dashboard.tsx` — uses the existing outline/h-8 button style.
+
+**Jobs deep-link filter — canonical, not shortcut:**
+- Surfaced `readyToInvoiceOnly=true` URL param on `/jobs`. The backend filter already existed (`server/storage/jobsFeed.ts:readyToInvoiceOnly`, wired in `server/routes/jobs.ts:122`). Added plumbing through `client/src/hooks/useJobsFeed.ts` (new `readyToInvoiceOnly` in `JobFeedParams`, URL builder, cache key) and `client/src/pages/Jobs.tsx` (parse param, pass to feed, pre-select lifecycle='completed' for UI affordance).
+- The Financial Dashboard's "Jobs Ready to Invoice" card links to `/jobs?readyToInvoiceOnly=true`, matching the Operations Dashboard's `requiresInvoicingCount` row-for-row.
+
+**Quote deep-link:**
+- `/quotes?status=approved` already worked — `Quotes.tsx` parses the URL param. Because quote statuses are mutually exclusive (`'approved'` vs `'converted'`), status=approved IS "approved and not converted". No backend or page change needed.
+
+**Files changed:**
+- `server/storage/dashboard.ts` — extended `FinancialSummary` interface + `getFinancialSummary()` with aging, top invoices, top customers, draft, pipeline.
+- `client/src/pages/FinancialDashboard.tsx` — NEW page (501 LOC) rendering the full layout.
+- `client/src/App.tsx` — imports + `/financials` route registration.
+- `client/src/components/AppSidebar.tsx` — added "Financials" nav entry + `DollarSign` import.
+- `client/src/pages/Dashboard.tsx` — right-side "Financial Dashboard" button in Today's Operations header + `TrendingUp` icon + Button import.
+- `client/src/hooks/useJobsFeed.ts` — added `readyToInvoiceOnly` to `JobFeedParams`, URL, cache key.
+- `client/src/pages/Jobs.tsx` — parse `readyToInvoiceOnly` URL param, pass to feed, pre-select lifecycle filter.
+
+**Migration files:** none.
+**Breaking changes:** none. `GET /api/dashboard/financial` response shape is strictly additive — existing consumers (`Jobs.tsx` summary card reading `data.revenue.month`) are unaffected.
+
+**Metric definitions used:**
+- Payments Received This Month = `SUM(payments.amount)` where `payments.receivedAt` in current month.
+- Outstanding A/R = `SUM(invoices.balance)` where `status IN ('awaiting_payment','sent','partial_paid')` AND `balance > 0`.
+- Overdue A/R = Outstanding A/R AND `dueDate < CURRENT_DATE`.
+- Draft = `COUNT(*)` / `SUM(total)` where `status='draft'`.
+- Jobs Ready to Invoice = `COUNT(*)` where `status='completed'` AND no invoices reference the job.
+- Approved Quotes Not Converted = `COUNT(*)` / `SUM(total)` where `quotes.status='approved'`.
+- Avg Days to Pay — **omitted from v1**; not yet derivable from a canonical helper and the brief explicitly allows omission.
+
+#### Dashboard: workload controls refined to dual dropdowns (feature, 2026-04-21)
+
+Follow-up pass on the morning's workload-view + Manage-team addition. The inline controls row (segmented `[All] [Open only]`, `N technicians` count, loose `Manage team` link) collapses into two compact dropdowns matching the Dispatch filter bar:
+
+- **View** — `[All ▼]` / `[Open ▼]`. Single-select. Drives the existing booked-vs-open-only rendering with no data-path change.
+- **Team** — `[All technicians ▼]` / `[<Name> ▼]` / `[N selected ▼]`. Multi-select checkbox list over the capacity feed's own tech roster, Select All / Clear All row at top, `Manage team` footer link (`/settings/team?tab=schedules`). No "Unassigned" row — the dashboard rail is technicians only.
+
+The dropdown shell was extracted from `DispatchFiltersBar.tsx` into a shared `client/src/components/MultiSelectDropdown.tsx` and both surfaces now import it. Badge rendering is opt-in (only fires when the caller supplies both `count` and `total`) so the dashboard trigger can show a plain text label.
+
+Filter state lives entirely in `TodaysOperationsCard` component state:
+- `workloadView: "all" | "open"`
+- `selectedTechIds: Set<string> | null` — `null` sentinel encodes "all", keeps the label stable, auto-collapses when user toggles back to a full set.
+- A reconcile effect drops IDs that no longer appear in the capacity feed (e.g. tech deactivated since page load).
+
+Empty states are distinct: "No technicians selected." when the user cleared the team filter; "No technicians have open availability today." when Open is picked and nothing matches; "No technicians match the current filters." otherwise.
+
+**Files changed:**
+- `client/src/components/MultiSelectDropdown.tsx` (new, extracted)
+- `client/src/components/dispatch/DispatchFiltersBar.tsx` (import from shared file, remove inline copy)
+- `client/src/components/TodaysOperationsCard.tsx` (two-dropdown header, team state + reconcile, refined empty states)
+
+**Breaking changes:** none. Dispatch dropdown behavior is byte-identical to before — same component, different file.
+
+#### Dashboard + Dispatch: workload view toggle + Team Management shortcuts (feature, 2026-04-21)
+
+Targeted UX pass on the two surfaces where admins most often need to jump from "what's happening right now" into "fix the schedule".
+
+**Dashboard → Today's Operations → Technician workload (`client/src/components/TodaysOperationsCard.tsx`):**
+- Header now carries a compact segmented toggle: **All** (current behavior — booked + open rows, "N jobs · ~Xh" summary) vs **Open only** (filters the rail to technicians with at least one open block, hides booked rows inside each tile, and replaces the jobs/hours summary with "Xh Xm open today"). Pure presentation filter — zero impact on the `/api/dashboard/capacity` feed.
+- Added subtle "Manage team" link in the same header row, routed to `/settings/team?tab=schedules` via wouter `<Link>` (the hub's existing URL-state accepts `?tab=schedules`).
+- New empty state when "Open only" is active and nobody has open availability today.
+
+**Dispatch → filters bar → Technicians dropdown (`client/src/components/dispatch/DispatchFiltersBar.tsx`):**
+- Added a "Manage team" footer utility link inside the technician dropdown, below a divider, with the settings icon. Routes to `/settings/team?tab=schedules`. Placed below the checkbox list so it cannot be mistaken for a selection row and doesn't interfere with Select All / Clear All.
+
+**Files changed:**
+- `client/src/components/TodaysOperationsCard.tsx` — header toggle, filtered rail, tile `view` prop, empty state, Manage team link.
+- `client/src/components/dispatch/DispatchFiltersBar.tsx` — footer Manage team link in tech dropdown.
+
+**No new routes, no schema changes, no duplicate data paths.** The open-row filter operates on the existing `scheduleBlocks` array that the capacity endpoint already emits.
+
+**Breaking changes:** none.
+
+#### Team Management: Roles & Access tab — fix broken rolePermissions fetch (fix, 2026-04-21)
+
+**Bug:** In `client/src/components/team-hub/RolesAccessTab.tsx` (and the previous copy in the old multi-tab `TeamMemberDetail.tsx` prior to the Phase 3 rewrite), the `rolePermissions` query had no `queryFn`, so the default fetcher silently hit `/api/roles` (which returns `Role[]`) instead of `/api/roles/:roleId/permissions` (which returns `string[]` of permission names). The "inherited from role" indicator and the Allow/Deny override button states were populated from the wrong shape — permissions that the selected role actually had were not flagged as inherited.
+
+**Fix:** Added an explicit `queryFn` that fetches `/api/roles/${member.roleId}/permissions`. The endpoint itself (`server/routes/roles.ts:328`) is unchanged; it has always returned the permission-name array. Only the client-side fetcher was broken.
+
+**Files changed:**
+- `client/src/components/team-hub/RolesAccessTab.tsx` — add canonical queryFn for rolePermissions.
+
+**Migration files:** none.
+**Breaking changes:** none.
+
+#### Team Management: Phase 4 polish — bulk actions, URL state, dirty protection, metrics (feature, 2026-04-20)
+
+Production-minded enhancement pass on top of the Phase 2 hub and Phase 3 hardening. No new schema, no new backend routes — all bulk actions fan out across canonical per-user endpoints with partial-success reporting.
+
+**Targeted audit findings:**
+- Editable surfaces *without* dirty protection before this pass: Compensation tab, Roles & Access tab, Add Member dialog, Invite dialog, profile-page basic info. Schedules tab already had ad-hoc protection (Phase 3).
+- Backend has no bulk endpoints. Per-user routes available: `POST /api/team/:userId/{activate|deactivate}`, `PATCH /api/team/:userId` (role, isSchedulable, useCustomSchedule), `PUT /api/team/:userId/working-hours`, `PUT /api/team/:userId/profile`.
+- Metrics derivable from canonical queries already used by the hub: `/api/team`, `/api/team/technicians`, `/api/team/technicians/working-hours` (which exposes per-tech `source: "custom" | "company"`).
+
+**Dirty-state protection** — single shared hook `useUnsavedChanges` (`client/src/hooks/useUnsavedChanges.ts`):
+- `markDirty()`, `markClean()`, `confirmLeave(action, message?)`, `isDirty`.
+- Auto-binds `beforeunload` so refresh / tab-close gets the native prompt while dirty. Removed on unmount or `markClean()`.
+- Applied uniformly across SchedulesTab, CompensationTab, RolesAccessTab, AddMemberDialog, InviteMemberDialog, TeamMemberDetail. Replaced ad-hoc per-component `confirmIfDirty` helpers.
+
+**URL state for the hub** (`/settings/team?tab=&member=`):
+- Selected tab and selected member are now URL-driven via wouter `useSearch` (canonical pattern; same as `JobDetailPage.tsx:437`, `ClientDetailPage.tsx:397`).
+- A combined `goToTabWithMember(tab, id)` setter avoids the race where two synchronous `setLocation` calls would each read a stale `params` snapshot and clobber each other.
+- Each tab keeps a *local* `displayedId` fallback when its list can't show the URL's selection (e.g. Schedules can't render an office user). The fallback never rewrites the URL — switching back to a tab that *can* show the original selection still sees it.
+
+**Bulk operations on the Members tab** (`BulkActionsBar.tsx`):
+- Row checkboxes + "select all visible" with indeterminate state + auto-deselect when filters drop a row.
+- Actions: **Enable**, **Disable**, **Set role**, **Revert to company hours**.
+- Each action runs as `Promise.allSettled` over per-user calls. Partial successes are reported honestly: "X succeeded, Y failed — <first failure message>". Server-side guards (role hierarchy, last-owner, last-admin) still apply per user.
+- Confirmation modal for every action with affected count and explicit copy on what server-side guards may reject.
+- The "Revert to company hours" action just flips `useCustomSchedule=false` per selected member — no destructive overwrite of stored `working_hours` rows. Aligns with the canonical inheritance model (Phase 3).
+
+**Team metrics strip** (`TeamMetricsStrip.tsx`):
+- Compact 5-tile row above the tabs: Active, Inactive, Schedulable techs, Company hours, Custom schedules.
+- Pure derivations from already-cached queries — TanStack dedupes by key so the strip is free.
+- No charts, no vanity metrics, no new backend.
+
+**Workflow polish:**
+- Members search input autofocuses on tab mount.
+- Per-row Enter opens the profile; Space toggles selection. Row gets a focus ring.
+- New "Schedule" row action (calendar icon) jumps directly to the Schedules tab with the technician pre-selected.
+- New filter values: "Technicians only" and "Office (non-tech)" alongside per-role choices.
+- Tighter empty/loading states across all tabs (e.g. "No matches" vs. "No schedulable technicians yet").
+
+**Files changed:**
+- `client/src/hooks/useUnsavedChanges.ts` (new)
+- `client/src/components/team-hub/BulkActionsBar.tsx` (new)
+- `client/src/components/team-hub/TeamMetricsStrip.tsx` (new)
+- `client/src/pages/TeamHubPage.tsx` — URL state, lifted member selection, metrics strip
+- `client/src/components/team-hub/MembersTab.tsx` — selection, bulk bar, autofocus, Enter-to-open, Schedule row action, expanded filters
+- `client/src/components/team-hub/SchedulesTab.tsx` — accept selection props, shared dirty hook, local displayedId fallback
+- `client/src/components/team-hub/CompensationTab.tsx` — accept selection props, shared dirty hook, local displayedId fallback
+- `client/src/components/team-hub/RolesAccessTab.tsx` — accept selection props, shared dirty hook, local displayedId fallback
+- `client/src/components/team-hub/AddMemberDialog.tsx` — confirm on close while dirty
+- `client/src/components/team-hub/InviteMemberDialog.tsx` — confirm on close while dirty
+- `client/src/pages/TeamMemberDetail.tsx` — dirty tracking on basic info; confirm on back-link
+
+**Migration files:** none.
+**Breaking changes:** none. Existing `/settings/team` URL still works; the `?tab=` and `?member=` query params are additive.
+
+#### Team Management: hardening pass — default hours, color drift, profile de-scope (fix, 2026-04-20)
+
+Phase 3 polish after the Team Hub ships. Addressed four production issues:
+
+**1. New technicians showed blank weekly hours.**
+Root cause: the canonical schedule model is **inheritance** — if `users.useCustomSchedule=false` the app falls back to `company_business_hours`. The backend already honors this (`server/routes/team.ts:320-366`, `server/storage/capacity.ts:417`); the hub's Schedules tab did not. It rendered `member.workingHours` directly, which is empty for new techs — so the admin saw "Off Off Off Off" even though dispatch + capacity correctly used the company baseline.
+**Fix:** `SchedulesTab` now fetches `/api/company/business-hours`, normalizes it to the same shape as per-user hours, and renders it as the baseline whenever `useCustomSchedule=false`. When the admin flips "Use custom schedule" ON for a tech with no saved hours, the editor seeds from the baseline so they never start from Off/Off/Off. If company hours are unset, the tab surfaces an inline warning pointing to Settings → Business Hours.
+
+**2. Technician colors drifted between dispatch and the team surfaces.**
+Root cause: three independent index-based fallback palettes (`dispatchPreviewMappers.ts:188`, `TechnicianSelector.tsx:77`, `ViewingScopePicker.tsx:150`), all using `m.color ?? DEFAULT_COLORS[i % N]`. Because `i` is the tech's position in a filtered/sorted list, the same tech could get different indices — and therefore different fallback colors — in different views. The hub applied no fallback at all, so a user with `technician_profiles.color = null` was blank in the hub and colored in dispatch.
+**Fix:** Added `resolveTechnicianColor(userId, profileColor)` in `@shared/colors.ts` — a userId-stable hash over `TECHNICIAN_COLORS`. Order-independent: same user → same color everywhere. Refactored the three existing callsites plus every team-hub surface and the profile-page avatar to use it. Custom colors from `technician_profiles.color` still win when set. One-time visual shift for legacy techs without a profile color; stable from then on.
+
+**3. Profile page was still a multi-tab operations console.**
+Removed the Schedule, Billing, and Permissions tabs from `TeamMemberDetail.tsx`. Those workflows live in the Team Hub now. The profile page is the personal-detail surface for name, phone, login email, role, enable/disable, and password reset. Removed ~1000 lines of dead tab state, mutations, and queries in a single-file rewrite.
+
+**4. Profile page was too tall.**
+Replaced the multi-tab layout with a single compact card: 40px avatar (down from 64px), two-column form grid, inline save/disable/reset-password actions, footer row with join date and last-login. Fits above the fold on a typical desktop display. Followed existing app design language (shadcn + rounded-md).
+
+**Hardening additions:**
+- `SchedulesTab` now prompts before switching techs while changes are unsaved (`confirmIfDirty`).
+- `SchedulesTab` empty/warning states distinguish "inheriting company hours" vs. "company hours not configured".
+- Single-source-of-truth color helper means any future surface gets the correct color by default.
+
+**Files changed:**
+- `shared/colors.ts` — added `resolveTechnicianColor(userId, profileColor)`
+- `client/src/components/dispatch/dispatchPreviewMappers.ts` — use resolver
+- `client/src/components/TechnicianSelector.tsx` — use resolver, remove local palette
+- `client/src/tech-app/components/ViewingScopePicker.tsx` — use resolver, remove local palette
+- `client/src/components/team-hub/SchedulesTab.tsx` — inherit company hours, seed on toggle, unsaved-change guard
+- `client/src/components/team-hub/CompensationTab.tsx` — use resolver
+- `client/src/components/team-hub/RolesAccessTab.tsx` — use resolver
+- `client/src/pages/TeamMemberDetail.tsx` — **rewritten** to compact single-card layout; Schedule/Billing/Permissions tabs removed
+
+**Migration files:** none — DB schema unchanged.
+**Breaking changes:** none. Profile page deep links still work; deprecated tab URLs were never routable (tabs used internal state).
+
+#### Team Management: centralized hub at `/settings/team` (feature, 2026-04-20)
+
+Replaced the fragmented team-management surface area (three separate pages, one
+orphan URL, a toast-only invite stub) with a single tabbed hub:
+Members · Schedules · Compensation · Roles & Access.
+
+**What changed:**
+
+- **New canonical page** `/settings/team` (Phase 2 of `TEAM_MANAGEMENT_AUDIT.md`).
+  Tabbed hub with fast tech-switching on every tab — no profile-by-profile
+  navigation to edit schedules, rates, or access.
+- **Real invite flow.** `handleInviteSubmit` in the old `ManageTeam.tsx`
+  (line 235) was a toast stub that never called the backend. The new
+  `InviteMemberDialog` hits canonical `POST /api/invitations`, respects
+  server-side `canAssignRole` hierarchy, and surfaces the accept link so admins
+  can distribute it directly.
+- **Settings card + back-links repointed.** Settings → Team Management now opens
+  `/settings/team`. `/manage-team` is a `<Redirect>` to the new URL. The
+  individual profile page at `/manage-team/:userId` is preserved per audit §7.4
+  as the personal-detail surface; its back-arrow now returns to the hub.
+- **Dead pages removed.** `TechnicianManagementPage.tsx` (orphan, called the
+  non-existent `/api/technicians/invite`, `.../DELETE`, `.../reset-password`
+  endpoints; flagged UI-001 in `App.tsx:58`) and `ManageTeam.tsx` (superseded
+  by the hub + redirect) are deleted. `ManageRoles.tsx` is still linked from
+  the Roles & Access tab via "Manage roles" — full consolidation of role-
+  definition CRUD is deferred to a later pass.
+
+**Reused existing backend (no new routes, no schema changes):**
+
+- `GET /api/team`, `GET /api/team/:userId`, `POST /api/team`,
+  `PATCH /api/team/:userId`, `POST /api/team/:userId/activate|deactivate`,
+  `PUT /api/team/:userId/profile`, `PUT /api/team/:userId/working-hours`,
+  `PUT /api/team/:userId/permissions`, `GET /api/team/:userId/effective-permissions`
+- `GET /api/team/technicians` (rate + color projection consumed by the left rail)
+- `GET /api/roles`, `GET /api/permissions`, `GET /api/roles/:roleId/permissions`
+- `POST /api/invitations` (finally wired to a real UI)
+
+**Performance baseline preserved** (per `CLAUDE.md` 2026-03-18):
+- No visit-filter predicate changes.
+- No invoice tax-batching changes.
+- All new polling would require `refetchIntervalInBackground: false`; the hub
+  adds no polling queries — it relies on TanStack invalidation after mutations.
+- Dispatch/capacity invalidation: every schedule save and enable/disable in
+  the hub invalidates `["/api/team/technicians"]` and
+  `["/api/team/technicians/working-hours"]`, which are the keys consumed by
+  `useTechnicians`, `useTechnicianWorkingHours`, `useDispatchStream`, and
+  `useDispatchPreviewMutations`. `filterSchedulableTechnicians()` at
+  `server/domain/scheduling.ts:507` is untouched.
+
+**Files changed:**
+
+- `client/src/pages/TeamHubPage.tsx` (new — hub shell)
+- `client/src/components/team-hub/MembersTab.tsx` (new)
+- `client/src/components/team-hub/SchedulesTab.tsx` (new)
+- `client/src/components/team-hub/CompensationTab.tsx` (new)
+- `client/src/components/team-hub/RolesAccessTab.tsx` (new)
+- `client/src/components/team-hub/InviteMemberDialog.tsx` (new — real invite)
+- `client/src/components/team-hub/AddMemberDialog.tsx` (new — extracted)
+- `client/src/components/team-hub/types.ts` (new — shared shapes)
+- `client/src/App.tsx` (mount hub at `/settings/team`, redirect `/manage-team`)
+- `client/src/pages/SettingsPage.tsx` (Team card → `/settings/team`)
+- `client/src/pages/TeamMemberDetail.tsx` (back-links → `/settings/team`)
+- `client/src/pages/ManageRoles.tsx` (back-link → `/settings/team`)
+- `client/src/pages/TechnicianManagementPage.tsx` (**deleted**, orphan)
+- `client/src/pages/ManageTeam.tsx` (**deleted**, superseded)
+
+**Migration files:** none — DB schema unchanged.
+
+**Breaking changes:** none. Existing deep links to `/manage-team` redirect;
+`/manage-team/:userId` unchanged.
+
+#### Dispatch + Dashboard: canonicalized visit-edit + quick-create launchers (2026-04-20)
+
+Canonicalization pass: eliminated the parallel per-surface orchestration
+Dashboard had accumulated when its workload-tile click-throughs were
+first wired, and folded Dispatch's inline quick-create state into the
+same shared launchers. Dispatch and Dashboard now invoke ONE
+implementation of each flow.
+
+**Two new shared components (`client/src/components/dispatch/`):**
+- **`VisitEditorLauncher.tsx`** — single controlled wrapper around
+  `EditVisitModal`. Accepts a `state: VisitEditorState | null` prop;
+  non-null renders the modal. Dispatch-specific optimistic-cache
+  callbacks (`onDispatchSchedule`, `onDispatchReschedule`,
+  `onDispatchUpdateCrew`) remain threadable but optional, so Dispatch
+  keeps its shared-cache fast path and Dashboard uses the
+  JobDetailPage-style modal-owned mutations. Same props, same modal,
+  two entry points.
+- **`SlotQuickCreateLauncher.tsx`** — single controlled wrapper around
+  the mini chooser `Dialog` + `QuickAddJobDialog` + `TaskDialog`.
+  Accepts `slot: QuickCreateSlot | null` and hands off to the canonical
+  create dialogs with prefill. `defaultJobDurationMinutes = 60` (matches
+  prior dispatch behavior); also applied by Dashboard's Open-row flow
+  when the slot omits an explicit duration.
+
+**`client/src/pages/DispatchPreview.tsx`** — removed:
+- Inline `EditVisitModal` mount (pre-existing `visitEditorModal` variable).
+- Inline 85-line quick-create `Dialog` (lines 1715–1795 of prior version).
+- `QuickAddJobDialog` + `TaskDialog` inline mounts.
+- Four state variables: `quickCreateJobOpen`, `quickCreateJobSchedule`,
+  `quickCreateTaskOpen`, `quickCreateTaskPrefill`.
+- Replaced `quickCreate` (`{techId, minuteOfDay}`) + its in-render date/
+  time derivation with a single `quickCreateSlot: QuickCreateSlot | null`
+  composed at `handleEmptySlotClick` time.
+- Dropped now-unused imports: `EditVisitModal`, `QuickAddJobDialog`,
+  `TaskDialog`, `Dialog*` from `ui/dialog`, `CalendarPlus`,
+  `ClipboardList`, `Truck`.
+- Behavior unchanged: same chooser UI (from the canonical launcher),
+  same prefill, same 60min default, same dispatch optimistic callbacks.
+
+**`client/src/pages/Dashboard.tsx`** — removed:
+- Inline `EditVisitModal` block.
+- Inline chooser `Dialog` + its 3 buttons.
+- Inline `QuickAddJobDialog` + `TaskDialog` mounts.
+- Five state variables: `visitEditorState` (custom shape with `open`),
+  `slotChooser`, `jobPrefillOpen`, `jobPrefill`, `taskPrefillOpen`,
+  `taskPrefill`.
+- The `invalidateCapacity()` wrapper and its calls on `onAfterMutation`/
+  `onSuccess`/`onChanged` — now handled canonically via SSE (see below).
+- Dropped now-unused imports: `EditVisitModal`, `QuickAddJobDialog`,
+  `TaskDialog`, `Dialog*`, `Button`, `CalendarPlus`, `ClipboardList`,
+  `Truck`, `useQueryClient`.
+- Added: two `<VisitEditorLauncher>` + `<SlotQuickCreateLauncher>`
+  mounts, fed by a simple `editorState` / `slot` useState pair.
+
+**`client/src/hooks/useDispatchStream.ts`** — added
+`["/api/dashboard/capacity"]` to `VISIT_JOB_KEYS`. The capacity query
+now refreshes on every visit/job SSE signal alongside
+`["dashboard","workflow"]` and `["dashboard","today-summary"]`. This
+replaces the per-surface `onAfterMutation` invalidation the Dashboard
+previously needed — no duplicate refresh path.
+
+**Files changed:**
+- `client/src/components/dispatch/VisitEditorLauncher.tsx` (new)
+- `client/src/components/dispatch/SlotQuickCreateLauncher.tsx` (new)
+- `client/src/pages/DispatchPreview.tsx`
+- `client/src/pages/Dashboard.tsx`
+- `client/src/hooks/useDispatchStream.ts`
+
+**Shared dialog files touched?** None. `EditVisitModal`,
+`QuickAddJobDialog`, `TaskDialog` reused with existing prop contracts.
+
+**Migrations:** none.  **Breaking changes:** none.
+
+#### Dashboard: clickable tech workload rows — edit visit + quick create in slot (2026-04-20)
+
+Tech workload tiles are now interactive. Booked rows open the canonical
+`EditVisitModal`; Open rows open a small chooser that fans out into the
+canonical `QuickAddJobDialog` / `TaskDialog` flows with slot prefill.
+
+**Frontend-only change. No backend or shared-component edits.**
+
+**`client/src/components/TodaysOperationsCard.tsx`:**
+- Outer tile wrapper converted from a `<button>` (which routed to
+  /dispatch) to a plain `<div>`. Individual schedule rows are now the
+  interactive affordance — no more nested buttons.
+- New callback props `onEditVisit({ jobId, visitId, title })` and
+  `onCreateInSlot({ technicianId, technicianName, date, startTime,
+  endTime, durationMinutes })`. Both are optional; when omitted the
+  rows render as disabled buttons (no behavior change for isolated
+  renders / tests).
+- `ScheduleBlockRow` becomes a `<button type="button">` with its own
+  onClick:
+  - Booked kind → `onEditVisit` (disabled if visitId/jobId missing).
+  - Open kind → `onCreateInSlot` (slot context converted to
+    company-local YYYY-MM-DD + HH:mm using the timezone on the capacity
+    response).
+- Open-row label now shows duration inline:
+  `START – END · Open (3h 15m)`. Subtle styling unchanged — still
+  emerald-50 tinted, not an alert color.
+
+**`client/src/pages/Dashboard.tsx`:**
+- Mounts `EditVisitModal`, a mini `Dialog` chooser (New Job / General
+  Task / Supplier Visit), `QuickAddJobDialog`, and `TaskDialog` at the
+  page root — the audit-recommended host.
+- Local state only: `visitEditorState`, `slotChooser`, `jobPrefill`,
+  `taskPrefill`. No context, no global store.
+- Booked-row wire-up uses JobDetailPage pattern: no dispatch callbacks;
+  modal fetches its own visit and handles mutations directly. Display
+  context is intentionally minimal (only `customerName` from the
+  block's `title`) — fully functional, header is lite.
+- Open-row wire-up mirrors dispatch's quick-create pattern verbatim:
+  chooser → set prefill state → open dialog. Prefill contracts:
+  - New Job → `QuickAddJobDialog.initialSchedule = { date, time,
+    durationMinutes, assignedTechnicianIds: [techId] }`.
+  - General Task → `TaskDialog.initialData = { assignedToUserId,
+    startDate, startTime, taskType: "GENERAL" }`.
+  - Supplier Visit → same `TaskDialog`, `taskType: "SUPPLIER_VISIT"`.
+- On mutation success (visit edit, job create, task create) the
+  capacity query `["/api/dashboard/capacity"]` is invalidated so the
+  rail refreshes without polling.
+
+**Files changed:**
+- `client/src/components/TodaysOperationsCard.tsx`
+- `client/src/pages/Dashboard.tsx`
+
+**Shared dialogs touched?** None. `EditVisitModal`, `QuickAddJobDialog`,
+`TaskDialog` reused with existing prop contracts.
+
+**Migrations:** none.  **Breaking changes:** none.
+
+#### Dashboard: capacity endpoint now uses company timezone (bugfix, 2026-04-20)
+
+Fixed a correctness bug that produced nonsensical tech-tile schedule
+rows like `4:00 AM – 1:00 PM · Open` for browsers in zones west of UTC.
+
+**Root cause:** `getTodayCapacity()` computed the day boundary and
+workStart/workEnd using `new Date().setHours(0,0,0,0)` — i.e. the
+server's local timezone. On hosted infrastructure the server runs in
+UTC, so all emitted ISO timestamps carried UTC wall-clock times. The
+browser then re-rendered those instants in its own local zone,
+shifting "9 AM–5 PM" by the full UTC↔local offset. Secondary: the
+dayOfWeek lookup used `dayStart.getDay()` (server-local), so the
+wrong `workingHours` row could be picked when the company-local date
+differed from server-UTC date at query time.
+
+**Fix:** resolved company timezone via `companyRepository.getCompanyTimezone()`
+and switched the day boundary to the canonical
+`getStartOfDayInTimezone()` / `getStartOfNextDayInTimezone()` helpers
+already used by `/api/calendar`. dow is now derived from the
+company-local YMD (constructed via `Intl.DateTimeFormat` in that zone),
+not from `getUTCDay()`. workStartMs / workEndMs remain `dayStartMs +
+minutes * 60_000`, which now anchors to company-local midnight — so
+added minutes produce company-local wall-clock times.
+
+The response gained a top-level `timezone` field mirroring what
+`/api/calendar` ships. The dashboard tile now formats clocks with
+`{ timeZone: response.timezone }` so a user browsing from a different
+zone still sees the same times the dispatch board shows.
+
+**Files changed:**
+- `server/storage/capacity.ts` — switched day/dow/workStart construction to canonical TZ helpers; added `timezone` to response.
+- `client/src/components/TodaysOperationsCard.tsx` — `formatClockTime` now takes a `timezone` param; plumbed through `TechCardData` and `ScheduleBlockRow`.
+
+**Migrations:** none.  **Breaking changes:** none.
+
+#### Dashboard: tech rail = day-at-a-glance; Today's Capacity card deleted (2026-04-20)
+
+Replaced the old per-tech tile (avatar + name + status chip + `loadPct` +
+progress bar + 3-visit preview + "+N more") with a day-at-a-glance
+schedule list on each tile, and deleted the separate `<TodaysCapacityCard />`
+that sat below the operational card. All tile data now flows from the
+single canonical `/api/dashboard/capacity` endpoint.
+
+**Backend** (`server/storage/capacity.ts`):
+- Added per-tech fields: `scheduleBlocks: ScheduleBlock[]`, `visitCount`,
+  `bookedMinutes`.
+- `ScheduleBlock` has `kind: "booked" | "open"` plus `startISO`/`endISO`/
+  `durationMinutes`; booked blocks also carry `title` (customer/location),
+  `visitId`, `jobId`, `visitStatus`.
+- New threshold `SCHEDULE_BLOCK_OPEN_THRESHOLD_MINUTES = 120`. Open rows
+  appear only when the gap meets the threshold; leading, inter-visit,
+  and trailing gaps all obey the same rule. Gaps <120min are suppressed.
+- Booked blocks include completed visits (so the tile shows the full day
+  even after shifts wrap); cancelled visits are excluded. Overlapping
+  visits render as separate booked rows so dispatchers see the overlap.
+- Existing capacity fields (`state`, `slot`, `totalAvailableMinutes`,
+  `meaningfulSlotCount`, `summary`) are retained — untouched from the
+  earlier passes. The 30-min `MIN_SLOT_MINUTES` constant continues to
+  govern those fields; 120-min governs tile display only.
+
+**Frontend** (`client/src/components/TodaysOperationsCard.tsx`):
+- Swapped `/api/calendar` + `/api/team/technicians/live-state` queries
+  for a single `/api/dashboard/capacity` query. Directory query is kept
+  for avatar color only.
+- Tile rewritten: dropped the status chip, percent, progress bar, 3-item
+  preview, and "+N more". Body is now a chronological schedule list.
+  Open rows get a subtle emerald tint (operationally meaningful, not
+  alarming). Completed visits render with strike-through + muted text so
+  they don't look active.
+- Empty-state rules: `off_today` → "Off today"; `day_over` with no
+  blocks → "Day ended"; otherwise "No scheduled jobs today".
+- Sort: techs with visits today first, then techs with any open block,
+  then `day_over`, then `off_today`. Within each group, more booked
+  minutes first, then name.
+
+**Dashboard** (`client/src/pages/Dashboard.tsx`):
+- Removed `<TodaysCapacityCard />` and its import. The row it shared with
+  Invoices collapsed to `grid-cols-1`; Invoices takes the full row.
+
+**Files changed:**
+- `server/storage/capacity.ts` (+ScheduleBlock, +buildScheduleBlocks, +3 per-tech fields)
+- `client/src/components/TodaysOperationsCard.tsx` (tile rewrite + query swap)
+- `client/src/pages/Dashboard.tsx` (remove TodaysCapacityCard import/usage, collapse grid)
+- `client/src/components/TodaysCapacityCard.tsx` **deleted**
+
+**Migrations:** none.  **Breaking changes:** none (frontend-only rewire).
+
+#### Dashboard: Today's Capacity summary strip (2026-04-20)
+
+Added a compact card-level summary strip to `<TodaysCapacityCard />` so a
+dispatcher can read overall team capacity before scanning individual tech
+rows. No architectural change — per-tech rows, sort order, and backend
+ownership model are unchanged.
+
+**Backend** (`server/storage/capacity.ts`):
+- Response gains a `summary` block: `{ dispatchableNowCount, isAnyOpenNow,
+  earliestAvailabilityAt, totalMeaningfulAvailableMinutes,
+  techniciansWithRoomLaterCount }`.
+- Computed in a single O(n) pass over the existing per-tech array —
+  keeps the definitions adjacent to the per-state logic so they can't
+  drift. Semantics documented in the `CapacitySummary` doc comment.
+- Key decisions:
+  - `dispatchableNowCount` counts only `open_now`. Pre-shift `fully_open`
+    techs are **not** dispatchable right now because they aren't on duty.
+  - `earliestAvailabilityAt` spans all four opening states
+    (open_now / fully_open / next_opening / limited_opening); `null`
+    when no meaningful opening exists today.
+  - `totalMeaningfulAvailableMinutes` simply sums per-tech totals —
+    off_today / day_over / fully_booked contribute 0 by construction,
+    so no additional exclusion filter is needed.
+
+**Frontend** (`client/src/components/TodaysCapacityCard.tsx`):
+- New `SummaryStrip` renders between the header and the rows. Inline,
+  one-line, middot-separated; no tiles, no icons, no badges. Visual
+  weight stays below individual tech rows.
+- Strip format: `N dispatchable now · Earliest: <Now|TIME|None today> · <TOTAL> remaining`.
+- Hidden when there are no schedulable techs (strip would be meaningless).
+
+**Files changed:**
+- `server/storage/capacity.ts` (+`CapacitySummary` type, +summary aggregation)
+- `client/src/components/TodaysCapacityCard.tsx` (+`SummaryStrip` + response type)
+
+**Migrations:** none.  **Breaking changes:** none.
+
+#### Dashboard: Today's Capacity refinement pass (2026-04-20)
+
+Dispatcher-facing refinement of the `<TodaysCapacityCard />` added earlier
+today. No architectural change — still a single backend endpoint, still
+thin frontend.
+
+**Backend** (`server/storage/capacity.ts`):
+- Response gains `meaningfulSlotCount: number` — count of remaining ≥30min
+  slots today. Lets the UI distinguish "one clean block" (==1) from
+  "fragmented day" (>1) without leaking per-gap detail.
+- Sort reranked for dispatch priority:
+  `open_now → fully_open → next_opening → limited_opening → fully_booked → day_over → off_today`.
+  Within `open_now` / `fully_open` we prefer the longest primary block
+  first (the tech you'd actually hand a job to); within
+  `next_opening` / `limited_opening` we prefer the soonest opening (the
+  one a dispatcher can act on next). Final tie-break is name, deterministic.
+
+**Frontend** (`client/src/components/TodaysCapacityCard.tsx`):
+- Row layout restructured so the slot line is the row's visual headline
+  (semibold, dark) instead of competing metadata with the tech name.
+- Secondary line is now fragmentation-aware:
+  "Xh Ym available today" (1 slot) vs "Xh Ym remaining across N openings"
+  (multi-slot). `fully_booked` states explicitly say "No meaningful
+  openings left". `day_over` / `off_today` hide the secondary entirely.
+- State accent dot colors tuned so `next_opening` reads as "future work"
+  (sky) rather than blending with `open_now`/`fully_open` greens.
+
+**Files changed:**
+- `server/storage/capacity.ts` (+meaningfulSlotCount field, refined sort)
+- `client/src/components/TodaysCapacityCard.tsx` (row + secondary refactor)
+
+**Migrations:** none.  **Breaking changes:** none.
+
+#### Dashboard: Jobs card replaced with Today's Capacity (2026-04-20)
+
+The dashboard Jobs summary card (Action Required / Scheduling Issues /
+Ready for Invoice) was removed — every row was already surfaced in the
+Operational Alerts stack on `<TodaysOperationsCard />`. That slot now
+renders a new `<TodaysCapacityCard />` that shows each schedulable
+technician's next meaningful open slot for the rest of today so
+dispatchers can instantly judge who can take another job.
+
+**Backend (new):** `GET /api/dashboard/capacity` — implemented in
+`server/storage/capacity.ts`, wired in `server/routes/dashboard.ts`.
+Computes per-tech slots by composing canonical sources only:
+- `filterSchedulableTechnicians()` for the roster
+- `teamRepository.getWorkingHours()` + `businessHoursRepository.getCompanyBusinessHours()` for per-tech workday bounds (same resolution used by `GET /api/team/technicians/working-hours`)
+- `schedulingRepository.getScheduledJobsInRange()` for today's visit blockers (same query backing `/api/calendar` and the dispatch board)
+- `resolveTechnicianName()` for display name
+
+No new scheduling model introduced; no duplicate predicates. Slot rules:
+ignore gaps <30min; label states `open_now`, `next_opening`,
+`limited_opening` (<90min), `fully_open`, `fully_booked`, `day_over`,
+`off_today`. Available time is floored at `now` — past time never counts.
+
+**Frontend:** `client/src/components/TodaysCapacityCard.tsx` (new).
+`client/src/pages/Dashboard.tsx` swap: remove Jobs `WorklistCard` and
+unused `Briefcase` import; render `<TodaysCapacityCard />` in its grid
+cell. Operational Alerts card left untouched.
+
+**Files changed:**
+- `server/storage/capacity.ts` (new)
+- `server/routes/dashboard.ts` (added `/capacity` route + import)
+- `client/src/components/TodaysCapacityCard.tsx` (new)
+- `client/src/pages/Dashboard.tsx` (Jobs card → TodaysCapacityCard)
+
+**Migrations:** none.
+
+**Breaking changes:** none.
+
 #### Global raw-write audit + final priority-domain drift fix (2026-04-20)
 
 System-wide scan of every direct `db.insert` / `db.update` / `tx.insert` /

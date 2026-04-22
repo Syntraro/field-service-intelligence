@@ -162,7 +162,19 @@
       "Bash(nix-env --query)",
       "Bash(npx md-to-pdf:*)",
       "Bash(find /home/runner/workspace -type f \\\\\\(-name *.tsx -o -name *.ts -o -name *.jsx -o -name *.js \\\\\\))",
-      "Bash(find /home/runner/workspace/client/src/components -type f \\\\\\(-name *[Pp][Mm]* -o -name *[Dd]ashboard* -o -name *[Rr]ecurring* \\\\\\))"
+      "Bash(find /home/runner/workspace/client/src/components -type f \\\\\\(-name *[Pp][Mm]* -o -name *[Dd]ashboard* -o -name *[Rr]ecurring* \\\\\\))",
+      "Bash(\" C:/dev/Syntraro/server/routes/techField.ts)",
+      "Bash(awk '/^router\\\\.\\(get|post|patch|delete|put\\)\\\\\\(/,/,$/ {print NR\": \"$0}' C:/dev/Syntraro/server/routes/techField.ts)",
+      "Bash(awk '/router\\\\.\\(get|post|patch|put|delete\\)\\\\\\(/ {print; getline; print}' /c/dev/Syntraro/server/routes/techField.ts)",
+      "Bash(cat)",
+      "Bash(/tmp/audit_search.sh)",
+      "Bash(tasklist)",
+      "Bash(wait)",
+      "Bash(wait %1)",
+      "Bash(jobs -l)",
+      "Bash(python -c \"import json,sys; r=json.load\\(sys.stdin\\)['routes']; [print\\(f\\\\\"{x['method']:6} {x['path']}\\\\\"\\) for x in r if 'team' in x['path'] or 'dashboard' in x['path']]\")",
+      "Bash(disown)",
+      "Bash(DATABASE_URL=\"postgres://localhost:5432/no_such_db\" SESSION_SECRET=test NODE_ENV=test npx vitest run tests/import-normalizers.test.ts)"
     ]
   }
 }

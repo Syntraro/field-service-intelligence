@@ -47,9 +47,20 @@ export function MobileShell({ children, showNav, hideTopBar }: {
       {!hideTopBar && (
         <div className="flex items-center justify-between px-4 h-10 bg-[#0f1a2e] shrink-0">
           <div className="flex items-center gap-1.5">
-            <div className="h-6 w-6 rounded-full bg-gradient-to-br from-[#22c55e] to-[#16a34a] flex items-center justify-center shadow-sm">
+            {/* 2026-04-21 Phase 2: initials circle is the entry point to
+                /tech/me — the only self-service surface in the tech app.
+                Kept visually identical to the previous static avatar so
+                the change is non-disruptive. */}
+            <button
+              type="button"
+              onClick={() => setLocation("/tech/me")}
+              aria-label="Me"
+              title="Me"
+              data-testid="button-open-me"
+              className="h-6 w-6 rounded-full bg-gradient-to-br from-[#22c55e] to-[#16a34a] flex items-center justify-center shadow-sm active:opacity-80"
+            >
               <span className="text-xs font-bold text-white leading-none">{initials}</span>
-            </div>
+            </button>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-sm text-slate-500 truncate max-w-[180px]">

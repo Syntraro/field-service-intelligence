@@ -43,7 +43,7 @@ const QUICK_HELP: QuickHelpItem[] = [
   { id: "dispatch-settings", label: "Dispatch settings" },
   { id: "scheduling-jobs", label: "Scheduling jobs" },
   { id: "creating-invoices", label: "Creating invoices" },
-  { id: "managing-technicians", label: "Managing technicians" },
+  { id: "managing-technicians", label: "Managing team" },
   { id: "quotes-approvals", label: "Quotes and approvals" },
 ];
 

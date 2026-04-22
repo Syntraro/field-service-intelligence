@@ -13,13 +13,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { TemplateEditor } from "@/components/settings/TemplateEditor";
-// 2026-04-19 Portal activation: show tenant portal flags so admins know
-// whether the new {{PAYMENT_URL}} / {{PAY_NOW_CTA}} variables will render.
-import { useTenantFeatures } from "@/hooks/useTenantFeatures";
+// 2026-04-21 Phase 2 canonical policy architecture: portal feature status
+// now reads through the canonical entitlement resolver instead of the
+// legacy /api/company-settings/features boolean-column endpoint.
+import { useEntitlements } from "@/hooks/useEntitlements";
 
 export default function CommunicationSettingsPage() {
   const [, setLocation] = useLocation();
-  const features = useTenantFeatures();
+  const { data: entitlements, isLoading: entitlementsLoading } = useEntitlements();
+  const portalEnabled = entitlements?.features["customer_portal"]?.enabled;
+  const portalPaymentsEnabled = entitlements?.features["customer_portal_payments"]?.enabled;
 
   return (
     <div className="w-full p-4 md:p-6 space-y-6">
@@ -54,13 +57,13 @@ export default function CommunicationSettingsPage() {
           <div className="flex flex-wrap items-start gap-4">
             <PortalFeatureBadge
               label="Customer Portal"
-              enabled={features.data?.customerPortalEnabled}
-              loading={features.isLoading}
+              enabled={portalEnabled}
+              loading={entitlementsLoading}
             />
             <PortalFeatureBadge
               label="Customer Portal Payments"
-              enabled={features.data?.customerPortalPaymentsEnabled}
-              loading={features.isLoading}
+              enabled={portalPaymentsEnabled}
+              loading={entitlementsLoading}
             />
             <p className="text-xs text-muted-foreground flex-1 min-w-[240px]">
               The <code className="font-mono text-[11px]">{"{{PAYMENT_URL}}"}</code> and{" "}

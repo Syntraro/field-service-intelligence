@@ -48,6 +48,34 @@ export interface AdjustmentInput {
 
 export class PaymentRepository extends BaseRepository {
   /**
+   * Look up a payment by its `(providerSource, reference)` pair. Used by
+   * the webhook dispatcher to resolve the parent of an externally-
+   * initiated provider refund: the `reference` column carries the
+   * provider charge id (e.g. Stripe `ch_...`) on rows the
+   * `payment_intent.succeeded` webhook handler wrote.
+   *
+   * Returns the single matching row, or null. Companywide by design —
+   * the webhook has no tenant context at this call site; tenant is
+   * re-verified by the dispatcher using the row's `companyId`.
+   */
+  async findByProviderReference(
+    providerSource: "stripe" | "qbo",
+    reference: string,
+  ) {
+    const rows = await db
+      .select()
+      .from(payments)
+      .where(
+        and(
+          eq(payments.providerSource, providerSource),
+          eq(payments.reference, reference),
+        ),
+      )
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  /**
    * Get all payments for an invoice
    */
   async getPayments(companyId: string, invoiceId: string) {

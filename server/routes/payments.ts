@@ -25,6 +25,9 @@ import { getQueryCtx } from "../lib/queryCtx";
 // throws, never mutates invoice financial state. See locked product decisions
 // in maybeSyncPayment.ts and QboPaymentService.ts.
 import { maybeSyncPaymentToQbo } from "../services/qbo/maybeSyncPayment";
+// 2026-04-21 provider-neutral seam. Routes do auth + validation + call the
+// application service. Stripe SDK usage lives only behind the Stripe adapter.
+import { paymentApplicationService } from "../services/payments/paymentApplicationService";
 
 const router = Router();
 
@@ -55,6 +58,40 @@ const updatePaymentSchema = z
 // ========================================
 // ROUTES
 // ========================================
+
+// ========================================
+// PROVIDER-NEUTRAL CHECKOUT (staff)
+// ========================================
+// POST /api/invoices/:invoiceId/payments/checkout
+// Issues a provider-neutral checkout token for an invoice. Replaces
+// the provider-named /stripe/payment-intent route (kept live as a
+// forwarder). Response contract is the same for every future provider;
+// only the `providerId` + `clientToken` semantics differ.
+const checkoutSchema = z
+  .object({
+    amount: z
+      .string()
+      .regex(/^\d+(\.\d{1,2})?$/, "Invalid amount format")
+      .optional(),
+    currency: z.string().length(3).optional(),
+  })
+  .strict();
+
+router.post(
+  "/invoices/:invoiceId/payments/checkout",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { amount, currency } = validateSchema(checkoutSchema, req.body ?? {});
+    const result = await paymentApplicationService.createCheckout({
+      companyId: req.companyId!,
+      invoiceId: req.params.invoiceId,
+      source: "staff",
+      amount,
+      currency,
+    });
+    res.status(201).json(result);
+  }),
+);
 
 // GET /api/invoices/:invoiceId/payments - List payments for invoice
 router.get(
@@ -169,39 +206,72 @@ const adjustmentSchema = z
     reference: z.string().max(100).nullable().optional(),
     notes: z.string().max(500).nullable().optional(),
     receivedAt: z.string().datetime().optional(),
+    // 2026-04-21 provider refunds: optional structured reason passed to
+    // the provider adapter (ignored for manual rows). Free-text notes
+    // continue via `notes`.
+    reason: z.string().max(200).nullable().optional(),
   })
   .strict();
 
 // POST /api/payments/:id/refund - Create a refund attached to a parent payment
+//
+// 2026-04-21 provider-neutral refund flow + hardening:
+//   Delegates to paymentApplicationService.refundPayment, which returns
+//   a discriminated union:
+//     - `settled`                → 201 with the ledger row (normal path).
+//     - `reconciliation_pending` → 202 with a structured body telling
+//       the caller "provider has the refund, ledger backfill pending".
+//       Returned only when Stripe has definitely moved money but the
+//       ledger insert failed for a non-unique reason (DB blip, etc.).
+//       A subsequent retry with the same arguments CANNOT cause a
+//       second Stripe refund — the service uses a deterministic Stripe
+//       idempotency key derived from the request shape, so Stripe
+//       collapses retries to a single refund object.
 router.post(
   "/payments/:id/refund",
   requireRole(MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const validated = validateSchema(adjustmentSchema, req.body);
-    try {
-      const refund = await paymentRepository.createRefund(
-        req.companyId!,
-        req.params.id,
-        validated,
-      );
-      logEventAsync(getQueryCtx(req), {
-        eventType: "invoice.refunded",
-        entityType: "invoice",
-        entityId: refund.invoiceId,
-        summary: `Refund recorded on invoice`,
-        meta: {
-          refundId: refund.id,
-          parentPaymentId: refund.parentPaymentId,
-          amount: refund.amount,
-          method: refund.method,
-          reference: refund.reference,
-        },
+    const result = await paymentApplicationService.refundPayment({
+      companyId: req.companyId!,
+      parentPaymentId: req.params.id,
+      amount: validated.amount,
+      method: validated.method,
+      reference: validated.reference,
+      notes: validated.notes,
+      reason: validated.reason ?? null,
+    });
+
+    if (result.kind === "reconciliation_pending") {
+      // 202 Accepted — request received and the external effect (the
+      // refund at Stripe) has been applied, but the server hasn't yet
+      // persisted the canonical record. The webhook will reconcile.
+      res.status(202).json({
+        status: "reconciliation_pending",
+        message: "Refund issued. Reconciliation pending.",
+        refundLedgerId: result.refundLedgerId,
+        providerRefundId: result.providerRefundId,
+        providerSource: result.providerSource,
       });
-      res.status(201).json(refund);
-    } catch (error: any) {
-      if (error.statusCode) throw error;
-      throw error;
+      return;
     }
+
+    const refund = result.row;
+    logEventAsync(getQueryCtx(req), {
+      eventType: "invoice.refunded",
+      entityType: "invoice",
+      entityId: refund.invoiceId,
+      summary: `Refund recorded on invoice`,
+      meta: {
+        refundId: refund.id,
+        parentPaymentId: refund.parentPaymentId,
+        amount: refund.amount,
+        method: refund.method,
+        reference: refund.reference,
+        providerSource: refund.providerSource,
+      },
+    });
+    res.status(201).json(refund);
   }),
 );
 

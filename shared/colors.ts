@@ -28,3 +28,32 @@ export const UNASSIGNED_COLOR = "#94a3b8";
 export function getTechnicianColor(index: number): string {
   return TECHNICIAN_COLORS[index % TECHNICIAN_COLORS.length];
 }
+
+/**
+ * Resolve the canonical display color for a technician.
+ *
+ * Single source of truth used by dispatch, team hub, profile page, tech selector,
+ * and the tech-app scope picker. Same inputs always return the same color across
+ * every surface — no more drift between "Team shows one color, dispatch shows
+ * another" (2026-04-20 Phase 3 fix).
+ *
+ * Resolution rules:
+ *   1. If the user has a custom color set in `technician_profiles.color`, use it.
+ *   2. Otherwise, derive a stable palette color from the userId. A userId-based
+ *      hash means the fallback is order-independent — a tech's color no longer
+ *      shifts when the roster is filtered/sorted differently.
+ *
+ * Do NOT re-implement this inline anywhere. If you need a color, call this.
+ */
+export function resolveTechnicianColor(
+  userId: string,
+  profileColor: string | null | undefined,
+): string {
+  if (profileColor) return profileColor;
+  // Cheap, stable string hash — FNV-ish. UUIDs spread cleanly across 10 slots.
+  let hash = 0;
+  for (let i = 0; i < userId.length; i++) {
+    hash = (hash * 31 + userId.charCodeAt(i)) | 0;
+  }
+  return TECHNICIAN_COLORS[Math.abs(hash) % TECHNICIAN_COLORS.length];
+}

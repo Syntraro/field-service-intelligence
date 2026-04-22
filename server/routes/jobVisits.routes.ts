@@ -14,7 +14,6 @@ import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
 import { storage } from "../storage/index";
 import { emitDispatch } from "../lib/dispatchBus";
-import { normalizeScheduleTimes } from "../domain/scheduling";
 import * as lifecycle from "../services/jobLifecycleOrchestrator";
 
 const router = Router();
@@ -30,17 +29,36 @@ const createVisitSchema = z.object({
   visitNotes: z.string().max(2000).optional(),
 }).strict();
 
-const updateVisitSchema = z.object({
-  scheduledDate: z.string().datetime().optional(),
-  scheduledStart: z.string().datetime().nullable().optional(),
-  scheduledEnd: z.string().datetime().nullable().optional(),
-  isAllDay: z.boolean().optional(),
-  estimatedDurationMinutes: z.number().int().min(0).nullable().optional(),
-  assignedTechnicianIds: z.array(z.string().uuid()).optional(),
+// ============================================================================
+// PATCH /api/jobs/:jobId/visits/:visitId — METADATA-ONLY contract
+// ============================================================================
+// 2026-04-21 Phase 1 canonical visit mutation architecture:
+//
+// This route is the NARROW METADATA PATCH. It may only write lightweight
+// fields that have no lifecycle / scheduling / reconciliation side effects:
+//
+//   - visitNotes    (free text, dispatcher-visible instructions)
+//   - equipmentIds  (array of location_equipment IDs pre-loaded for this visit)
+//
+// Every operational field is REJECTED here by `.strict()`:
+//   - scheduledStart / scheduledEnd / scheduledDate / isAllDay /
+//     estimatedDurationMinutes → route through PATCH /api/calendar/visit/:id/reschedule
+//   - assignedTechnicianIds                                       → route through PATCH /api/calendar/visit/:id/assign-crew
+//   - status                                                      → route through POST /api/jobs/:jobId/visits/:visitId/status
+//
+// DO NOT widen this schema. The whole point of Model B is one narrow
+// metadata path + one canonical operational engine. Any new visit field
+// that has ANY lifecycle implication (spawn protection, time entry side
+// effects, single-active-visit invariants) MUST go through the
+// `jobLifecycleOrchestrator`, not through this route.
+// 2026-04-21 Phase 1: exported so tests can pin the metadata-only contract.
+// Any change to this schema is a source-of-truth violation unless it is a
+// lightweight-metadata field with zero lifecycle implications.
+export const updateVisitSchema = z.object({
+  visitNotes: z.string().max(2000).nullable().optional(),
   // 2026-03-27: Visit equipment selection — location_equipment IDs being worked on this visit
   equipmentIds: z.array(z.string()).nullable().optional(),
-  visitNotes: z.string().max(2000).nullable().optional(),
-});
+}).strict();
 
 const updateStatusSchema = z.object({
   status: z.enum(jobVisitStatusEnum),
@@ -127,7 +145,12 @@ router.get(
   })
 );
 
-/* PATCH /api/jobs/:jobId/visits/:visitId - Update visit */
+/* PATCH /api/jobs/:jobId/visits/:visitId - Update visit METADATA only.
+ *
+ * 2026-04-21 Phase 1 canonical visit mutation architecture: narrow metadata
+ * path. Only `visitNotes` and `equipmentIds` may be written here. See the
+ * comment above `updateVisitSchema` for the full contract and the canonical
+ * routes that own every other visit field. */
 router.patch(
   "/:jobId/visits/:visitId",
   requireRole(MANAGER_ROLES),
@@ -137,43 +160,19 @@ router.patch(
     const { version, ...data } = req.body;
     const validated = validateSchema(updateVisitSchema, data);
 
-    // Normalize all-day timestamps through canonical path to guarantee UTC boundaries.
-    // This prevents local-timezone Date shifts from violating jobs_all_day_*_check constraints.
-    const input: Record<string, unknown> = { ...validated };
-    if (validated.isAllDay === true && validated.scheduledStart) {
-      const normalized = normalizeScheduleTimes({
-        allDay: true,
-        startAt: validated.scheduledStart as string,
-      });
-      input.scheduledStart = normalized.scheduledStart;
-      input.scheduledEnd = normalized.scheduledEnd;
-      input.isAllDay = true;
-    } else {
-      // Timed or unscheduled: convert ISO strings to Date objects for Drizzle
-      if ("scheduledStart" in input) {
-        input.scheduledStart = input.scheduledStart ? new Date(input.scheduledStart as string) : null;
-      }
-      if ("scheduledEnd" in input) {
-        input.scheduledEnd = input.scheduledEnd ? new Date(input.scheduledEnd as string) : null;
-      }
-    }
-    if ("scheduledDate" in input && input.scheduledDate) {
-      input.scheduledDate = new Date(input.scheduledDate as string);
-    }
-
     try {
       const updated = await jobVisitsRepository.updateJobVisit(
         companyId,
         req.params.visitId,
         version,
-        input
+        validated,
       );
 
       if (!updated) {
         throw createError(404, "Visit not found");
       }
 
-      // Technician-originated dispatch signal: visit fields changed
+      // Dispatch signal: visit metadata changed — clients refresh notes / equipment panels
       emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: req.params.visitId, ts: new Date().toISOString() });
 
       res.json(updated);
@@ -237,46 +236,116 @@ router.delete(
   })
 );
 
-/* POST /api/jobs/:jobId/visits/:visitId/status - Update visit status (non-terminal only) */
-/* 2026-03-18: Completion redirected to orchestrator via /complete endpoint */
+/* POST /api/jobs/:jobId/visits/:visitId/status — Office visit status route.
+ *
+ * 2026-04-21 Phase 1 canonical visit mutation architecture:
+ * This route is now a THIN DELEGATOR. Every accepted status transition
+ * routes through `jobLifecycleOrchestrator` so the invariants (single
+ * active visit, time-entry cleanup, schedule sync) fire uniformly
+ * regardless of whether the transition came from the tech app or from
+ * dispatch. Direct-storage status writes from this route are prohibited.
+ *
+ * Mapping (target → orchestrator method):
+ *   en_route                    → setVisitEnRoute
+ *   on_site / in_progress       → startVisit
+ *   paused                      → pauseVisit
+ *   scheduled   (from en_route) → cancelVisitRoute
+ *   scheduled   (from paused)   → resumeVisit-like restore (delegated to orchestrator)
+ *   cancelled                   → cancelVisit
+ *
+ * Rejected at this route:
+ *   completed — must POST /complete with explicit outcome
+ *   on_hold   — hold is a JOB-level concept, not a visit status
+ *   dispatched — not exposed through this office route; use /assign-crew
+ *                + the tech-app lifecycle to express "I'm dispatching this"
+ */
 router.post(
   "/:jobId/visits/:visitId/status",
   requireRole(MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
+    const { jobId, visitId } = req.params;
 
     const { status } = validateSchema(updateStatusSchema, req.body);
 
-    // Reject completion via this endpoint — must use /complete with outcome
+    // Explicitly-rejected targets — point callers at the canonical route.
     if (status === "completed") {
-      throw createError(400, "Visit completion requires an explicit outcome. Use POST /api/jobs/:jobId/visits/:visitId/complete instead.");
+      throw createError(
+        400,
+        "Visit completion requires an explicit outcome. Use POST /api/jobs/:jobId/visits/:visitId/complete instead.",
+      );
+    }
+    if (status === "on_hold") {
+      throw createError(400, "Hold is a job-level state. Use POST /api/jobs/:jobId/status to place the job on hold.");
+    }
+    if (status === "dispatched") {
+      throw createError(400, "Status 'dispatched' is not settable from this route. Assign crew + let the tech app drive lifecycle transitions.");
     }
 
-    // Fix C: Reject uncompleting a visit when job is in a terminal status.
+    // Terminal-job guard kept here because orchestrator methods do not
+    // uniformly enforce it for the non-terminal transitions below. If the
+    // parent job is already closed, no visit status change should land.
     const TERMINAL_JOB_STATUSES = ["completed", "invoiced", "archived"];
-    const job = await storage.getJob(companyId, req.params.jobId);
+    const job = await storage.getJob(companyId, jobId);
     if (job && TERMINAL_JOB_STATUSES.includes(job.status)) {
       const err = createError(409, "Reopen job to uncomplete a visit.");
       (err as any).code = "JOB_TERMINAL";
       throw err;
     }
 
-    // Non-terminal status transitions — not lifecycle, just workflow
-    const updated = await jobVisitsRepository.updateJobVisitStatus(companyId, req.params.visitId, status);
+    const existing = await jobVisitsRepository.getJobVisit(companyId, visitId);
+    if (!existing) throw createError(404, "Visit not found");
 
-    // Phase 4B.1: Emit milestone event for status transitions
+    // Delegate to the orchestrator. The route does not own transition logic.
+    try {
+      if (status === "en_route") {
+        await lifecycle.setVisitEnRoute({ type: "SET_VISIT_EN_ROUTE", companyId, visitId, jobId });
+      } else if (status === "on_site" || status === "in_progress") {
+        await lifecycle.startVisit({ type: "START_VISIT", companyId, visitId, jobId });
+      } else if (status === "paused") {
+        await lifecycle.pauseVisit({ type: "PAUSE_VISIT", companyId, visitId, jobId });
+      } else if (status === "cancelled") {
+        await lifecycle.cancelVisit({ type: "CANCEL_VISIT", companyId, visitId, jobId });
+      } else if (status === "scheduled") {
+        // Revert from whatever actioned state the visit is currently in.
+        if (existing.status === "en_route") {
+          await lifecycle.cancelVisitRoute({ type: "CANCEL_VISIT_ROUTE", companyId, visitId, jobId });
+        } else if (existing.status === "in_progress" || existing.status === "on_site") {
+          await lifecycle.cancelVisitStart({ type: "CANCEL_VISIT_START", companyId, visitId, jobId });
+        } else if (existing.status === "paused") {
+          // Paused → scheduled is not a first-class orchestrator transition today.
+          // Reject with a clear error so callers do the right thing.
+          throw createError(400, "Resume or cancel the paused visit instead of reverting to 'scheduled'.");
+        } else {
+          // Already scheduled (or similar non-actioned state) — no-op.
+        }
+      } else {
+        // Defensive: every enum member should be handled above.
+        throw createError(400, `Unsupported status transition: ${status}`);
+      }
+    } catch (error: any) {
+      // Orchestrator already emits structured errors; forward the most useful ones.
+      if (error?.status === 409) {
+        return res.status(409).json({ error: error.message, code: error.code ?? "CONFLICT" });
+      }
+      throw error;
+    }
+
+    const updated = await jobVisitsRepository.getJobVisit(companyId, visitId);
+
+    // Phase 4B.1: Emit milestone event for status transitions (unchanged)
     const ctx = getQueryCtx(req);
     if (status === "in_progress" || status === "on_site") {
       logEventAsync(ctx, {
         eventType: "visit.started",
         entityType: "visit",
-        entityId: req.params.visitId,
-        summary: `Visit started (job ${req.params.jobId})`,
-        meta: { jobId: req.params.jobId, status },
+        entityId: visitId,
+        summary: `Visit started (job ${jobId})`,
+        meta: { jobId, status },
       });
     }
 
-    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: req.params.visitId, ts: new Date().toISOString() });
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visitId, ts: new Date().toISOString() });
 
     res.json(updated);
   })
