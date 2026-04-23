@@ -177,7 +177,12 @@
       "Bash(DATABASE_URL=\"postgres://localhost:5432/no_such_db\" SESSION_SECRET=test NODE_ENV=test npx vitest run tests/import-normalizers.test.ts)",
       "Bash(awk '{print $1}')",
       "Bash(taskkill *)",
-      "Bash(RESET_TENANT_DATA=true npm run *)"
+      "Bash(RESET_TENANT_DATA=true npm run *)",
+      "Bash(python *)",
+      "Bash(COMPANY_ID=290c20d3-4e61-4766-af4e-953fbdfc465f DELETE_IMPORTED_INVOICES=true npx tsx --env-file=.env scripts/deleteImportedInvoices.ts)",
+      "Bash(npx dotenv *)",
+      "Bash(tsx --env-file=.env -e \"console.log\\('env loaded:', !!process.env.DATABASE_URL\\)\")",
+      "Bash(findstr :5000)"
     ]
   }
 }

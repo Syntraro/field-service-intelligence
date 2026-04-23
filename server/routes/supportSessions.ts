@@ -15,8 +15,12 @@ import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { requirePlatformRole } from "../auth/requirePlatformRole";
 import { supportSessionService } from "../services/supportSessionService";
-
-const WRITE_ROLES = ["platform_admin", "platform_support"] as const;
+// 2026-04-22 Revised Phase 1: capability-based gates.
+// - create → support:session:create
+// - activate / revoke / close → support:session:manage
+// Both capabilities are held by platform_admin + platform_support today;
+// billing loses support-session access, which matches their job scope.
+import { requireCapability } from "../auth/requireCapability";
 
 const supportSessionsRouter = Router();
 supportSessionsRouter.use(requirePlatformRole());
@@ -46,7 +50,29 @@ const listQuerySchema = z.object({
 
 const idParamSchema = z.object({ id: z.string().min(1) });
 
+/**
+ * 2026-04-22 Phase 2-lite Platform Auth Separation: the actor for every
+ * support-session action is the platform admin. We now prefer
+ * `req.platformUser` (psid-backed session) over `req.user` (sid-backed
+ * tenant session). A platform admin who logs in exclusively via
+ * /platform/login can create / activate / revoke / close support sessions
+ * without ever holding a tenant session.
+ *
+ * Fallback to `req.user` (with the impersonation real-actor preference)
+ * is retained for any transitional caller that still uses the legacy
+ * tenant-session path. Once Phase 3 removes the legacy path entirely,
+ * the fallback can be dropped.
+ */
 function requireActor(req: Request) {
+  const platformUser = (req as any).platformUser as
+    | { id: string; email: string }
+    | undefined;
+  if (platformUser?.id) {
+    return {
+      id: platformUser.id,
+      email: platformUser.email ?? "unknown",
+    };
+  }
   const source = (req as any).isImpersonating ? (req as any).realUser : req.user;
   if (!source?.id) throw createError(401, "Unauthorized");
   return { id: source.id as string, email: (source.email as string) ?? "unknown" };
@@ -55,7 +81,7 @@ function requireActor(req: Request) {
 // POST /api/platform/support-sessions — create (read-only or impersonation)
 supportSessionsRouter.post(
   "/",
-  requirePlatformRole(WRITE_ROLES),
+  requireCapability("support:session:create"),
   asyncHandler(async (req: Request, res: Response) => {
     const input = validateSchema(createSchema, req.body);
     if (input.accessMode === "impersonation" && !input.targetUserId) {
@@ -91,7 +117,7 @@ supportSessionsRouter.get(
 // POST /api/platform/support-sessions/:id/activate
 supportSessionsRouter.post(
   "/:id/activate",
-  requirePlatformRole(WRITE_ROLES),
+  requireCapability("support:session:manage"),
   asyncHandler(async (req: Request, res: Response) => {
     const { id } = validateSchema(idParamSchema, req.params);
     const actor = requireActor(req);
@@ -104,7 +130,7 @@ supportSessionsRouter.post(
 // POST /api/platform/support-sessions/:id/revoke
 supportSessionsRouter.post(
   "/:id/revoke",
-  requirePlatformRole(WRITE_ROLES),
+  requireCapability("support:session:manage"),
   asyncHandler(async (req: Request, res: Response) => {
     const { id } = validateSchema(idParamSchema, req.params);
     const actor = requireActor(req);
@@ -117,7 +143,7 @@ supportSessionsRouter.post(
 // POST /api/platform/support-sessions/:id/close
 supportSessionsRouter.post(
   "/:id/close",
-  requirePlatformRole(WRITE_ROLES),
+  requireCapability("support:session:manage"),
   asyncHandler(async (req: Request, res: Response) => {
     const { id } = validateSchema(idParamSchema, req.params);
     const actor = requireActor(req);

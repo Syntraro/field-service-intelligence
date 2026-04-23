@@ -14,3 +14,4 @@ export { applyPresetMappings, normalizeHeader } from "./applyPresetMappings";
 export { jobberClientsPreset } from "./jobberClientsPreset";
 export { jobberJobsPreset } from "./jobberJobsPreset";
 export { jobberProductsPreset } from "./jobberProductsPreset";
+export { jobberInvoicesPreset } from "./jobberInvoicesPreset";

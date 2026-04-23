@@ -11,6 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+// 2026-04-22 Revised Phase 1: feedback triage writes require `feedback:triage`.
+import { usePlatformAuth } from "@/lib/platformAuth";
 
 const STATUSES = ["new", "triaged", "in_progress", "resolved", "wont_fix"];
 
@@ -34,6 +36,8 @@ export default function PlatformFeedbackPage() {
   const [status, setStatus] = useState<string>("");
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<FeedbackRow | null>(null);
+  const { hasCapability } = usePlatformAuth();
+  const canTriage = hasCapability("feedback:triage");
 
   const params = new URLSearchParams();
   if (status) params.set("status", status);
@@ -99,12 +103,12 @@ export default function PlatformFeedbackPage() {
           </Table>
         </CardContent>
       </Card>
-      {selected && <FeedbackDetailDialog item={selected} onClose={() => setSelected(null)} />}
+      {selected && <FeedbackDetailDialog item={selected} canTriage={canTriage} onClose={() => setSelected(null)} />}
     </PlatformLayout>
   );
 }
 
-function FeedbackDetailDialog({ item, onClose }: { item: FeedbackRow; onClose: () => void }) {
+function FeedbackDetailDialog({ item, canTriage, onClose }: { item: FeedbackRow; canTriage: boolean; onClose: () => void }) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const [status, setStatus] = useState(item.status);
@@ -138,18 +142,18 @@ function FeedbackDetailDialog({ item, onClose }: { item: FeedbackRow; onClose: (
           <div className="rounded border bg-muted/40 p-3 whitespace-pre-wrap">{item.message}</div>
           <div>
             <Label>Status</Label>
-            <Select value={status} onValueChange={setStatus}>
+            <Select value={status} onValueChange={setStatus} disabled={!canTriage}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>{STATUSES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
             </Select>
           </div>
           <div>
             <Label>Priority (low / medium / high / critical)</Label>
-            <Input value={priority} onChange={(e) => setPriority(e.target.value)} />
+            <Input value={priority} onChange={(e) => setPriority(e.target.value)} disabled={!canTriage} />
           </div>
           <div>
             <Label>Assignee user id</Label>
-            <Input value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} />
+            <Input value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} disabled={!canTriage} />
             {(item.assigneeName || item.assigneeEmail) && (
               <p className="mt-1 text-xs text-muted-foreground">
                 Current: {item.assigneeName ?? item.assigneeEmail}
@@ -157,7 +161,9 @@ function FeedbackDetailDialog({ item, onClose }: { item: FeedbackRow; onClose: (
               </p>
             )}
           </div>
-          <Button onClick={() => patch.mutate()} disabled={patch.isPending} className="w-full">Save</Button>
+          {canTriage && (
+            <Button onClick={() => patch.mutate()} disabled={patch.isPending} className="w-full">Save</Button>
+          )}
         </div>
       </DialogContent>
     </Dialog>

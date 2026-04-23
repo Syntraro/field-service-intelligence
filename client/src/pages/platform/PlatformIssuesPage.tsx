@@ -12,6 +12,11 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+// 2026-04-22 Revised Phase 1: issue triage writes require `feedback:triage`.
+// Route-guard already enforces visibility, but surface-level gate keeps the
+// "New issue" CTA and detail Save button correct if an in-flight session
+// drops the capability.
+import { usePlatformAuth } from "@/lib/platformAuth";
 
 const STATUSES = ["open", "in_progress", "blocked", "resolved", "closed"];
 const SEVERITIES = ["low", "medium", "high", "critical"];
@@ -35,6 +40,8 @@ export default function PlatformIssuesPage() {
   const [q, setQ] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [selected, setSelected] = useState<Issue | null>(null);
+  const { hasCapability } = usePlatformAuth();
+  const canTriage = hasCapability("feedback:triage");
 
   const params = new URLSearchParams();
   if (status) params.set("status", status);
@@ -53,7 +60,9 @@ export default function PlatformIssuesPage() {
           <h2 className="text-xl font-semibold">Issues</h2>
           {data && <Badge variant="outline">{data.total}</Badge>}
         </div>
-        <Button onClick={() => setCreateOpen(true)} data-testid="btn-new-issue">New issue</Button>
+        {canTriage && (
+          <Button onClick={() => setCreateOpen(true)} data-testid="btn-new-issue">New issue</Button>
+        )}
       </div>
       <div className="mb-4 flex gap-3">
         <Input placeholder="Search..." value={q} onChange={(e) => setQ(e.target.value)} className="max-w-sm" />
@@ -113,7 +122,7 @@ export default function PlatformIssuesPage() {
         </CardContent>
       </Card>
       {createOpen && <CreateIssueDialog onClose={() => setCreateOpen(false)} />}
-      {selected && <IssueDetailDialog issue={selected} onClose={() => setSelected(null)} />}
+      {selected && <IssueDetailDialog issue={selected} canTriage={canTriage} onClose={() => setSelected(null)} />}
     </PlatformLayout>
   );
 }
@@ -187,7 +196,7 @@ function CreateIssueDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-function IssueDetailDialog({ issue, onClose }: { issue: Issue; onClose: () => void }) {
+function IssueDetailDialog({ issue, canTriage, onClose }: { issue: Issue; canTriage: boolean; onClose: () => void }) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const [status, setStatus] = useState(issue.status);
@@ -215,21 +224,21 @@ function IssueDetailDialog({ issue, onClose }: { issue: Issue; onClose: () => vo
           {issue.description && <div className="rounded border bg-muted/40 p-3 whitespace-pre-wrap">{issue.description}</div>}
           <div>
             <Label>Status</Label>
-            <Select value={status} onValueChange={setStatus}>
+            <Select value={status} onValueChange={setStatus} disabled={!canTriage}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>{STATUSES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
             </Select>
           </div>
           <div>
             <Label>Severity</Label>
-            <Select value={severity} onValueChange={setSeverity}>
+            <Select value={severity} onValueChange={setSeverity} disabled={!canTriage}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>{SEVERITIES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
             </Select>
           </div>
           <div>
             <Label>Assignee user id</Label>
-            <Input value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} />
+            <Input value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} disabled={!canTriage} />
             {(issue.assigneeName || issue.assigneeEmail) && (
               <p className="mt-1 text-xs text-muted-foreground">
                 Current: {issue.assigneeName ?? issue.assigneeEmail}
@@ -237,7 +246,9 @@ function IssueDetailDialog({ issue, onClose }: { issue: Issue; onClose: () => vo
               </p>
             )}
           </div>
-          <Button onClick={() => patch.mutate()} disabled={patch.isPending} className="w-full">Save</Button>
+          {canTriage && (
+            <Button onClick={() => patch.mutate()} disabled={patch.isPending} className="w-full">Save</Button>
+          )}
         </div>
       </DialogContent>
     </Dialog>

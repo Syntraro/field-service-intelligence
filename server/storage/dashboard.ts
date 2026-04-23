@@ -36,9 +36,39 @@ import { db } from "../db";
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * 2026-04-22 dashboard upgrade: one quote preview row per bucket.
+ * Short label + amount + timing context + click → canonical quotes list.
+ */
+export interface DashboardQuotePreview {
+  id: string;
+  quoteNumber: string | null;
+  title: string | null;
+  customerName: string | null;
+  total: number;
+  /**
+   * Bucket-specific reference timestamp for "sent / edited / approved X days ago"
+   * copy. Awaiting-approval → sentAt; Draft → updatedAt fallback createdAt;
+   * Approved → approvedAt. Null when the source column is null.
+   */
+  referenceAt: string | null;
+}
+
 /** Workflow summary for the Dashboard strip. */
 export interface WorkflowSummary {
-  quotes: { approvedCount: number; draftCount: number };
+  quotes: {
+    /** 2026-04-22: real counts (was hardcoded to 0 before today). */
+    awaitingApprovalCount: number;
+    draftReadyToSendCount: number;
+    approvedNotConvertedCount: number;
+    /** Up to 5 previews per bucket — client applies smart-fill to render up to 9 across buckets. */
+    awaitingApprovalPreview: DashboardQuotePreview[];
+    draftReadyToSendPreview: DashboardQuotePreview[];
+    approvedNotConvertedPreview: DashboardQuotePreview[];
+    /** Kept for backwards compatibility with any pre-existing consumer. */
+    approvedCount: number;
+    draftCount: number;
+  };
   jobs: {
     requiresInvoicingCount: number;
     activeCount: number;
@@ -55,8 +85,24 @@ export interface WorkflowSummary {
      */
     overdueCount: number;
   };
-  invoices: { outstandingCount: number; pastDueCount: number };
-  pm: { awaitingGenerationCount: number; overdueCount: number; comingDueCount: number; upcomingCount: number };
+  invoices: {
+    outstandingCount: number;
+    pastDueCount: number;
+    /** 2026-04-22 Revenue Center: draft invoice count surfaced alongside past-due. */
+    draftCount: number;
+  };
+  pm: {
+    awaitingGenerationCount: number;
+    overdueCount: number;
+    comingDueCount: number;
+    upcomingCount: number;
+    /**
+     * 2026-04-22: PM relevance flag — the dashboard's PM Health card hides
+     * entirely when no PM template or instance exists. Avoids dedicating
+     * real estate to an empty product area for tenants not using PM.
+     */
+    hasAnyData: boolean;
+  };
   fourth: null;
 }
 
@@ -91,14 +137,28 @@ export interface DashboardJobItem {
  * Phase 5 B2: Now uses QueryCtx + canonical filters.
  */
 export async function getWorkflowSummary(ctx: QueryCtx): Promise<WorkflowSummary> {
-  const [jobCounts, invoiceCounts, pmCounts] = await Promise.all([
+  const [jobCounts, invoiceCounts, pmCounts, quoteSummary] = await Promise.all([
     getJobCounts(ctx),
     getInvoiceCounts(ctx),
     getPMCounts(ctx.tenantId),
+    // 2026-04-22: quote pipeline counts + 5-row previews per bucket.
+    getQuotePipeline(ctx.tenantId),
   ]);
 
   return {
-    quotes: { approvedCount: 0, draftCount: 0 }, // No quotes table
+    quotes: {
+      awaitingApprovalCount: quoteSummary.awaitingApproval.count,
+      draftReadyToSendCount: quoteSummary.draftReadyToSend.count,
+      approvedNotConvertedCount: quoteSummary.approvedNotConverted.count,
+      awaitingApprovalPreview: quoteSummary.awaitingApproval.preview,
+      draftReadyToSendPreview: quoteSummary.draftReadyToSend.preview,
+      approvedNotConvertedPreview: quoteSummary.approvedNotConverted.preview,
+      // Back-compat mirror: earlier WorkflowSummary consumers used these fields
+      // for a simple "draft count / approved count" strip. Kept non-zero now so
+      // any straggler reader sees real data instead of the former hardcoded 0.
+      draftCount: quoteSummary.draftReadyToSend.count,
+      approvedCount: quoteSummary.approvedNotConverted.count,
+    },
     jobs: jobCounts,
     invoices: invoiceCounts,
     pm: pmCounts,
@@ -183,14 +243,159 @@ async function getInvoiceCounts(ctx: QueryCtx) {
           AND ${invoices.status} IN (${sql.raw(UNPAID_INVOICE_STATUS_SQL)})
         )
       `.as("past_due_count"),
+      // 2026-04-22 Revenue Center — draft invoice count surfaced on the dashboard.
+      draftCount: sql<number>`
+        COUNT(*) FILTER (WHERE ${invoices.status} = 'draft')
+      `.as("draft_count"),
     })
     .from(invoices)
     .where(and(eq(invoices.companyId, ctx.tenantId)));
 
-  const c = result[0] || { outstandingCount: 0, pastDueCount: 0 };
+  const c = result[0] || { outstandingCount: 0, pastDueCount: 0, draftCount: 0 };
   return {
     outstandingCount: Number(c.outstandingCount) || 0,
     pastDueCount: Number(c.pastDueCount) || 0,
+    draftCount: Number(c.draftCount) || 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Quote Pipeline (2026-04-22)
+// ---------------------------------------------------------------------------
+//
+// Three actionable quote buckets, each with a count + up to 5 preview rows:
+//   • awaitingApproval   : status='sent'     → "Follow up" CTA
+//   • draftReadyToSend   : status='draft'    → "Send / open" CTA
+//   • approvedNotConverted : status='approved' AND convertedToJobId IS NULL
+//                           → "Convert / open" CTA
+//
+// Kept surgical — no materialized view, no new endpoint. The existing
+// /api/dashboard/workflow query is the single round-trip for the dashboard.
+// Customer name derivation follows the canonical
+// COALESCE(customerCompanies.name, clients.companyName) rule used by
+// getFinancialSummary() and the Financial Dashboard preview lists.
+// ---------------------------------------------------------------------------
+
+interface QuotePipelineBucket {
+  count: number;
+  preview: Array<{
+    id: string;
+    quoteNumber: string | null;
+    title: string | null;
+    customerName: string | null;
+    total: number;
+    referenceAt: string | null;
+  }>;
+}
+
+async function getQuotePipeline(tenantId: string): Promise<{
+  awaitingApproval: QuotePipelineBucket;
+  draftReadyToSend: QuotePipelineBucket;
+  approvedNotConverted: QuotePipelineBucket;
+}> {
+  const PREVIEW_LIMIT = 5;
+
+  const baseWhere = and(
+    eq(quotes.companyId, tenantId),
+    eq(quotes.isActive, true),
+    isNull(quotes.deletedAt),
+  );
+
+  // Shared select shape — customer name via the canonical COALESCE rule.
+  const previewSelect = {
+    id: quotes.id,
+    quoteNumber: quotes.quoteNumber,
+    title: quotes.title,
+    total: quotes.total,
+    sentAt: quotes.sentAt,
+    updatedAt: quotes.updatedAt,
+    createdAt: quotes.createdAt,
+    approvedAt: quotes.approvedAt,
+    customerCompanyName: customerCompanies.name,
+    locationCompanyName: clients.companyName,
+  };
+
+  const [sentRows, draftRows, approvedRows] = await Promise.all([
+    db
+      .select(previewSelect)
+      .from(quotes)
+      .leftJoin(clients, eq(quotes.locationId, clients.id))
+      .leftJoin(customerCompanies, eq(quotes.customerCompanyId, customerCompanies.id))
+      .where(and(baseWhere, eq(quotes.status, "sent")))
+      .orderBy(sql`${quotes.sentAt} ASC NULLS LAST`, desc(quotes.updatedAt))
+      .limit(PREVIEW_LIMIT),
+    db
+      .select(previewSelect)
+      .from(quotes)
+      .leftJoin(clients, eq(quotes.locationId, clients.id))
+      .leftJoin(customerCompanies, eq(quotes.customerCompanyId, customerCompanies.id))
+      .where(and(baseWhere, eq(quotes.status, "draft")))
+      .orderBy(sql`COALESCE(${quotes.updatedAt}, ${quotes.createdAt}) DESC`)
+      .limit(PREVIEW_LIMIT),
+    db
+      .select(previewSelect)
+      .from(quotes)
+      .leftJoin(clients, eq(quotes.locationId, clients.id))
+      .leftJoin(customerCompanies, eq(quotes.customerCompanyId, customerCompanies.id))
+      .where(and(
+        baseWhere,
+        eq(quotes.status, "approved"),
+        isNull(quotes.convertedToJobId),
+      ))
+      .orderBy(sql`${quotes.approvedAt} DESC NULLS LAST`)
+      .limit(PREVIEW_LIMIT),
+  ]);
+
+  // Counts — single aggregated query so we don't pay for three separate
+  // count round-trips alongside the three preview selects above.
+  const countsRow = await db
+    .select({
+      sentCount: sql<number>`COUNT(*) FILTER (WHERE ${quotes.status} = 'sent')`,
+      draftCount: sql<number>`COUNT(*) FILTER (WHERE ${quotes.status} = 'draft')`,
+      approvedCount: sql<number>`
+        COUNT(*) FILTER (
+          WHERE ${quotes.status} = 'approved'
+          AND ${quotes.convertedToJobId} IS NULL
+        )
+      `,
+    })
+    .from(quotes)
+    .where(baseWhere);
+
+  const toPreview = (rows: typeof sentRows, bucket: "sent" | "draft" | "approved") =>
+    rows.map((r) => {
+      const referenceAt =
+        bucket === "sent"
+          ? r.sentAt
+          : bucket === "approved"
+            ? r.approvedAt
+            : r.updatedAt ?? r.createdAt;
+      return {
+        id: r.id,
+        quoteNumber: r.quoteNumber ?? null,
+        title: r.title ?? null,
+        customerName: r.customerCompanyName ?? r.locationCompanyName ?? null,
+        total: parseFloat(r.total ?? "0"),
+        referenceAt: referenceAt instanceof Date
+          ? referenceAt.toISOString()
+          : (referenceAt ? String(referenceAt) : null),
+      };
+    });
+
+  const c = countsRow[0] ?? { sentCount: 0, draftCount: 0, approvedCount: 0 };
+  return {
+    awaitingApproval: {
+      count: Number(c.sentCount) || 0,
+      preview: toPreview(sentRows, "sent"),
+    },
+    draftReadyToSend: {
+      count: Number(c.draftCount) || 0,
+      preview: toPreview(draftRows, "draft"),
+    },
+    approvedNotConverted: {
+      count: Number(c.approvedCount) || 0,
+      preview: toPreview(approvedRows, "approved"),
+    },
   };
 }
 
@@ -254,11 +459,24 @@ async function getPMCounts(tenantId: string) {
     ));
 
   const c = result[0] || { awaitingGenerationCount: 0, overdueCount: 0, comingDueCount: 0, upcomingCount: 0 };
+
+  // 2026-04-22: relevance signal. Dashboard hides the PM card when the
+  // tenant has no recurring templates at all. One lightweight EXISTS query
+  // — cheaper than counting all instances and zero-allocation false when
+  // the tenant has never used PM.
+  const templatePresence = await db
+    .select({ exists: sql<number>`1` })
+    .from(recurringJobTemplates)
+    .where(eq(recurringJobTemplates.companyId, tenantId))
+    .limit(1);
+  const hasAnyData = templatePresence.length > 0;
+
   return {
     awaitingGenerationCount: Number(c.awaitingGenerationCount) || 0,
     overdueCount: Number(c.overdueCount) || 0,
     comingDueCount: Number(c.comingDueCount) || 0,
     upcomingCount: Number(c.upcomingCount) || 0,
+    hasAnyData,
   };
 }
 

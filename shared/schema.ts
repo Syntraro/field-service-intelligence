@@ -541,6 +541,9 @@ export const contactPersons = pgTable("contact_persons", {
   customerCompanyId: varchar("customer_company_id").notNull().references(() => customerCompanies.id, { onDelete: "cascade" }),
   firstName: text("first_name").notNull().default(""),
   lastName: text("last_name").notNull().default(""),
+  // 2026-04-22: optional prefix/role (e.g. "Mr.", "Ms.", "Operations Manager"),
+  // populated by the Client import from Jobber's `Title` column.
+  title: text("title"),
   email: text("email"),
   phone: text("phone"),
   isPrimary: boolean("is_primary").notNull().default(false),
@@ -1721,7 +1724,11 @@ export const insertInvoiceLineSchema = createInsertSchema(invoiceLines).omit({
   updatedAt: true,
 }).extend({
     lineItemType: z.enum(lineItemTypeEnum).default("service"),
-    source: z.enum(["manual", "job"]).default("manual"),
+    // 2026-04-22: "imported" source tag added for canonical invoice import.
+    // The column is text (not an enum) so this widening is a zod-layer-only
+    // change — no migration. Lines tagged "imported" are catalog-exempt and
+    // have null productId.
+    source: z.enum(["manual", "job", "imported"]).default("manual"),
 
 });
 
@@ -1990,6 +1997,17 @@ export const paymentWebhookEvents = pgTable(
 );
 
 export type PaymentWebhookEvent = typeof paymentWebhookEvents.$inferSelect;
+
+// ============================================================================
+// PAYMENT RECONCILIATION PENDING — removed 2026-04-22 (rollback)
+// ============================================================================
+// The sidecar reconciliation queue was removed along with the platform
+// ops dashboard. The HTTP 202 `reconciliation_pending` contract on the
+// refund route is preserved; operators rely on the
+// `[payments-refund] CRITICAL ledger_write_failed_after_provider_success`
+// log line plus the provider webhook's automatic ledger backfill.
+// See migrations/2026_04_22_rollback_payment_ops_tables.sql for the DB
+// drop statement (apply only where the forward migration ran).
 
 // ============================================
 // JOBS SYSTEM

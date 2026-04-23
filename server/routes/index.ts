@@ -84,6 +84,13 @@ import pmTemplatesRouter from "./pmTemplates";
 import pmBillingRouter from "./pmBilling";
 // Phase 1 (Platform Admin Foundation): Ops Portal API surface.
 import platformRouter from "./platform";
+// 2026-04-22 Phase 1 platform auth separation: dedicated login endpoints +
+// session middleware for the internal /platform admin console.
+import platformAuthRouter from "./platformAuth";
+import {
+  platformSessionMiddleware,
+  requirePlatformSession,
+} from "../auth/platformSession";
 // Phase 6 (Customer Approval): tenant-side approval endpoints.
 import supportAccessRouter from "./supportAccess";
 
@@ -158,8 +165,35 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/portal", portalRouter);
 
   // ========================================
+  // PLATFORM ADMIN CONSOLE (2026-04-22 Phase 1 auth separation)
+  // ========================================
+  //
+  // /api/platform/* is a separate auth boundary from the tenant app:
+  //   - Its own session cookie (`psid`, signed with PLATFORM_SESSION_SECRET).
+  //   - Its own login endpoint (`POST /api/platform/auth/login`).
+  //   - Its own identity surface (`req.platformUser`, NOT req.user).
+  //
+  // Mounted BEFORE the global `app.use("/api", requireAuth)` so a tenant
+  // session is NOT required to reach platform routes. The login endpoint
+  // is mounted as a sibling (no requirePlatformSession — it's the bootstrap
+  // step); everything else under /api/platform is gated by
+  // requirePlatformSession.
+  app.use("/api/platform", platformSessionMiddleware);
+  app.use("/api/platform/auth", platformAuthRouter);
+  app.use("/api/platform", requirePlatformSession, platformRouter);
+
+  // ========================================
   // GLOBAL MIDDLEWARE (after auth routes)
   // ========================================
+
+  // 2026-04-22 Phase 2-lite Platform Auth Separation:
+  //   impersonationMiddleware now runs BEFORE requireAuth so a platform
+  //   admin with only a psid session + imp_session cookie can reach tenant
+  //   routes while impersonating. The middleware bootstraps req.user from
+  //   the imp_session's target tenant user; requireAuth then passes because
+  //   req.user is populated. Without imp_session the middleware is a no-op
+  //   and requireAuth behaves as before.
+  app.use(impersonationMiddleware(storage as any));
 
   // 1) Auth guard (API only)
   app.use("/api", requireAuth);
@@ -183,9 +217,9 @@ export function registerRoutes(app: Express): Server {
     }
     return next();
   });
-  
-  // 4) Impersonation context & activity tracking (API only)
-  app.use(impersonationMiddleware(storage as any));
+
+  // 4) Activity tracking (requires an authenticated req.user — runs AFTER
+  //    requireAuth so platform-only requests don't spuriously touch it).
   app.use(trackActivity);
 
   // 5) Phase 4: Read-only support session enforcement.
@@ -314,14 +348,11 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/admin", adminRouter);
 
   // ========================================
-  // PLATFORM OPS PORTAL (platform-role only)
-  //
-  // Phase 1 (Platform Admin Foundation): /api/platform/* is gated by
-  // requirePlatformRole at the router level. ensureTenantContext skips
-  // this prefix so platform staff operate outside any tenant scope until
-  // a support session is explicitly started (future phase).
+  // PLATFORM OPS PORTAL mount moved UP to the platform-auth block above
+  // (2026-04-22 Phase 1 auth separation). The `/api/platform/*` mount
+  // now precedes the global tenant `requireAuth` so platform routes
+  // authenticate exclusively via the psid session.
   // ========================================
-  app.use("/api/platform", platformRouter);
 
   // ========================================
   // CUSTOMER-SIDE SUPPORT ACCESS (tenant admin/owner only)

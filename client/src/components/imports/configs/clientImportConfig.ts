@@ -18,9 +18,9 @@ export const clientImportConfig: ImportWizardConfig = {
   fieldDefs: CLIENT_FIELD_DEFS.map((f) => ({ ...f })),
   template: { filename: "clients-template.csv", csv: TEMPLATE_CSV },
   uploadBanner:
-    "One CSV row = one company + one location + one optional contact. Existing companies (matched by normalized name) gain the location/contact without duplicating; matching addresses are skipped.",
+    "Each row becomes one client with an optional service location and primary contact. If a client with the same name already exists, the new location and contact are added to them instead of creating a duplicate.",
   commitBanner:
-    "This creates companies, locations, and contacts in your tenant. Subscription location limits are enforced server-side. Duplicates detected in the preview won't be committed.",
+    "This imports clients, locations, and contacts. Duplicate rows found in preview will not be imported.",
   presets: [jobberClientsPreset],
   // 2026-04-22 Phase 2b: Clients import writes one row into up to three
   // canonical entities (customer_company + client_location + client_contact).

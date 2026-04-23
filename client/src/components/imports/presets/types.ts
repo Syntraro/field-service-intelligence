@@ -30,7 +30,7 @@ export interface ProviderPreset {
   /** Which provider this preset is for. */
   source: SourceId;
   /** Which entity this preset applies to. */
-  entity: "clients" | "jobs" | "products";
+  entity: "clients" | "jobs" | "products" | "invoices";
   /** Short label shown on the "Source" chip once selected, e.g. "Jobber Clients export". */
   label: string;
   /** Human sentence shown above the column mapper so the user knows what happened. */

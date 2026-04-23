@@ -1,32 +1,62 @@
 /**
- * Platform Ops Portal layout — Phase 6.
+ * Platform Ops Portal layout.
  *
- * Minimal shell for /platform/* routes. Uses the same Card/Button primitives
- * as the tenant app; the nav is rendered inline (no changes to tenant
- * AppSidebar so there is zero leakage risk for non-platform users).
+ * 2026-04-22 Revised Phase 1 Internal Console Separation: nav items are
+ * capability-conditional. Users see only the sections their role grants
+ * them via the canonical capability registry (`shared/platformCapabilities`).
+ * No admin-vs-support console split — one console, variable visibility.
  */
 
 import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Building2, MessageSquare, Bug, LifeBuoy, Shield, Package, Layers, Clock } from "lucide-react";
+import {
+  Building2,
+  MessageSquare,
+  Bug,
+  LifeBuoy,
+  Shield,
+  Package,
+  Layers,
+  Clock,
+  History,
+} from "lucide-react";
+import type { PlatformCapability } from "@shared/platformCapabilities";
+import { usePlatformAuth } from "@/lib/platformAuth";
 
 interface Props {
   children: React.ReactNode;
 }
 
-const NAV = [
-  { href: "/platform/tenants", label: "Tenants", icon: Building2 },
-  { href: "/platform/trials", label: "Trials", icon: Clock },
-  { href: "/platform/plans", label: "Plans", icon: Package },
-  { href: "/platform/features", label: "Features", icon: Layers },
-  { href: "/platform/feedback", label: "Feedback", icon: MessageSquare },
-  { href: "/platform/issues", label: "Issues", icon: Bug },
-  { href: "/platform/support-sessions", label: "Support Sessions", icon: LifeBuoy },
+interface NavItem {
+  href: string;
+  label: string;
+  icon: typeof Building2;
+  /**
+   * Capability required to see this nav entry. Keeping one capability per
+   * nav entry rather than any/all lists — if a future surface needs a mix
+   * (e.g. "bulk-runs visible to anyone with bulk:history:read"), use the
+   * narrowest capability that implies visibility.
+   */
+  cap: PlatformCapability;
+}
+
+const NAV: NavItem[] = [
+  { href: "/platform/tenants",          label: "Tenants",          icon: Building2,    cap: "tenant:read" },
+  { href: "/platform/trials",           label: "Trials",           icon: Clock,        cap: "tenant:read" },
+  { href: "/platform/plans",            label: "Plans",            icon: Package,      cap: "plan:write" },
+  { href: "/platform/features",         label: "Features",         icon: Layers,       cap: "feature:catalog:write" },
+  { href: "/platform/feedback",         label: "Feedback",         icon: MessageSquare, cap: "feedback:triage" },
+  { href: "/platform/issues",           label: "Issues",           icon: Bug,          cap: "feedback:triage" },
+  { href: "/platform/support-sessions", label: "Support Sessions", icon: LifeBuoy,     cap: "support:session:manage" },
+  { href: "/platform/bulk-runs",        label: "Bulk Runs",        icon: History,      cap: "bulk:history:read" },
 ];
 
 export function PlatformLayout({ children }: Props) {
   const [location] = useLocation();
+  const { hasCapability } = usePlatformAuth();
+
+  const visibleNav = NAV.filter((item) => hasCapability(item.cap));
 
   return (
     <div className="min-h-screen bg-background">
@@ -36,7 +66,7 @@ export function PlatformLayout({ children }: Props) {
           <h1 className="text-lg font-semibold">Platform Ops</h1>
           <Badge variant="secondary">Internal</Badge>
           <nav className="ml-4 flex gap-1">
-            {NAV.map((item) => {
+            {visibleNav.map((item) => {
               const Icon = item.icon;
               const active = location.startsWith(item.href);
               return (

@@ -103,7 +103,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // signs in after a different tenant user in the same tab inherits
       // stale data (/api/company-settings, tasks, etc.) until refetch.
       queryClient.cancelQueries();
-      queryClient.clear();
+      // 2026-04-22 first-click login fix: removeQueries(predicate) instead
+      // of clear(). The previous `clear()` wiped /api/auth/me while the
+      // AuthProvider's useQuery observer was still mounted, which caused
+      // TanStack to refetch it immediately — and that refetch could race
+      // with `setQueryData(["/api/auth/me"], userData)` below. On cold
+      // sessions the refetch sometimes landed before the Set-Cookie
+      // response was visible to the new request, returned 401, and
+      // overwrote the freshly seeded user state with an error snapshot.
+      // AuthProvider's useEffect then wrote `user = null`, ProtectedRoute
+      // bounced to /login, and the user had to click Login a second time.
+      // The predicate preserves the tenant-data wipe exactly as before;
+      // it only excludes the auth query we're about to seed by hand on
+      // the next two lines so `setQueryData` is the sole writer.
+      queryClient.removeQueries({
+        predicate: (query) => query.queryKey?.[0] !== "/api/auth/me",
+      });
       setUser(userData);
       setUserInitialized(true);
       queryClient.setQueryData(["/api/auth/me"], userData);
@@ -125,9 +140,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify(body),
       }),
     onSuccess: (userData) => {
-      // Same rationale as loginMutation onSuccess — isolation between sessions.
+      // Same rationale as loginMutation onSuccess — isolation between
+      // sessions. Same 2026-04-22 first-click fix applied: predicate-
+      // scoped removeQueries instead of clear() so the mounted
+      // /api/auth/me observer does not race a refetch against the
+      // setQueryData seed below.
       queryClient.cancelQueries();
-      queryClient.clear();
+      queryClient.removeQueries({
+        predicate: (query) => query.queryKey?.[0] !== "/api/auth/me",
+      });
       setUser(userData);
       setUserInitialized(true);
       queryClient.setQueryData(["/api/auth/me"], userData);

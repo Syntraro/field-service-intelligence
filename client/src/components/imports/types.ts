@@ -25,7 +25,7 @@ export interface ImportFieldDef {
 /** Per-entity configuration — everything the wizard needs to render. */
 export interface ImportWizardConfig {
   /** Backend entity key — matches the adapter registry. */
-  entity: "clients" | "jobs" | "products";
+  entity: "clients" | "jobs" | "products" | "invoices";
   /** Page title (e.g. "Import Clients"). */
   title: string;
   /** Short one-line description under the title. */

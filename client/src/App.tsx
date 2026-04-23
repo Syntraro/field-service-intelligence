@@ -6,6 +6,8 @@ import { Toaster } from "@/components/ui/toaster";
 import { PwaUpdatePrompt } from "@/components/PwaUpdatePrompt";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider, useAuth } from "@/lib/auth";
+// 2026-04-22 Phase 1 Platform Auth Separation: psid-backed platform auth.
+import { PlatformAuthRoute } from "@/lib/platformAuth";
 import { isPlatformRole } from "@/lib/platformRoles";
 import { useToast } from "@/hooks/use-toast";
 import { useDispatchStream } from "@/hooks/useDispatchStream";
@@ -48,6 +50,10 @@ const PlatformIssuesPage = lazy(() => import("@/pages/platform/PlatformIssuesPag
 const PlatformSupportSessionsPage = lazy(() => import("@/pages/platform/PlatformSupportSessionsPage"));
 // 2026-04-22 Admin Phase A2: trial pipeline dashboard.
 const PlatformTrialsPipeline = lazy(() => import("@/pages/platform/PlatformTrialsPipeline"));
+// 2026-04-22 Admin Phase A6.3: bulk-run history + retry.
+const PlatformBulkRuns = lazy(() => import("@/pages/platform/PlatformBulkRuns"));
+// 2026-04-22 Phase 1 Platform Auth Separation: dedicated login surface.
+const PlatformLogin = lazy(() => import("@/pages/platform/PlatformLogin"));
 // 2026-04-19 Entitlement system — plans + features + feature-matrix surfaces.
 const PlatformPlansList = lazy(() => import("@/pages/platform/PlatformPlansList"));
 const PlatformPlanDetail = lazy(() => import("@/pages/platform/PlatformPlanDetail"));
@@ -172,6 +178,9 @@ function Router() {
     <Suspense fallback={<RouteFallback />}>
     <Switch>
       <Route path="/login" component={Login} />
+      {/* 2026-04-22 Phase 1 Platform Auth Separation: dedicated login surface.
+          Distinct from /login; authenticates against psid session only. */}
+      <Route path="/platform/login" component={PlatformLogin} />
       <Route path="/signup" component={Signup} />
       <Route path="/request-reset" component={RequestReset} />
       <Route path="/reset-password" component={ResetPassword} />
@@ -334,61 +343,67 @@ function Router() {
 
       {/* Phase 6: Platform Ops Portal (any platform role). */}
       <Route path="/platform">
-        <ProtectedRoute requirePlatformRole>
+        <PlatformAuthRoute cap="tenant:read">
           <PlatformTenantsList />
-        </ProtectedRoute>
+        </PlatformAuthRoute>
       </Route>
       <Route path="/platform/tenants">
-        <ProtectedRoute requirePlatformRole>
+        <PlatformAuthRoute cap="tenant:read">
           <PlatformTenantsList />
-        </ProtectedRoute>
+        </PlatformAuthRoute>
       </Route>
       <Route path="/platform/tenants/:id">
-        <ProtectedRoute requirePlatformRole>
+        <PlatformAuthRoute cap="tenant:read">
           <PlatformTenantDetail />
-        </ProtectedRoute>
+        </PlatformAuthRoute>
       </Route>
       <Route path="/platform/feedback">
-        <ProtectedRoute requirePlatformRole>
+        <PlatformAuthRoute cap="feedback:triage">
           <PlatformFeedbackPage />
-        </ProtectedRoute>
+        </PlatformAuthRoute>
       </Route>
       <Route path="/platform/issues">
-        <ProtectedRoute requirePlatformRole>
+        <PlatformAuthRoute cap="feedback:triage">
           <PlatformIssuesPage />
-        </ProtectedRoute>
+        </PlatformAuthRoute>
       </Route>
       <Route path="/platform/support-sessions">
-        <ProtectedRoute requirePlatformRole>
+        <PlatformAuthRoute cap="support:session:manage">
           <PlatformSupportSessionsPage />
-        </ProtectedRoute>
+        </PlatformAuthRoute>
       </Route>
       {/* 2026-04-22 Admin Phase A2: trial pipeline dashboard. */}
       <Route path="/platform/trials">
-        <ProtectedRoute requirePlatformRole>
+        <PlatformAuthRoute cap="tenant:read">
           <PlatformTrialsPipeline />
-        </ProtectedRoute>
+        </PlatformAuthRoute>
+      </Route>
+      {/* 2026-04-22 Admin Phase A6.3: bulk-run history + retry. */}
+      <Route path="/platform/bulk-runs">
+        <PlatformAuthRoute cap="bulk:history:read">
+          <PlatformBulkRuns />
+        </PlatformAuthRoute>
       </Route>
       {/* 2026-04-19 Entitlement system routes. */}
       <Route path="/platform/plans">
-        <ProtectedRoute requirePlatformRole>
+        <PlatformAuthRoute cap="plan:write">
           <PlatformPlansList />
-        </ProtectedRoute>
+        </PlatformAuthRoute>
       </Route>
       <Route path="/platform/plans/:planId">
-        <ProtectedRoute requirePlatformRole>
+        <PlatformAuthRoute cap="plan:write">
           <PlatformPlanDetail />
-        </ProtectedRoute>
+        </PlatformAuthRoute>
       </Route>
       <Route path="/platform/features">
-        <ProtectedRoute requirePlatformRole>
+        <PlatformAuthRoute cap="feature:catalog:write">
           <PlatformFeaturesCatalog />
-        </ProtectedRoute>
+        </PlatformAuthRoute>
       </Route>
       <Route path="/platform/features/:featureId">
-        <ProtectedRoute requirePlatformRole>
+        <PlatformAuthRoute cap="feature:catalog:write">
           <PlatformFeatureDetail />
-        </ProtectedRoute>
+        </PlatformAuthRoute>
       </Route>
 
       {/* Phase 6: Tenant-side support access management (owner/admin). */}

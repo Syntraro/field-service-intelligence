@@ -13,6 +13,10 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 // 2026-04-22 Admin Phase A1: canonical per-tenant timeline.
 import { TenantTimeline } from "./TenantTimeline";
+// 2026-04-22 Revised Phase 1: capability-gate mutation controls. Tenant detail
+// is reachable with `tenant:read` (support + billing + audit all qualify) but
+// writes require narrower capabilities the reader may not hold.
+import { usePlatformAuth } from "@/lib/platformAuth";
 
 // 2026-04-21 Phase 3 canonical policy architecture: the "Legacy" feature-flag
 // card + FLAG_KEYS + patchFlag mutation that wrote to PATCH /api/platform/tenants/:id/features
@@ -24,6 +28,8 @@ export default function PlatformTenantDetail() {
   const [, params] = useRoute("/platform/tenants/:id");
   const tenantId = params?.id as string;
   const [sessionDialogOpen, setSessionDialogOpen] = useState(false);
+  const { hasCapability } = usePlatformAuth();
+  const canCreateSupportSession = hasCapability("support:session:create");
 
   const { data, isLoading } = useQuery<any>({
     queryKey: [`/api/platform/tenants/${tenantId}`],
@@ -67,9 +73,11 @@ export default function PlatformTenantDetail() {
 {/* QBO badge removed with the legacy tenant_features column drop (Phase 3). */}
           </div>
         </div>
-        <Button onClick={() => setSessionDialogOpen(true)} data-testid="btn-new-support-session">
-          New support session
-        </Button>
+        {canCreateSupportSession && (
+          <Button onClick={() => setSessionDialogOpen(true)} data-testid="btn-new-support-session">
+            New support session
+          </Button>
+        )}
       </div>
 
       {/* 2026-04-22 Admin Phase A4.1: canonical tenant health summary.
@@ -331,6 +339,9 @@ interface SubscriptionPlan {
 function EntitlementsSection({ tenantId }: { tenantId: string }) {
   const { toast } = useToast();
   const qc = useQueryClient();
+  const { hasCapability } = usePlatformAuth();
+  const canWriteLifecycle = hasCapability("tenant:lifecycle:write");
+  const canWriteOverride = hasCapability("entitlement:override:write");
 
   const { data: ent } = useQuery<TenantEntitlements>({
     queryKey: [`/api/platform/tenants/${tenantId}/entitlements`],
@@ -405,14 +416,20 @@ function EntitlementsSection({ tenantId }: { tenantId: string }) {
         <CardContent>
           <div className="flex items-center gap-3">
             <Label>Current plan</Label>
-            <Select value={ent.planName ?? ""} onValueChange={(v) => assignPlan.mutate(v)}>
-              <SelectTrigger className="w-64"><SelectValue placeholder="Assign a plan" /></SelectTrigger>
-              <SelectContent>
-                {(plans ?? []).filter((p) => p.active).map((p) => (
-                  <SelectItem key={p.id} value={p.name}>{p.displayName} ({p.name})</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {canWriteLifecycle ? (
+              <Select value={ent.planName ?? ""} onValueChange={(v) => assignPlan.mutate(v)}>
+                <SelectTrigger className="w-64"><SelectValue placeholder="Assign a plan" /></SelectTrigger>
+                <SelectContent>
+                  {(plans ?? []).filter((p) => p.active).map((p) => (
+                    <SelectItem key={p.id} value={p.name}>{p.displayName} ({p.name})</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <span className="text-sm" data-testid="tenant-plan-readonly">
+                {ent.planName ?? "—"}
+              </span>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -435,6 +452,7 @@ function EntitlementsSection({ tenantId }: { tenantId: string }) {
                       ent={e}
                       currentUsage={currentUsage}
                       override={override}
+                      canWrite={canWriteOverride}
                       onUpsert={(body) => upsertOverride.mutate({ featureKey: e.featureKey, body })}
                       onRemove={() => removeOverride.mutate(e.featureKey)}
                     />
@@ -450,11 +468,12 @@ function EntitlementsSection({ tenantId }: { tenantId: string }) {
 }
 
 function EntitlementRow({
-  ent, currentUsage, override, onUpsert, onRemove,
+  ent, currentUsage, override, canWrite, onUpsert, onRemove,
 }: {
   ent: Entitlement;
   currentUsage: number | undefined;
   override: TenantOverride | undefined;
+  canWrite: boolean;
   onUpsert: (b: Record<string, unknown>) => void;
   onRemove: () => void;
 }) {
@@ -481,7 +500,7 @@ function EntitlementRow({
         {usageDisplay ?? limitDisplay}
       </div>
       <div className="flex gap-1">
-        {!ent.isCore && (
+        {canWrite && !ent.isCore && (
           <Button
             size="sm"
             variant={override ? "secondary" : "outline"}
@@ -491,7 +510,7 @@ function EntitlementRow({
             {override ? "Edit" : "Override"}
           </Button>
         )}
-        {override && (
+        {canWrite && override && (
           <Button size="sm" variant="ghost" onClick={() => onRemove()}>Clear</Button>
         )}
       </div>

@@ -282,6 +282,7 @@ export default function PlatformTenantsList() {
 
       <BulkTenantActions
         selectedIds={selectedIdsArray}
+        visibleIds={pageIds}
         namesById={namesById}
         onClear={clearSelection}
       />

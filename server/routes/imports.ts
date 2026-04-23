@@ -17,9 +17,11 @@ import { CsvParseError } from "../services/importPipeline/parse";
 import { productImportPipeline } from "../services/importPipeline/adapters/ProductImportAdapter";
 import { jobImportPipeline } from "../services/importPipeline/adapters/JobImportAdapter";
 import { clientImportPipeline } from "../services/importPipeline/adapters/ClientImportAdapter";
+import { invoiceImportPipeline } from "../services/importPipeline/adapters/InvoiceImportAdapter";
 import { productCommitRequestSchema } from "@shared/importPipeline/zod/product";
 import { jobCommitRequestSchema } from "@shared/importPipeline/zod/job";
 import { clientCommitRequestSchema } from "@shared/importPipeline/zod/client";
+import { invoiceCommitRequestSchema } from "@shared/importPipeline/zod/invoice";
 import type { ImportPipeline } from "../services/importPipeline/ImportPipeline";
 import type { ImportContext } from "../services/importPipeline/types";
 import type { ColumnMapping } from "@shared/importPipeline/contracts";
@@ -56,6 +58,10 @@ const registry: Record<string, ImportRegistryEntry<any>> = {
   clients: {
     pipeline: clientImportPipeline,
     commitSchema: clientCommitRequestSchema,
+  },
+  invoices: {
+    pipeline: invoiceImportPipeline,
+    commitSchema: invoiceCommitRequestSchema,
   },
 };
 

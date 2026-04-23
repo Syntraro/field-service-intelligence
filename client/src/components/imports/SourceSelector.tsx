@@ -64,18 +64,29 @@ interface SourceSelectorProps {
   onChange: (next: SourceId) => void;
 }
 
+/**
+ * 2026-04-22 live-testing fix: demoted from 3 big cards to a compact
+ * inline segmented picker. Record-type choice (on ImportCenterPage) is
+ * the primary decision — source is a secondary detail about this
+ * specific file. Keeping this surface small signals that hierarchy.
+ */
 export function SourceSelector({ value, onChange }: SourceSelectorProps) {
   return (
-    <section className="space-y-3" data-testid="source-selector">
-      <div>
-        <h2 className="text-base font-semibold text-[#111827]">Where is this file from?</h2>
-        <p className="text-xs text-[#4b5563] mt-0.5">
-          Pick the tool that produced this CSV. Your choice determines which columns we
-          auto-map. If you're not sure, pick Generic CSV and map fields manually.
+    <section className="space-y-2" data-testid="source-selector">
+      <div className="flex items-baseline gap-2">
+        <h2 className="text-xs font-semibold text-[#4b5563] uppercase tracking-wider">
+          Source
+        </h2>
+        <p className="text-xs text-[#6b7280]">
+          Which tool produced this CSV?
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div
+        className="inline-flex flex-wrap gap-1.5 rounded-md bg-[#F4F8F4] p-1 border border-[#e2e8f0]"
+        role="radiogroup"
+        aria-label="Source of the CSV file"
+      >
         {SOURCE_OPTIONS.map((option) => {
           const Icon = option.icon;
           const isActive = value === option.id;
@@ -83,27 +94,20 @@ export function SourceSelector({ value, onChange }: SourceSelectorProps) {
             <button
               key={option.id}
               type="button"
+              role="radio"
+              aria-checked={isActive}
               onClick={() => onChange(option.id)}
               data-testid={`source-option-${option.id}`}
-              aria-pressed={isActive}
-              className={`group text-left rounded-md border p-4 transition-all focus:outline-none focus:ring-2 focus:ring-[#76B054]/40 ${
+              title={option.description}
+              className={`inline-flex items-center gap-1.5 px-3 h-8 rounded text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-[#76B054]/40 ${
                 isActive
-                  ? "border-[#76B054] bg-[#F0F5F0] shadow-sm"
-                  : "border-[#e2e8f0] bg-white hover:border-[#76B054] hover:shadow-sm"
+                  ? "bg-white text-[#111827] shadow-sm border border-[#76B054]"
+                  : "text-[#4b5563] hover:bg-white hover:text-[#111827]"
               }`}
             >
-              <div className="flex items-start justify-between gap-2 mb-2">
-                <div
-                  className={`p-2 rounded-md transition-colors ${
-                    isActive ? "bg-[#76B054]/20" : "bg-[#F4F8F4] group-hover:bg-[#76B054]/10"
-                  }`}
-                >
-                  <Icon className="h-4 w-4 text-[#76B054]" />
-                </div>
-                {isActive && <Check className="h-4 w-4 text-[#76B054]" />}
-              </div>
-              <div className="text-sm font-semibold text-[#111827]">{option.label}</div>
-              <div className="text-xs text-[#4b5563] mt-1">{option.description}</div>
+              <Icon className={`h-3.5 w-3.5 ${isActive ? "text-[#76B054]" : "text-[#6b7280]"}`} />
+              <span>{option.label}</span>
+              {isActive && <Check className="h-3.5 w-3.5 text-[#76B054]" />}
             </button>
           );
         })}

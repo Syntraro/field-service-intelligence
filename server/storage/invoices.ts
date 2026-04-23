@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { eq, and, sql, desc, or, lt, isNull, isNotNull, asc, inArray } from "drizzle-orm";
-import { invoices, invoiceLines, invoiceTaxLines, clients, payments, jobs, jobParts, laborEntries, technicians, timeEntries, users, companySettings, customerCompanies, items } from "@shared/schema";
+import { invoices, invoiceLines, invoiceTaxLines, clients, payments, jobs, jobParts, laborEntries, technicians, timeEntries, users, companySettings, customerCompanies, items, type InvoiceStatus } from "@shared/schema";
 import { BaseRepository, parseDecimal } from "./base";
 import { activeJobFilter } from "./jobFilters";
 import { UNPAID_INVOICE_STATUSES } from "./invoicesFeed";
@@ -31,6 +31,7 @@ export const INVOICE_CREATION_SOURCES = [
   "JOB_CLOSE_ROUTE",
   "PM_BILLING_SERVICE", // PM Billing Phase 2: Contract-period billing events
   "STANDALONE_ROUTE",   // Standalone invoice creation without job/PM dependency
+  "IMPORT_ROUTE",       // 2026-04-22: Canonical invoice CSV importer (InvoiceImportAdapter)
 ] as const;
 
 /**
@@ -1962,6 +1963,147 @@ export class InvoiceRepository extends BaseRepository {
       return { invoice, invoiceNumber };
     });
   }
+
+  /**
+   * Canonical invoice-import creation path (2026-04-22).
+   *
+   * Called from the InvoiceImportAdapter inside the import pipeline's
+   * transaction. Reuses `createInvoiceShell` for atomic invoice-number
+   * assignment + the guarded INSERT, then applies source-provided
+   * overrides (issueDate, dueDate, source status, final totals,
+   * notesInternal) in a single UPDATE, and inserts the summarized line
+   * items in one batch.
+   *
+   * KEY DESIGN CHOICES:
+   *   • Imported invoices carry FINALIZED historical totals from the source
+   *     CSV. We do NOT recompute tax per line — the 2026-03-18 performance
+   *     baseline mandates batchApplyLineTax() for NEW invoices created by
+   *     the app; historical imports record what already happened and so
+   *     bypass tax application entirely (lines are persisted with their
+   *     pre-computed taxAmount / lineTotal).
+   *   • `invoiceNumber` override is optional. Callers that detect a
+   *     collision with an existing invoice number upstream pass null and
+   *     preserve the source number in notesInternal so nothing is lost.
+   *   • No line creation loop with per-line recalculation — single
+   *     bulk INSERT.
+   */
+  async createImportedInvoice(
+    companyId: string,
+    params: {
+      locationId: string;
+      customerCompanyId: string | null;
+      jobId: string | null;
+      /** Source-provided invoice number to override shell's auto-assigned number. Null → keep auto-assigned. */
+      invoiceNumber: string | null;
+      /** ISO date "YYYY-MM-DD". */
+      issueDate: string;
+      /** ISO date "YYYY-MM-DD" or null. */
+      dueDate: string | null;
+      status: InvoiceStatus;
+      subtotal: string;
+      taxTotal: string;
+      total: string;
+      amountPaid: string;
+      balance: string;
+      workDescription: string | null;
+      notesInternal: string;
+    },
+    lines: Array<{
+      description: string;
+      quantity: string;
+      unitPrice: string;
+      unitCost: string | null;
+      taxRate: string;
+      lineSubtotal: string;
+      taxAmount: string;
+      lineTotal: string;
+      lineItemType: "service" | "material" | "fee" | "discount";
+    }>,
+    creationSource: InvoiceCreationSource,
+    txHandle: any,
+  ): Promise<{ invoice: any; invoiceNumber: string }> {
+    if (creationSource !== "IMPORT_ROUTE") {
+      throw new Error(
+        "INVOICE_CREATION_GUARD: createImportedInvoice() only allowed from IMPORT_ROUTE",
+      );
+    }
+    if (!txHandle) {
+      throw new Error(
+        "createImportedInvoice() requires a caller-supplied txHandle — the import pipeline wraps each row in its own transaction.",
+      );
+    }
+    this.assertCompanyId(companyId);
+
+    const [settings] = await txHandle
+      .select({ defaultPaymentTermsDays: companySettings.defaultPaymentTermsDays })
+      .from(companySettings)
+      .where(eq(companySettings.companyId, companyId))
+      .limit(1);
+    const paymentTermsDays = settings?.defaultPaymentTermsDays ?? 30;
+
+    const { invoice: shell, invoiceNumber: autoNumber } = await this.createInvoiceShell(
+      companyId,
+      {
+        locationId: params.locationId,
+        customerCompanyId: params.customerCompanyId,
+        jobId: params.jobId,
+        workDescription: params.workDescription,
+        initialSubtotal: params.subtotal,
+        initialTotal: params.total,
+        initialBalance: params.balance,
+      },
+      txHandle,
+      paymentTermsDays,
+    );
+
+    const effectiveNumber = params.invoiceNumber ?? autoNumber;
+
+    // Single UPDATE to apply source-truth overrides the shell can't accept
+    // (issueDate/dueDate are shell-derived from "today"; status/taxTotal/
+    // amountPaid/notesInternal have no override slots). Historical imports
+    // must preserve the original dates + status + finalized tax, so we
+    // overwrite in one statement.
+    const [finalInvoice] = await txHandle
+      .update(invoices)
+      .set({
+        invoiceNumber: effectiveNumber,
+        issueDate: params.issueDate,
+        dueDate: params.dueDate,
+        status: params.status,
+        taxTotal: params.taxTotal,
+        amountPaid: params.amountPaid,
+        notesInternal: params.notesInternal,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(invoices.id, shell.id), eq(invoices.companyId, companyId)))
+      .returning();
+
+    if (lines.length > 0) {
+      await txHandle.insert(invoiceLines).values(
+        lines.map((line, idx) => ({
+          companyId,
+          invoiceId: shell.id,
+          lineNumber: idx + 1,
+          lineItemType: line.lineItemType,
+          description: line.description,
+          quantity: line.quantity,
+          unitCost: line.unitCost,
+          unitPrice: line.unitPrice,
+          taxRate: line.taxRate,
+          lineSubtotal: line.lineSubtotal,
+          taxAmount: line.taxAmount,
+          lineTotal: line.lineTotal,
+          // Catalog-exempt: productId intentionally null so "Imported Line
+          // Item" summary rows never pollute the products/services catalog.
+          productId: null,
+          source: "imported",
+        })),
+      );
+    }
+
+    return { invoice: finalInvoice ?? shell, invoiceNumber: effectiveNumber };
+  }
+
   /**
    * Counter-drift guard: bump companyCounters.nextInvoiceNumber if minValue exceeds current counter.
    * Called when a user manually sets an invoice number to a higher numeric value.

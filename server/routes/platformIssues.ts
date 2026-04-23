@@ -13,9 +13,10 @@ import { requirePlatformRole } from "../auth/requirePlatformRole";
 import { platformIssuesService } from "../services/platformIssuesService";
 import { insertIssueReportSchema } from "@shared/schema";
 
-// Phase 5 role matrix hardening: issue tracker is a support concern.
-// `platform_billing` no longer writes here (read still permitted).
-const WRITE_ROLES = ["platform_admin", "platform_support"] as const;
+// 2026-04-22 Revised Phase 1: issue triage → `feedback:triage` capability
+// (feedback + issues share the same triage capability by design; they're
+// sibling surfaces).
+import { requireCapability } from "../auth/requireCapability";
 
 const platformIssuesRouter = Router();
 platformIssuesRouter.use(requirePlatformRole());
@@ -62,7 +63,7 @@ platformIssuesRouter.get("/", asyncHandler(async (req: Request, res: Response) =
 // POST /api/platform/issues
 platformIssuesRouter.post(
   "/",
-  requirePlatformRole(WRITE_ROLES),
+  requireCapability("feedback:triage"),
   asyncHandler(async (req: Request, res: Response) => {
     const input = validateSchema(insertIssueReportSchema, req.body);
     const actor = requireActor(req);
@@ -82,7 +83,7 @@ platformIssuesRouter.get("/:id", asyncHandler(async (req: Request, res: Response
 // PATCH /api/platform/issues/:id
 platformIssuesRouter.patch(
   "/:id",
-  requirePlatformRole(WRITE_ROLES),
+  requireCapability("feedback:triage"),
   asyncHandler(async (req: Request, res: Response) => {
     const { id } = validateSchema(idParamSchema, req.params);
     const patch = validateSchema(patchSchema, req.body);
@@ -96,7 +97,7 @@ platformIssuesRouter.patch(
 // POST /api/platform/issues/:id/note
 platformIssuesRouter.post(
   "/:id/note",
-  requirePlatformRole(WRITE_ROLES),
+  requireCapability("feedback:triage"),
   asyncHandler(async (req: Request, res: Response) => {
     const { id } = validateSchema(idParamSchema, req.params);
     const { note } = validateSchema(noteSchema, req.body);

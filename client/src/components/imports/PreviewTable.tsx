@@ -39,6 +39,27 @@ export function PreviewTable<T, D>({ preview, renderDetails }: PreviewTableProps
     return c;
   }, [preview.rows]);
 
+  // 2026-04-22: de-duplicate the top warning legend against the row table.
+  // Every row warning already renders inline in the row table's
+  // "Details / warnings" cell, so the legend was doubling up as a second
+  // copy — noisy on imports where each row carries its own warning (e.g.
+  // "Job #X not found — invoice imported unlinked"). Keep the legend only
+  // for warnings that apply to MULTIPLE rows, i.e. genuinely systemic
+  // issues (same parse failure on many rows, same fallback behavior
+  // across the batch). Single-row warnings stay in the row table only.
+  const systemicLegendEntries = useMemo(() => {
+    if (!preview.warningLegend) return [] as Array<[string, string]>;
+    const codeCounts = new Map<number, number>();
+    for (const row of preview.rows) {
+      for (const code of row.warningCodes ?? []) {
+        codeCounts.set(code, (codeCounts.get(code) ?? 0) + 1);
+      }
+    }
+    return Object.entries(preview.warningLegend).filter(
+      ([code]) => (codeCounts.get(Number(code)) ?? 0) > 1,
+    );
+  }, [preview.warningLegend, preview.rows]);
+
   const exportErrors = () => {
     const failedRows = preview.rows.filter((r) => r.disposition === "failed");
     if (failedRows.length === 0) return;
@@ -75,11 +96,11 @@ export function PreviewTable<T, D>({ preview, renderDetails }: PreviewTableProps
         )}
       </div>
 
-      {preview.warningLegend && Object.keys(preview.warningLegend).length > 0 && (
+      {systemicLegendEntries.length > 0 && (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
           <div className="font-semibold mb-1">Warning legend</div>
           <div className="space-y-0.5">
-            {Object.entries(preview.warningLegend).map(([code, msg]) => (
+            {systemicLegendEntries.map(([code, msg]) => (
               <div key={code}>
                 <span className="font-mono text-[10px] bg-amber-200 px-1 rounded mr-2">W{code}</span>
                 {msg}

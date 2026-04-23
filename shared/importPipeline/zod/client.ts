@@ -43,6 +43,9 @@ export const clientImportRowSchema = z.object({
   billWithParent: z.boolean().nullable(),
 
   // Contact
+  // 2026-04-22: `contactTitle` captures Jobber's `Title` column (prefix
+  // or role), stored on `contact_persons.title`.
+  contactTitle: z.string().nullable(),
   contactFirstName: z.string().nullable(),
   contactLastName: z.string().nullable(),
   contactEmail: z.string().nullable(),
@@ -108,6 +111,7 @@ export const CLIENT_FIELD_DEFS = [
   { key: "siteCode", label: "Site / roof code", group: "Location", required: false },
   { key: "locationNotes", label: "Location notes", group: "Location", required: false },
   { key: "billWithParent", label: "Bill with parent", group: "Location", required: false },
+  { key: "contactTitle", label: "Contact title / prefix", group: "Contact", required: false },
   { key: "contactFirstName", label: "Contact first name", group: "Contact", required: false },
   { key: "contactLastName", label: "Contact last name", group: "Contact", required: false },
   { key: "contactEmail", label: "Contact email", group: "Contact", required: false },

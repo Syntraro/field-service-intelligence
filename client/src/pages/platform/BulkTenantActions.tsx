@@ -1,13 +1,20 @@
 /**
- * BulkTenantActions — SaaS Admin Phase A6.1.
+ * BulkTenantActions — SaaS Admin Phase A6.1 / A6.2.
  *
  * Sticky bulk action bar for `/platform/tenants`. Appears only when rows
  * are selected. Every action routes through the canonical
  * `POST /api/platform/tenants/bulk` endpoint, which delegates per-tenant
  * writes to the same canonical writers used by the single-tenant paths.
  *
- * The client doesn't own any policy logic here — it renders forms,
- * confirms, submits, and displays the server's per-tenant result summary.
+ * A6.2 upgrades:
+ *   - Two-step flow: Preview (dry-run) always runs before Apply. The
+ *     Apply button stays disabled until the operator has seen the
+ *     predicted outcomes.
+ *   - Selection metadata in the bar: "N selected (M on this page)".
+ *   - Progress indicator while the live run is in flight.
+ *
+ * The client never derives policy: plan-exists, feature-exists,
+ * lifecycle-transition-legal all live in the server dry-run response.
  */
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -42,7 +49,14 @@ import {
   Sliders,
   X,
   Loader2,
+  Eye,
+  CheckCircle2,
+  AlertTriangle,
 } from "lucide-react";
+// 2026-04-22 Revised Phase 1: capability gates. The bar itself hides for
+// readers without bulk access; inside the dialog, Preview needs
+// `bulk:dry-run` and Apply needs `bulk:write`. Server enforces both.
+import { usePlatformAuth } from "@/lib/platformAuth";
 
 // ── Shared types mirroring the server bulk contract ─────────────────────────
 
@@ -54,15 +68,18 @@ type BulkAction =
   | "add_override"
   | "remove_override";
 
+type BulkItemStatus = "ok" | "error" | "would_ok" | "would_error";
+
 interface BulkItemResult {
   tenantId: string;
-  status: "ok" | "error";
+  status: BulkItemStatus;
   message?: string;
   error?: string;
 }
 
 interface BulkResult {
   action: BulkAction;
+  dryRun: boolean;
   total: number;
   succeeded: number;
   failed: number;
@@ -87,33 +104,57 @@ interface FeatureListItem {
 // ── Public API ──────────────────────────────────────────────────────────────
 
 export interface BulkTenantActionsProps {
-  /** Selected tenant ids (ordered for stable UI). */
+  /** All selected tenant ids (cross-page). */
   selectedIds: string[];
-  /** Optional names-by-id map so the results summary can show human labels. */
+  /** IDs of tenants currently visible on the rendered page. */
+  visibleIds: string[];
+  /** Names for tenants we know about; used in the results dialog. */
   namesById?: Map<string, string>;
-  /** Clear selection after a bulk run. */
+  /** Clear selection after a successful live run. */
   onClear: () => void;
 }
 
 export function BulkTenantActions({
   selectedIds,
+  visibleIds,
   namesById,
   onClear,
 }: BulkTenantActionsProps) {
   const [activeDialog, setActiveDialog] = useState<BulkAction | null>(null);
   const [resultDialog, setResultDialog] = useState<BulkResult | null>(null);
+  const { hasCapability } = usePlatformAuth();
+  const canDryRun = hasCapability("bulk:dry-run");
+  const canWrite = hasCapability("bulk:write");
 
   if (selectedIds.length === 0) return null;
+  // A tenant reader with neither bulk capability gets no bar at all —
+  // clicking any row's checkbox still works for other UX uses (e.g. future
+  // "export selection"), but there's nothing useful to offer here.
+  if (!canDryRun && !canWrite) return null;
+
+  // Selection metadata: how many of the selected IDs are currently visible,
+  // how many are selected on other pages the operator has seen.
+  const visibleSet = new Set(visibleIds);
+  const onPage = selectedIds.filter((id) => visibleSet.has(id)).length;
+  const offPage = selectedIds.length - onPage;
 
   return (
     <>
       <div
-        className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-background border shadow-lg rounded-lg px-3 py-2 flex items-center gap-2 flex-wrap"
+        className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-background border shadow-lg rounded-lg px-3 py-2 flex items-center gap-2 flex-wrap max-w-[95vw]"
         data-testid="bulk-action-bar"
       >
-        <Badge variant="secondary" className="font-semibold">
+        <Badge variant="secondary" className="font-semibold" data-testid="bulk-selection-count">
           {selectedIds.length} selected
         </Badge>
+        {offPage > 0 && (
+          <span
+            className="text-[11px] text-muted-foreground"
+            data-testid="bulk-selection-split"
+          >
+            ({onPage} on this page, {offPage} on other pages)
+          </span>
+        )}
 
         <span className="text-muted-foreground text-xs mx-1">Actions:</span>
 
@@ -186,8 +227,13 @@ export function BulkTenantActions({
       <BulkActionDialog
         action={activeDialog}
         tenantIds={selectedIds}
+        namesById={namesById}
+        canDryRun={canDryRun}
+        canWrite={canWrite}
         onOpenChange={(open) => !open && setActiveDialog(null)}
         onResult={(r) => {
+          // Only surface the results dialog on LIVE runs; previews render
+          // inline in the action dialog.
           setActiveDialog(null);
           setResultDialog(r);
           if (r.failed === 0) onClear();
@@ -203,23 +249,29 @@ export function BulkTenantActions({
   );
 }
 
-// ── Action dialog (morphs by action) ────────────────────────────────────────
+// ── Action dialog (two-step: preview → apply) ───────────────────────────────
 
 function BulkActionDialog({
   action,
   tenantIds,
+  namesById,
+  canDryRun,
+  canWrite,
   onOpenChange,
   onResult,
 }: {
   action: BulkAction | null;
   tenantIds: string[];
+  namesById?: Map<string, string>;
+  canDryRun: boolean;
+  canWrite: boolean;
   onOpenChange: (open: boolean) => void;
   onResult: (r: BulkResult) => void;
 }) {
   const { toast } = useToast();
   const qc = useQueryClient();
 
-  // Per-action local state. Kept separate so switching actions doesn't leak.
+  // Per-action local state.
   const [extendDays, setExtendDays] = useState<7 | 14>(7);
   const [planName, setPlanName] = useState<string>("");
   const [reason, setReason] = useState<string>("");
@@ -227,6 +279,10 @@ function BulkActionDialog({
   const [overrideEnabled, setOverrideEnabled] = useState<boolean>(true);
   const [overrideLimit, setOverrideLimit] = useState<string>("");
   const [overrideSetLimit, setOverrideSetLimit] = useState<boolean>(false);
+
+  // A6.2: dry-run preview lives inside the same dialog. Apply stays
+  // disabled until a preview has returned.
+  const [preview, setPreview] = useState<BulkResult | null>(null);
 
   const { data: plans = [] } = useQuery<PlanListItem[]>({
     queryKey: ["/api/platform/plans"],
@@ -242,40 +298,58 @@ function BulkActionDialog({
   const activePlans = plans.filter((p) => p.active && p.name !== "trial");
   const activeFeatures = features.filter((f) => f.active);
 
-  const mutation = useMutation({
+  const buildParams = (): Record<string, unknown> => {
+    if (!action) throw new Error("No action");
+    switch (action) {
+      case "extend_trial":
+        return { extendDays };
+      case "assign_plan":
+        if (!planName) throw new Error("Choose a plan");
+        return { planName };
+      case "pause_subscription":
+      case "reactivate_subscription":
+        return { reason: reason.trim() || null };
+      case "add_override": {
+        if (!overrideFeatureKey) throw new Error("Choose a feature");
+        const p: Record<string, unknown> = {
+          featureKey: overrideFeatureKey,
+          enabled: overrideEnabled,
+          reason: reason.trim() || null,
+        };
+        if (overrideSetLimit) {
+          p.limitValue = overrideLimit.trim() === "" ? null : Number(overrideLimit);
+        }
+        return p;
+      }
+      case "remove_override":
+        if (!overrideFeatureKey) throw new Error("Choose a feature");
+        return { featureKey: overrideFeatureKey };
+    }
+  };
+
+  const previewMutation = useMutation({
     mutationFn: async (): Promise<BulkResult> => {
       if (!action) throw new Error("No action");
-      let params: Record<string, unknown>;
-      switch (action) {
-        case "extend_trial":
-          params = { extendDays };
-          break;
-        case "assign_plan":
-          if (!planName) throw new Error("Choose a plan");
-          params = { planName };
-          break;
-        case "pause_subscription":
-        case "reactivate_subscription":
-          params = { reason: reason.trim() || null };
-          break;
-        case "add_override": {
-          if (!overrideFeatureKey) throw new Error("Choose a feature");
-          const p: Record<string, unknown> = {
-            featureKey: overrideFeatureKey,
-            enabled: overrideEnabled,
-            reason: reason.trim() || null,
-          };
-          if (overrideSetLimit) {
-            p.limitValue = overrideLimit.trim() === "" ? null : Number(overrideLimit);
-          }
-          params = p;
-          break;
-        }
-        case "remove_override":
-          if (!overrideFeatureKey) throw new Error("Choose a feature");
-          params = { featureKey: overrideFeatureKey };
-          break;
-      }
+      const params = buildParams();
+      return apiRequest<BulkResult>(`/api/platform/tenants/bulk?dryRun=true`, {
+        method: "POST",
+        body: JSON.stringify({ action, tenantIds, params }),
+      });
+    },
+    onSuccess: (r) => setPreview(r),
+    onError: (e: any) => {
+      toast({
+        title: "Preview failed",
+        description: e?.message ?? "Unknown error",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const applyMutation = useMutation({
+    mutationFn: async (): Promise<BulkResult> => {
+      if (!action) throw new Error("No action");
+      const params = buildParams();
       return apiRequest<BulkResult>(`/api/platform/tenants/bulk`, {
         method: "POST",
         body: JSON.stringify({ action, tenantIds, params }),
@@ -296,15 +370,46 @@ function BulkActionDialog({
     },
   });
 
+  // Reset preview when params change — operator sees a stale preview risk
+  // eliminated by invalidating it on every input change.
+  const clearPreview = () => setPreview(null);
+
+  // Reset full local state when the dialog is closed from the outside.
+  const handleOpenChange = (open: boolean) => {
+    if (!open) {
+      setPreview(null);
+      previewMutation.reset();
+      applyMutation.reset();
+    }
+    onOpenChange(open);
+  };
+
   const open = action !== null;
   const title = action ? actionTitle(action) : "";
   const description = action
-    ? `${actionDescription(action)} Preview: ${tenantIds.length} tenant${tenantIds.length === 1 ? "" : "s"} will be affected.`
+    ? `${actionDescription(action)} ${tenantIds.length} tenant${tenantIds.length === 1 ? "" : "s"} selected.`
     : "";
 
+  const canPreview = action !== null && (() => {
+    switch (action) {
+      case "extend_trial": return true;
+      case "assign_plan": return !!planName;
+      case "pause_subscription":
+      case "reactivate_subscription": return true;
+      case "add_override": return !!overrideFeatureKey;
+      case "remove_override": return !!overrideFeatureKey;
+    }
+  })();
+
+  const canApply =
+    canWrite &&
+    preview !== null &&
+    preview.succeeded > 0 &&
+    !applyMutation.isPending;
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent data-testid="bulk-action-dialog">
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent data-testid="bulk-action-dialog" className="max-w-xl">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
@@ -312,14 +417,14 @@ function BulkActionDialog({
 
         <div className="space-y-3">
           {action === "extend_trial" && (
-            <div className="space-y-1.5">
+            <div className="space-y-1.5" onChange={clearPreview}>
               <Label>Extend by</Label>
               <div className="flex gap-2">
                 <Button
                   type="button"
                   size="sm"
                   variant={extendDays === 7 ? "default" : "outline"}
-                  onClick={() => setExtendDays(7)}
+                  onClick={() => { setExtendDays(7); clearPreview(); }}
                   data-testid="bulk-extend-7"
                 >
                   +7 days
@@ -328,7 +433,7 @@ function BulkActionDialog({
                   type="button"
                   size="sm"
                   variant={extendDays === 14 ? "default" : "outline"}
-                  onClick={() => setExtendDays(14)}
+                  onClick={() => { setExtendDays(14); clearPreview(); }}
                   data-testid="bulk-extend-14"
                 >
                   +14 days
@@ -343,7 +448,10 @@ function BulkActionDialog({
           {action === "assign_plan" && (
             <div className="space-y-1.5">
               <Label htmlFor="bulk-plan-select">Target plan</Label>
-              <Select value={planName} onValueChange={setPlanName}>
+              <Select
+                value={planName}
+                onValueChange={(v) => { setPlanName(v); clearPreview(); }}
+              >
                 <SelectTrigger id="bulk-plan-select" data-testid="bulk-plan-select">
                   <SelectValue placeholder="Choose a plan" />
                 </SelectTrigger>
@@ -367,7 +475,7 @@ function BulkActionDialog({
               <Textarea
                 id="bulk-reason"
                 value={reason}
-                onChange={(e) => setReason(e.target.value)}
+                onChange={(e) => { setReason(e.target.value); clearPreview(); }}
                 placeholder="Audit trail note"
                 rows={3}
                 data-testid="bulk-reason"
@@ -379,7 +487,10 @@ function BulkActionDialog({
             <div className="space-y-3">
               <div className="space-y-1.5">
                 <Label htmlFor="bulk-feature-select">Feature</Label>
-                <Select value={overrideFeatureKey} onValueChange={setOverrideFeatureKey}>
+                <Select
+                  value={overrideFeatureKey}
+                  onValueChange={(v) => { setOverrideFeatureKey(v); clearPreview(); }}
+                >
                   <SelectTrigger id="bulk-feature-select" data-testid="bulk-feature-select">
                     <SelectValue placeholder="Choose a feature" />
                   </SelectTrigger>
@@ -400,7 +511,7 @@ function BulkActionDialog({
                     <Switch
                       id="bulk-override-enabled"
                       checked={overrideEnabled}
-                      onCheckedChange={setOverrideEnabled}
+                      onCheckedChange={(v) => { setOverrideEnabled(v); clearPreview(); }}
                       data-testid="bulk-override-enabled"
                     />
                   </div>
@@ -410,7 +521,7 @@ function BulkActionDialog({
                       <Switch
                         id="bulk-override-set-limit"
                         checked={overrideSetLimit}
-                        onCheckedChange={setOverrideSetLimit}
+                        onCheckedChange={(v) => { setOverrideSetLimit(v); clearPreview(); }}
                         data-testid="bulk-override-set-limit"
                       />
                       <Label htmlFor="bulk-override-set-limit">Override limit</Label>
@@ -420,7 +531,7 @@ function BulkActionDialog({
                         type="number"
                         placeholder="Empty = unlimited"
                         value={overrideLimit}
-                        onChange={(e) => setOverrideLimit(e.target.value)}
+                        onChange={(e) => { setOverrideLimit(e.target.value); clearPreview(); }}
                         data-testid="bulk-override-limit"
                       />
                     )}
@@ -431,7 +542,7 @@ function BulkActionDialog({
                     <Input
                       id="bulk-override-reason"
                       value={reason}
-                      onChange={(e) => setReason(e.target.value)}
+                      onChange={(e) => { setReason(e.target.value); clearPreview(); }}
                       placeholder="Audit trail note"
                       data-testid="bulk-override-reason"
                     />
@@ -440,20 +551,109 @@ function BulkActionDialog({
               )}
             </div>
           )}
+
+          {/* Preview panel — appears after the first dry-run. */}
+          {preview && (
+            <div className="rounded border bg-muted/30 p-3 space-y-2" data-testid="bulk-preview-panel">
+              <div className="flex items-center gap-2 text-sm">
+                <Eye className="h-4 w-4 text-muted-foreground" />
+                <span className="font-medium">Preview</span>
+                <Badge variant="outline" className="text-[10px] uppercase">
+                  dry-run
+                </Badge>
+                <span className="text-muted-foreground">·</span>
+                <span className="inline-flex items-center gap-1 text-emerald-700 text-xs">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  {preview.succeeded} expected to succeed
+                </span>
+                {preview.failed > 0 && (
+                  <>
+                    <span className="text-muted-foreground">·</span>
+                    <span className="inline-flex items-center gap-1 text-red-700 text-xs">
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                      {preview.failed} expected to fail
+                    </span>
+                  </>
+                )}
+              </div>
+              <div className="max-h-48 overflow-auto space-y-1 text-xs">
+                {preview.results.slice(0, 100).map((r) => {
+                  const name = namesById?.get(r.tenantId) ?? r.tenantId;
+                  const ok = r.status === "would_ok";
+                  return (
+                    <div
+                      key={r.tenantId}
+                      className={`rounded border px-2 py-1 flex items-start gap-2 ${
+                        ok ? "border-emerald-200 bg-emerald-50/40" : "border-red-200 bg-red-50/40"
+                      }`}
+                      data-testid={`bulk-preview-${r.tenantId}`}
+                    >
+                      <span className={`font-mono text-[10px] uppercase shrink-0 ${
+                        ok ? "text-emerald-700" : "text-red-700"
+                      }`}>
+                        {ok ? "ok" : "fail"}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <span className="font-medium truncate block">{name}</span>
+                        <span className="text-muted-foreground">
+                          {ok ? r.message : r.error}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+                {preview.results.length > 100 && (
+                  <p className="text-[11px] text-muted-foreground pt-1">
+                    + {preview.results.length - 100} more rows (scroll result dialog to see all)
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Progress strip during live execution. */}
+          {applyMutation.isPending && (
+            <div
+              className="rounded border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2 text-xs"
+              data-testid="bulk-apply-progress"
+            >
+              <Loader2 className="h-4 w-4 animate-spin text-amber-700" />
+              <span className="font-medium text-amber-900">
+                Applying to {tenantIds.length} tenant{tenantIds.length === 1 ? "" : "s"}…
+              </span>
+              <span className="text-muted-foreground">
+                canonical writers run in a bounded worker pool, so large batches complete in
+                parallel.
+              </span>
+            </div>
+          )}
         </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+        <DialogFooter className="flex-wrap gap-2">
+          <Button variant="outline" onClick={() => handleOpenChange(false)}>
             Cancel
           </Button>
-          <Button
-            onClick={() => mutation.mutate()}
-            disabled={mutation.isPending || !action}
-            data-testid="bulk-action-confirm"
-          >
-            {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
-            Run on {tenantIds.length}
-          </Button>
+          {canDryRun && (
+            <Button
+              variant="secondary"
+              onClick={() => previewMutation.mutate()}
+              disabled={!canPreview || previewMutation.isPending}
+              data-testid="bulk-action-preview"
+            >
+              {previewMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+              {preview ? "Re-preview" : "Preview"}
+            </Button>
+          )}
+          {canWrite && (
+            <Button
+              onClick={() => applyMutation.mutate()}
+              disabled={!canApply}
+              data-testid="bulk-action-confirm"
+            >
+              {applyMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+              Apply to {preview?.succeeded ?? 0}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -495,25 +695,26 @@ function BulkResultDialog({
           <div className="space-y-2 max-h-[50vh] overflow-auto">
             {result.results.map((r) => {
               const name = namesById?.get(r.tenantId) ?? r.tenantId;
+              const ok = r.status === "ok";
               return (
                 <div
                   key={r.tenantId}
                   className={`rounded border px-2 py-1.5 text-xs flex items-start gap-2 ${
-                    r.status === "ok"
+                    ok
                       ? "border-emerald-200 bg-emerald-50/50"
                       : "border-red-200 bg-red-50/50"
                   }`}
                   data-testid={`bulk-result-${r.tenantId}`}
                 >
                   <span className={`font-mono text-[10px] uppercase shrink-0 ${
-                    r.status === "ok" ? "text-emerald-700" : "text-red-700"
+                    ok ? "text-emerald-700" : "text-red-700"
                   }`}>
                     {r.status}
                   </span>
                   <div className="flex-1 min-w-0">
                     <div className="font-medium truncate">{name}</div>
                     <div className="text-muted-foreground">
-                      {r.status === "ok" ? r.message : r.error}
+                      {ok ? r.message : r.error}
                     </div>
                   </div>
                 </div>

@@ -11,6 +11,9 @@ import {
   confirmPasswordReset,
 } from "../services/passwordResetService";
 import { createCompanyWithOwner } from "../services/onboardingService";
+// 2026-04-22 Phase 1 Platform Auth Separation: gate tenant login against
+// platform-role accounts once operator verification is complete.
+import { isPlatformRole } from "../auth/roles";
 
 declare module "express-serve-static-core" {
   interface Request {
@@ -109,6 +112,27 @@ router.post(
         console.warn(`[AUTH] Failed login for: ${req.body?.email || "unknown"}`);
         return res.status(401).json({ error: "Invalid email or password" });
       }
+
+      // 2026-04-22 Phase 2-lite Platform Auth Separation: DEFAULT FLIPPED.
+      //   Tenant login now rejects platform-role accounts by default. Phase
+      //   2-lite taught impersonationMiddleware to bootstrap req.user from
+      //   a valid imp_session cookie alone, so platform admins no longer
+      //   need a tenant session to use the canonical impersonation flow.
+      //   `ALLOW_PLATFORM_IN_TENANT_LOGIN=true` can still re-enable the
+      //   legacy fallback as an emergency break-glass, but is no longer
+      //   the default.
+      const allowPlatformInTenant =
+        (process.env.ALLOW_PLATFORM_IN_TENANT_LOGIN ?? "false").toLowerCase() === "true";
+      if (!allowPlatformInTenant && isPlatformRole((user as any).role)) {
+        console.warn(
+          `[AUTH] Rejecting tenant login for platform-role account: ${(user as any).email}`,
+        );
+        return res.status(403).json({
+          error: "This account is a platform admin. Use /platform/login.",
+          code: "PLATFORM_ACCOUNT_REJECTED",
+        });
+      }
+
       req.logIn(user, (loginErr) => {
         if (loginErr) {
           console.error(`[AUTH] Login error:`, loginErr);

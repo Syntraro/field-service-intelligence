@@ -64,7 +64,14 @@ const ALLOWED_TRANSITIONS: Record<string, readonly SubscriptionState[]> = {
   paused: ["paused", "active", "cancelled", "trial"],
 };
 
-function isValidTransition(from: string | null | undefined, to: SubscriptionState): boolean {
+/**
+ * 2026-04-22 Admin Phase A6.2: exported so dry-run callers (bulk tenant
+ * operations) can preview whether a transition is legal WITHOUT performing
+ * the write. The canonical `transition()` writer still uses this same
+ * function for its own validation, so dry-run results cannot drift from
+ * live execution.
+ */
+export function isValidTransition(from: string | null | undefined, to: SubscriptionState): boolean {
   if (!from) return true; // null/undefined (new tenant) → anything
   const allowed = ALLOWED_TRANSITIONS[from];
   if (!allowed) return true; // unknown historical state → permissive
@@ -308,5 +315,6 @@ function datesEqual(a: Date | null | undefined, b: Date | null | undefined): boo
 export const subscriptionLifecycleService = {
   transition,
   emitTrialExpiredEvent,
+  isValidTransition,
   SUBSCRIPTION_STATES,
 };

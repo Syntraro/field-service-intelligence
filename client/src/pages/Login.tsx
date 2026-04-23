@@ -153,6 +153,19 @@ export default function Login() {
               Sign up
             </button>
           </div>
+          {/* 2026-04-22 Phase 1 Platform Auth Separation: platform admins
+              authenticate via a separate surface. */}
+          <div className="mt-3 text-center text-xs text-muted-foreground">
+            Platform admin?{" "}
+            <button
+              data-testid="link-platform-login"
+              type="button"
+              className="text-primary underline-offset-4 hover:underline"
+              onClick={() => setLocation("/platform/login")}
+            >
+              Log in here
+            </button>
+          </div>
         </CardContent>
       </Card>
     </AuthLayout>

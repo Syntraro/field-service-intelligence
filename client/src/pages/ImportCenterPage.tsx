@@ -25,18 +25,19 @@
 import { useMemo } from "react";
 import { useLocation, useSearch } from "wouter";
 import { Button } from "@/components/ui/button";
-import { Upload, Users, Briefcase, Package } from "lucide-react";
+import { Upload, Users, Briefcase, Package, Receipt } from "lucide-react";
 import { ImportWizard } from "@/components/imports/ImportWizard";
 import { clientImportConfig } from "@/components/imports/configs/clientImportConfig";
 import { jobImportConfig } from "@/components/imports/configs/jobImportConfig";
 import { productImportConfig } from "@/components/imports/configs/productImportConfig";
+import { invoiceImportConfig } from "@/components/imports/configs/invoiceImportConfig";
 import type { ImportWizardConfig } from "@/components/imports/types";
 
 // ---------------------------------------------------------------------------
 // Entity catalog (the three options on the selector)
 // ---------------------------------------------------------------------------
 
-const TYPE_KEYS = ["clients", "jobs", "products"] as const;
+const TYPE_KEYS = ["clients", "jobs", "products", "invoices"] as const;
 type TypeKey = (typeof TYPE_KEYS)[number];
 
 // Default when the URL has no (or an invalid) ?type= param. See the
@@ -81,6 +82,14 @@ const TYPES: TypeDef[] = [
     icon: Package,
     config: productImportConfig,
   },
+  {
+    key: "invoices",
+    label: "Invoices",
+    tabLabel: "Invoices",
+    description: "Historical invoices — summarized for reporting, raw detail in notes.",
+    icon: Receipt,
+    config: invoiceImportConfig,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -107,9 +116,9 @@ export default function ImportCenterPage() {
 
   return (
     <div className="min-h-screen bg-[#F4F8F4]" data-testid="import-center-page">
-      <main className="mx-auto max-w-6xl px-4 sm:px-5 lg:px-6 py-6 space-y-5">
+      <main className="mx-auto max-w-6xl px-4 sm:px-5 lg:px-6 py-6 space-y-6">
         {/* Page header — stays constant as the user switches types. */}
-        <header className="flex items-start justify-between gap-4 pb-3 border-b border-[#e5e7eb]">
+        <header className="flex items-start justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-md bg-white border border-[#e2e8f0]">
               <Upload className="h-5 w-5 text-[#76B054]" />
@@ -117,7 +126,7 @@ export default function ImportCenterPage() {
             <div>
               <h1 className="text-lg font-semibold text-[#111827] tracking-tight">Import Center</h1>
               <p className="text-xs text-[#4b5563] mt-0.5">
-                Bring data into Syntraro — one wizard, three record types.
+                Bring your existing data into Syntraro in a few clicks.
               </p>
             </div>
           </div>
@@ -126,21 +135,30 @@ export default function ImportCenterPage() {
           </Button>
         </header>
 
-        {/* Type selector — always visible so switching is one click. */}
-        <TypeSelector active={activeType} onSelect={setType} />
+        {/* 2026-04-22: primary record-type picker — visually dominant, answers
+            "What do you want to import?" before anything else. Source
+            (Jobber / HCP / Generic) is a secondary choice inside the wizard. */}
+        <section aria-labelledby="import-type-heading">
+          <div className="flex items-baseline justify-between mb-2">
+            <h2 id="import-type-heading" className="text-sm font-semibold text-[#111827]">
+              What do you want to import?
+            </h2>
+            <span className="text-[11px] text-[#6b7280]">Step 1 of 2</span>
+          </div>
+          <TypeSelector active={activeType} onSelect={setType} />
+        </section>
 
         {/* Wizard body. Remount on type change so state resets cleanly. */}
-        <div className="pt-2 border-t border-[#e2e8f0]">
-          <ActiveTypeHeader type={active} />
+        <section aria-label="Import wizard">
           <ImportWizard key={active.key} config={active.config} variant="embedded" />
-        </div>
+        </section>
       </main>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Type selector
+// Type selector — 2026-04-22 upgraded to dominant record-type cards
 // ---------------------------------------------------------------------------
 
 function TypeSelector({
@@ -151,7 +169,11 @@ function TypeSelector({
   onSelect: (key: TypeKey) => void;
 }) {
   return (
-    <div className="flex items-center gap-2 flex-wrap" role="tablist" aria-label="Import type">
+    <div
+      className="grid grid-cols-1 sm:grid-cols-3 gap-3"
+      role="tablist"
+      aria-label="Import type"
+    >
       {TYPES.map((t) => {
         const isActive = t.key === active;
         const Icon = t.icon;
@@ -163,36 +185,32 @@ function TypeSelector({
             aria-selected={isActive}
             onClick={() => onSelect(t.key)}
             data-testid={`import-type-tab-${t.key}`}
-            className={`inline-flex items-center gap-1.5 px-3 h-8 rounded-md border text-xs font-semibold transition-colors ${
+            className={`group text-left rounded-lg border-2 p-4 transition-all focus:outline-none focus:ring-2 focus:ring-[#76B054]/40 ${
               isActive
-                ? "bg-[#76B054] border-[#76B054] text-white"
-                : "bg-white border-[#e2e8f0] text-[#4b5563] hover:border-[#76B054] hover:text-[#111827]"
+                ? "border-[#76B054] bg-white shadow-sm"
+                : "border-[#e2e8f0] bg-white hover:border-[#76B054]/60 hover:shadow-sm"
             }`}
           >
-            <Icon className="h-3.5 w-3.5" />
-            {t.tabLabel}
+            <div className="flex items-center gap-3 mb-2">
+              <div
+                className={`p-2 rounded-md transition-colors ${
+                  isActive ? "bg-[#76B054]" : "bg-[#F0F5F0] group-hover:bg-[#76B054]/15"
+                }`}
+              >
+                <Icon className={`h-5 w-5 ${isActive ? "text-white" : "text-[#76B054]"}`} />
+              </div>
+              <span
+                className={`text-base font-semibold ${
+                  isActive ? "text-[#111827]" : "text-[#111827]"
+                }`}
+              >
+                {t.label}
+              </span>
+            </div>
+            <p className="text-xs text-[#4b5563] leading-snug">{t.description}</p>
           </button>
         );
       })}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Active-type header — shown above the embedded wizard body
-// ---------------------------------------------------------------------------
-
-function ActiveTypeHeader({ type }: { type: TypeDef }) {
-  const Icon = type.icon;
-  return (
-    <div className="flex items-center gap-3 pt-4 pb-3">
-      <div className="p-1.5 rounded-md bg-white border border-[#e2e8f0]">
-        <Icon className="h-4 w-4 text-[#76B054]" />
-      </div>
-      <div>
-        <div className="text-sm font-semibold text-[#111827]">{type.config.title}</div>
-        <div className="text-xs text-[#4b5563] mt-0.5">{type.config.description}</div>
-      </div>
     </div>
   );
 }

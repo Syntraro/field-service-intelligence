@@ -18,9 +18,9 @@ export const jobImportConfig: ImportWizardConfig = {
   fieldDefs: JOB_FIELD_DEFS.map((f) => ({ ...f })),
   template: { filename: "historical-jobs-template.csv", csv: TEMPLATE_CSV },
   uploadBanner:
-    "Historical jobs are created with status = archived. They won't appear in dispatch, won't create visits, and won't affect live KPIs. Companies must already exist in your account — import clients first.",
+    "Imported jobs are saved as archived records — they stay visible in reporting and search but don't appear in your live dispatch or create new visits. Import clients first so the jobs can be linked to the right companies.",
   commitBanner:
-    "This will write archived job records directly. Archived jobs are still visible in reporting and search, but they're separate from your live operations workflow.",
+    "This imports past jobs as archived records. Duplicate rows found in preview will not be imported.",
   presets: [jobberJobsPreset],
   // 2026-04-22 Phase 2b: Jobs import writes custom fields onto the Job
   // entity. Location targeting is intentionally omitted from this config —

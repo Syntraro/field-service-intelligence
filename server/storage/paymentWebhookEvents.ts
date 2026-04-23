@@ -179,3 +179,9 @@ export async function safeRecordPaymentWebhookEvent(
     );
   }
 }
+
+// 2026-04-22 Rollback: read helpers (list + getById) removed along
+// with the platform ops routes. The table is now a write-only error
+// log — operators query it directly via psql / BI tools when they
+// need to look at historical webhook errors. If an in-app read
+// surface returns later, reintroduce list/get then.

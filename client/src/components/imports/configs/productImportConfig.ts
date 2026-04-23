@@ -18,9 +18,9 @@ export const productImportConfig: ImportWizardConfig = {
   fieldDefs: [...PRODUCT_FIELD_DEFS],
   template: { filename: "products-template.csv", csv: TEMPLATE_CSV },
   uploadBanner:
-    "Products default to taxable = yes and active = yes when the column is not mapped. Map the Taxable/Active columns explicitly if your catalog has non-default values.",
+    "Items default to taxable and active when those columns aren't mapped. Map them yourself if your catalog has non-default values.",
   commitBanner:
-    "This will create catalog items in your tenant. Existing items with the same name+type or SKU are matched (not duplicated).",
+    "This imports catalog items (products, services, parts). Items that already exist (matched by SKU or name+type) are updated rather than duplicated.",
   presets: [jobberProductsPreset],
   // 2026-04-22 Phase 2b: Products / Services import can attach custom fields
   // to the catalog item (item entity on the canonical Reference-Fields system).

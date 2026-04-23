@@ -45,8 +45,12 @@ const router = Router();
 // Defense-in-depth: parent router also applies requirePlatformRole.
 router.use(requirePlatformRole());
 
-// Mutation guard: platform_readonly_audit cannot mutate.
-const canMutate = requirePlatformRole(["platform_admin", "platform_support", "platform_billing"]);
+// 2026-04-22 Revised Phase 1: mutation guards are per-capability now,
+// applied per-route below. The legacy `canMutate` umbrella (allowed support
+// + billing alongside admin) is gone — support can no longer write plans,
+// features, overrides, or subscription state. Billing retains plan +
+// lifecycle writes but LOSES feature-catalog + override writes.
+import { requireCapability } from "../auth/requireCapability";
 
 function auditActor(req: Request) {
   const user = (req as any).user;
@@ -114,7 +118,7 @@ router.get("/plans/:planId", asyncHandler(async (req: Request, res: Response) =>
   res.json({ plan, metadata, features });
 }));
 
-router.post("/plans", canMutate, asyncHandler(async (req: Request, res: Response) => {
+router.post("/plans", requireCapability("plan:write"), asyncHandler(async (req: Request, res: Response) => {
   const data = validateSchema(createPlanSchema, req.body);
   const existing = await entitlementStorage.getPlanByName(data.name);
   if (existing) throw createError(400, `Plan name '${data.name}' already exists`);
@@ -128,7 +132,7 @@ router.post("/plans", canMutate, asyncHandler(async (req: Request, res: Response
   res.status(201).json(plan);
 }));
 
-router.patch("/plans/:planId", canMutate, asyncHandler(async (req: Request, res: Response) => {
+router.patch("/plans/:planId", requireCapability("plan:write"), asyncHandler(async (req: Request, res: Response) => {
   const planId = req.params.planId;
   const data = validateSchema(updatePlanSchema, req.body);
   const before = await entitlementStorage.getPlanById(planId);
@@ -153,7 +157,7 @@ router.get("/plans/:planId/metadata", asyncHandler(async (req: Request, res: Res
   res.json(metadata);
 }));
 
-router.put("/plans/:planId/metadata", canMutate, asyncHandler(async (req: Request, res: Response) => {
+router.put("/plans/:planId/metadata", requireCapability("plan:write"), asyncHandler(async (req: Request, res: Response) => {
   const planId = req.params.planId;
   const data = validateSchema(upsertPlanMetadataSchema, req.body);
   const plan = await entitlementStorage.getPlanById(planId);
@@ -184,7 +188,7 @@ router.get("/features/:featureId", asyncHandler(async (req: Request, res: Respon
   res.json(feature);
 }));
 
-router.post("/features", canMutate, asyncHandler(async (req: Request, res: Response) => {
+router.post("/features", requireCapability("feature:catalog:write"), asyncHandler(async (req: Request, res: Response) => {
   const data = validateSchema(insertSubscriptionFeatureSchema, req.body);
   const existing = await entitlementStorage.getFeatureByKey(data.featureKey);
   if (existing) throw createError(400, `Feature key '${data.featureKey}' already exists`);
@@ -202,7 +206,7 @@ router.post("/features", canMutate, asyncHandler(async (req: Request, res: Respo
 // NOTE: feature_key is IMMUTABLE — updateSubscriptionFeatureSchema does not
 // accept it. Attempts to include it in the PATCH body are ignored by Zod's
 // unknown-key stripping.
-router.patch("/features/:featureId", canMutate, asyncHandler(async (req: Request, res: Response) => {
+router.patch("/features/:featureId", requireCapability("feature:catalog:write"), asyncHandler(async (req: Request, res: Response) => {
   const featureId = req.params.featureId;
   const data = validateSchema(updateSubscriptionFeatureSchema, req.body);
   const before = await entitlementStorage.getFeatureById(featureId);
@@ -224,7 +228,7 @@ router.patch("/features/:featureId", canMutate, asyncHandler(async (req: Request
 
 router.put(
   "/plans/:planId/features/:featureId",
-  canMutate,
+  requireCapability("plan:write"),
   asyncHandler(async (req: Request, res: Response) => {
     const { planId, featureId } = req.params;
     const data = validateSchema(upsertPlanFeatureSchema, req.body);
@@ -254,7 +258,7 @@ router.put(
 
 router.post(
   "/plans/:planId/features/bulk",
-  canMutate,
+  requireCapability("plan:write"),
   asyncHandler(async (req: Request, res: Response) => {
     const planId = req.params.planId;
     const bulkSchema = z.array(z.object({
@@ -302,7 +306,7 @@ router.get("/tenants/:tenantId/subscription", asyncHandler(async (req: Request, 
 
 router.patch(
   "/tenants/:tenantId/subscription",
-  canMutate,
+  requireCapability("tenant:lifecycle:write"),
   asyncHandler(async (req: Request, res: Response) => {
     const tenantId = req.params.tenantId;
     const data = validateSchema(assignPlanSchema, req.body);
@@ -358,7 +362,7 @@ router.get("/tenants/:tenantId/overrides", asyncHandler(async (req: Request, res
 
 router.put(
   "/tenants/:tenantId/overrides/:featureKey",
-  canMutate,
+  requireCapability("entitlement:override:write"),
   asyncHandler(async (req: Request, res: Response) => {
     const { tenantId, featureKey } = req.params;
     const data = validateSchema(upsertTenantOverrideSchema, req.body);
@@ -383,7 +387,7 @@ router.put(
 
 router.delete(
   "/tenants/:tenantId/overrides/:featureKey",
-  canMutate,
+  requireCapability("entitlement:override:write"),
   asyncHandler(async (req: Request, res: Response) => {
     const { tenantId, featureKey } = req.params;
     await assertTenantExists(tenantId);

@@ -4,7 +4,6 @@ import {
   Users,
   FileText,
   Shield,
-  Smartphone,
   ShieldAlert,
   Clock,
   Package,
@@ -60,14 +59,10 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       },
       testId: "nav-dashboard"
     });
-    // Temporary preview link — remove when tech PWA is production-ready
-    menuItems.push({
-      title: "Technician",
-      icon: Smartphone,
-      href: "/tech/login",
-      isActive: location.startsWith("/tech"),
-      testId: "nav-tech-preview"
-    });
+    // 2026-04-22: Removed the "Technician" preview link — the tech PWA lives
+    // at /tech/* and is accessed by direct URL for testing. Internal users who
+    // need it already know the route; sidebar entry was clutter for everyone
+    // else. Routes + auth guards on /tech/* are unchanged.
     menuItems.push({
       title: "Dispatch",
       icon: LayoutGrid,

@@ -687,12 +687,15 @@ export function TodaysOperationsCard({
                   <ChevronRight className="h-4 w-4" aria-hidden="true" />
                 </button>
               </div>
-              <div className="space-y-1">
+              <div className="space-y-0.5">
                 {/* 2026-04-21: Row order reflects operational triage — Action
                     Required (human-in-the-loop) surfaces first, then Past Due,
                     then Unscheduled backlog, then Ready for Invoice as the
                     cashflow tail. Presentation only; counts, handlers, and
-                    modal wiring are unchanged. */}
+                    modal wiring are unchanged.
+                    2026-04-22: vertical rhythm tightened (outer space-y-1 →
+                    space-y-0.5, AlertRow padding py-2 → py-1.5) so low-count
+                    days stop feeling loose. */}
                 <AlertRow
                   icon={AlertTriangle}
                   label="Action Required"
@@ -940,7 +943,7 @@ function AlertRow({
     <button
       type="button"
       onClick={onClick}
-      className={`w-full flex items-center justify-between px-2.5 py-2 rounded-md text-left transition-colors group ${
+      className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-md text-left transition-colors group ${
         urgent && hasCount
           ? "bg-red-50/60 hover:bg-red-50"
           : "hover:bg-[#F0F5F0]"

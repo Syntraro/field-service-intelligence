@@ -79,6 +79,7 @@ const FIELD_DEFS: readonly AdapterFieldDef[] = [
   { key: "siteCode", label: "Site / roof code", group: "Location", required: false },
   { key: "locationNotes", label: "Location notes", group: "Location", required: false },
   { key: "billWithParent", label: "Bill with parent", group: "Location", required: false },
+  { key: "contactTitle", label: "Contact title / prefix", group: "Contact", required: false },
   { key: "contactFirstName", label: "Contact first name", group: "Contact", required: false },
   { key: "contactLastName", label: "Contact last name", group: "Contact", required: false },
   { key: "contactEmail", label: "Contact email", group: "Contact", required: false },
@@ -120,6 +121,9 @@ const RAW_ALIASES: Record<string, keyof ClientImportRow> = {
   "location notes": "locationNotes", notes: "locationNotes",
   "bill with parent": "billWithParent",
   // Contact
+  // 2026-04-22: Jobber's "Title" column → contact title/prefix.
+  "title": "contactTitle", "contact title": "contactTitle", "prefix": "contactTitle",
+  "salutation": "contactTitle",
   "contact first name": "contactFirstName", "first name": "contactFirstName",
   "contact last name": "contactLastName", "last name": "contactLastName",
   "contact email": "contactEmail",
@@ -349,6 +353,7 @@ export const clientImportAdapter: ImportAdapter<
       locationNotes: trimOrNull(raw.locationNotes),
       billWithParent: coerceBooleanStrict(raw.billWithParent),
 
+      contactTitle: trimOrNull(raw.contactTitle),
       contactFirstName: trimOrNull(raw.contactFirstName),
       contactLastName: trimOrNull(raw.contactLastName),
       contactEmail: extractFirstEmail(raw.contactEmail),
@@ -768,6 +773,10 @@ export const clientImportAdapter: ImportAdapter<
         customerCompanyId: companyId,
         firstName: row.contactFirstName?.trim() || "",
         lastName: row.contactLastName?.trim() || "",
+        // 2026-04-22: persist title/prefix when the CSV provided one
+        // (Jobber `Title`). Null-safe so commercial imports without a
+        // title column continue to work unchanged.
+        title: row.contactTitle?.trim() || null,
         email: row.contactEmail?.trim() || null,
         phone: row.contactPhone?.trim() || null,
         isPrimary: true,

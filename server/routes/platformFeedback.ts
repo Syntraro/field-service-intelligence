@@ -12,9 +12,10 @@ import { validateSchema } from "../utils/validationHelpers";
 import { requirePlatformRole } from "../auth/requirePlatformRole";
 import { platformFeedbackService } from "../services/platformFeedbackService";
 
-// Phase 5 role matrix hardening: feedback triage is a tenant-support concern,
-// not a billing concern. `platform_billing` no longer writes here.
-const WRITE_ROLES = ["platform_admin", "platform_support"] as const;
+// 2026-04-22 Revised Phase 1: feedback triage → `feedback:triage` capability
+// (held by admin + support; billing + audit lack it). Replaces the legacy
+// WRITE_ROLES whitelist; capability registry is the single source of truth.
+import { requireCapability } from "../auth/requireCapability";
 
 const platformFeedbackRouter = Router();
 
@@ -67,7 +68,7 @@ platformFeedbackRouter.get("/:id", asyncHandler(async (req: Request, res: Respon
 // PATCH /api/platform/feedback/:id
 platformFeedbackRouter.patch(
   "/:id",
-  requirePlatformRole(WRITE_ROLES),
+  requireCapability("feedback:triage"),
   asyncHandler(async (req: Request, res: Response) => {
     const { id } = validateSchema(idParamSchema, req.params);
     const patch = validateSchema(patchSchema, req.body);
@@ -81,7 +82,7 @@ platformFeedbackRouter.patch(
 // POST /api/platform/feedback/:id/note
 platformFeedbackRouter.post(
   "/:id/note",
-  requirePlatformRole(WRITE_ROLES),
+  requireCapability("feedback:triage"),
   asyncHandler(async (req: Request, res: Response) => {
     const { id } = validateSchema(idParamSchema, req.params);
     const { note } = validateSchema(noteSchema, req.body);

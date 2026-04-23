@@ -20,6 +20,8 @@ import { requirePlatformRole } from "../auth/requirePlatformRole";
 import { tenantHealthService } from "../services/tenantHealthService";
 // 2026-04-22 Admin Phase A6.1: bulk tenant-operation orchestrator.
 import { bulkTenantOpsService, type BulkRequest } from "../services/bulkTenantOpsService";
+// 2026-04-22 Revised Phase 1: capability-based gates.
+import { requireCapability } from "../auth/requireCapability";
 
 const platformTenantsRouter = Router();
 
@@ -91,10 +93,12 @@ platformTenantsRouter.get(
 //   The tenant_features boolean-column table is being dropped.
 
 // ============================================================================
-// 2026-04-22 Admin Phase A6.1 — Bulk tenant actions
+// 2026-04-22 Admin Phase A6.1 + A6.2 — Bulk tenant actions (+ dry-run)
 // ============================================================================
 //
-// POST /api/platform/tenants/bulk
+// POST /api/platform/tenants/bulk           — live execution (canMutate gate)
+// POST /api/platform/tenants/bulk?dryRun=true — preview only (no writes,
+//                                                no audit; platform-role gate)
 //
 // Six whitelisted actions: extend_trial | assign_plan | pause_subscription
 // | reactivate_subscription | add_override | remove_override. Each action's
@@ -104,8 +108,11 @@ platformTenantsRouter.get(
 // Response is a per-tenant result list so the operator UI can surface
 // success / failure per row without hiding partial outcomes.
 
-const BULK_WRITE_ROLES = ["platform_admin", "platform_support", "platform_billing"] as const;
-
+// 2026-04-22 Revised Phase 1: bulk gating uses capabilities. `bulk:dry-run`
+// is held by EVERY platform role (including read-only audit); `bulk:write`
+// is admin + billing only — support loses live bulk writes. Action-specific
+// capabilities (entitlement:override:write for add_override / remove_override)
+// are enforced in the per-action branch below.
 const tenantIdsSchema = z.array(z.string().min(1)).min(1).max(200);
 
 const bulkBodySchema = z.discriminatedUnion("action", [
@@ -161,12 +168,40 @@ const bulkBodySchema = z.discriminatedUnion("action", [
 
 platformTenantsRouter.post(
   "/bulk",
-  requirePlatformRole(BULK_WRITE_ROLES),
   asyncHandler(async (req: Request, res: Response) => {
     const body = validateSchema(bulkBodySchema, req.body);
 
-    const actorSource = (req as any).isImpersonating ? (req as any).realUser : req.user;
+    // Revised Phase 1: actor comes from the psid platform session. Keep
+    // the legacy tenant-session fallback for transitional callers.
+    const platformUser = (req as any).platformUser as
+      | { id: string; email?: string; capabilities?: readonly string[] }
+      | undefined;
+    const actorSource =
+      platformUser ??
+      ((req as any).isImpersonating ? (req as any).realUser : req.user);
     if (!actorSource?.id) throw createError(401, "Unauthorized");
+
+    const capabilities: readonly string[] =
+      platformUser?.capabilities ?? [];
+
+    const dryRun = req.query.dryRun === "true";
+
+    // Capability gate:
+    //   - Every dry-run requires `bulk:dry-run` (held by every platform role).
+    //   - Every live run requires `bulk:write` (admin + billing only).
+    //   - add_override / remove_override ALSO require
+    //     `entitlement:override:write` on live runs — admin only. Override
+    //     writes are never in billing's scope and billing can't circumvent
+    //     via the bulk surface.
+    const requiredCap = dryRun ? "bulk:dry-run" : "bulk:write";
+    if (!capabilities.includes(requiredCap)) {
+      throw createError(403, "Forbidden", "PLATFORM_CAPABILITY_DENIED");
+    }
+    if (!dryRun && (body.action === "add_override" || body.action === "remove_override")) {
+      if (!capabilities.includes("entitlement:override:write")) {
+        throw createError(403, "Forbidden", "PLATFORM_CAPABILITY_DENIED");
+      }
+    }
 
     // Build the BulkRequest discriminated union. We branch on action so the
     // `params` field carries the right shape — including `limitProvided` for
@@ -175,16 +210,16 @@ platformTenantsRouter.post(
     const actor = { id: actorSource.id as string, email: (actorSource.email as string) ?? "unknown" };
     switch (body.action) {
       case "extend_trial":
-        bulkReq = { action: "extend_trial", tenantIds: body.tenantIds, params: body.params, actor, req };
+        bulkReq = { action: "extend_trial", tenantIds: body.tenantIds, params: body.params, actor, req, dryRun };
         break;
       case "assign_plan":
-        bulkReq = { action: "assign_plan", tenantIds: body.tenantIds, params: body.params, actor, req };
+        bulkReq = { action: "assign_plan", tenantIds: body.tenantIds, params: body.params, actor, req, dryRun };
         break;
       case "pause_subscription":
-        bulkReq = { action: "pause_subscription", tenantIds: body.tenantIds, params: body.params, actor, req };
+        bulkReq = { action: "pause_subscription", tenantIds: body.tenantIds, params: body.params, actor, req, dryRun };
         break;
       case "reactivate_subscription":
-        bulkReq = { action: "reactivate_subscription", tenantIds: body.tenantIds, params: body.params, actor, req };
+        bulkReq = { action: "reactivate_subscription", tenantIds: body.tenantIds, params: body.params, actor, req, dryRun };
         break;
       case "add_override": {
         const limitProvided = Object.prototype.hasOwnProperty.call(body.params, "limitValue");
@@ -194,11 +229,12 @@ platformTenantsRouter.post(
           params: { ...body.params, limitProvided },
           actor,
           req,
+          dryRun,
         };
         break;
       }
       case "remove_override":
-        bulkReq = { action: "remove_override", tenantIds: body.tenantIds, params: body.params, actor, req };
+        bulkReq = { action: "remove_override", tenantIds: body.tenantIds, params: body.params, actor, req, dryRun };
         break;
     }
 

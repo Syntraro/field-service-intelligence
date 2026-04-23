@@ -16,17 +16,14 @@
 
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
-import {
-  FileText, ChevronRight,
-  Wrench,
-} from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-import { resolveDashboardNav, type DashboardAction } from "@/lib/dashboardNavigation";
-import { Skeleton } from "@/components/ui/skeleton";
 import { DashboardActionModal, type DashboardActionMode } from "@/components/DashboardActionModal";
 import { MidnightRolloverCard } from "@/components/MidnightRolloverCard";
 import { TodaysOperationsCard } from "@/components/TodaysOperationsCard";
+import { QuotePipelineCard, type DashboardQuotePreview } from "@/components/dashboard/QuotePipelineCard";
+import { RevenueCenterCard } from "@/components/dashboard/RevenueCenterCard";
+import { PMHealthCard } from "@/components/dashboard/PMHealthCard";
 import {
   DashboardViewToggle,
   DASHBOARD_VIEW_KEY,
@@ -39,19 +36,22 @@ import {
   SlotQuickCreateLauncher,
   type QuickCreateSlot,
 } from "@/components/dispatch/SlotQuickCreateLauncher";
-import type { Invoice as SchemaInvoice } from "@shared/schema";
-
 // ============================================================================
 // Types
 // ============================================================================
 
-interface Invoice extends Pick<SchemaInvoice, "id" | "invoiceNumber" | "total" | "balance" | "dueDate" | "status"> {
-  locationName?: string;
-  isPastDue?: boolean;
-}
-
 interface WorkflowSummary {
-  quotes: { approvedCount: number; draftCount: number };
+  quotes: {
+    awaitingApprovalCount: number;
+    draftReadyToSendCount: number;
+    approvedNotConvertedCount: number;
+    awaitingApprovalPreview: DashboardQuotePreview[];
+    draftReadyToSendPreview: DashboardQuotePreview[];
+    approvedNotConvertedPreview: DashboardQuotePreview[];
+    /** Backwards-compat fields — not read by current UI. */
+    approvedCount: number;
+    draftCount: number;
+  };
   jobs: {
     requiresInvoicingCount: number;
     activeCount: number;
@@ -61,8 +61,20 @@ interface WorkflowSummary {
     // This is the SOLE source of the overdue count for the dashboard widget.
     overdueCount: number;
   };
-  invoices: { outstandingCount: number; pastDueCount: number };
-  pm: { awaitingGenerationCount: number; overdueCount: number; comingDueCount: number; upcomingCount: number };
+  invoices: {
+    outstandingCount: number;
+    pastDueCount: number;
+    /** 2026-04-22 Revenue Center. */
+    draftCount: number;
+  };
+  pm: {
+    awaitingGenerationCount: number;
+    overdueCount: number;
+    comingDueCount: number;
+    upcomingCount: number;
+    /** 2026-04-22: PM relevance signal — hides the card when false. */
+    hasAnyData: boolean;
+  };
   fourth: null;
 }
 
@@ -78,24 +90,17 @@ interface WorkflowSummary {
 // longer queries it.
 
 // ============================================================================
-// Shared card primitives
-// ============================================================================
-
-function DashCard({ children, className = "", elevated }: { children: React.ReactNode; className?: string; elevated?: boolean }) {
-  return (
-    <div className={`bg-[#ffffff] dark:bg-gray-900 rounded-md overflow-hidden border border-[#e2e8f0] dark:border-gray-700 ${className}`} style={{ boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
-      {children}
-    </div>
-  );
-}
-
-// ============================================================================
 // Today's Operations (command center top — strongest visual anchor)
 // ----------------------------------------------------------------------------
 // 2026-04-08: Split into TodaysOperationsHeader + TodaysOperationsKPIs so the
 // parent can place the heading and the KPI cards in different CSS Grid cells.
 // This is the structural fix that lets the Tasks panel align with the KPI row
 // instead of the heading.
+//
+// 2026-04-22 Operations Dashboard upgrade: the inline DashCard + WorklistCard
+// primitives that powered the old Quotes + PM Health row were removed. Their
+// replacements live in `@/components/dashboard/{QuotePipelineCard,
+// RevenueCenterCard, PMHealthCard}`.
 // ============================================================================
 
 function TodaysOperationsHeader() {
@@ -119,78 +124,6 @@ function TodaysOperationsHeader() {
 // In Progress / Remaining / Completed) was replaced by the live
 // command-center card. Tech workload rail + operational alerts stack now
 // live in <TodaysOperationsCard /> in `@/components/TodaysOperationsCard`.
-
-// ============================================================================
-// Worklist Card (flat rows, pipeline-style phrasing)
-// ============================================================================
-
-interface WorklistRow {
-  label: string;
-  value: number | string;
-  sub?: string;
-  action: DashboardAction;
-  warn?: boolean;
-  urgentBg?: boolean;
-  /** Optional click override — when set, row calls this instead of navigating */
-  onClick?: () => void;
-}
-
-function WorklistCard({ title, icon: Icon, color, bg, headerStrength, rows, isLoading, elevated }: {
-  title: string;
-  icon: React.ElementType;
-  color: string;
-  bg: string;
-  headerStrength?: "strong" | "medium" | "light";
-  rows: WorklistRow[];
-  isLoading: boolean;
-  elevated?: boolean;
-}) {
-  const [, setLocation] = useLocation();
-
-  return (
-    <DashCard className="flex flex-col" elevated={elevated}>
-      <div className="px-4 py-2.5 border-b border-[#e2e8f0] dark:border-gray-600">
-        <div className="flex items-center gap-2">
-          <Icon className={`h-3.5 w-3.5 ${color}`} />
-          <h3 className="text-sm font-semibold text-[#111827] dark:text-gray-100">{title}</h3>
-        </div>
-      </div>
-      <div className="flex-1">
-        {isLoading ? (
-          <div className="p-4 space-y-3">
-            {rows.map((_, i) => <Skeleton key={i} className="h-8" />)}
-          </div>
-        ) : (
-          <div>
-            {rows.map((row, index) => {
-              const isLast = index === rows.length - 1;
-              const numVal = typeof row.value === "number" ? row.value : parseFloat(String(row.value).replace(/[^0-9.-]/g, "")) || 0;
-              const isWarn = row.warn && numVal > 0;
-              return (
-                <button
-                  key={row.label}
-                  onClick={() => row.onClick ? row.onClick() : setLocation(resolveDashboardNav(row.action))}
-                  className={`w-full text-left px-4 py-1.5 hover:bg-[#F0F5F0] transition-colors flex items-center justify-between group ${row.urgentBg ? (numVal > 0 ? "bg-red-50/60 dark:bg-red-950/15" : "bg-red-50/20 dark:bg-red-950/5") : ""} ${!isLast ? "border-b border-[#e2e8f0]" : ""}`}
-                >
-                  <span className={`text-xs group-hover:text-[#111827] transition-colors ${isWarn ? "text-red-600 dark:text-red-400 font-medium" : "text-[#4b5563]"}`}>
-                    {row.label}
-                  </span>
-                  <div className="flex items-center gap-2">
-                    {row.sub && <span className="text-[11px] text-[#4b5563]">{row.sub}</span>}
-                    <span className={`text-sm font-bold tabular-nums ${isWarn ? "text-red-600" : numVal > 0 || typeof row.value === "string" ? "text-[#111827]" : "text-[#4b5563]"}`}>
-                      {row.value}
-                    </span>
-                    <ChevronRight className="h-3.5 w-3.5 text-[#4b5563] group-hover:text-[#111827] transition-colors" />
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </DashCard>
-  );
-}
 
 // 2026-04-15: The in-file `TasksPanel` + `getInitials` + `formatTaskDate`
 // block (previously here, ~180 LOC) moved to
@@ -325,38 +258,61 @@ export default function Dashboard() {
               })}
             />
 
-            {/* 2026-04-21: Invoices WorklistCard removed — invoice
-                management is now the Financial Dashboard's concern.
-                The Operations Dashboard is operations-only. */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <WorklistCard
-                title="Quotes"
-                icon={FileText}
-                color="text-teal-600"
-                bg="bg-teal-100 dark:bg-teal-950/30"
-                headerStrength="light"
-                isLoading={workflowLoading}
-                rows={[
-                  { label: "Quotes awaiting approval", value: workflowData?.quotes.draftCount ?? 0, action: "pipeline.quotesAwaitingApproval" },
-                  { label: "Draft quotes — need sending", value: 0, action: "quotes.draft" },
-                  { label: "Approved quotes not converted", value: workflowData?.quotes.approvedCount ?? 0, action: "quotes.approved" },
-                ]}
-              />
-              <WorklistCard
-                title="PM Health"
-                icon={Wrench}
-                color="text-violet-600"
-                bg="bg-violet-100 dark:bg-violet-950/30"
-                headerStrength="light"
-                isLoading={workflowLoading}
-                rows={[
-                  { label: "Overdue PM work", value: workflowData?.pm.overdueCount ?? 0, action: "pm.overdue", warn: true, urgentBg: true },
-                  { label: "PM due in next 7 days", value: workflowData?.pm.comingDueCount ?? 0, action: "pm.comingDue" },
-                  { label: "Upcoming PM (7–30 days)", value: workflowData?.pm.upcomingCount ?? 0, action: "pm.upcoming" },
-                  { label: "PM instances awaiting generation", value: workflowData?.pm.awaitingGenerationCount ?? 0, action: "pipeline.pmAwaiting" },
-                ]}
-              />
-            </div>
+            {/* 2026-04-22 Operations Dashboard upgrade:
+                • Row 2 (always):  Quote Pipeline + Revenue Center
+                • Row 3 (conditional): PM Health — only when tenant has PM data.
+                Quote Pipeline hides itself when there are zero quote actions
+                across all three buckets; Revenue Center then spans full width. */}
+            {(() => {
+              const quoteTotal =
+                (workflowData?.quotes.awaitingApprovalCount ?? 0) +
+                (workflowData?.quotes.draftReadyToSendCount ?? 0) +
+                (workflowData?.quotes.approvedNotConvertedCount ?? 0);
+              const showQuotes = workflowLoading || quoteTotal > 0;
+              const showPM = (workflowData?.pm.hasAnyData ?? false) || workflowLoading;
+              return (
+                <>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                    {showQuotes && (
+                      <QuotePipelineCard
+                        awaitingApproval={{
+                          count: workflowData?.quotes.awaitingApprovalCount ?? 0,
+                          preview: workflowData?.quotes.awaitingApprovalPreview ?? [],
+                        }}
+                        draftReadyToSend={{
+                          count: workflowData?.quotes.draftReadyToSendCount ?? 0,
+                          preview: workflowData?.quotes.draftReadyToSendPreview ?? [],
+                        }}
+                        approvedNotConverted={{
+                          count: workflowData?.quotes.approvedNotConvertedCount ?? 0,
+                          preview: workflowData?.quotes.approvedNotConvertedPreview ?? [],
+                        }}
+                        isLoading={workflowLoading}
+                      />
+                    )}
+                    <RevenueCenterCard
+                      className={!showQuotes ? "lg:col-span-2" : ""}
+                      readyToInvoiceCount={workflowData?.jobs.requiresInvoicingCount ?? 0}
+                      draftInvoiceCount={workflowData?.invoices.draftCount ?? 0}
+                      overdueInvoiceCount={workflowData?.invoices.pastDueCount ?? 0}
+                      approvedQuotesNotConvertedCount={workflowData?.quotes.approvedNotConvertedCount ?? 0}
+                      unscheduledCount={workflowData?.jobs.unscheduledCount ?? 0}
+                      isLoading={workflowLoading}
+                    />
+                  </div>
+
+                  {showPM && (
+                    <PMHealthCard
+                      overdueCount={workflowData?.pm.overdueCount ?? 0}
+                      comingDueCount={workflowData?.pm.comingDueCount ?? 0}
+                      upcomingCount={workflowData?.pm.upcomingCount ?? 0}
+                      awaitingGenerationCount={workflowData?.pm.awaitingGenerationCount ?? 0}
+                      isLoading={workflowLoading}
+                    />
+                  )}
+                </>
+              );
+            })()}
           </div>
 
           {/* 2026-04-16: midnight rollover widget. Only renders when

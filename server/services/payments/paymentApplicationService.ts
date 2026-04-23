@@ -27,9 +27,11 @@ import { paymentRepository } from "../../storage/payments";
 import { canAcceptInvoicePayment } from "../../lib/invoicePredicates";
 import { createError } from "../../middleware/errorHandler";
 import { emailDispatchService } from "../emailDispatchService";
-// 2026-04-22 Payment Ops PR1: persistent webhook-event log. Calls are
-// fire-and-forget — a log-write failure must never block the canonical
-// webhook decision path.
+// 2026-04-22 Lightweight error-only webhook log. Only transient /
+// config / signature failures are persisted; success + replay + ignored
+// deliveries stay in-memory via `[payments-webhook]` console logs.
+// Writes are fire-and-forget — a log-write failure must never block
+// the canonical webhook decision path.
 import {
   buildDedupeKey,
   safeRecordPaymentWebhookEvent,
@@ -472,6 +474,10 @@ async function refundPayment(
         error: err instanceof Error ? err.message : String(err),
       });
 
+      // 2026-04-22 Rollback: reconciliation-pending TABLE removed.
+      // The CRITICAL log above remains the operator signal; the 202
+      // response contract is preserved. Stripe's charge.refunded
+      // webhook still backfills the canonical ledger within seconds.
       return {
         kind: "reconciliation_pending",
         refundLedgerId,
@@ -581,20 +587,6 @@ async function applyVerifiedWebhookBatch(
             providerPaymentId: event.providerPaymentId,
             lastError: event.lastErrorMessage,
           });
-          void safeRecordPaymentWebhookEvent({
-            providerId,
-            providerEventId: event.eventId,
-            eventType: event.eventType,
-            eventKind: "payment_failed",
-            outcome: "ignored",
-            httpStatus: 200,
-            providerPaymentId: event.providerPaymentId,
-            errorMessage: event.lastErrorMessage ?? null,
-            dedupeKey: buildDedupeKey({
-              providerId,
-              providerEventId: event.eventId,
-            }),
-          });
           out.ignored.push(event);
           break;
         case "unsupported":
@@ -602,18 +594,6 @@ async function applyVerifiedWebhookBatch(
             providerId,
             eventId: event.eventId,
             eventType: event.eventType,
-          });
-          void safeRecordPaymentWebhookEvent({
-            providerId,
-            providerEventId: event.eventId,
-            eventType: event.eventType,
-            eventKind: "unsupported",
-            outcome: "ignored",
-            httpStatus: 200,
-            dedupeKey: buildDedupeKey({
-              providerId,
-              providerEventId: event.eventId,
-            }),
           });
           out.ignored.push(event);
           break;
@@ -702,13 +682,6 @@ async function handlePaymentSucceeded(
       paymentId: meta.prospectivePaymentId,
       amount: amountDollars,
     });
-    void safeRecordPaymentWebhookEvent({
-      ...logBase,
-      outcome: "accepted",
-      httpStatus: 200,
-      companyId: meta.companyId,
-      invoiceId: meta.invoiceId,
-    });
 
     // Post-payment receipt email — runs AFTER the canonical ledger
     // write so the rendered balance reflects the just-committed row.
@@ -742,13 +715,6 @@ async function handlePaymentSucceeded(
         providerId,
         eventId: event.eventId,
         providerPaymentId: event.providerPaymentId,
-        companyId: meta.companyId,
-        invoiceId: meta.invoiceId,
-      });
-      void safeRecordPaymentWebhookEvent({
-        ...logBase,
-        outcome: "replayed",
-        httpStatus: 200,
         companyId: meta.companyId,
         invoiceId: meta.invoiceId,
       });
@@ -859,15 +825,6 @@ async function handleRefundCreated(
       parentPaymentId: parent.id,
       amount: refundDollars,
     });
-    void safeRecordPaymentWebhookEvent({
-      ...logBase,
-      outcome: "accepted",
-      httpStatus: 200,
-      companyId: parent.companyId,
-      invoiceId: parent.invoiceId,
-      parentPaymentId: parent.id,
-      providerPaymentId: event.providerChargeId,
-    });
     return "accepted";
   } catch (err: unknown) {
     // 2026-04-21 Patch C1: same classification as the payment handler.
@@ -880,15 +837,6 @@ async function handleRefundCreated(
         eventId: event.eventId,
         chargeId: event.providerChargeId,
         refundId: event.providerRefundId,
-      });
-      void safeRecordPaymentWebhookEvent({
-        ...logBase,
-        outcome: "replayed",
-        httpStatus: 200,
-        companyId: parent.companyId,
-        invoiceId: parent.invoiceId,
-        parentPaymentId: parent.id,
-        providerPaymentId: event.providerChargeId,
       });
       return "replay";
     }

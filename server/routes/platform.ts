@@ -21,6 +21,8 @@ import platformEntitlementsRouter from "./platformEntitlements";
 import platformTrialsRouter from "./platformTrials";
 // 2026-04-22 Admin Phase A3: platform-wide KPI strip.
 import platformKpisRouter from "./platformKpis";
+// 2026-04-22 Admin Phase A6.3: bulk-run history + retry.
+import platformBulkRunsRouter from "./platformBulkRuns";
 
 const platformRouter = Router();
 
@@ -48,6 +50,10 @@ platformRouter.use("/trials", platformTrialsRouter);
 
 // 2026-04-22 Admin Phase A3 — platform-wide KPI strip. Mounts GET /kpis.
 platformRouter.use("/kpis", platformKpisRouter);
+
+// 2026-04-22 Admin Phase A6.3 — bulk-run history over audit_logs.
+// Mounts GET /bulk-runs and GET /bulk-runs/:runId.
+platformRouter.use("/bulk-runs", platformBulkRunsRouter);
 
 // 2026-04-19 Entitlement system — plans, features, plan-feature matrix,
 // tenant subscription assignment, tenant overrides, entitlements + usage.

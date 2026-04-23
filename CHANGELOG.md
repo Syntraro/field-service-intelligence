@@ -6,7 +6,203 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### Internal Console Separation — Revised Phase 1: capability-based access inside a single platform console (refactor, 2026-04-22)
+
+Replaces the scattered `requirePlatformRole([...])` role whitelists across `/api/platform/*` with a single canonical capability registry. One internal login, one internal auth provider, one internal shell — what a user sees and can do is driven entirely by their capability set, not by separate admin vs. support consoles. Support loses `bulk:write`, `tenant:lifecycle:write`, and `entitlement:override:write`; billing loses `entitlement:override:write` and `feature:catalog:write`. Admin still holds everything.
+
+**Canonical registry (new, shared).**
+- NEW — `shared/platformCapabilities.ts` — 14 capabilities + `PLATFORM_ROLE_CAPS` role→cap map + `capabilitiesForRoles(roles)` UNION helper + `roleSetHasCapability(roles, cap)` membership helper. The UNION shape is already multi-role-ready — today users hold exactly one `users.role`, but Phase 2's migration to `platform_users` + `platform_user_roles` plugs in here with zero client changes.
+
+**Server (new gate + session expansion).**
+- NEW — `server/auth/requireCapability.ts` — `requireCapability(cap)` Express middleware. Reads `req.platformUser.capabilities`, returns `403 { code: "PLATFORM_CAPABILITY_DENIED", capability }` on miss, and fires a best-effort `platform_capability_denied` audit row. Also exports `requireAnyCapability(...caps)` for the rare any-of case.
+- MODIFIED — `server/auth/platformSession.ts` — `PlatformUser` interface gains `roles: readonly string[]` + `capabilities: readonly PlatformCapability[]`. `requirePlatformSession` populates both from `capabilitiesForRoles()`.
+- MODIFIED — `server/routes/platformAuth.ts` — `POST /login` and `GET /me` response bodies return `roles` + `capabilities` alongside `id/email/role/fullName`.
+
+**Server (route guards migrated to capabilities).**
+- MODIFIED — `server/routes/platformEntitlements.ts` — 10 mutation sites re-gated: plans POST/PATCH/metadata/plan-features → `plan:write`; features POST/PATCH → `feature:catalog:write`; tenant subscription PATCH → `tenant:lifecycle:write`; tenant overrides PUT/DELETE → `entitlement:override:write`.
+- MODIFIED — `server/routes/platformTenants.ts` — removed `BULK_WRITE_ROLES`; bulk endpoint now gates dry-run vs. live separately (`bulk:dry-run` vs. `bulk:write`); `add_override`/`remove_override` additionally require `entitlement:override:write`.
+- MODIFIED — `server/routes/supportSessions.ts` — removed `WRITE_ROLES`; POST `/` → `support:session:create`; activate/revoke/close → `support:session:manage`.
+- MODIFIED — `server/routes/platformFeedback.ts` + `server/routes/platformIssues.ts` — removed `WRITE_ROLES`; write routes → `feedback:triage`.
+
+**Client (provider + guard + surfaces).**
+- MODIFIED — `client/src/lib/platformAuth.tsx` — `PlatformUser` gains `roles` + `capabilities`; context exposes `hasCapability(cap)`; `PlatformAuthRoute` accepts optional `cap` prop; new `RequireCapability` wrapper renders an in-shell `AccessDenied` panel (no redirect — keeps UX inside one console).
+- MODIFIED — `client/src/pages/platform/PlatformLayout.tsx` — nav items are capability-filtered (e.g. Plans hides for roles lacking `plan:write`; Support Sessions hides for roles lacking `support:session:manage`).
+- MODIFIED — `client/src/App.tsx` — all 12 `<PlatformAuthRoute>` usages tagged with the route's required `cap`.
+- MODIFIED — `client/src/pages/platform/PlatformTenantDetail.tsx` — "New support session" button hidden without `support:session:create`; Plan Assignment select falls back to read-only text without `tenant:lifecycle:write`; per-feature override Edit/Clear buttons hidden without `entitlement:override:write`.
+- MODIFIED — `client/src/pages/platform/BulkTenantActions.tsx` — bar hides entirely for readers with neither `bulk:dry-run` nor `bulk:write`; dialog Preview button hides without `bulk:dry-run`, Apply hides without `bulk:write`.
+- MODIFIED — `client/src/pages/platform/PlatformFeedbackPage.tsx` + `client/src/pages/platform/PlatformIssuesPage.tsx` — detail dialog inputs disable and Save button hides without `feedback:triage`; "New issue" CTA hides likewise.
+
+**Tests.**
+- NEW — `shared/platformCapabilities.test.ts` — 12 tests covering registry membership, per-role inclusions/exclusions, UNION semantics across multiple roles, unknown-role handling, and admin-superset invariant.
+- NEW — `server/auth/requireCapability.test.ts` — 7 tests covering 200 (holder), 403 (non-holder + correct deny shape), audit row on denial, 401 when no platform session present, empty-capabilities handling, and `requireAnyCapability` any-of semantics.
+- MODIFIED — `vitest.config.ts` — added `shared/**/*.test.ts` to the include pattern so shared registry tests run.
+
+**Breaking changes:** none at the HTTP layer — routes still return 403 for unauthorized callers; error shape changed from the old `requirePlatformRole` message to `{ code: "PLATFORM_CAPABILITY_DENIED", capability }`. Support users lose the ability to call bulk-write / lifecycle-write / override-write endpoints that the server previously accepted from them, matching the documented UI constraint.
+
+**Verification:** `npm run check` clean; all 19 new tests pass.
+
+#### Payment Ops dashboard — rollback to lean architecture (refactor, 2026-04-22)
+
+Reverted the platform ops console, reconciliation queue, and heavy webhook telemetry. Retained a lightweight persistent ERROR-only webhook log as the single diagnostic surface; all correctness patches (webhook error classification, refund idempotency, 202 reconciliation_pending contract, canonical ledger writes) kept intact.
+
+**Removed:**
+- `server/routes/platformPayments.ts` (deleted) — platform ops router.
+- `server/services/payments/paymentOpsService.ts` (deleted) — recheck / abort orchestration.
+- `server/storage/paymentReconciliationPending.ts` (deleted) — reconciliation queue repo.
+- `payment_reconciliation_pending` table — schema block removed; forward migration deleted; rollback migration `migrations/2026_04_22_rollback_payment_reconciliation_pending.sql` added for environments that already applied the forward migration.
+- `retrieveRefund` method on `PaymentProvider` + Stripe implementation + `RefundLookupResult` type.
+- Reconciliation-queue call-sites (`safeRecordPending`, `safeResolvePendingByProviderRefund`) in `paymentApplicationService`.
+- Success / replay / ignored call-sites to `safeRecordPaymentWebhookEvent` in `paymentApplicationService`.
+- Read helpers (`listPaymentWebhookEvents`, `getPaymentWebhookEvent`, `ListWebhookEventsFilter`) in the webhook events storage file.
+- `/platform/payments` mount in `server/routes/platform.ts`.
+
+**Kept (lightweight error log):**
+- `payment_webhook_events` table and its forward migration.
+- `recordPaymentWebhookEvent` / `safeRecordPaymentWebhookEvent` / `redactMetadataForLog` / `buildDedupeKey` in `server/storage/paymentWebhookEvents.ts`.
+- Six call-sites in `paymentApplicationService` — narrowed to `config_error` (×4) and `transient_failure` (×2) only. Plus the signature-failure call in `server/routes/stripeWebhook.ts`. Zero success-path writes.
+- Table is now write-only from code; operators query it directly via psql / BI when investigating historical errors.
+
+**Kept (all correctness patches):**
+- Provider-neutral checkout routes + `paymentApplicationService.createCheckout`.
+- Stripe adapter + factory; SDK imports confined to `stripeClient.ts` + `stripeAdapter.ts`.
+- `WebhookSignatureError`, `WebhookTransientFailureError`, `classifyWebhookError`, split `verifyInboundWebhook` / `applyVerifiedWebhookBatch` — C1 patch (transient failures → HTTP 500 → Stripe retries).
+- `stripeRefundIdempotencyKey` deterministic hash — H2 patch (prevents double-refund on retry).
+- `RefundPaymentResult` discriminated union + HTTP 202 `reconciliation_pending` response contract — H2 patch. The `[payments-refund] CRITICAL ledger_write_failed_after_provider_success` log remains the sole operator signal for the 202 path.
+- Canonical `payments` ledger + `paymentRepository` + all predicates + invoice balance recalc.
+
+**Breaking changes:** none. Refund 202 response body shape, webhook HTTP codes, checkout contracts, and invoice payment flows are byte-identical to the pre-rollback state.
+
+**Verification:** `npm run check` passes. `grep` confirms no dangling references to removed modules. Stripe SDK imports remain confined to two files.
+
 ### Added
+
+#### Canonical invoice importer + Jobber invoices preset (feature, 2026-04-22)
+
+Adds a generic invoice CSV importer as a first-class entity on the existing import platform, with Jobber as the first provider preset. Other sources plug in as additional presets — the engine is provider-agnostic.
+
+**What it does for each row.**
+- Creates ONE canonical invoice via a new guarded repo path (`createImportedInvoice` on `InvoiceRepository`, gated by a new `IMPORT_ROUTE` value on `INVOICE_CREATION_SOURCES`). No `db.insert(invoices)` bypass — the shell path (`createInvoiceShell`) is reused so invoice numbering, counter increment, and the existing creation-source guard all continue to hold.
+- Writes ONE summarized line item — description `"Imported Line Item"` plus the raw line-item text from the source — with `productId: null` (catalog-exempt) and a new `source: "imported"` tag. Quantity `1`, `unitPrice = source subtotal`, `taxAmount = source taxTotal`, `lineTotal = source total`, so the line-level sums agree with the invoice-level totals. No per-line tax recomputation — historical invoices record finalized numbers, which honors (and deliberately sidesteps) the 2026-03-18 `batchApplyLineTax()` rule that governs NEW invoices built by the app.
+- Snapshots the raw source breakdown into `invoices.notesInternal` (source invoice #, job #, status, line-items text, totals, deposit, discount, paid date, assignees, billing address) so nothing from the source is lost.
+- Optionally links to an existing job via `invoices.jobId` when the first integer in the "Job #s" cell matches a `jobs.jobNumber` AND that job belongs under the matched customer. Never a blocker — unmatched job numbers become warnings, not failures.
+- Preserves an "Imported Expense" row ONLY when a distinct expense total is present in the source. Jobber's invoice CSV doesn't expose one, so no expense row is written for Jobber today — that concern lives on the jobs export (JobImportAdapter) and stays there.
+
+**Source of truth.**
+- Customers MUST exist before import — the adapter matches by `normalizeBusinessName` + `normalizeForMatch` fallback against `customerCompanies.nameNormalized`. A missing match fails the row with a clear "import customers first" error.
+- Locations resolve under the matched customer: exact service-address match first, then fall back to the customer's first location (with a preview warning when more than one exists).
+- Status mapping: source strings route through `STATUS_MAP` (Draft / Awaiting Payment / Sent / Paid / Partially Paid / Void / Voided / Bad Debt / Overdue / Past Due). Unknown strings fall back to a balance-derived status (`balance <= 0 → paid`, `balance >= total → awaiting_payment`, otherwise `partial_paid`) and emit a preview warning so the user can reconcile manually.
+- Invoice-number collisions (source # already exists in tenant) drop the source number back into `notesInternal` and let the shell assign a fresh number — neither the existing invoice nor the historical source number is lost.
+
+**Generic vs Jobber-specific.**
+Generic-first architecture: `InvoiceImportAdapter` speaks the canonical field set only — `invoiceNumber`, `subject`, `status`, `issuedDate`/`dueDate`/`paidDate`, `clientName`/`clientEmail`/`clientPhone`, billing + service address, `jobNumbers`, `lineItemsText`, `subtotal`/`taxAmount`/`total`/`balance`/`deposit`/`discount`, `visitsAssignedTo`. The `jobberInvoicesPreset` is a thin alias table layered on top, following the same pattern as `jobberClientsPreset` / `jobberJobsPreset` / `jobberProductsPreset`. Users can re-map anything in the Map step, and generic CSV imports without a preset Just Work as long as the user picks their columns.
+
+**No custom fields needed.** All canonical fields have a home in `invoices` / `invoice_lines`; everything else round-trips verbatim in `notesInternal`. `customFieldEntities` is intentionally absent from `invoiceImportConfig`.
+
+**UI surface.**
+- `ImportCenterPage` now renders a fourth tab, "Invoices" (Receipt icon), alongside Clients / Historical Jobs / Products & Services. Same wizard; same Upload / Map / Preview / Results flow.
+- Preview banner copy: *"Invoices import as summarized financial lines for reporting. Original line-item detail is saved in notes. When a matching Job # is found, the invoice links to it automatically."*
+- Upload banner, commit banner, and preset `limitations` describe: summarized-lines behavior, notes snapshot, optional job linkage, multi-Job-# handling (first integer only, rest in notes), invoice-number collision handling, and status fallbacks.
+
+**Files changed.**
+- NEW — `shared/importPipeline/zod/invoice.ts` — row schema, commit request schema, field defs, per-row details type
+- NEW — `server/services/importPipeline/adapters/InvoiceImportAdapter.ts` — adapter + exported `invoiceImportPipeline`
+- NEW — `client/src/components/imports/presets/jobberInvoicesPreset.ts` — Jobber field aliases + limitations copy
+- NEW — `client/src/components/imports/configs/invoiceImportConfig.ts` — entity config, template CSV, wizard copy
+- MODIFIED — `shared/schema.ts` — widened `insertInvoiceLineSchema.source` zod enum from `["manual","job"]` → `["manual","job","imported"]` (column remains plain text; no migration)
+- MODIFIED — `server/storage/invoices.ts` — added `IMPORT_ROUTE` to `INVOICE_CREATION_SOURCES`; added `createImportedInvoice()` repo method; imported `InvoiceStatus` type
+- MODIFIED — `server/routes/imports.ts` — registered `invoices` entry in the pipeline registry
+- MODIFIED — `client/src/components/imports/types.ts` — widened `ImportWizardConfig.entity` union
+- MODIFIED — `client/src/components/imports/presets/types.ts` — widened `ProviderPreset.entity` union
+- MODIFIED — `client/src/components/imports/presets/index.ts` — export `jobberInvoicesPreset`
+- MODIFIED — `client/src/pages/ImportCenterPage.tsx` — added "invoices" to `TYPE_KEYS` + `TYPES` (Receipt icon)
+
+**What did NOT change.** No database migration. No change to `createInvoiceFromJob`, `createInvoiceFromBillingEvent`, or `createStandaloneInvoice`. No change to `batchApplyLineTax`, `recalculateInvoiceTotalsInTx`, or any tax computation path. Housecall Pro imports (clients, jobs, products) are untouched — HCP presets for invoices can be added later by dropping another preset file next to `jobberInvoicesPreset.ts`. No catalog items created.
+
+**Verification.** `npm run check` clean. Preview → commit pipeline exercised through the shared `ImportPipeline` (parse, suggest mappings, normalize, preview context, validate, classify within-CSV, commit under `db.transaction`) — no bespoke orchestration added.
+
+#### Payment Ops dashboard PR3 — platform ops routes (feature, 2026-04-22)
+
+Platform-admin routes for the internal Payment Ops dashboard. Exposes PR1 (webhook events) and PR2 (reconciliation tracker) as HTTP endpoints, adds manual recheck + abort tools that write the canonical ledger through `paymentRepository.createRefund` (no shadow writers), and adds a cross-tenant payment timeline for triage. Every manual action writes an `audit_logs` row via `platformAuditService`.
+
+**New routes — all mounted under `/api/platform/payments/*`, all require `platform_admin` role (inherited from `platformRouter.use(requirePlatformRole())`), `ensureTenantContext` skipped for `/api/platform/*`:**
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/webhook-events` | Paginated list; filters: `providerId`, `outcome`, `companyId`, `eventTypeLike`, `receivedAfter`, `receivedBefore`, `limit`, `offset`. Newest-first. |
+| GET | `/webhook-events/:id` | Single webhook event row including `raw_metadata`. |
+| GET | `/config-drift` | Alias for webhook events with `outcome='config_error'`. |
+| GET | `/reconciliation-pending` | Paginated list; filters: `companyId`, `status` (default `pending`), `olderThanMinutes`. |
+| GET | `/reconciliation-pending/:id` | Single pending row. |
+| POST | `/reconciliation-pending/:id/recheck` | Manual recheck. Body: `{ reason: string }`. Verifies with provider, writes canonical refund row if needed, resolves pending ticket. Discriminated response: `already_backfilled` / `ledger_written` / `webhook_raced` / `provider_not_found` / `provider_status_not_succeeded`. |
+| POST | `/reconciliation-pending/:id/abort` | Manual abort. Body: `{ reason: string, notes? }`. Closes ticket without a ledger write. |
+| GET | `/tenant/:companyId/timeline` | Interleaved payments + webhook events for a tenant. Filters: `from`, `to`, `limit`. |
+
+**Stripe adapter extension (PR3 scope — read-only):**
+- Added `retrieveRefund(providerRefundId)` to the `PaymentProvider` interface (optional method). Stripe implementation wraps `stripe.refunds.retrieve` and treats 404/`resource_missing` as `null` instead of throwing. Other errors propagate so the ops route returns 5xx for transient failures.
+
+**New orchestration service: `server/services/payments/paymentOpsService.ts`:**
+- `manualRecheckPending({ pendingId, userId, userEmail, reason, req })` — short-circuits when the canonical ledger already carries the refund (webhook raced); otherwise calls `provider.retrieveRefund`, branches on status, writes the canonical row via `paymentRepository.createRefund`, resolves the ticket with `resolved_by_source='manual_recheck'`, audit-logs.
+- `manualAbortPending({ pendingId, userId, userEmail, reason, notes, req })` — marks the pending row aborted with `resolved_by_source='manual_abort'`, audit-logs.
+- Both require a non-empty `reason`; both route every audit entry through `platformAuditService.log` with `action='cross_tenant_write'` and a `details.actionKind` of `payment_reconciliation_recheck` or `payment_reconciliation_abort` so auditors can grep all payment-ops interventions.
+
+**Canonical-ledger guarantee:** no route writes to `payments` directly. The recheck path calls `paymentRepository.createRefund` with the same `providerSource`, `providerEventId`, `id` convention the webhook and service-retry paths use, so `payments_provider_event_id_uq` dedupes cleanly across all three writers. Invoice balance is always recalculated by the canonical repository, never by ops code.
+
+**Files created:**
+- `server/services/payments/paymentOpsService.ts`
+- `server/routes/platformPayments.ts`
+
+**Files modified:**
+- `server/services/payments/providers/types.ts` — `RefundLookupResult` type, `retrieveRefund` optional method on `PaymentProvider`.
+- `server/services/payments/providers/stripeAdapter.ts` — `retrieveRefund` implementation.
+- `server/storage/paymentWebhookEvents.ts` — `listPaymentWebhookEvents`, `getPaymentWebhookEvent`.
+- `server/storage/paymentReconciliationPending.ts` — `getPendingById`; tightened `listPending` limit bounds.
+- `server/routes/platform.ts` — mount `/platform/payments`.
+
+**Breaking changes:** none. All routes are new; canonical ledger semantics, webhook ACK contracts, and provider adapter write surface are unchanged.
+
+**Verification:** `npm run check` passes.
+
+#### Payment Ops dashboard PR2 — reconciliation-pending tracker (feature, 2026-04-22)
+
+Second backend layer for the internal Payment Operations dashboard. Persists the "provider succeeded, ledger insert failed" state so operators have a queryable / alertable / auditable surface for it, and closes itself automatically when the canonical refund row finally lands in `payments`.
+
+**New table `payment_reconciliation_pending`** (`migrations/2026_04_22_payment_reconciliation_pending.sql`):
+- Sidecar only. The `payments` ledger is unchanged; this table never overrides it.
+- Provider-neutral columns: `provider_source`, `provider_refund_id`, `refund_ledger_id`, `amount_cents`.
+- `status` ∈ `pending | resolved | aborted`. Rows are never deleted (audit trail).
+- `resolved_by_source` ∈ `webhook | service_retry | manual_recheck | manual_abort` — distinguishes automated backfills from operator interventions.
+- `resolved_by_user_id` set only for manual actions so a grep finds human overrides.
+- Partial unique `(provider_source, provider_refund_id) WHERE status='pending'` prevents duplicate tickets for the same refund.
+- Indexes on `(company_id, status, created_at)` and `(status, created_at)` for the ops queue queries.
+
+**Write sites:**
+- `paymentApplicationService.refundPayment` — when returning `{ kind: "reconciliation_pending" }`, calls `safeRecordPending` to insert the queue row. Safe-wrapped: a sidecar write failure must not turn the 202 into a 5xx.
+
+**Auto-resolution sites (all safe-wrapped):**
+- `paymentApplicationService.refundPayment` — on success branch: `resolved_by_source = 'service_retry'` (closes any ticket a previous attempt opened).
+- `paymentApplicationService.refundPayment` — on unique-violation branch after successful lookup: same source.
+- `paymentApplicationService.handleRefundCreated` (webhook) — on success: `resolved_by_source = 'webhook'`.
+- `paymentApplicationService.handleRefundCreated` (webhook) — on replay: `resolved_by_source = 'webhook'`.
+
+Every resolve call is a no-op when no pending row exists (expected for refunds that never went through the 202 path).
+
+**Reliability guarantee:** the sidecar never blocks canonical operations. `safeRecordPending` and `safeResolvePendingByProviderRefund` catch and log to `[payments-reconciliation] record_failed` / `resolve_failed`; the webhook / service continues with its canonical outcome unchanged.
+
+**Files created:**
+- `migrations/2026_04_22_payment_reconciliation_pending.sql`
+- `server/storage/paymentReconciliationPending.ts`
+
+**Files modified:**
+- `shared/schema.ts` — new table + two enums + `PaymentReconciliationPending` type.
+- `server/services/payments/paymentApplicationService.ts` — one insert-on-202 call + four resolve call-sites.
+
+**Migration:** additive. `npm run db:migrate:one -- migrations/2026_04_22_payment_reconciliation_pending.sql`.
+
+**Breaking changes:** none. Canonical ledger semantics, refund response shapes (201 / 202 / 502), webhook ACK semantics all unchanged.
+
+**Verification:** `npm run check` passes.
 
 #### Payment Ops dashboard PR1 — persistent webhook event log (feature, 2026-04-22)
 
@@ -50,7 +246,96 @@ First backend layer for the internal Payment Operations dashboard. Persists ever
 
 **Verification:** `npm run check` passes.
 
+#### Operations Dashboard — actionable cards (feature, 2026-04-22)
+
+Upgrades the Operations Dashboard's second row from passive counters to actionable previews while preserving the top row (Team Workload + Operational Alerts).
+
+**Top row (preserved + tightened).** `TodaysOperationsCard` stays unchanged. `AlertRow` padding tightened `py-2` → `py-1.5` and outer rail spacing `space-y-1` → `space-y-0.5` — visually tighter, same click targets.
+
+**New row 2 (always):** `<QuotePipelineCard />` + `<RevenueCenterCard />` in a 2-col grid. When the tenant has zero quote actions across all three buckets, `QuotePipelineCard` hides and `RevenueCenterCard` spans `lg:col-span-2`.
+
+**Conditional row 3:** `<PMHealthCard />` renders only when the tenant has PM data.
+
+**Quote Pipeline smart-fill.** Target ~9 rows across three buckets (Awaiting Approval / Drafts Ready to Send / Approved · Not Converted). Each bucket claims `min(3, count)`; remaining slots redistribute greedily to non-empty buckets. Empty buckets are hidden entirely. Per-row CTAs (Follow up / Open / Convert) route via the canonical `resolveDashboardNav()`; preview rows navigate to `/quotes/:id`.
+
+**Revenue Center.** Five rows: Jobs ready to invoice · Draft invoices · Overdue invoices (red) · Approved quotes not converted · Unscheduled approved work. Zero-count rows hidden. Each row routes to the existing filtered list; footer links `/financials`.
+
+**PM relevance signal.** `getWorkflowSummary()` now returns `pm.hasAnyData: boolean` from a single-row `EXISTS` probe on `recurring_job_templates`. Dashboard hides PM card when false.
+
+**Backend — canonical workflow query extended (not duplicated).** `server/storage/dashboard.ts:getWorkflowSummary()` now populates:
+- `quotes.awaitingApprovalCount / draftReadyToSendCount / approvedNotConvertedCount` — real counts (previously hardcoded `{approvedCount: 0, draftCount: 0}` with the comment "No quotes table" — incorrect)
+- `quotes.awaitingApprovalPreview / draftReadyToSendPreview / approvedNotConvertedPreview` — up to 5 rows each (client trims via smart-fill to ≤9 total)
+- `invoices.draftCount` — new
+- `pm.hasAnyData` — relevance flag
+
+Quote previews use the same `COALESCE(customerCompanies.name, clients.companyName)` rule as `getFinancialSummary()`. One `Promise.all` round-trip, one cache key (`dashboard.workflow`). SSE invalidation already covered.
+
+**Files changed:**
+- `server/storage/dashboard.ts` — WorkflowSummary interface + `getWorkflowSummary()` + new `getQuotePipeline()` helper + invoice `draftCount` + PM `hasAnyData`
+- `client/src/pages/Dashboard.tsx` — row 2 swap, conditional PM, removed dead `DashCard` / `WorklistCard` / `Invoice` types
+- `client/src/components/TodaysOperationsCard.tsx` — alerts vertical rhythm tightened
+- NEW — `client/src/components/dashboard/QuotePipelineCard.tsx`
+- NEW — `client/src/components/dashboard/RevenueCenterCard.tsx`
+- NEW — `client/src/components/dashboard/PMHealthCard.tsx`
+
+**Verification:** `npm run check` clean. Single consolidated `/api/dashboard/workflow` query remains the sole data source; no new routes, no new destinations, no duplicate query systems.
+
+---
+
 ### Fixed
+
+#### Tenant login — first-click-does-nothing bug (bug fix, 2026-04-22)
+
+The tenant `/login` page required two clicks to sign in: the first click visually responded (button switched to "Logging in…") and the server authenticated successfully, but the user was silently bounced back to `/login` instead of landing on `/`. The second click worked.
+
+**Root cause.** `loginMutation.onSuccess` in `client/src/lib/auth.tsx` called `queryClient.clear()` and then immediately `queryClient.setQueryData(["/api/auth/me"], userData)`. `clear()` removed every query including `/api/auth/me`, whose `useQuery` observer was still mounted inside `AuthProvider`. TanStack Query responded by refetching the query. That refetch raced with the `setQueryData` seed on the next line. On cold sessions the refetch could complete before the `Set-Cookie` response from `POST /api/auth/login` was visible to the new request, return 401, and overwrite the freshly seeded user state with an error snapshot. `AuthProvider`'s reconciliation `useEffect` then wrote `user = null`, `ProtectedRoute` on the navigated `/` route saw no user and redirected back to `/login`. No console error, no toast, just a silent bounce.
+
+**Fix.** Swap `queryClient.clear()` for a predicate-scoped `queryClient.removeQueries({ predicate: (q) => q.queryKey?.[0] !== "/api/auth/me" })` in both `loginMutation.onSuccess` and `signupMutation.onSuccess`. Same cross-session tenant-data wipe, but the auth query's cache entry is left alone so `setQueryData` on the next line is the sole writer and the observer has nothing to refetch.
+
+**Files:**
+- `client/src/lib/auth.tsx` — two surgical swaps in `loginMutation.onSuccess` and `signupMutation.onSuccess`. `logoutMutation.onSuccess` and `clearAuth()` intentionally keep `queryClient.clear()` (logged-out flows want the auth cache gone).
+
+**Verification:** `npm run check` clean. Tenant-data isolation preserved (the predicate removes every query except the one we hand-seed). Logout and session-expired paths unchanged.
+
+---
+
+#### Import Center — mapping defaults, contact linkage, messaging, UI hierarchy (live-testing fixes, 2026-04-22)
+
+Four surgical fixes surfaced by live testing of the Clients import.
+
+**1. Jobber preset now maps Title / Billing Street 2 / Service Street 2.** Previously these defaulted to Ignore. `Title` had no backend home (the `contact_persons` table didn't have a column for it) — fixed by adding a nullable `title TEXT` column via migration `2026_04_22_contact_title.sql` + Drizzle. `Billing Street 2` / `Service Street 2` were already supported in the adapter and Zod schema — just missing from the Jobber preset's alias map.
+
+**2. Contact linkage bug (email / phone landing on company instead of contact).** Root cause in `client/src/components/imports/presets/applyPresetMappings.ts`: when two canonical fields claim the same CSV column alias, the one declared *first* wins. `jobberClientsPreset` declared `companyEmail: ["E-mails"]` before `contactEmail: ["E-mails"]` and `companyPhone: ["Main Phone #s", "Work Phone #s"]` before `contactPhone: [...]`, so Jobber's `E-mails` and `Main Phone #s` columns were silently routed to the company and the primary contact was left without either. Fix: re-ordered the preset so `contactEmail` / `contactPhone` claim the shared columns first; removed `companyEmail` entirely (the single "E-mails" column is the contact's by default); narrowed `companyPhone` to `Work Phone #s` only (the one Jobber column that is genuinely org-level). Users who want a different split can still remap manually in the Map step.
+
+**3. Messaging cleanup.** Replaced technical language in `uploadBanner` / `commitBanner` for all three import configs (clients, jobs, products) with SMB-friendly wording — "Subscription location limits are enforced server-side" → "This imports clients, locations, and contacts. Duplicate rows found in preview will not be imported", and similar throughout.
+
+**4. UI hierarchy.** `ImportCenterPage` now presents the three record-type choices (Clients / Jobs / Products & Services) as full-width card buttons under a prominent "What do you want to import?" heading — they're the primary decision. `SourceSelector` (inside the wizard) is demoted from three large cards to a compact segmented control labeled "Source" — visibly secondary to the record-type choice.
+
+**Files changed:**
+- NEW — `migrations/2026_04_22_contact_title.sql`
+- MODIFIED — `shared/schema.ts` (added `contact_persons.title` column)
+- MODIFIED — `shared/importPipeline/zod/client.ts` (added `contactTitle`)
+- MODIFIED — `server/services/importPipeline/adapters/ClientImportAdapter.ts` (FIELD_DEFS + normalizeRow + applyRow persist title; new `Title`/`contact title`/`prefix`/`salutation` header aliases)
+- MODIFIED — `client/src/components/imports/presets/jobberClientsPreset.ts` (alias order + Title/Billing Street 2/Service Street 2)
+- MODIFIED — `client/src/components/imports/configs/{client,job,product}ImportConfig.ts` (plain-language banners)
+- MODIFIED — `client/src/pages/ImportCenterPage.tsx` (dominant 3-card record-type picker)
+- MODIFIED — `client/src/components/imports/SourceSelector.tsx` (compact segmented control)
+
+**Run migration:**
+```
+npm run db:migrate:one -- migrations/2026_04_22_contact_title.sql
+```
+
+**Verification:**
+- ✅ Title column imports via Jobber preset → `contact_persons.title`
+- ✅ Billing Street 2 / Service Street 2 auto-map via Jobber preset
+- ✅ Company + first + last + email + phone row creates a complete primary contact with email and phone attached
+- ✅ Residential person-only rows continue to import (prior fix preserved)
+- ✅ New plain-language wording rendered in Upload and Confirm dialogs
+- ✅ Record-type cards are visually dominant; source picker is compact
+- ✅ `npm run check` clean
+
+---
 
 #### Client import — accept residential / person customers without a company name (bug fix, 2026-04-22)
 
@@ -615,6 +900,240 @@ Second category to come online on top of the Phase 1/2 notification triptych. Pa
 - Reminder emitter (brief explicitly out of scope).
 - Notifying newly-assigned techs inside a reschedule call where both schedule AND crew changed (the assignment-notification emitter is tied to the `assign-crew` route today; cross-route coordination is future work).
 - "Removed from visit" schedule notifications to techs taken off a visit during reschedule (only current crew gets schedule notifications in v1).
+
+#### Platform Admin Auth Separation — Phase 2-lite (feature, 2026-04-22)
+
+Completes the auth-boundary cutover started in Phase 1. Platform admins no longer need a tenant session for any workflow, including the canonical impersonation flow. Tenant `/login` rejects platform-role accounts by default. Zero schema changes, zero new tables, impersonation cookie + store + lifecycle untouched.
+
+**What changed:**
+
+1. **Support-session actor derivation moved onto `req.platformUser`.** `server/routes/supportSessions.ts::requireActor()` now prefers `req.platformUser` (psid-backed) over `req.user` (sid-backed). All four state transitions (`POST /`, `/activate`, `/revoke`, `/close`) gain their actor from the platform session. Legacy fallback to `req.user` retained during the soak so any transitional caller still in flight keeps working; fallback can be deleted in Phase 3 once the migration settles.
+
+2. **`impersonationMiddleware` bootstraps `req.user` from `imp_session` alone.** Previously the middleware early-exited when `req.user` was unset — which broke as soon as a platform admin stopped logging into tenant `/login`. Now:
+   - For **impersonation-mode** sessions: the middleware validates the `imp_session` cookie, loads the target tenant user via `userRepository.getAuthenticatedUser`, sets `req.user` to the target, and synthesizes `req.realUser` from the session's `ownerUserId` when no tenant session is present. `requireAuth` then passes because `req.user` is populated. Existing flow (tenant session + imp_session) is preserved — `req.realUser` still comes from `req.user` in that path.
+   - For **read-only** sessions without a tenant session: `req.supportSession` is attached for observability but `req.user` is NOT bootstrapped. Downstream `requireAuth` 401s — this is the documented Phase 2-lite limitation. Read-only without tenant identity requires rewiring `tenantIsolation` to prefer `session.companyId`, deferred to Phase 3.
+
+3. **`impersonationMiddleware` moved ahead of `requireAuth`** in `server/routes/index.ts`. The bootstrap must run first so `req.user` is populated before the auth gate. `trackActivity` stays after `requireAuth` (it depends on an authenticated `req.user`). Existing tenant requests — no `imp_session` cookie — see identical behavior: middleware is a no-op, `requireAuth` fires on `req.user` from the tenant session exactly as before.
+
+4. **Tenant `/login` rejects platform-role accounts by default.** `ALLOW_PLATFORM_IN_TENANT_LOGIN` env var default flipped from `"true"` → `"false"`. The semantic check flipped from "allow unless explicitly false" to "reject unless explicitly true". An operator can still set `ALLOW_PLATFORM_IN_TENANT_LOGIN="true"` for a break-glass emergency (e.g., during a rollback), but the default behavior now matches the canonical auth boundary.
+
+**Impersonation lifecycle is unchanged:**
+- Cookie name: `imp_session` (regression-guarded by a string-level test).
+- Cookie options: httpOnly, secure in prod, sameSite=lax, 60-minute maxAge.
+- DB-backed session table: `impersonation_sessions`, same columns, same expiry + idle-timeout semantics.
+- `impersonationService.checkImpersonation` validates cookie → DB row → expiry → idle; unchanged.
+- Audit writes on session start / stop / expire / revoke: unchanged.
+- Phase 5 `runWithSupportContext` + `assertWritableSupportContext` chain: unchanged.
+
+**Kill-switch readiness:** the flip happened in this phase. If production operators discover a regression in the first soak window, they can set `ALLOW_PLATFORM_IN_TENANT_LOGIN="true"` in env and redeploy to restore the legacy fallback. No DB state, no cookie rotation, no cache busts required.
+
+**Tests — `tests/platform-auth-phase-2-lite.test.ts` (NEW).**
+1. `supportSessions.requireActor` source-level ordering guarantee: `platformUser` appears before `req.user`.
+2. `impersonationMiddleware` bootstraps `req.user` from `imp_session` + target user when NO tenant session is present.
+3. `impersonationMiddleware` retains legacy behavior (tenant session populates `req.realUser` = the platform admin) when both sid and imp_session are present.
+4. `impersonationMiddleware` does NOT bootstrap `req.user` for read-only mode without tenant session (documented limitation).
+5. `impersonationMiddleware` is a no-op when no `imp_session` cookie is present — tenant user pass-through.
+6. `server/routes/auth.ts` source-level assertion: env-var default is `"false"` AND the check uses `=== "true"`.
+7. `requirePlatformSession` still 401s a sid-only request to `/api/platform/*` (Phase 1 regression guard).
+8. `IMPERSONATION_COOKIE_NAME === "imp_session"` (structural regression guard).
+
+**Files changed:**
+- Modified — `server/routes/supportSessions.ts` (actor derivation), `server/impersonationMiddleware.ts` (bootstrap from imp_session alone), `server/routes/index.ts` (reordered middleware stack), `server/routes/auth.ts` (env default flipped).
+- New — `tests/platform-auth-phase-2-lite.test.ts`.
+- Modified — `CHANGELOG.md`.
+
+**What explicitly did NOT ship (per scope):**
+- No `platform_users` table. Platform accounts remain rows in `users` with `role ∈ PLATFORM_ROLES`.
+- No MFA / TOTP.
+- No CSRF split (still shared with tenant CSRF pool).
+- No read-only support bootstrap from psid — explicit Phase 3 follow-up.
+
+**Verification:** `npm run check` passes.
+
+#### Platform Admin Auth Separation — Phase 1 (feature, 2026-04-22)
+
+Creates a dedicated auth boundary for the internal `/platform` admin console. Separate login page, separate endpoints, separate session cookie, separate middleware. Tenant auth is completely unchanged. Impersonation is preserved verbatim. Zero schema changes — platform accounts remain rows in the existing `users` table for now (Phase 2 will extract them into `platform_users`).
+
+**Server — new files:**
+- `server/auth/platformSession.ts`
+  - `platformSessionMiddleware` — a thin wrapper around `express-session` with cookie name `psid`, its own signing secret (`PLATFORM_SESSION_SECRET`, fallback `SESSION_SECRET`), and a 30-minute idle maxAge. The wrapper captures the resulting session into `req.platformSession` then **restores** the prior tenant `req.session` so Passport / CSRF / every downstream tenant consumer see their usual state. Shares the existing `session` PgStore table (no new schema) — session IDs are random, rows never collide.
+  - `requirePlatformSession` — middleware that resolves `req.platformSession` to a concrete `req.platformUser` (or 401). Reads the canonical `users` table via `storage.getUser`, re-verifies role ∈ `PLATFORM_ROLES` (defense-in-depth), checks `tokenVersion` matches (same invalidation contract the tenant session uses), rejects disabled/deactivated accounts. On success populates `req.platformUser = { id, email, role, fullName }`.
+  - Exported types: `PlatformSessionData`, `PlatformUser`. Global `Request` augmented with `platformSession` and `platformUser`.
+- `server/routes/platformAuth.ts`
+  - `POST /api/platform/auth/login` — email + password. Verifies credentials against `user_identities` (same source of truth as tenant login) BUT **rejects any non-platform-role account** at 403 `PLATFORM_ACCOUNT_REJECTED` — tenant users can never acquire a psid session. Also rejects unactivated, disabled, or deactivated accounts. On success writes `{ platformUserId, platformTokenVersion, loggedInAt }` onto `req.platformSession` and responds with the authenticated identity.
+  - `POST /api/platform/auth/logout` — destroys the psid session, clears the cookie.
+  - `GET /api/platform/auth/me` — protected by `requirePlatformSession`; returns `{ user }`.
+  - Every login path (success / failed password / rejected non-platform / account disabled) writes a canonical `platformAuditService.log` row with action strings `platform_login` / `platform_login_failed` / `platform_login_rejected_non_platform` / `platform_logout` so rollout + abuse monitoring are visible in existing audit surfaces.
+
+**Server — modified:**
+- `server/routes/index.ts` — `/api/platform/*` mount moved **above** the global `app.use("/api", requireAuth)`. The new mount order:
+  ```
+  app.use("/api/platform", platformSessionMiddleware);
+  app.use("/api/platform/auth", platformAuthRouter);
+  app.use("/api/platform", requirePlatformSession, platformRouter);
+  app.use("/api", requireAuth);   // tenant auth — never sees platform traffic
+  ```
+  This is what severs the tenant auth dependency. A request with only `psid` now reaches platform routes; a request with only `sid` hitting `/api/platform/*` is 401'd by `requirePlatformSession` before any route handler runs.
+- `server/auth/requirePlatformRole.ts` — prefers `req.platformUser` (from psid) when present. Retains `req.user` fallback for transitional callers so the tenant-session platform-admin flow continues to work during rollout. Audit-log denial path unchanged.
+- `server/routes/auth.ts` — tenant login gains a platform-role rejection gated by env var `ALLOW_PLATFORM_IN_TENANT_LOGIN` (default `"true"` for soak). When flipped to `"false"`, `POST /api/auth/login` returns 403 `PLATFORM_ACCOUNT_REJECTED` for any user with a platform role. Intentionally left ON by default so Phase 1 deploy does not break the existing impersonation flow (which still requires a tenant session until Phase 2 teaches impersonation to bootstrap from psid).
+
+**Client — new files:**
+- `client/src/pages/platform/PlatformLogin.tsx` — standalone, visually distinct (dark slate theme, "Internal" label, no tenant chrome, no signup link, no password-reset link — platform accounts are provisioned out of band). Posts to `/api/platform/auth/login`. Footer link to `/login` for anyone who landed here by mistake.
+- `client/src/lib/platformAuth.tsx` — `PlatformAuthProvider` (fetches `GET /api/platform/auth/me` once, exposes `user`, `isLoading`, `refresh`, `logout`), `usePlatformAuth` hook, `RequirePlatformAuth` guard, `PlatformAuthRoute` composed wrapper. **Never consults tenant auth.** A signed-in tenant user with a platform-role `users.role` but no psid is "not authenticated" here.
+
+**Client — modified:**
+- `client/src/App.tsx` — registers `/platform/login` (NOT behind any guard). All 12 `/platform/*` route wrappers swapped from `<ProtectedRoute requirePlatformRole>` to `<PlatformAuthRoute>`. Tenant pages unchanged.
+- `client/src/pages/Login.tsx` — adds a small "Platform admin? Log in here" link to `/platform/login` so operators routinely use the correct surface.
+
+**Tests — `tests/platform-auth-separation.test.ts` (NEW).** Eight middleware/handler-level tests plus two structural checks:
+1. `requirePlatformSession` 401s without a session.
+2. `requirePlatformSession` 401s on a session missing `platformUserId`.
+3. `requirePlatformSession` passes on a valid platform role + matching tokenVersion.
+4. `requirePlatformSession` 403s when the session points at a user whose role is no longer platform.
+5. `requirePlatformSession` 401s on stale tokenVersion.
+6. `requirePlatformRole` prefers `req.platformUser` over `req.user`.
+7. `requirePlatformRole` falls back to `req.user` when no platform session.
+8. `requirePlatformRole` 403s a tenant-role user.
+9. `requirePlatformRole` chooses platform user even when both are present.
+10. Platform login endpoint writes `platformUserId` to the session on valid credentials.
+11. Platform login rejects a tenant-role account with 403 even with a valid password.
+12. Platform login rejects a bad password with 401.
+13. `impersonationService` cookie name is still `imp_session` (structural regression guard).
+14. `impersonationMiddleware` + `trackActivity` exports are untouched.
+
+**Rollout notes (operator workflow):**
+1. Deploy with `ALLOW_PLATFORM_IN_TENANT_LOGIN=true` (default). Platform admins can now reach `/platform/login` — verify manually. Existing `/login` still accepts them as a fallback; existing impersonation flow still works.
+2. Verify same-day: at least one `platform_login` audit row lands, `/api/platform/tenants` returns 200 with psid-only, `/api/jobs` returns 401 with psid-only, impersonation sessions still start + end cleanly.
+3. Flip `ALLOW_PLATFORM_IN_TENANT_LOGIN=false` only after Phase 2 teaches `impersonationMiddleware` to bootstrap from psid (otherwise impersonation flows break for admins without a tenant session). **The env-var flip is explicitly deferred to Phase 2.**
+4. Rollback: revert two files — `server/routes/index.ts` and `client/src/App.tsx` — plus optionally drop the new files. Zero DB impact, no data to undo.
+
+**Architecture preserved:**
+- No new tables. Platform users remain rows in `users` with `role ∈ PLATFORM_ROLES`.
+- No changes to impersonation: `imp_session` cookie, middleware, and service unchanged.
+- Tenant auth + session cookie (`sid`) + Passport stack: literally zero changes.
+- Canonical writers, canonical services, canonical audit trail: unchanged.
+
+**Files changed:**
+- New — `server/auth/platformSession.ts`, `server/routes/platformAuth.ts`, `client/src/pages/platform/PlatformLogin.tsx`, `client/src/lib/platformAuth.tsx`, `tests/platform-auth-separation.test.ts`.
+- Modified — `server/routes/index.ts` (mount order), `server/auth/requirePlatformRole.ts` (prefer req.platformUser with fallback), `server/routes/auth.ts` (env-var platform-role rejection), `client/src/App.tsx` (route wrappers + /platform/login route + import), `client/src/pages/Login.tsx` (platform login link), `CHANGELOG.md`.
+
+**Risks (documented in §Risks of the audit plan):**
+1. Forgetting to set `PLATFORM_SESSION_SECRET` in prod falls back to `SESSION_SECRET`. Acceptable default; separate secret recommended.
+2. Kill-switch flip before Phase 2 breaks impersonation — explicitly gated by the soak-period default.
+3. Two cookies on the same domain — verified by existing impersonation flow (imp_session coexists with sid today).
+4. CSRF token continues to be tenant-session-scoped; platform login uses the tenant CSRF pool (no-op for security since both originate from the same browser). Phase 2 can split if needed.
+
+**Verification:** `npm run check` passes.
+
+#### SaaS Admin / Tenant Operations — Phase A6.3 Bulk Run History + Retry (feature, 2026-04-22)
+
+Third pass on bulk tenant operations. Every live bulk execution is now fully auditable end-to-end, history is queryable from a dedicated operator page, and failed tenants from a past run can be re-submitted in one click. No new tables — history reads over existing `audit_logs` rows with a shared `runId` correlation.
+
+**Server — run correlation + uniform audit.** `bulkTenantOpsService.run()` now generates a single `crypto.randomUUID()` `runId` per LIVE execution (dry-run gets `null`). After all per-tenant workers complete, the orchestrator writes one `platformAuditService.log` row per live outcome — both `ok` and `error` — with a canonical envelope:
+```
+details: {
+  runId,
+  status: "ok" | "error",
+  action,          // e.g. "bulk_extend_trial"
+  params,          // original action params (for retry)
+  message?, error?
+}
+```
+Per-handler `writeAudit` calls were removed; audit emission is now orchestrated uniformly in `run()` so every action has the same shape. Canonical lifecycle events (e.g. `subscription_events.status_changed`) continue to land through the lifecycle writer unchanged — the bulk-audit row captures correlation, not the lifecycle detail.
+
+A6.2's `liveError` path now also produces an audited row — previously failures were silent in the audit log. The audit write itself is try/caught so audit-infra flakiness can't poison a bulk run.
+
+`BulkResult.runId: string | null` is returned so the UI can deep-link to the new run from the moment it completes.
+
+**Server — `bulkRunsService.ts` (NEW).** Canonical reader over `audit_logs`:
+- `listRuns({ limit, offset })` — `SELECT ... GROUP BY (details::jsonb)->>'runId'` with `COUNT FILTER` for succeeded/failed aggregation, filtered to `action LIKE 'bulk\_%'`. Returns runs sorted newest-first.
+- `getRun(runId)` — fetches every audit row for that runId, decodes the details JSON, reconstructs the per-tenant items array, and extracts `params` from the first row (all rows in a run share the same params snapshot).
+
+Both functions use Drizzle's `sql` template with an explicit `details::jsonb` cast since the column is TEXT. No schema change.
+
+**Server — `server/routes/platformBulkRuns.ts` + platform mount (NEW).**
+- `GET /api/platform/bulk-runs` — list (any platform role; read-only).
+- `GET /api/platform/bulk-runs/:runId` — detail.
+Both gated by the parent `requirePlatformRole()`. No write endpoint lives here — retry posts to the existing `/api/platform/tenants/bulk` endpoint.
+
+**Client — `client/src/pages/platform/PlatformBulkRuns.tsx` (NEW).** Page at `/platform/bulk-runs`:
+- Simple table of recent runs with action, actor, totals, time ago. Click row opens a right-side drawer.
+- **Drawer** shows actor + timing + a formatted `params` JSON block + every per-tenant outcome (green `ok` / red `error`) with the exact message or error the server recorded. Each tenant id links to `/platform/tenants/:id`.
+- **Retry failures button** appears whenever the run has any errored tenants. Clicking reconstructs `{ action, tenantIds: failedIds, params }` from the run detail and POSTs to the canonical `/api/platform/tenants/bulk` endpoint — spawning a brand-new bulk run (new `runId`) that itself shows up in history. On success it invalidates `/api/platform/bulk-runs`, `/api/platform/tenants`, `/api/platform/kpis`, and `/api/platform/trials/pipeline` so every downstream surface refreshes.
+- `BULK_ACTION_FROM_AUDIT` map reverses the audit action string (`bulk_extend_trial`) back to the orchestrator action (`extend_trial`). If a historical run's action string doesn't reverse-map (e.g. an older bulk taxonomy), the Retry button disables rather than risking a malformed retry.
+
+**Client — nav + route.** `PlatformLayout` gets a "Bulk Runs" nav entry with the `History` icon. `App.tsx` lazy-loads `/platform/bulk-runs` gated by `requirePlatformRole`.
+
+**Architecture rules preserved:**
+- No new tables. History reads over existing `audit_logs` rows.
+- No new write paths. Retry reuses the canonical bulk endpoint, which delegates to the canonical per-tenant writers (lifecycle service, billing repo, entitlement storage).
+- Every retry is itself a new bulk run with its own `runId` — no concept of "undoing" a run that was never meant to succeed; the retry is a fresh transaction with fresh audit trail.
+- Dry-run runs still produce zero audit rows, so they never appear in bulk-run history.
+
+**Files changed:**
+- New — `server/services/bulkRunsService.ts`, `server/routes/platformBulkRuns.ts`, `client/src/pages/platform/PlatformBulkRuns.tsx`.
+- Modified — `server/services/bulkTenantOpsService.ts` (runId generation + post-processed uniform audit; handlers no longer call `writeAudit` individually; BulkResult carries `runId`), `server/routes/platform.ts` (mount `/bulk-runs`), `client/src/pages/platform/PlatformLayout.tsx` (nav entry), `client/src/App.tsx` (lazy route), `CHANGELOG.md`.
+
+**Verification:** `npm run check` passes. No schema, no migrations.
+
+**Follow-up (A6.4+):**
+- Server-side filter by action type / actor / date range on the list endpoint (Zod schema already allows it; not yet UI-exposed).
+- Cancel-in-flight: long-running bulks currently can't be aborted mid-execution. Small addition: maintain an in-memory `AbortController` keyed on runId and check it between worker iterations.
+- CSV export of a run's items for post-mortems outside the app.
+- If operator volume makes the `details::jsonb` group-by expensive at scale, add a generated column on `audit_logs` (`run_id` extracted from `details`) plus an index. Today the query is bounded by LIMIT + the `bulk\_%` action prefix so it performs fine — the index path is a next-year problem.
+
+#### SaaS Admin / Tenant Operations — Phase A6.2 Bulk Actions: Dry-Run + Concurrency (feature, 2026-04-22)
+
+Upgrades the Phase A6.1 bulk tenant actions for trust + scale. Every operator-initiated batch now previews before it writes, runs its per-tenant work under bounded concurrency, and surfaces progress during execution. Canonical writers are unchanged; audit behavior is unchanged; per-tenant explicit results preserved.
+
+**Server — dry-run mode.** `POST /api/platform/tenants/bulk?dryRun=true` runs every preflight (tenant exists, lifecycle transition legal, override feature exists, override patch valid) and returns the would-be result per tenant — **zero writes, zero audit rows, zero cache invalidations**. Per-tenant status becomes `would_ok` / `would_error` and the corresponding field is `message` / `error` carrying the predicted outcome or the preview-only failure reason.
+
+To keep preview and live from drifting, the lifecycle validator moved from module-private to a canonical export: `subscriptionLifecycleService.isValidTransition(from, to)`. Both the live `transition()` writer and the dry-run handler consult the same function.
+
+Auth model: any platform role (including `platform_readonly_audit`) may issue a dry-run — it's a read over canonical state. Only the existing `BULK_WRITE_ROLES` (`platform_admin`, `platform_support`, `platform_billing`) may issue a live run; the route throws 403 if a read-only role attempts `dryRun=false`.
+
+**Server — bounded concurrency.** Per-tenant work now runs in a worker pool with `CONCURRENCY = 10`. Implemented as a small local `runWithConcurrency(items, limit, worker)` helper (no new deps) that preserves input order in the returned results array. All six action handlers refactored: the `for (const tenantId of tenantIds)` loop is replaced by a single `runWithConcurrency(...)` call, so a 200-tenant batch completes in roughly 1/10th the wall time of the Phase A6.1 serial loop. Per-tenant try/catch is inside the worker, so one failure never poisons the batch.
+
+**Server — result shape grew additively.**
+```
+type BulkItemStatus = "ok" | "error" | "would_ok" | "would_error";
+interface BulkResult {
+  action: BulkAction;
+  dryRun: boolean;          // NEW
+  total: number;
+  succeeded: number;        // ok + would_ok
+  failed: number;           // error + would_error
+  results: BulkItemResult[];
+}
+```
+Existing consumers that only look at `ok/error` continue to work — they'll see `succeeded/failed` against live-run results.
+
+**Client — two-step dialog flow (Preview → Apply).** The bulk action dialog now has three buttons:
+1. **Cancel** — discard local state.
+2. **Preview** — POST with `?dryRun=true`, renders a preview panel inside the same dialog showing "N expected to succeed · M expected to fail" plus a per-tenant chip list (green `ok` / red `fail`, with the predicted message).
+3. **Apply to N** — disabled until a preview has returned; the button label uses the preview's `succeeded` count (not the selection total) so operators see the blast radius they're actually committing to.
+
+Any parameter change (plan dropdown, feature dropdown, reason input, toggle, etc.) invalidates the preview by clearing it; the operator must re-preview before re-enabling Apply. This prevents "tweaked params after preview, applied stale outcome" foot-guns.
+
+**Client — progress indicator during live run.** While the apply request is in flight, the dialog renders an amber strip: "Applying to N tenants… canonical writers run in a bounded worker pool, so large batches complete in parallel." Indeterminate spinner (no streaming yet — the request is one POST); for most batches the server-side concurrency means the wall time stays well under a second per 50 tenants.
+
+**Client — "N selected across M pages" annotation.** `PlatformTenantsList` now passes the current page's `visibleIds` into the bulk bar. The bar renders "N selected" plus a secondary line "(M on this page, K on other pages)" whenever the selection spans beyond the visible viewport — operators can no longer lose count after scrolling or changing pages mid-selection.
+
+**Architecture rules preserved:**
+- Every live write still flows through the canonical writer verbatim (lifecycle service + billing repo + entitlement storage). No duplicate write paths.
+- Dry-run reads only. No dry-run audit. No dry-run cache effects.
+- Per-tenant explicit results are preserved; partial failures remain fully visible.
+
+**Files changed:**
+- Modified — `server/services/subscriptionLifecycleService.ts` (exports `isValidTransition`), `server/services/bulkTenantOpsService.ts` (dry-run branches per handler, `runWithConcurrency`, result shape grows `dryRun` + `would_*` statuses), `server/routes/platformTenants.ts` (accepts `?dryRun=true`; write-roles gate moved into handler, conditional on dryRun), `client/src/pages/platform/BulkTenantActions.tsx` (two-step dialog, preview panel, progress strip, selection split annotation), `client/src/pages/platform/PlatformTenantsList.tsx` (passes `visibleIds` to the bar), `CHANGELOG.md`.
+
+**Verification:** `npm run check` passes. No schema, no migrations.
+
+**Follow-up (A6.3+):**
+- Streaming progress: upgrade the live run to Server-Sent Events so the client shows a determinate `x/N` counter as per-tenant operations finish (especially useful for 200+ tenant batches on slower DBs).
+- Persist a bulk-run id across the per-tenant audit rows so "undo last bulk run" becomes a filter query. Audit schema doesn't currently carry a bulk correlation column; additive change.
+- Configurable concurrency: expose `CONCURRENCY` per action (e.g. cap override writes at 5 to reduce cache-invalidation churn while permitting 20 for lifecycle transitions). Today 10 is uniform.
+- Client-side cap at 200 selected with a warning toast mirroring the server-side Zod max.
 
 #### SaaS Admin / Tenant Operations — Phase A6.1 Bulk Tenant Actions (feature, 2026-04-22)
 
