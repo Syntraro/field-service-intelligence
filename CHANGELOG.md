@@ -284,6 +284,29 @@ Quote previews use the same `COALESCE(customerCompanies.name, clients.companyNam
 
 ### Fixed
 
+#### Quick Create — technician selection now persists on the seed visit (bug fix, 2026-04-23)
+
+Creating a job via the Quick Create dialog (`QuickAddJobDialog` from `SlotQuickCreateLauncher`) let the user pick a technician, but the resulting visit was saved **unassigned**. Opening the visit via Edit Visit and assigning a tech there worked — which is what made the bug confusing, because the UI, the wire format, and the storage layer all used the same `assignedTechnicianIds` field name.
+
+**Root cause.** `insertJobSchema` in `shared/schema.ts` is built via `createInsertSchema(jobs).omit(...).extend({...})`. On 2026-04-12 the `jobs.assigned_technician_ids` column was deliberately removed (crew moved to `job_visits.assigned_technician_ids` under the "jobs are containers only" refactor). The `.extend()` was never updated to re-add the field as a write-only passthrough. Zod's default object mode is `strip`, so when Quick Create sent `POST /api/jobs` with `{ assignedTechnicianIds: [techId], scheduledStart, scheduledEnd, ... }`, `validateSchema(insertJobSchema, req.body)` silently dropped the crew. The storage layer at `server/storage/jobs.ts:587-590` then read `(normalizedData as any).assignedTechnicianIds`, found `undefined`, set `incomingAssignedTechnicianIds = null`, and created the seed visit unassigned.
+
+The canonical visit-assignment path (`POST /api/calendar/schedule` via `useDispatchPreviewMutations`) was unaffected — its `scheduleJobSchema` at `shared/schema.ts:727-738` explicitly declares `assignedTechnicianIds`, so the field survives validation and persists.
+
+**Fix.** One-line addition to `insertJobSchema.extend({...})`:
+
+```ts
+assignedTechnicianIds: z.array(z.string().uuid()).nullable().optional(),
+```
+
+No route, storage, or UI changes needed — the storage layer already knows how to consume this field and forward it to the seed visit (see `server/storage/jobs.ts:587-590, 633, 644`). The only thing missing was Zod passthrough. `updateJobSchema` intentionally does NOT gain this field: job-level crew edits go through visit-scoped endpoints, and `storage.updateJob` already strips it defensively at `jobs.ts:700-702`.
+
+**Files changed:**
+- `shared/schema.ts` — single line added to `insertJobSchema.extend({...})`.
+
+**Verification:** `npm run check` clean. Edit Visit flow unaffected (separate schema, separate route).
+
+---
+
 #### Tenant login — first-click-does-nothing bug (bug fix, 2026-04-22)
 
 The tenant `/login` page required two clicks to sign in: the first click visually responded (button switched to "Logging in…") and the server authenticated successfully, but the user was silently bounced back to `/login` instead of landing on `/`. The second click worked.

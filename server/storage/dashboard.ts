@@ -724,6 +724,21 @@ export interface FinancialSummary {
     locationName: string | null;
     completedAt: string | null;
   }[];
+  /**
+   * 2026-04-23: 5 most recent inbound payments across the tenant. Feeds the
+   * Solo / owner-operator dashboard's "Recent Payments" card. Refunds /
+   * reversals (amount ≤ 0) are excluded — this is cash-in, not net ledger.
+   */
+  recentPayments: {
+    id: string;
+    amount: number;
+    method: string | null;
+    receivedAt: string | null;
+    invoiceId: string;
+    invoiceNumber: string | null;
+    customerName: string | null;
+    locationName: string | null;
+  }[];
 }
 
 export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSummary> {
@@ -761,6 +776,7 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
     trendRows, arRows, pastDueRows, sentThisMonthRows, quoteRows, pmRows,
     agingRows, topInvoiceRows, topCustomerRows, draftRows, readyToInvoiceRows,
     draftPreviewRows, readyToInvoicePreviewRows,
+    recentPaymentRows,
   ] = await Promise.all([
     // Revenue by period (4 queries)
     revenueQuery(todayStart, new Date(todayStart.getTime() + 86400000)),
@@ -1005,6 +1021,35 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
       ))
       .orderBy(sql`COALESCE(${jobs.closedAt}, ${jobs.updatedAt}) ASC NULLS LAST`)
       .limit(6),
+
+    // 2026-04-23 Solo dashboard: 5 most recent inbound payments with
+    // invoice + customer resolved via the same join topology used by the
+    // top-outstanding / draft-preview queries above. `amount > 0` excludes
+    // refund / reversal rows (stored as negatives) so the "Recent Payments"
+    // card is cash-in only.
+    db.select({
+      id: payments.id,
+      amount: payments.amount,
+      method: payments.method,
+      receivedAt: payments.receivedAt,
+      invoiceId: payments.invoiceId,
+      invoiceNumber: invoices.invoiceNumber,
+      customerName: customerCompanies.name,
+      locationCompanyName: clients.companyName,
+      locationName: clients.location,
+    }).from(payments)
+      .innerJoin(invoices, and(
+        eq(payments.invoiceId, invoices.id),
+        eq(invoices.companyId, companyId),
+      ))
+      .leftJoin(clients, eq(invoices.locationId, clients.id))
+      .leftJoin(customerCompanies, eq(invoices.customerCompanyId, customerCompanies.id))
+      .where(and(
+        eq(payments.companyId, companyId),
+        sql`CAST(${payments.amount} AS numeric) > 0`,
+      ))
+      .orderBy(desc(payments.receivedAt))
+      .limit(5),
   ]);
 
   // Post-query derivations
@@ -1082,6 +1127,19 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
     };
   });
 
+  const recentPayments = recentPaymentRows.map((r: any) => ({
+    id: r.id,
+    amount: parseFloat(r.amount ?? "0"),
+    method: r.method ?? null,
+    receivedAt: r.receivedAt instanceof Date
+      ? r.receivedAt.toISOString()
+      : (r.receivedAt ? String(r.receivedAt) : null),
+    invoiceId: r.invoiceId,
+    invoiceNumber: r.invoiceNumber ?? null,
+    customerName: r.customerName ?? r.locationCompanyName ?? null,
+    locationName: r.locationName ?? null,
+  }));
+
   return {
     revenue: {
       today: revenueToday,
@@ -1127,6 +1185,7 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
     topCustomerBalances,
     draftInvoicesPreview,
     readyToInvoiceJobsPreview,
+    recentPayments,
   };
 }
 

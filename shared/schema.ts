@@ -2570,6 +2570,15 @@ export const insertJobSchema = createInsertSchema(jobs).omit({
   // Hold state fields
   holdNotes: z.string().nullable().optional(),
   nextActionDate: z.string().nullable().optional(), // Accept ISO date string (YYYY-MM-DD)
+  // 2026-04-23: Write-only passthrough for the seed visit's crew. The
+  // `jobs` table lost its `assigned_technician_ids` column on 2026-04-12
+  // (crew moved to `job_visits`); this field was never re-added to the
+  // insert schema, so Zod silently stripped it from POST /api/jobs and
+  // Quick Create created unassigned visits. storage.createJob already
+  // reads and forwards this to the seed visit (see
+  // server/storage/jobs.ts:587-590); declaring it here just stops
+  // strip-mode from eating the value on the way in.
+  assignedTechnicianIds: z.array(z.string().uuid()).nullable().optional(),
 });
 
 export const updateJobSchema = z.object({
