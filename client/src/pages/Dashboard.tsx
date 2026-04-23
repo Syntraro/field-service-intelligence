@@ -113,7 +113,7 @@ function TodaysOperationsHeader() {
       style={{ borderBottom: '1px solid #e5e7eb', paddingBottom: '8px' }}
     >
       <h3 className="text-lg font-semibold text-[#111827] dark:text-gray-100 tracking-tight">
-        Today's Operations
+        Business Dashboard
       </h3>
       <DashboardViewToggle active="operations" />
     </div>

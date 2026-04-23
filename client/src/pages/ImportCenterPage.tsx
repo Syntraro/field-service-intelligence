@@ -22,11 +22,15 @@
  *     in the shared ImportWizard (variant="embedded" for this surface).
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Upload, Users, Briefcase, Package, Receipt } from "lucide-react";
-import { ImportWizard } from "@/components/imports/ImportWizard";
+import {
+  ImportWizard,
+  StepIndicator,
+  type Step,
+} from "@/components/imports/ImportWizard";
 import { clientImportConfig } from "@/components/imports/configs/clientImportConfig";
 import { jobImportConfig } from "@/components/imports/configs/jobImportConfig";
 import { productImportConfig } from "@/components/imports/configs/productImportConfig";
@@ -114,6 +118,14 @@ export default function ImportCenterPage() {
     setLocation(`/settings/import?type=${key}`);
   };
 
+  // 2026-04-23: step state hoisted up from ImportWizard so the canonical
+  // Upload → Map → Preview → Done strip can render at the top of the
+  // page, above the type chooser. The wizard reports its step via
+  // `onStepChange` and suppresses its inline indicator via
+  // `hideStepIndicator`. Remounting the wizard on type change resets
+  // everything including this state (see `key={active.key}` below).
+  const [wizardStep, setWizardStep] = useState<Step>("upload");
+
   return (
     <div className="min-h-screen bg-[#F4F8F4]" data-testid="import-center-page">
       <main className="mx-auto max-w-6xl px-4 sm:px-5 lg:px-6 py-6 space-y-6">
@@ -135,22 +147,33 @@ export default function ImportCenterPage() {
           </Button>
         </header>
 
-        {/* 2026-04-22: primary record-type picker — visually dominant, answers
-            "What do you want to import?" before anything else. Source
-            (Jobber / HCP / Generic) is a secondary choice inside the wizard. */}
+        {/* 2026-04-23: canonical step strip hoisted above the type chooser.
+            The wizard reports its step via onStepChange and suppresses its
+            own inline indicator. */}
+        <section aria-label="Import progress" className="pt-1">
+          <StepIndicator step={wizardStep} />
+        </section>
+
+        {/* Primary record-type picker — "What do you want to import?" */}
         <section aria-labelledby="import-type-heading">
           <div className="flex items-baseline justify-between mb-2">
             <h2 id="import-type-heading" className="text-sm font-semibold text-[#111827]">
               What do you want to import?
             </h2>
-            <span className="text-[11px] text-[#6b7280]">Step 1 of 2</span>
           </div>
           <TypeSelector active={activeType} onSelect={setType} />
         </section>
 
-        {/* Wizard body. Remount on type change so state resets cleanly. */}
+        {/* Wizard body — Source picker + Upload/Map/Preview/Done steps.
+            Remount on type change so state resets cleanly. */}
         <section aria-label="Import wizard">
-          <ImportWizard key={active.key} config={active.config} variant="embedded" />
+          <ImportWizard
+            key={active.key}
+            config={active.config}
+            variant="embedded"
+            hideStepIndicator
+            onStepChange={setWizardStep}
+          />
         </section>
       </main>
     </div>

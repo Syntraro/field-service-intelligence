@@ -78,6 +78,85 @@ Reverted the platform ops console, reconciliation queue, and heavy webhook telem
 
 ### Added
 
+#### Technician external calendar subscription (ICS feed) — Phase 1 (feature, 2026-04-23)
+
+Each technician can now subscribe to their assigned work schedule from Google Calendar, Apple Calendar, or Outlook via a private read-only ICS URL. Managed by owner/admin/manager on the Team member detail page. Convenience-only — Syntraro remains the single source of truth for scheduling; external calendars are read-only subscribers.
+
+**Scope (explicitly minimal per the Phase 1 spec):**
+- ICS feed only. No Google OAuth, no Apple-specific API, no CalDAV, no two-way sync.
+- Per-technician token. One row per user; rotation overwrites the token, disable flips `is_active`, the token itself is the only secret in the feed URL (the technician's user id is never exposed in the URL).
+- Feed contents limited to safe operational fields: summary, start/end, service address, basic description, optional app deep link. **Never** pricing, invoice/payment state, visit notes, QBO identifiers, or any other technician's schedule.
+- Cancellations and reschedules are reflected naturally by the feed contents on the subscriber's next refresh — no push, no ICS METHOD:CANCEL tricks.
+
+**Data model (new table `technician_calendar_tokens`):**
+```
+migrations/2026_04_23_technician_calendar_tokens.sql
+  id, company_id, user_id, token (UNIQUE), is_active,
+  last_accessed_at, created_at, updated_at
+  UNIQUE (user_id), UNIQUE (token), partial INDEX (token) WHERE is_active
+```
+One row per user. Token = 32 random bytes → 43-char URL-safe base64 (256 bits entropy). Tenant-scoped every non-resolve read.
+
+**Storage layer — `server/storage/technicianCalendarTokens.ts`:**
+- `getByUserId(companyId, userId)` — read current row.
+- `ensureToken(companyId, userId)` — idempotent create (no-op if a row exists).
+- `rotateToken(companyId, userId)` — overwrite `token`, re-activate (operators' "new working link" intent).
+- `setActive(companyId, userId, active)` — flip without touching the token string.
+- `resolveByToken(token)` — PUBLIC-facing lookup. Matches active tokens only. Returns `{ companyId, userId }` or `null` (the route serves 404 for both unknown and disabled, so an attacker can't distinguish).
+- `touchLastAccessed(token)` — fire-and-forget bookkeeping; failure never breaks the feed.
+
+**Service layer — `server/services/technicianCalendarIcsService.ts`:**
+- `buildTechnicianIcsFeed(companyId, userId, { appBaseUrl })` — queries canonical `job_visits` JOIN `jobs` JOIN `clientLocations` JOIN `customerCompanies` using the same `${jobVisits.assignedTechnicianIds} && ARRAY[userId]::varchar[]` predicate the Dispatch board uses. No new scheduling source. Window is `now − 30d` → `now + 365d`.
+- Renders minimal RFC 5545: VCALENDAR with PRODID, CALSCALE, METHOD:PUBLISH, NAME, X-WR-CALNAME. VEVENT per visit: UID (`visit-<visitId>@syntraro`, stable across refreshes), DTSTAMP, DTSTART/DTEND (UTC Z-form; all-day visits use DATE-value form with exclusive-end semantics), SUMMARY (`"Customer Name — Job Summary"`), LOCATION (joined address line), DESCRIPTION (job #, summary, location name, status, optional deep link), URL (deep link), STATUS (CONFIRMED / CANCELLED), TRANSP.
+- RFC 5545 §3.1 line folding at 75 octets with CRLF+space continuation. Text fields escaped per §3.3.11.
+
+**Admin routes — added to existing `/api/team/:userId`:**
+- `GET    /calendar-token` — returns `{ token, isActive, feedUrl, lastAccessedAt, … }`. `feedUrl` is null when disabled or unset.
+- `POST   /calendar-token` — idempotent create.
+- `POST   /calendar-token/rotate` — new token, re-activated.
+- `POST   /calendar-token/disable` — flip active → false, preserve token.
+- `POST   /calendar-token/enable` — flip active → true, reuse existing token.
+
+All gated `RESTRICTED_MANAGER_ROLES` (`owner`, `admin`, `manager`) — same gate as the rest of the team-management surface. All tenant-scoped via `req.companyId`.
+
+**Public route — `server/routes/technicianCalendarPublic.ts`:**
+- `GET /calendar/technician/:token.ics` — returns `text/calendar; charset=utf-8; method=PUBLISH`.
+- Mounted at `/calendar/technician` **before** `app.use("/api", requireAuth)` in `server/routes/index.ts`, so the feed escapes the global auth gate. Token is the auth primitive.
+- Token shape check (32–128 URL-safe chars) rejects obvious garbage before DB lookup.
+- Unknown or disabled tokens → 404 (not 403) so enabled/disabled state is indistinguishable to unauthenticated callers.
+- `Cache-Control: private, max-age=300, must-revalidate` — smooths bursty polls (Google refreshes ~12h, Apple 15m–1d, Outlook ~3h).
+
+**UI — `client/src/components/team-hub/CalendarSyncSection.tsx`:**
+- Mounted on the Team member detail page (below the existing "Team hub pointer" row).
+- Three states: no token / active + feed URL / disabled. Active state shows the URL with a Copy button, "Regenerate" button (token rotation), and "Disable link" button. Disabled state shows an amber re-enable panel. Help text ("How to subscribe") collapses to a details/summary block with Google / Apple / Outlook steps.
+- Reads/writes via the five new `/api/team/:userId/calendar-token*` endpoints.
+
+**Security / rate-limiting notes:**
+- The token is the only secret in the URL. No technician identifiers are leaked in the URL path.
+- The public endpoint sits outside `/api` so it bypasses the `requireAuth` gate by design — but it does NOT inherit the `/api`-scoped `rateLimitPerTenant`. Phase 1 ships without dedicated rate limiting on this path; if abuse surfaces, the next step is to add a per-IP limiter on `/calendar/*` (Phase 2 consideration).
+- The feed omits every pricing / financial / internal-note field. Inspection of `technicianCalendarIcsService.ts` confirms the SELECT list includes only address components, location/company name, job summary, visit status, and timestamps.
+- Cross-tenant isolation: `resolveByToken` returns `{ companyId, userId }` and the service's visit query filters on `jobVisits.companyId = resolved.companyId`. A token cannot expose another tenant's data.
+
+**Files changed / added:**
+- NEW — `migrations/2026_04_23_technician_calendar_tokens.sql`
+- MODIFIED — `shared/schema.ts` (added `technicianCalendarTokens` table + types)
+- NEW — `server/storage/technicianCalendarTokens.ts`
+- NEW — `server/services/technicianCalendarIcsService.ts`
+- MODIFIED — `server/routes/team.ts` (5 admin endpoints appended)
+- NEW — `server/routes/technicianCalendarPublic.ts`
+- MODIFIED — `server/routes/index.ts` (mount public router before `/api` auth gate)
+- NEW — `client/src/components/team-hub/CalendarSyncSection.tsx`
+- MODIFIED — `client/src/pages/TeamMemberDetail.tsx` (mount the new section)
+
+**Run migration:**
+```
+npm run db:migrate:one -- migrations/2026_04_23_technician_calendar_tokens.sql
+```
+
+**Verification:** `npm run check` clean. Migration applied to `neondb`. Manual browser verification needs to confirm: (a) generating a link returns a valid-looking URL; (b) curl against the returned URL yields a 200 `text/calendar` body starting with `BEGIN:VCALENDAR` and containing VEVENT rows; (c) rotate invalidates the prior URL (old URL 404s, new URL 200s); (d) disable makes the URL 404; (e) feed omits financial/internal fields.
+
+---
+
 #### Canonical invoice importer + Jobber invoices preset (feature, 2026-04-22)
 
 Adds a generic invoice CSV importer as a first-class entity on the existing import platform, with Jobber as the first provider preset. Other sources plug in as additional presets — the engine is provider-agnostic.

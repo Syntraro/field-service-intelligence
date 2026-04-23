@@ -12,7 +12,7 @@
  * contains ZERO entity-specific switches.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -40,7 +40,7 @@ import {
   type CustomFieldPlan,
 } from "./importPlan";
 
-type Step = "upload" | "map" | "preview" | "results";
+export type Step = "upload" | "map" | "preview" | "results";
 
 /**
  * Headers-only CSV parse, resilient to malformed content (returns empty
@@ -117,11 +117,37 @@ interface ImportWizardProps {
    * and the header. No behavior differences — the body is identical.
    */
   variant?: "standalone" | "embedded";
+  /**
+   * 2026-04-23: when true, the wizard does NOT render its own step
+   * indicator inline. Hosts that want the step strip at a different
+   * position on the page (e.g. ImportCenterPage renders it above the
+   * entity chooser) set this true and render `<StepIndicator step={...} />`
+   * themselves, using the step reported via `onStepChange`.
+   */
+  hideStepIndicator?: boolean;
+  /**
+   * 2026-04-23: callback fired whenever the wizard advances to a new
+   * step. Hosts opt in by passing this prop and can use it to drive a
+   * hoisted step indicator (see `hideStepIndicator`).
+   */
+  onStepChange?: (step: Step) => void;
 }
 
-export function ImportWizard({ config, variant = "standalone" }: ImportWizardProps) {
+export function ImportWizard({
+  config,
+  variant = "standalone",
+  hideStepIndicator = false,
+  onStepChange,
+}: ImportWizardProps) {
   const [, setLocation] = useLocation();
   const [step, setStep] = useState<Step>("upload");
+
+  // 2026-04-23: report step transitions to the host when it asked to
+  // drive the indicator itself. Fires on mount + every step change so
+  // the hoisted indicator lands on the right state on first paint.
+  useEffect(() => {
+    onStepChange?.(step);
+  }, [step, onStepChange]);
   const [csvText, setCsvText] = useState<string>("");
   // 2026-04-22 Phase 2a: columns carry actions (ignore / map_existing /
   // create_custom), not just target fields. Backend sees only the
@@ -491,9 +517,11 @@ export function ImportWizard({ config, variant = "standalone" }: ImportWizardPro
   const Icon = config.icon;
 
   // Body — identical in both variants; the shell wrapping it differs.
+  // 2026-04-23: the step indicator is suppressed when the host opted to
+  // hoist it to a different page position.
   const body = (
     <>
-      <StepIndicator step={step} />
+      {!hideStepIndicator && <StepIndicator step={step} />}
 
       {step === "upload" && (
         <UploadStep
@@ -682,7 +710,7 @@ function MapStepNotice({
 // Step indicator
 // ----------------------------------------------------------------------------
 
-function StepIndicator({ step }: { step: Step }) {
+export function StepIndicator({ step }: { step: Step }) {
   const steps: { key: Step; label: string }[] = [
     { key: "upload", label: "Upload" },
     { key: "map", label: "Map" },

@@ -70,6 +70,13 @@ export interface ScheduleBlock {
   durationMinutes: number;
   /** Customer/location label. Present on booked blocks only. */
   title?: string;
+  /**
+   * 2026-04-23: short job/visit description ("No heat", "Annual PM", etc.).
+   * Sourced from jobs.summary with jobs.description as fallback; both are
+   * already selected by schedulingRepository.getScheduledJobsInRange, so
+   * no new join is introduced. Present on booked blocks only.
+   */
+  description?: string;
   /** Visit metadata for future click-through. Present on booked blocks only. */
   visitId?: string;
   jobId?: string;
@@ -195,6 +202,7 @@ function buildScheduleBlocks(
     start: number;
     end: number;
     title: string;
+    description?: string;
     visitId: string;
     jobId: string;
     visitStatus: string;
@@ -236,6 +244,7 @@ function buildScheduleBlocks(
         endISO: new Date(v.end).toISOString(),
         durationMinutes: Math.round((v.end - v.start) / 60_000),
         title: v.title,
+        description: v.description,
         visitId: v.visitId,
         jobId: v.jobId,
         visitStatus: v.visitStatus,
@@ -373,6 +382,7 @@ export async function getTodayCapacity(
     start: number;
     end: number;
     title: string;
+    description?: string;
     visitId: string;
     jobId: string;
     visitStatus: string;
@@ -390,10 +400,12 @@ export async function getTodayCapacity(
     const clippedEnd = Math.min(end, dayEndMs);
     if (clippedEnd <= clippedStart) continue;
     const title = v.customerCompanyName ?? v.locationName ?? "Unassigned location";
+    const description = (v.summary?.trim() || v.description?.trim()) || undefined;
     const meta: VisitMeta = {
       start: clippedStart,
       end: clippedEnd,
       title,
+      description,
       visitId: v.visitId ?? v.id,
       jobId: v.jobId,
       visitStatus: v.visitStatus ?? "scheduled",

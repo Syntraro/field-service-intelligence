@@ -82,8 +82,11 @@ export function SourceSelector({ value, onChange }: SourceSelectorProps) {
         </p>
       </div>
 
+      {/* 2026-04-23: upgraded from a tinted pill group to distinct white
+          buttons with visible borders so each source reads as an actual
+          selectable control instead of fading into the green page bg. */}
       <div
-        className="inline-flex flex-wrap gap-1.5 rounded-md bg-[#F4F8F4] p-1 border border-[#e2e8f0]"
+        className="inline-flex flex-wrap gap-2"
         role="radiogroup"
         aria-label="Source of the CSV file"
       >
@@ -99,13 +102,13 @@ export function SourceSelector({ value, onChange }: SourceSelectorProps) {
               onClick={() => onChange(option.id)}
               data-testid={`source-option-${option.id}`}
               title={option.description}
-              className={`inline-flex items-center gap-1.5 px-3 h-8 rounded text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-[#76B054]/40 ${
+              className={`inline-flex items-center gap-2 h-9 px-3.5 rounded-md text-sm font-medium border bg-white transition-colors focus:outline-none focus:ring-2 focus:ring-[#76B054]/40 ${
                 isActive
-                  ? "bg-white text-[#111827] shadow-sm border border-[#76B054]"
-                  : "text-[#4b5563] hover:bg-white hover:text-[#111827]"
+                  ? "border-[#76B054] text-[#111827] ring-1 ring-[#76B054]/30 shadow-sm"
+                  : "border-[#e2e8f0] text-[#4b5563] hover:border-[#76B054]/60 hover:text-[#111827]"
               }`}
             >
-              <Icon className={`h-3.5 w-3.5 ${isActive ? "text-[#76B054]" : "text-[#6b7280]"}`} />
+              <Icon className={`h-4 w-4 ${isActive ? "text-[#76B054]" : "text-slate-400"}`} />
               <span>{option.label}</span>
               {isActive && <Check className="h-3.5 w-3.5 text-[#76B054]" />}
             </button>

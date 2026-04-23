@@ -923,9 +923,14 @@ function ScheduleBlockRow({
 
 // ============================================================================
 // Alert row
+// 2026-04-23: exported so the Business Dashboard (FinancialDashboard.tsx)
+// can mount the SAME component with identical styling + interaction
+// contract. Zero behavior change for Operations; only added the `export`
+// keyword. Consumers pass the same canonical onClick → DashboardActionModal
+// wiring. No fork, no duplicate styling.
 // ============================================================================
 
-function AlertRow({
+export function AlertRow({
   icon: Icon,
   label,
   count,

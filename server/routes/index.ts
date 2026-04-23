@@ -27,6 +27,11 @@ import portalRouter from "./portal";
 // ✅ NEW (long-term client/company detail fix)
 import customerCompaniesRouter from "./customer-companies";
 import healthRouter from "./health";
+// 2026-04-23: public technician calendar ICS feed. Mounted at /calendar/*
+// (no /api prefix) so the global `app.use("/api", requireAuth)` gate does
+// not apply — the ICS token itself is the auth primitive. See
+// server/routes/technicianCalendarPublic.ts for the full rationale.
+import technicianCalendarPublicRouter from "./technicianCalendarPublic";
 import { requireAuth } from "../auth/requireAuth";
 import { ensureTenantContext, rateLimitPerTenant } from "../auth/tenantIsolation";
 import { impersonationMiddleware, trackActivity } from "../impersonationMiddleware";
@@ -154,6 +159,16 @@ export function registerRoutes(app: Express): Server {
   // HEALTH CHECK (before auth)
   // ========================================
   app.use("/api/health", healthRouter);  //
+
+  // ========================================
+  // PUBLIC TECHNICIAN CALENDAR FEED (before auth)
+  // ========================================
+  //
+  // /calendar/technician/:token.ics resolves technicians by private token
+  // and returns a read-only ICS feed. Mounted BEFORE the /api auth gate
+  // so external calendar apps (Google / Apple / Outlook) can subscribe
+  // without a session. The token is the auth primitive.
+  app.use("/calendar/technician", technicianCalendarPublicRouter);
   // ========================================
   // CRITICAL: Auth routes MUST come FIRST
   // ========================================

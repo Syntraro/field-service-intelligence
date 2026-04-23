@@ -35,9 +35,9 @@ import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  DollarSign, AlertCircle, Wrench, ChevronRight,
+  DollarSign, AlertCircle, AlertTriangle, Wrench, ChevronRight,
   TrendingUp, Users, Receipt, Calendar as CalendarIcon, Plus,
-  CreditCard,
+  CreditCard, Clock, Briefcase,
 } from "lucide-react";
 import { DashboardViewToggle } from "@/components/dashboard/DashboardViewToggle";
 import {
@@ -48,6 +48,19 @@ import {
   SlotQuickCreateLauncher,
   type QuickCreateSlot,
 } from "@/components/dispatch/SlotQuickCreateLauncher";
+// 2026-04-23: reuse the canonical Operations alert stack — same AlertRow
+// JSX, same DashboardActionModal, same resolveDashboardNav fallback paths.
+// See audit 2026-04-23 in TodaysOperationsCard for why AlertRow is a named
+// export now instead of a module-local function.
+import { AlertRow } from "@/components/TodaysOperationsCard";
+import {
+  DashboardActionModal,
+  type DashboardActionMode,
+} from "@/components/DashboardActionModal";
+import { resolveDashboardNav } from "@/lib/dashboardNavigation";
+// 2026-04-23: canonical trigger+popover shell shared with DispatchFiltersBar
+// and TodaysOperationsCard. Generic children — we own what's inside.
+import { MultiSelectDropdown } from "@/components/MultiSelectDropdown";
 
 // ---------------------------------------------------------------------------
 // Types — mirror server/storage/dashboard.ts FinancialSummary
@@ -149,6 +162,41 @@ function formatDate(iso: string | null): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "—";
   return d.toLocaleDateString("en-CA", { year: "numeric", month: "short", day: "numeric" });
+}
+
+/**
+ * Compact hours duration label for schedule rows. Integer hours → "Nh";
+ * fractional → stripped-decimal form ("1.5h", "2.5h", "0.75h"). Replaces
+ * the raw "60m" format the card previously used per the 2026-04-23 UX
+ * refinement brief.
+ */
+function formatDurationHours(minutes: number): string {
+  if (!Number.isFinite(minutes) || minutes <= 0) return "0h";
+  const hours = minutes / 60;
+  if (Number.isInteger(hours)) return `${hours}h`;
+  return `${hours.toFixed(2).replace(/\.?0+$/, "")}h`;
+}
+
+/**
+ * 2026-04-23: compact 12-hour clock for the schedule card's time-range
+ * gutter — drops the AM/PM suffix so a pair reads as a tight inline range
+ * (e.g. "9:00–10:00", "12:00–2:00"). The dashboard shows today's schedule
+ * only, so AM/PM disambiguation is implicit. Midnight renders as "12:00",
+ * noon as "12:00" too — same convention the tech-app's formatClockTime uses.
+ */
+function formatClock12Short(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  let h = d.getHours();
+  const m = d.getMinutes();
+  if (h === 0) h = 12;
+  else if (h > 12) h -= 12;
+  return `${h}:${m.toString().padStart(2, "0")}`;
+}
+
+/** Compact 12h time range — "9:00–10:00", used in the schedule-card gutter. */
+function formatTimeRange(startISO: string, endISO: string): string {
+  return `${formatClock12Short(startISO)}–${formatClock12Short(endISO)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +307,39 @@ export default function FinancialDashboard() {
   const [editorState, setEditorState] = useState<VisitEditorState | null>(null);
   const [slot, setSlot] = useState<QuickCreateSlot | null>(null);
 
+  // 2026-04-23: canonical alert modal — same state pattern Dashboard.tsx
+  // uses (lines 165–170). Clicking an alert row opens the SAME
+  // DashboardActionModal the Operations dashboard opens; counts come from
+  // the shared `["dashboard", "workflow"]` query cache.
+  const [actionModalOpen, setActionModalOpen] = useState(false);
+  const [actionModalMode, setActionModalMode] = useState<DashboardActionMode>("action_required");
+  const openActionModal = (mode: DashboardActionMode) => {
+    setActionModalMode(mode);
+    setActionModalOpen(true);
+  };
+  const handleAlertClick = (mode: DashboardActionMode, fallbackPath: string) => {
+    openActionModal(mode);
+    // `fallbackPath` is the canonical deep-link URL from resolveDashboardNav;
+    // kept for parity with Operations so tests / non-modal contexts behave
+    // the same. Unused when the modal opens successfully.
+    void fallbackPath;
+  };
+
+  // Same canonical workflow summary Operations uses. Shared TanStack
+  // Query cache — both dashboards hit the same rowset, a refresh on
+  // either tab benefits both.
+  const workflowQuery = useQuery<WorkflowSummaryDto>({
+    queryKey: ["dashboard", "workflow"],
+    queryFn: () => apiRequest<WorkflowSummaryDto>("/api/dashboard/workflow"),
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+  });
+  const workflow = workflowQuery.data;
+  const actionRequiredCount = workflow?.jobs.onHoldCount ?? 0;
+  const pastDueCount = workflow?.jobs.overdueCount ?? 0;
+  const unscheduledJobsCount = workflow?.jobs.unscheduledCount ?? 0;
+  const readyForInvoiceCount = workflow?.jobs.requiresInvoicingCount ?? 0;
+
   if (error) {
     return (
       <div className="min-h-screen bg-[#F4F8F4]">
@@ -288,10 +369,10 @@ export default function FinancialDashboard() {
         >
           <div>
             <h1 className="text-lg font-semibold text-[#111827] dark:text-gray-100 tracking-tight">
-              Financial Dashboard
+              Business Dashboard
             </h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Today's schedule, outstanding money, and recent payments — at a glance.
+              Today's schedule, outstanding money, and operational alerts — at a glance.
             </p>
           </div>
           <DashboardViewToggle active="financial" />
@@ -355,8 +436,58 @@ export default function FinancialDashboard() {
             />
           </div>
 
-          {/* Right rail — 3 stacked cards */}
+          {/* Right rail — 4 stacked cards. 2026-04-23 order: alerts first
+              (most time-sensitive), then receivables, then recent payments
+              at the bottom so cash-in doesn't shout louder than action items. */}
           <div className="space-y-3" data-testid="column-oversight">
+            {/* Operational Alerts — reuses the SAME AlertRow + DashboardActionModal
+                Operations uses. Click handlers route through the exact same
+                `handleAlertClick(mode, fallbackPath)` pattern; counts come from
+                the shared ["dashboard", "workflow"] query cache. */}
+            <DashCard>
+              <CardHeader
+                icon={AlertCircle}
+                color="text-orange-600"
+                title="Operational Alerts"
+              />
+              <div className="px-2 py-1.5 space-y-0.5" data-testid="business-alerts-rail">
+                <AlertRow
+                  icon={AlertTriangle}
+                  label="Action Required"
+                  count={actionRequiredCount}
+                  onClick={() =>
+                    handleAlertClick("action_required", resolveDashboardNav("ops.onHold"))
+                  }
+                  urgent={actionRequiredCount > 0}
+                />
+                <AlertRow
+                  icon={Clock}
+                  label="Past Due"
+                  count={pastDueCount}
+                  onClick={() =>
+                    handleAlertClick("scheduling_issues", resolveDashboardNav("alerts.overdueJobs"))
+                  }
+                  urgent={pastDueCount > 0}
+                />
+                <AlertRow
+                  icon={Briefcase}
+                  label="Unscheduled"
+                  count={unscheduledJobsCount}
+                  onClick={() =>
+                    handleAlertClick("scheduling_issues", resolveDashboardNav("jobs.unscheduled"))
+                  }
+                />
+                <AlertRow
+                  icon={Receipt}
+                  label="Ready for Invoice"
+                  count={readyForInvoiceCount}
+                  onClick={() =>
+                    handleAlertClick("ready_to_invoice", resolveDashboardNav("jobs.needsInvoicing"))
+                  }
+                />
+              </div>
+            </DashCard>
+
             {/* Top Outstanding Invoices */}
             <DashCard>
               <CardHeader
@@ -502,6 +633,14 @@ export default function FinancialDashboard() {
         slot={slot}
         onClose={() => setSlot(null)}
       />
+      {/* Canonical alert modal — same one Operations opens. Single modal
+          instance per page; mode switches in place when a different alert
+          row is clicked. */}
+      <DashboardActionModal
+        open={actionModalOpen}
+        onOpenChange={setActionModalOpen}
+        mode={actionModalMode}
+      />
     </div>
   );
 }
@@ -536,6 +675,9 @@ interface CapacityBlockDto {
   endISO: string;
   durationMinutes: number;
   title?: string;
+  /** 2026-04-23: short job/visit description threaded through the
+   *  capacity feed from jobs.summary / jobs.description. */
+  description?: string;
   visitId?: string;
   jobId?: string;
   visitStatus?: string;
@@ -557,11 +699,12 @@ function TodaysScheduleCard({
   onOpenVisit: (state: VisitEditorState) => void;
   onOpenSlot: (slot: QuickCreateSlot) => void;
 }) {
-  // "all" = every tech's booked blocks merged; otherwise the selected
-  // technicianId shows both booked + open slots so the operator can
-  // click into a gap. Default "all" works for Solo (single-tech tenants
-  // will see their own schedule regardless).
-  const [scope, setScope] = useState<string>("all");
+  const [, setLocation] = useLocation();
+  // 2026-04-23: scope is a set of technicianIds. Empty array OR "one item
+  // per tech in the tenant" both render as "All team" (same effective set).
+  // On single-tech tenants the scope control is hidden entirely — the one
+  // tech always shows with the dense single-column view.
+  const [scopeIds, setScopeIds] = useState<string[]>([]);
 
   const capacityQuery = useQuery<CapacityResponseDto>({
     queryKey: ["/api/dashboard/capacity"],
@@ -571,39 +714,76 @@ function TodaysScheduleCard({
   });
 
   const techs = capacityQuery.data?.technicians ?? [];
-  const selectedTech = scope === "all"
-    ? null
-    : techs.find((t) => t.technicianId === scope) ?? null;
+  const isMultiTech = techs.length > 1;
 
-  const rows = useMemo(() => {
-    const out: Array<{ tech: CapacityTechDto; block: CapacityBlockDto }> = [];
-    if (selectedTech) {
-      for (const b of selectedTech.scheduleBlocks) {
-        out.push({ tech: selectedTech, block: b });
-      }
-    } else {
-      for (const t of techs) {
-        for (const b of t.scheduleBlocks) {
-          if (b.kind === "booked") out.push({ tech: t, block: b });
-        }
-      }
+  // Scope resolution:
+  //   solo tenant             → always the one tech (scope control hidden)
+  //   multi-tech, empty scope → every tech (All team)
+  //   multi-tech, full scope  → every tech (same All-team semantics as empty)
+  //   multi-tech, subset      → just the selected techs
+  const isAllTeam =
+    !isMultiTech ||
+    scopeIds.length === 0 ||
+    scopeIds.length === techs.length;
+
+  const activeTechs = useMemo(() => {
+    if (!isMultiTech) return techs;
+    if (isAllTeam) return techs;
+    return techs.filter((t) => scopeIds.includes(t.technicianId));
+  }, [techs, scopeIds, isMultiTech, isAllTeam]);
+
+  // Rendering mode: one tech → dense single-column; >1 tech → columns.
+  const isSingleTechView = activeTechs.length === 1;
+
+  // Compact trigger label for the MultiSelectDropdown button.
+  const scopeLabel = useMemo(() => {
+    if (isAllTeam) return "All team";
+    if (scopeIds.length === 1) {
+      return techs.find((t) => t.technicianId === scopeIds[0])?.name ?? "Team";
     }
-    out.sort((a, b) => a.block.startISO.localeCompare(b.block.startISO));
-    return out;
-  }, [techs, selectedTech]);
+    return `${scopeIds.length} technicians`;
+  }, [isAllTeam, scopeIds, techs]);
 
+  // 2026-04-23: Header suffix reflecting the CURRENT scope so the card
+  // title reads as "Today's Schedule / Team" or "…/ Nadeem Samaha" or
+  // "…/ Mikel Elias, Solomon Rahimi". Long lists truncate after two
+  // names with "+N more" so the header stays single-line at the usual
+  // card width. Solo tenants get no suffix — their schedule isn't
+  // scoped.
+  const scopeHeaderSuffix = useMemo(() => {
+    if (!isMultiTech) return null;
+    if (isAllTeam) return "Team";
+    const names = scopeIds
+      .map((id) => techs.find((t) => t.technicianId === id)?.name)
+      .filter((n): n is string => !!n);
+    if (names.length === 1) return names[0];
+    if (names.length <= 3) return names.join(", ");
+    return `${names.slice(0, 2).join(", ")} +${names.length - 2} more`;
+  }, [isMultiTech, isAllTeam, scopeIds, techs]);
+
+  const toggleTechId = (id: string) => {
+    setScopeIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  };
+  // "All team" clears the set; any individual subsequent pick replaces it.
+  const selectAll = () => setScopeIds([]);
+
+  // Prefer an open slot from the active scope for the Create button's
+  // prefill. Falls back to any active tech + "now" when the day is fully
+  // booked. Always canonical → SlotQuickCreateLauncher handles the rest.
   const firstOpen = useMemo(() => {
-    const pool = selectedTech ? [selectedTech] : techs;
+    const pool = activeTechs.length > 0 ? activeTechs : techs;
     for (const t of pool) {
       for (const b of t.scheduleBlocks) {
         if (b.kind === "open") return { tech: t, block: b };
       }
     }
     return null;
-  }, [techs, selectedTech]);
+  }, [activeTechs, techs]);
 
   const openAdd = () => {
-    const baseTech = firstOpen?.tech ?? selectedTech ?? techs[0];
+    const baseTech = firstOpen?.tech ?? activeTechs[0] ?? techs[0];
     if (!baseTech) return;
     const start = firstOpen?.block ? new Date(firstOpen.block.startISO) : new Date();
     const hh = String(start.getHours()).padStart(2, "0");
@@ -637,37 +817,89 @@ function TodaysScheduleCard({
   };
 
   return (
-    <DashCard className="h-full">
+    // 2026-04-23: no `h-full` — the card height tracks its content, so
+    // short days don't leave a tall empty column under the last visit.
+    <DashCard>
       <div className="px-4 py-2.5 border-b border-[#e2e8f0] dark:border-gray-600 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <CalendarIcon className="h-3.5 w-3.5 text-[#76B054]" />
-          <h3 className="text-sm font-semibold text-[#111827] dark:text-gray-100">
+        <div className="flex items-center gap-2 min-w-0">
+          <CalendarIcon className="h-3.5 w-3.5 text-[#76B054] shrink-0" />
+          <h3 className="text-sm font-semibold text-[#111827] dark:text-gray-100 truncate">
             Today&apos;s Schedule
+            {scopeHeaderSuffix && (
+              <>
+                {" "}
+                <span className="text-xs font-normal text-slate-500">
+                  / {scopeHeaderSuffix}
+                </span>
+              </>
+            )}
           </h3>
         </div>
         <div className="flex items-center gap-2">
-          <select
-            value={scope}
-            onChange={(e) => setScope(e.target.value)}
-            className="h-7 text-xs border border-[#e2e8f0] rounded-md bg-white px-2 focus:outline-none focus:ring-2 focus:ring-[#76B054]/40"
-            data-testid="schedule-scope-filter"
-          >
-            <option value="all">All team</option>
-            {techs.map((t) => (
-              <option key={t.technicianId} value={t.technicianId}>
-                {t.name}
-              </option>
-            ))}
-          </select>
+          {/* 2026-04-23: scope control only renders on multi-tech tenants.
+              Solo tenants see a clean header with just the Create button. */}
+          {isMultiTech && (
+            <MultiSelectDropdown
+              label={scopeLabel}
+              count={isAllTeam ? techs.length : scopeIds.length}
+              total={techs.length}
+              align="right"
+              width="w-60"
+              testId="schedule-scope-filter"
+            >
+              <div className="py-1 max-h-80 overflow-y-auto">
+                <button
+                  type="button"
+                  onClick={selectAll}
+                  className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-slate-50 ${
+                    isAllTeam ? "font-semibold text-[#111827]" : "text-[#4b5563]"
+                  }`}
+                  data-testid="schedule-scope-all"
+                >
+                  <input type="checkbox" readOnly checked={isAllTeam} className="pointer-events-none" />
+                  All team
+                </button>
+                <div className="border-t border-[#e2e8f0] my-1" />
+                {techs.map((t) => {
+                  const checked = !isAllTeam && scopeIds.includes(t.technicianId);
+                  return (
+                    <button
+                      key={t.technicianId}
+                      type="button"
+                      onClick={() => toggleTechId(t.technicianId)}
+                      className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-slate-50 ${
+                        checked ? "font-medium text-[#111827]" : "text-[#4b5563]"
+                      }`}
+                      data-testid={`schedule-scope-${t.technicianId}`}
+                    >
+                      <input type="checkbox" readOnly checked={checked} className="pointer-events-none" />
+                      <span className="truncate">{t.name}</span>
+                    </button>
+                  );
+                })}
+                <div className="border-t border-[#e2e8f0] my-1" />
+                {/* Canonical Manage Team route — /settings/team resolves to
+                    TeamHubPage (see client/src/App.tsx:448). No new route. */}
+                <button
+                  type="button"
+                  onClick={() => setLocation("/settings/team")}
+                  className="w-full text-left px-3 py-1.5 text-xs text-[#76B054] hover:underline font-medium"
+                  data-testid="schedule-manage-team"
+                >
+                  Manage team →
+                </button>
+              </div>
+            </MultiSelectDropdown>
+          )}
           <button
             type="button"
             onClick={openAdd}
             disabled={techs.length === 0}
-            className="inline-flex items-center gap-1 h-7 px-2.5 text-xs font-medium rounded-md bg-[#76B054] text-white hover:bg-[#68a14a] disabled:opacity-50 disabled:cursor-not-allowed"
-            data-testid="schedule-add-job"
+            className="inline-flex items-center gap-1 h-8 px-3 text-xs font-medium rounded-md bg-[#76B054] text-white hover:bg-[#68a14a] disabled:opacity-50 disabled:cursor-not-allowed"
+            data-testid="schedule-create"
           >
-            <Plus className="h-3 w-3" />
-            Add Job
+            <Plus className="h-3.5 w-3.5" />
+            Create
           </button>
         </div>
       </div>
@@ -676,42 +908,125 @@ function TodaysScheduleCard({
           <div className="p-4 space-y-2">
             {[1, 2, 3, 4, 5, 6].map((i) => <Skeleton key={i} className="h-8" />)}
           </div>
-        ) : rows.length === 0 ? (
+        ) : activeTechs.length === 0 ? (
           <div className="p-4">
-            <EmptyState message={selectedTech ? "No scheduled work for this tech today." : "No scheduled work today."} />
+            <EmptyState message="No technicians in the selected scope." />
+          </div>
+        ) : isSingleTechView ? (
+          // ── Dense single-tech view — rich rows with description + duration.
+          //    Same interactions as before: click booked → editor, click
+          //    open slot → quick-create. Time range in the left gutter.
+          //    2026-04-23: no max-height — row stack is content-driven.
+          <div data-testid="schedule-single-tech-view">
+            {activeTechs[0].scheduleBlocks.length === 0 ? (
+              <div className="p-4">
+                <EmptyState message="No scheduled work for this tech today." />
+              </div>
+            ) : (
+              activeTechs[0].scheduleBlocks.map((block, idx, arr) => {
+                const tech = activeTechs[0];
+                const timeRange = formatTimeRange(block.startISO, block.endISO);
+                const isOpen = block.kind === "open";
+                const isLast = idx === arr.length - 1;
+                const duration = formatDurationHours(block.durationMinutes);
+                const clientLabel = block.title ?? "Visit";
+                const primary = isOpen
+                  ? `Open slot · ${duration}`
+                  : block.description
+                    ? `${clientLabel} · ${block.description} · ${duration}`
+                    : `${clientLabel} · ${duration}`;
+                return (
+                  <button
+                    key={`${tech.technicianId}-${block.startISO}-${block.visitId ?? "open"}-${idx}`}
+                    type="button"
+                    onClick={() => handleBlockClick(tech, block)}
+                    className={`w-full text-left px-4 py-2 transition-colors flex items-center gap-3 group ${!isLast ? "border-b border-[#e2e8f0]" : ""} ${
+                      isOpen
+                        ? "bg-emerald-50/40 hover:bg-emerald-50/80"
+                        : "hover:bg-[#F0F5F0]"
+                    }`}
+                    data-testid={`schedule-block-${block.visitId ?? `${tech.technicianId}-${block.startISO}`}`}
+                  >
+                    <div className={`w-24 tabular-nums text-xs font-medium shrink-0 ${isOpen ? "text-emerald-700" : "text-slate-500"}`}>
+                      {timeRange}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className={`text-sm truncate ${isOpen ? "text-emerald-700 font-medium" : "text-[#111827]"}`}>
+                        {primary}
+                      </div>
+                    </div>
+                    <ChevronRight className={`h-3.5 w-3.5 transition-colors ${isOpen ? "text-emerald-600 group-hover:text-emerald-800" : "text-slate-400 group-hover:text-[#111827]"}`} />
+                  </button>
+                );
+              })
+            )}
           </div>
         ) : (
-          <div className="max-h-[520px] overflow-y-auto">
-            {rows.map(({ tech, block }, idx, arr) => {
-              const start = new Date(block.startISO);
-              const hhmm = start.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-              const isOpen = block.kind === "open";
-              const isLast = idx === arr.length - 1;
-              return (
-                <button
-                  key={`${tech.technicianId}-${block.startISO}-${block.visitId ?? "open"}-${idx}`}
-                  type="button"
-                  onClick={() => handleBlockClick(tech, block)}
-                  className={`w-full text-left px-4 py-2 hover:bg-[#F0F5F0] transition-colors flex items-center gap-3 group ${!isLast ? "border-b border-[#e2e8f0]" : ""} ${isOpen ? "bg-slate-50/40" : ""}`}
-                  data-testid={`schedule-block-${block.visitId ?? `${tech.technicianId}-${block.startISO}`}`}
-                >
-                  <div className="w-14 tabular-nums text-xs text-slate-500 font-medium">
-                    {hhmm}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className={`text-sm truncate ${isOpen ? "text-slate-500 italic" : "text-[#111827]"}`}>
-                      {isOpen ? "Open slot" : (block.title ?? "Scheduled visit")}
-                    </div>
-                    <div className="text-xs text-slate-500 truncate">
+          // ── Multi-column team view — one column per active tech, compact
+          //    blocks (time range + company/client only). Description is
+          //    intentionally omitted here; full detail is one click away in
+          //    the canonical visit editor. Horizontal scroll kicks in when
+          //    column count exceeds the card width (~4 columns comfortably).
+          <div
+            className="overflow-x-auto"
+            data-testid="schedule-multi-column-view"
+          >
+            <div className="flex" style={{ minWidth: "min-content" }}>
+              {activeTechs.map((tech, i) => {
+                const isLastCol = i === activeTechs.length - 1;
+                return (
+                  <div
+                    key={tech.technicianId}
+                    className={`flex-none w-[220px] ${!isLastCol ? "border-r border-[#e2e8f0]" : ""}`}
+                  >
+                    {/* 2026-04-23: tech name size bumped from 11px → 13px
+                        for readability. Still one tier smaller than the
+                        card title (text-sm). */}
+                    <div className="px-3 py-2 text-[13px] font-semibold text-[#111827] border-b border-[#e2e8f0] bg-slate-50/50 truncate">
                       {tech.name}
-                      {!isOpen && block.visitStatus ? ` · ${block.visitStatus}` : ""}
-                      {` · ${block.durationMinutes}m`}
+                    </div>
+                    {/* 2026-04-23: content-driven height (no max-h cap) and
+                        a very light bottom divider between blocks so
+                        consecutive booked visits don't blur together. */}
+                    <div className="py-0.5">
+                      {tech.scheduleBlocks.length === 0 ? (
+                        <div className="px-3 py-3 text-[11px] text-slate-500 italic">
+                          No work
+                        </div>
+                      ) : (
+                        tech.scheduleBlocks.map((block, bIdx, bArr) => {
+                          const timeRange = formatTimeRange(block.startISO, block.endISO);
+                          const isOpen = block.kind === "open";
+                          const isLastBlock = bIdx === bArr.length - 1;
+                          return (
+                            <button
+                              key={`${tech.technicianId}-${block.startISO}-${block.visitId ?? "open"}`}
+                              type="button"
+                              onClick={() => handleBlockClick(tech, block)}
+                              className={`w-full text-left px-3 py-2 transition-colors ${
+                                !isLastBlock ? "border-b border-slate-100" : ""
+                              } ${
+                                isOpen
+                                  ? "bg-emerald-50/60 hover:bg-emerald-50"
+                                  : "hover:bg-[#F0F5F0]"
+                              }`}
+                              data-testid={`schedule-block-${block.visitId ?? `${tech.technicianId}-${block.startISO}`}`}
+                            >
+                              <div className={`tabular-nums text-[11px] font-medium ${isOpen ? "text-emerald-700" : "text-slate-500"}`}>
+                                {timeRange}
+                              </div>
+                              <div className={`text-xs truncate ${isOpen ? "text-emerald-700 font-medium" : "text-[#111827]"}`}>
+                                {isOpen ? "Open slot" : (block.title ?? "Visit")}
+                              </div>
+                            </button>
+                          );
+                        })
+                      )}
                     </div>
                   </div>
-                  <ChevronRight className="h-3.5 w-3.5 text-slate-400 group-hover:text-[#111827] transition-colors" />
-                </button>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
         )}
       </div>
@@ -783,4 +1098,21 @@ function RecentPaymentsCard({
       </div>
     </DashCard>
   );
+}
+
+// ---------------------------------------------------------------------------
+// WorkflowSummaryDto — mirrors server/storage/dashboard.ts:58 WorkflowSummary
+// (only the fields the Business Dashboard needs for the alerts rail).
+// Same query key as Operations → shared cache.
+// ---------------------------------------------------------------------------
+
+interface WorkflowSummaryDto {
+  jobs: {
+    overdueCount: number;
+    onHoldCount: number;
+    unscheduledCount: number;
+    requiresInvoicingCount: number;
+    activeCount: number;
+  };
+  invoices: { outstandingCount: number; pastDueCount: number; draftCount: number };
 }

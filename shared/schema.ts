@@ -6081,3 +6081,39 @@ export interface DeliveryAttachmentMetadata {
   /** Present only for `uploaded_image` attachments — references the file row. */
   fileId?: string | null;
 }
+
+// ============================================================================
+// TECHNICIAN CALENDAR TOKENS (Phase 1 — 2026-04-23)
+// ============================================================================
+//
+// Per-technician private calendar subscription secret. Powers the public
+// /calendar/technician/:token.ics feed which external calendar apps
+// (Google / Apple / Outlook) subscribe to. Read-only; app is still the
+// single source of truth for scheduling.
+//
+// One row per user. Rotation overwrites `token`. Disable flips `is_active`.
+// See migrations/2026_04_23_technician_calendar_tokens.sql.
+
+export const technicianCalendarTokens = pgTable(
+  "technician_calendar_tokens",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    token: varchar("token", { length: 64 }).notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+    lastAccessedAt: timestamp("last_accessed_at"),
+    createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at"),
+  },
+  (table) => ({
+    userUq: uniqueIndex("tct_user_uq").on(table.userId),
+    tokenUq: uniqueIndex("tct_token_uq").on(table.token),
+    activeTokenIdx: index("tct_active_token_idx")
+      .on(table.token)
+      .where(sql`is_active`),
+  }),
+);
+
+export type TechnicianCalendarToken = typeof technicianCalendarTokens.$inferSelect;
+export type InsertTechnicianCalendarToken = typeof technicianCalendarTokens.$inferInsert;

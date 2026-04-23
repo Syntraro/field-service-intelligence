@@ -1032,4 +1032,170 @@ router.get(
   })
 );
 
+// ============================================================================
+// Technician Calendar Tokens — Phase 1 (2026-04-23)
+// ============================================================================
+//
+// Per-technician private ICS feed tokens, managed by owners/admins/managers
+// on the Team member detail page. The public read endpoint lives at
+// /calendar/technician/:token.ics (mounted outside /api in
+// server/routes/index.ts). These endpoints only manage the token itself.
+
+function buildFeedUrl(req: AuthedRequest, token: string): string {
+  // Prefer the request's own origin — reverse proxies are trusted because
+  // `app.set('trust proxy', ...)` is already on in the shell. Fall back to
+  // a relative path if origin resolution ever fails.
+  const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol || "https";
+  const host = (req.headers["x-forwarded-host"] as string) || req.get("host");
+  if (!host) return `/calendar/technician/${token}.ics`;
+  return `${proto}://${host}/calendar/technician/${token}.ics`;
+}
+
+/**
+ * GET /api/team/:userId/calendar-token
+ * Returns the current token row (if any). Never returns a disabled token's
+ * feed URL — the UI uses `isActive` to decide whether to show the URL.
+ */
+router.get(
+  "/:userId/calendar-token",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId } = req.params;
+    const companyId = req.companyId!;
+    const { technicianCalendarTokenRepository } = await import("../storage/technicianCalendarTokens");
+
+    const member = await storage.getTeamMember(companyId, userId);
+    if (!member) throw createError(404, "Team member not found");
+
+    const row = await technicianCalendarTokenRepository.getByUserId(companyId, userId);
+    if (!row) {
+      res.json({ token: null, isActive: false, feedUrl: null, lastAccessedAt: null });
+      return;
+    }
+    res.json({
+      token: row.token,
+      isActive: row.isActive,
+      feedUrl: row.isActive ? buildFeedUrl(req, row.token) : null,
+      lastAccessedAt: row.lastAccessedAt,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    });
+  }),
+);
+
+/**
+ * POST /api/team/:userId/calendar-token
+ * Idempotent "make sure there is a token". Creates a fresh row if none
+ * exists; otherwise returns the existing one unchanged.
+ */
+router.post(
+  "/:userId/calendar-token",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId } = req.params;
+    const companyId = req.companyId!;
+    const { technicianCalendarTokenRepository } = await import("../storage/technicianCalendarTokens");
+
+    const member = await storage.getTeamMember(companyId, userId);
+    if (!member) throw createError(404, "Team member not found");
+
+    const row = await technicianCalendarTokenRepository.ensureToken(companyId, userId);
+    res.json({
+      token: row.token,
+      isActive: row.isActive,
+      feedUrl: row.isActive ? buildFeedUrl(req, row.token) : null,
+      lastAccessedAt: row.lastAccessedAt,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    });
+  }),
+);
+
+/**
+ * POST /api/team/:userId/calendar-token/rotate
+ * Regenerate the token. Immediately invalidates any existing subscription
+ * URL. Also re-activates the row if it was disabled — the operator's
+ * intent when pressing "Regenerate" is "I want a new working link".
+ */
+router.post(
+  "/:userId/calendar-token/rotate",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId } = req.params;
+    const companyId = req.companyId!;
+    const { technicianCalendarTokenRepository } = await import("../storage/technicianCalendarTokens");
+
+    const member = await storage.getTeamMember(companyId, userId);
+    if (!member) throw createError(404, "Team member not found");
+
+    const row = await technicianCalendarTokenRepository.rotateToken(companyId, userId);
+    res.json({
+      token: row.token,
+      isActive: row.isActive,
+      feedUrl: row.isActive ? buildFeedUrl(req, row.token) : null,
+      lastAccessedAt: row.lastAccessedAt,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    });
+  }),
+);
+
+/**
+ * POST /api/team/:userId/calendar-token/disable
+ * Flip is_active → false. The token string is preserved so re-enabling
+ * restores the same URL. Rotation remains the "new URL" path.
+ */
+router.post(
+  "/:userId/calendar-token/disable",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId } = req.params;
+    const companyId = req.companyId!;
+    const { technicianCalendarTokenRepository } = await import("../storage/technicianCalendarTokens");
+
+    const member = await storage.getTeamMember(companyId, userId);
+    if (!member) throw createError(404, "Team member not found");
+
+    const row = await technicianCalendarTokenRepository.setActive(companyId, userId, false);
+    if (!row) throw createError(404, "No calendar token exists for this member");
+    res.json({
+      token: row.token,
+      isActive: row.isActive,
+      feedUrl: null,
+      lastAccessedAt: row.lastAccessedAt,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    });
+  }),
+);
+
+/**
+ * POST /api/team/:userId/calendar-token/enable
+ * Flip is_active → true without changing the token string. Lets operators
+ * toggle visibility without rotating the subscription URL.
+ */
+router.post(
+  "/:userId/calendar-token/enable",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId } = req.params;
+    const companyId = req.companyId!;
+    const { technicianCalendarTokenRepository } = await import("../storage/technicianCalendarTokens");
+
+    const member = await storage.getTeamMember(companyId, userId);
+    if (!member) throw createError(404, "Team member not found");
+
+    const row = await technicianCalendarTokenRepository.setActive(companyId, userId, true);
+    if (!row) throw createError(404, "No calendar token exists for this member");
+    res.json({
+      token: row.token,
+      isActive: row.isActive,
+      feedUrl: row.isActive ? buildFeedUrl(req, row.token) : null,
+      lastAccessedAt: row.lastAccessedAt,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    });
+  }),
+);
+
 export default router;

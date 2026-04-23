@@ -43,6 +43,8 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
 import { ArrowLeft, KeyRound, Save, ExternalLink } from "lucide-react";
+// 2026-04-23 Phase 1: external calendar (ICS) subscription management.
+import { CalendarSyncSection } from "@/components/team-hub/CalendarSyncSection";
 import { getMemberDisplayName, getMemberInitials } from "@/lib/displayName";
 import { resolveTechnicianColor } from "@shared/colors";
 
@@ -422,6 +424,9 @@ export default function TeamMemberDetail() {
             </Button>
           </Link>
         </div>
+
+        {/* 2026-04-23 Phase 1: external calendar subscription (read-only ICS feed). */}
+        <CalendarSyncSection userId={member.id} memberFirstName={member.firstName} />
       </div>
 
       <AlertDialog open={deactivateOpen} onOpenChange={setDeactivateOpen}>
