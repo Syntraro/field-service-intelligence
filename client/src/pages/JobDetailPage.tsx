@@ -56,6 +56,11 @@ import JobEquipmentSection from "@/components/JobEquipmentSection";
 import { JobInvoicesCard } from "@/components/JobInvoicesCard";
 import { AddVisitDialog } from "@/components/AddVisitDialog";
 import { VisitEditorLauncher, type VisitEditorState } from "@/components/dispatch/VisitEditorLauncher";
+// 2026-04-24: mandatory single path for every Edit Visit modal opening.
+// JobDetailPage holds the rich context (job detail is already in memory);
+// the adapter fast-paths and returns the partial unchanged. Routing through
+// it keeps the single-adapter contract uniform across every surface.
+import { enrichVisitEditorState } from "@/lib/visitEditorPayloadBuilder";
 import JobNotesSection from "@/components/JobNotesSection";
 import { PartsBillingCard } from "@/components/PartsBillingCard";
 import { JobExpensesCard } from "@/components/JobExpensesCard";
@@ -458,6 +463,11 @@ export default function JobDetailPage() {
   }>({ open: false, mode: "create", entry: null });
   // Visit detail dialog — FIX A: single modal state, initialEdit for active visits
   const [selectedVisitId, setSelectedVisitId] = useState<string | null>(null);
+  // 2026-04-24: hydrated VisitEditorState populated via the canonical
+  // adapter when `selectedVisitId` changes. Consolidates the inline ternary
+  // the launcher mount used to carry — every surface now routes through
+  // `enrichVisitEditorState` before the modal opens.
+  const [visitEditorState, setVisitEditorState] = useState<VisitEditorState | null>(null);
   // visitEditMode removed — EditVisitModal always opens in edit mode
   // Inline job number editing
   const [editingJobNumber, setEditingJobNumber] = useState(false);
@@ -593,6 +603,39 @@ export default function JobDetailPage() {
     isLoading: boolean;
     error: Error | null;
   };
+
+  // 2026-04-24: hydrate `visitEditorState` via the canonical adapter
+  // whenever `selectedVisitId` or the underlying job changes. The inline
+  // ternary that used to live at the VisitEditorLauncher mount has been
+  // replaced by this effect so every Edit Visit modal opening on this page
+  // routes through `enrichVisitEditorState`. The page holds the full job
+  // detail in memory so the adapter fast-paths (no network call) — the
+  // routing is for contract uniformity, not performance.
+  useEffect(() => {
+    if (!selectedVisitId || !job) {
+      setVisitEditorState(null);
+      return;
+    }
+    let cancelled = false;
+    const addressParts = [
+      job.location?.address || job.locationAddress,
+      job.location?.city || job.locationCity,
+    ].filter(Boolean) as string[];
+    enrichVisitEditorState(selectedVisitId, job.id, {
+      customerName: job.parentCompany?.name || job.locationDisplayName || undefined,
+      customerCompanyId: job.parentCompany?.id || job.location?.parentCompanyId || undefined,
+      jobNumber: job.jobNumber,
+      jobSummary: job.summary,
+      locationName: job.location?.companyName || job.locationName || undefined,
+      locationAddress: addressParts.join(", ") || undefined,
+      locationId: job.locationId || undefined,
+    }).then((next) => {
+      if (!cancelled) setVisitEditorState(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedVisitId, job]);
 
   // Phase 11: Fixed job/invoice cross-linking - use correct endpoint
   const { data: jobInvoice } = useQuery<Invoice | null>({
@@ -1636,19 +1679,13 @@ export default function JobDetailPage() {
           mount to Dashboard + DispatchPreview. All three surfaces now open
           visit editing through the same component; there is no per-page
           mount divergence. The launcher + modal consume
-          `useDispatchPreviewMutations` internally. */}
+          `useDispatchPreviewMutations` internally.
+          2026-04-24: the inline ternary that previously composed the state
+          here was moved to a `useEffect` that routes through the canonical
+          `enrichVisitEditorState` adapter. Launcher just reads the hydrated
+          state now — uniform with Dashboard / FinancialDashboard. */}
       <VisitEditorLauncher
-        state={selectedVisitId ? ({
-          jobId: job.id,
-          visitId: selectedVisitId,
-          customerName: job.parentCompany?.name || job.locationDisplayName || undefined,
-          customerCompanyId: job.parentCompany?.id || job.location?.parentCompanyId || undefined,
-          jobNumber: job.jobNumber,
-          jobSummary: job.summary,
-          locationName: job.location?.companyName || job.locationName || undefined,
-          locationAddress: [job.location?.address || job.locationAddress, job.location?.city || job.locationCity].filter(Boolean).join(", ") || undefined,
-          locationId: job.locationId || undefined,
-        } satisfies VisitEditorState) : null}
+        state={visitEditorState}
         onClose={() => setSelectedVisitId(null)}
       />
 

@@ -6,6 +6,77 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### `/platform/login` rendered inside the tenant office shell (bugfix, 2026-04-24)
+
+`AppContent`'s bare-shell whitelist (`isAuthPage`) only matched `/login`, `/signup`, `/request-reset`, `/reset-password`. `/platform/login` fell through to the full tenant `SidebarProvider` shell — header, AppSidebar, company greeting, UniversalSearch, Tasks/Help/More controls were all visible behind the platform login card. The signed-in platform-user branch (which already returned a bare `<Router />`) only fired for sessions where `isPlatformUser` was true; unauthenticated visitors and signed-in tenant users hitting `/platform/login` (or any `/platform/*` redirect target) bypassed it.
+
+**Fix:** added `isPlatformPage = location.startsWith('/platform')` and an early `return <Router />` in `AppContent` covering every `/platform/*` path regardless of session state. The platform console owns its own shell (`PlatformLayout`) inside `<PlatformAuthRoute>`; the tenant office shell never wraps it. The pre-existing platform-user redirect branch was simplified to handle only the non-platform-path case (signed-in platform user landing on `/jobs` etc. → toast + redirect to `/platform/tenants`).
+
+**Files changed:** `client/src/App.tsx` (one new derived flag, one new early return, one simplification).
+
+**Verification:** `npm run check` clean; capability tests still pass (19/19); manual checks all four cases (`/login`, `/platform/login`, `/platform/tenants`, tenant routes) — only the targeted path now changes.
+
+### Changed
+
+#### Edit Visit modal — mandatory single hydration path via `enrichVisitEditorState` (refactor, 2026-04-24)
+
+Every surface that opens the canonical `EditVisitModal` / `VisitEditorLauncher` now routes through `client/src/lib/visitEditorPayloadBuilder.ts` → `enrichVisitEditorState(visitId, jobId, partial?)` before setting modal state. Removes the last opportunity for a new call site to ship a "lean payload → degraded modal" regression.
+
+**Before this change:**
+- `FinancialDashboard.tsx` — compliant (already used the adapter).
+- `DispatchPreview.tsx` — inline-composed a rich payload (`customerName` + `locationId` present); worked, but bypassed the adapter.
+- `JobDetailPage.tsx` — inline-composed a rich payload in the launcher mount ternary; worked, but bypassed the adapter.
+- `Dashboard.tsx` (Operations, via `TodaysOperationsCard.onEditVisit`) — shipped `{ jobId, visitId, customerName: title }` only. No `locationId` → modal's Equipment picker fell back to "Select location first" on first paint.
+
+**After this change:** all four surfaces call `enrichVisitEditorState(...)` before `setState(...)`. Dispatch + JobDetailPage hit the adapter's fast-path (both pass `customerName` + `locationId`) so their user-perceived latency is unchanged. Dashboard's Operations tab now follows the slow-path (adapter fetches `GET /api/jobs/:jobId`) and the modal's header + Equipment picker hydrate identically to the dispatch/JobDetailPage experience.
+
+**Files changed:**
+- MODIFIED — `client/src/pages/DispatchPreview.tsx` — `handleSelectVisit` becomes async; constructs `partial` from `DispatchVisit` and routes through the adapter.
+- MODIFIED — `client/src/pages/JobDetailPage.tsx` — new `visitEditorState` useState; `useEffect` on `selectedVisitId` / `job` hydrates via the adapter; launcher mount simplified to `state={visitEditorState}`.
+- MODIFIED — `client/src/pages/Dashboard.tsx` — `onEditVisit` callback becomes async; passes `{ customerName: title }` as partial so `TodaysOperationsCard`'s label flows in while the adapter fills the rest.
+
+**What stayed the same:**
+- `EditVisitModal`, `VisitEditorLauncher`, and the adapter's contract — zero changes.
+- `FinancialDashboard.tsx` was already routing through the adapter from the prior fix.
+- No new routes, no schema changes, no modal logic touched, no dashboard-specific or dispatch-specific branching introduced. The `partial` overrides in the adapter preserve dispatch's already-composed address formatting and any call-site display overrides.
+
+**Verification:**
+- [x] `npm run check` clean.
+- [ ] Open a booked visit from `/dispatch-preview` — modal renders as before (fast-path no-op; no perceptible latency).
+- [ ] Open the same visit from `/jobs/:id` — modal renders as before (fast-path no-op).
+- [ ] Open a booked visit from the Operations tab's Today's Operations workload rail — modal now shows populated header + Equipment picker (previously degraded).
+- [ ] Open a booked visit from the Business Dashboard schedule card — unchanged (was already compliant).
+
+### Fixed
+
+#### Business Dashboard — Edit Visit modal hydration when opened from a schedule row (bug fix, 2026-04-24)
+
+Clicking a booked visit on the Business Dashboard's schedule card opened the canonical Edit Visit modal but the header showed a generic `Job #`, visit instructions were empty, and the Equipment section showed `Select location first`. Opening the SAME visit from the dispatch board hydrated everything correctly. Same modal, same launcher — different caller payload.
+
+**Root cause.** `VisitEditorLauncher` is a pure pass-through to `EditVisitModal` (`client/src/components/dispatch/VisitEditorLauncher.tsx:40-62`). The modal reads header fields (`customerName`, `customerCompanyId`, `jobNumber`, `jobSummary`, `locationName`) and the Equipment-picker trigger (`locationId`) DIRECTLY from props — it does not self-fetch them when they are absent. Dispatch's `handleSelectVisit` (`client/src/pages/DispatchPreview.tsx:1142-1162`) passes the full context from a `DispatchVisit` hydrated by `/api/calendar`. The dashboard's `handleBlockClick` (`client/src/pages/FinancialDashboard.tsx`) was only passing `{ visitId, jobId }` because the capacity feed (`server/storage/capacity.ts`) intentionally ships a lean `ScheduleBlock` tuned for aggregation, not modal hydration. With the prop-driven fields undefined, the modal rendered its degraded "lite" header + the equipment picker silently bailed.
+
+**Fix.** New shared adapter `client/src/lib/visitEditorPayloadBuilder.ts` exports `enrichVisitEditorState(visitId, jobId, partial?)`:
+- **Fast path** — when `partial` already contains `customerName` + `locationId` (dispatch's case), the adapter returns `{ visitId, jobId, ...partial }` unchanged. Zero network, zero latency added to dispatch.
+- **Slow path** — when only `{ visitId, jobId }` is available (dashboard's case), the adapter fetches the canonical `GET /api/jobs/:jobId` detail (`JobHeaderDetail`, `server/storage/jobsFeed.ts:119`) and composes the full `VisitEditorState` (customer from `parentCompany.name` with `location.companyName` fallback, address composed from `locationAddress` + `locationCity`, etc.).
+- **Failure** — on fetch error, the adapter returns the minimal `{ visitId, jobId, ...partial }` so the modal still opens. That's the pre-fix "lite" behavior — no regression vs. before, simply no improvement for that one click. Development logs the error.
+
+Dashboard `handleBlockClick` updated to `async` and calls the adapter before forwarding to the launcher. Dispatch call site untouched — its payload already hits the fast path.
+
+**What stayed canonical:** one `EditVisitModal` component, one `VisitEditorLauncher`, one `/api/jobs/:jobId` endpoint, one `DashboardActionModal` ecosystem. No duplicate modal, no dashboard-specific editor, no parallel route, no hidden fallback labels. The capacity feed is unchanged — keeping it lean preserves the aggregation-only contract; modal hydration is the adapter's job.
+
+**Files changed:**
+- NEW — `client/src/lib/visitEditorPayloadBuilder.ts` — shared hydration adapter
+- MODIFIED — `client/src/pages/FinancialDashboard.tsx` — `handleBlockClick` async + adapter call
+
+**Verification:**
+- [x] `npm run check` clean.
+- [ ] Open a visit from the dispatch board — modal header shows customer, job number, location; equipment picker lists the location's equipment; instructions populate.
+- [ ] Open the SAME visit from the Business Dashboard schedule card — identical populated modal (customer, job #, location, equipment, instructions).
+- [ ] Open an open slot from the dashboard — `SlotQuickCreateLauncher` still opens (unchanged).
+- [ ] On a slow network, verify the ~100-300ms delay between clicking a dashboard booked row and the modal opening is acceptable (single canonical `/api/jobs/:jobId` fetch).
+
 ### Changed
 
 #### Internal Console Separation — Revised Phase 1: capability-based access inside a single platform console (refactor, 2026-04-22)

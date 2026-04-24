@@ -61,6 +61,12 @@ import { resolveDashboardNav } from "@/lib/dashboardNavigation";
 // 2026-04-23: canonical trigger+popover shell shared with DispatchFiltersBar
 // and TodaysOperationsCard. Generic children — we own what's inside.
 import { MultiSelectDropdown } from "@/components/MultiSelectDropdown";
+// 2026-04-24: shared adapter that fills in the prop fields the canonical
+// Edit Visit modal reads (customerName, jobNumber, locationId, ...) when
+// the caller only holds visitId + jobId. Dispatch already passes the full
+// payload and hits the adapter's fast-path no-op; the dashboard takes the
+// fetch path so its click hydrates the modal identically.
+import { enrichVisitEditorState } from "@/lib/visitEditorPayloadBuilder";
 
 // ---------------------------------------------------------------------------
 // Types — mirror server/storage/dashboard.ts FinancialSummary
@@ -797,9 +803,14 @@ function TodaysScheduleCard({
     });
   };
 
-  const handleBlockClick = (tech: CapacityTechDto, block: CapacityBlockDto) => {
+  const handleBlockClick = async (tech: CapacityTechDto, block: CapacityBlockDto) => {
     if (block.kind === "booked" && block.visitId && block.jobId) {
-      onOpenVisit({ visitId: block.visitId, jobId: block.jobId });
+      // 2026-04-24: hydrate the Edit Visit modal's prop fields via the
+      // canonical adapter. The capacity feed ships visitId + jobId only;
+      // without this the modal renders a generic "Job #" header and an
+      // empty "Select location first" equipment section.
+      const state = await enrichVisitEditorState(block.visitId, block.jobId);
+      onOpenVisit(state);
       return;
     }
     if (block.kind === "open") {

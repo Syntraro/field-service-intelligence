@@ -697,6 +697,13 @@ function AppContent() {
   const isAuthPage = ['/login', '/signup', '/request-reset', '/reset-password'].includes(location);
   const isPortalPage = location.startsWith('/portal');
   const isTechnicianPage = location.startsWith('/tech'); // Restored 2026-04-03 for technician preview
+  // 2026-04-24 routing fix: ALL /platform/* paths render outside the tenant
+  // shell. Previously only signed-in platform users got a bare shell (via the
+  // isPlatformUser branch below); unauthenticated visitors and signed-in
+  // tenant users hitting /platform/login were wrapped in the tenant header +
+  // sidebar. The platform console owns its own shell (PlatformLayout) and
+  // must never be composed inside the tenant office shell.
+  const isPlatformPage = location.startsWith('/platform');
   const isPlatformUser = isPlatformRole(user?.role);
 
   // Realtime: single SSE subscription for the entire authenticated office app.
@@ -724,30 +731,29 @@ function AppContent() {
   });
   const companyDisplayName = companySettings?.companyName || "";
 
+  // 2026-04-24 routing fix: any /platform/* path renders bare. /platform/login
+  // is its own standalone surface; /platform/* protected routes mount their
+  // own PlatformLayout (header + nav) inside <PlatformAuthRoute>. The tenant
+  // shell never wraps either case. This handles unauthenticated visitors AND
+  // signed-in tenant users; the isPlatformUser branch below still handles
+  // signed-in platform users who hit a non-platform tenant path.
+  if (isPlatformPage) {
+    return <Router />;
+  }
+
   // Security/isolation fix: platform-role users must NEVER mount the tenant
-  // shell (tenant header, AppSidebar, Tasks badge, UniversalSearch). They
-  // are redirected into the canonical Ops Portal and render a minimal shell.
-  // This conditional return comes AFTER all hooks above so React's
+  // shell (tenant header, AppSidebar, Tasks badge, UniversalSearch). When
+  // they land on a non-platform path we redirect into the canonical Ops
+  // Portal. This conditional return comes AFTER all hooks above so React's
   // rules-of-hooks stay intact.
   if (isPlatformUser && !isAuthPage && !isPortalPage && !isTechnicianPage) {
-    if (!location.startsWith("/platform")) {
-      // One-time toast so the redirect isn't silent on first visit.
-      toast({
-        title: "Platform Ops portal",
-        description: "Tenant views are not available here.",
-      });
-      setLocation("/platform/tenants");
-      return null;
-    }
-    // Consistency sprint (2026-04-16): do NOT mount <ImpersonationBanner />
-    // here — it queries /api/admin/impersonate/status which is
-    // tenant-scoped and 403s for platform users, leaking one audit row
-    // per platform session. During an actual accessMode='impersonation'
-    // session, req.user is swapped to the tenant user and this branch
-    // is never reached; the tenant shell renders the banner. For
-    // read-only support sessions, the session status is visible on
-    // /platform/support-sessions. No tenant-scoped query fires here.
-    return <Router />;
+    // One-time toast so the redirect isn't silent on first visit.
+    toast({
+      title: "Platform Ops portal",
+      description: "Tenant views are not available here.",
+    });
+    setLocation("/platform/tenants");
+    return null;
   }
 
   // Portal pages use a completely separate layout and auth

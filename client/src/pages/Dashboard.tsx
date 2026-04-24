@@ -36,6 +36,12 @@ import {
   SlotQuickCreateLauncher,
   type QuickCreateSlot,
 } from "@/components/dispatch/SlotQuickCreateLauncher";
+// 2026-04-24: mandatory single path for every Edit Visit modal opening.
+// Fast-paths rich payloads (callers with customerName + locationId) and
+// slow-paths lean payloads (fetches GET /api/jobs/:jobId). Every surface
+// that opens the modal must route through this adapter before setting
+// modal state — no exceptions.
+import { enrichVisitEditorState } from "@/lib/visitEditorPayloadBuilder";
 // ============================================================================
 // Types
 // ============================================================================
@@ -245,9 +251,17 @@ export default function Dashboard() {
                 one canonical drill-down for both surfaces. */}
             <TodaysOperationsCard
               onOpenActionModal={openActionModal}
-              onEditVisit={({ jobId, visitId, title }) =>
-                setEditorState({ jobId, visitId, customerName: title })
-              }
+              onEditVisit={async ({ jobId, visitId, title }) => {
+                // Route through the canonical adapter so the modal hydrates
+                // the same way it does from dispatch / JobDetailPage. `title`
+                // (customer/location label from the capacity feed) flows in
+                // as partial context; the adapter fills everything else from
+                // GET /api/jobs/:jobId.
+                const state = await enrichVisitEditorState(visitId, jobId, {
+                  customerName: title,
+                });
+                setEditorState(state);
+              }}
               onCreateInSlot={(s) => setSlot({
                 technicianId: s.technicianId,
                 technicianName: s.technicianName,

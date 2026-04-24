@@ -62,6 +62,11 @@ import {
   SlotQuickCreateLauncher,
   type QuickCreateSlot,
 } from "@/components/dispatch/SlotQuickCreateLauncher";
+// 2026-04-24: mandatory single path for every Edit Visit modal opening.
+// DispatchPreview passes a fully hydrated payload from DispatchVisit (has
+// customerName + locationId) so the adapter hits the fast-path no-op —
+// zero network cost, uniform contract across every surface.
+import { enrichVisitEditorState } from "@/lib/visitEditorPayloadBuilder";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -1139,16 +1144,18 @@ export default function DispatchPreview() {
   // Both scheduled (kind="visit") and unscheduled (kind="backlog") items can carry
   // a visitId. Items without a visitId (rare edge case: no active visit exists)
   // are not actionable — the user needs to schedule the job first.
-  const handleSelectVisit = useCallback((visit: DispatchVisit) => {
+  const handleSelectVisit = useCallback(async (visit: DispatchVisit) => {
     setSelectedTaskId(null);
     const effectiveVisitId = visit.visitId;
     if (effectiveVisitId) {
-      // Open canonical EditVisitModal directly with visit identity + display context
+      // 2026-04-24: ALWAYS route through the canonical adapter so this page
+      // obeys the same hydration contract as Dashboard / JobDetailPage. The
+      // DispatchVisit payload already carries customerName + locationId, so
+      // the adapter fast-paths and returns the partial unchanged — zero
+      // network cost, uniform contract, no dispatch-specific branching.
       // 2026-03-23: Include location context for modal header
       const addressParts = [visit.locationAddress, visit.locationCity, visit.locationProvinceState].filter(Boolean);
-      setVisitEditorState({
-        visitId: effectiveVisitId,
-        jobId: visit.jobId,
+      const state = await enrichVisitEditorState(effectiveVisitId, visit.jobId, {
         customerName: visit.customerName,
         customerCompanyId: visit.customerCompanyId || undefined,
         jobNumber: visit.jobNumber,
@@ -1157,6 +1164,7 @@ export default function DispatchPreview() {
         locationAddress: addressParts.join(", "),
         locationId: visit.locationId || undefined,
       });
+      setVisitEditorState(state);
     }
     // Items without a visitId: no-op (schedule the job via drag-to-lane first)
   }, []);
