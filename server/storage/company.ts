@@ -22,6 +22,8 @@ const PREFERENCE_KEYS = new Set([
   "invoiceRemindersEnabled",
   "invoiceReminderFirstDelayDays",
   "invoiceReminderRepeatEveryDays",
+  // 2026-04-26: default scheduling buffer.
+  "defaultSchedulingBufferMinutes",
 ]);
 
 export interface CompanyProfile {

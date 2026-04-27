@@ -10,7 +10,7 @@ import { Link } from "wouter";
 import { ArrowLeft, Save } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -38,8 +38,25 @@ interface BusinessHoursResponse {
   hours: BusinessHourDay[];
 }
 
+interface CompanySettingsResponse {
+  defaultSchedulingBufferMinutes?: number;
+  [key: string]: unknown;
+}
+
 // Day names indexed by dayOfWeek (0=Sunday)
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+// Scheduling buffer pill options. DB CHECK constraint allows 0..240; UI exposes
+// the seven values most tenants will actually want.
+const BUFFER_OPTIONS: { value: number; label: string }[] = [
+  { value: 0, label: "None" },
+  { value: 15, label: "15m" },
+  { value: 30, label: "30m" },
+  { value: 45, label: "45m" },
+  { value: 60, label: "1hr" },
+  { value: 90, label: "1.5hr" },
+  { value: 120, label: "2hr" },
+];
 
 // ============================================================================
 // Time Utilities
@@ -138,6 +155,36 @@ export default function BusinessHoursSettingsPage() {
       toast({
         title: "Failed to save",
         description: error.message || "Please check your settings and try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // ─────────────── Default scheduling buffer ───────────────
+  // 2026-04-26: separate read/write through /api/company-settings (the
+  // canonical tenant-preferences endpoint). Buffer extends the scheduled
+  // block on every newly created job/visit; work duration stays as-picked.
+  const { data: settingsData } = useQuery<CompanySettingsResponse>({
+    queryKey: ["/api/company-settings"],
+    staleTime: 5 * 60 * 1000,
+  });
+  const bufferMinutes = settingsData?.defaultSchedulingBufferMinutes ?? 0;
+
+  const bufferMutation = useMutation({
+    mutationFn: (next: number) =>
+      apiRequest("/api/company-settings", {
+        method: "PUT",
+        body: JSON.stringify({ defaultSchedulingBufferMinutes: next }),
+      }),
+    onSuccess: (result: any) => {
+      queryClient.setQueryData(["/api/company-settings"], result);
+      queryClient.invalidateQueries({ queryKey: ["/api/company-settings"] });
+      toast({ title: "Scheduling buffer saved" });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Failed to save buffer",
+        description: error.message || "Please try again.",
         variant: "destructive",
       });
     },
@@ -316,6 +363,43 @@ export default function BusinessHoursSettingsPage() {
               <Save className="h-4 w-4 mr-1.5" />
               {updateMutation.isPending ? "Saving..." : "Save"}
             </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Default Scheduling Buffer Card */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base" data-testid="text-buffer-title">Default Scheduling Buffer</CardTitle>
+          <CardDescription>
+            Extra time added to every newly scheduled job and visit on top of the
+            chosen work duration. Useful for travel, paperwork, or setup. Work
+            duration is unchanged — only the scheduled block grows.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Default scheduling buffer">
+            {BUFFER_OPTIONS.map((opt) => {
+              const selected = bufferMinutes === opt.value;
+              return (
+                <Button
+                  key={opt.value}
+                  type="button"
+                  size="sm"
+                  variant={selected ? "default" : "outline"}
+                  role="radio"
+                  aria-checked={selected}
+                  disabled={bufferMutation.isPending || (selected && !bufferMutation.isPending)}
+                  onClick={() => {
+                    if (opt.value === bufferMinutes) return;
+                    bufferMutation.mutate(opt.value);
+                  }}
+                  data-testid={`button-buffer-${opt.value}`}
+                >
+                  {opt.label}
+                </Button>
+              );
+            })}
           </div>
         </CardContent>
       </Card>

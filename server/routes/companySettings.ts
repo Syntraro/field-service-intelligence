@@ -50,6 +50,9 @@ const updateCompanySettingsSchema = z.object({
   invoiceRemindersEnabled: z.boolean().optional(),
   invoiceReminderFirstDelayDays: z.number().int().min(1).max(90).optional(),
   invoiceReminderRepeatEveryDays: z.number().int().min(1).max(90).optional(),
+  // 2026-04-26: default scheduling buffer (minutes). Range mirrors the DB
+  // CHECK constraint cs_default_scheduling_buffer_range.
+  defaultSchedulingBufferMinutes: z.number().int().min(0).max(240).optional(),
 });
 
 const PROFILE_KEYS = [
@@ -74,6 +77,8 @@ const PREFERENCE_KEYS = [
   "invoiceRemindersEnabled",
   "invoiceReminderFirstDelayDays",
   "invoiceReminderRepeatEveryDays",
+  // 2026-04-26: default scheduling buffer.
+  "defaultSchedulingBufferMinutes",
 ] as const;
 
 type ProfileKey = (typeof PROFILE_KEYS)[number];

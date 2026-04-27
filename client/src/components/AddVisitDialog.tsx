@@ -22,6 +22,7 @@ import { useToast } from "@/hooks/use-toast";
 // EditVisitModal / VisitEditorLauncher use. No bespoke `apiRequest` body
 // assembly, no one-off invalidation helpers, no alternate payload shape.
 import { useDispatchPreviewMutations } from "@/components/dispatch/useDispatchPreviewMutations";
+import { useDefaultSchedulingBuffer, formatScheduledBlockSummary } from "@/hooks/useDefaultSchedulingBuffer";
 
 interface AddVisitDialogProps {
   jobId: string;
@@ -53,6 +54,8 @@ export function AddVisitDialog({
   const { toast } = useToast();
   // Canonical schedule mutation — same hook EditVisitModal / VisitEditorLauncher use.
   const { scheduleVisit, savingIds } = useDispatchPreviewMutations();
+  // 2026-04-26: tenant default buffer extends scheduledEnd only.
+  const defaultBufferMinutes = useDefaultSchedulingBuffer();
   const [scheduledDate, setScheduledDate] = useState("");
   const [scheduledTime, setScheduledTime] = useState("09:00");
   const [estimatedDuration, setEstimatedDuration] = useState("60");
@@ -89,7 +92,11 @@ export function AddVisitDialog({
     // converts to correct UTC (matches EditVisitModal pattern).
     const start = new Date(`${scheduledDate}T${scheduledTime}:00`);
     const durationMinutes = parseInt(estimatedDuration, 10);
-    const end = new Date(start.getTime() + durationMinutes * 60_000);
+    // Work duration stays as the user picked; the scheduled block adds the
+    // tenant default buffer so calendar conflicts honour the same window
+    // that gets persisted server-side.
+    const buffer = Math.max(0, defaultBufferMinutes | 0);
+    const end = new Date(start.getTime() + (durationMinutes + buffer) * 60_000);
 
     setSubmitting(true);
     try {
@@ -187,6 +194,17 @@ export function AddVisitDialog({
                 required
                 data-testid="input-visit-duration"
               />
+              {(() => {
+                const summary = formatScheduledBlockSummary(
+                  parseInt(estimatedDuration || "0", 10) || 0,
+                  defaultBufferMinutes,
+                );
+                return summary ? (
+                  <p className="text-xs text-muted-foreground mt-1" data-testid="text-buffer-hint">
+                    {summary}
+                  </p>
+                ) : null;
+              })()}
             </div>
             <div>
               {/* 2026-04-12 UI consistency: canonical visit team assignment —

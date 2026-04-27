@@ -91,20 +91,56 @@ router.get("/pm-due-instances", asyncHandler(async (req: AuthedRequest, res: Res
 }));
 
 /**
- * GET /api/dashboard/capacity
+ * GET /api/dashboard/capacity[?date=YYYY-MM-DD]
  *
- * Returns per-technician "remaining capacity today" — one primary open slot
- * per active technician plus total remaining available minutes. Powers the
- * "Today's Capacity" card on the dashboard.
+ * Returns per-technician capacity for a target day. Without `date`, defaults
+ * to today (preserving the original Dashboard "Today's Capacity" card
+ * behavior). With `date`, returns capacity for that calendar day in the
+ * company's timezone — used by the Create New Job modal so "Find next
+ * available" and per-tech availability suggestions work for tomorrow / a
+ * week from now, not just today.
  *
  * Reuses canonical sources (no duplicate scheduling logic): workingHours
  * table, companyBusinessHours fallback, schedulable-tech filter, and the
- * same visit query the calendar + dispatch board use.
+ * same visit query the calendar + dispatch board use. The `?date` path
+ * threads a mid-day anchor for the requested YMD into `getTodayCapacity`'s
+ * existing `now` parameter — that single Date already drives the
+ * `getStartOfDayInTimezone` / `getStartOfNextDayInTimezone` window math, so
+ * no new code paths are added inside the storage layer.
  */
 router.get("/capacity", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
-  const capacity = await getTodayCapacity(companyId);
+  const dateParam = typeof req.query.date === "string" ? req.query.date : undefined;
+  const anchor = dateParam ? buildCapacityDateAnchor(dateParam) : undefined;
+  // Pass `anchor` as the `now` argument when present. `getTodayCapacity`
+  // already uses `now` solely to derive the day window (and to compute
+  // its display-only state/slot fields, which the client's
+  // `findNextAvailableSlot` ignores). Today behavior is unchanged.
+  const capacity = anchor
+    ? await getTodayCapacity(companyId, anchor)
+    : await getTodayCapacity(companyId);
   res.json(capacity);
 }));
+
+/**
+ * Build a Date that lands inside the requested calendar day for any IANA
+ * timezone within ±14h of UTC. Noon UTC is the stable anchor for offsets
+ * ≤ ±12h; for the handful of zones beyond (Pacific/Kiritimati = +14,
+ * Pacific/Apia = +13, etc.) noon UTC may roll into the next/prior local
+ * day — we then nudge by ±24h. The result is passed to
+ * `getStartOfDayInTimezone(now, tz)` which collapses any in-day instant
+ * to the canonical UTC midnight-in-tz.
+ *
+ * Returns the noon-UTC fallback when the date string is malformed; the
+ * caller's date-format validation in storage will surface that as a 400
+ * via Drizzle/zod elsewhere if needed. We deliberately keep this lenient
+ * — invalid dates produce the SAME response as today, not an opaque crash.
+ */
+function buildCapacityDateAnchor(dateYmd: string): Date {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateYmd)) return new Date();
+  const noonUTC = new Date(`${dateYmd}T12:00:00.000Z`);
+  if (Number.isNaN(noonUTC.getTime())) return new Date();
+  return noonUTC;
+}
 
 export default router;

@@ -712,14 +712,14 @@ function AppContent() {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [newQuoteModalOpen, setNewQuoteModalOpen] = useState(false);
   // 2026-04-15: New invoice entry modal. Replaces the initial
-  // client-selection page step for the header "New" + Universal
-  // Search entry flows. The /invoices/new route is preserved for
-  // the InvoicesListPage link and any direct URL entry.
+  // client-selection page step for the header "New" entry flow.
+  // The /invoices/new route is preserved for the InvoicesListPage
+  // link and any direct URL entry.
   const [newInvoiceModalOpen, setNewInvoiceModalOpen] = useState(false);
   // 2026-04-26: Create Maintenance Plan chooser modal. Replaces direct
-  // navigation to /pm/new from the top-bar Quick Create + UniversalSearch
-  // so users can pick From Scratch / Use Template / Duplicate before
-  // landing in the wizard. /pm/new remains the canonical create surface.
+  // navigation to /pm/new from the top-bar "+ New" dropdown so users
+  // can pick From Scratch / Use Template / Duplicate before landing
+  // in the wizard. /pm/new remains the canonical create surface.
   const [createPmDialogOpen, setCreatePmDialogOpen] = useState(false);
 
   const isAuthPage = ['/login', '/signup', '/request-reset', '/reset-password'].includes(location);
@@ -851,23 +851,10 @@ function AppContent() {
           {/* Spacer pushes search + actions to the right */}
           <div className="flex-1" />
 
-          {/* Search — right-aligned, before action controls */}
-          {/* 2026-04-15: Quick Actions in UniversalSearch are an exact
-              mirror of the header "New" dropdown below. Each callback
-              here MUST match the corresponding DropdownMenuItem's
-              onClick verbatim — not a similar route, not a list page,
-              the same setter/route the "New" menu uses. */}
-          <UniversalSearch
-            onCreateJob={() => openCreate("job")}
-            onCreateClient={() => setAddClientModalOpen(true)}
-            onCreateInvoice={() => setNewInvoiceModalOpen(true)}
-            // Quote entry opens the unified NewQuoteModal directly.
-            // Template selection is inline inside that modal; there
-            // is no longer a separate chooser step.
-            onCreateQuote={() => setNewQuoteModalOpen(true)}
-            onCreateTask={() => openCreate("task")}
-            onCreateMaintenancePlan={() => setCreatePmDialogOpen(true)}
-          />
+          {/* Search — right-aligned, before action controls.
+              2026-04-26: search is search-only. Creation flows live
+              exclusively under the header "+ New" dropdown below. */}
+          <UniversalSearch />
 
           {/* Right: Tasks popover + Quick Create dropdown + More menu */}
           {!isTechnicianPage && (
@@ -1069,10 +1056,10 @@ function AppContent() {
       />
       {/* 2026-04-26: Canonical "+ New" entry — Job / Task / Supplier Visit
           tabs in one compact modal. Replaces the separate QuickAddJobDialog
-          + TaskDialog mounts. The header dropdown, UniversalSearch, and any
-          other surface-level entry point all flow through this single mount
-          via openCreate(tab). Standalone QuickAddJobDialog/TaskDialog mounts
-          on detail pages still own their EDIT flows; this only consolidates
+          + TaskDialog mounts. The header "+ New" dropdown is the only
+          surface-level entry point; it flows through this single mount via
+          openCreate(tab). Standalone QuickAddJobDialog/TaskDialog mounts on
+          detail pages still own their EDIT flows; this only consolidates
           CREATE. */}
       <CreateNewDialog
         open={createNewOpen}

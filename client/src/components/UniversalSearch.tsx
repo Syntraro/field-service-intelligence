@@ -1,12 +1,14 @@
 /**
- * UniversalSearch — Command Palette + Global Search
- *
- * Combines quick actions, navigation shortcuts, and the existing data search
- * into a single keyboard-driven command palette (Linear / Raycast style).
+ * UniversalSearch — Search bar + navigation command palette.
  *
  * Trigger: click the header search bar, or press Cmd+K / Ctrl+K.
- * Sections: Quick Actions → Navigation → Search Results (ranked in that order).
- * Preserves all original search behavior (debounced /api/search, grouped results).
+ * Sections: Navigation → Search Results.
+ * Debounced /api/search, grouped results.
+ *
+ * 2026-04-26: removed the "Quick Actions" creation entries
+ * (Create Job/Client/Invoice/Quote/Task/Maintenance Plan). The header
+ * "+ New" dropdown is the single canonical creation entry point;
+ * mirroring it in search was redundant noise.
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
@@ -15,8 +17,8 @@ import { useSurfaceController } from "@/hooks/useSurfaceController";
 import { getClientDisplayName } from "@shared/clientDisplayName";
 import {
   Search, Loader2, Briefcase, FileText, Building2, MapPin, Truck, UserCircle,
-  Plus, LayoutDashboard, LayoutGrid, ClipboardList, Receipt, FileCheck,
-  Users, Wrench, Settings, Shield, Zap,
+  LayoutDashboard, LayoutGrid, ClipboardList, Receipt, FileCheck,
+  Users, Wrench, Settings, Shield,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -44,80 +46,48 @@ interface SearchResponse {
   query: string;
 }
 
-/** A static command entry (quick action or navigation shortcut) */
+/** A static navigation shortcut row */
 interface CommandItem {
   id: string;
   label: string;
   /** Searchable keywords (lowercase) — label is always searched too */
   keywords: string[];
   icon: React.ComponentType<{ className?: string }>;
-  section: "action" | "navigation";
-  route?: string;
-  /** If provided, called instead of navigating */
-  action?: () => void;
+  route: string;
 }
 
-/** Unified palette row — either a command or a search result */
+/** Unified palette row — either a navigation command or a search result */
 type PaletteItem =
   | { kind: "command"; item: CommandItem }
   | { kind: "search"; item: SearchResult };
 
 // ========================================
-// STATIC COMMANDS
+// STATIC NAVIGATION COMMANDS
 // ========================================
 
-/** Build static commands — create actions use runtime callbacks when provided
- *
- * 2026-04-15 — Quick Actions are an exact mirror of the header "New"
- * dropdown (App.tsx). Each action here must invoke the same code path
- * the corresponding "New" menu item uses. Order matches the "New"
- * dropdown verbatim.
- *
- *   New Job          → setAddJobModalOpen(true)        → onCreateJob
- *   New Client       → setAddClientModalOpen(true)     → onCreateClient
- *   New Invoice      → setNewInvoiceModalOpen(true)    → onCreateInvoice
- *   New Quote        → setQuoteChooserOpen(true)       → onCreateQuote
- *   New Task         → setNewTaskOpen(true)            → onCreateTask
- *   Create Maintenance Plan → setLocation("/pm/new")    → route
- *
- * Maintenance Plan stays as a `route` entry because the "New" dropdown
- * itself uses `setLocation` — reusing the route is the canonical path.
+/**
+ * Navigation shortcuts. Surface only when the user types a query —
+ * the canonical creation entry point is the header "+ New" dropdown
+ * in App.tsx, not this palette.
  */
-function buildCommands(callbacks: {
-  onCreateJob?: () => void;
-  onCreateClient?: () => void;
-  onCreateInvoice?: () => void;
-  onCreateQuote?: () => void;
-  onCreateTask?: () => void;
-  onCreateMaintenancePlan?: () => void;
-}): CommandItem[] {
-  return [
-    // Quick Actions — true create commands only (navigation lives in sidebar)
-    { id: "create-job",         label: "Create Job",         keywords: ["new job", "add job", "create work order"], icon: Plus, section: "action", action: callbacks.onCreateJob },
-    { id: "create-client",      label: "Create Client",      keywords: ["new client", "add client", "new customer", "add customer"], icon: Plus, section: "action", action: callbacks.onCreateClient },
-    { id: "create-invoice",     label: "Create Invoice",     keywords: ["new invoice", "add invoice", "bill"], icon: Plus, section: "action", action: callbacks.onCreateInvoice },
-    { id: "create-quote",       label: "Create Quote",       keywords: ["new quote", "add quote", "estimate"], icon: Plus, section: "action", action: callbacks.onCreateQuote },
-    { id: "create-task",        label: "Create Task",        keywords: ["new task", "add task", "supplier visit"], icon: Plus, section: "action", action: callbacks.onCreateTask },
-    { id: "create-pm-contract", label: "Create Maintenance Plan", keywords: ["new contract", "add contract", "pm contract", "maintenance plan", "preventive maintenance"], icon: Plus, section: "action", action: callbacks.onCreateMaintenancePlan },
-    // Navigation — these appear only when the user searches for them
-    { id: "open-dispatch",  label: "Open Dispatch",  keywords: ["dispatch", "calendar", "schedule"], icon: LayoutGrid, section: "navigation", route: "/dispatch" },
-    { id: "open-pm",        label: "Open PM",        keywords: ["pm", "preventive maintenance"], icon: Wrench, section: "navigation", route: "/pm" },
-    { id: "open-clients",   label: "Open Clients",   keywords: ["clients", "customers"], icon: Users, section: "navigation", route: "/clients" },
-    { id: "open-invoices",  label: "Open Invoices",  keywords: ["invoices", "billing"], icon: Receipt, section: "navigation", route: "/invoices" },
-    { id: "open-quotes",    label: "Open Quotes",    keywords: ["quotes", "estimates"], icon: FileCheck, section: "navigation", route: "/quotes" },
-    { id: "nav-dashboard",  label: "Dashboard",      keywords: ["home", "overview"], icon: LayoutDashboard, section: "navigation", route: "/" },
-    { id: "nav-dispatch",   label: "Dispatch",       keywords: ["dispatch", "calendar", "schedule", "disp"], icon: LayoutGrid, section: "navigation", route: "/dispatch" },
-    { id: "nav-jobs",       label: "Jobs",           keywords: ["jobs", "job", "work orders"], icon: ClipboardList, section: "navigation", route: "/jobs" },
-    { id: "nav-pm",         label: "PM",             keywords: ["pm", "preventive maintenance", "preventative"], icon: Wrench, section: "navigation", route: "/pm" },
-    { id: "nav-invoices",   label: "Invoices",       keywords: ["invoices", "invoice", "billing", "inv"], icon: Receipt, section: "navigation", route: "/invoices" },
-    { id: "nav-quotes",     label: "Quotes",         keywords: ["quotes", "quote", "estimates", "estimate"], icon: FileCheck, section: "navigation", route: "/quotes" },
-    { id: "nav-clients",    label: "Clients",        keywords: ["clients", "client", "customers", "customer", "cli"], icon: Users, section: "navigation", route: "/clients" },
-    { id: "nav-suppliers",  label: "Suppliers",      keywords: ["suppliers", "supplier", "vendor", "vendors"], icon: Building2, section: "navigation", route: "/suppliers" },
-    { id: "nav-reports",    label: "Reports",        keywords: ["reports", "report", "analytics"], icon: FileText, section: "navigation", route: "/reports" },
-    { id: "nav-settings",   label: "Settings",       keywords: ["settings", "preferences", "config"], icon: Settings, section: "navigation", route: "/settings" },
-    { id: "nav-admin",      label: "Admin",          keywords: ["admin", "tenants", "administration"], icon: Shield, section: "navigation", route: "/admin/tenants" },
-  ];
-}
+const NAVIGATION_COMMANDS: CommandItem[] = [
+  { id: "open-dispatch",  label: "Open Dispatch",  keywords: ["dispatch", "calendar", "schedule"], icon: LayoutGrid, route: "/dispatch" },
+  { id: "open-pm",        label: "Open PM",        keywords: ["pm", "preventive maintenance"], icon: Wrench, route: "/pm" },
+  { id: "open-clients",   label: "Open Clients",   keywords: ["clients", "customers"], icon: Users, route: "/clients" },
+  { id: "open-invoices",  label: "Open Invoices",  keywords: ["invoices", "billing"], icon: Receipt, route: "/invoices" },
+  { id: "open-quotes",    label: "Open Quotes",    keywords: ["quotes", "estimates"], icon: FileCheck, route: "/quotes" },
+  { id: "nav-dashboard",  label: "Dashboard",      keywords: ["home", "overview"], icon: LayoutDashboard, route: "/" },
+  { id: "nav-dispatch",   label: "Dispatch",       keywords: ["dispatch", "calendar", "schedule", "disp"], icon: LayoutGrid, route: "/dispatch" },
+  { id: "nav-jobs",       label: "Jobs",           keywords: ["jobs", "job", "work orders"], icon: ClipboardList, route: "/jobs" },
+  { id: "nav-pm",         label: "PM",             keywords: ["pm", "preventive maintenance", "preventative"], icon: Wrench, route: "/pm" },
+  { id: "nav-invoices",   label: "Invoices",       keywords: ["invoices", "invoice", "billing", "inv"], icon: Receipt, route: "/invoices" },
+  { id: "nav-quotes",     label: "Quotes",         keywords: ["quotes", "quote", "estimates", "estimate"], icon: FileCheck, route: "/quotes" },
+  { id: "nav-clients",    label: "Clients",        keywords: ["clients", "client", "customers", "customer", "cli"], icon: Users, route: "/clients" },
+  { id: "nav-suppliers",  label: "Suppliers",      keywords: ["suppliers", "supplier", "vendor", "vendors"], icon: Building2, route: "/suppliers" },
+  { id: "nav-reports",    label: "Reports",        keywords: ["reports", "report", "analytics"], icon: FileText, route: "/reports" },
+  { id: "nav-settings",   label: "Settings",       keywords: ["settings", "preferences", "config"], icon: Settings, route: "/settings" },
+  { id: "nav-admin",      label: "Admin",          keywords: ["admin", "tenants", "administration"], icon: Shield, route: "/admin/tenants" },
+];
 
 // ========================================
 // SEARCH RESULT HELPERS (preserved from original)
@@ -192,22 +162,7 @@ function scoreCommand(cmd: CommandItem, q: string): number {
 // COMPONENT
 // ========================================
 
-interface UniversalSearchProps {
-  /** Callback to open the create-job flow — mirrors "New Job" */
-  onCreateJob?: () => void;
-  /** Callback to open the create-client flow — mirrors "New Client" */
-  onCreateClient?: () => void;
-  /** Callback to open the create-invoice flow — mirrors "New Invoice" */
-  onCreateInvoice?: () => void;
-  /** Callback to open the create-quote flow — mirrors "New Quote" */
-  onCreateQuote?: () => void;
-  /** Callback to open the create-task flow — mirrors "New Task" */
-  onCreateTask?: () => void;
-  /** Callback to open the create-maintenance-plan chooser — mirrors "New Maintenance Plan" */
-  onCreateMaintenancePlan?: () => void;
-}
-
-export default function UniversalSearch({ onCreateJob, onCreateClient, onCreateInvoice, onCreateQuote, onCreateTask, onCreateMaintenancePlan }: UniversalSearchProps = {}) {
+export default function UniversalSearch() {
   const [, setLocation] = useLocation();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -221,19 +176,12 @@ export default function UniversalSearch({ onCreateJob, onCreateClient, onCreateI
   // Query cache cleanup not needed here (no React Query) but abort is.
   const surface = useSurfaceController(open);
 
-  // Build commands with create callbacks
-  const commands = useMemo(
-    () => buildCommands({ onCreateJob, onCreateClient, onCreateInvoice, onCreateQuote, onCreateTask, onCreateMaintenancePlan }),
-    [onCreateJob, onCreateClient, onCreateInvoice, onCreateQuote, onCreateTask, onCreateMaintenancePlan],
-  );
-
-  // ------ Command filtering ------
+  // ------ Navigation-command filtering ------
+  // Empty query = no commands rendered (search-only). Non-empty query
+  // scores nav shortcuts so typing "dispatch" still jumps you there.
   const filteredCommands = useMemo(() => {
-    if (!query.trim()) {
-      // Show all quick actions when empty, hide navigation to keep it compact
-      return commands.filter((c) => c.section === "action");
-    }
-    const scored = commands.map((cmd) => ({ cmd, score: scoreCommand(cmd, query) }))
+    if (!query.trim()) return [];
+    const scored = NAVIGATION_COMMANDS.map((cmd) => ({ cmd, score: scoreCommand(cmd, query) }))
       .filter((s) => s.score > 0)
       .sort((a, b) => b.score - a.score);
     return scored.map((s) => s.cmd);
@@ -318,12 +266,7 @@ export default function UniversalSearch({ onCreateJob, onCreateClient, onCreateI
   // ------ Execute a palette item ------
   const executeItem = useCallback((item: PaletteItem) => {
     if (item.kind === "command") {
-      const cmd = item.item;
-      if (cmd.action) {
-        cmd.action();
-      } else if (cmd.route) {
-        setLocation(cmd.route);
-      }
+      setLocation(item.item.route);
     } else {
       const sr = item.item;
       // Location results navigate to parent client page with ?location= scope
@@ -429,8 +372,7 @@ export default function UniversalSearch({ onCreateJob, onCreateClient, onCreateI
   }, [selectedIndex, open]);
 
   // ------ Section helpers for rendering ------
-  const actionItems = paletteItems.filter((p) => p.kind === "command" && p.item.section === "action");
-  const navItems = paletteItems.filter((p) => p.kind === "command" && p.item.section === "navigation");
+  const navItems = paletteItems.filter((p) => p.kind === "command");
   const hasSearchResults = flatSearchResults.length > 0;
 
   /** Offset where search results start in the flat paletteItems list */
@@ -456,9 +398,6 @@ export default function UniversalSearch({ onCreateJob, onCreateClient, onCreateI
         >
           <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
           <span className="flex-1 truncate">{cmd.label}</span>
-          {cmd.section === "action" && !cmd.route && (
-            <Zap className="h-3 w-3 text-muted-foreground/50 shrink-0" />
-          )}
         </button>
       );
     }
@@ -500,8 +439,13 @@ export default function UniversalSearch({ onCreateJob, onCreateClient, onCreateI
     </div>
   );
 
-  // Determine if palette should show (always show when open — even with empty query for quick actions)
-  const showPalette = open;
+  // Show the palette only when there's something to render. With an empty
+  // query and no results we hide it entirely — the search bar is the only
+  // affordance until the user types. (Pre-2026-04-26 the palette stayed
+  // open to surface Quick Actions; that section has been removed.)
+  const showPalette =
+    open &&
+    (navItems.length > 0 || hasSearchResults || (query.trim().length >= 2));
 
   return (
     <div ref={paletteRef} className="relative">
@@ -514,7 +458,7 @@ export default function UniversalSearch({ onCreateJob, onCreateClient, onCreateI
         <input
           ref={inputRef}
           type="text"
-          placeholder="Search or create jobs, clients, invoices..."
+          placeholder="Search jobs, clients, invoices..."
           value={query}
           onChange={handleInputChange}
           onKeyDown={handleKeyDown}
@@ -531,20 +475,9 @@ export default function UniversalSearch({ onCreateJob, onCreateClient, onCreateI
           data-testid="command-palette"
         >
           <div className="max-h-[420px] overflow-y-auto">
-            {/* Quick Actions section */}
-            {actionItems.length > 0 && (
-              <div className="py-1">
-                {sectionHeader("Quick Actions")}
-                <div className="px-1">
-                  {actionItems.map((item) => renderRow(item, paletteItems.indexOf(item)))}
-                </div>
-              </div>
-            )}
-
             {/* Navigation section */}
             {navItems.length > 0 && (
               <div className="py-1">
-                {actionItems.length > 0 && <div className="mx-3 border-t border-border" />}
                 {sectionHeader("Navigation")}
                 <div className="px-1">
                   {navItems.map((item) => renderRow(item, paletteItems.indexOf(item)))}
@@ -557,7 +490,7 @@ export default function UniversalSearch({ onCreateJob, onCreateClient, onCreateI
               let srIdx = searchResultsOffset;
               return (
                 <div className="py-1">
-                  {(actionItems.length > 0 || navItems.length > 0) && (
+                  {navItems.length > 0 && (
                     <div className="mx-3 border-t border-border" />
                   )}
                   {sectionHeader("Search Results")}

@@ -1461,12 +1461,13 @@ export default function JobDetailPage() {
                       ? <ChevronDown className="h-3.5 w-3.5 text-slate-400 shrink-0" />
                       : <ChevronRight className="h-3.5 w-3.5 text-slate-400 shrink-0" />}
                     <MessageSquare className="h-4 w-4 text-[#64748b] shrink-0" />
+                    {/* 2026-04-26: header reads `Notes` when empty
+                        and `Notes {count}` when populated — dropped
+                        the explicit "No notes" pill and the
+                        parenthesised count form. */}
                     <h2 className="text-sm font-semibold text-[#0f172a] truncate">Notes</h2>
-                    {notesCount === 0 && (
-                      <span className="text-xs text-slate-400 ml-1">No notes</span>
-                    )}
                     {notesCount !== null && notesCount > 0 && (
-                      <span className="text-xs text-slate-400 ml-1 tabular-nums">({notesCount})</span>
+                      <span className="text-xs text-slate-400 ml-1 tabular-nums">{notesCount}</span>
                     )}
                   </button>
                   <Button
@@ -1561,9 +1562,13 @@ export default function JobDetailPage() {
                       ? <ChevronDown className="h-3.5 w-3.5 text-slate-400 shrink-0" />
                       : <ChevronRight className="h-3.5 w-3.5 text-slate-400 shrink-0" />}
                     <Clock className="h-4 w-4 text-[#64748b] shrink-0" />
-                    <h2 className="text-sm font-semibold text-[#0f172a] truncate">Labour Summary</h2>
-                    {jobTimeEntries.length === 0 && (
-                      <span className="text-xs text-slate-400 ml-1">No labour</span>
+                    {/* 2026-04-26: header renamed `Labour Summary` →
+                        `Labour`. Empty state drops the "No labour"
+                        pill entirely; populated state shows a bare
+                        count next to the title. */}
+                    <h2 className="text-sm font-semibold text-[#0f172a] truncate">Labour</h2>
+                    {jobTimeEntries.length > 0 && (
+                      <span className="text-xs text-slate-400 ml-1 tabular-nums">{jobTimeEntries.length}</span>
                     )}
                   </button>
                   <Button

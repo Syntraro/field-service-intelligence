@@ -57,7 +57,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Check, ChevronsUpDown, Loader2, Plus, CalendarIcon, Users, Search, Repeat, Wand2, Wrench, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronsUpDown, Loader2, Plus, CalendarIcon, Users, Search, Repeat, Wand2, Wrench, X } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import type { Job, InsertJob } from "@shared/schema";
@@ -79,11 +79,21 @@ import {
   createDefaultScheduleValue,
 } from "@/components/jobs/JobScheduleFields";
 import { createJobWithSchedule } from "@/lib/jobScheduling";
+import { useDefaultSchedulingBuffer, formatScheduledBlockSummary } from "@/hooks/useDefaultSchedulingBuffer";
 import { TechnicianSelector } from "@/components/TechnicianSelector";
 // 2026-04-26: service-catalog selector + capacity-aware tech-pick. Both use
 // existing canonical endpoints (`/api/items?type=service`, `/api/dashboard/capacity`).
 // No new APIs, no shadow scheduling logic.
-import { findNextAvailableSlot, formatSlotTimeLabel, type CapacityResponse } from "@/lib/findNextAvailableSlot";
+import {
+  formatSlotTimeLabel,
+  computeOpenGapsForTech,
+  groupOpenGapsByTech,
+  getOverlappingBookedBlocks,
+  type CapacityResponse,
+  type OpenGap,
+  type TechAvailability,
+} from "@/lib/findNextAvailableSlot";
+import { getSmartScheduleDefault, getWallClockInTimezone } from "@/lib/schedulingConstants";
 // 2026-04-26 polish: searchable service combobox + inline "Create service".
 // The canonical Add-Item modal lives at @/components/products-services/
 // ProductServiceFormDialog; we mount it inside QuickAddJobDialog so the user
@@ -839,6 +849,9 @@ interface QuickAddJobDialogProps {
 export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, editJob, onSuccess, initialSchedule, mode = "standard", embedded = false, compact: _compact = false }: QuickAddJobDialogProps) {
   const { toast } = useToast();
   const { logActivity } = useActivityStore();
+  // Tenant default scheduling buffer (minutes) — applied at scheduledEnd
+  // computation in createJobWithSchedule. Work duration is unaffected.
+  const defaultBufferMinutes = useDefaultSchedulingBuffer();
   // Location selector state (canonical)
   const [locationSearch, setLocationSearchText] = useState("");
   const [selectedLocationOption, setSelectedLocationOption] = useState<LocationOption | null>(null);
@@ -887,6 +900,13 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     createDefaultScheduleValue({ unscheduled: true })
   );
 
+  // 2026-04-26 v7: dirty flag for the Start time field. Once the user (or a
+  // dispatch prefill) sets a specific start, we never silently overwrite it
+  // — only an explicit Unscheduled toggle resets it. Per spec: "If user
+  // manually changes start time, do not overwrite it unless they change date
+  // back to today and field is still untouched/defaulted."
+  const [startTimeDirty, setStartTimeDirty] = useState(false);
+
   useEffect(() => {
     if (open && editJob) {
       // Edit mode: populate core fields only — no schedule/assignment (2026-04-03)
@@ -897,6 +917,8 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
       });
     } else if (open && initialSchedule) {
       // Dispatch board quick-create: prefill schedule with crew + date + time.
+      // The user clicked a specific slot — treat the start time as user-chosen
+      // (dirty) so subsequent date changes don't silently round-up the time.
       setScheduleValue(createDefaultScheduleValue({
         unscheduled: false,
         date: initialSchedule.date,
@@ -904,6 +926,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
         durationMinutes: initialSchedule.durationMinutes ?? 60,
         assignedTechnicianIds: initialSchedule.assignedTechnicianIds ?? [],
       }));
+      setStartTimeDirty(true);
       if (preselectedLocationId) {
         setFormData(prev => ({ ...prev, locationId: preselectedLocationId }));
       }
@@ -928,6 +951,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
       setSelectedServices([]);
       setSummaryDirty(false);
       setDurationDirty(false);
+      setStartTimeDirty(false);
       setServiceComboOpen(false);
       setServiceSearchText("");
       // Reset recurring state on close — recurring mode defaults ON
@@ -1083,64 +1107,20 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     },
   });
 
-  // ── Find next available technician (capacity-aware tech pick) ────────
-  // Reuses the canonical /api/dashboard/capacity endpoint that powers the
-  // dashboard "Today's Schedule" rail. No shadow scheduling logic.
-  const findAvailableMutation = useMutation({
-    mutationFn: () => apiRequest<CapacityResponse>("/api/dashboard/capacity"),
-    onSuccess: (cap) => {
-      const wantedDuration =
-        scheduleValue.durationMinutes && scheduleValue.durationMinutes > 0
-          ? scheduleValue.durationMinutes
-          : 60;
-      // 2026-04-26: honor the user's pre-selected technicians. If they've
-      // already picked someone in the Schedule row, "Find next available"
-      // looks for THAT tech's earliest gap — not a random other tech's.
-      // When no tech is pre-selected, we consider everyone (legacy behavior).
-      const match = findNextAvailableSlot(cap, wantedDuration, {
-        preferredTechnicianIds: scheduleValue.assignedTechnicianIds,
-      });
-      if (!match) {
-        const hadPick = scheduleValue.assignedTechnicianIds.length > 0;
-        toast({
-          title: "No open slot today",
-          description: hadPick
-            ? "The selected technician has no open slot of this duration today. Clear the assignee or try a shorter duration."
-            : "No technician has an open slot of this duration today. Try a shorter duration or pick a date manually.",
-        });
-        return;
-      }
-      setScheduleValue((prev) => ({
-        ...prev,
-        unscheduled: false,
-        date: match.date,
-        time: match.time,
-        durationMinutes: wantedDuration,
-        assignedTechnicianIds: [match.technicianId],
-        isAllDay: false,
-      }));
-      // 2026-04-26 polish v3: format the toast time from the SAME date/time
-      // slices that populate the form (`match.date` + `match.time`) instead
-      // of `parseISO(match.startISO)`. The two interpretations diverged when
-      // the browser's local TZ differed from UTC: `<input type="time">`
-      // showed "14:00" as 2:00 PM (timezone-naive) while parseISO+format
-      // converted UTC 14:00 to local 10:00 AM. Using a single source of
-      // truth for the displayed time guarantees the toast and the form
-      // can never disagree.
-      const startLabel = formatSlotTimeLabel(match.date, match.time);
-      toast({
-        title: "Slot found",
-        description: `${match.technicianName} · ${startLabel} (today)`,
-      });
-    },
-    onError: () => {
-      toast({
-        title: "Couldn't check availability",
-        description: "Failed to load today's capacity. Please try again.",
-        variant: "destructive",
-      });
-    },
-  });
+  // ── Find Availability (dispatcher-controlled gap picker) ──────────────
+  //
+  // 2026-04-26: replaced the old auto-pick "Find next available" flow.
+  // The new flow does NOT mutate the form on click — it opens an inline
+  // panel that shows every technician's open windows for the selected
+  // date and requested duration, grouped by tech. The dispatcher then
+  // chooses a gap, which prefills the form fields (`date`, `time`,
+  // `assignedTechnicianIds`, `durationMinutes`) but does not save —
+  // the actual create still goes through the existing Create button.
+  //
+  // Panel state is declared here; the `availabilityGroups` derivation
+  // and the `applyAvailabilityGap` callback live below the
+  // `capacityData` query (they read it).
+  const [availabilityPanelOpen, setAvailabilityPanelOpen] = useState(false);
 
   // ── Schedule helpers ──
 
@@ -1154,17 +1134,233 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     });
   }, []);
 
+  // ── Capacity feed (canonical /api/dashboard/capacity) ──
+  // 2026-04-26 v8: date-aware. The endpoint now accepts ?date=YYYY-MM-DD and
+  // returns workday + scheduleBlocks for THAT day in the company tz; the
+  // server change is a thin pass-through over the existing `now` parameter
+  // of `getTodayCapacity`. Without a date param the endpoint still defaults
+  // to today (Dashboard behavior unchanged).
+  //
+  // The query key includes the selected date so React Query refetches when
+  // the user moves between today / tomorrow / next week. When the schedule
+  // is unscheduled (no date), we still fetch today's capacity so the
+  // "Find next available" button has data to operate on.
+  const capacityQueryDate = scheduleValue.date || ""; // "" → today on server
+  const { data: capacityData } = useQuery<CapacityResponse>({
+    queryKey: ["/api/dashboard/capacity", capacityQueryDate],
+    queryFn: () =>
+      apiRequest<CapacityResponse>(
+        capacityQueryDate
+          ? `/api/dashboard/capacity?date=${capacityQueryDate}`
+          : "/api/dashboard/capacity",
+      ),
+    enabled: open && !isEditMode,
+    staleTime: 30_000,
+  });
+  const companyTimezone = capacityData?.timezone ?? null;
+
+  // ── Find Availability — derived gap groups + apply callback ────────────
+  // Reads from the cached `capacityData` above; no extra fetch. The panel
+  // (rendered later in the JSX, gated by `availabilityPanelOpen`) consumes
+  // these directly. Uses the canonical `groupOpenGapsByTech` helper.
+  const availabilityGroups: TechAvailability[] = useMemo(() => {
+    if (!capacityData) return [];
+    const wantedDuration =
+      scheduleValue.durationMinutes && scheduleValue.durationMinutes > 0
+        ? scheduleValue.durationMinutes
+        : 60;
+    const todayYmd = getWallClockInTimezone(new Date(), capacityData.timezone ?? null).ymd;
+    // Future date: anchor `now=0` so the panel evaluates the full workday
+    // rather than clipping past times that would only matter for today.
+    // Today (or unscheduled, which the server resolves to today): anchor
+    // at real `Date.now()` so past slots are excluded.
+    const isFutureDate = !!scheduleValue.date && scheduleValue.date > todayYmd;
+    return groupOpenGapsByTech(capacityData, wantedDuration, {
+      preferredTechnicianIds: scheduleValue.assignedTechnicianIds,
+      now: isFutureDate ? 0 : Date.now(),
+    });
+  }, [
+    capacityData,
+    scheduleValue.date,
+    scheduleValue.durationMinutes,
+    scheduleValue.assignedTechnicianIds,
+  ]);
+
+  const applyAvailabilityGap = useCallback(
+    (technicianId: string, gap: OpenGap) => {
+      const wantedDuration =
+        scheduleValue.durationMinutes && scheduleValue.durationMinutes > 0
+          ? scheduleValue.durationMinutes
+          : 60;
+      // Apply the GAP'S START as the slot start for the requested duration —
+      // not the gap's full extent. The dispatcher can still nudge the start
+      // time afterwards manually.
+      setScheduleValue((prev) => ({
+        ...prev,
+        unscheduled: false,
+        date: gap.date,
+        time: gap.time,
+        durationMinutes: wantedDuration,
+        assignedTechnicianIds: [technicianId],
+        isAllDay: false,
+      }));
+      setStartTimeDirty(true);
+      setAvailabilityPanelOpen(false);
+    },
+    [scheduleValue.durationMinutes],
+  );
+
+  // ── Smart default time ──
+  // Pure helper wraps the canonical getSmartScheduleDefault so the dialog can
+  // call it from multiple paths (unscheduled toggle, date change, etc.).
+  const computeSmartDefault = useCallback(
+    (targetDateYmd?: string) =>
+      getSmartScheduleDefault({
+        targetDateYmd,
+        timezone: companyTimezone,
+        now: new Date(),
+      }),
+    [companyTimezone],
+  );
+
   const handleUnscheduledChange = useCallback((checked: boolean) => {
     if (checked) {
       updateSchedule({ unscheduled: true, date: "", time: "", isAllDay: false });
+      setStartTimeDirty(false);
     } else {
-      updateSchedule({ unscheduled: false, date: format(new Date(), "yyyy-MM-dd"), time: "09:00", isAllDay: false });
+      // Switching to scheduled: pick today as the target date and let
+      // getSmartScheduleDefault compute the time. If "today" + current wall
+      // clock rolls past midnight, the helper advances `date` for us.
+      const smart = computeSmartDefault();
+      updateSchedule({
+        unscheduled: false,
+        date: smart.date,
+        time: smart.time,
+        isAllDay: false,
+      });
+      // The default isn't user-chosen — leave dirty=false so a future Date
+      // change to "today" can re-derive a fresh rounded value if needed.
+      setStartTimeDirty(false);
     }
-  }, [updateSchedule]);
+  }, [updateSchedule, computeSmartDefault]);
+
+  // Date picker → if Start was never user-edited, recompute it for the
+  // newly chosen date. This implements the spec rule:
+  //   "If user manually changes start time, do not overwrite it unless they
+  //    change date back to today and field is still untouched/defaulted."
+  const handleDateChange = useCallback(
+    (newDateYmd: string) => {
+      if (startTimeDirty) {
+        updateSchedule({ date: newDateYmd });
+        return;
+      }
+      const smart = computeSmartDefault(newDateYmd);
+      updateSchedule({ date: smart.date, time: smart.time, isAllDay: false });
+    },
+    [startTimeDirty, updateSchedule, computeSmartDefault],
+  );
 
   const selectedDate = scheduleValue.date ? parseISO(scheduleValue.date) : undefined;
   const isScheduleDisabled = scheduleValue.unscheduled;
   const isAllDay = !scheduleValue.time && !scheduleValue.unscheduled && !!scheduleValue.date;
+
+  // ── Smart-availability derivations (2026-04-26 v8) ───────────────────
+  // The capacity feed is now date-aware (server accepts ?date=YYYY-MM-DD),
+  // so suggestions and the conflict warning work for ANY selected date —
+  // not just today. Both still require exactly ONE technician (the
+  // dispatcher's "open slot for X" mental model).
+
+  /** Today in the company's timezone — used to decide whether to clip
+   *  past time during gap enumeration. For future dates we anchor `now`
+   *  before workday-start so the morning isn't dropped. */
+  const todayInTz = useMemo(
+    () => getWallClockInTimezone(new Date(), companyTimezone).ymd,
+    [companyTimezone],
+  );
+
+  const isFutureSelectedDate =
+    !scheduleValue.unscheduled && !!scheduleValue.date && scheduleValue.date > todayInTz;
+
+  /** The single selected technician (when exactly one is picked). Multi-tech
+   *  jobs collapse to "no suggestions" for now — the dispatcher's mental
+   *  model of "open slots" only makes sense for one person at a time. */
+  const singleSelectedTechId =
+    scheduleValue.assignedTechnicianIds.length === 1
+      ? scheduleValue.assignedTechnicianIds[0]
+      : null;
+
+  const selectedTechCapacity = useMemo(() => {
+    if (!singleSelectedTechId || !capacityData) return null;
+    return (
+      capacityData.technicians.find((t) => t.technicianId === singleSelectedTechId) ?? null
+    );
+  }, [capacityData, singleSelectedTechId]);
+
+  /** Up to 3 earliest gaps that fit the requested duration + tenant buffer. */
+  const availabilitySuggestions = useMemo(() => {
+    if (scheduleValue.unscheduled) return [];
+    if (!scheduleValue.date) return [];
+    if (!selectedTechCapacity) return [];
+    const work = scheduleValue.durationMinutes > 0 ? scheduleValue.durationMinutes : 60;
+    const wanted = work + Math.max(0, defaultBufferMinutes | 0);
+    return computeOpenGapsForTech(selectedTechCapacity, wanted, {
+      now: isFutureSelectedDate ? 0 : Date.now(),
+    }).slice(0, 3);
+  }, [
+    scheduleValue.unscheduled,
+    scheduleValue.date,
+    selectedTechCapacity,
+    scheduleValue.durationMinutes,
+    isFutureSelectedDate,
+    defaultBufferMinutes,
+  ]);
+
+  /** Whether the user's CURRENT (date+start+duration) overlaps this
+   *  technician's other booked work. Non-blocking — the warning renders
+   *  inline below the schedule row and does not gate Create Job. */
+  const conflictWarning = useMemo<{ count: number; techName: string } | null>(() => {
+    if (scheduleValue.unscheduled) return null;
+    if (!selectedTechCapacity) return null;
+    if (!scheduleValue.time || !scheduleValue.date) return null;
+    if (!(scheduleValue.durationMinutes > 0)) return null;
+    const [y, mo, d] = scheduleValue.date.split("-").map(Number);
+    const [hh, mm] = scheduleValue.time.split(":").map(Number);
+    if (![y, mo, d, hh, mm].every(Number.isFinite)) return null;
+    // Browser-local interpretation of the form's wall-clock matches the
+    // dispatch board's overlap math when the user is in the company tz —
+    // this is the same convention the rest of the dialog uses.
+    const startLocal = new Date(y, (mo as number) - 1, d, hh, mm, 0, 0);
+    const startMs = startLocal.getTime();
+    const blockMins = scheduleValue.durationMinutes + Math.max(0, defaultBufferMinutes | 0);
+    const endMs = startMs + blockMins * 60_000;
+    const overlaps = getOverlappingBookedBlocks(selectedTechCapacity, startMs, endMs);
+    if (overlaps.length === 0) return null;
+    return { count: overlaps.length, techName: selectedTechCapacity.name };
+  }, [
+    scheduleValue.unscheduled,
+    selectedTechCapacity,
+    scheduleValue.date,
+    scheduleValue.time,
+    scheduleValue.durationMinutes,
+    defaultBufferMinutes,
+  ]);
+
+  /** Apply a suggested gap → updates date + start, keeps duration + tech.
+   *  Marks the time as user-chosen (dirty) so a downstream date change
+   *  doesn't immediately undo the click. */
+  const applySuggestion = useCallback(
+    (suggestion: { date: string; time: string }) => {
+      setScheduleValue((prev) => ({
+        ...prev,
+        unscheduled: false,
+        date: suggestion.date,
+        time: suggestion.time,
+        isAllDay: false,
+      }));
+      setStartTimeDirty(true);
+    },
+    [],
+  );
 
   // ── Mutations ──
 
@@ -1177,7 +1373,8 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
           description: formData.description.trim() || null,
           priority: "medium",
         },
-        scheduleValue
+        scheduleValue,
+        defaultBufferMinutes,
       );
       if (!result.success) throw new Error(result.error || "Failed to create job");
       return result;
@@ -1448,14 +1645,14 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
   // only the form + footer. The conflict alert + quick-create-client toast
   // logic stay live in both modes — they're not visual chrome.
   const formBody = (
-    <form onSubmit={handleSubmit} className="space-y-2.5">
+    <form onSubmit={handleSubmit} className="space-y-2">
           {/* ── Location ──
               2026-04-26 polish v5: switched from CreateOrSelectField (inline
               results that expanded the modal while typing) to a Service-style
               Popover+Command combobox. Results overlay; modal shell stays
               stable. */}
           <div>
-            <Label className="text-xs font-medium mb-1 block">Location *</Label>
+            <Label className="text-xs font-medium mb-0.5 block">Location *</Label>
             <LocationCombobox
               value={selectedLocation}
               searchText={locationSearch}
@@ -1477,7 +1674,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               stack on mobile. Service comes first per spec (left of Equipment).
               Both are optional inputs that hang off the selected Location. */}
           {!isEditMode && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             {/* Service (multi-select) ── 2026-04-26 polish v6
                  Mirrors EditVisitModal's ServiceMultiSelect: search-only
                  trigger on top, selected services rendered as white pill-
@@ -1485,7 +1682,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                  summary auto-fill. Keeps the dialog state local; persists
                  to /api/jobs/:id/parts after the job is created. */}
             <div>
-              <Label className="text-xs font-medium mb-1 block flex items-center gap-1.5">
+              <Label className="text-xs font-medium mb-0.5 block flex items-center gap-1.5">
                 <Wrench className="h-3 w-3 text-muted-foreground" />
                 Service (optional)
               </Label>
@@ -1506,7 +1703,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               />
             </div>
             <div>
-              <Label className="text-xs font-medium mb-1 block flex items-center gap-1.5">
+              <Label className="text-xs font-medium mb-0.5 block flex items-center gap-1.5">
                 <Wrench className="h-3 w-3 text-muted-foreground" />
                 Equipment (optional)
               </Label>
@@ -1522,7 +1719,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
 
           {/* ── Summary ── */}
           <div>
-            <Label htmlFor="summary" className="text-xs font-medium mb-1 block">Summary *</Label>
+            <Label htmlFor="summary" className="text-xs font-medium mb-0.5 block">Summary *</Label>
             <Input
               id="summary"
               value={formData.summary}
@@ -1561,7 +1758,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
 
           {/* ── Recurring schedule fields — shown when Make Recurring is ON ── */}
           {isRecurring && !isEditMode && (
-            <div className="space-y-3 rounded-md border p-3 bg-muted/30">
+            <div className="space-y-2 rounded-md border p-2.5 bg-muted/30">
               {/* Row: Preset + Start date + End date */}
               <div className="flex items-start gap-3">
                 <div className="flex-1">
@@ -1739,7 +1936,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               not the OS-native `<input type="time">` that rendered as a
               browser-specific 3-column popover on Windows/Chrome. */}
           {!isEditMode && !isRecurring && (
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <Label className="text-xs font-medium">Schedule</Label>
               <label className="flex items-center gap-1.5 cursor-pointer">
@@ -1754,12 +1951,12 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
 
             <div
               className={cn(
-                "grid grid-cols-2 sm:grid-cols-4 gap-2",
+                "grid grid-cols-2 sm:grid-cols-4 gap-1.5",
                 isScheduleDisabled && "opacity-40 pointer-events-none",
               )}
             >
               {/* Date */}
-              <div className="space-y-1 min-w-0">
+              <div className="space-y-0.5 min-w-0">
                 <Label className="text-[11px] font-medium text-muted-foreground">Date</Label>
                 <Popover>
                   <PopoverTrigger asChild>
@@ -1784,7 +1981,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                     <Calendar
                       mode="single"
                       selected={selectedDate}
-                      onSelect={(d) => d && updateSchedule({ date: format(d, "yyyy-MM-dd") })}
+                      onSelect={(d) => d && handleDateChange(format(d, "yyyy-MM-dd"))}
                       initialFocus
                     />
                   </PopoverContent>
@@ -1792,14 +1989,19 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               </div>
 
               {/* Start — native time input. The OS native picker overlays
-                  (does not push layout) and accepts manual edits per spec. */}
-              <div className="space-y-1 min-w-0">
+                  (does not push layout) and accepts manual edits per spec.
+                  Manual edits flip startTimeDirty=true so subsequent date
+                  changes never silently overwrite the user's pick. */}
+              <div className="space-y-0.5 min-w-0">
                 <Label className="text-[11px] font-medium text-muted-foreground">Start</Label>
                 <Input
                   type="time"
                   step={900}
                   value={scheduleValue.time || ""}
-                  onChange={(e) => updateSchedule({ time: e.target.value, isAllDay: false })}
+                  onChange={(e) => {
+                    setStartTimeDirty(true);
+                    updateSchedule({ time: e.target.value, isAllDay: false });
+                  }}
                   disabled={isScheduleDisabled}
                   className="h-9 w-full text-xs bg-white"
                   data-testid="input-time"
@@ -1810,7 +2012,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                   Service-prefill still works (the parent updates
                   scheduleValue.durationMinutes; an effect in the inner
                   component re-syncs the draft string). */}
-              <div className="space-y-1 min-w-0">
+              <div className="space-y-0.5 min-w-0">
                 <Label className="text-[11px] font-medium text-muted-foreground">Duration</Label>
                 <DurationHoursInput
                   durationMinutes={scheduleValue.durationMinutes}
@@ -1831,7 +2033,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                   default `min-w-[120px] max-w-[220px]` so the trigger fits
                   the grid column on narrow widths and never forces the
                   modal to sideways-scroll. */}
-              <div className="space-y-1 min-w-0">
+              <div className="space-y-0.5 min-w-0">
                 <Label className="text-[11px] font-medium text-muted-foreground">Assigned To</Label>
                 <TechnicianSelector
                   mode="multi"
@@ -1843,41 +2045,218 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               </div>
             </div>
 
-            {/* 2026-04-26: capacity-aware tech pick. Reads the canonical
-                /api/dashboard/capacity feed and now honors a pre-selected
-                tech (see findNextAvailableSlot.preferredTechnicianIds). */}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-8 text-xs gap-1.5"
-              onClick={() => findAvailableMutation.mutate()}
-              disabled={findAvailableMutation.isPending || isScheduleDisabled}
-              data-testid="button-find-next-available"
-              title="Find the earliest open slot today (honors a pre-selected technician if set)"
-            >
-              {findAvailableMutation.isPending ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
+            {/* 2026-04-26: tenant default scheduling buffer hint. Shown only
+                when buffer > 0 AND a duration is set — the helper returns
+                null otherwise so this row collapses cleanly. Mirrors the
+                AddVisitDialog hint and uses the same shared formatter. */}
+            {!isScheduleDisabled && (() => {
+              const summary = formatScheduledBlockSummary(
+                scheduleValue.durationMinutes,
+                defaultBufferMinutes,
+              );
+              return summary ? (
+                <p className="text-xs text-muted-foreground" data-testid="text-buffer-hint">
+                  {summary}
+                </p>
+              ) : null;
+            })()}
+
+            {/* 2026-04-26: dispatcher-controlled "Find Availability"
+                panel. Replaces the old auto-pick "Find next available"
+                button. Click toggles the inline panel; the panel shows
+                every technician's open windows for the selected date
+                and requested duration, grouped by tech. Picking a gap
+                prefills the form — never saves. The actual create
+                still goes through the Create Job button below. */}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs gap-1.5"
+                onClick={() => setAvailabilityPanelOpen((o) => !o)}
+                disabled={isScheduleDisabled}
+                aria-expanded={availabilityPanelOpen}
+                aria-controls="find-availability-panel"
+                data-testid="button-find-availability"
+                title="Show open windows grouped by technician for the selected date and duration"
+              >
                 <Wand2 className="h-3.5 w-3.5" />
+                Find Availability
+              </Button>
+
+              {/* Per-tech availability suggestions (2026-04-26 v7).
+                  Lights up only when ONE technician is selected and the
+                  date is today — the canonical capacity feed is today-only.
+                  Each chip applies date + start; never blocks manual entry.
+                  When the selected tech has zero fitting gaps, surfaces the
+                  compact "No open slot for this duration." per spec.  */}
+              {!isScheduleDisabled && singleSelectedTechId && !!scheduleValue.date && (
+                <div
+                  className="flex flex-wrap items-center gap-1.5 text-xs"
+                  data-testid="availability-suggestions-row"
+                >
+                  {availabilitySuggestions.length > 0 ? (
+                    <>
+                      <span className="text-muted-foreground">Available:</span>
+                      {availabilitySuggestions.map((s) => (
+                        <Button
+                          key={s.startISO}
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => applySuggestion(s)}
+                          data-testid={`availability-suggestion-${s.time}`}
+                        >
+                          {formatSlotTimeLabel(s.date, s.time)}
+                        </Button>
+                      ))}
+                    </>
+                  ) : (
+                    <span
+                      className="text-muted-foreground italic"
+                      data-testid="availability-suggestions-empty"
+                    >
+                      No open slot for this duration.
+                    </span>
+                  )}
+                </div>
               )}
-              Find next available
-            </Button>
+            </div>
+
+            {/* 2026-04-26: Find Availability inline panel. Renders
+                only when the dispatcher has explicitly opened it.
+                Shows every active technician's open windows for the
+                selected date + requested duration, grouped by tech.
+                Each gap button prefills the form (date / time / tech
+                / duration) and closes the panel — no save. Empty
+                state when no tech has a fitting window for the
+                requested duration. */}
+            {availabilityPanelOpen && !isScheduleDisabled && (
+              <div
+                id="find-availability-panel"
+                className="rounded-md border border-slate-200 bg-slate-50/70 p-2.5"
+                data-testid="find-availability-panel"
+              >
+                <div className="flex items-center justify-between gap-3 mb-1.5">
+                  <div className="text-xs font-medium text-slate-700">
+                    Availability for{" "}
+                    <span className="tabular-nums">
+                      {scheduleValue.date
+                        ? format(parseISO(scheduleValue.date), "MMM d")
+                        : "today"}
+                    </span>
+                    {" · "}
+                    {(() => {
+                      const mins =
+                        scheduleValue.durationMinutes && scheduleValue.durationMinutes > 0
+                          ? scheduleValue.durationMinutes
+                          : 60;
+                      const hrs = mins / 60;
+                      return Number.isInteger(hrs) ? `${hrs}h` : `${hrs.toFixed(1)}h`;
+                    })()}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 text-xs px-2"
+                    onClick={() => setAvailabilityPanelOpen(false)}
+                    data-testid="button-find-availability-close"
+                  >
+                    Close
+                  </Button>
+                </div>
+                {!capacityData ? (
+                  <p className="text-xs text-muted-foreground italic">
+                    Loading availability…
+                  </p>
+                ) : availabilityGroups.length === 0 ? (
+                  <p
+                    className="text-xs text-muted-foreground italic"
+                    data-testid="find-availability-empty"
+                  >
+                    No matching availability for{" "}
+                    {scheduleValue.date
+                      ? format(parseISO(scheduleValue.date), "MMM d")
+                      : "today"}
+                    .
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {availabilityGroups.map((group) => (
+                      <div
+                        key={group.technicianId}
+                        data-testid={`find-availability-group-${group.technicianId}`}
+                      >
+                        <div className="text-xs font-semibold text-slate-800 mb-0.5">
+                          {group.technicianName}
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {group.gaps.map((gap, idx) => {
+                            const startLabel = formatSlotTimeLabel(gap.date, gap.time);
+                            const endTime = gap.endISO.slice(11, 16);
+                            const endLabel = formatSlotTimeLabel(gap.date, endTime);
+                            const hrs = gap.durationMinutes / 60;
+                            const durLabel = Number.isInteger(hrs)
+                              ? `${hrs}h`
+                              : `${hrs.toFixed(1)}h`;
+                            return (
+                              <Button
+                                key={`${group.technicianId}-${gap.startISO}`}
+                                type="button"
+                                variant="secondary"
+                                size="sm"
+                                className="h-7 px-2 text-xs"
+                                onClick={() => applyAvailabilityGap(group.technicianId, gap)}
+                                data-testid={`find-availability-gap-${group.technicianId}-${idx}`}
+                              >
+                                {startLabel} – {endLabel} · {durLabel} open
+                              </Button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Non-blocking overlap warning (2026-04-26 v7). Tech-selected,
+                today only, recomputes on assignee/date/start/duration change.
+                Renders only — never gates the Create button. */}
+            {!isScheduleDisabled && conflictWarning && (
+              <div
+                className="flex items-start gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900"
+                role="status"
+                data-testid="conflict-warning"
+              >
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                <span>
+                  This overlaps another scheduled visit for{" "}
+                  <span className="font-medium">{conflictWarning.techName}</span>. Review dispatch board.
+                </span>
+              </div>
+            )}
           </div>
           )}
 
           {/* ── Team Instructions (optional, compact 2-row) ──
-              2026-04-26 polish v4: rows=2 max with a small fixed height so
-              the textarea cannot grow and force the Job tab to scroll. */}
+              2026-04-26 v9 compactness pass: textarea trimmed to h-[40px]
+              (≈ 2 lines of 14px text + minimal vertical padding). Label
+              spacing also tightened. Resize disabled so users cannot
+              re-grow it. */}
           <div>
-            <Label htmlFor="description" className="text-xs font-medium mb-1 block">Team Instructions</Label>
+            <Label htmlFor="description" className="text-xs font-medium mb-0.5 block">Team Instructions</Label>
             <Textarea
               id="description"
               value={formData.description}
               onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
               placeholder="Add any notes or instructions for the team..."
               rows={2}
-              className="text-sm resize-none h-[52px] bg-white"
+              className="text-sm resize-none h-[40px] bg-white"
               data-testid="input-description"
             />
           </div>
@@ -1891,7 +2270,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               embedded scroll engaging on common desktop heights, so a
               sticky footer isn't needed. The embedded `overflow-y-auto`
               remains only as a small-screen safety net. */}
-          <DialogFooter className="pt-2">
+          <DialogFooter className="pt-1.5">
             <Button
               type="button"
               variant="outline"
@@ -1924,12 +2303,11 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
   return (
     <>
     {embedded ? (
-      // 2026-04-26 polish v4: tighter padding (px-5 pt-3 pb-3) so the Job
-      // tab fits at common desktop heights without engaging the embedded
-      // scrollbar. `overflow-y-auto` stays as a safety net for very small
-      // viewports (max-h-[90vh] on the parent shell) and for when the
-      // recurring fields panel expands.
-      <div className="px-5 pt-3 pb-3 flex-1 min-h-0 overflow-y-auto" data-testid="embedded-quick-add-job">
+      // 2026-04-26 v9 compactness pass: padding tightened to px-4 pt-2 pb-2
+      // so the Job tab fits without internal scroll on common desktop heights
+      // even after the recurring panel expands. `overflow-y-auto` stays as a
+      // safety net for very small viewports (max-h-[90vh] on the parent shell).
+      <div className="px-4 pt-2 pb-2 flex-1 min-h-0 overflow-y-auto" data-testid="embedded-quick-add-job">
         {formBody}
       </div>
     ) : (

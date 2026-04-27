@@ -64,6 +64,36 @@ export async function setupVite(app: Express, server: Server) {
  * Static file serving for production build.
  * Vite config builds client assets to: dist/public
  * In production, server runs from dist/index.js, so import.meta.dirname === dist
+ *
+ * 2026-04-26 cache-control hardening (stale-deploy fix):
+ *
+ *   The previous implementation called bare `express.static(distPath)` with no
+ *   `setHeaders` callback. Express defaults to NO `Cache-Control` on static
+ *   files, leaving every browser to apply heuristic caching. Modern browsers
+ *   — Safari especially aggressively, but Chrome/Firefox/Edge under disk
+ *   pressure too — can heuristically cache `index.html` for hours.
+ *
+ *   That meant after a Render deploy:
+ *     1. Browser served stale `index.html` from HTTP cache.
+ *     2. Stale HTML referenced asset hashes from the prior build, which
+ *        Vite's `emptyOutDir: true` had purged from `dist/public`.
+ *     3. The page loaded a mix of cached old chunks + 404'd new chunks →
+ *        blank screen / React #310 errors.
+ *
+ *   Two stable rules close that window:
+ *     - `/assets/*` (Vite's hashed bundle output): `public, max-age=31536000,
+ *       immutable`. The filename hash IS the cache key — content can't change
+ *       under the same name, so the longest-possible cache is correct.
+ *     - Entrypoints that can change without their filename changing
+ *       (`index.html`, `sw.js`, `workbox-*.js`, `manifest.webmanifest`):
+ *       `no-cache, no-store, must-revalidate` so the browser always
+ *       revalidates with the server. Adds at most one round-trip per visit
+ *       (often a 304 via ETag); saves users from broken UI.
+ *
+ *   The PWA service-worker layer is unchanged — it still precaches and serves
+ *   the SPA shell, but its update lifecycle finally has a chance to detect
+ *   new builds because the SW file itself is no longer being served from a
+ *   stale browser HTTP cache.
  */
 export function serveStatic(app: Express) {
   const distPath = path.resolve(import.meta.dirname, "public");
@@ -74,11 +104,57 @@ export function serveStatic(app: Express) {
     );
   }
 
-  app.use(express.static(distPath));
+  // Predicate for "this file's URL is a stable identity but its content can
+  // change between deploys" — i.e. NOT a hashed bundle. Matches the file
+  // path (not the request URL) so it works inside `setHeaders` callbacks.
+  const isUpdateSensitive = (filePath: string): boolean => {
+    const lower = filePath.toLowerCase();
+    if (lower.endsWith("index.html")) return true;
+    if (lower.endsWith("sw.js")) return true;
+    if (lower.endsWith("service-worker.js")) return true;
+    if (lower.endsWith("manifest.webmanifest")) return true;
+    if (lower.includes("workbox-")) return true;
+    return false;
+  };
 
-  // SPA fallback — PROD (GET only, skip /api)
+  // (1) Hashed bundle assets — long-lived, immutable.
+  // Vite emits content-hashed filenames into `/assets/`; the hash IS the
+  // cache key. Caching forever is safe and reduces bandwidth meaningfully
+  // on repeat visits.
+  app.use(
+    "/assets",
+    express.static(path.resolve(distPath, "assets"), {
+      immutable: true,
+      maxAge: "1y",
+      setHeaders: (res) => {
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      },
+    }),
+  );
+
+  // (2) Everything else under dist/public — entrypoints get explicit
+  // no-cache; static images / fonts at the root keep modest defaults.
+  app.use(
+    express.static(distPath, {
+      setHeaders: (res, filePath) => {
+        if (isUpdateSensitive(filePath)) {
+          res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+          res.setHeader("Pragma", "no-cache");
+          res.setHeader("Expires", "0");
+        }
+      },
+    }),
+  );
+
+  // (3) SPA fallback — every navigation that lands here renders index.html.
+  // The HTML response must carry the same no-cache headers as the static
+  // file would, otherwise we leak the stale-cache window the static layer
+  // closed.
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api")) return next();
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
     res.sendFile(path.resolve(distPath, "index.html"));
   });
 }

@@ -97,7 +97,7 @@ export function CreateNewDialog({
           X at top-right; we keep the accessible DialogTitle visually
           hidden via `sr-only` so Radix's a11y check stays happy. */}
       <DialogContent
-        className="max-w-xl sm:max-w-[820px] h-auto max-h-[90vh] flex flex-col p-0 gap-0 overflow-hidden"
+        className="max-w-xl sm:max-w-[700px] h-auto max-h-[90vh] flex flex-col p-0 gap-0 overflow-hidden"
         data-testid="dialog-create-new"
       >
         <DialogHeader className="sr-only">
@@ -112,7 +112,7 @@ export function CreateNewDialog({
         >
           {/* Tab strip: tight padding, right-padded so it doesn't touch the
               shadcn close X (positioned absolute at right-4 top-4). */}
-          <div className="px-5 pt-3 pb-2 pr-12 shrink-0">
+          <div className="px-4 pt-2.5 pb-1.5 pr-12 shrink-0">
             <TabsList className="grid grid-cols-3 w-full bg-slate-100">
               <TabsTrigger value="job" className={cn(TAB_TRIGGER_CLASS)} data-testid="tab-job">
                 <ClipboardList className="h-3.5 w-3.5" />

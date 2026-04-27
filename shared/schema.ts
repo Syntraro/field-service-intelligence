@@ -833,6 +833,9 @@ export const companySettings = pgTable("company_settings", {
   // design. Left in the database for migration compat; not surfaced here.
   geofenceAutoStartEnabled: boolean("geofence_auto_start_enabled").notNull().default(false),
   geofenceAutoStartRadiusMeters: integer("geofence_auto_start_radius_meters").notNull().default(100),
+  // Default scheduling buffer (2026-04-26): applied client-side when computing
+  // scheduledEnd from a chosen work duration. DB CHECK enforces 0..240.
+  defaultSchedulingBufferMinutes: integer("default_scheduling_buffer_minutes").notNull().default(0),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 

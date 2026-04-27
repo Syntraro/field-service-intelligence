@@ -15,8 +15,10 @@ import * as path from "node:path";
 import {
   findNextAvailableSlot,
   formatSlotTimeLabel,
+  groupOpenGapsByTech,
   type CapacityResponse,
 } from "../client/src/lib/findNextAvailableSlot";
+import { getWallClockInTimezone } from "../client/src/lib/schedulingConstants";
 import { formatDuration } from "../client/src/components/products-services/types";
 
 // ---------------------------------------------------------------------------
@@ -953,6 +955,179 @@ describe("EditVisitModal — service suggestions + duration-driven schedule", ()
 });
 
 // ---------------------------------------------------------------------------
+// PWA stale-deploy fix (2026-04-26) — server cache headers + client SW update.
+// Locks in the rules that close the desktop+iPad stale-build window:
+//   - /assets/* → immutable long cache
+//   - index.html / sw.js / workbox-* / manifest → no-cache/no-store
+//   - SPA fallback HTML → no-cache headers
+//   - PwaUpdatePrompt: visibilitychange triggers registration.update()
+//   - PwaUpdatePrompt: controllerchange reload guard preserved (RELOAD_FLAG)
+// ---------------------------------------------------------------------------
+
+describe("server/vite.ts — production cache header policy", () => {
+  const filePath = path.resolve(__dirname, "..", "server", "vite.ts");
+  const source = fs.readFileSync(filePath, "utf-8");
+
+  it("mounts /assets with the immutable long-lived Cache-Control header", () => {
+    // The hashed-bundle bucket. Filename is the cache key; safe to cache forever.
+    expect(source).toMatch(/app\.use\(\s*["']\/assets["']/);
+    expect(source).toMatch(/public,\s*max-age=31536000,\s*immutable/);
+  });
+
+  it("declares an isUpdateSensitive predicate covering every entrypoint", () => {
+    // The predicate decides which static files get no-cache headers in
+    // setHeaders. Missing any one of these reopens the stale-deploy window.
+    expect(source).toMatch(/index\.html/);
+    expect(source).toMatch(/sw\.js/);
+    expect(source).toMatch(/service-worker\.js/);
+    expect(source).toMatch(/manifest\.webmanifest/);
+    expect(source).toMatch(/workbox-/);
+  });
+
+  it("emits the no-cache trifecta for update-sensitive static files", () => {
+    // Cache-Control alone isn't enough on legacy intermediaries / older
+    // Safari builds — Pragma + Expires:0 belt-and-braces it.
+    expect(source).toMatch(/no-cache,\s*no-store,\s*must-revalidate/);
+    expect(source).toMatch(/Pragma["'\s,]+no-cache/);
+    expect(source).toMatch(/Expires["'\s,]+0/);
+  });
+
+  it("SPA fallback sends the same no-cache headers before sendFile(index.html)", () => {
+    // The SPA route returns index.html for unknown paths — without these
+    // headers the browser would heuristically cache the HTML response and
+    // we'd leak the bug right back through the fallback.
+    const fallbackIdx = source.indexOf("app.get(\"*\"");
+    expect(fallbackIdx).toBeGreaterThan(-1);
+    const slice = source.slice(fallbackIdx);
+    // Cache-Control header set BEFORE sendFile.
+    const cacheCtrlIdx = slice.indexOf("Cache-Control");
+    const sendFileIdx = slice.indexOf("res.sendFile");
+    expect(cacheCtrlIdx).toBeGreaterThan(-1);
+    expect(sendFileIdx).toBeGreaterThan(cacheCtrlIdx);
+    expect(slice).toMatch(/no-cache,\s*no-store,\s*must-revalidate/);
+    expect(slice).toMatch(/res\.sendFile\([^)]*index\.html/);
+  });
+});
+
+describe("client/src/components/PwaUpdatePrompt.tsx — SW update lifecycle", () => {
+  const filePath = path.resolve(
+    __dirname,
+    "..",
+    "client",
+    "src",
+    "components",
+    "PwaUpdatePrompt.tsx",
+  );
+  const source = fs.readFileSync(filePath, "utf-8");
+
+  it("registers a visibilitychange listener that calls registration.update()", () => {
+    // Bridges the gap iOS PWAs hit: SW JS is suspended while the app is
+    // backgrounded, so the hourly setInterval poll never fires. When the
+    // user foregrounds the app, this fires registration.update() so a new
+    // SW gets discovered + claimed.
+    expect(source).toMatch(/visibilitychange/);
+    expect(source).toMatch(/document\.visibilityState\s*===\s*["']visible["']/);
+    expect(source).toMatch(/registration\.update\(\)/);
+  });
+
+  it("preserves the controllerchange listener with the sessionStorage reload guard", () => {
+    // The auto-reload primary path. Without RELOAD_FLAG we'd loop reloads
+    // every time the SW updates inside the same tab session.
+    expect(source).toMatch(/controllerchange/);
+    expect(source).toMatch(/RELOAD_FLAG/);
+    expect(source).toMatch(/sessionStorage\.getItem\(RELOAD_FLAG\)\s*===\s*["']1["']/);
+    expect(source).toMatch(/sessionStorage\.setItem\(RELOAD_FLAG,\s*["']1["']\)/);
+    expect(source).toMatch(/window\.location\.reload\(\)/);
+  });
+
+  it("preserves the hourly registration.update() poll for long-lived foreground tabs", () => {
+    // Belt-and-suspenders for desktop tabs that stay open for hours — the
+    // visibilitychange listener won't fire if the tab never loses focus.
+    expect(source).toMatch(/setInterval\([\s\S]*?registration\.update\(\)[\s\S]*?60\s*\*\s*60\s*\*\s*1000/);
+  });
+
+  it("removes both event listeners on unmount (no leak across hot-reloads)", () => {
+    expect(source).toMatch(/removeEventListener\(\s*["']controllerchange["']/);
+    expect(source).toMatch(/removeEventListener\(\s*["']visibilitychange["']/);
+  });
+
+  it("renders the secondary banner with the canonical test ids when needsRefresh flips", () => {
+    expect(source).toMatch(/data-testid="pwa-update-banner"/);
+    expect(source).toMatch(/data-testid="pwa-update-refresh"/);
+    expect(source).toMatch(/role="status"/);
+    expect(source).toMatch(/aria-live="polite"/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UniversalSearch — quick-action creation removed (2026-04-26).
+// The header "+ New" dropdown is the single canonical creation entry point.
+// Mirroring create flows inside the search palette was redundant noise; this
+// guard makes sure the section + callbacks don't sneak back in.
+// ---------------------------------------------------------------------------
+
+describe("UniversalSearch — quick-action creation feature removed", () => {
+  const universalSearchPath = path.resolve(
+    __dirname,
+    "..",
+    "client",
+    "src",
+    "components",
+    "UniversalSearch.tsx",
+  );
+  const appPath = path.resolve(__dirname, "..", "client", "src", "App.tsx");
+  const usSrc = fs.readFileSync(universalSearchPath, "utf-8");
+  const appSrc = fs.readFileSync(appPath, "utf-8");
+
+  it("UniversalSearch source does not declare any create-* command entries", () => {
+    expect(usSrc).not.toMatch(/id:\s*"create-job"/);
+    expect(usSrc).not.toMatch(/id:\s*"create-client"/);
+    expect(usSrc).not.toMatch(/id:\s*"create-invoice"/);
+    expect(usSrc).not.toMatch(/id:\s*"create-quote"/);
+    expect(usSrc).not.toMatch(/id:\s*"create-task"/);
+    expect(usSrc).not.toMatch(/id:\s*"create-pm-contract"/);
+  });
+
+  it("UniversalSearch does not render a 'Quick Actions' section header", () => {
+    expect(usSrc).not.toMatch(/sectionHeader\("Quick Actions"\)/);
+  });
+
+  it("UniversalSearch does not accept onCreate* callback props", () => {
+    expect(usSrc).not.toMatch(/onCreateJob\??:/);
+    expect(usSrc).not.toMatch(/onCreateClient\??:/);
+    expect(usSrc).not.toMatch(/onCreateInvoice\??:/);
+    expect(usSrc).not.toMatch(/onCreateQuote\??:/);
+    expect(usSrc).not.toMatch(/onCreateTask\??:/);
+    expect(usSrc).not.toMatch(/onCreateMaintenancePlan\??:/);
+  });
+
+  it("App.tsx renders <UniversalSearch /> with no creation callbacks attached", () => {
+    expect(appSrc).toMatch(/<UniversalSearch\s*\/>/);
+    expect(appSrc).not.toMatch(/<UniversalSearch[\s\S]*?onCreateJob=/);
+    expect(appSrc).not.toMatch(/<UniversalSearch[\s\S]*?onCreateClient=/);
+  });
+
+  it("the canonical '+ New' dropdown still wires every create flow in App.tsx", () => {
+    // The +New menu must remain — these test IDs are the user-visible
+    // entry points. Removing the search-palette mirror MUST NOT remove
+    // the canonical menu.
+    expect(appSrc).toMatch(/data-testid="button-create-new"/);
+    expect(appSrc).toMatch(/data-testid="quick-new-job"/);
+    expect(appSrc).toMatch(/data-testid="quick-new-client"/);
+    expect(appSrc).toMatch(/data-testid="quick-new-invoice"/);
+    expect(appSrc).toMatch(/data-testid="quick-new-quote"/);
+    expect(appSrc).toMatch(/data-testid="quick-new-task"/);
+    expect(appSrc).toMatch(/data-testid="quick-new-pm"/);
+  });
+
+  it("UniversalSearch keeps the search input + Cmd/Ctrl+K trigger intact", () => {
+    expect(usSrc).toMatch(/data-testid="universal-search-input"/);
+    expect(usSrc).toMatch(/\(e\.metaKey\s*\|\|\s*e\.ctrlKey\)\s*&&\s*e\.key\s*===\s*["']k["']/);
+    expect(usSrc).toMatch(/\/api\/search/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Repo-wide guard: only one canonical Create New Job modal exists.
 // ---------------------------------------------------------------------------
 
@@ -976,5 +1151,436 @@ describe("Create New Job modal — single canonical source", () => {
              src.includes('data-testid="button-create-job"');
     });
     expect(offenders.map((f) => path.basename(f))).toEqual(["QuickAddJobDialog.tsx"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// groupOpenGapsByTech — dispatcher-controlled "Find Availability" panel
+//
+// 2026-04-26: replaces the old auto-pick "Find next available" flow. The
+// panel does NOT mutate the form on click; it surfaces every tech's open
+// windows so the dispatcher can choose. These tests guard the helper that
+// derives the grouped data the panel renders.
+// ---------------------------------------------------------------------------
+
+describe("groupOpenGapsByTech", () => {
+  it("returns empty array for null / empty capacity", () => {
+    expect(groupOpenGapsByTech(null, 60)).toEqual([]);
+    expect(groupOpenGapsByTech(undefined, 60)).toEqual([]);
+    expect(groupOpenGapsByTech({ technicians: [] }, 60)).toEqual([]);
+  });
+
+  it("groups every tech's open windows for the day, dropping techs with no fitting window", () => {
+    // Alice: workday 9–17, booked 11–14 → two windows (9–11 = 2h, 14–17 = 3h).
+    // Bob:   workday 9–17, fully booked → no windows.
+    // Carla: workday 9–17, booked 12–13 → two windows (9–12 = 3h, 13–17 = 4h).
+    const cap: CapacityResponse = {
+      technicians: [
+        tech({
+          id: "t1",
+          name: "Alice",
+          workday: { startISO: NINE_AM, endISO: FIVE_PM },
+          booked: [{ startISO: ELEVEN_AM, endISO: TWO_PM }],
+        }),
+        tech({
+          id: "t2",
+          name: "Bob",
+          workday: { startISO: NINE_AM, endISO: FIVE_PM },
+          booked: [{ startISO: NINE_AM, endISO: FIVE_PM }],
+        }),
+        tech({
+          id: "t3",
+          name: "Carla",
+          workday: { startISO: NINE_AM, endISO: FIVE_PM },
+          booked: [{ startISO: TWELVE_PM, endISO: "2026-04-26T13:00:00.000Z" }],
+        }),
+      ],
+    };
+    // Anchor `now` before the workday so we evaluate the full day (mimics
+    // a future-date query — see `isFutureDate` branch in QuickAddJobDialog).
+    const groups = groupOpenGapsByTech(cap, 60, { now: 0 });
+    expect(groups.map((g) => g.technicianName)).toEqual(["Alice", "Carla"]); // Bob dropped
+    expect(groups[0].technicianId).toBe("t1");
+    expect(groups[0].gaps.length).toBe(2);
+    // Each gap reflects the FULL window extent, not the requested 60-min slot.
+    expect(groups[0].gaps[0].durationMinutes).toBe(120); // 9–11
+    expect(groups[0].gaps[1].durationMinutes).toBe(180); // 14–17
+    expect(groups[0].gaps[0].time).toBe("09:00");
+    expect(groups[0].gaps[1].time).toBe("14:00");
+    expect(groups[1].gaps.map((g) => g.durationMinutes)).toEqual([180, 240]); // 9–12, 13–17
+  });
+
+  it("filters out windows shorter than the requested duration", () => {
+    // Alice has a 30-minute gap (9:00–9:30) plus a 4-hour gap (13:00–17:00).
+    // Asking for 60 minutes should drop the 30-min window.
+    const cap: CapacityResponse = {
+      technicians: [
+        tech({
+          id: "t1",
+          name: "Alice",
+          workday: { startISO: NINE_AM, endISO: FIVE_PM },
+          booked: [
+            { startISO: "2026-04-26T09:30:00.000Z", endISO: "2026-04-26T13:00:00.000Z" },
+          ],
+        }),
+      ],
+    };
+    const groups = groupOpenGapsByTech(cap, 60, { now: 0 });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].gaps).toHaveLength(1);
+    expect(groups[0].gaps[0].time).toBe("13:00");
+    expect(groups[0].gaps[0].durationMinutes).toBe(240); // 13–17 = 4h
+  });
+
+  it("excludes past-time windows when the search anchor is today (now=1:50 PM)", () => {
+    // Alice's only booking is 9:00–11:00 — leaves an 11:00–17:00 open window.
+    // With `now=1:50 PM`, the past portion (11:00–13:50) must be clipped out.
+    // Result: a single gap starting at 13:50 (clipped window start) running
+    // to 17:00 (3h 10m / 190 min).
+    const cap: CapacityResponse = {
+      technicians: [
+        tech({
+          id: "t1",
+          name: "Alice",
+          workday: { startISO: NINE_AM, endISO: FIVE_PM },
+          booked: [{ startISO: NINE_AM, endISO: ELEVEN_AM }],
+        }),
+      ],
+    };
+    const groups = groupOpenGapsByTech(cap, 60, { now: new Date(ONE_FIFTY_PM) });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].gaps).toHaveLength(1);
+    expect(groups[0].gaps[0].time).toBe("13:50"); // clipped to now
+    expect(groups[0].gaps[0].durationMinutes).toBe(190); // 13:50 → 17:00
+  });
+
+  it("future-date search (now=0) does NOT clip morning availability", () => {
+    // Same fixture as the "today" test above. With `now=0`, the morning
+    // window 11:00–17:00 is preserved as one continuous gap (6h / 360min).
+    const cap: CapacityResponse = {
+      technicians: [
+        tech({
+          id: "t1",
+          name: "Alice",
+          workday: { startISO: NINE_AM, endISO: FIVE_PM },
+          booked: [{ startISO: NINE_AM, endISO: ELEVEN_AM }],
+        }),
+      ],
+    };
+    const groups = groupOpenGapsByTech(cap, 60, { now: 0 });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].gaps).toHaveLength(1);
+    expect(groups[0].gaps[0].time).toBe("11:00");
+    expect(groups[0].gaps[0].durationMinutes).toBe(360); // 11–17
+  });
+
+  it("respects preferredTechnicianIds — restricts groups to those techs only", () => {
+    const cap: CapacityResponse = {
+      technicians: [
+        tech({
+          id: "t1",
+          name: "Alice",
+          workday: { startISO: NINE_AM, endISO: FIVE_PM },
+          booked: [],
+        }),
+        tech({
+          id: "t2",
+          name: "Bob",
+          workday: { startISO: NINE_AM, endISO: FIVE_PM },
+          booked: [],
+        }),
+      ],
+    };
+    const groups = groupOpenGapsByTech(cap, 60, {
+      now: 0,
+      preferredTechnicianIds: ["t2"],
+    });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].technicianId).toBe("t2");
+  });
+
+  it("sorts techs by their earliest first window's start (then by name on tie)", () => {
+    // Alice's first window starts at 9:00. Bob's first window starts at 8:00
+    // (earlier workday). Bob should lead.
+    const EIGHT_AM = "2026-04-26T08:00:00.000Z";
+    const cap: CapacityResponse = {
+      technicians: [
+        tech({
+          id: "t1",
+          name: "Alice",
+          workday: { startISO: NINE_AM, endISO: FIVE_PM },
+          booked: [],
+        }),
+        tech({
+          id: "t2",
+          name: "Bob",
+          workday: { startISO: EIGHT_AM, endISO: FIVE_PM },
+          booked: [],
+        }),
+      ],
+    };
+    const groups = groupOpenGapsByTech(cap, 60, { now: 0 });
+    expect(groups.map((g) => g.technicianName)).toEqual(["Bob", "Alice"]);
+  });
+
+  // ── Behavioural guard: the panel never auto-saves ─────────────────────
+  //
+  // Because `groupOpenGapsByTech` is pure (returns a data structure, has
+  // no side effects, doesn't touch network or React state), and the
+  // QuickAddJobDialog click handler for "Find Availability" only opens
+  // the panel + sets local state, there is no path from clicking the
+  // button to a backend mutation. This is a static-grep regression
+  // guard for the call site to keep that property true.
+  it("QuickAddJobDialog's Find Availability button does not trigger any mutation", () => {
+    const dialogPath = path.resolve(
+      __dirname,
+      "..",
+      "client",
+      "src",
+      "components",
+      "QuickAddJobDialog.tsx",
+    );
+    const src = fs.readFileSync(dialogPath, "utf-8");
+    // The button must still exist with the new test id ...
+    expect(src).toContain('data-testid="button-find-availability"');
+    // ... and its onClick must only toggle local panel state, not call
+    // any `*.mutate(`-style mutation handler.
+    const buttonBlock = (() => {
+      const start = src.indexOf('data-testid="button-find-availability"');
+      if (start < 0) return "";
+      // Walk backwards to the opening `<Button` and forwards to its `</Button>`.
+      const open = src.lastIndexOf("<Button", start);
+      const close = src.indexOf("</Button>", start);
+      return src.slice(open, close + "</Button>".length);
+    })();
+    expect(buttonBlock).toContain('onClick={() => setAvailabilityPanelOpen((o) => !o)}');
+    expect(buttonBlock).not.toMatch(/\.mutate\(/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Find Availability — timezone correctness regression guards
+//
+// 2026-04-26: focused follow-up audit verified that QuickAddJobDialog's
+// `availabilityGroups` derivation determines "today" via the company
+// timezone (`capacityData.timezone`), not browser-local. These tests
+// lock that property in place so a future refactor can't silently
+// regress to `new Date().toISOString().slice(0, 10)` (browser-local).
+//
+// The wiring is:
+//
+//   const todayYmd = getWallClockInTimezone(
+//     new Date(),
+//     capacityData.timezone ?? null,
+//   ).ymd;
+//   const isFutureDate = !!scheduleValue.date && scheduleValue.date > todayYmd;
+//   return groupOpenGapsByTech(capacityData, wantedDuration, {
+//     preferredTechnicianIds: scheduleValue.assignedTechnicianIds,
+//     now: isFutureDate ? 0 : Date.now(),
+//   });
+//
+// Two things to guard:
+//   (a) `getWallClockInTimezone` produces the company-tz YMD, not the
+//       browser-tz YMD.
+//   (b) The dialog calls `getWallClockInTimezone(... capacityData.timezone ...)`
+//       — i.e. it threads the capacity timezone through, not a hard-coded
+//       string or browser-default.
+// ---------------------------------------------------------------------------
+
+describe("getWallClockInTimezone — Find Availability today-check primitive", () => {
+  it("returns the company-tz YMD for an instant that lands on a different browser-local day", () => {
+    // 04:30 UTC on Apr 26 = 00:30 EDT (Toronto) on Apr 26 …
+    // … BUT it's also 21:30 PDT (Los Angeles) on Apr 25 — different YMDs.
+    // The helper must report the YMD in the *supplied* zone, not
+    // whatever zone the test runner / browser happens to be in.
+    const utcInstant = new Date("2026-04-26T04:30:00.000Z");
+
+    const tor = getWallClockInTimezone(utcInstant, "America/Toronto");
+    expect(tor.ymd).toBe("2026-04-26");
+    expect(tor.hours).toBe(0);
+    expect(tor.minutes).toBe(30);
+
+    const la = getWallClockInTimezone(utcInstant, "America/Los_Angeles");
+    expect(la.ymd).toBe("2026-04-25");
+    expect(la.hours).toBe(21);
+    expect(la.minutes).toBe(30);
+  });
+
+  it("near-midnight: company-tz today differs from UTC date when offset is negative", () => {
+    // 02:30 UTC on Apr 27 = 22:30 EDT on Apr 26.
+    // A dispatcher in Toronto picking "Apr 26" should NOT be treated as
+    // a future date — it's still company-today.
+    const utcInstant = new Date("2026-04-27T02:30:00.000Z");
+    const tor = getWallClockInTimezone(utcInstant, "America/Toronto");
+    expect(tor.ymd).toBe("2026-04-26");
+
+    const selectedDate = "2026-04-26";
+    const isFuture = selectedDate > tor.ymd;
+    expect(isFuture).toBe(false); // selected = company-today → CLIP past slots
+  });
+
+  it("near-midnight: company-tz today differs from UTC date when offset is positive", () => {
+    // 22:30 UTC on Apr 26 = 08:30 NZST on Apr 27 (NZ is UTC+12).
+    // A dispatcher in NZ picking "Apr 27" is on company-today, not future.
+    const utcInstant = new Date("2026-04-26T22:30:00.000Z");
+    const nz = getWallClockInTimezone(utcInstant, "Pacific/Auckland");
+    expect(nz.ymd).toBe("2026-04-27");
+
+    const selectedDate = "2026-04-27";
+    const isFuture = selectedDate > nz.ymd;
+    expect(isFuture).toBe(false);
+
+    // And selecting Apr 28 should correctly read as future from NZ's pov.
+    expect("2026-04-28" > nz.ymd).toBe(true);
+  });
+
+  it("falls back to browser-local YMD only when the timezone is missing", () => {
+    // This is a sanity check on the fallback path. It does NOT test the
+    // company-tz path — that's covered above. The dialog avoids this
+    // branch in production because the server always emits a timezone;
+    // the test guards that the helper itself doesn't crash on null.
+    const utcInstant = new Date("2026-04-26T04:30:00.000Z");
+    const local = getWallClockInTimezone(utcInstant, null);
+    // Just confirm the shape — exact YMD depends on the test runner's
+    // local TZ. Both ymd and hours must be present.
+    expect(local.ymd).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(typeof local.hours).toBe("number");
+  });
+});
+
+describe("Find Availability — groupOpenGapsByTech behavior driven by company-tz today-check", () => {
+  // These cases reconstruct the production wiring step-by-step, then
+  // exercise `groupOpenGapsByTech` with the resulting `now` value. They
+  // PROVE that the timezone-correct anchor produces the spec'd
+  // clip / no-clip behaviour.
+
+  function decideAnchor(
+    selectedDateYmd: string,
+    companyTimezone: string,
+    nowInstant: Date,
+  ): { now: number; isFuture: boolean } {
+    const todayYmd = getWallClockInTimezone(nowInstant, companyTimezone).ymd;
+    const isFuture = selectedDateYmd > todayYmd;
+    return { now: isFuture ? 0 : nowInstant.getTime(), isFuture };
+  }
+
+  it("future date in company timezone passes now=0 to the helper — full workday is evaluated", () => {
+    // 22:00 UTC on Apr 26 = 18:00 EDT (Toronto). Company-today is Apr 26.
+    // Dispatcher selects Apr 27 → future-date branch → now=0.
+    const nowInstant = new Date("2026-04-26T22:00:00.000Z");
+    const decision = decideAnchor("2026-04-27", "America/Toronto", nowInstant);
+    expect(decision.isFuture).toBe(true);
+    expect(decision.now).toBe(0);
+
+    // Helper called with now=0 returns the full 9–17 window for a tech
+    // with no bookings, regardless of where in real time we are.
+    const cap: CapacityResponse = {
+      timezone: "America/Toronto",
+      technicians: [
+        tech({
+          id: "t1",
+          name: "Alice",
+          // Real-UTC instants for company-local 9am–5pm on Apr 27 EDT.
+          workday: {
+            startISO: "2026-04-27T13:00:00.000Z",
+            endISO: "2026-04-27T21:00:00.000Z",
+          },
+          booked: [],
+        }),
+      ],
+    };
+    const groups = groupOpenGapsByTech(cap, 60, { now: decision.now });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].gaps).toHaveLength(1);
+    expect(groups[0].gaps[0].durationMinutes).toBe(480); // full 8h workday
+  });
+
+  it("selected date equal to company-time today passes Date.now() — past slots are clipped", () => {
+    // 18:00 UTC on Apr 26 = 14:00 EDT (Toronto). Company-today = Apr 26.
+    // Dispatcher selects Apr 26 → not-future-branch → now=instant ms.
+    const nowInstant = new Date("2026-04-26T18:00:00.000Z");
+    const decision = decideAnchor("2026-04-26", "America/Toronto", nowInstant);
+    expect(decision.isFuture).toBe(false);
+    expect(decision.now).toBe(nowInstant.getTime());
+
+    // Helper called with now=14:00 EDT clips the morning, leaving 14–17
+    // = 3h available for a tech with no bookings.
+    const cap: CapacityResponse = {
+      timezone: "America/Toronto",
+      technicians: [
+        tech({
+          id: "t1",
+          name: "Alice",
+          workday: {
+            startISO: "2026-04-26T13:00:00.000Z", // 9 AM EDT
+            endISO: "2026-04-26T21:00:00.000Z", // 5 PM EDT
+          },
+          booked: [],
+        }),
+      ],
+    };
+    const groups = groupOpenGapsByTech(cap, 60, { now: decision.now });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].gaps).toHaveLength(1);
+    // 18:00 UTC → 21:00 UTC = 3 hours
+    expect(groups[0].gaps[0].durationMinutes).toBe(180);
+  });
+
+  it("selected date is browser-tomorrow but company-today → still clips past slots", () => {
+    // The cross-timezone wedge case: dispatcher's BROWSER is in PST and
+    // it's 21:30 PDT on Apr 25 (= 04:30 UTC Apr 26 = 00:30 EDT Apr 26).
+    // The COMPANY is in Toronto. From Toronto's perspective, today is
+    // Apr 26. The dispatcher picks "Apr 26" — which is *browser-
+    // tomorrow* (PDT is still on Apr 25) but *company-today* (EDT
+    // already rolled over).
+    //
+    // The correct behaviour is: NOT future → clip past slots (in EDT
+    // it's 00:30 AM, so very little to clip but the math should still
+    // be the today-anchor path, not the future-date path).
+    const nowInstant = new Date("2026-04-26T04:30:00.000Z");
+
+    // Sanity: Toronto says today is Apr 26.
+    const torToday = getWallClockInTimezone(nowInstant, "America/Toronto").ymd;
+    expect(torToday).toBe("2026-04-26");
+
+    const decision = decideAnchor("2026-04-26", "America/Toronto", nowInstant);
+    expect(decision.isFuture).toBe(false); // company-today, NOT future
+    expect(decision.now).toBe(nowInstant.getTime());
+
+    // Cross-check: if the wiring used browser-local instead, in PDT the
+    // YMD would be Apr 25, and Apr 26 > Apr 25 would incorrectly trip
+    // the future-date branch (now=0). This expectation locks down the
+    // company-tz path.
+    const pdtToday = getWallClockInTimezone(nowInstant, "America/Los_Angeles").ymd;
+    expect(pdtToday).toBe("2026-04-25");
+    const wrongDecision = decideAnchor("2026-04-26", "America/Los_Angeles", nowInstant);
+    expect(wrongDecision.isFuture).toBe(true); // would be wrong in production
+    expect(wrongDecision.now).toBe(0);
+  });
+
+  // Static-grep guard: the dialog must still thread `capacityData.timezone`
+  // through `getWallClockInTimezone`. A future refactor that drops the
+  // timezone (e.g. accidentally typing `getWallClockInTimezone(new Date())`)
+  // would silently regress to browser-local.
+  it("QuickAddJobDialog wires capacityData.timezone into getWallClockInTimezone for the today-check", () => {
+    const dialogPath = path.resolve(
+      __dirname,
+      "..",
+      "client",
+      "src",
+      "components",
+      "QuickAddJobDialog.tsx",
+    );
+    const src = fs.readFileSync(dialogPath, "utf-8");
+    expect(src).toContain('getWallClockInTimezone(new Date(), capacityData.timezone');
+    // And the only resulting `now: …` literal in availability-groups
+    // logic must be `Date.now()` or `0` — not, say, `Date.parse(...)`.
+    const memoBlock = (() => {
+      const start = src.indexOf("const availabilityGroups: TechAvailability[] = useMemo");
+      if (start < 0) return "";
+      const end = src.indexOf("}, [", start);
+      return src.slice(start, end);
+    })();
+    expect(memoBlock).toContain("isFutureDate ? 0 : Date.now()");
   });
 });

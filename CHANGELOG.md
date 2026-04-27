@@ -6,7 +6,309 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Removed
+
+#### Search bar quick-action creation feature — single canonical "+ New" entry point (2026-04-26)
+
+The header search bar previously opened a "Quick Actions" dropdown mirroring the "+ New" menu (Create Job / Client / Invoice / Quote / Task / Maintenance Plan). Two ways to do the same thing was redundant noise. Decision: search is search-only; "+ New" is the single canonical creation entry point.
+
+**`client/src/components/UniversalSearch.tsx`**:
+- Removed all 6 `create-*` entries from the static command list (`create-job`, `create-client`, `create-invoice`, `create-quote`, `create-task`, `create-pm-contract`).
+- Removed the "Quick Actions" section render block + the `actionItems` filter + the conditional border-top before Navigation.
+- Removed `UniversalSearchProps` interface and the 6 `onCreate*` callback props (`onCreateJob`, `onCreateClient`, `onCreateInvoice`, `onCreateQuote`, `onCreateTask`, `onCreateMaintenancePlan`).
+- `buildCommands(callbacks)` collapsed to a static `NAVIGATION_COMMANDS` const (no callbacks, no useMemo dep churn).
+- Collapsed `CommandItem.section: "action" | "navigation"` to nav-only — section discriminant + the `cmd.action` branch in `executeItem` deleted as dead code.
+- Empty-query state now returns `[]` for filtered commands; the floating popover only mounts when there's something to render (nav matches, search results, or a query ≥ 2 chars). Pre-fix the popover stayed open showing only the keyboard-hint footer when focused with no query — that's gone.
+- Dropped `Plus` and `Zap` icon imports (only used by the removed action rows).
+- Updated the search input placeholder from "Search or create jobs, clients, invoices..." → "Search jobs, clients, invoices..." — verb "create" no longer applies.
+- Cmd/Ctrl+K trigger, navigation shortcuts (`open-*`, `nav-*`), debounced `/api/search`, grouped results, and click-outside / focus / scroll behavior all unchanged.
+
+**`client/src/App.tsx`**:
+- `<UniversalSearch>` mount collapsed from 11 lines (with 6 `onCreate*` callback wires) to `<UniversalSearch />`. The 5-line stale comment block above it is gone.
+- Updated two stale code comments that referenced "UniversalSearch" entry points to point at the canonical "+ New" dropdown.
+- The "+ New" dropdown (`button-create-new` + `quick-new-{job,client,invoice,quote,task,pm}` items) is unchanged — `openCreate("job")`, `setAddClientModalOpen`, `setNewInvoiceModalOpen`, `setNewQuoteModalOpen`, `openCreate("task")`, `setCreatePmDialogOpen` all still wired exactly as before. Every create modal mount (`CreateClientModal`, `CreateNewDialog`, `NewQuoteModal`, `NewInvoiceModal`, `CreatePmDialog`) is unchanged.
+
+**Tests**: added 6 source-level guards in `tests/find-next-available-slot.test.ts` ("UniversalSearch — quick-action creation feature removed") asserting:
+  - no `create-*` command IDs in `UniversalSearch.tsx`,
+  - no `sectionHeader("Quick Actions")` render,
+  - no `onCreate*` props,
+  - `App.tsx` mounts `<UniversalSearch />` with no creation callbacks,
+  - the `+ New` dropdown still wires every create flow,
+  - search bar (`universal-search-input`), Cmd/Ctrl+K trigger, and `/api/search` are intact.
+
+**No backend changes. No route changes. No auth/permission changes. No schema changes.**
+
+### Added
+
+#### Default Scheduling Buffer — tenant setting (2026-04-26)
+
+New tenant-level preference that automatically extends the **scheduled block** of every newly created job and visit by a configurable amount, while leaving the chosen **work duration** alone. Useful for travel, paperwork, or setup time that shouldn't inflate the billable estimate but does need to be reserved on the calendar.
+
+**Behaviour**:
+- Work duration (`durationMinutes` / `estimatedDurationMinutes`) is unchanged — reporting and billing stay accurate.
+- `scheduledEnd = scheduledStart + (workMinutes + bufferMinutes) * 60_000` at create time only.
+- Conflict detection (`detectScheduleConflict`) and find-next-available-slot (`computeOpenGapsForTech`) honour the same buffered block, so an adjacent visit in the buffer window is correctly flagged.
+- Existing visits/jobs are NOT retroactively expanded; edits in `EditVisitModal` keep the user-picked time range untouched.
+
+**Schema** (`migrations/2026_04_26_default_scheduling_buffer.sql`):
+- New column `company_settings.default_scheduling_buffer_minutes INTEGER NOT NULL DEFAULT 0`.
+- CHECK constraint `cs_default_scheduling_buffer_range` enforces `0..240` minutes (UI exposes 7 values: None / 15m / 30m / 45m / 1hr / 1.5hr / 2hr; looser DB ceiling lets us add larger options later without another migration).
+- Drizzle declaration in `shared/schema.ts` mirrors the column.
+
+**Settings UI** — added to `BusinessHoursSettingsPage.tsx` (the existing tenant scheduling-config surface) as a new "Default Scheduling Buffer" card below the workday-hours grid. Pill-button radiogroup; each click immediately PUTs `/api/company-settings`. No new page, no new route.
+
+**Wiring**:
+- New shared hook `client/src/hooks/useDefaultSchedulingBuffer.ts` — reads `defaultSchedulingBufferMinutes` off the existing `/api/company-settings` cache.
+- `client/src/lib/jobScheduling.ts` — `createJobWithSchedule` now accepts an optional `bufferMinutes` arg; expands `scheduledEnd` and the conflict-check duration accordingly. Forwards the work duration as `durationMinutes` so the seed visit's `estimatedDurationMinutes` reflects the chargeable time only.
+- `client/src/components/QuickAddJobDialog.tsx` — calls the hook and threads the buffer into both `createJobWithSchedule` and the inline `availabilitySuggestions` / `conflictWarning` memos.
+- `client/src/components/AddVisitDialog.tsx` — calls the hook, expands `endAt` for the canonical `scheduleVisit` mutation, and shows a small "Scheduled block: 75m (60m work + 15m buffer)" hint below the duration input when buffer > 0.
+
+**Backend**:
+- `server/routes/companySettings.ts` — added `defaultSchedulingBufferMinutes` to `updateCompanySettingsSchema` (Zod min 0 / max 240) and to the `PREFERENCE_KEYS` partition array.
+- `server/storage/company.ts` — added the key to the `PREFERENCE_KEYS` Set so the upsert allowlist accepts it.
+- No changes to the job/visit create endpoints — the client computes the buffered `scheduledEnd` before the request, keeping the server a dumb pass-through. Intentional: keeps conflict detection and slot-finding consistent with the persisted block size without server-side recomputation.
+
+**Files changed**: `shared/schema.ts`, `server/routes/companySettings.ts`, `server/storage/company.ts`, `client/src/pages/BusinessHoursSettingsPage.tsx`, `client/src/lib/jobScheduling.ts`, `client/src/components/QuickAddJobDialog.tsx`, `client/src/components/AddVisitDialog.tsx`, `client/src/hooks/useDefaultSchedulingBuffer.ts` (new), `migrations/2026_04_26_default_scheduling_buffer.sql` (new).
+
 ### Changed
+
+#### Create New modal — compactness pass v9 (2026-04-26)
+
+Tightened the Create New modal so the Job tab fits on a typical desktop without internal scroll, and so the modal no longer feels disproportionate to the simpler Task / Supplier-Visit tabs. Pure CSS — no behavioral change, no field removal.
+
+**Shell (`client/src/components/CreateNewDialog.tsx`)**:
+| Surface | Before | After |
+|---|---|---|
+| Modal max-width (≥sm) | `sm:max-w-[820px]` | `sm:max-w-[700px]` |
+| Tab strip horizontal padding | `px-5` | `px-4` |
+| Tab strip top padding | `pt-3` | `pt-2.5` |
+| Tab strip bottom padding | `pb-2` | `pb-1.5` |
+
+**Form body (`client/src/components/QuickAddJobDialog.tsx`, embedded mode)**:
+| Surface | Before | After |
+|---|---|---|
+| Embedded wrapper padding | `px-5 pt-3 pb-3` | `px-4 pt-2 pb-2` |
+| Form root vertical rhythm | `space-y-2.5` | `space-y-2` |
+| Service + Equipment grid gap | `gap-3` | `gap-2` |
+| Schedule section vertical rhythm | `space-y-2` | `space-y-1.5` |
+| Schedule grid (Date/Start/Duration/Assigned) gap | `gap-2` | `gap-1.5` |
+| Schedule cell label-to-input gap (×4) | `space-y-1` | `space-y-0.5` |
+| Section label bottom margin (×5) | `mb-1` | `mb-0.5` |
+| Team Instructions textarea height | `h-[52px]` | `h-[40px]` |
+| Footer top padding | `pt-2` | `pt-1.5` |
+| Recurring panel padding | `p-3` | `p-2.5` |
+| Recurring panel rhythm | `space-y-3` | `space-y-2` |
+| Find Availability panel padding | `p-3` | `p-2.5` |
+| Find Availability panel rhythm | `space-y-2.5` | `space-y-1.5` |
+| Find Availability header bottom gap | `mb-2` | `mb-1.5` |
+| Find Availability tech-name bottom gap | `mb-1` | `mb-0.5` |
+
+**Approximate vertical reduction (Job tab, scheduled mode, no recurring panel)**: ≈ 28-36 px shaved across labels + grids + textarea + footer + wrapper. The Job tab now fits in roughly 540-560 px of vertical content, well under the `max-h-[90vh]` shell on a 768 px tall viewport.
+
+**Width reduction**: 820 px → 700 px = -120 px (-14.6%). The modal still comfortably accommodates the 4-column Date/Start/Duration/Assigned-To schedule grid (each cell ~150 px after the new `gap-1.5`) and the 2-column Service/Equipment row.
+
+**Behavior preserved (audited, no functional change):**
+- Multi-service select + duration sum + summary autofill (chip pattern unchanged).
+- Multi-equipment chips-below pattern unchanged.
+- Smart Start time default + dirty-flag (today rounds up to next hour, future = 9:00 AM).
+- Find Availability panel (per-tech grouped openings).
+- Recurring panel toggle.
+- Unscheduled (backlog) checkbox.
+- Task / Supplier Visit tabs unchanged — they don't use these classes.
+- Dispatch-board prefill path untouched.
+
+**Files changed**:
+- `client/src/components/CreateNewDialog.tsx` — shell width + tab strip padding.
+- `client/src/components/QuickAddJobDialog.tsx` — wrapper padding, form rhythm, schedule grid gap, label margins, textarea height, footer padding, recurring panel, Find Availability panel.
+
+**Manual / verification results**:
+- `npm run check` passes cleanly (TypeScript `tsc`).
+- No new components, no imports added/removed — purely Tailwind class adjustments.
+- The trims do not touch any selector, query key, mutation, or focus management — no risk surface for regressions in create paths.
+- Browser-level visual verification was not run (no UI test environment per CLAUDE.md). The Tailwind classes used are all standard utility values (no custom CSS); behavior follows directly from the class definitions.
+
+#### Find Next Available → Find Availability — dispatcher-controlled gap picker (2026-04-26)
+
+Replaced the auto-pick "Find next available" button on the Create New Job modal with a dispatcher-controlled inline panel. The previous implementation called `findNextAvailableSlot` and silently filled the form with the earliest-start match across all techs (or the user's pre-selected tech) — opaque, fragile, and easy to misinterpret as "the system already scheduled something." The new flow surfaces every tech's open windows for the selected date and requested duration, grouped by technician; the dispatcher chooses; clicking only prefills the form. No save, no auto-assign.
+
+**Audit findings (verified before changing code):**
+- The old `findAvailableMutation` in `client/src/components/QuickAddJobDialog.tsx` (lines 1110-1175) was form-fill only — it never persisted anything to the backend. The user's "auto-assign" concern was about UX feeling silently authoritative, not an actual hidden write. (Confirmed by tracing the click handler — only `setScheduleValue` and a toast.)
+- The capacity feed is already date-aware (`/api/dashboard/capacity?date=YYYY-MM-DD`, see `server/routes/dashboard.ts:111-123`) and the client query already passes the selected date (`capacityQueryDate` query-key), so no backend change is required.
+- `computeOpenGapsForTech` in `client/src/lib/findNextAvailableSlot.ts:223-268` already returns full open windows when called with `requestedDurationMinutes: 0` — exactly the structure the new panel needs to display "8:00 AM – 11:30 AM · 3.5h open".
+- `EditVisitModal` and `SlotQuickCreateLauncher` do not currently expose a Find Next Available affordance. Only `QuickAddJobDialog` did, so only that surface needs the redesign.
+
+**Helper changes (`client/src/lib/findNextAvailableSlot.ts`):**
+- New `TechAvailability` type: `{ technicianId, technicianName, gaps: OpenGap[] }`.
+- New `groupOpenGapsByTech(capacity, requestedDurationMinutes, options)` helper. For each technician in `capacity.technicians`, calls the existing `computeOpenGapsForTech(tech, 0, options)` to get the full open windows for the day, then filters to windows ≥ requested duration. Honors `preferredTechnicianIds` (when set, returns only those techs). Sorts groups by their earliest first-window start, with technician name as tiebreaker. Empty arrays returned for null/undefined capacity. **No new busy/window math** — reuses the canonical primitive that already powers `findNextAvailableSlot` and the per-tech suggestion chips.
+
+**UI changes (`client/src/components/QuickAddJobDialog.tsx`):**
+- **Renamed** "Find next available" → "Find Availability". `data-testid` updated `button-find-next-available` → `button-find-availability`.
+- **Removed** the `findAvailableMutation` (~65 lines deleted) and the auto-pick / "Slot found" toast / "No open slot on …" failure-toast logic. Imports of `findNextAvailableSlot` and `apiRequest` (where unused) cleaned up.
+- **Added** `availabilityPanelOpen` boolean state — clicking the button toggles the inline panel; nothing else.
+- **Added** an `availabilityGroups` `useMemo` that derives the groups from the cached `capacityData` (no extra fetch). Anchors `now=0` for future-date searches (so the full workday is evaluated), `Date.now()` for today (so past slots are clipped). Uses `groupOpenGapsByTech` and respects the dispatcher's pre-selected tech via `preferredTechnicianIds`.
+- **Added** an inline expandable panel (`<div id="find-availability-panel">`) below the button. Header line: `Availability for {date} · {duration}h` + Close button. Body: one tech-block per `availabilityGroups` entry — tech name, then a wrap-flex of gap pills labelled `8:00 AM – 11:30 AM · 3.5h open`. Empty state: `No matching availability for {date}.` Loading state when `capacityData` is undefined: `Loading availability…`. Lightweight chrome (`bg-slate-50/70 rounded-md border`) — never a modal-on-modal.
+- **Added** `applyAvailabilityGap(techId, gap)` callback. On click of a gap pill: sets `scheduleValue.{date, time, durationMinutes, assignedTechnicianIds, isAllDay, unscheduled: false}`, marks the start time as user-dirty (so subsequent date changes don't auto-shift it), and closes the panel. The applied duration is the dispatcher's requested duration (e.g. 1h), not the gap's full extent (e.g. 3.5h) — the gap's extent is just informational headroom. The dispatcher can still nudge the start time manually afterwards. **No save** — the actual create still goes through the existing Create Job button.
+
+**Tests added (`tests/find-next-available-slot.test.ts`):**
+- `groupOpenGapsByTech` — empty/null capacity returns `[]`.
+- Groups every tech's open windows; drops techs with no fitting window (Bob fully booked → not in result).
+- Filters out windows shorter than the requested duration (30-min gap dropped when asking for 60 min).
+- Today (now=1:50 PM) excludes past-time windows — clipped window starts at 13:50.
+- Future date (`now: 0`) does not clip morning availability.
+- Honors `preferredTechnicianIds` — restricts groups to those techs only.
+- Sorts groups by earliest first-window start, then by name on tie.
+- Static-grep regression guard: the QuickAddJobDialog "Find Availability" button's `onClick` only toggles `setAvailabilityPanelOpen`; the surrounding `<Button>` block must NOT contain a `.mutate(` call. (Locks the no-auto-save invariant.)
+
+**What's preserved unchanged:**
+- The per-tech availability suggestions chip row (lights up when ONE tech is selected + a date is set, shows top start times via `computeOpenGapsForTech`). It's a controlled, dispatcher-driven helper for the single-tech case and remains untouched.
+- The non-blocking conflict warning when the chosen tech overlaps another visit.
+- `findNextAvailableSlot` itself — still exported, still tested, still used by anything that wants a single best-pick (no current callers in the dialog after this change). Safe to leave for back-compat or future surfaces.
+- `EditVisitModal`, `SlotQuickCreateLauncher`, the dispatch board — none of them invoked Find Next Available; none changed.
+- Backend routes, capacity payload shape, scheduling rules, permissions, tenant scoping.
+
+**Files changed:**
+- `client/src/lib/findNextAvailableSlot.ts` — new `TechAvailability` type and `groupOpenGapsByTech` helper.
+- `client/src/components/QuickAddJobDialog.tsx` — rebuilt the Find Availability flow (state + memo + apply callback + panel JSX); removed the auto-pick mutation; updated imports.
+- `tests/find-next-available-slot.test.ts` — added a `groupOpenGapsByTech` describe block (8 cases) plus the no-auto-save grep guard.
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None.
+
+### Fixed
+
+#### Create New modal — Find Next Available now respects the selected date (2026-04-26)
+
+**Bug**: When the dispatcher selected tomorrow (or any future date) on the Create New Job modal and clicked "Find next available," the modal returned `"No open slot today"` even when the selected technician clearly had open time on that future date. Per-tech availability suggestions and the inline conflict warning were also gated to today only — they never lit up for future-date jobs.
+
+**Root cause**: `/api/dashboard/capacity` was hardcoded to today via `getTodayCapacity(companyId)` with no date input. The client query was correspondingly date-blind (`queryKey: ["/api/dashboard/capacity"]` with a fixed URL). When the user picked tomorrow, `findNextAvailableSlot` was running over today's workday + booked blocks, found no fitting gap (because today was almost over), and produced the misleading "today" toast. The earlier 2026-04-26 v7 work also explicitly gated suggestions / conflict warning behind `isScheduledForToday` because the server had no date-aware feed to fall back on.
+
+**Fix** — three coordinated changes, all reusing canonical paths:
+
+1. **Server (`server/routes/dashboard.ts`)** — `/api/dashboard/capacity` accepts `?date=YYYY-MM-DD`. The handler builds a noon-UTC anchor for the requested calendar day and threads it into the existing `getTodayCapacity(companyId, now)` `now` parameter. That single Date already drives the `getStartOfDayInTimezone` / `getStartOfNextDayInTimezone` window math in `server/storage/capacity.ts`, so no new code paths are added inside the storage layer. Without `?date`, behavior is byte-identical to before (Dashboard "Today's Capacity" card unaffected). Auth/tenant scoping unchanged. The `state` and `slot` fields the function emits are still computed using `now` as the wall-clock anchor, so they may be stale when `?date` points to a future day — but the only caller that reads `?date` is the Create New Job modal, which consumes only `workday` + `scheduleBlocks` (date-bounded, complete, `now`-independent).
+
+2. **Client (`client/src/components/QuickAddJobDialog.tsx`)** — capacity query keyed on `["/api/dashboard/capacity", scheduleValue.date]` so React Query refetches when the user moves between today / tomorrow / next week. URL adds `?date=YYYY-MM-DD` when a date is selected; falls back to today's URL when unscheduled. `findNextAvailableSlot` is called with a date-aware `now`:
+   - Selected date is today (or unscheduled): `now = Date.now()` — past time clipping preserved per spec ("never return past slots for today").
+   - Selected date is in the future: `now = 0` — anchors before any conceivable workday-start so the helper does not clip the morning gaps.
+   The same `now` selection feeds `computeOpenGapsForTech` for the suggestion chips, so suggestions also surface for future dates. Suggestions and conflict warning no longer require `isScheduledForToday` — they simply require capacity for the chosen day, which is now always fetchable.
+
+3. **Toast copy** — the "no slot" toast now names the actual selected date:
+   - `"No open slot on Apr 27"` (with date)
+   - `"No open slot today"` only when the search ran without a selected date.
+   The "Slot found" toast also names the date the slot is on (`"Tech 1 · 9:00 AM (Apr 27)"`) so the dispatcher gets unambiguous confirmation when the system-chosen slot lands on a different day than they originally typed.
+
+**Files changed**:
+  - `server/routes/dashboard.ts` — `/capacity` route accepts `?date`; new `buildCapacityDateAnchor()` helper.
+  - `client/src/components/QuickAddJobDialog.tsx` — date-keyed `useQuery`, future-date-aware `nowMs`, suggestions/conflict warning ungated, date-specific toast copy. Removed the unused `isScheduledForToday` derivation.
+
+**Manual / spot-check results**:
+  - `npm run check` passes cleanly.
+  - Standalone tsx spot-check (7/7 passing): future-date `now=0` returns morning gap; future-date 4-hour duration fits in the 5-hour pre-booking window; `computeOpenGapsForTech` enumerates correctly for tomorrow; today regression still clips past time (late-evening returns null; midday clips to nowMs, not workStart).
+  - Server-side anchor verification across Toronto / Los_Angeles / London (4/4 passing): noon-UTC anchor for `"2026-04-27"` produces correct dayStart in each tz.
+  - The dispatch board reads `/api/dashboard/capacity` without `?date`, so it continues to receive today's payload — no behavioral drift between the two surfaces for the same day.
+  - "Find next available" never returns a past slot: the today path uses `now = Date.now()` which the existing `Math.max(workStart, nowMs)` clip prevents from going backwards.
+
+#### PWA stale-deploy after Render builds — desktop + iPad both stuck on old bundle (2026-04-26)
+
+After every Render deploy, users on desktop Chrome AND iPad Safari kept seeing the old frontend until they cleared site data — sometimes for hours. Symptoms: blank screens, React #310 errors, "lazy chunk failed" console errors. Root cause was on the server side, not the SW: `serveStatic` in `server/vite.ts` was calling bare `express.static(distPath)` with no `setHeaders`. Express defaults to NO `Cache-Control` header on static files, so every browser was free to apply heuristic caching. Modern browsers (Safari aggressively, Chrome/Firefox under disk pressure) cache `index.html` for hours under those rules. Stale `index.html` referenced asset hashes that Vite's `emptyOutDir: true` had already purged from the new build → mixed-bundle runtime failures.
+
+**1. Server cache header policy (`server/vite.ts`).** Replaced the bare static handler with three layers:
+  - `/assets/*` → `Cache-Control: public, max-age=31536000, immutable`. Vite emits hashed filenames into this directory; the hash IS the cache key, so caching forever is correct.
+  - Everything else under `dist/public` runs through a `setHeaders` callback. An `isUpdateSensitive(filePath)` predicate matches `index.html`, `sw.js`, `service-worker.js`, `manifest.webmanifest`, and `workbox-*` and sets `Cache-Control: no-cache, no-store, must-revalidate` + `Pragma: no-cache` + `Expires: 0`. The Pragma/Expires duo handles legacy intermediaries and older Safari builds where `Cache-Control` alone was historically ignored.
+  - SPA fallback `app.get("*", ...)` now sets the same no-cache trifecta BEFORE `res.sendFile(distPath/index.html)`. Without this, navigations that fall through to the SPA route would re-leak the cache window the static layer just closed.
+
+**2. Client SW visibility-driven update check (`client/src/components/PwaUpdatePrompt.tsx`).** The hourly `setInterval(registration.update, 60min)` poll never fires while the iPad PWA is suspended in the background. Added a `visibilitychange` listener that calls `registration.update()` the moment `document.visibilityState === "visible"` — the user returns to the app, the SW immediately checks for a new build. The hourly interval stays as a belt-and-suspenders for desktop tabs that never lose focus.
+
+**3. Auto-reload guard preserved (`PwaUpdatePrompt.tsx`).** The `controllerchange` listener + `__syntraro_sw_reloaded__` sessionStorage flag are unchanged — when the new SW claims the client, we trigger ONE hard reload so the page re-bootstraps against the new `index.html` and the new hashed chunks. The session flag prevents reload loops if the SW updates again later in the same tab.
+
+**4. Secondary "Update available" banner.** Added as a fallback for the rare iOS PWA case where the OS parks the SW between sessions and a new worker stays in `waiting` state past 5s without claiming. Banner uses `data-testid="pwa-update-banner"`, `role="status"`, `aria-live="polite"`. Tap Refresh → calls the canonical `updateServiceWorker(true)` from `virtual:pwa-register` (posts SKIP_WAITING + reloads). Falls back to a plain `window.location.reload()` if the helper isn't available. The cache-header fix and visibility-driven update check are the load-bearing pieces; the banner only renders when those still leave the user stuck.
+
+**Why this fixes both desktop and iPad:**
+  - **Desktop Chrome/Firefox/Edge.** The cache headers force the browser to revalidate `index.html` and `sw.js` on every request. After a deploy, the next page load gets the new HTML referencing the new hashed chunks; the new SW installs and claims; `controllerchange` fires; we reload once into the new bundle.
+  - **iPad Safari (PWA mode).** Cache headers do the same revalidation when the network round-trip happens. Plus, when the app is suspended and refocused (the iPad PWA's typical lifecycle), `visibilitychange` triggers the SW update check immediately instead of waiting for the next hourly tick — which never fires because the JS context was suspended.
+  - **Hashed assets stay fast.** Only entrypoints get no-cache; `/assets/*` is still cached for a year, so repeat-visit performance is unchanged.
+
+**Files changed**:
+  - `server/vite.ts` — three-layer cache policy in `serveStatic`; SPA fallback sets no-cache before sendFile.
+  - `client/src/components/PwaUpdatePrompt.tsx` — added `visibilitychange` listener, secondary banner with `useState`, captured `updateSW` for the Refresh button; preserved `controllerchange` reload guard.
+  - `tests/find-next-available-slot.test.ts` — 11 new source-level guards covering the cache headers, the predicate's entrypoint coverage, the SPA fallback ordering, the visibilitychange listener, the controllerchange + RELOAD_FLAG guard, the unmount cleanup, and the banner test ids.
+
+**No backend API changes. No routing changes. No `render.yaml` changes (none exists). PWA stays enabled.**
+
+**Verification**:
+  - Desktop Chrome: deploy → DevTools Network → reload — `index.html` and `sw.js` show `Cache-Control: no-cache, no-store, must-revalidate` and a 200 (not 200 from disk cache); `/assets/*.js` show the immutable header. SW updates and the page hard-reloads once into the new bundle.
+  - iPad Safari (PWA): deploy → background the app → reopen — visibilitychange triggers update; new SW claims; one reload puts you on the new bundle. No need to clear site data.
+  - `npm run check` clean. `vitest run tests/find-next-available-slot.test.ts` → 92/92 passing.
+
+### Changed
+
+#### Create New modal — smart scheduling defaults + per-tech availability + conflict warning (2026-04-26)
+
+Three coordinated upgrades to the Create New Job tab so dispatchers stop fighting a stale 9:00 AM default and stop having to alt-tab to the dispatch board to spot conflicts. Pure client work — no new endpoints, no schema changes, no migrations.
+
+**1. Smart default Start time.** The previous code defaulted Start to literal `"09:00"` whenever the modal switched to scheduled, even when the dispatcher was creating a same-day job at 8 PM. Two new helpers in `client/src/lib/schedulingConstants.ts`:
+
+  - `roundUpTimeToInterval(hours, minutes, intervalMinutes)` → `{ time, nextDay }`: pure function that rounds wall-clock UP to the next interval boundary. Wraps to `"00:00"` with `nextDay: true` past midnight.
+  - `getWallClockInTimezone(now, timezone)` → `{ ymd, hours, minutes }`: extracts company-tz wall clock from a JS `Date` via `Intl.DateTimeFormat`. Falls back to browser-local on Intl errors / missing tz.
+  - `getSmartScheduleDefault({ targetDateYmd?, now?, timezone?, intervalMinutes?, businessStart? })` → `{ date, time }`: today → round current wall-clock UP to the next `SMART_DEFAULT_ROUNDING_MINUTES` (60-minute) boundary; future date → `BUSINESS_DAY_START_TIME` (`"09:00"`); cross-midnight rolls the date forward by one day.
+
+  Wired through `QuickAddJobDialog`:
+  - `handleUnscheduledChange(false)` calls `getSmartScheduleDefault()` instead of hardcoding `"09:00"`.
+  - New `handleDateChange(newYmd)` recomputes Start from `getSmartScheduleDefault({ targetDateYmd: newYmd })` whenever the user picks a new date AND has not manually edited Start (see dirty flag below).
+  - Company timezone read from the live `/api/dashboard/capacity` payload (`capacityData.timezone`) — same authoritative source used by the dispatch board / "Today's Schedule" rail. Browser tz is only the fallback.
+
+**2. Start-time dirty flag.** `startTimeDirty` flips `true` on:
+  - any manual `<input type="time">` edit
+  - dispatch-slot prefill (`initialSchedule` arrives) — the user already chose this slot on the dispatch board, so subsequent date edits must not overwrite it
+  - "Find next available" returns a slot — system-chosen but treat as user-chosen for stability
+  
+  While dirty, `handleDateChange` only updates date and leaves time alone. Reset to `false` on Unscheduled toggle and on modal close. Implements the spec rule: *"If user manually changes start time, do not overwrite it unless they change date back to today and field is still untouched/defaulted."*
+
+**3. Per-tech availability suggestions.** Two new exports from `client/src/lib/findNextAvailableSlot.ts` extracted from the existing `findNextAvailableSlot` algorithm — single source of truth, no duplicate gap math:
+
+  - `computeOpenGapsForTech(tech, requestedDurationMinutes, options?)` → `OpenGap[]`: enumerates every fitting gap in the tech's day, in chronological order, past-time-clipped at `options.now`.
+  - `getOverlappingBookedBlocks(tech, startMs, endMs)` → `CapacityBlock[]`: returns the booked rows that overlap a proposed range. Edge-touching is NOT overlap (matches the dispatch board's `dispatchOverlapUtils.rangesOverlap` semantics).
+  - Internal helper `buildBusyForTech(tech, nowMs)` consolidated so `findNextAvailableSlot` and `computeOpenGapsForTech` walk identical busy intervals — they can never disagree on what counts as busy.
+  - `CapacityResponse` type extended with `timezone?: string` (the server has emitted it since 2026-04; the client type was just lagging).
+
+  Wired into `QuickAddJobDialog`:
+  - `useQuery({ queryKey: ["/api/dashboard/capacity"], staleTime: 30s, enabled: open && !isEditMode })` keeps a single capacity payload alive for the modal's lifetime. Powers (a) suggestions, (b) conflict warning, AND (c) the existing "Find next available" button — one network call, three surfaces.
+  - When ONE technician is selected and the date is today (in company tz), the schedule row renders up to 3 earliest gaps as inline buttons: `Available: 9:00 PM, 10:00 PM, 11:00 PM`. Clicking applies date + time and flips `startTimeDirty=true`.
+  - When the selected tech has zero fitting gaps, renders `"No open slot for this duration."` per spec — never blocks manual entry.
+  - Multi-tech selection collapses to no suggestions — the "open slot for X" mental model only makes sense for one person at a time.
+  - Future dates: no suggestions (canonical capacity is today-only by design — `getTodayCapacity()`). Documented in `findNextAvailableSlot.ts`.
+
+**4. Non-blocking conflict warning.** Below the schedule grid, a compact amber banner renders when the user's selected (date + start + duration) overlaps another booked block for the chosen technician:
+
+  > ⚠ This overlaps another scheduled visit for **[Name]**. Review dispatch board.
+
+  - Recomputes via `useMemo` on changes to assignee / date / start / duration / unscheduled.
+  - Never gates Submit — Create Job remains enabled. Implements the spec's "allow scheduling anyway" rule.
+  - Uses `getOverlappingBookedBlocks` against the same capacity payload — no parallel busy-interval layer, no `/api/calendar` re-fetch.
+
+**5. Find Next Available reuses the live capacity feed.** Previously the button click triggered a fresh fetch via `useMutation({ mutationFn: () => apiRequest(...) })`. Now it reads `capacityData` from the cached query and only refetches if the cache is empty. Same toast UX, half the network traffic when the user has been hovering in the modal.
+
+**Architecture notes / what we deliberately didn't do**:
+  - No new server route. `/api/dashboard/capacity` already returns workday + booked blocks per schedulable tech with company-tz alignment — every new feature reads from that.
+  - No parallel busy-interval layer for future dates. The audit confirmed `getTodayCapacity()` is today-scoped by design (`getStartOfDayInTimezone` + `getStartOfNextDayInTimezone`); rather than fork the helper or fetch `/api/calendar` twice, future-date suggestions/conflict checks simply don't render. The "Find next available" button still works because it always operates on today.
+  - No change to `dispatchOverlapUtils.ts`. Dispatch-board overlap math operates on `DispatchVisit`/`DispatchTask` minutes-from-midnight; capacity overlap operates on ISO instants. Both share the exclusive-boundary semantics; only the input shape differs.
+  - Off-shift technicians naturally collapse to "no suggestions" — `getTodayCapacity` already excludes them via `filterSchedulableTechnicians`, so they never appear in `capacityData.technicians`. Manual scheduling against an off-shift tech remains allowed (no client guard).
+  - "Find next available" continues to clip past time via the same `nowMs` Math.max in `buildBusyForTech` — guaranteed never to return a past slot.
+
+**Files changed**:
+  - `client/src/lib/schedulingConstants.ts` — added `SCHEDULING_INTERVAL_MINUTES`, `SMART_DEFAULT_ROUNDING_MINUTES`, `BUSINESS_DAY_START_TIME`, `roundUpTimeToInterval`, `getWallClockInTimezone`, `getSmartScheduleDefault`.
+  - `client/src/lib/findNextAvailableSlot.ts` — added `OpenGap` type, `computeOpenGapsForTech`, `getOverlappingBookedBlocks`, internal `buildBusyForTech` consolidation; `CapacityResponse.timezone` added.
+  - `client/src/components/QuickAddJobDialog.tsx` — replaced hardcoded `"09:00"`, added `startTimeDirty` flag, persistent capacity query, `handleDateChange`, suggestion chips UI, conflict warning UI, `applySuggestion`, refactored `findAvailableMutation` to reuse the live cache.
+
+**Test plan (manual)**:
+  1. Open Create New → Job tab at 8:41 PM today → Start defaults to 9:00 PM (✓ verified via standalone spot-check).
+  2. Pick a future date → Start defaults to 9:00 AM (✓).
+  3. Set time manually to 14:30, change date to next week → Start stays 14:30 (dirty flag honored).
+  4. Toggle Unscheduled on then off → Start re-defaults via smart helper (dirty flag reset).
+  5. Pick a single tech with open gaps for today → "Available: …" chips appear; clicking one applies date+time.
+  6. Pick a tech with no fitting gaps → "No open slot for this duration." renders.
+  7. Manually pick a time that overlaps the chosen tech's existing visit → amber warning appears; Create Job button stays enabled.
+  8. Open the modal from a dispatch board slot → prefilled date/start/tech preserved; warning still recomputes if relevant.
+  9. Find Next Available → never returns a past slot (✓ verified via spot-check `now > end-of-workday` → null).
 
 #### Edit Visit modal — service suggestions + duration-driven schedule (2026-04-26)
 

@@ -195,7 +195,8 @@
       "Bash(DATABASE_URL=$\\(node --env-file=.env -e \"console.log\\(process.env.DATABASE_URL\\)\"\\) npx vitest run tests/visit-editor-payload-builder.test.ts tests/find-next-available-slot.test.ts)",
       "Bash(DATABASE_URL=$\\(node --env-file=.env -e \"console.log\\(process.env.DATABASE_URL\\)\"\\) npx vitest run tests/visit-editor-payload-builder.test.ts)",
       "Bash(DATABASE_URL=$\\(node --env-file=.env -e \"console.log\\(process.env.DATABASE_URL\\)\"\\) npx vitest run tests/find-next-available-slot.test.ts tests/canonical-policy-architecture.test.ts)",
-      "Bash(DATABASE_URL=$\\(node --env-file=.env -e \"console.log\\(process.env.DATABASE_URL\\)\"\\) npx vitest run tests/canonical-policy-architecture.test.ts)"
+      "Bash(DATABASE_URL=$\\(node --env-file=.env -e \"console.log\\(process.env.DATABASE_URL\\)\"\\) npx vitest run tests/canonical-policy-architecture.test.ts)",
+      "Bash(DATABASE_URL=\"postgres://stub:stub@localhost:5432/stub\" npx vitest run tests/find-next-available-slot.test.ts --no-coverage)"
     ]
   }
 }
