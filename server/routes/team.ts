@@ -21,6 +21,7 @@ import {
   logRoleChanged,
   logUserEnabled,
   logUserDisabled,
+  logAuditEvent,
 } from "../services/auditService";
 import { getRolesWithPermissions } from "../permissions";
 import { filterSchedulableTechnicians } from "../domain/scheduling";
@@ -987,6 +988,19 @@ router.patch(
         override: action, // "grant" | "revoke"
       });
     }
+
+    // 2026-04-26 — Audit row for the privileged override write. Mirrors
+    // the audit pattern used by the role-change route (logRoleChanged).
+    // Non-blocking: auditService swallows DB errors internally so the
+    // caller never sees a partial-write situation here.
+    await logAuditEvent({
+      companyId,
+      actorUserId,
+      targetUserId: userId,
+      action: "PERMISSION_OVERRIDE_CHANGED",
+      metadata: { permissionKey, action },
+      req,
+    });
 
     // Evict the in-memory effective-permission cache for this user so the
     // next requirePermission() read sees the change immediately.

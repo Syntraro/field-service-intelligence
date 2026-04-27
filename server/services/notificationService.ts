@@ -42,14 +42,6 @@ interface JobScheduledParams {
   isReschedule?: boolean;
 }
 
-interface SlaBreachParams {
-  companyId: string;
-  jobId: string;
-  jobNumber: string;
-  clientName: string;
-  daysPending: number;
-}
-
 interface QboFailureParams {
   companyId: string;
   entityType: string;
@@ -172,40 +164,6 @@ export async function emitJobScheduled(params: JobScheduledParams): Promise<void
     relatedEntityType: "job",
     relatedEntityId: jobId,
   });
-}
-
-/**
- * Emit notification for SLA breach (job stuck in action_required)
- */
-export async function emitSlaBreachNotification(params: SlaBreachParams): Promise<void> {
-  const { companyId, jobId, jobNumber, clientName, daysPending } = params;
-
-  const type: NotificationType = "sla_breach";
-  const title = `SLA Alert: Job #${jobNumber}`;
-  const body = `Job at ${clientName} has been pending action for ${daysPending} day${daysPending === 1 ? "" : "s"}.`;
-  const linkUrl = `/jobs/${jobId}`;
-  // Daily dedupe - only one notification per day per job
-  const today = new Date().toISOString().split("T")[0];
-  const dedupeKey = `sla_breach_${jobId}_${today}`;
-
-  // Get office staff to notify
-  const officeUsers = await notificationRepository.getUsersByRole(companyId, OFFICE_ROLES);
-
-  if (officeUsers.length > 0) {
-    await notificationRepository.createNotificationsForUsers(
-      companyId,
-      officeUsers.map((u) => u.id),
-      {
-        type,
-        title,
-        body,
-        linkUrl,
-        dedupeKey,
-        relatedEntityType: "job",
-        relatedEntityId: jobId,
-      }
-    );
-  }
 }
 
 /**
@@ -593,28 +551,6 @@ export async function emitVisitScheduleChange(
   );
 }
 
-/**
- * Emit a generic system notification
- */
-export async function emitSystemNotification(
-  companyId: string,
-  userIds: string[],
-  title: string,
-  body: string,
-  linkUrl?: string,
-  dedupeKey?: string
-): Promise<void> {
-  if (userIds.length === 0) return;
-
-  await notificationRepository.createNotificationsForUsers(companyId, userIds, {
-    type: "system",
-    title,
-    body,
-    linkUrl,
-    dedupeKey,
-  });
-}
-
 // ============================================================================
 // Export Service Object
 // ============================================================================
@@ -622,9 +558,7 @@ export async function emitSystemNotification(
 export const notificationService = {
   emitQuoteStatusChange,
   emitJobScheduled,
-  emitSlaBreachNotification,
   emitQboFailureNotification,
-  emitSystemNotification,
   emitVisitAssignmentChange,
   emitVisitScheduleChange,
 };

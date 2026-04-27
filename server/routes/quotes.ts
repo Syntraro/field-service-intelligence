@@ -247,7 +247,11 @@ router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authed
   res.json(updated);
 }));
 
-// DELETE /api/quotes/:id - Delete a quote (draft only)
+// DELETE /api/quotes/:id - Permanent-delete a quote (draft + non-converted only)
+//
+// 2026-04-26: switched to permanent-delete (matches invoice baseline 2026-04-09).
+// quote_lines + quote_notes cascade-delete via their FK on quotes.id.
+//
 // LEAD HARDENING: Deleting a quote does NOT auto-revert lead.status.
 // This is intentional — lead attribution is forward-only. If a draft quote linked to a lead
 // is deleted, the lead retains its 'quoted' status and convertedQuoteId. An admin must
@@ -262,12 +266,22 @@ router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authe
     throw createError(404, "Quote not found");
   }
 
-  // Only allow deleting draft quotes
-  if (!isQuoteDraft(quote.status)) {
-    throw createError(409, "Only draft quotes can be deleted");
+  // Permanent-delete precondition: only draft, non-converted quotes are deletable.
+  if (!isQuoteDraft(quote.status) || quote.convertedToJobId) {
+    throw createError(
+      409,
+      "Only draft, non-converted quotes can be deleted",
+      "QUOTE_NOT_DELETABLE",
+    );
   }
 
-  await quoteRepository.deleteQuote(companyId, quoteId);
+  const deleted = await quoteRepository.deleteQuote(companyId, quoteId);
+  if (!deleted) {
+    // Storage WHERE clause re-checks the precondition; reaching here means a
+    // concurrent status change won the race. Same 409 mapping.
+    throw createError(409, "Only draft, non-converted quotes can be deleted", "QUOTE_NOT_DELETABLE");
+  }
+
   res.json({ success: true });
 }));
 
@@ -814,7 +828,11 @@ router.post("/:id/decline", requireRole(MANAGER_ROLES), asyncHandler(async (req:
     assessmentStatus: null,
   } as any);
 
-  // Emit notification for quote decline
+  // Emit notification for quote decline. Best-effort: failure is logged
+  // with structured context (matches the pattern used inside
+  // notificationService.ts:333,345) but never propagates — the decline
+  // write already succeeded and the response should not depend on
+  // notification fan-out.
   const customerName = quoteDetails.customerCompany?.name || quoteDetails.location?.companyName || "Customer";
   notificationService.emitQuoteStatusChange({
     companyId,
@@ -822,7 +840,15 @@ router.post("/:id/decline", requireRole(MANAGER_ROLES), asyncHandler(async (req:
     quoteNumber: quote.quoteNumber || "N/A",
     customerName,
     action: "declined",
-  }).catch((err) => console.error("Failed to emit quote declined notification:", err));
+  }).catch((err) => {
+    console.error("[quotes.decline] emitQuoteStatusChange failed", {
+      companyId,
+      quoteId,
+      quoteNumber: quote.quoteNumber || null,
+      action: "declined",
+      err,
+    });
+  });
 
   res.json(updated);
 }));

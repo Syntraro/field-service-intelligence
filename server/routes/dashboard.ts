@@ -7,7 +7,7 @@
 
 import { Router } from "express";
 import type { Response } from "express";
-import { getWorkflowSummary, getNeedsAttentionJobs, getFinancialSummary } from "../storage/dashboard";
+import { getWorkflowSummary, getNeedsAttentionJobs, getFinancialSummary, getPMDueInstances } from "../storage/dashboard";
 import { getTodayVisitSummary } from "../storage/todaySummary";
 import { getTodayCapacity } from "../storage/capacity";
 import { getQueryCtx } from "../lib/queryCtx";
@@ -68,6 +68,26 @@ router.get("/today-summary", asyncHandler(async (req: AuthedRequest, res: Respon
   const companyId = req.companyId!;
   const summary = await getTodayVisitSummary(companyId);
   res.json(summary);
+}));
+
+/**
+ * GET /api/dashboard/pm-due-instances
+ *
+ * 2026-04-26: Drill-down rows for the dashboard "Requires attention"
+ * bucket — preventive-maintenance instances that are eligible for job
+ * generation but have not been generated yet. The row filter mirrors
+ * `getPMCounts().awaitingGenerationCount` exactly so the tile count and
+ * this list stay in lockstep. Tenant-scoped via `getQueryCtx`. Each row
+ * carries the instance id, the template id (for "View PM" navigation),
+ * customer / location identity, and an `isOverdue` flag the modal uses
+ * to colour-tag the row. Generation itself still routes through the
+ * canonical `POST /api/recurring-templates/generate-selected` endpoint.
+ */
+router.get("/pm-due-instances", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const ctx = getQueryCtx(req);
+  const limit = req.query.limit ? Math.min(parseInt(String(req.query.limit), 10) || 50, 100) : 50;
+  const data = await getPMDueInstances(ctx, limit);
+  res.json({ data });
 }));
 
 /**

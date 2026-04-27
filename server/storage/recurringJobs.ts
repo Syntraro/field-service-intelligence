@@ -179,6 +179,14 @@ export class RecurringJobsRepository extends BaseRepository {
       // PM Phase 3: Service window
       serviceWindowDaysBefore?: number;
       serviceWindowDaysAfter?: number;
+      // PM Billing Disposition: Contract-level billing rules.
+      // 2026-04-26: Added to createTemplate so the new Create Maintenance Plan
+      // wizard can persist Pricing & Contract on initial save (these were
+      // already accepted by Zod and persisted on update, but were silently
+      // dropped on insert).
+      pmBillingModel?: string | null;
+      pmBillingLabel?: string | null;
+      pmContractAmount?: string | null;
     }
   ): Promise<RecurringJobTemplate> {
     this.assertCompanyId(companyId);
@@ -217,6 +225,10 @@ export class RecurringJobsRepository extends BaseRepository {
         serviceWindowDaysBefore: data.serviceWindowDaysBefore ?? 7,
         serviceWindowDaysAfter: data.serviceWindowDaysAfter
           ?? (this.isPmLikeTemplate(data) ? 14 : 0),
+        // PM Billing Disposition (persisted on insert as of 2026-04-26)
+        pmBillingModel: data.pmBillingModel ?? null,
+        pmBillingLabel: data.pmBillingLabel ?? null,
+        pmContractAmount: data.pmContractAmount ?? null,
       })
       .returning();
 

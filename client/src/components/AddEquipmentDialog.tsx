@@ -5,7 +5,7 @@
  * Extracted from EquipmentPicker to enable reuse across equipment surfaces.
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -39,11 +39,24 @@ interface AddEquipmentDialogProps {
   onOpenChange: (open: boolean) => void;
   /** Called with the newly created equipment record on success */
   onCreated?: (created: { id: string; name: string }) => void;
+  /** Optional: prefill the Name field on open. Used by the QuickAddJob
+   *  Equipment combobox so the user's typed text flows through into the
+   *  create dialog ("Create equipment: 'X'" → opens this with `name=X`). */
+  defaultName?: string;
 }
 
-export function AddEquipmentDialog({ locationId, open, onOpenChange, onCreated }: AddEquipmentDialogProps) {
+export function AddEquipmentDialog({ locationId, open, onOpenChange, onCreated, defaultName }: AddEquipmentDialogProps) {
   const { toast } = useToast();
   const [form, setForm] = useState(emptyForm);
+
+  // Apply defaultName on open. We only seed when transitioning closed →
+  // open so the user's edits aren't blown away by re-renders.
+  useEffect(() => {
+    if (open) {
+      setForm({ ...emptyForm, name: defaultName ?? "" });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const resetAndClose = useCallback(() => {
     setForm(emptyForm);

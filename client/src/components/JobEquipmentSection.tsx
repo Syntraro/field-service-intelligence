@@ -30,6 +30,12 @@ interface JobEquipmentSectionProps {
   externalAddOpen?: boolean;
   /** Callback when the externally-triggered dialog closes */
   onExternalAddOpenChange?: (open: boolean) => void;
+  /**
+   * 2026-04-26: Optional count signal so a parent (e.g. Job Detail) can
+   * drive an "auto-collapse when empty" wrapper without duplicating the
+   * equipment query. Fired whenever the linked-equipment count changes.
+   */
+  onCountChange?: (count: number) => void;
 }
 
 // 2026-04-19 Equipment types are now tenant-owned (see equipment_types
@@ -58,7 +64,7 @@ const LEGACY_TYPE_LABELS: Record<string, string> = {
   other: "Other",
 };
 
-export default function JobEquipmentSection({ jobId, locationId, defaultOpen = false, hideAddButton = false, externalAddOpen, onExternalAddOpenChange }: JobEquipmentSectionProps) {
+export default function JobEquipmentSection({ jobId, locationId, defaultOpen = false, hideAddButton = false, externalAddOpen, onExternalAddOpenChange, onCountChange }: JobEquipmentSectionProps) {
   const { toast } = useToast();
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
@@ -83,6 +89,12 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
       return res.json();
     },
   });
+
+  // 2026-04-26: surface count to the parent (used by Job Detail's
+  // auto-collapse wrapper). Same query, no extra fetch.
+  useEffect(() => {
+    onCountChange?.(jobEquipment.length);
+  }, [jobEquipment.length, onCountChange]);
 
   const { data: locationEquipment = [], isLoading: locationEquipmentLoading } = useQuery<LocationEquipment[]>({
     // Phase 6 C3: Use correct /api/clients path to match server route

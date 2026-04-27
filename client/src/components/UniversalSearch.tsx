@@ -78,9 +78,9 @@ type PaletteItem =
  *   New Invoice      → setNewInvoiceModalOpen(true)    → onCreateInvoice
  *   New Quote        → setQuoteChooserOpen(true)       → onCreateQuote
  *   New Task         → setNewTaskOpen(true)            → onCreateTask
- *   New PM Contract  → setLocation("/pm/new")          → route
+ *   Create Maintenance Plan → setLocation("/pm/new")    → route
  *
- * PM Contract stays as a `route` entry because the "New" dropdown
+ * Maintenance Plan stays as a `route` entry because the "New" dropdown
  * itself uses `setLocation` — reusing the route is the canonical path.
  */
 function buildCommands(callbacks: {
@@ -89,6 +89,7 @@ function buildCommands(callbacks: {
   onCreateInvoice?: () => void;
   onCreateQuote?: () => void;
   onCreateTask?: () => void;
+  onCreateMaintenancePlan?: () => void;
 }): CommandItem[] {
   return [
     // Quick Actions — true create commands only (navigation lives in sidebar)
@@ -97,7 +98,7 @@ function buildCommands(callbacks: {
     { id: "create-invoice",     label: "Create Invoice",     keywords: ["new invoice", "add invoice", "bill"], icon: Plus, section: "action", action: callbacks.onCreateInvoice },
     { id: "create-quote",       label: "Create Quote",       keywords: ["new quote", "add quote", "estimate"], icon: Plus, section: "action", action: callbacks.onCreateQuote },
     { id: "create-task",        label: "Create Task",        keywords: ["new task", "add task", "supplier visit"], icon: Plus, section: "action", action: callbacks.onCreateTask },
-    { id: "create-pm-contract", label: "Create PM Contract", keywords: ["new contract", "add contract", "pm contract", "preventive maintenance contract"], icon: Plus, section: "action", route: "/pm/new" },
+    { id: "create-pm-contract", label: "Create Maintenance Plan", keywords: ["new contract", "add contract", "pm contract", "maintenance plan", "preventive maintenance"], icon: Plus, section: "action", action: callbacks.onCreateMaintenancePlan },
     // Navigation — these appear only when the user searches for them
     { id: "open-dispatch",  label: "Open Dispatch",  keywords: ["dispatch", "calendar", "schedule"], icon: LayoutGrid, section: "navigation", route: "/dispatch" },
     { id: "open-pm",        label: "Open PM",        keywords: ["pm", "preventive maintenance"], icon: Wrench, section: "navigation", route: "/pm" },
@@ -202,9 +203,11 @@ interface UniversalSearchProps {
   onCreateQuote?: () => void;
   /** Callback to open the create-task flow — mirrors "New Task" */
   onCreateTask?: () => void;
+  /** Callback to open the create-maintenance-plan chooser — mirrors "New Maintenance Plan" */
+  onCreateMaintenancePlan?: () => void;
 }
 
-export default function UniversalSearch({ onCreateJob, onCreateClient, onCreateInvoice, onCreateQuote, onCreateTask }: UniversalSearchProps = {}) {
+export default function UniversalSearch({ onCreateJob, onCreateClient, onCreateInvoice, onCreateQuote, onCreateTask, onCreateMaintenancePlan }: UniversalSearchProps = {}) {
   const [, setLocation] = useLocation();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -220,8 +223,8 @@ export default function UniversalSearch({ onCreateJob, onCreateClient, onCreateI
 
   // Build commands with create callbacks
   const commands = useMemo(
-    () => buildCommands({ onCreateJob, onCreateClient, onCreateInvoice, onCreateQuote, onCreateTask }),
-    [onCreateJob, onCreateClient, onCreateInvoice, onCreateQuote, onCreateTask],
+    () => buildCommands({ onCreateJob, onCreateClient, onCreateInvoice, onCreateQuote, onCreateTask, onCreateMaintenancePlan }),
+    [onCreateJob, onCreateClient, onCreateInvoice, onCreateQuote, onCreateTask, onCreateMaintenancePlan],
   );
 
   // ------ Command filtering ------

@@ -41,6 +41,16 @@ export interface ProductOption {
    * underneath the item name. Display-only; never reaches a save payload.
    */
   description?: string | null;
+  /**
+   * 2026-04-26: per-service default duration in minutes. Already populated
+   * via the Products & Services UI (column `items.estimated_duration_minutes`)
+   * but historically dropped at normalization. Surfacing it lets every service
+   * picker (Create Job, Edit Visit) auto-fill / auto-bump the schedule
+   * duration on add. Optional + nullable — products and services without a
+   * default duration set keep the field as `null` and consumers fall back
+   * to whatever default the surface uses.
+   */
+  estimatedDurationMinutes?: number | null;
 }
 
 // ── Search ──
@@ -61,9 +71,151 @@ export function useProductSearch(searchText: string, options?: { limit?: number;
   });
 }
 
+// ── Suggested-services (no-search-text) selector helper ──
+//
+// 2026-04-26: empty-state replacement for the "Type to search the service
+// catalog" empty state. When a service combobox opens with no typed text,
+// callers want the top N most-recently-used services (per tenant), with an
+// alphabetical fallback when the recency log is empty. No backend change —
+// recency lives in `localStorage` keyed by company id; `/api/items?type=service`
+// supplies the alphabetical universe.
+//
+// Recency is INTENTIONALLY namespaced by company id so a user logging into
+// Tenant B on the same browser doesn't see Tenant A's recent picks.
+
+const SERVICE_RECENCY_STORAGE_PREFIX = "syntraro:recent-services:";
+const SERVICE_RECENCY_MAX_ENTRIES = 50;
+
+function recencyStorageKey(companyId: string | null | undefined): string | null {
+  if (!companyId) return null;
+  return `${SERVICE_RECENCY_STORAGE_PREFIX}${companyId}`;
+}
+
+interface RecencyMap {
+  [serviceId: string]: number; // epoch ms of last use
+}
+
+function readRecencyMap(companyId: string | null | undefined): RecencyMap {
+  const key = recencyStorageKey(companyId);
+  if (!key || typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? (parsed as RecencyMap) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Mark `serviceId` as just-used for the current tenant. Trims the map to
+ * `SERVICE_RECENCY_MAX_ENTRIES` newest. Safe to call from a non-browser
+ * environment (no-op when `window` is undefined).
+ */
+export function recordServiceUsage(
+  companyId: string | null | undefined,
+  serviceId: string,
+): void {
+  const key = recencyStorageKey(companyId);
+  if (!key || !serviceId || typeof window === "undefined") return;
+  try {
+    const next = { ...readRecencyMap(companyId), [serviceId]: Date.now() };
+    const entries = Object.entries(next);
+    if (entries.length > SERVICE_RECENCY_MAX_ENTRIES) {
+      entries.sort((a, b) => b[1] - a[1]);
+      const trimmed = Object.fromEntries(entries.slice(0, SERVICE_RECENCY_MAX_ENTRIES));
+      window.localStorage.setItem(key, JSON.stringify(trimmed));
+      return;
+    }
+    window.localStorage.setItem(key, JSON.stringify(next));
+  } catch {
+    // Quota / private-mode failures are non-fatal — fall back silently to
+    // alphabetical-only ordering on next open.
+  }
+}
+
+/**
+ * Suggested-services hook for empty-state combobox panels. Fetches services
+ * from the canonical `/api/items?type=service` endpoint, applies a recency
+ * overlay sourced from `localStorage`, removes already-selected ids, and
+ * returns up to `limit` rows.
+ *
+ * Ordering rule: any service whose id appears in the recency map sorts
+ * first by `lastUsedAt DESC`, then any remaining services sort by `name
+ * ASC` (server already orders alphabetically). The result is a smooth
+ * "your most-used services first, then everything else" list.
+ */
+export function useTopServiceSuggestions(opts: {
+  companyId: string | null | undefined;
+  excludeIds: string[];
+  /** Description-fallback exclusion — matches services whose name was
+   *  hand-typed onto a job_part with `productId === null`. Case-insensitive. */
+  excludeDescriptions?: string[];
+  limit?: number;
+  enabled?: boolean;
+}) {
+  const { companyId, excludeIds, excludeDescriptions, limit = 3, enabled = true } = opts;
+
+  return useQuery<ProductOption[]>({
+    queryKey: ["/api/items", "service-suggestions", companyId ?? "anon"],
+    queryFn: async () => {
+      const res = await apiRequest<any>(`/api/items?type=service&limit=50`);
+      const rows = Array.isArray(res) ? res : (res?.data ?? res?.items ?? []);
+      const services: ProductOption[] = rows
+        .map(normalizeProductRow)
+        .filter((r: ProductOption) => r.type === "service");
+      return services;
+    },
+    enabled,
+    staleTime: 60_000,
+    select: (services) => {
+      const excludeIdSet = new Set(excludeIds.filter(Boolean));
+      const excludeNameSet = new Set(
+        (excludeDescriptions ?? [])
+          .map((d) => (d || "").trim().toLowerCase())
+          .filter((d) => d.length > 0),
+      );
+      const recency = readRecencyMap(companyId);
+
+      const eligible = services.filter((s) => {
+        if (excludeIdSet.has(s.id)) return false;
+        if (excludeNameSet.size > 0 && excludeNameSet.has(s.name.trim().toLowerCase())) return false;
+        return true;
+      });
+
+      // Two-bucket sort: recent (DESC by timestamp), then rest (ASC by name).
+      const recent: Array<{ s: ProductOption; t: number }> = [];
+      const rest: ProductOption[] = [];
+      for (const s of eligible) {
+        const t = recency[s.id];
+        if (typeof t === "number" && Number.isFinite(t)) {
+          recent.push({ s, t });
+        } else {
+          rest.push(s);
+        }
+      }
+      recent.sort((a, b) => b.t - a.t);
+      rest.sort((a, b) => a.name.localeCompare(b.name));
+
+      return [...recent.map((r) => r.s), ...rest].slice(0, Math.max(0, limit));
+    },
+  });
+}
+
 // ── Normalization ──
 
 export function normalizeProductRow(r: any): ProductOption {
+  // Read camelCase first, fall back to snake_case so a legacy endpoint
+  // serializer doesn't drop a populated value.
+  const rawDuration =
+    r?.estimatedDurationMinutes ?? r?.estimated_duration_minutes ?? null;
+  const parsedDuration =
+    typeof rawDuration === "number"
+      ? rawDuration
+      : typeof rawDuration === "string" && rawDuration.trim() !== ""
+        ? Number(rawDuration)
+        : null;
   return {
     id: r.id,
     name: r.name ?? "Unknown",
@@ -76,6 +228,11 @@ export function normalizeProductRow(r: any): ProductOption {
     category: r.category ?? null,
     // 2026-04-18: propagate catalog description for the selector chip.
     description: r.description ?? null,
+    // 2026-04-26: propagate `estimatedDurationMinutes` so service pickers
+    // can auto-fill / auto-bump schedule duration on add. NaN-safe.
+    estimatedDurationMinutes: Number.isFinite(parsedDuration as number)
+      ? (parsedDuration as number)
+      : null,
   };
 }
 

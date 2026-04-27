@@ -127,7 +127,7 @@ All feature reads go through it:
 
 **Canonical subscription writer.** `subscriptionLifecycleService.transition({ companyId, to, trialEndsAt, source, reason, actorUserId })` is the SOLE writer of `companies.subscriptionStatus` + `companies.trialEndsAt`. Validates transitions against `ALLOWED_TRANSITIONS`, writes, appends `subscription_events` audit row (`type='status_changed'`), invalidates the resolver cache. Every writer (admin PATCH, platform PATCH, trial-expire worker) routes through it. The ONE carve-out is `onboardingService.createCompanyWithOwner` for birth-state seeding.
 
-**Plan-name guard.** `PATCH /api/admin/tenants/:id/billing` and `PATCH /api/platform/tenants/:id/subscription` reject unknown `subscriptionPlan` at 400. Prevents orphan plan strings on `companies.subscription_plan`.
+**Plan-name guard.** `PATCH /api/platform/tenants/:id/subscription` rejects unknown `subscriptionPlan` at 400. Prevents orphan plan strings on `companies.subscription_plan`. (The legacy `PATCH /api/admin/tenants/:id/billing` was removed 2026-04-26 — it gated on tenant-`owner` role and could be invoked cross-tenant; all callers now use the platform-scoped endpoint above.)
 
 **Trial expiration.** Compute-on-read at the entitlement gate. `trialExpireWorker` emits a one-shot `trial_expired` audit event per tenant but does NOT mutate `subscriptionStatus`.
 
@@ -164,7 +164,7 @@ All feature reads go through it:
   - Job types: PM, Repair, Install, etc.
   - Supports recurring job series
 - **Invoices** - Billing with QBO sync, line items, tax calculation
-  - Invoice statuses: Draft, Sent, Paid, Overdue, Void
+  - Invoice statuses (canonical, see `shared/schema.ts:1519` `invoiceStatusEnum`): `draft`, `awaiting_payment`, `sent`, `partial_paid`, `paid`, `voided`. `Overdue` is NOT a stored status — it is computed at read time as `isPastDue` (`dueDate < NOW && balance > 0`) by `server/storage/invoicesFeed.ts::computeIsPastDue()`. Do NOT add an `overdue` status writer.
   - Client visibility toggles (show/hide prices, quantities, etc.)
 - **Parts** - Inventory tracking with categories
 - **Equipment** - Location-level asset tracking, linked to jobs

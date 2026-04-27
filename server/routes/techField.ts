@@ -17,7 +17,7 @@ import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 import { db } from "../db";
-import { timeEntries, jobs, clients, jobParts, items, jobEquipment, jobVisits, locationEquipment } from "@shared/schema";
+import { timeEntries, jobs, clients, customerCompanies, jobParts, items, jobEquipment, jobVisits, locationEquipment, companySettings } from "@shared/schema";
 import { jobNotesRepository } from "../storage/jobNotes";
 import { jobRepository } from "../storage/jobs";
 import { createTechTask, taskRepository } from "../storage/tasks";
@@ -46,6 +46,9 @@ import { notificationTargetsRepository } from "../storage/notificationTargets";
 import { getPublicVapidKey, isWebPushConfigured } from "../services/push/webPushAdapter";
 // 2026-04-21 Phase 2 notification preferences: user-level policy.
 import { notificationPreferencesRepository } from "../storage/notificationPreferences";
+// 2026-04-26 geofence start prompt: read-only tenant config endpoint gates on
+// the canonical entitlement resolver.
+import { entitlementService } from "../services/entitlementService";
 
 const router = Router();
 
@@ -772,18 +775,36 @@ router.get(
       companyId, userId, todayStr, tzStart, tzEnd
     );
 
-    // Enrich today's entries with minimal job context (same pattern as day endpoint)
+    // Enrich today's entries with minimal job context (same pattern as
+    // day endpoint). 2026-04-26: added `clientName` (customer company
+    // name) via a left-join on `client_locations.parent_company_id →
+    // customer_companies.id` so the tech-app Day View can label the
+    // group header by client rather than by job summary. The join uses
+    // the existing `idx_client_locations_parent_company` compound
+    // index so the cost is negligible.
     const jobIds = Array.from(new Set(todayStatus.todayEntries.map(e => e.jobId).filter((id): id is string => id !== null)));
-    let jobMap: Record<string, { jobNumber: number; summary: string; locationName: string | null }> = {};
+    let jobMap: Record<string, { jobNumber: number; summary: string; locationName: string | null; clientName: string | null }> = {};
     if (jobIds.length > 0) {
       const { inArray } = await import("drizzle-orm");
       const jobRows = await db
-        .select({ id: jobs.id, jobNumber: jobs.jobNumber, summary: jobs.summary, locationName: clients.companyName })
+        .select({
+          id: jobs.id,
+          jobNumber: jobs.jobNumber,
+          summary: jobs.summary,
+          locationName: clients.companyName,
+          clientName: customerCompanies.name,
+        })
         .from(jobs)
         .leftJoin(clients, eq(jobs.locationId, clients.id))
+        .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
         .where(inArray(jobs.id, jobIds));
       for (const j of jobRows) {
-        jobMap[j.id] = { jobNumber: j.jobNumber, summary: j.summary, locationName: j.locationName };
+        jobMap[j.id] = {
+          jobNumber: j.jobNumber,
+          summary: j.summary,
+          locationName: j.locationName,
+          clientName: j.clientName,
+        };
       }
     }
     const enrichedEntries = todayStatus.todayEntries.map(e => ({
@@ -791,6 +812,7 @@ router.get(
       jobNumber: e.jobId ? jobMap[e.jobId]?.jobNumber ?? null : null,
       jobSummary: e.jobId ? jobMap[e.jobId]?.summary ?? null : null,
       locationName: e.jobId ? jobMap[e.jobId]?.locationName ?? null : null,
+      clientName: e.jobId ? jobMap[e.jobId]?.clientName ?? null : null,
     }));
 
     // Get this week's entries (Monday-Sunday)
@@ -859,7 +881,12 @@ router.get(
     );
     const session = sessions[0] ?? null;
 
-    // Time entries for this date with minimal job context (left join)
+    // Time entries for this date with minimal job context (left join).
+    // 2026-04-26: added `clientName` via the existing
+    // `client_locations.parent_company_id → customer_companies.id`
+    // relation so the tech-app Day View can label each group header by
+    // client. Indexed join (`idx_client_locations_parent_company`)
+    // keeps the cost negligible. Tenant scoping is enforced below.
     const rows = await db
       .select({
         id: timeEntries.id,
@@ -880,10 +907,12 @@ router.get(
         jobNumber: jobs.jobNumber,
         jobSummary: jobs.summary,
         locationName: clients.companyName,
+        clientName: customerCompanies.name,
       })
       .from(timeEntries)
       .leftJoin(jobs, eq(timeEntries.jobId, jobs.id))
       .leftJoin(clients, eq(jobs.locationId, clients.id))
+      .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
       .where(
         and(
           eq(timeEntries.companyId, companyId),
@@ -1652,6 +1681,75 @@ router.post(
 
     emitDispatch(companyId, { scope: "calendar", entityType: "task", entityId: req.params.id, ts: new Date().toISOString() });
     res.json({ task, timeEntry });
+  }),
+);
+
+// ============================================================================
+// 2026-04-26 — Geofence start prompt (read-only tenant config)
+// ============================================================================
+//
+// GET /api/tech/geofence-config
+//
+// Returns the tenant's tech-app geofence settings so the mobile PWA's
+// useGeofencePrompt hook can decide whether to watch position. Read-only.
+// No writes anywhere on this surface.
+//
+// Fail-closed shape: every error path returns `{ enabled: false, ... }` so
+// the client treats the feature as off rather than throwing — preserves the
+// "no prompt unless everything lines up" UX guarantee.
+//
+// Behavior:
+//   - Tenant must have the `geofence_auto_start` entitlement enabled.
+//   - Tenant must have `companySettings.geofenceAutoStartEnabled = true`.
+//   - Returns the configured `radiusMeters` (DB CHECK enforces 25-1000).
+//
+// Dismiss handling lives entirely on the client: a "Not now" tap suppresses
+// the prompt for that visit for the rest of the session, no server state.
+
+router.get(
+  "/geofence-config",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+
+    // 1) Entitlement gate — fail closed on any resolver error.
+    let featureEnabled = false;
+    try {
+      featureEnabled = await entitlementService.isFeatureEnabled(
+        companyId,
+        "geofence_auto_start",
+      );
+    } catch {
+      // Resolver error → behave as if off. Logged at the resolver layer.
+      featureEnabled = false;
+    }
+
+    if (!featureEnabled) {
+      return res.json({ enabled: false, radiusMeters: 100 });
+    }
+
+    // 2) Tenant config — pull from companySettings.
+    const settings = await db
+      .select({
+        enabled: companySettings.geofenceAutoStartEnabled,
+        radiusMeters: companySettings.geofenceAutoStartRadiusMeters,
+      })
+      .from(companySettings)
+      .where(eq(companySettings.companyId, companyId))
+      .limit(1);
+
+    const row = settings[0];
+    if (!row || !row.enabled) {
+      return res.json({
+        enabled: false,
+        radiusMeters: row?.radiusMeters ?? 100,
+      });
+    }
+
+    return res.json({
+      enabled: true,
+      radiusMeters: row.radiusMeters,
+    });
   }),
 );
 

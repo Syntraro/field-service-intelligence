@@ -353,13 +353,19 @@ export function TodaysOperationsCard({
     else setLocation(fallbackPath);
   };
 
-  // 2026-04-21 UX pass: two header-level filters.
+  // 2026-04-21 UX pass: header-level filters.
   //   1. workloadView: "all" | "open" — booked+open rows vs open-only.
-  //   2. selectedTechIds: Set<string> — which techs appear on the rail.
+  //      Surfaced as the "Open slots" pill toggle in the header.
+  //   2. workingTeamOnly: hides techs whose capacity state is `off_today`.
+  //      `day_over` techs (scheduled, shift over) stay visible — they were
+  //      scheduled to work, just their day ended. Capacity state is the
+  //      authoritative shift-status signal already produced server-side.
+  //   3. selectedTechIds: Set<string> — which techs appear on the rail.
   //      null means "all techs"; any Set means explicit subset. We never
   //      persist a subset that's equal to "all" — when the user hits Select
   //      All we reset to null so the label collapses back to "All technicians".
   const [workloadView, setWorkloadView] = useState<"all" | "open">("all");
+  const [workingTeamOnly, setWorkingTeamOnly] = useState<boolean>(false);
   const [selectedTechIds, setSelectedTechIds] = useState<Set<string> | null>(null);
 
   // ── Render ─────────────────────────────────────────────────────────────
@@ -385,13 +391,22 @@ export function TodaysOperationsCard({
     else setSelectedTechIds(next);
   }, [techCards, selectedTechIds]);
 
-  // Apply the two filters in sequence. View mode happens first so the empty-
-  // state wording can distinguish "this tech has no open time" from "you
-  // filtered everyone out".
+  // Apply filters in sequence so the empty-state copy can distinguish
+  // "you hid off-shift staff" from "no open time anywhere" from "you
+  // narrowed the team to nothing."
+  //
+  //   1. Working-team filter — drops `off_today` techs only. `day_over`
+  //      stays (those staff were scheduled, day just ended).
+  //   2. View filter — keeps techs that have ≥1 open block when in
+  //      open-slots-only mode; otherwise pass-through.
+  //   3. Team subset — explicit user pick from the dropdown.
+  const workingFiltered = workingTeamOnly
+    ? techCards.filter((t) => t.state !== "off_today")
+    : techCards;
   const viewFiltered =
     workloadView === "open"
-      ? techCards.filter((t) => t.scheduleBlocks.some((b) => b.kind === "open"))
-      : techCards;
+      ? workingFiltered.filter((t) => t.scheduleBlocks.some((b) => b.kind === "open"))
+      : workingFiltered;
   const visibleTechCards =
     selectedTechIds === null
       ? viewFiltered
@@ -465,39 +480,42 @@ export function TodaysOperationsCard({
               <Users className="h-3.5 w-3.5 text-[#4b5563] shrink-0" />
               <h4 className="text-sm font-semibold text-[#111827] truncate">Team workload</h4>
             </div>
-            {/* 2026-04-21 UX refinement: two-dropdown pattern mirrors the
-                Dispatch filter bar. View dropdown owns booked-vs-open; Team
-                dropdown owns the visible-tech subset and carries the
-                Manage team shortcut in its footer. No count text, no
-                loose Manage team link — the dropdowns carry the state. */}
-            <div className="flex items-center gap-2 shrink-0">
-              <MultiSelectDropdown
-                label={workloadView === "all" ? "All" : "Open"}
-                width="w-40"
-                align="right"
-                testId="workload-view-trigger"
+            {/* 2026-04-26 UX refinement: replaced the View dropdown with
+                two compact pill toggles for the most-used filters
+                ("Open slots", "Working team"). The team-pick dropdown
+                stays as-is (it's a multi-select, not a binary). The
+                pills wrap below the title on narrow widths via
+                `flex-wrap`. */}
+            <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+              <button
+                type="button"
+                onClick={() => setWorkloadView((v) => (v === "open" ? "all" : "open"))}
+                aria-pressed={workloadView === "open"}
+                data-testid="workload-open-slots-toggle"
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
+                  workloadView === "open"
+                    ? "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                    : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                }`}
               >
-                <div className="p-1">
-                  <button
-                    type="button"
-                    onClick={() => setWorkloadView("all")}
-                    className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-xs hover:bg-slate-50"
-                    data-testid="workload-view-all"
-                  >
-                    <span>All</span>
-                    {workloadView === "all" && <Check className="h-3 w-3 text-primary" />}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setWorkloadView("open")}
-                    className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-xs hover:bg-slate-50"
-                    data-testid="workload-view-open"
-                  >
-                    <span>Open</span>
-                    {workloadView === "open" && <Check className="h-3 w-3 text-primary" />}
-                  </button>
-                </div>
-              </MultiSelectDropdown>
+                {workloadView === "open" && <Check className="h-3 w-3" />}
+                Open slots
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setWorkingTeamOnly((v) => !v)}
+                aria-pressed={workingTeamOnly}
+                data-testid="workload-working-team-toggle"
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
+                  workingTeamOnly
+                    ? "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                    : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                {workingTeamOnly && <Check className="h-3 w-3" />}
+                Working team
+              </button>
 
               <MultiSelectDropdown
                 label={teamFilterLabel}
@@ -583,28 +601,45 @@ export function TodaysOperationsCard({
           ) : techCards.length === 0 ? (
             <div className="text-sm text-[#4b5563] italic py-6">No available team members.</div>
           ) : visibleTechCards.length === 0 ? (
-            // Distinguish "nothing selected" from "nobody has open time" so
-            // the fix path is obvious at a glance.
+            // Spell out which filter combination produced the empty
+            // state so the user knows what to flip back. Order matters:
+            // the dropdown's "Clear All" sentinel wins over filters
+            // because it's the most explicit user intent.
             <div className="text-sm text-[#4b5563] italic py-6" data-testid="workload-open-empty">
               {selectedTechIds !== null && selectedTechIds.size === 0
                 ? "No team members selected."
-                : workloadView === "open"
-                  ? "No team members have open availability today."
-                  : "No team members match the current filters."}
+                : workingTeamOnly && workloadView === "open"
+                  ? "No open slots for scheduled team members."
+                  : workloadView === "open"
+                    ? "No open slots today."
+                    : workingTeamOnly
+                      ? "No team members scheduled to work today."
+                      : "No team members match the current filters."}
             </div>
           ) : (
+            // 2026-04-26: tiles share a single rounded outer border and
+            // use right-side dividers so each tech reads as a column in
+            // a unified grid (rather than separate boxed cards). Flex's
+            // default `align-items: stretch` already equalises tile
+            // heights; `min-h-[220px]` on the rail keeps the column
+            // dividers visible even when every tile is short. `divide-x`
+            // would be cleaner but it doesn't paint dividers across
+            // overflow-scrolled flex children — explicit per-tile
+            // `border-r` is the portable equivalent.
             <div
-              className="flex gap-3 overflow-x-auto pb-1"
+              className="flex overflow-x-auto rounded-md border border-[#e2e8f0] bg-white min-h-[220px] items-stretch"
               style={{
                 scrollbarWidth: "thin",
                 scrollbarColor: "#cbd5e1 transparent",
               }}
+              data-testid="workload-rail"
             >
-              {visibleTechCards.map((t) => (
+              {visibleTechCards.map((t, idx) => (
                 <TechnicianWorkloadTile
                   key={t.id}
                   card={t}
                   view={workloadView}
+                  isLast={idx === visibleTechCards.length - 1}
                   onEditVisit={onEditVisit}
                   onCreateInSlot={onCreateInSlot}
                 />
@@ -760,6 +795,7 @@ export function TodaysOperationsCard({
 function TechnicianWorkloadTile({
   card,
   view = "all",
+  isLast = false,
   onEditVisit,
   onCreateInSlot,
 }: {
@@ -767,6 +803,10 @@ function TechnicianWorkloadTile({
   /** 2026-04-21: "all" = booked + open rows with the jobs/hours summary.
    *  "open" = open rows only, summary replaced with total-available time. */
   view?: "all" | "open";
+  /** 2026-04-26: drives the right-divider class so the last column has no
+   *  dangling border. Tiles render as columns inside a single rounded
+   *  rail rather than separate boxed cards. */
+  isLast?: boolean;
   onEditVisit?: TodaysOperationsCardProps["onEditVisit"];
   onCreateInSlot?: TodaysOperationsCardProps["onCreateInSlot"];
 }) {
@@ -777,9 +817,16 @@ function TechnicianWorkloadTile({
     view === "open"
       ? card.scheduleBlocks.filter((b) => b.kind === "open")
       : card.scheduleBlocks;
-  const showOffToday = card.state === "off_today";
-  const showDayEnded = view === "all" && card.state === "day_over" && blocks.length === 0;
-  const showEmptyFallback = !showOffToday && !showDayEnded && blocks.length === 0;
+  // 2026-04-26 polish v6: an off-shift technician with assigned visits is
+  // an accidental booking the dispatcher needs to see, not a "No work" row.
+  // We now check `blocks.length > 0` before falling into the off-shift
+  // empty state — the tile renders the actual blocks with an `(off shift)`
+  // label next to the name. The empty-state copy still fires only when
+  // truly nothing is assigned to the off-shift tech.
+  const isOffShift = card.state === "off_today";
+  const showOffShiftEmpty = isOffShift && blocks.length === 0;
+  const showDayEnded = !isOffShift && view === "all" && card.state === "day_over" && blocks.length === 0;
+  const showEmptyFallback = !isOffShift && !showDayEnded && blocks.length === 0;
   const openMinutesTotal = card.scheduleBlocks
     .filter((b) => b.kind === "open")
     .reduce((acc, b) => acc + b.durationMinutes, 0);
@@ -788,8 +835,17 @@ function TechnicianWorkloadTile({
   // nesting buttons inside a tile-level button was brittle and the
   // tile-wide "→ /dispatch" behavior is superseded by the richer row-
   // level actions (edit visit / quick create in slot).
+  // 2026-04-26: removed self-contained box border + rounding. Tiles are
+  // now columns inside the rail (parent owns the outer border + radius)
+  // and use a right-side divider that paints full-height because flex
+  // stretches every tile to the rail's height.
   return (
-    <div className="shrink-0 w-[260px] rounded-md border border-[#e2e8f0] bg-white px-3 py-3">
+    <div
+      className={`shrink-0 w-[260px] bg-white px-3 py-3 ${
+        isLast ? "" : "border-r border-[#e2e8f0]"
+      }`}
+      data-testid={`workload-tile-${card.id}`}
+    >
       <div className="flex items-center gap-2.5 mb-2">
         <span
           className="h-8 w-8 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0"
@@ -799,7 +855,14 @@ function TechnicianWorkloadTile({
           {card.initials}
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold text-[#111827] truncate">{card.name}</p>
+          <p className="text-sm font-semibold text-[#111827] truncate">
+            {card.name}
+            {isOffShift && (
+              <span className="ml-1.5 text-[10px] font-medium text-amber-700 align-middle">
+                (off shift)
+              </span>
+            )}
+          </p>
           {/* Open-only mode suppresses the job/hours workload summary and
               surfaces an availability-first label instead. No new feed —
               openMinutesTotal sums existing scheduleBlocks of kind "open". */}
@@ -818,13 +881,20 @@ function TechnicianWorkloadTile({
       </div>
 
       <div className="space-y-0.5">
-        {showOffToday ? (
-          <p className="text-[11px] text-[#94a3b8] italic">Off today</p>
+        {showOffShiftEmpty ? (
+          // Off shift AND no jobs assigned today — pure idle state.
+          // (When an off-shift tech HAS assigned jobs, the blocks render
+          // below and the `(off shift)` label next to the name conveys
+          // the shift status.)
+          <div data-testid="tile-off-shift">
+            <p className="text-[11px] text-[#94a3b8] italic">Off shift</p>
+            <p className="text-[10px] text-[#cbd5e1]">Not scheduled to work today</p>
+          </div>
         ) : showDayEnded ? (
           <p className="text-[11px] text-[#94a3b8] italic">Day ended</p>
         ) : showEmptyFallback ? (
-          <p className="text-[11px] text-[#94a3b8] italic">
-            {view === "open" ? "No open time today" : "No scheduled jobs today"}
+          <p className="text-[11px] text-[#94a3b8] italic" data-testid="tile-empty-fallback">
+            {view === "open" ? "No open time today" : "No jobs scheduled"}
           </p>
         ) : (
           blocks.map((block, idx) => (

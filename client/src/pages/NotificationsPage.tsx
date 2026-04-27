@@ -368,6 +368,13 @@ export default function NotificationsPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/notifications"] });
     },
+    onError: (error: any) => {
+      toast({
+        title: "Failed to mark as read",
+        description: error?.message || "Could not mark notification as read",
+        variant: "destructive",
+      });
+    },
   });
 
   // Mark all read mutation
@@ -379,6 +386,13 @@ export default function NotificationsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/notifications"] });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Failed to mark all as read",
+        description: error?.message || "Could not mark all notifications as read",
+        variant: "destructive",
+      });
     },
   });
 

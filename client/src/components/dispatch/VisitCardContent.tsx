@@ -33,10 +33,15 @@ interface VisitCardContentProps {
   displayDuration?: number;
 }
 
-/** Canonical team badge — identical rendering across all surfaces */
+/** Canonical team badge — identical rendering across all surfaces.
+ *  2026-04-26 polish v5: rendered as `inline-flex` (was plain `flex`) so
+ *  it can sit inside the company-name `<p>` without breaking the line-clamp
+ *  flow. Adding it as a leading inline element keeps the count visible
+ *  on tiny dispatch cards (30-min visits) where the previous sibling-of-
+ *  `<p>` rendering let the badge clip behind the second clamped line. */
 function TeamBadge({ count }: { count: number }) {
   return (
-    <span className="flex items-center gap-0.5 rounded bg-emerald-100 px-1 py-px text-[8px] font-semibold text-emerald-700 flex-shrink-0">
+    <span className="inline-flex items-center gap-0.5 rounded bg-emerald-100 px-1 py-px text-[8px] font-semibold text-emerald-700 align-middle mr-1">
       <Users className="h-2 w-2" />{count}
     </span>
   );
@@ -59,14 +64,12 @@ export const VisitCardContent = memo(function VisitCardContent({
   // No flex/block children inside the clamp container.
   if (variant === "timeline-wide") {
     return (
-      <>
-        <p className={`text-[13px] leading-snug m-0 min-w-0 overflow-hidden break-words ${nameStrike}`}
-           style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" as const }}>
-          <span className="font-semibold text-slate-900">{visit.customerName}</span>
-          {visit.summary && <span className="text-slate-600"> — {visit.summary}</span>}
-        </p>
+      <p className={`text-[13px] leading-snug m-0 min-w-0 overflow-hidden break-words ${nameStrike}`}
+         style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" as const }}>
         {isTeamVisit && <TeamBadge count={visit.technicianIds.length} />}
-      </>
+        <span className="font-semibold text-slate-900">{visit.customerName}</span>
+        {visit.summary && <span className="text-slate-600"> — {visit.summary}</span>}
+      </p>
     );
   }
 
@@ -74,6 +77,7 @@ export const VisitCardContent = memo(function VisitCardContent({
   if (variant === "timeline-narrow") {
     return (
       <p className={`text-[11px] leading-snug m-0 truncate ${nameStrike}`}>
+        {isTeamVisit && <TeamBadge count={visit.technicianIds.length} />}
         <span className="font-semibold text-slate-900">{visit.customerName}</span>
         {visit.summary && <span className="text-slate-600"> — {visit.summary}</span>}
       </p>
@@ -110,13 +114,11 @@ export const VisitCardContent = memo(function VisitCardContent({
   // break-words ensures long company names wrap within narrow week columns.
   if (variant === "week-calendar") {
     return (
-      <>
-        <p className={`text-[13px] leading-snug m-0 min-w-0 overflow-hidden break-words ${nameStrike}`}>
-          <span className="font-semibold text-slate-900">{visit.customerName}</span>
-          {visit.summary && <span className="text-slate-600"> — {visit.summary}</span>}
-        </p>
+      <p className={`text-[13px] leading-snug m-0 min-w-0 overflow-hidden break-words ${nameStrike}`}>
         {isTeamVisit && <TeamBadge count={visit.technicianIds.length} />}
-      </>
+        <span className="font-semibold text-slate-900">{visit.customerName}</span>
+        {visit.summary && <span className="text-slate-600"> — {visit.summary}</span>}
+      </p>
     );
   }
 
@@ -155,10 +157,10 @@ export const VisitCardContent = memo(function VisitCardContent({
         : <span className={`h-1.5 w-1.5 rounded-full flex-shrink-0 ${visitStatusDot(visit.status)}`} />
       }
       <p className={`truncate text-[10px] m-0 min-w-0 ${nameStrike}`}>
+        {isTeamVisit && <TeamBadge count={visit.technicianIds.length} />}
         <span className={`font-semibold ${isCompleted ? "text-muted-foreground" : "text-foreground"}`}>{visit.customerName}</span>
         {visit.summary && <span className={`${isCompleted ? "text-muted-foreground" : "text-slate-500"}`}> — {visit.summary}</span>}
       </p>
-      {isTeamVisit && <TeamBadge count={visit.technicianIds.length} />}
     </>
   );
 });

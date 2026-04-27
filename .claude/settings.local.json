@@ -182,7 +182,20 @@
       "Bash(COMPANY_ID=290c20d3-4e61-4766-af4e-953fbdfc465f DELETE_IMPORTED_INVOICES=true npx tsx --env-file=.env scripts/deleteImportedInvoices.ts)",
       "Bash(npx dotenv *)",
       "Bash(tsx --env-file=.env -e \"console.log\\('env loaded:', !!process.env.DATABASE_URL\\)\")",
-      "Bash(findstr :5000)"
+      "Bash(findstr :5000)",
+      "Bash(sed -i '1198,1961d' C:/dev/Syntraro/client/src/pages/JobDetailPage.tsx)",
+      "Bash(sed -n '1190,1210p' C:/dev/Syntraro/client/src/pages/JobDetailPage.tsx)",
+      "Bash(sed -n '165,175p' C:/dev/Syntraro/CLAUDE.md)",
+      "Bash(sed -n '295,305p' C:/dev/Syntraro/server/storage/dashboard.ts)",
+      "Bash(awk -F: '$1>=3850 && $1<=3920')",
+      "Bash(DATABASE_URL=$\\(node --env-file=.env -e \"console.log\\(process.env.DATABASE_URL\\)\"\\) npm run db:check)",
+      "Bash(tasklist /FI \"PID eq 4788\")",
+      "Bash(PORT=5050 npm run dev)",
+      "Bash(DATABASE_URL=$\\(node --env-file=.env -e \"console.log\\(process.env.DATABASE_URL\\)\"\\) npx vitest run tests/find-next-available-slot.test.ts)",
+      "Bash(DATABASE_URL=$\\(node --env-file=.env -e \"console.log\\(process.env.DATABASE_URL\\)\"\\) npx vitest run tests/visit-editor-payload-builder.test.ts tests/find-next-available-slot.test.ts)",
+      "Bash(DATABASE_URL=$\\(node --env-file=.env -e \"console.log\\(process.env.DATABASE_URL\\)\"\\) npx vitest run tests/visit-editor-payload-builder.test.ts)",
+      "Bash(DATABASE_URL=$\\(node --env-file=.env -e \"console.log\\(process.env.DATABASE_URL\\)\"\\) npx vitest run tests/find-next-available-slot.test.ts tests/canonical-policy-architecture.test.ts)",
+      "Bash(DATABASE_URL=$\\(node --env-file=.env -e \"console.log\\(process.env.DATABASE_URL\\)\"\\) npx vitest run tests/canonical-policy-architecture.test.ts)"
     ]
   }
 }

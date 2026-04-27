@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { eq, and, desc, sql, ilike, or } from "drizzle-orm";
+import { eq, and, desc, sql, ilike, or, isNull } from "drizzle-orm";
 import {
   quotes,
   quoteLines,
@@ -46,9 +46,9 @@ export class QuoteRepository extends BaseRepository {
     const offset = clampOffset(options.offset ?? 0);
 
     // Build base conditions
+    // 2026-04-26: isActive filter removed — quotes use permanent-delete now.
     const conditions = [
       eq(quotes.companyId, companyId),
-      eq(quotes.isActive, true),
     ];
 
     // Add status filter
@@ -118,7 +118,6 @@ export class QuoteRepository extends BaseRepository {
         and(
           eq(quotes.id, quoteId),
           eq(quotes.companyId, companyId),
-          eq(quotes.isActive, true)
         )
       )
       .limit(1);
@@ -146,7 +145,6 @@ export class QuoteRepository extends BaseRepository {
         and(
           eq(quotes.id, quoteId),
           eq(quotes.companyId, companyId),
-          eq(quotes.isActive, true)
         )
       )
       .limit(1);
@@ -280,7 +278,6 @@ export class QuoteRepository extends BaseRepository {
         and(
           eq(quotes.id, quoteId),
           eq(quotes.companyId, companyId),
-          eq(quotes.isActive, true)
         )
       )
       .returning();
@@ -289,26 +286,29 @@ export class QuoteRepository extends BaseRepository {
   }
 
   /**
-   * Delete a quote (soft delete)
+   * Permanent-delete a quote.
+   *
+   * 2026-04-26: matches the invoice permanent-delete model. Only quotes that
+   * are in `draft` status AND have not been converted to a job may be
+   * deleted. Returns false if the row exists but fails the precondition
+   * (caller should map to 409). quote_lines and quote_notes cascade-delete
+   * via their FK on quotes.id.
    */
   async deleteQuote(companyId: string, quoteId: string): Promise<boolean> {
     this.assertCompanyId(companyId);
     this.validateUUID(quoteId, "quoteId");
 
     const result = await db
-      .update(quotes)
-      .set({
-        isActive: false,
-        deletedAt: new Date(),
-        updatedAt: new Date(),
-      })
+      .delete(quotes)
       .where(
         and(
           eq(quotes.id, quoteId),
-          eq(quotes.companyId, companyId)
+          eq(quotes.companyId, companyId),
+          eq(quotes.status, "draft"),
+          isNull(quotes.convertedToJobId),
         )
       )
-      .returning();
+      .returning({ id: quotes.id });
 
     return result.length > 0;
   }
@@ -455,7 +455,7 @@ export class QuoteRepository extends BaseRepository {
         total: sql<string>`COALESCE(SUM(total::numeric), 0)::text`,
       })
       .from(quotes)
-      .where(and(eq(quotes.companyId, companyId), eq(quotes.isActive, true)))
+      .where(eq(quotes.companyId, companyId))
       .groupBy(quotes.status);
 
     return rows;

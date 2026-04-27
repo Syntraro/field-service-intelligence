@@ -40,7 +40,11 @@ import {
   Select, SelectTrigger, SelectContent, SelectItem, SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
+// 2026-04-26: Routed through the canonical CreateNewDialog (Job tab). The
+// `preselectedLocationId` contract maps one-for-one onto CreateNewDialog's
+// `jobPreselectedLocationId`, so the client-scoped create still keeps its
+// location prefill.
+import { CreateNewDialog } from "@/components/CreateNewDialog";
 import { NewQuoteModal } from "@/components/NewQuoteModal";
 import { NewInvoiceModal } from "@/components/NewInvoiceModal";
 import LocationFormModal from "@/components/LocationFormModal";
@@ -1568,10 +1572,11 @@ export default function ClientDetailPage() {
       {/* ═══ /BODY ═══ */}
 
       {/* ── Dialogs ── */}
-      <QuickAddJobDialog
+      <CreateNewDialog
         open={jobDialogOpen}
         onOpenChange={setJobDialogOpen}
-        preselectedLocationId={scopeType === "location" ? selectedLocationId ?? undefined : undefined}
+        defaultTab="job"
+        jobPreselectedLocationId={scopeType === "location" ? selectedLocationId ?? undefined : undefined}
       />
 
       {/* Create Quote — canonical NewQuoteModal. Modal has its own

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { queryClient } from "@/lib/queryClient";
+import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { JobVisit } from "@shared/schema";
 import { useMemo } from "react";
 
@@ -28,13 +28,9 @@ export function useJobVisits(jobId: string, options: UseJobVisitsOptions = {}) {
   const query = useQuery<JobVisit[]>({
     // Phase 4 Step C5: canonical visit family key
     queryKey: ["visits", jobId, "all"],
-    queryFn: async () => {
-      const res = await fetch(`/api/jobs/${jobId}/visits?all=true`, {
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Failed to fetch job visits");
-      return res.json();
-    },
+    // 2026-04-26: routed through canonical apiRequest so callers get
+    // ApiError on failure plus CSRF + session-expired handling.
+    queryFn: () => apiRequest<JobVisit[]>(`/api/jobs/${jobId}/visits?all=true`),
     enabled: enabled && !!jobId,
     staleTime: 30 * 1000, // 30 seconds
   });

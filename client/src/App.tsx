@@ -13,7 +13,10 @@ import { useToast } from "@/hooks/use-toast";
 import { useDispatchStream } from "@/hooks/useDispatchStream";
 import { useServiceWorkerNavigator } from "@/hooks/useServiceWorkerNavigator";
 import ProtectedRoute from "@/components/ProtectedRoute";
-import Dashboard from "@/pages/Dashboard";
+// 2026-04-26: Operations Dashboard retired — `/` and `/financials` both
+// now render the canonical Business Dashboard (see `FinancialDashboard`).
+// `Dashboard.tsx`, `TodaysOperationsCard.tsx`, and `DashboardViewToggle.tsx`
+// are no longer mounted by any route; flagged for follow-up deletion.
 import Jobs from "@/pages/Jobs";
 import JobDetailPage from "@/pages/JobDetailPage";
 import InvoicesListPage from "@/pages/InvoicesListPage";
@@ -126,7 +129,8 @@ import { SubscriptionBanner } from "@/components/SubscriptionBanner";
 import { ImpersonationBanner } from "@/components/ImpersonationBanner";
 // 2026-03-21: QuickAddClientModal removed — replaced by canonical CreateClientModal
 import { CreateClientModal } from "@/components/CreateClientModal";
-import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
+import { CreateNewDialog, type CreateNewTab } from "@/components/CreateNewDialog";
+import CreateMaintenancePlanDialog from "@/components/pm/CreateMaintenancePlanDialog";
 import UniversalSearch from "@/components/UniversalSearch";
 import { NewQuoteModal } from "@/components/NewQuoteModal";
 import { NewInvoiceModal } from "@/components/NewInvoiceModal";
@@ -136,7 +140,10 @@ import { Badge } from "@/components/ui/badge";
 import { useState, useEffect } from "react";
 import { Plus, MoreHorizontal, Settings, MessageCircle, LogOut, ClipboardList, Users, Receipt, FileText, CheckSquare, Wrench, HelpCircle, Shield } from "lucide-react";
 import { HelpPanel } from "@/components/help/HelpPanel";
-import { TaskDialog } from "@/components/TaskDialog";
+// 2026-04-26: TaskDialog import removed from App.tsx — the canonical
+// CreateNewDialog mount below owns Task creation now (Task / Supplier Visit
+// tabs both render embedded TaskDialog instances). TaskDialog is still
+// imported standalone by callers that own EDIT mode (e.g. TasksPanel).
 import syntaroLogo from "@/assets/Syntraro Logo Transparent.png";
 import { Button } from "@/components/ui/button";
 import {
@@ -154,7 +161,9 @@ import DispatchBoard from "@/pages/DispatchPreview";
 import PMWorkspacePage from "@/pages/PMWorkspacePage";
 import PMWizardPage from "@/pages/PMWizardPage";
 import PMDetailPage from "@/pages/PMDetailPage";
-import PMEditPage from "@/pages/PMEditPage";
+// 2026-04-26: PMEditPage was merged into PMDetailPage (unified view+edit
+// surface). The /pm/:id/edit route now renders the same component, which
+// detects the route and pre-selects edit mode.
 import PMTemplateEditorPage from "@/pages/PMTemplateEditorPage";
 // Technician PWA preview — self-contained mock prototype (no backend)
 import TechApp from "@/tech-app/app/TechApp";
@@ -192,9 +201,14 @@ function Router() {
           <OnboardingWizard />
         </ProtectedRoute>
       </Route>
+      {/* 2026-04-26: `/` now renders the consolidated Business
+          Dashboard (formerly the Financial dashboard). The Operations
+          dashboard surface was retired; `/financials` is kept below as
+          a back-compat alias so any external links / bookmarks still
+          land on the right page. */}
       <Route path="/">
         <ProtectedRoute requireAdmin>
-          <Dashboard />
+          <FinancialDashboard />
         </ProtectedRoute>
       </Route>
       <Route path="/dispatch">
@@ -222,7 +236,7 @@ function Router() {
       </Route>
       <Route path="/pm/:id/edit">
         <ProtectedRoute requireAdmin>
-          <PMEditPage />
+          <PMDetailPage />
         </ProtectedRoute>
       </Route>
       <Route path="/pm/:id">
@@ -297,9 +311,9 @@ function Router() {
           <AccountsReceivablePage />
         </ProtectedRoute>
       </Route>
-      {/* 2026-04-21: Financial Dashboard — canonical financial command center.
-          Backed by GET /api/dashboard/financial (getFinancialSummary). Linked
-          from the Operations Dashboard header button and the sidebar. */}
+      {/* 2026-04-26: Back-compat alias — `/financials` and `/` both
+          render the canonical Business Dashboard. The Operations
+          dashboard surface was retired in this commit. */}
       <Route path="/financials">
         <ProtectedRoute requireAdmin>
           <FinancialDashboard />
@@ -671,8 +685,17 @@ function AppContent() {
   const { user, logout } = useAuth();
   const { toast } = useToast();
   const [addClientModalOpen, setAddClientModalOpen] = useState(false);
-  const [addJobModalOpen, setAddJobModalOpen] = useState(false);
-  const [newTaskOpen, setNewTaskOpen] = useState(false);
+  // 2026-04-26: Quick-create funnel collapsed onto the canonical
+  // CreateNewDialog (Job / Task / Supplier Visit tabs). The previous two
+  // separate boolean states (`addJobModalOpen` / `newTaskOpen`) routed to
+  // separate modals; entry points now just call `openCreate("job"|"task")`
+  // and one CreateNewDialog mount handles all three flows.
+  const [createNewOpen, setCreateNewOpen] = useState(false);
+  const [createNewTab, setCreateNewTab] = useState<CreateNewTab>("job");
+  const openCreate = (tab: CreateNewTab) => {
+    setCreateNewTab(tab);
+    setCreateNewOpen(true);
+  };
   // 2026-04-15: Tasks header popover. Auto-closes on route change so the
   // panel never outlives its context. Count badge below reads the same
   // query the panel uses, so open/close has no extra network cost.
@@ -693,6 +716,11 @@ function AppContent() {
   // Search entry flows. The /invoices/new route is preserved for
   // the InvoicesListPage link and any direct URL entry.
   const [newInvoiceModalOpen, setNewInvoiceModalOpen] = useState(false);
+  // 2026-04-26: Create Maintenance Plan chooser modal. Replaces direct
+  // navigation to /pm/new from the top-bar Quick Create + UniversalSearch
+  // so users can pick From Scratch / Use Template / Duplicate before
+  // landing in the wizard. /pm/new remains the canonical create surface.
+  const [createPmDialogOpen, setCreatePmDialogOpen] = useState(false);
 
   const isAuthPage = ['/login', '/signup', '/request-reset', '/reset-password'].includes(location);
   const isPortalPage = location.startsWith('/portal');
@@ -830,14 +858,15 @@ function AppContent() {
               onClick verbatim — not a similar route, not a list page,
               the same setter/route the "New" menu uses. */}
           <UniversalSearch
-            onCreateJob={() => setAddJobModalOpen(true)}
+            onCreateJob={() => openCreate("job")}
             onCreateClient={() => setAddClientModalOpen(true)}
             onCreateInvoice={() => setNewInvoiceModalOpen(true)}
             // Quote entry opens the unified NewQuoteModal directly.
             // Template selection is inline inside that modal; there
             // is no longer a separate chooser step.
             onCreateQuote={() => setNewQuoteModalOpen(true)}
-            onCreateTask={() => setNewTaskOpen(true)}
+            onCreateTask={() => openCreate("task")}
+            onCreateMaintenancePlan={() => setCreatePmDialogOpen(true)}
           />
 
           {/* Right: Tasks popover + Quick Create dropdown + More menu */}
@@ -910,7 +939,7 @@ function AppContent() {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" sideOffset={8} className="w-48">
-                  <DropdownMenuItem data-testid="quick-new-job" onClick={() => setAddJobModalOpen(true)}>
+                  <DropdownMenuItem data-testid="quick-new-job" onClick={() => openCreate("job")}>
                     <ClipboardList className="h-4 w-4 mr-2" />
                     New Job
                   </DropdownMenuItem>
@@ -927,13 +956,13 @@ function AppContent() {
                     New Quote
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem data-testid="quick-new-task" onClick={() => setNewTaskOpen(true)}>
+                  <DropdownMenuItem data-testid="quick-new-task" onClick={() => openCreate("task")}>
                     <CheckSquare className="h-4 w-4 mr-2" />
                     New Task
                   </DropdownMenuItem>
-                  <DropdownMenuItem data-testid="quick-new-pm" onClick={() => setLocation("/pm/new")}>
+                  <DropdownMenuItem data-testid="quick-new-pm" onClick={() => setCreatePmDialogOpen(true)}>
                     <Wrench className="h-4 w-4 mr-2" />
-                    New PM Contract
+                    New Maintenance Plan
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -1038,14 +1067,17 @@ function AppContent() {
         open={addClientModalOpen}
         onOpenChange={setAddClientModalOpen}
       />
-      <QuickAddJobDialog
-        open={addJobModalOpen}
-        onOpenChange={setAddJobModalOpen}
-      />
-      <TaskDialog
-        open={newTaskOpen}
-        onOpenChange={setNewTaskOpen}
-        onChanged={() => {}}
+      {/* 2026-04-26: Canonical "+ New" entry — Job / Task / Supplier Visit
+          tabs in one compact modal. Replaces the separate QuickAddJobDialog
+          + TaskDialog mounts. The header dropdown, UniversalSearch, and any
+          other surface-level entry point all flow through this single mount
+          via openCreate(tab). Standalone QuickAddJobDialog/TaskDialog mounts
+          on detail pages still own their EDIT flows; this only consolidates
+          CREATE. */}
+      <CreateNewDialog
+        open={createNewOpen}
+        onOpenChange={setCreateNewOpen}
+        defaultTab={createNewTab}
       />
       <NewQuoteModal
         open={newQuoteModalOpen}
@@ -1054,6 +1086,10 @@ function AppContent() {
       <NewInvoiceModal
         open={newInvoiceModalOpen}
         onOpenChange={setNewInvoiceModalOpen}
+      />
+      <CreateMaintenancePlanDialog
+        open={createPmDialogOpen}
+        onOpenChange={setCreatePmDialogOpen}
       />
       <TimezoneSetupDialog />
       <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} />

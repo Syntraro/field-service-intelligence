@@ -295,10 +295,10 @@ async function getQuotePipeline(tenantId: string): Promise<{
 }> {
   const PREVIEW_LIMIT = 5;
 
+  // 2026-04-26: isActive + deletedAt filters removed — quotes use
+  // permanent-delete now, so a row's existence is the only liveness signal.
   const baseWhere = and(
     eq(quotes.companyId, tenantId),
-    eq(quotes.isActive, true),
-    isNull(quotes.deletedAt),
   );
 
   // Shared select shape — customer name via the canonical COALESCE rule.
@@ -478,6 +478,102 @@ async function getPMCounts(tenantId: string) {
     upcomingCount: Number(c.upcomingCount) || 0,
     hasAnyData,
   };
+}
+
+// ---------------------------------------------------------------------------
+// PM-due Instances (Requires Attention drill-down)
+//
+// 2026-04-26: the "Requires attention" alert on the Business Dashboard
+// now folds in PM (preventive-maintenance) instances that are eligible
+// for job generation but have not been generated yet. The count is
+// already exposed via `getPMCounts().awaitingGenerationCount`; this
+// helper returns the row list the action modal needs to render
+// "Generate job" / "View PM" buttons. The row filter mirrors the
+// awaiting-generation count exactly so the dashboard tile and the
+// modal list stay in lockstep by construction.
+// ---------------------------------------------------------------------------
+
+export interface DashboardPMDueInstance {
+  /** recurring_job_instances.id — the row the generation route consumes. */
+  instanceId: string;
+  /** ISO date — the instance's scheduled date (instance_date). */
+  instanceDate: string;
+  /** True when the instance date is strictly before today (i.e. overdue). */
+  isOverdue: boolean;
+  templateId: string;
+  templateTitle: string;
+  /** Customer (parent) company. May be null when the location is linked
+   *  directly without a parent (rare, but the FK allows it). */
+  customerCompanyId: string | null;
+  customerName: string | null;
+  /** Service location. Always set — every PM template requires a location
+   *  (or the instance was orphaned and is filtered out by the inner join). */
+  locationId: string | null;
+  locationName: string | null;
+  locationDisplayName: string | null;
+}
+
+export async function getPMDueInstances(
+  ctx: QueryCtx,
+  limit: number = 50,
+): Promise<DashboardPMDueInstance[]> {
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Filter mirrors `getPMCounts().awaitingGenerationCount`:
+  //   status='pending' AND generatedJobId IS NULL AND
+  //   (instanceDate - serviceWindowDaysBefore) <= today.
+  // Sort: overdue first (earliest instance date), then due-soon next.
+  const rows = await ctx.db
+    .select({
+      instanceId: recurringJobInstances.id,
+      instanceDate: recurringJobInstances.instanceDate,
+      templateId: recurringJobTemplates.id,
+      templateTitle: recurringJobTemplates.title,
+      customerCompanyId: customerCompanies.id,
+      customerName: customerCompanies.name,
+      locationId: clients.id,
+      locationName: clients.location,
+      locationCompanyName: clients.companyName,
+      locationDisplayName: locationDisplayNameExpr,
+    })
+    .from(recurringJobInstances)
+    .innerJoin(
+      recurringJobTemplates,
+      eq(recurringJobInstances.templateId, recurringJobTemplates.id),
+    )
+    .leftJoin(clients, eq(recurringJobTemplates.locationId, clients.id))
+    .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
+    .where(
+      and(
+        eq(recurringJobInstances.companyId, ctx.tenantId),
+        eq(recurringJobTemplates.isActive, true),
+        eq(recurringJobInstances.status, "pending"),
+        isNull(recurringJobInstances.generatedJobId),
+        sql`(${recurringJobInstances.instanceDate}::date - COALESCE(${recurringJobTemplates.serviceWindowDaysBefore}, 7)) <= ${today}::date`,
+      ),
+    )
+    .orderBy(asc(recurringJobInstances.instanceDate))
+    .limit(limit);
+
+  return rows.map((r) => {
+    // Drizzle's `date()` column type returns the value as a YYYY-MM-DD
+    // string in this codebase. The `< today` comparison is therefore a
+    // safe lexicographic compare on ISO date strings (`2026-04-25` <
+    // `2026-04-26`).
+    const dateStr = String(r.instanceDate);
+    return {
+      instanceId: r.instanceId,
+      instanceDate: dateStr,
+      isOverdue: dateStr < today,
+      templateId: r.templateId,
+      templateTitle: r.templateTitle,
+      customerCompanyId: r.customerCompanyId,
+      customerName: r.customerName,
+      locationId: r.locationId,
+      locationName: r.locationName ?? r.locationCompanyName,
+      locationDisplayName: r.locationDisplayName,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -837,7 +933,7 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
       count: sql<number>`count(*)::int`,
       total: sql<string>`COALESCE(SUM(CAST(${quotes.total} AS numeric)), 0)::text`,
     }).from(quotes)
-      .where(and(eq(quotes.companyId, companyId), eq(quotes.isActive, true)))
+      .where(eq(quotes.companyId, companyId))
       .groupBy(quotes.status),
 
     // PM financial health

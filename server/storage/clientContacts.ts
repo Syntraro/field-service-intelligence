@@ -231,11 +231,21 @@ export class ClientContactRepository extends BaseRepository {
   // `matchFromCascade` / `createOrGetPerson(Tx)` as the single source of
   // truth for contact dedupe.
   // =========================================================================
-  // Legacy compatibility — adapts old API response shape
+  // DTO adapters for the customer-company / location contact endpoints.
+  //
+  // The underlying model (contact_persons + contact_assignments) is canonical;
+  // the {companyContacts, locationContacts} response shape these methods build
+  // is the legacy WIRE FORMAT that ClientDetailPage still consumes. Both
+  // adapters are real production paths — only the DTO is legacy, not the
+  // route, the data, or the storage primitives below.
   // =========================================================================
 
-  /** Returns { companyContacts, locationContacts } matching old API contract. */
-  async getLegacyContactsForCustomerCompany(companyId: string, customerCompanyId: string) {
+  /**
+   * Customer-company contacts view — full directory + every assignment across
+   * every location, flattened into the legacy {companyContacts, locationContacts}
+   * DTO consumed by GET /api/customer-companies/:companyId/contacts.
+   */
+  async getContactsForCustomerCompany(companyId: string, customerCompanyId: string) {
     const directory = await this.getCompanyDirectory(companyId, customerCompanyId);
     // Company contacts = all persons (the directory)
     const companyContacts = directory.map(p => ({
@@ -258,8 +268,13 @@ export class ClientContactRepository extends BaseRepository {
     return { companyContacts, locationContacts };
   }
 
-  /** Returns { companyContacts, locationContacts } for a specific location. */
-  async getLegacyContactsForLocation(companyId: string, locationId: string, customerCompanyId: string) {
+  /**
+   * Location contacts view — parent-company directory (so the UI's "assign
+   * existing" picker has its data) + only THIS location's assignments,
+   * flattened into the legacy {companyContacts, locationContacts} DTO
+   * consumed by GET /api/clients/:clientId/contacts.
+   */
+  async getContactsForLocation(companyId: string, locationId: string, customerCompanyId: string) {
     const allPersons = await this.getCompanyPersons(companyId, customerCompanyId);
     const locationAssigned = await this.getLocationContacts(companyId, locationId);
     const companyContacts = allPersons.map(p => ({

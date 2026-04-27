@@ -58,6 +58,16 @@ export function AssignContactDialog({
       });
     },
     onSuccess: () => {
+      // 2026-04-26: explicit self-invalidation. The parent component also
+      // refreshes via its own onSuccess callback today, but a future caller
+      // that forgets to wire the callback would otherwise leave the
+      // contact lists stale.
+      queryClient.invalidateQueries({
+        queryKey: ["/api/customer-companies", customerCompanyId, "contacts"],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["/api/clients", locationId, "contacts"],
+      });
       onSuccess();
       onOpenChange(false);
       reset();

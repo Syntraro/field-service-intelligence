@@ -13,23 +13,11 @@ import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { adminRepository } from "../storage/admin";
 import { adminQboRepository } from "../storage/adminQbo";
-// 2026-04-21 Phase 3 canonical policy architecture: billing reads / writes
-// live in the dedicated billingRepository (module name no longer misleads —
-// the underlying columns are on `companies`, not `tenant_features`).
-import { billingRepository } from "../storage/billing";
-// 2026-04-21 Phase 1: reject PATCH billing requests that reference an
-// unknown subscription plan name (guard against silent orphan state).
-import { entitlementStorage } from "../storage/entitlements";
 import { customerCompanyRepository } from "../storage/customerCompanies";
 import { impersonationService } from "../impersonationService";
 import { userRepository } from "../storage/users";
 import { platformAuditService } from "../services/platformAuditService";
 import type { AuthedRequest } from "../auth/tenantIsolation";
-import { invalidateCompanyCache } from "../services/cache";
-// 2026-04-21 Phase 1 canonical policy architecture: subscriptionStatus +
-// trialEndsAt writes route through the lifecycle service (validated transitions
-// + subscription_events audit row + entitlement cache invalidation).
-import { subscriptionLifecycleService } from "../services/subscriptionLifecycleService";
 import { runTimeAlertsForCompany, runTimeAlertsWorker, getAlertThresholds, runWeeklyDigestWorker } from "../services/timeAlertsWorker";
 // 2026-04-09: Bulk archived-job cleanup tool (admin-only)
 import {
@@ -165,11 +153,26 @@ router.get(
  * - All account summary metrics
  * - Recent sync errors (last 10)
  * - Recent users (last 10 by activity)
+ *
+ * 2026-04-26 — Cross-tenant guard. The router gates on `OWNER_ONLY`,
+ * which is *tenant* owner role — not platform role. Without the guard
+ * below, a tenant owner could pass another tenant's id as `:companyId`
+ * and read account metadata for that tenant. Same shape as the legacy
+ * `PATCH /api/admin/tenants/:companyId/billing` cross-tenant mutation
+ * bug (already retired). Cross-tenant reads now flow exclusively
+ * through `/api/platform/tenants/*` (capability-gated).
  */
 router.get(
   "/tenants/:companyId",
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { companyId } = req.params;
+
+    if (companyId !== req.companyId) {
+      throw createError(
+        403,
+        "Cross-tenant access forbidden — tenant detail is scoped to your own tenant. Cross-tenant reads use /api/platform/tenants/* (platform-capability gated).",
+      );
+    }
 
     const tenant = await adminRepository.getTenantDetail(companyId);
     if (!tenant) {
@@ -542,144 +545,24 @@ router.get(
 );
 
 // ============================================================================
-// Billing Routes (Tenant Configuration)
+// Billing Routes (REMOVED 2026-04-26)
 // ============================================================================
 //
-// 2026-04-21 Phase 3 canonical policy architecture:
-//   The legacy feature-flag admin endpoints (
-//     GET  /api/admin/tenants/:id/billing-features,
-//     PATCH /api/admin/tenants/:id/features
-//   ) have been deleted. Feature entitlements are read / written through
-//   the canonical resolver + platform override endpoints:
-//     GET /api/me/entitlements        (per-user, auth-scoped)
-//     GET /api/platform/tenants/:id/entitlements
-//     PUT /api/platform/tenants/:id/overrides/:featureKey
-//     DELETE /api/platform/tenants/:id/overrides/:featureKey
-//   The billing PATCH below is retained — it writes canonical fields on
-//   `companies` (subscription plan, interval, period-end, cancel-at-period-end)
-//   plus lifecycle state via subscriptionLifecycleService.
-
-// Billing update schema
-const updateBillingSchema = z.object({
-  subscriptionStatus: z.enum(["trial", "active", "past_due", "cancelled", "paused"]).optional(),
-  subscriptionPlan: z.string().nullable().optional(),
-  billingInterval: z.enum(["monthly", "annual"]).nullable().optional(),
-  trialEndsAt: z.string().datetime().nullable().optional(),
-  currentPeriodEnd: z.string().datetime().nullable().optional(),
-  cancelAtPeriodEnd: z.boolean().optional(),
-});
-
-/**
- * PATCH /api/admin/tenants/:companyId/billing
- * Update billing configuration for a specific tenant
- *
- * Note: This does NOT update Stripe IDs - those are managed by Stripe webhooks
- *
- * Body: Partial update of billing fields
- * - subscriptionStatus?: "trial" | "active" | "past_due" | "cancelled" | "paused"
- * - subscriptionPlan?: string | null
- * - billingInterval?: "monthly" | "annual" | null
- * - trialEndsAt?: ISO date string | null
- * - currentPeriodEnd?: ISO date string | null
- * - cancelAtPeriodEnd?: boolean
- */
-router.patch(
-  "/tenants/:companyId/billing",
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const { companyId } = req.params;
-    const owner = (req as any).isImpersonating ? (req as any).realUser : req.user!;
-
-    // Validate request body
-    const data = validateSchema(updateBillingSchema, req.body);
-
-    // Check tenant exists
-    const existing = await billingRepository.getBilling(companyId);
-    if (!existing) {
-      throw createError(404, "Tenant not found");
-    }
-
-    // 2026-04-21 Phase 1: reject unknown plan names before any write lands.
-    // Prevents `companies.subscription_plan` from drifting into an orphan
-    // string the entitlement resolver cannot match.
-    if (data.subscriptionPlan) {
-      const plan = await entitlementStorage.getPlanByName(data.subscriptionPlan);
-      if (!plan) {
-        throw createError(400, `Unknown subscription plan: '${data.subscriptionPlan}'`);
-      }
-    }
-
-    // 2026-04-21 Phase 1 canonical policy architecture:
-    //   subscriptionStatus + trialEndsAt are routed through
-    //   subscriptionLifecycleService.transition() — it validates the
-    //   transition, writes the canonical state, appends a
-    //   subscription_events audit row, and invalidates the entitlement
-    //   resolver cache. Other billing fields (plan, interval, period-end,
-    //   cancel-at-period-end) continue through the tenant-features repo.
-    const trialEndsAtValue = data.trialEndsAt !== undefined
-      ? (data.trialEndsAt ? new Date(data.trialEndsAt) : null)
-      : undefined;
-
-    if (data.subscriptionStatus !== undefined || trialEndsAtValue !== undefined) {
-      await subscriptionLifecycleService.transition({
-        companyId,
-        to: data.subscriptionStatus ?? (existing.subscriptionStatus as any),
-        ...(trialEndsAtValue !== undefined && { trialEndsAt: trialEndsAtValue }),
-        source: "admin_patch",
-        actorUserId: owner.id,
-        reason: "admin billing PATCH",
-      });
-    }
-
-    const nonLifecycleUpdates: Parameters<typeof billingRepository.updateBilling>[1] = {
-      ...(data.subscriptionPlan !== undefined && { subscriptionPlan: data.subscriptionPlan }),
-      ...(data.billingInterval !== undefined && { billingInterval: data.billingInterval }),
-      ...(data.currentPeriodEnd !== undefined && {
-        currentPeriodEnd: data.currentPeriodEnd ? new Date(data.currentPeriodEnd) : null
-      }),
-      ...(data.cancelAtPeriodEnd !== undefined && { cancelAtPeriodEnd: data.cancelAtPeriodEnd }),
-    };
-
-    if (Object.keys(nonLifecycleUpdates).length > 0) {
-      await billingRepository.updateBilling(companyId, nonLifecycleUpdates);
-    }
-
-    // Re-read canonical billing row so the response reflects BOTH the
-    // lifecycle-service write and the plan/interval writes.
-    const updated = await billingRepository.getBilling(companyId);
-
-    // Invalidate subscription cache so limit checks use fresh plan data immediately
-    invalidateCompanyCache(companyId);
-
-    // Audit log the change (special handling for trial adjustments)
-    if (data.trialEndsAt !== undefined || data.subscriptionStatus === "trial") {
-      await platformAuditService.logTrialAdjustment(
-        owner.id,
-        owner.email || "unknown",
-        companyId,
-        {
-          changeType: "billing_update",
-          previousStatus: existing.subscriptionStatus,
-          updates: data,
-        },
-        req
-      );
-    } else {
-      await platformAuditService.logBillingAdjustment(
-        owner.id,
-        owner.email || "unknown",
-        companyId,
-        {
-          changeType: "billing_update",
-          previousStatus: existing.subscriptionStatus,
-          updates: data,
-        },
-        req
-      );
-    }
-
-    res.json({ success: true, billing: updated });
-  })
-);
+// `PATCH /api/admin/tenants/:companyId/billing` was removed because this
+// router gates only on tenant role `owner` — meaning any tenant owner could
+// pass an arbitrary `:companyId` and mutate billing for a different tenant.
+// All billing / lifecycle mutations now route through the platform-scoped
+// endpoint, which enforces the platform capability:
+//
+//   PATCH /api/platform/tenants/:tenantId/subscription
+//     guard: requireCapability("tenant:lifecycle:write")
+//     accepts: { subscriptionPlan?, subscriptionStatus?, trialEndsAt? }
+//
+// The legacy feature-flag admin endpoints (
+//   GET  /api/admin/tenants/:id/billing-features,
+//   PATCH /api/admin/tenants/:id/features
+// ) were already deleted in 2026-04-21 Phase 3 — entitlement reads / writes
+// flow through the canonical resolver + platform override endpoints.
 
 // ============================================================================
 // Time Alerts Worker Routes

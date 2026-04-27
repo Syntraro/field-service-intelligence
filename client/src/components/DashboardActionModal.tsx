@@ -41,7 +41,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Loader2, ExternalLink, Receipt, ArrowUpRight,
+  Loader2, Receipt, ArrowUpRight, Wrench,
 } from "lucide-react";
 import {
   JobScheduleFields, createDefaultScheduleValue,
@@ -53,7 +53,11 @@ import {
 // client root — the hook applies optimistic patching, version caching,
 // per-visit serialization, and canonical invalidation uniformly.
 import { useDispatchPreviewMutations } from "@/components/dispatch/useDispatchPreviewMutations";
-import { resolveDashboardNav, type DashboardAction } from "@/lib/dashboardNavigation";
+// 2026-04-26: bottom "View all on Jobs page" link removed; the
+// `viewAllAction` field on each MODE_CONFIG entry is now informational
+// only (kept for forward-compat with surfaces that may inspect it).
+// `resolveDashboardNav` is no longer needed in this file.
+import type { DashboardAction } from "@/lib/dashboardNavigation";
 import { getHoldReasonLabel } from "@shared/schema";
 
 // ============================================================================
@@ -64,22 +68,35 @@ import { getHoldReasonLabel } from "@shared/schema";
 export type DashboardActionMode = "action_required" | "scheduling_issues" | "ready_to_invoice";
 
 /**
- * Internal "source" identifies one /api/jobs query shape. Each user-facing
- * mode composes one or two sources. Sources map 1:1 onto the same canonical
+ * Internal "source" identifies one query shape. Each user-facing mode
+ * composes one or two sources. Sources map 1:1 onto the same canonical
  * filters the dashboard widget counters use — this preserves the invariant
  * that tile counts and drill-down lists stay in lockstep by construction.
+ *
+ * 2026-04-26: `pm_due` added — preventive-maintenance instances awaiting
+ * job generation. Folded into the `action_required` mode alongside `on_hold`.
+ * Hits `/api/dashboard/pm-due-instances` (rows mirror the workflow tile's
+ * `pm.awaitingGenerationCount`); generation routes through the canonical
+ * `POST /api/recurring-templates/generate-selected`.
  */
-type InternalSource = "overdue" | "on_hold" | "unscheduled" | "ready_to_invoice";
+type InternalSource = "overdue" | "on_hold" | "unscheduled" | "ready_to_invoice" | "pm_due";
 
-/** Query params per source. Mirrors getWorkflowSummary / getJobCounts in
- *  server/storage/dashboard.ts and the readyToInvoiceOnly filter in
- *  server/storage/jobsFeed.ts. */
+/** Query params per source. Job-table sources hit `/api/jobs?…`; `pm_due`
+ *  hits its own dashboard endpoint. */
 const SOURCE_PARAMS: Record<InternalSource, string> = {
   overdue: "status=open&overdue=true&limit=50",
   on_hold: "status=open&openSubStatus=on_hold&limit=50",
   unscheduled: "status=open&unscheduledOnly=true&limit=50",
   ready_to_invoice: "readyToInvoiceOnly=true&limit=50",
+  pm_due: "limit=50",
 };
+
+/** Sources that hit `/api/jobs` (and return `JobsResponse`). `pm_due` is
+ *  the lone exception — it returns `PMDueInstancesResponse` instead. */
+function sourceUrl(source: InternalSource): string {
+  if (source === "pm_due") return `/api/dashboard/pm-due-instances?${SOURCE_PARAMS.pm_due}`;
+  return `/api/jobs?${SOURCE_PARAMS[source]}`;
+}
 
 /** Human label for a section header when more than one source is rendered. */
 const SOURCE_SECTION_LABEL: Record<InternalSource, string> = {
@@ -87,6 +104,7 @@ const SOURCE_SECTION_LABEL: Record<InternalSource, string> = {
   on_hold: "On Hold",
   unscheduled: "Needs Scheduling",
   ready_to_invoice: "Ready to Invoice",
+  pm_due: "PMs Due / Overdue",
 };
 
 interface ModeConfig {
@@ -99,7 +117,10 @@ interface ModeConfig {
 const MODE_CONFIG: Record<DashboardActionMode, ModeConfig> = {
   action_required: {
     title: "Action Required",
-    sources: ["on_hold"],
+    // 2026-04-26: PM-due rows now fold into "Action Required" alongside
+    // on-hold jobs. Same modal, same dismiss behaviour, two grouped
+    // sections rendered top-to-bottom.
+    sources: ["on_hold", "pm_due"],
     viewAllAction: "ops.onHold",
   },
   scheduling_issues: {
@@ -142,6 +163,26 @@ interface JobsResponse {
   data: JobItem[];
 }
 
+// 2026-04-26: PM-due drill-down row. Sourced from
+// `/api/dashboard/pm-due-instances`; generation routes through
+// `/api/recurring-templates/generate-selected`.
+interface PMDueInstance {
+  instanceId: string;
+  instanceDate: string;
+  isOverdue: boolean;
+  templateId: string;
+  templateTitle: string;
+  customerCompanyId: string | null;
+  customerName: string | null;
+  locationId: string | null;
+  locationName: string | null;
+  locationDisplayName: string | null;
+}
+
+interface PMDueInstancesResponse {
+  data: PMDueInstance[];
+}
+
 // ============================================================================
 // Component
 // ============================================================================
@@ -174,47 +215,80 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
 
   // ── Data fetches ─────────────────────────────────────────────────────────
   //
-  // Every mode has at least a primary source; scheduling_issues has a
-  // secondary one. Both hooks are declared unconditionally (React rule) and
-  // the secondary hook is gated via `enabled` when the current mode has no
-  // secondary source.
+  // Every mode has at least a primary source; some modes have a secondary
+  // one. All hooks are declared unconditionally (React rule); each is
+  // gated via `enabled` when the current mode does not include that
+  // source. 2026-04-26: PM-due rows added under `action_required`. Their
+  // shape differs from `JobsResponse`, so they have their own query +
+  // render path.
   const primarySource = config.sources[0];
   const secondarySource: InternalSource | undefined = config.sources[1];
 
-  const primaryQuery = useQuery<JobsResponse>({
+  const isPMDue = (s: InternalSource | undefined) => s === "pm_due";
+  const isJobSource = (s: InternalSource | undefined) =>
+    !!s && s !== "pm_due";
+
+  // The job-source queries cover every source EXCEPT `pm_due`.
+  const primaryJobQuery = useQuery<JobsResponse>({
     queryKey: ["dashboard-action", mode, primarySource],
     queryFn: async () => {
-      const res = await fetch(`/api/jobs?${SOURCE_PARAMS[primarySource]}`, { credentials: "include" });
+      const res = await fetch(sourceUrl(primarySource), { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch");
       return res.json();
     },
-    enabled: open,
+    enabled: open && isJobSource(primarySource),
     staleTime: 30_000,
   });
 
-  const secondaryQuery = useQuery<JobsResponse>({
+  const secondaryJobQuery = useQuery<JobsResponse>({
     queryKey: ["dashboard-action", mode, secondarySource ?? "none"],
     queryFn: async () => {
       if (!secondarySource) return { data: [] };
-      const res = await fetch(`/api/jobs?${SOURCE_PARAMS[secondarySource]}`, { credentials: "include" });
+      const res = await fetch(sourceUrl(secondarySource), { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch");
       return res.json();
     },
-    enabled: open && !!secondarySource,
+    enabled: open && isJobSource(secondarySource),
+    staleTime: 30_000,
+  });
+
+  // Dedicated PM-due query — fires only when one of the configured
+  // sources is `pm_due` (today: only `action_required`).
+  const pmDueSource = isPMDue(primarySource)
+    ? primarySource
+    : isPMDue(secondarySource)
+      ? secondarySource
+      : null;
+  const pmDueQuery = useQuery<PMDueInstancesResponse>({
+    queryKey: ["dashboard-action", mode, "pm_due"],
+    queryFn: async () => {
+      const res = await fetch(sourceUrl("pm_due"), { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch");
+      return res.json();
+    },
+    enabled: open && !!pmDueSource,
     staleTime: 30_000,
   });
 
   const refetchAll = useCallback(() => {
-    primaryQuery.refetch();
-    if (secondarySource) secondaryQuery.refetch();
-  }, [primaryQuery, secondaryQuery, secondarySource]);
+    if (isJobSource(primarySource)) primaryJobQuery.refetch();
+    if (isJobSource(secondarySource)) secondaryJobQuery.refetch();
+    if (pmDueSource) pmDueQuery.refetch();
+  }, [primaryJobQuery, secondaryJobQuery, pmDueQuery, primarySource, secondarySource, pmDueSource]);
 
-  const isLoading = primaryQuery.isLoading || (!!secondarySource && secondaryQuery.isLoading);
-  const isError = primaryQuery.isError || (!!secondarySource && secondaryQuery.isError);
+  const isLoading =
+    (isJobSource(primarySource) && primaryJobQuery.isLoading) ||
+    (isJobSource(secondarySource) && secondaryJobQuery.isLoading) ||
+    (!!pmDueSource && pmDueQuery.isLoading);
+  const isError =
+    (isJobSource(primarySource) && primaryJobQuery.isError) ||
+    (isJobSource(secondarySource) && secondaryJobQuery.isError) ||
+    (!!pmDueSource && pmDueQuery.isError);
 
-  const primaryJobs: JobItem[] = primaryQuery.data?.data ?? [];
-  const secondaryJobs: JobItem[] = secondarySource ? (secondaryQuery.data?.data ?? []) : [];
-  const totalJobCount = primaryJobs.length + secondaryJobs.length;
+  const primaryJobs: JobItem[] = isJobSource(primarySource) ? (primaryJobQuery.data?.data ?? []) : [];
+  const secondaryJobs: JobItem[] = isJobSource(secondarySource) ? (secondaryJobQuery.data?.data ?? []) : [];
+  const pmDueRows: PMDueInstance[] = pmDueSource ? (pmDueQuery.data?.data ?? []) : [];
+  const totalJobCount = primaryJobs.length + secondaryJobs.length + pmDueRows.length;
 
   // Overdue section only surfaces under `scheduling_issues` — that's the only
   // mode that currently pulls from the "overdue" source. If it shifts in
@@ -288,25 +362,35 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
       const endAt = end.toISOString();
       const crew = scheduleValue.assignedTechnicianIds ?? [];
 
+      // 2026-04-26 (Option A): both branches now check the typed result so
+      // a swallowed hook-level failure can't fall through to the green
+      // "Scheduled" toast and the row-collapse / form-reset / dashboard +
+      // attention invalidations. The hook fires its own failure toast.
       if (visitId) {
         // Overdue reschedule OR placeholder visit promotion — both go
         // through the orchestrator-backed reschedule path. The orchestrator
         // decides spawn-on-actioned vs in-place update.
-        await rescheduleVisit({
+        const result = await rescheduleVisit({
           jobId,
           visitId,
           assignedTechnicianIds: crew,
           startAt,
           endAt,
         });
+        if (!result.ok) {
+          return;
+        }
       } else {
         // Job has no existing visit row (rare) — create a new one.
-        await scheduleVisit({
+        const result = await scheduleVisit({
           jobId,
           assignedTechnicianIds: crew,
           startAt,
           endAt,
         });
+        if (!result.ok) {
+          return;
+        }
       }
 
       toast({ title: "Scheduled", description: "Job scheduled successfully." });
@@ -347,6 +431,43 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
       setActionLoading(null);
     }
   }, [toast, refetchAll]);
+
+  // ── PM job-generation mutation ──────────────────────────────────────────
+  //
+  // 2026-04-26: dashboard PM rows reuse the canonical generation route
+  // `POST /api/recurring-templates/generate-selected` — same endpoint
+  // PMWorkspacePage drives. No parallel generation logic. Single-row
+  // generation passes a one-element `instanceIds` array. Toast + cache
+  // invalidations mirror the workspace mutation so the dashboard stays
+  // in lockstep with the rest of the PM surface.
+  const pmGenerateMutation = useMutation({
+    mutationFn: (instanceIds: string[]) =>
+      apiRequest<{ jobsCreated?: number }>(
+        "/api/recurring-templates/generate-selected",
+        { method: "POST", body: JSON.stringify({ instanceIds }) },
+      ),
+    onSuccess: (data) => {
+      const count = data?.jobsCreated ?? 0;
+      toast({
+        title: `${count} work order${count !== 1 ? "s" : ""} created`,
+        description: "Schedule them from the dispatch board.",
+      });
+      refetchAll();
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates/upcoming"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Generation failed",
+        description: err?.message || "Could not generate the work order.",
+        variant: "destructive",
+      });
+    },
+  });
 
   // ── Bulk unschedule mutation (overdue section inside scheduling_issues) ──
   //
@@ -433,7 +554,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
   // scheduling_issues can render a "Reschedule" button on overdue rows and
   // "Schedule" on unscheduled rows in the same modal without branching on
   // the user-facing mode.
-  function renderJobRow(job: JobItem, source: InternalSource, isLastInSection: boolean) {
+  function renderJobRow(job: JobItem, source: InternalSource, _isLastInSection: boolean) {
     const isExpanded = expandedJobId === job.id;
     const isActioning = actionLoading === job.id;
     const location = job.locationDisplayName || job.locationName || "—";
@@ -443,11 +564,71 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
     const isOverdueRow = source === "overdue";
     const isReadyToInvoiceRow = source === "ready_to_invoice";
 
+    // 2026-04-26: On Hold rows render as a single <button> wrapping
+    // the whole card body — clicking anywhere navigates to the job's
+    // detail page. The previous `Open Job` action button was redundant
+    // with this row click and is removed. Hold reason moves to the
+    // right side as a compact pill (replaces the inline " · Hold:"
+    // suffix that used to push location text into wrap territory).
+    if (isOnHoldRow) {
+      return (
+        <div
+          key={job.id}
+          className="bg-white rounded-md border border-[#e5e7eb] hover:bg-[#F0F5F0] hover:border-[#cbd5e1] transition-colors"
+          data-testid={`action-row-on-hold-${job.id}`}
+        >
+          <button
+            type="button"
+            onClick={() => { handleOpenChange(false); setLocation(`/jobs/${job.id}`); }}
+            className="w-full flex items-center gap-3 px-3 py-2.5 text-left cursor-pointer"
+            title="Open job detail"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-xs font-bold text-[#4b5563] tabular-nums shrink-0">#{job.jobNumber}</span>
+                <span className="text-sm font-medium text-[#111827] truncate min-w-0 flex-1">{job.summary}</span>
+              </div>
+              <div className="text-xs text-[#4b5563] mt-0.5 truncate">
+                {location}{city}
+              </div>
+              {job.holdNotes && (
+                <div className="text-xs text-[#4b5563] mt-1 line-clamp-2 italic">
+                  {/* 2026-04-26: strip the leading `Visit #N — ` prefix
+                      that some upstream completion paths embed in
+                      `holdNotes` (e.g. `Visit #1 — Needs parts: motor`).
+                      Display-only — the stored text is unchanged so
+                      audit history and visit association are preserved.
+                      Idempotent: notes without the prefix render
+                      verbatim. */}
+                  {job.holdNotes.replace(/^Visit\s+#\d+\s+—\s+/, "")}
+                </div>
+              )}
+            </div>
+            {job.holdReason && (
+              <span
+                className="shrink-0 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider rounded bg-orange-50 text-orange-700 border border-orange-200 whitespace-nowrap"
+                data-testid={`hold-reason-pill-${job.id}`}
+              >
+                Hold: {getHoldReasonLabel(job.holdReason)}
+              </span>
+            )}
+          </button>
+        </div>
+      );
+    }
+
+    // Non-on-hold rows keep the existing div + per-action-button layout.
+    // The outer card chrome was added so they sit alongside the on-hold
+    // and PM cards consistently against the grey body.
     return (
-      <div key={job.id} className={`${!isLastInSection ? "border-b border-[#e5e7eb]" : ""}`}>
-        <div className="flex items-center justify-between px-5 py-3 hover:bg-[#f8fafc] transition-colors">
+      <div
+        key={job.id}
+        className="bg-white rounded-md border border-[#e5e7eb] overflow-hidden"
+        data-testid={`action-row-${source}-${job.id}`}
+      >
+        <div className="flex items-center justify-between px-3 py-2.5 hover:bg-[#f8fafc] transition-colors">
           {isOverdueRow && (
-            <div className="mr-3 shrink-0">
+            <div className="mr-2 shrink-0">
               <Checkbox
                 checked={selectedIds.has(job.id)}
                 onCheckedChange={() => toggleSelect(job.id)}
@@ -457,27 +638,13 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
             </div>
           )}
           <div className="min-w-0 flex-1 mr-3">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold text-[#4b5563] tabular-nums">#{job.jobNumber}</span>
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-xs font-bold text-[#4b5563] tabular-nums shrink-0">#{job.jobNumber}</span>
               <span className="text-sm font-medium text-[#111827] truncate">{job.summary}</span>
             </div>
             <div className="text-xs text-[#4b5563] mt-0.5 truncate">
               {location}{city}
-              {/* 2026-04-19 Task A: canonical hold-reason label.
-                  Replaces the previous `job.holdReason.replace(/_/g, " ")`
-                  which rendered "parts" as "parts" (lowercase enum) instead
-                  of "Needs Parts". `getHoldReasonLabel` is the single
-                  source of truth in `@shared/schema` and is already used
-                  by JobDetailPage and ActionRequiredModal. */}
-              {job.holdReason && (
-                <span className="ml-2 text-orange-600">· Hold: {getHoldReasonLabel(job.holdReason)}</span>
-              )}
             </div>
-            {isOnHoldRow && job.holdNotes && (
-              <div className="text-xs text-[#4b5563] mt-1 line-clamp-2 italic">
-                {job.holdNotes}
-              </div>
-            )}
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             {isScheduleRow ? (
@@ -488,14 +655,6 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
                 className="shrink-0 h-8 text-xs"
               >
                 {isExpanded ? "Cancel" : (isOverdueRow ? "Reschedule" : "Schedule")}
-              </Button>
-            ) : isOnHoldRow ? (
-              <Button
-                size="sm"
-                onClick={() => { handleOpenChange(false); setLocation(`/jobs/${job.id}`); }}
-                className="shrink-0 h-8 text-xs"
-              >
-                Open Job <ArrowUpRight className="h-3 w-3 ml-0.5" />
               </Button>
             ) : isReadyToInvoiceRow ? (
               <Button
@@ -508,7 +667,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
                 Create Invoice
               </Button>
             ) : null}
-            {!isExpanded && !isOnHoldRow && (
+            {!isExpanded && (
               <Button
                 size="sm"
                 variant="ghost"
@@ -522,7 +681,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
           </div>
         </div>
         {isScheduleRow && isExpanded && (
-          <div className="px-5 pb-4 pt-1 bg-[#f8fafc] border-t border-[#e5e7eb]">
+          <div className="px-3 pb-3 pt-1 bg-[#f8fafc] border-t border-[#e5e7eb]">
             <JobScheduleFields
               value={scheduleValue}
               onChange={setScheduleValue}
@@ -557,16 +716,148 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
   function renderSection(source: InternalSource, rows: JobItem[]) {
     if (rows.length === 0) return null;
     const showHeader = config.sources.length > 1;
+    // 2026-04-26: ON HOLD section header now carries a "View all jobs"
+    // link on the right side — replaces the bottom footer's vague
+    // "View all on Jobs page" CTA. Other job sources (overdue,
+    // unscheduled, ready_to_invoice) keep just the title for now since
+    // the dashboard's `viewAllAction` already points each mode at the
+    // right destination via the section-internal action buttons.
+    const showViewAllJobs = source === "on_hold";
     return (
       <div key={source}>
         {showHeader && (
-          <div className="sticky top-0 z-10 bg-[#f1f5f9] px-5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#64748b] border-b border-[#e5e7eb]">
-            {SOURCE_SECTION_LABEL[source]}
-            <span className="ml-2 text-[#94a3b8] tabular-nums normal-case">({rows.length})</span>
+          <div className="sticky top-0 z-10 bg-[#f1f5f9] px-5 py-1.5 border-b border-[#e5e7eb] flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[#64748b]">
+              {SOURCE_SECTION_LABEL[source]}
+              <span className="ml-2 text-[#94a3b8] tabular-nums normal-case">({rows.length})</span>
+            </span>
+            {showViewAllJobs && (
+              <button
+                type="button"
+                onClick={() => { handleOpenChange(false); setLocation("/jobs"); }}
+                className="text-[11px] font-medium text-[#76B054] hover:text-[#5F9442] inline-flex items-center gap-1"
+                data-testid="action-required-view-all-jobs"
+              >
+                View all jobs
+                <ArrowUpRight className="h-3 w-3" />
+              </button>
+            )}
           </div>
         )}
-        <div>
+        {/* 2026-04-26: rows render as white cards stacked on the grey
+            body — `space-y-1.5` (tightened from `space-y-2`), individual
+            `bg-white border rounded-md` chrome owned by the row
+            renderers below. */}
+        <div className="px-3 py-1.5 space-y-1.5">
           {rows.map((job, i) => renderJobRow(job, source, i === rows.length - 1))}
+        </div>
+      </div>
+    );
+  }
+
+  // 2026-04-26: compact PM-due row. Two lines max:
+  //   Line 1: PM template name (truncated) · status pill (Overdue/Due).
+  //   Line 2: customer · location · due-date (each segment truncates).
+  // The whole row is the navigation target — clicking the title block
+  // opens the existing PM detail page (`/pm/{templateId}`). The
+  // separate "View PM" secondary button was removed; the row click
+  // replaces it. "Generate job" stays as the primary on the far right
+  // and uses `e.stopPropagation()` so it doesn't bubble into the row's
+  // navigation handler. `min-w-0 flex-1 truncate` on the title block
+  // prevents long names from forcing the status pill or the action
+  // button onto a new line.
+  function renderPMRow(row: PMDueInstance, isLastInSection: boolean) {
+    const isGenerating =
+      pmGenerateMutation.isPending && pmGenerateMutation.variables?.[0] === row.instanceId;
+    const statusLabel = row.isOverdue ? "Overdue" : "Due";
+    const statusTone = row.isOverdue
+      ? "bg-red-50 text-red-700 border border-red-200"
+      : "bg-amber-50 text-amber-700 border border-amber-200";
+    const customer = row.customerName ?? row.locationDisplayName ?? "—";
+    const location = row.locationName ?? row.locationDisplayName ?? "";
+    const handleNavigate = () => {
+      handleOpenChange(false);
+      setLocation(`/pm/${row.templateId}`);
+    };
+    return (
+      <div
+        key={row.instanceId}
+        className="bg-white rounded-md border border-[#e5e7eb] hover:bg-[#F0F5F0] hover:border-[#cbd5e1] transition-colors"
+        data-testid={`pm-due-row-${row.instanceId}`}
+      >
+        <div className="flex items-center gap-3 px-3 py-2.5">
+          <button
+            type="button"
+            onClick={handleNavigate}
+            className="min-w-0 flex-1 text-left cursor-pointer"
+            data-testid={`pm-due-open-${row.instanceId}`}
+            title="Open PM contract"
+          >
+            {/* Line 1 — name + status pill */}
+            <div className="flex items-center gap-2 min-w-0">
+              <Wrench className="h-3.5 w-3.5 text-[#76B054] shrink-0" />
+              <span className="text-sm font-medium text-[#111827] truncate min-w-0 flex-1">
+                {row.templateTitle}
+              </span>
+              <span className={`text-[10px] font-semibold uppercase tracking-wider rounded px-1.5 py-0.5 shrink-0 ${statusTone}`}>
+                {statusLabel}
+              </span>
+            </div>
+            {/* Line 2 — customer · location · due date */}
+            <div className="text-xs text-[#4b5563] mt-0.5 truncate">
+              <span className="text-[#111827]">{customer}</span>
+              {location && <span className="text-[#4b5563]"> · {location}</span>}
+              <span className="text-[#94a3b8]"> · Due {row.instanceDate}</span>
+            </div>
+          </button>
+          <Button
+            size="sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              pmGenerateMutation.mutate([row.instanceId]);
+            }}
+            disabled={pmGenerateMutation.isPending}
+            className="shrink-0 h-8 text-xs"
+            data-testid={`pm-due-generate-${row.instanceId}`}
+          >
+            {isGenerating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Generate job"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  function renderPMSection(rows: PMDueInstance[]) {
+    if (rows.length === 0) return null;
+    const showHeader = config.sources.length > 1;
+    return (
+      <div key="pm_due">
+        {/* 2026-04-26: section header carries a single "View all PMs"
+            link to `/pm` (the PM workspace) — replaces the per-row
+            "View PM" button. Header always renders for the PM section
+            so the link is reachable even when on-hold has no rows. */}
+        {showHeader && (
+          <div className="sticky top-0 z-10 bg-[#f1f5f9] px-5 py-1.5 border-b border-[#e5e7eb] flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[#64748b]">
+              {SOURCE_SECTION_LABEL.pm_due}
+              <span className="ml-2 text-[#94a3b8] tabular-nums normal-case">({rows.length})</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                handleOpenChange(false);
+                setLocation("/pm");
+              }}
+              className="text-[11px] font-medium text-[#76B054] hover:text-[#5F9442] inline-flex items-center gap-1"
+              data-testid="pm-due-view-all"
+            >
+              View all PMs
+              <ArrowUpRight className="h-3 w-3" />
+            </button>
+          </div>
+        )}
+        <div className="px-3 py-1.5 space-y-1.5">
+          {rows.map((row, i) => renderPMRow(row, i === rows.length - 1))}
         </div>
       </div>
     );
@@ -612,7 +903,12 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
           )}
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto min-h-0">
+        {/* 2026-04-26: body background switched from default white to
+            a light slate so the action rows below can render as
+            distinct white cards. The visual emphasis (white card on
+            grey body) matches how the dashboard cards themselves sit
+            against the page. */}
+        <div className="flex-1 overflow-y-auto min-h-0 bg-[#f1f5f9]">
           {isLoading ? (
             <div className="p-5 space-y-3">
               {[1, 2, 3].map((i) => <Skeleton key={i} className="h-14" />)}
@@ -620,28 +916,29 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
           ) : isError ? (
             <div className="p-5 text-sm text-red-600">Failed to load jobs. Please try again.</div>
           ) : totalJobCount === 0 ? (
-            <div className="p-8 text-center text-sm text-[#4b5563]">No jobs in this category.</div>
+            <div className="p-8 text-center text-sm text-[#4b5563]">No items in this category.</div>
           ) : (
             <div>
-              {renderSection(primarySource, primaryJobs)}
-              {secondarySource && renderSection(secondarySource, secondaryJobs)}
+              {/* 2026-04-26: render configured sources in declaration
+                  order. PM-due rows have a different shape and use
+                  their own renderer. Empty sections silently no-op,
+                  so a tenant with on-hold jobs but zero PM-due work
+                  sees only the on-hold section (and vice versa). */}
+              {config.sources.map((source) => {
+                if (source === "pm_due") return renderPMSection(pmDueRows);
+                if (source === primarySource) return renderSection(primarySource, primaryJobs);
+                if (source === secondarySource) return renderSection(secondarySource, secondaryJobs);
+                return null;
+              })}
             </div>
           )}
         </div>
 
-        <div className="px-5 py-3 border-t border-[#e5e7eb] shrink-0 flex items-center justify-between">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-xs text-[#4b5563] hover:text-[#111827]"
-            onClick={() => {
-              handleOpenChange(false);
-              setLocation(resolveDashboardNav(config.viewAllAction));
-            }}
-          >
-            <ExternalLink className="h-3.5 w-3.5 mr-1" />
-            View all on Jobs page
-          </Button>
+        {/* 2026-04-26: bottom "View all on Jobs page" link removed —
+            section-level links (`View all jobs` beside ON HOLD,
+            `View all PMs` beside the PM section) replace it. The
+            footer keeps just the Close button. */}
+        <div className="px-5 py-3 border-t border-[#e5e7eb] shrink-0 flex items-center justify-end">
           <Button variant="outline" size="sm" className="text-xs" onClick={() => handleOpenChange(false)}>
             Close
           </Button>

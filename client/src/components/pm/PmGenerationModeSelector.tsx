@@ -1,14 +1,16 @@
 /**
- * PmGenerationModeSelector — Shared generation mode radio group with day-of-month input.
- * Used by PM Create wizard and PM Edit page.
+ * PmGenerationModeSelector — Generation mode radio group.
+ * Used by PM Edit page (the create wizard has its own redesigned UI).
  */
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
+type GenerationMode = "period_start" | "day_of_month";
+
 interface PmGenerationModeSelectorProps {
-  generationMode: "period_start" | "day_of_month";
+  generationMode: GenerationMode;
   generationDayOfMonth: number;
-  onModeChange: (mode: "period_start" | "day_of_month") => void;
+  onModeChange: (mode: GenerationMode) => void;
   onDayChange: (day: number) => void;
   testIdPrefix?: string;
 }
@@ -22,7 +24,7 @@ export function PmGenerationModeSelector({
 }: PmGenerationModeSelectorProps) {
   return (
     <div className="space-y-2">
-      <Label>When should jobs be created?</Label>
+      <Label>When should work orders be created?</Label>
       <div className="space-y-2">
         <label className="flex items-center gap-2 text-sm cursor-pointer">
           <input
@@ -32,7 +34,7 @@ export function PmGenerationModeSelector({
             onChange={() => onModeChange("period_start")}
             className="accent-primary"
           />
-          Start of each scheduled month
+          On the 1st of each service month
         </label>
         <label className="flex items-center gap-2 text-sm cursor-pointer">
           <input

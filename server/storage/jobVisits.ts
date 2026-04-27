@@ -36,6 +36,11 @@ export interface VisitLocationInfo {
   province: string | null;
   postalCode: string | null;
   phone: string | null;
+  /** Geocoded latitude (numeric column → string from drizzle, parsed to number
+   *  in API response). Null when the address has not been geocoded. */
+  lat: number | null;
+  /** Geocoded longitude. See `lat`. */
+  lng: number | null;
 }
 
 /** A visit enriched with job + location data (canonical shape for tech/calendar). */
@@ -287,11 +292,19 @@ export class JobVisitsRepository extends BaseRepository {
           province: clientLocations.province,
           postalCode: clientLocations.postalCode,
           phone: clientLocations.phone,
+          lat: clientLocations.lat,
+          lng: clientLocations.lng,
         })
         .from(clientLocations)
         .innerJoin(jobs, eq(jobs.locationId, clientLocations.id))
         .where(and(eq(jobs.id, visit.jobId), eq(jobs.companyId, companyId)));
-      location = loc ?? null;
+      location = loc
+        ? {
+            ...loc,
+            lat: loc.lat == null ? null : Number(loc.lat),
+            lng: loc.lng == null ? null : Number(loc.lng),
+          }
+        : null;
     }
 
     // Fetch hydrated equipment for this job (via job_equipment → location_equipment)

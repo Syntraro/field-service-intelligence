@@ -53,6 +53,36 @@ export const DURATION_OPTIONS_LONG = [
 ] as const;
 
 // ============================================================================
+// Time-of-day options (15-minute granularity)
+// ============================================================================
+
+/**
+ * Lazy-built canonical time options. 96 entries, every 15 minutes from
+ * 00:00 to 23:45. `value` is "HH:mm" (matches `<input type="time">`),
+ * `label` is the user-facing 12-hour display ("9:00 AM").
+ *
+ * 2026-04-26: extracted from JobScheduleFields so the QuickAddJobDialog's
+ * compact schedule row can use the same dropdown — eliminates the native
+ * `<input type="time">` inconsistency the redesigned Create New modal
+ * surfaces side-by-side with date / duration / assignee.
+ */
+function buildTimeOptions(): Array<{ value: string; label: string }> {
+  const out: Array<{ value: string; label: string }> = [];
+  for (let h = 0; h < 24; h++) {
+    for (let m = 0; m < 60; m += 15) {
+      const value = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+      const period = h < 12 ? "AM" : "PM";
+      const hour12 = h % 12 === 0 ? 12 : h % 12;
+      const label = `${hour12}:${String(m).padStart(2, "0")} ${period}`;
+      out.push({ value, label });
+    }
+  }
+  return out;
+}
+
+export const TIME_OPTIONS_15MIN: ReadonlyArray<{ value: string; label: string }> = buildTimeOptions();
+
+// ============================================================================
 // Day-of-week labels
 // ============================================================================
 

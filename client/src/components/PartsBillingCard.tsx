@@ -670,13 +670,19 @@ export function PartsBillingCard({ jobId, isEditing, onExitEdit, onTotalsChange 
                   Add Line Item
                 </Button>
               )}
-              {!isEditing && isOfficeUser && (
+              {/* 2026-04-26: hide the Apply Template button entirely
+                  when no templates exist. Surfacing a disabled button
+                  with a "create one in Settings" tooltip clutters the
+                  card on tenants that haven't set up templates. The
+                  feature itself isn't removed — once a template exists
+                  the button reappears with full behaviour. */}
+              {!isEditing && isOfficeUser && jobTemplates.length > 0 && (
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => { setTemplatePickerOpen(true); setTemplateSearch(""); }}
-                  disabled={applyTemplateMutation.isPending || jobTemplates.length === 0}
-                  title={jobTemplates.length === 0 ? "No templates available — create one in Settings → Job Templates" : "Apply a template"}
+                  disabled={applyTemplateMutation.isPending}
+                  title="Apply a template"
                   className="border-slate-400 text-slate-800 bg-slate-50 hover:bg-slate-100 hover:border-slate-500 font-medium shadow-sm"
                   data-testid="button-apply-template"
                 >

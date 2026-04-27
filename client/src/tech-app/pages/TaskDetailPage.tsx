@@ -13,9 +13,14 @@ import { MobileShell } from "../components/MobileShell";
 import { useTechTasks } from "../hooks/useTechTasks";
 import {
   ArrowLeft, Clock, Truck, CheckSquare, Loader2, Check, Navigation,
-  Briefcase, MapPin, FileText, Calendar,
+  Briefcase, MapPin, FileText, Calendar, AlertCircle, X,
 } from "lucide-react";
 import { ActiveTimerConflictDialog, parseTimerConflict, type ActiveTimerInfo } from "../components/ActiveTimerConflictDialog";
+// 2026-04-26: canonical tech-app error formatter — same helper VisitDetailPage
+// uses. Returns `null` for 401 (handled by SessionExpiredDialog at app root)
+// and a stable message for 403 / other failures. Lets us suppress the toast
+// flicker that otherwise overlaps the session-expired modal.
+import { displayApiError } from "../utils/apiErrorDisplay";
 import type { Task } from "@shared/schema";
 
 interface SupplierVisitDetails {
@@ -31,6 +36,20 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const { tasks, runningTaskId, startTask, stopTask, closeTask, refetch } = useTechTasks();
   const [actionPending, setActionPending] = useState<string | null>(null);
   const [timerConflict, setTimerConflict] = useState<ActiveTimerInfo | null>(null);
+  // 2026-04-26: surfaced action-error state — replaces the prior empty
+  // "/* handled by mutation */" catches that hid every non-conflict failure
+  // (the underlying useTechTasks mutations have no onError handler, so
+  // without this banner the user saw nothing on stop/start/close failure).
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  /** Map a mutation error into the inline banner. Falls back to a stable
+   *  message; suppresses 401 (handled by the session-expired modal at the
+   *  app root). Same shape VisitDetailPage uses. */
+  const showError = (err: unknown) => {
+    const msg = displayApiError(err);
+    if (msg === null) return; // 401 — session-expired modal handles it
+    setActionError(msg);
+  };
 
   // Resync task + timer state when the app regains focus. Prevents a stale
   // "running" badge if the backend stopped the timer (e.g., started another
@@ -90,23 +109,47 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   const handleStart = async () => {
     setActionPending("start");
-    try { await startTask.mutateAsync(taskId); }
-    catch (e) { const c = parseTimerConflict(e); if (c) setTimerConflict(c); }
-    finally { setActionPending(null); }
+    setActionError(null);
+    try {
+      await startTask.mutateAsync(taskId);
+    } catch (e) {
+      // Active-timer conflict has its own dedicated dialog (gives the user
+      // the option to stop the other timer). Any OTHER failure surfaces in
+      // the inline error banner so the user knows the start didn't land.
+      const c = parseTimerConflict(e);
+      if (c) {
+        setTimerConflict(c);
+      } else {
+        showError(e);
+      }
+    } finally {
+      setActionPending(null);
+    }
   };
 
   const handleStop = async () => {
     setActionPending("stop");
-    try { await stopTask.mutateAsync(taskId); }
-    catch { /* handled by mutation */ }
-    finally { setActionPending(null); }
+    setActionError(null);
+    try {
+      await stopTask.mutateAsync(taskId);
+    } catch (e) {
+      showError(e);
+    } finally {
+      setActionPending(null);
+    }
   };
 
   const handleComplete = async () => {
     setActionPending("complete");
-    try { await closeTask.mutateAsync(taskId); setLocation("/tech/today"); }
-    catch { /* handled by mutation */ }
-    finally { setActionPending(null); }
+    setActionError(null);
+    try {
+      await closeTask.mutateAsync(taskId);
+      setLocation("/tech/today");
+    } catch (e) {
+      showError(e);
+    } finally {
+      setActionPending(null);
+    }
   };
 
   return (
@@ -191,6 +234,33 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </div>
         )}
       </div>
+
+      {/* 2026-04-26: inline error banner — sits directly above the fixed
+           action strip so the user sees the failure in the same eyeline as
+           the button they tapped. `role="alert" + aria-live="assertive"`
+           announces it on screen readers (matches VisitDetailPage). The
+           banner is fixed-positioned to stay above the action strip even
+           when the page is scrolled. */}
+      {actionError && (
+        <div
+          className="fixed left-0 right-0 z-30 bg-red-50 border-t border-b border-red-200 px-3 py-2 flex items-start gap-2"
+          style={{ bottom: "68px" }}
+          role="alert"
+          aria-live="assertive"
+          data-testid="task-detail-error"
+        >
+          <AlertCircle className="h-3.5 w-3.5 text-red-600 shrink-0 mt-0.5" aria-hidden="true" />
+          <p className="text-xs text-red-700 flex-1">{actionError}</p>
+          <button
+            type="button"
+            onClick={() => setActionError(null)}
+            className="text-red-600 -mt-0.5 -mr-1 p-1 rounded hover:bg-red-100"
+            aria-label="Dismiss"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Action buttons — fixed at bottom */}
       <div className="fixed bottom-0 left-0 right-0 border-t border-slate-200 bg-white p-3 flex gap-2 z-20">

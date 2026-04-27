@@ -36,13 +36,6 @@ const router = Router();
 // ========================================
 
 /**
- * Schema for simple import request body - only accepts clients array
- */
-const importSimpleRequestSchema = z.object({
-  clients: z.array(insertClientSchema).min(1).max(500),
-}).strict();
-
-/**
  * Schema for equipment in full import
  */
 const importEquipmentSchema = z.object({
@@ -668,54 +661,13 @@ router.get("/:clientId/contacts", asyncHandler(async (req: AuthedRequest, res: R
 
   // Identity + Assignment model: return company persons + location-assigned persons
   if (client.parentCompanyId) {
-    const result = await clientContactRepository.getLegacyContactsForLocation(
+    const result = await clientContactRepository.getContactsForLocation(
       companyId!, clientId, client.parentCompanyId
     );
     res.json(result);
   } else {
     res.json({ companyContacts: [], locationContacts: [] });
   }
-}));
-
-/**
- * POST /api/clients/import-simple - Simple bulk import
- * PHASE A.1: Uses strict schema to reject unknown/forbidden fields
- */
-router.post("/import-simple", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
-  // PHASE A.1: Strict validation - rejects unknown keys at any level
-  const validated = validateSchema(importSimpleRequestSchema, req.body);
-  const clients = validated.clients;
-
-  // Check if user can import this many clients
-  const usage = await storage.getSubscriptionUsage(req.companyId!) as any;
-  const availableSlots = usage.plan ? usage.plan.locationLimit - usage.usage.locations : 999999;
-
-  const subscriptionsEnabled = process.env.ENABLE_SUBSCRIPTIONS === 'true';
-  if (subscriptionsEnabled && clients.length > availableSlots) {
-    const error: any = createError(403, `Cannot import ${clients.length} clients. You have ${availableSlots} available locations on your ${usage.plan?.displayName} plan.`);
-    error.subscriptionLimitReached = true;
-    error.current = usage.usage.locations;
-    error.limit = usage.plan?.locationLimit || 0;
-    error.requested = clients.length;
-    throw error;
-  }
-
-  // Bulk insert all validated clients (single INSERT statement)
-  const errors: string[] = [];
-  let imported = 0;
-
-  try {
-    const created = await storage.bulkCreateClients(req.companyId!, req.user!.id, clients);
-    imported = created.length;
-  } catch (error: any) {
-    errors.push(`Bulk insert failed: ${error.message || 'Unknown error'}`);
-  }
-
-  res.json({
-    imported,
-    errors: errors.length > 0 ? errors : undefined,
-    total: clients.length
-  });
 }));
 
 /**
@@ -935,7 +887,7 @@ router.get("/:id/overview", asyncHandler(async (req: AuthedRequest, res: Respons
       company = parentCompany;
 
       // Link any tenant-owned clients with same companyName that are not yet linked
-      const unlinkedSameName = await customerCompanyRepository.getUnlinkedLocationsByCompanyName(
+      const unlinkedSameName = await customerCompanyRepository.getOrphanLocationsByCompanyName(
         tenantCompanyId!,
         companyName ?? ""
       );
@@ -1060,7 +1012,7 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
     );
 
     // Link all same-name unlinked locations under this customer company (Model A normalization)
-    const sameNameUnlinked = await customerCompanyRepository.getUnlinkedLocationsByCompanyName(
+    const sameNameUnlinked = await customerCompanyRepository.getOrphanLocationsByCompanyName(
       tenantCompanyId,
       legacyParentClient.companyName ?? ""
     );

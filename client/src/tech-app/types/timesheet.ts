@@ -38,4 +38,13 @@ export interface TimesheetEntry {
   jobNumber: number | null;
   jobSummary: string | null;
   locationName: string | null;
+  /**
+   * 2026-04-26: customer-company name pulled via
+   * `client_locations.parent_company_id → customer_companies.id`. Null
+   * when the location has no parent company (rare — direct-location
+   * jobs) or the entry has no `jobId`. Used by the tech-app Day View
+   * grouped header so the title reads `#{jobNumber} {clientName}`
+   * instead of `#{jobNumber} {jobSummary}`.
+   */
+  clientName: string | null;
 }

@@ -84,10 +84,8 @@ async function backfillForTenant(tenantCompanyId: string, dryRun: boolean): Prom
     })
     .from(quotes)
     .where(
-      and(
-        eq(quotes.companyId, tenantCompanyId),
-        eq(quotes.isActive, true),
-      )
+      // 2026-04-26: isActive filter removed — quotes use permanent-delete now.
+      eq(quotes.companyId, tenantCompanyId),
     );
 
   summary.totalScanned = allQuotes.length;

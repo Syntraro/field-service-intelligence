@@ -50,7 +50,19 @@ const ENRICHED_VISIT_SELECT = {
   locationProvince: clientLocations.province,
   locationPostalCode: clientLocations.postalCode,
   locationPhone: clientLocations.phone,
+  // 2026-04-24 geofence prompt needs lat/lng on every today-visit row.
+  locationLat: clientLocations.lat,
+  locationLng: clientLocations.lng,
 } as const;
+
+/** Drizzle returns `numeric` columns as strings to preserve precision; the
+ *  client-facing API works with `number | null`. Returns null on parse fail. */
+function parseNumericCoord(raw: string | number | null | undefined): number | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
 /** Map a raw row from the enriched select into an EnrichedVisit. */
 function toEnrichedVisit(r: {
@@ -69,6 +81,8 @@ function toEnrichedVisit(r: {
   locationProvince: string | null;
   locationPostalCode: string | null;
   locationPhone: string | null;
+  locationLat: string | null;
+  locationLng: string | null;
 }): EnrichedVisit {
   return {
     ...r.visit,
@@ -90,6 +104,8 @@ function toEnrichedVisit(r: {
           province: r.locationProvince,
           postalCode: r.locationPostalCode,
           phone: r.locationPhone,
+          lat: parseNumericCoord(r.locationLat),
+          lng: parseNumericCoord(r.locationLng),
         }
       : null,
   };

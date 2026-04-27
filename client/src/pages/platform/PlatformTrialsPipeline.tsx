@@ -6,7 +6,7 @@
  * actions route through canonical lifecycle + billing writers — no new
  * write paths.
  *
- *   Extend trial   → PATCH /api/admin/tenants/:id/billing  { trialEndsAt }
+ *   Extend trial   → PATCH /api/platform/tenants/:id/subscription  { trialEndsAt }
  *   Assign plan    → PATCH /api/platform/tenants/:id/subscription  { plan, status }
  *   Open detail    → navigate to /platform/tenants/:id
  *
@@ -420,7 +420,7 @@ function ExtendTrialDialog({
   const mutation = useMutation({
     mutationFn: () => {
       if (!row) throw new Error("No row");
-      return apiRequest(`/api/admin/tenants/${row.companyId}/billing`, {
+      return apiRequest(`/api/platform/tenants/${row.companyId}/subscription`, {
         method: "PATCH",
         body: JSON.stringify({
           trialEndsAt: new Date(newEnd + "T23:59:59Z").toISOString(),

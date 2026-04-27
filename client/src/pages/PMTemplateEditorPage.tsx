@@ -1,37 +1,40 @@
 /**
- * PMTemplateEditorPage — Full-page create/edit for PM templates
+ * PMTemplateEditorPage — Create/edit a reusable PM template.
  *
  * Routes:
  *   /pm/templates/new          — create new template
  *   /pm/templates/:id/edit     — edit existing template
  *
- * 2026-04-10 (P9-P10 Phase B): Migrated to the canonical client pipeline.
+ * 2026-04-26 layout pass: dense two-column form with a sticky save bar.
  *
- *   - Local `TemplateLineItem` interface: REMOVED.
- *   - Direct `/api/items?limit=200` prefetch: REMOVED.
- *   - Inline `TemplateLineItemRow` custom dropdown picker: REPLACED with the
- *     canonical `CreateOrSelectField` + `useProductSearch`.
- *   - Inline catalog→draft mapping in `selectProduct`: REPLACED with
- *     `catalogItemToDraft(productOptionToCatalogItem(product), {...})`.
+ *   • Top section (2-col)        — Name + Summary | Charge Type + Suggested Rate
+ *   • Full-width below           — Description
+ *   • Section 2 (2-col)          — Schedule Defaults | Completion Window
+ *   • Collapsible advanced       — Line Items (hidden by default)
+ *   • Sticky header              — Cancel / Save Template always visible
  *
- * Persistence rule: PM template `defaultLineItemsJson` is a lightweight JSON
- * blob with `{productId, description, quantity, unitPrice}` per row. The
- * canonical `LineItemDraft` lives in memory and is projected at save time
- * via the local `pmTemplateLineFromDraft` helper. Templates are content
- * references — they never store tax/totals — so the canonical extra fields
- * are intentionally dropped at the projection.
+ * Removed surfaces (kept removed):
+ *   • "Include location PM parts by default" toggle — deprecated everywhere.
+ *   • Old duplicate billing-label field — folded into the canonical
+ *     Charge Type / Rate pair below.
+ *
+ * Line Items note:
+ *   Items are persisted to `pm_templates.default_line_items_json` (the
+ *   canonical column). The recurrence engine does not currently copy these
+ *   into generated jobs — surfacing them here lets users curate the list
+ *   for future workflow integration. The collapsed-by-default section
+ *   makes this a power-user surface, not the primary template flow.
  */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation, useParams } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
@@ -41,11 +44,21 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
   ChevronLeft,
+  ChevronDown,
+  ChevronRight,
   Loader2,
+  Save,
+  ClipboardList,
+  Calendar,
+  DollarSign,
   Plus,
   Trash2,
-  Save,
 } from "lucide-react";
 import type { PmTemplate } from "@shared/schema";
 import type { LineItemDraft } from "@shared/lineItem";
@@ -69,70 +82,149 @@ import {
 // Constants
 // ============================================================================
 
-const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
-
-const MONTH_PRESETS = [
-  { label: "Quarterly", months: [1, 4, 7, 10] },
-  { label: "Bi-Annual", months: [4, 10] },
-  { label: "Annual", months: [4] },
-  { label: "Monthly", months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+const MONTH_LABELS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ] as const;
 
-const BILLING_MODE_OPTIONS = [
+type FrequencyKey = "monthly" | "quarterly" | "biannual" | "annual" | "custom";
+
+/** Generic month presets — anchored on January for templates since
+ *  templates are reusable blueprints with no fixed start date.
+ *  The wizard re-anchors months on the selected start date at prefill time. */
+const FREQUENCY_PRESETS: Record<Exclude<FrequencyKey, "custom">, number[]> = {
+  monthly: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+  quarterly: [1, 4, 7, 10],
+  biannual: [4, 10],
+  annual: [4],
+};
+
+const FREQUENCY_LABEL: Record<FrequencyKey, string> = {
+  monthly: "Monthly",
+  quarterly: "Quarterly",
+  biannual: "Bi-Annual",
+  annual: "Annual",
+  custom: "Custom",
+};
+
+const BILLING_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "per_visit", label: "Per visit" },
-  { value: "monthly", label: "Monthly" },
-  { value: "annually", label: "Annually" },
-  { value: "none", label: "None (no billing)" },
-] as const;
+  { value: "monthly", label: "Monthly contract" },
+  { value: "annually", label: "Annual contract" },
+  { value: "none", label: "No preset charge" },
+];
 
 // ============================================================================
-// Month Picker
+// Helpers
 // ============================================================================
 
-function MonthPicker({ selected, onChange }: { selected: number[]; onChange: (m: number[]) => void }) {
-  function toggle(m: number) {
-    onChange(selected.includes(m) ? selected.filter((v) => v !== m) : [...selected, m].sort((a, b) => a - b));
+/** Detect cadence intent from a months array, ignoring start-month
+ *  alignment. Mirrors the wizard's helper so prefill is consistent. */
+function detectFrequency(months: number[]): FrequencyKey {
+  if (months.length === 0) return "custom";
+  if (months.length === 12) return "monthly";
+  if (months.length === 1) return "annual";
+  const sorted = [...months].sort((a, b) => a - b);
+  const gaps: number[] = [];
+  for (let i = 1; i < sorted.length; i++) gaps.push(sorted[i] - sorted[i - 1]);
+  gaps.push(12 - sorted[sorted.length - 1] + sorted[0]);
+  const allSame = gaps.every((g) => g === gaps[0]);
+  if (!allSame) return "custom";
+  if (sorted.length === 4 && gaps[0] === 3) return "quarterly";
+  if (sorted.length === 2 && gaps[0] === 6) return "biannual";
+  return "custom";
+}
+
+/** Project a canonical LineItemDraft down to the lightweight PM-template
+ *  line shape stored in `default_line_items_json`. PM templates are
+ *  content references — they never store tax/totals — so only the four
+ *  fields the persistence shape uses are emitted. */
+function pmTemplateLineFromDraft(draft: LineItemDraft) {
+  return {
+    productId: draft.productId,
+    description: draft.description,
+    quantity: parseMoney(draft.quantity) || 1,
+    unitPrice: draft.unitPrice,
+  };
+}
+
+// ============================================================================
+// Frequency Picker
+// ============================================================================
+
+function FrequencyPicker({
+  value,
+  months,
+  onChange,
+}: {
+  value: FrequencyKey;
+  months: number[];
+  onChange: (next: { frequency: FrequencyKey; months: number[] }) => void;
+}) {
+  function setFrequency(freq: FrequencyKey) {
+    if (freq === "custom") {
+      onChange({ frequency: "custom", months });
+      return;
+    }
+    onChange({ frequency: freq, months: [...FREQUENCY_PRESETS[freq]] });
   }
+
+  function toggleMonth(m: number) {
+    const next = months.includes(m)
+      ? months.filter((v) => v !== m)
+      : [...months, m].sort((a, b) => a - b);
+    onChange({ frequency: "custom", months: next });
+  }
+
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap gap-1">
-        {MONTH_PRESETS.map((p) => (
-          <Button key={p.label} variant="outline" size="sm" className="h-6 text-xs px-2" onClick={() => onChange([...p.months])}>
-            {p.label}
-          </Button>
+      <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5">
+        {(Object.keys(FREQUENCY_LABEL) as FrequencyKey[]).map((freq) => (
+          <button
+            key={freq}
+            type="button"
+            onClick={() => setFrequency(freq)}
+            className={`text-left px-2.5 py-1.5 rounded-md border-2 transition-colors text-xs font-medium ${
+              value === freq
+                ? "border-primary bg-primary/5"
+                : "border-border hover:border-primary/40"
+            }`}
+            data-testid={`pm-tpl-freq-${freq}`}
+          >
+            {FREQUENCY_LABEL[freq]}
+          </button>
         ))}
-        <Button variant="outline" size="sm" className="h-6 text-xs px-2" onClick={() => onChange([])}>Clear</Button>
       </div>
-      <div className="grid grid-cols-6 gap-1">
-        {MONTH_LABELS.map((label, i) => {
-          const m = i + 1;
-          const active = selected.includes(m);
-          return (
-            <button
-              key={m}
-              type="button"
-              onClick={() => toggle(m)}
-              className={`rounded px-2 py-1 text-xs font-medium border transition-colors ${
-                active ? "bg-primary text-primary-foreground border-primary" : "bg-background border-border hover:border-primary/30"
-              }`}
-            >
-              {label}
-            </button>
-          );
-        })}
-      </div>
+      {value === "custom" && (
+        <div className="flex flex-wrap gap-1.5 pt-1">
+          {MONTH_LABELS.map((label, i) => {
+            const m = i + 1;
+            const active = months.includes(m);
+            return (
+              <button
+                key={m}
+                type="button"
+                onClick={() => toggleMonth(m)}
+                className={`rounded-full px-2.5 py-0.5 text-xs font-medium border transition-colors ${
+                  active
+                    ? "bg-primary text-primary-foreground border-primary"
+                    : "bg-background text-muted-foreground border-border hover:border-primary/50"
+                }`}
+                data-testid={`pm-tpl-month-${m}`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
 // ============================================================================
-// Per-row product cell using the canonical CreateOrSelectField
+// Line Item Row (collapsible section)
 // ============================================================================
-//
-// 2026-04-10 Phase B: Replaces the previous custom dropdown row. Each row
-// owns its own search-text state because useProductSearch is keyed by query
-// string. The selected ProductOption is reconstructed from the canonical
-// draft fields so the chip renders without a parallel selectedProduct state.
 
 function TemplateLineItemRow({
   item,
@@ -183,7 +275,6 @@ function TemplateLineItemRow({
           searchText={searchText || (selectedValue ? "" : item.description)}
           onSearchTextChange={(text) => {
             setSearchText(text);
-            // Manual-entry fallback: if no product is selected, mirror text to description
             if (!item.productId) onChange(index, { description: text });
           }}
           getKey={getProductKey}
@@ -197,7 +288,7 @@ function TemplateLineItemRow({
         placeholder="Qty"
         value={item.quantity}
         onChange={(e) => onChange(index, { quantity: e.target.value })}
-        className="w-20 text-sm"
+        className="w-20 h-9 text-sm"
       />
       <Input
         type="number"
@@ -205,34 +296,13 @@ function TemplateLineItemRow({
         placeholder="Price"
         value={item.unitPrice}
         onChange={(e) => onChange(index, { unitPrice: e.target.value })}
-        className="w-28 text-sm"
+        className="w-28 h-9 text-sm"
       />
-      <Button variant="ghost" size="icon" className="shrink-0" onClick={() => onRemove(index)}>
+      <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" onClick={() => onRemove(index)}>
         <Trash2 className="h-4 w-4 text-muted-foreground" />
       </Button>
     </div>
   );
-}
-
-/**
- * Project a canonical `LineItemDraft` down to the lightweight PM template
- * line shape stored in `defaultLineItemsJson`. PM templates are content
- * references — they never store tax/computed totals — so only the four
- * fields the persistence shape uses are emitted. `quantity` is parsed
- * to a number to match the previous wire format.
- *
- * Local to this file, matching the same pattern as `templateLineFromDraft`
- * in QuoteTemplateModal.tsx and JobTemplateModal.tsx.
- */
-function pmTemplateLineFromDraft(draft: LineItemDraft) {
-  return {
-    productId: draft.productId,
-    description: draft.description,
-    // 2026-04-10 Phase E polish: parseMoney replaces bare parseFloat.
-    // Same fallback semantics (invalid → 0 → defaulted to 1).
-    quantity: parseMoney(draft.quantity) || 1,
-    unitPrice: draft.unitPrice,
-  };
 }
 
 // ============================================================================
@@ -245,49 +315,62 @@ export default function PMTemplateEditorPage() {
   const { toast } = useToast();
   const isEdit = Boolean(params.id);
 
-  // Fetch existing template for edit mode
+  // Existing template lookup for edit mode. Reuses the canonical list cache
+  // PMWorkspacePage already populates so this is usually instant.
   const { data: existingTemplates = [] } = useQuery<PmTemplate[]>({
     queryKey: ["/api/pm/templates"],
     enabled: isEdit,
   });
-  const existing = isEdit ? existingTemplates.find((t) => t.id === params.id) : null;
+  const existing = useMemo(
+    () => (isEdit ? existingTemplates.find((t) => t.id === params.id) ?? null : null),
+    [isEdit, existingTemplates, params.id],
+  );
 
-  // --- Form state ---
+  // ----- Form state -----
   const [name, setName] = useState("");
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
+  const [frequency, setFrequency] = useState<FrequencyKey>("custom");
   const [months, setMonths] = useState<number[]>([]);
-  const [genMode, setGenMode] = useState("");
+  const [genMode, setGenMode] = useState<"" | "period_start" | "day_of_month">("");
   const [genDay, setGenDay] = useState(1);
   const [swBefore, setSwBefore] = useState("");
   const [swAfter, setSwAfter] = useState("");
-  const [includeLocParts, setIncludeLocParts] = useState<boolean | null>(null);
-  const [billingMode, setBillingMode] = useState("");
-  const [billingLabel, setBillingLabel] = useState("");
+  const [billingMode, setBillingMode] = useState<string>("");
   const [defaultPrice, setDefaultPrice] = useState("");
-  // 2026-04-10 Phase B: canonical LineItemDraft, not the local shadow.
   const [lineItems, setLineItems] = useState<LineItemDraft[]>([]);
+  // Collapsed by default — expands when the user has stored items already
+  // (so editing an existing template doesn't hide their data).
+  const [lineItemsOpen, setLineItemsOpen] = useState(false);
 
-  // Populate form when existing template loads
+  // Hydrate from existing template
   useEffect(() => {
     if (existing) {
       setName(existing.name);
       setSummary(existing.summary ?? "");
       setDescription(existing.description ?? "");
-      setMonths((existing.defaultMonthsOfYear as number[]) ?? []);
-      setGenMode((existing.defaultGenerationMode as string) ?? "");
-      setGenDay((existing.defaultGenerationDayOfMonth as number) ?? 1);
-      setSwBefore(existing.defaultServiceWindowDaysBefore != null ? String(existing.defaultServiceWindowDaysBefore) : "");
-      setSwAfter(existing.defaultServiceWindowDaysAfter != null ? String(existing.defaultServiceWindowDaysAfter) : "");
-      setIncludeLocParts((existing.defaultIncludeLocationPmParts as boolean) ?? null);
-      setBillingMode((existing.billingMode as string) ?? "");
-      setBillingLabel((existing.billingLabel as string) ?? "");
-      setDefaultPrice((existing.defaultPrice as string) ?? "");
+      const tplMonths = (existing.defaultMonthsOfYear as number[] | null) ?? [];
+      setMonths(tplMonths);
+      setFrequency(detectFrequency(tplMonths));
+      const mode = existing.defaultGenerationMode as string | null;
+      setGenMode(mode === "period_start" || mode === "day_of_month" ? mode : "");
+      setGenDay((existing.defaultGenerationDayOfMonth as number | null) ?? 1);
+      setSwBefore(
+        existing.defaultServiceWindowDaysBefore != null
+          ? String(existing.defaultServiceWindowDaysBefore)
+          : "",
+      );
+      setSwAfter(
+        existing.defaultServiceWindowDaysAfter != null
+          ? String(existing.defaultServiceWindowDaysAfter)
+          : "",
+      );
+      setBillingMode((existing.billingMode as string | null) ?? "");
+      setDefaultPrice((existing.defaultPrice as string | null) ?? "");
+      // Hydrate persisted lines through the canonical hydrateDraft. The PM
+      // template JSON shape only has 4 fields; the rest fill with safe defaults.
       const raw = existing.defaultLineItemsJson;
-      if (Array.isArray(raw)) {
-        // 2026-04-10 Phase B: hydrate persisted lines through the canonical
-        // hydrateDraft. The PM template JSON shape only has 4 fields; the
-        // other canonical fields fill with safe zero-defaults.
+      if (Array.isArray(raw) && raw.length > 0) {
         setLineItems(
           raw.map((li: any, index: number) =>
             hydrateDraft({
@@ -301,14 +384,15 @@ export default function PMTemplateEditorPage() {
             }),
           ),
         );
+        setLineItemsOpen(true); // auto-expand if there are stored items
       }
     }
   }, [existing]);
 
-  // --- Build payload (convert empty values to null) ---
+  // ----- Build payload -----
   function buildPayload(): Record<string, unknown> {
-    const swBeforeNum = swBefore !== "" ? parseInt(swBefore, 10) : null;
-    const swAfterNum = swAfter !== "" ? parseInt(swAfter, 10) : null;
+    const swBeforeNum = swBefore !== "" ? parseInt(swBefore, 10) : NaN;
+    const swAfterNum = swAfter !== "" ? parseInt(swAfter, 10) : NaN;
     return {
       name: name.trim(),
       summary: summary.trim() || null,
@@ -316,18 +400,18 @@ export default function PMTemplateEditorPage() {
       defaultMonthsOfYear: months.length > 0 ? months : null,
       defaultGenerationMode: genMode || null,
       defaultGenerationDayOfMonth: genMode === "day_of_month" ? genDay : null,
-      defaultServiceWindowDaysBefore: swBeforeNum != null && !isNaN(swBeforeNum) ? swBeforeNum : null,
-      defaultServiceWindowDaysAfter: swAfterNum != null && !isNaN(swAfterNum) ? swAfterNum : null,
-      defaultIncludeLocationPmParts: includeLocParts,
+      defaultServiceWindowDaysBefore: !Number.isNaN(swBeforeNum) ? swBeforeNum : null,
+      defaultServiceWindowDaysAfter: !Number.isNaN(swAfterNum) ? swAfterNum : null,
+      // 2026-04-26: removed from UI. Templates no longer recommend the
+      // include-location-parts default. Server-side default remains false.
+      defaultIncludeLocationPmParts: null,
       billingMode: billingMode || null,
-      billingLabel: billingLabel.trim() || null,
+      // The legacy free-text "billing label" field was removed in the redesign;
+      // its role is covered by the canonical Charge Type + Suggested Rate.
+      billingLabel: null,
       defaultPrice: defaultPrice.trim() || null,
-      // 2026-04-10 Phase B: lines projected from canonical drafts via the local
-      // pmTemplateLineFromDraft helper. PM templates store a lightweight subset
-      // of canonical fields by design.
-      defaultLineItemsJson: lineItems.length > 0
-        ? lineItems.map(pmTemplateLineFromDraft)
-        : null,
+      defaultLineItemsJson:
+        lineItems.length > 0 ? lineItems.map(pmTemplateLineFromDraft) : null,
     };
   }
 
@@ -339,18 +423,31 @@ export default function PMTemplateEditorPage() {
       toast({ title: "Template created" });
       setLocation("/pm?tab=templates");
     },
-    onError: (err: Error) => toast({ title: "Failed to create template", description: err.message, variant: "destructive" }),
+    onError: (err: Error) =>
+      toast({
+        title: "Failed to create template",
+        description: err.message,
+        variant: "destructive",
+      }),
   });
 
   const updateMutation = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
-      apiRequest(`/api/pm/templates/${params.id}`, { method: "PATCH", body: JSON.stringify(body) }),
+      apiRequest(`/api/pm/templates/${params.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/pm/templates"] });
       toast({ title: "Template saved" });
       setLocation("/pm?tab=templates");
     },
-    onError: (err: Error) => toast({ title: "Failed to save template", description: err.message, variant: "destructive" }),
+    onError: (err: Error) =>
+      toast({
+        title: "Failed to save template",
+        description: err.message,
+        variant: "destructive",
+      }),
   });
 
   const deleteMutation = useMutation({
@@ -360,7 +457,12 @@ export default function PMTemplateEditorPage() {
       toast({ title: "Template deleted" });
       setLocation("/pm?tab=templates");
     },
-    onError: (err: Error) => toast({ title: "Failed to delete", description: err.message, variant: "destructive" }),
+    onError: (err: Error) =>
+      toast({
+        title: "Failed to delete",
+        description: err.message,
+        variant: "destructive",
+      }),
   });
 
   const isPending = createMutation.isPending || updateMutation.isPending;
@@ -368,21 +470,19 @@ export default function PMTemplateEditorPage() {
   function handleSave() {
     if (!name.trim()) return;
     const body = buildPayload();
-    if (isEdit) {
-      updateMutation.mutate(body);
-    } else {
-      createMutation.mutate(body);
-    }
+    if (isEdit) updateMutation.mutate(body);
+    else createMutation.mutate(body);
+  }
+
+  function handleFrequencyChange(next: { frequency: FrequencyKey; months: number[] }) {
+    setFrequency(next.frequency);
+    setMonths(next.months);
   }
 
   function handleLineItemChange(index: number, patch: Partial<LineItemDraft>) {
     setLineItems((prev) => prev.map((li, i) => (i === index ? { ...li, ...patch } : li)));
   }
 
-  /**
-   * 2026-04-10 Phase B: canonical catalog→draft mapping. Replaces the inline
-   * field map. Preserves the row position and existing quantity.
-   */
   function handleLineItemSelect(index: number, product: ProductOption) {
     setLineItems((prev) =>
       prev.map((li, i) => {
@@ -403,184 +503,329 @@ export default function PMTemplateEditorPage() {
     );
   }
 
-  const showPartsWarning = includeLocParts === true && lineItems.length > 0;
-
   return (
-    <div className="flex flex-col gap-6 p-4 md:p-6 lg:p-8 max-w-3xl mx-auto">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={() => setLocation("/pm?tab=templates")}>
-            <ChevronLeft className="h-5 w-5" />
+    <div className="w-full max-w-4xl mx-auto px-4 md:px-6 py-3 md:py-4 space-y-3">
+      {/* Sticky save bar — stays visible while the form scrolls. Container
+          uses `top-0 z-20` so it pins under the app header. The bar lives
+          at the page level (outside the cards) so its height stays compact. */}
+      <div className="sticky top-0 z-20 -mx-4 md:-mx-6 px-4 md:px-6 py-2 bg-background/95 backdrop-blur border-b border-border flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            onClick={() => setLocation("/pm?tab=templates")}
+            data-testid="pm-tpl-back"
+          >
+            <ChevronLeft className="h-4 w-4" />
           </Button>
-          <h1 className="text-2xl font-bold tracking-tight">
+          <h1 className="text-base font-semibold truncate">
             {isEdit ? "Edit Template" : "New Template"}
           </h1>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           {isEdit && (
             <Button
               variant="outline"
               size="sm"
               className="text-destructive"
               disabled={deleteMutation.isPending}
-              onClick={() => { if (confirm(`Delete "${name}"?`)) deleteMutation.mutate(); }}
+              onClick={() => {
+                if (confirm(`Delete "${name}"?`)) deleteMutation.mutate();
+              }}
+              data-testid="pm-tpl-delete"
             >
               Delete
             </Button>
           )}
-          <Button variant="outline" size="sm" onClick={() => setLocation("/pm?tab=templates")}>Cancel</Button>
-          <Button size="sm" onClick={handleSave} disabled={isPending || !name.trim()}>
-            {isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setLocation("/pm?tab=templates")}
+            data-testid="pm-tpl-cancel"
+          >
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={handleSave}
+            disabled={isPending || !name.trim()}
+            data-testid="pm-tpl-save"
+          >
+            {isPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="mr-2 h-4 w-4" />
+            )}
             Save Template
           </Button>
         </div>
       </div>
 
-      {/* Template Name + PM Summary + Description */}
-      <Card>
-        <CardContent className="pt-6 space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="tpl-name">Template Name *</Label>
-            <Input id="tpl-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. RTU Cooling PM, Fall Startup Quarterly" />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="tpl-summary">PM Summary</Label>
-            <Input id="tpl-summary" value={summary} onChange={(e) => setSummary(e.target.value)} placeholder="Default title for generated jobs" />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="tpl-desc">Description</Label>
-            <Textarea id="tpl-desc" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Scope, checklist, instructions..." rows={4} />
-          </div>
-        </CardContent>
-      </Card>
+      {/* Top section — Basics (left) + Pricing (right) on desktop. */}
+      <div className="grid lg:grid-cols-2 gap-3">
+        <Card>
+          <CardHeader className="pb-2 pt-3 px-4">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <ClipboardList className="h-4 w-4 text-muted-foreground" />
+              Basics
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-3 space-y-2.5">
+            <div className="space-y-1">
+              <Label htmlFor="tpl-name" className="text-sm">Template Name</Label>
+              <Input
+                id="tpl-name"
+                className="h-9"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. RTU Cooling PM, Fall Startup Quarterly"
+                data-testid="pm-tpl-name"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="tpl-summary" className="text-sm">PM Summary</Label>
+              <Input
+                id="tpl-summary"
+                className="h-9"
+                value={summary}
+                onChange={(e) => setSummary(e.target.value)}
+                placeholder="Default plan name applied to new plans"
+                data-testid="pm-tpl-summary"
+              />
+            </div>
+          </CardContent>
+        </Card>
 
-      {/* Scheduling (optional) */}
-      <Card>
-        <CardContent className="pt-6 space-y-4">
-          <p className="text-sm font-semibold text-muted-foreground">Scheduling (optional)</p>
-          <div className="space-y-1.5">
-            <Label>Months</Label>
-            <MonthPicker selected={months} onChange={setMonths} />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label>Service window — days before</Label>
-              <Input type="number" min={0} max={90} value={swBefore} onChange={(e) => setSwBefore(e.target.value)} placeholder="e.g. 7" />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Service window — days after</Label>
-              <Input type="number" min={0} max={90} value={swAfter} onChange={(e) => setSwAfter(e.target.value)} placeholder="e.g. 14" />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label>Jobs created on</Label>
-              <Select value={genMode} onValueChange={setGenMode}>
-                <SelectTrigger><SelectValue placeholder="Not set" /></SelectTrigger>
+        <Card>
+          <CardHeader className="pb-2 pt-3 px-4">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <DollarSign className="h-4 w-4 text-muted-foreground" />
+              Pricing Defaults
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-3 space-y-2.5">
+            <div className="space-y-1">
+              <Label className="text-sm">Charge Type</Label>
+              <Select
+                value={billingMode || "none-unset"}
+                onValueChange={(v) => setBillingMode(v === "none-unset" ? "" : v)}
+              >
+                <SelectTrigger className="h-9" data-testid="pm-tpl-billing">
+                  <SelectValue placeholder="Not set" />
+                </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="period_start">Start of period</SelectItem>
-                  <SelectItem value="day_of_month">Day of month</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            {genMode === "day_of_month" && (
-              <div className="space-y-1.5">
-                <Label>Day of month</Label>
-                <Input type="number" min={1} max={28} value={genDay} onChange={(e) => setGenDay(parseInt(e.target.value) || 1)} />
-              </div>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <Checkbox
-              id="tpl-loc-parts"
-              checked={includeLocParts === true}
-              onCheckedChange={(v) => setIncludeLocParts(v === true ? true : v === false ? false : null)}
-            />
-            <Label htmlFor="tpl-loc-parts" className="text-sm font-normal">Include location PM parts by default</Label>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Billing (optional) */}
-      <Card>
-        <CardContent className="pt-6 space-y-4">
-          <p className="text-sm font-semibold text-muted-foreground">Billing (optional)</p>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label>Billing mode</Label>
-              <Select value={billingMode} onValueChange={setBillingMode}>
-                <SelectTrigger><SelectValue placeholder="Not set" /></SelectTrigger>
-                <SelectContent>
-                  {BILLING_MODE_OPTIONS.map((o) => (
+                  <SelectItem value="none-unset">Not set</SelectItem>
+                  {BILLING_OPTIONS.map((o) => (
                     <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label>Default price</Label>
-              <Input type="number" step="0.01" min={0} value={defaultPrice} onChange={(e) => setDefaultPrice(e.target.value)} placeholder="e.g. 249.00" />
-            </div>
-          </div>
-          <div className="space-y-1.5">
-            <Label>Billing label</Label>
-            <Input value={billingLabel} onChange={(e) => setBillingLabel(e.target.value)} placeholder="e.g. Preventive Maintenance" />
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Line Items */}
-      <Card>
-        <CardContent className="pt-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold text-muted-foreground">Line Items</p>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                setLineItems((prev) => [
-                  ...prev,
-                  blankDraft({ source: "template", sortOrder: prev.length }),
-                ])
-              }
-            >
-              <Plus className="h-3 w-3 mr-1" />Add Item
-            </Button>
-          </div>
-          {lineItems.length > 0 ? (
-            <div className="space-y-2">
-              {lineItems.map((li, i) => (
-                <TemplateLineItemRow
-                  key={li.id}
-                  item={li}
-                  index={i}
-                  onChange={handleLineItemChange}
-                  onSelect={handleLineItemSelect}
-                  onClear={handleLineItemClear}
-                  onRemove={(idx) => setLineItems((prev) => prev.filter((_, j) => j !== idx))}
+            <div className="space-y-1">
+              <Label className="text-sm">Suggested Rate (optional)</Label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">
+                  $
+                </span>
+                <Input
+                  type="number"
+                  step="0.01"
+                  min={0}
+                  className="h-9 pl-7"
+                  value={defaultPrice}
+                  onChange={(e) => setDefaultPrice(e.target.value)}
+                  placeholder="0.00"
+                  data-testid="pm-tpl-price"
                 />
-              ))}
+              </div>
             </div>
-          ) : (
-            <p className="text-sm text-muted-foreground py-2">No line items. Add from Products & Services or create custom entries.</p>
-          )}
-          {showPartsWarning && (
-            <p className="text-xs text-amber-600">
-              Location PM parts are enabled. Template line items may duplicate included parts.
+            <p className="text-[11px] text-muted-foreground leading-snug">
+              Used for reporting only. Plans created from this template can override the rate.
+              Invoices are not generated automatically from this setting.
             </p>
-          )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Description — full width below the top row. */}
+      <Card>
+        <CardContent className="px-4 py-3 space-y-1">
+          <Label htmlFor="tpl-desc" className="text-sm">Description</Label>
+          <Textarea
+            id="tpl-desc"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Scope, checklist, instructions..."
+            rows={3}
+            data-testid="pm-tpl-description"
+          />
         </CardContent>
       </Card>
 
-      {/* Bottom save bar for long forms */}
-      <div className="flex items-center justify-end gap-2 pb-8">
-        <Button variant="outline" onClick={() => setLocation("/pm?tab=templates")}>Cancel</Button>
-        <Button onClick={handleSave} disabled={isPending || !name.trim()}>
-          {isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-          Save Template
-        </Button>
+      {/* Section 2 — Schedule (left) + Completion Window (right). */}
+      <div className="grid lg:grid-cols-2 gap-3">
+        <Card>
+          <CardHeader className="pb-2 pt-3 px-4">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <Calendar className="h-4 w-4 text-muted-foreground" />
+              Schedule Defaults
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-3 space-y-2.5">
+            <div className="space-y-1">
+              <Label className="text-sm">Frequency</Label>
+              <FrequencyPicker
+                value={frequency}
+                months={months}
+                onChange={handleFrequencyChange}
+              />
+              <p className="text-[11px] text-muted-foreground leading-snug">
+                Plans created from this template re-anchor months on the selected start date.
+              </p>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-sm">Job Creation Timing</Label>
+              <div className="flex items-center gap-2">
+                <Select
+                  value={genMode || "none"}
+                  onValueChange={(v) => setGenMode(v === "none" ? "" : (v as "period_start" | "day_of_month"))}
+                >
+                  <SelectTrigger className="h-9 flex-1" data-testid="pm-tpl-gen-mode">
+                    <SelectValue placeholder="Not set" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Not set</SelectItem>
+                    <SelectItem value="period_start">First day of service month</SelectItem>
+                    <SelectItem value="day_of_month">Specific day of service month</SelectItem>
+                  </SelectContent>
+                </Select>
+                {genMode === "day_of_month" && (
+                  <Input
+                    type="number"
+                    className="h-9 w-20"
+                    min={1}
+                    max={28}
+                    value={genDay}
+                    onChange={(e) => setGenDay(parseInt(e.target.value) || 1)}
+                    data-testid="pm-tpl-gen-day"
+                    aria-label="Day of month"
+                  />
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2 pt-3 px-4">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <Calendar className="h-4 w-4 text-muted-foreground" />
+              Completion Window
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-3 space-y-2.5">
+            <p className="text-[11px] text-muted-foreground leading-snug">
+              The acceptable date range around the ideal service date.
+              Leave both blank to skip the default.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label className="text-sm">Days Before</Label>
+                <Input
+                  type="number"
+                  className="h-9"
+                  min={0}
+                  max={90}
+                  value={swBefore}
+                  onChange={(e) => setSwBefore(e.target.value)}
+                  placeholder="7"
+                  data-testid="pm-tpl-window-before"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-sm">Days After</Label>
+                <Input
+                  type="number"
+                  className="h-9"
+                  min={0}
+                  max={90}
+                  value={swAfter}
+                  onChange={(e) => setSwAfter(e.target.value)}
+                  placeholder="14"
+                  data-testid="pm-tpl-window-after"
+                />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
+
+      {/* Optional advanced — Line Items (collapsed by default). Power users
+          can curate a list of products / services that pair with this PM. */}
+      <Card>
+        <Collapsible open={lineItemsOpen} onOpenChange={setLineItemsOpen}>
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="w-full flex items-center justify-between gap-2 px-4 py-3 hover:bg-muted/30 transition-colors"
+              data-testid="pm-tpl-line-items-toggle"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                {lineItemsOpen ? (
+                  <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
+                ) : (
+                  <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+                )}
+                <span className="text-sm font-semibold">Line Items</span>
+                <span className="text-xs text-muted-foreground">
+                  Optional · {lineItems.length === 0 ? "none" : `${lineItems.length} item${lineItems.length === 1 ? "" : "s"}`}
+                </span>
+              </div>
+              <span className="text-[11px] text-muted-foreground hidden sm:inline">Advanced</span>
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="px-4 pb-3 space-y-2">
+              <div className="flex items-center justify-end">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setLineItems((prev) => [
+                      ...prev,
+                      blankDraft({ source: "template", sortOrder: prev.length }),
+                    ]);
+                  }}
+                  data-testid="pm-tpl-line-items-add"
+                >
+                  <Plus className="h-3.5 w-3.5 mr-1" />Add Item
+                </Button>
+              </div>
+              {lineItems.length > 0 ? (
+                <div className="space-y-2">
+                  {lineItems.map((li, i) => (
+                    <TemplateLineItemRow
+                      key={li.id}
+                      item={li}
+                      index={i}
+                      onChange={handleLineItemChange}
+                      onSelect={handleLineItemSelect}
+                      onClear={handleLineItemClear}
+                      onRemove={(idx) => setLineItems((prev) => prev.filter((_, j) => j !== idx))}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground py-1">
+                  No line items yet. Add reusable products or services to keep with this template.
+                </p>
+              )}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      </Card>
     </div>
   );
 }

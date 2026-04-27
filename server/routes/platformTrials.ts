@@ -5,10 +5,11 @@
  * (applied once by the parent platform router; repeated here as
  * defense-in-depth against mis-mount).
  *
- * Read-only. Writes for trial lifecycle (extend / assign plan) continue to
- * flow through the canonical lifecycle + billing endpoints:
- *   PATCH /api/admin/tenants/:id/billing            (trialEndsAt)
- *   PATCH /api/platform/tenants/:id/subscription    (plan assignment)
+ * Read-only. Writes for trial lifecycle (extend / assign plan) flow through
+ * the canonical platform-scoped subscription endpoint:
+ *   PATCH /api/platform/tenants/:id/subscription
+ *     { trialEndsAt }                  → extend trial
+ *     { subscriptionPlan, subscriptionStatus } → assign plan
  */
 
 import { Router, type Request, type Response } from "express";

@@ -73,7 +73,31 @@ interface ScheduleParams {
   allDay?: boolean;
   /** 2026-03-23: Visit notes — passed through to server so modal save doesn't need a separate PATCH */
   visitNotes?: string | null;
+  /** 2026-04-26: explicit optimistic-locking version. When provided, the
+   *  hook uses THIS instead of the cache-derived `freshVersion()` lookup.
+   *
+   *  Required for callers whose job is not currently in the dispatch
+   *  caches (`/api/calendar` + `/api/calendar/unscheduled`) — e.g. the
+   *  Job Detail "Schedule visit" flow on an on-hold job, since on-hold
+   *  jobs are excluded from the unscheduled backlog feed. Without this,
+   *  `freshVersion` returns the `-1` sentinel and the backend rejects
+   *  with `VERSION_MISMATCH` even when the actual row is current.
+   *
+   *  Drag-drop callers continue to omit this field; the hook falls back
+   *  to the cache lookup for them, preserving today's behavior. */
+  expectedVersion?: number;
 }
+
+/**
+ * Discriminated result returned by `scheduleVisit` / `rescheduleVisit` /
+ * `unscheduleVisit`. Callers that care about success vs failure (e.g.,
+ * AddVisitDialog deciding whether to fire a success toast and close)
+ * branch on `ok`. Drag-drop callers ignore the result entirely — the
+ * hook still surfaces its own toast on failure for them.
+ */
+export type DispatchMutationResult =
+  | { ok: true; visitId?: string; version?: number }
+  | { ok: false; reason: "version_conflict" | "not_found" | "error"; message: string };
 
 interface RescheduleParams {
   visitId: string;
@@ -560,7 +584,7 @@ export function useDispatchPreviewMutations() {
   // Per-visit mutation serialization — prevents stale version conflicts during rapid chained moves.
   // When multiple mutations fire for the same visit, each waits for the prior to complete
   // so freshVersion() resolves AFTER the previous mutation's patchCachedVersion().
-  const visitChainMap = useRef<Map<string, Promise<void>>>(new Map());
+  const visitChainMap = useRef<Map<string, Promise<unknown>>>(new Map());
 
   // Timestamp of last successful background invalidation (starvation prevention)
   const lastInvalidateRef = useRef(Date.now());
@@ -582,7 +606,7 @@ export function useDispatchPreviewMutations() {
    * Chained: if a previous mutation for the same visitId is in-flight, fn() waits for it.
    * This ensures freshVersion() inside fn() always reads the latest server-patched version.
    */
-  const chainForVisit = useCallback((visitId: string, fn: () => Promise<void>): Promise<void> => {
+  const chainForVisit = useCallback(<T = void>(visitId: string, fn: () => Promise<T>): Promise<T> => {
     const prev = visitChainMap.current.get(visitId) ?? Promise.resolve();
     // Swallow previous errors — each mutation handles its own error/rollback
     const next = prev.catch(() => {}).then(fn);
@@ -684,24 +708,42 @@ export function useDispatchPreviewMutations() {
 
   /**
    * Graceful error handler — shows recovery toast + refetches instead of crashing.
-   * Returns true if the error was handled gracefully (caller should NOT rethrow).
+   * Returns a `DispatchMutationResult` shaped for callers that branch on
+   * success / failure. The hook's callers are split into two camps:
+   *   - Drag-drop callers (DispatchPreview) fire-and-forget; they ignore
+   *     the return value. They still get their toast from this helper.
+   *   - Awaiting callers (AddVisitDialog, EditVisitModal,
+   *     DashboardActionModal) can read `.ok` to skip their own success
+   *     toast / modal-close when the mutation actually failed.
+   *
+   * 2026-04-26 fix: previously this helper returned a `boolean` and the
+   * mutation wrapper swallowed all errors. AddVisitDialog therefore
+   * always fired its "Visit Scheduled" toast even on 409 VERSION_MISMATCH.
+   * Returning a structured result without re-throwing preserves
+   * fire-and-forget semantics for drag-drop while letting modal callers
+   * detect failure cleanly.
    */
-  const handleMutationError = useCallback((err: unknown, fallbackTitle: string): boolean => {
-    if (isVersionConflict(err)) {
-      toast({ title: "Schedule conflict", description: VERSION_CONFLICT_MSG });
-      forceRefresh();
-      return true;
-    }
-    if (isNotFoundError(err)) {
-      toast({ title: "Item changed", description: NOT_FOUND_MSG });
-      forceRefresh();
-      return true;
-    }
-    // Non-recoverable error — show destructive toast
-    const msg = (err as any)?.message || `Failed: ${fallbackTitle}`;
-    toast({ variant: "destructive", title: fallbackTitle, description: msg });
-    return false;
-  }, [toast, forceRefresh]);
+  const handleMutationError = useCallback(
+    (err: unknown, fallbackTitle: string): { reason: "version_conflict" | "not_found" | "error"; message: string } => {
+      if (isVersionConflict(err)) {
+        toast({
+          title: "Schedule conflict",
+          description: `${VERSION_CONFLICT_MSG} Please try again.`,
+        });
+        forceRefresh();
+        return { reason: "version_conflict", message: VERSION_CONFLICT_MSG };
+      }
+      if (isNotFoundError(err)) {
+        toast({ title: "Item changed", description: NOT_FOUND_MSG });
+        forceRefresh();
+        return { reason: "not_found", message: NOT_FOUND_MSG };
+      }
+      const msg = (err as any)?.message || `Failed: ${fallbackTitle}`;
+      toast({ variant: "destructive", title: fallbackTitle, description: msg });
+      return { reason: "error", message: msg };
+    },
+    [toast, forceRefresh],
+  );
 
   /**
    * Resolve the latest version for a visit. Logs debug info for tracing staleness.
@@ -736,20 +778,26 @@ export function useDispatchPreviewMutations() {
    *  specific visit in place instead of silently creating a new one.
    *  A card without `visitId` (zero-visit job placeholder) falls through
    *  to the create-new path. */
-  const scheduleVisit = useCallback(async (params: ScheduleParams) => {
-    const { jobId, visitId, assignedTechnicianIds, startAt, endAt, allDay, visitNotes } = params;
+  const scheduleVisit = useCallback(async (params: ScheduleParams): Promise<DispatchMutationResult> => {
+    const { jobId, visitId, assignedTechnicianIds, startAt, endAt, allDay, visitNotes, expectedVersion } = params;
 
     const optimisticKey = visitId ?? jobId;
     const snapshot = snapshotDispatchCache(queryClient);
 
     optimisticSchedule(queryClient, optimisticKey, jobId, startAt, endAt, assignedTechnicianIds);
 
-    return chainForVisit(optimisticKey, async () => {
-      const version = freshVersion(optimisticKey);
+    return chainForVisit(optimisticKey, async (): Promise<DispatchMutationResult> => {
+      // 2026-04-26 fix: prefer the caller-supplied version when present.
+      // Required for jobs that aren't in the dispatch caches (notably
+      // on-hold jobs, which are excluded from the unscheduled backlog
+      // feed by `server/storage/scheduling.ts:592`). Drag-drop callers
+      // continue to omit `expectedVersion` and fall through to the
+      // cache lookup, preserving today's behavior.
+      const version = expectedVersion ?? freshVersion(optimisticKey);
       markSaving(optimisticKey);
       inflightRef.current++;
       try {
-        const resp = await apiRequest<{ version?: number }>("/api/calendar/schedule", {
+        const resp = await apiRequest<{ version?: number; visit?: { id?: string } }>("/api/calendar/schedule", {
           method: "POST",
           body: JSON.stringify({
             jobId,
@@ -794,9 +842,11 @@ export function useDispatchPreviewMutations() {
           queryClient.setQueryData(["visit-detail", realVisitId], scheduleResp.visit);
         }
         backgroundInvalidate();
+        return { ok: true, visitId: realVisitId, version: resp?.version };
       } catch (err: any) {
         restoreDispatchCache(queryClient, snapshot);
-        handleMutationError(err, "Schedule failed");
+        const handled = handleMutationError(err, "Schedule failed");
+        return { ok: false, reason: handled.reason, message: handled.message };
       } finally {
         inflightRef.current--;
         clearSaving(optimisticKey);
@@ -805,7 +855,7 @@ export function useDispatchPreviewMutations() {
   }, [freshVersion, queryClient, backgroundInvalidate, handleMutationError, chainForVisit, markSaving, clearSaving, cancelAndPatchVersion]);
 
   /** Reschedule an existing scheduled visit. */
-  const rescheduleVisit = useCallback(async (params: RescheduleParams) => {
+  const rescheduleVisit = useCallback(async (params: RescheduleParams): Promise<DispatchMutationResult> => {
     const { visitId, jobId, assignedTechnicianIds, startAt, endAt, allDay, visitNotes } = params;
 
     const snapshot = snapshotDispatchCache(queryClient);
@@ -813,8 +863,12 @@ export function useDispatchPreviewMutations() {
     // Optimistic update: crew change semantics match server intent.
     optimisticReschedule(queryClient, visitId, startAt, endAt, assignedTechnicianIds, allDay);
 
-    // Chain per-visit: version resolved after any prior mutation completes
-    return chainForVisit(visitId, async () => {
+    // Chain per-visit: version resolved after any prior mutation completes.
+    // 2026-04-26 (Option A): returns DispatchMutationResult so awaiting
+    // callers (DashboardActionModal, EditVisitModal) can distinguish
+    // success from silent failure. Drag-drop callers in DispatchPreview
+    // ignore the return value — no behavior change for them.
+    return chainForVisit(visitId, async (): Promise<DispatchMutationResult> => {
       const version = freshVersion(visitId);
 
       if (process.env.NODE_ENV !== "production") {
@@ -847,23 +901,25 @@ export function useDispatchPreviewMutations() {
           // Graceful recovery: not-found means stale state — refetch instead of fallback cascade
           if (isNotFoundError(newErr)) {
             restoreDispatchCache(queryClient, snapshot);
-            handleMutationError(newErr, "Reschedule failed");
-            return;
+            const handled = handleMutationError(newErr, "Reschedule failed");
+            return { ok: false, reason: handled.reason, message: handled.message };
           }
           // Version conflict — graceful recovery
           if (isVersionConflict(newErr)) {
             restoreDispatchCache(queryClient, snapshot);
-            handleMutationError(newErr, "Reschedule failed");
-            return;
+            const handled = handleMutationError(newErr, "Reschedule failed");
+            return { ok: false, reason: handled.reason, message: handled.message };
           }
           throw newErr;
         }
         if (resp?.version != null) await cancelAndPatchVersion(visitId, resp.version);
         // 2026-03-28: Full invalidation — reschedule can change past-due status, attention counts, dashboard state
         backgroundInvalidate();
+        return { ok: true, visitId, version: resp?.version };
       } catch (err: any) {
         restoreDispatchCache(queryClient, snapshot);
-        handleMutationError(err, "Reschedule failed");
+        const handled = handleMutationError(err, "Reschedule failed");
+        return { ok: false, reason: handled.reason, message: handled.message };
       } finally {
         inflightRef.current--;
         clearSaving(visitId);
@@ -872,7 +928,7 @@ export function useDispatchPreviewMutations() {
   }, [freshVersion, queryClient, backgroundInvalidate, handleMutationError, chainForVisit, markSaving, clearSaving, cancelAndPatchVersion]);
 
   /** Unschedule a visit — returns it to backlog. Fallback routing. */
-  const unscheduleVisit = useCallback(async (params: UnscheduleParams) => {
+  const unscheduleVisit = useCallback(async (params: UnscheduleParams): Promise<DispatchMutationResult> => {
     const { visitId, jobId } = params;
 
     // Snapshot before optimistic patch so rollback restores true pre-mutation state
@@ -881,8 +937,9 @@ export function useDispatchPreviewMutations() {
     // Optimistic: move from scheduled → unscheduled immediately (outside chain for instant feedback)
     optimisticUnschedule(queryClient, visitId, jobId);
 
-    // Chain per-visit: version resolved after any prior mutation completes
-    return chainForVisit(visitId, async () => {
+    // Chain per-visit: version resolved after any prior mutation completes.
+    // 2026-04-26 (Option A): returns DispatchMutationResult — see rescheduleVisit.
+    return chainForVisit(visitId, async (): Promise<DispatchMutationResult> => {
       const version = freshVersion(visitId);
 
       markSaving(visitId);
@@ -901,14 +958,16 @@ export function useDispatchPreviewMutations() {
           // 404. Every error here is now handled by the canonical
           // recovery path.
           restoreDispatchCache(queryClient, snapshot);
-          handleMutationError(newErr, "Unschedule failed");
-          return;
+          const handled = handleMutationError(newErr, "Unschedule failed");
+          return { ok: false, reason: handled.reason, message: handled.message };
         }
         if (resp?.version != null) await cancelAndPatchVersion(visitId, resp.version);
         backgroundInvalidate();
+        return { ok: true, visitId, version: resp?.version };
       } catch (err: any) {
         restoreDispatchCache(queryClient, snapshot);
-        handleMutationError(err, "Unschedule failed");
+        const handled = handleMutationError(err, "Unschedule failed");
+        return { ok: false, reason: handled.reason, message: handled.message };
       } finally {
         inflightRef.current--;
         clearSaving(visitId);
@@ -1053,7 +1112,7 @@ export function useDispatchPreviewMutations() {
     outcome: "completed" | "needs_parts" | "needs_followup";
     holdReason?: string | null;
     holdNotes?: string | null;
-  }) => {
+  }): Promise<DispatchMutationResult> => {
     const { visitId, jobId, outcome, holdReason, holdNotes } = params;
     markSaving(visitId);
     inflightRef.current++;
@@ -1091,16 +1150,21 @@ export function useDispatchPreviewMutations() {
       // 2026-03-20: Unconditional invalidation — completion is a lifecycle event that
       // must always trigger refetch regardless of in-flight mutation count.
       invalidateAfterCompletion();
+      return { ok: true, visitId };
     } catch (err: any) {
       // 2026-03-20: If the visit is already terminal (409 from server), a prior
       // request succeeded but the UI may not have refreshed. Invalidate queries
       // so the board reflects the true committed state. Uses structured status
       // code — Express error handler preserves the original message for 409s.
+      // 2026-04-26 (Option A): a 409-on-complete is treated as success because
+      // a prior completion already landed — `result.ok = true` so the caller's
+      // success UI runs as expected.
       if (err?.status === 409) {
         invalidateAfterCompletion();
-        return; // No error toast — prior completion succeeded
+        return { ok: true, visitId };
       }
-      handleMutationError(err, "Visit completion failed");
+      const handled = handleMutationError(err, "Visit completion failed");
+      return { ok: false, reason: handled.reason, message: handled.message };
     } finally {
       inflightRef.current--;
       clearSaving(visitId);
@@ -1143,8 +1207,9 @@ export function useDispatchPreviewMutations() {
   }, [markSaving, clearSaving, invalidateAfterCompletion, handleMutationError, queryClient]);
 
   /** Soft-delete a visit. DELETE /api/jobs/:jobId/visits/:visitId
-   * 2026-03-18: Callers MUST ensure item.kind === "visit" — backlog placeholders have no real visitId. */
-  const deleteVisit = useCallback(async (params: { visitId: string; jobId: string }) => {
+   * 2026-03-18: Callers MUST ensure item.kind === "visit" — backlog placeholders have no real visitId.
+   * 2026-04-26 (Option A): returns DispatchMutationResult — see rescheduleVisit. */
+  const deleteVisit = useCallback(async (params: { visitId: string; jobId: string }): Promise<DispatchMutationResult> => {
     const { visitId, jobId } = params;
     const snapshot = snapshotDispatchCache(queryClient);
 
@@ -1156,9 +1221,11 @@ export function useDispatchPreviewMutations() {
         method: "DELETE",
       });
       backgroundInvalidate();
+      return { ok: true, visitId };
     } catch (err: any) {
       restoreDispatchCache(queryClient, snapshot);
-      handleMutationError(err, "Delete failed");
+      const handled = handleMutationError(err, "Delete failed");
+      return { ok: false, reason: handled.reason, message: handled.message };
     } finally {
       inflightRef.current--;
     }

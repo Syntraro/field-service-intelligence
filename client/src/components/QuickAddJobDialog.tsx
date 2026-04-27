@@ -57,13 +57,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Check, ChevronsUpDown, Loader2, Plus, CalendarIcon, Users, Search, Repeat } from "lucide-react";
+import { Check, ChevronsUpDown, Loader2, Plus, CalendarIcon, Users, Search, Repeat, Wand2, Wrench, X } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import type { Job, InsertJob } from "@shared/schema";
-import { EquipmentPicker } from "@/components/EquipmentPicker";
+// 2026-04-26 polish v4: replaced the multi-select chip-strip + Add-button
+// EquipmentPicker with a Service-style inline combobox. The dialog used
+// for inline create stays canonical — `AddEquipmentDialog` (now accepts
+// a `defaultName` prefill so the typed text flows through).
+import { AddEquipmentDialog } from "@/components/AddEquipmentDialog";
 
-import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
+// 2026-04-26 polish v5: CreateOrSelectField import removed — Location now
+// uses the inline LocationCombobox below (Popover overlay). Other surfaces
+// of the codebase (NewQuoteModal, etc.) still use CreateOrSelectField.
 import {
   useLocationSearch, useLocationById, getLocationKey, getLocationLabel, getLocationDescription,
   type LocationOption,
@@ -74,12 +80,714 @@ import {
 } from "@/components/jobs/JobScheduleFields";
 import { createJobWithSchedule } from "@/lib/jobScheduling";
 import { TechnicianSelector } from "@/components/TechnicianSelector";
+// 2026-04-26: service-catalog selector + capacity-aware tech-pick. Both use
+// existing canonical endpoints (`/api/items?type=service`, `/api/dashboard/capacity`).
+// No new APIs, no shadow scheduling logic.
+import { findNextAvailableSlot, formatSlotTimeLabel, type CapacityResponse } from "@/lib/findNextAvailableSlot";
+// 2026-04-26 polish: searchable service combobox + inline "Create service".
+// The canonical Add-Item modal lives at @/components/products-services/
+// ProductServiceFormDialog; we mount it inside QuickAddJobDialog so the user
+// never leaves the Create New Job flow. Duration formatting (`formatDuration`)
+// reuses the canonical helper so the same format renders everywhere.
+// 2026-04-26 polish v6: ProductServiceFormDialog + ProductFormData imports
+// removed — services now use the inline one-shot create pattern. Only the
+// duration formatter helper is still imported.
+import { formatDuration as formatServiceDuration } from "@/components/products-services/types";
+// Canonical line-item mapper — same pipeline EditVisitModal uses to persist
+// services as job_parts. We rebuild the ProductOption shape from local
+// SelectedService state and pipe through these helpers.
+import { catalogItemToDraft, draftToJobPartPayload } from "@/lib/entities/lineItemMapper";
+import { productOptionToCatalogItem } from "@/lib/entities/productEntity";
 
 // ============================================================================
 // Duration options (static) — time uses native input, no option list needed
 // ============================================================================
 
-import { DURATION_OPTIONS_SHORT as DURATION_OPTIONS, DAYS_OF_WEEK_SHORT as DAYS_OF_WEEK } from "@/lib/schedulingConstants";
+import {
+  DURATION_OPTIONS_SHORT as DURATION_OPTIONS,
+  DAYS_OF_WEEK_SHORT as DAYS_OF_WEEK,
+  TIME_OPTIONS_15MIN,
+} from "@/lib/schedulingConstants";
+
+// ============================================================================
+// Location Combobox (Service-style inline picker)
+// ============================================================================
+// 2026-04-26 polish v5: replaces the inline-results CreateOrSelectField for
+// the Location field. The CreateOrSelectField rendered its result list in
+// the form flow (`<div className="border ... max-h-48 overflow-y-auto">`),
+// which pushed the modal taller while typing — the user complaint that
+// "the modal expands when searching locations." This Service-pattern
+// combobox keeps results in a Popover overlay (portaled by Radix) so the
+// modal shell never resizes.
+
+interface LocationComboboxProps {
+  value: LocationOption | null;
+  searchText: string;
+  onSearchTextChange: (text: string) => void;
+  searchResults: LocationOption[];
+  searchLoading: boolean;
+  onChange: (loc: LocationOption | null) => void;
+  onCreateNew: (typed: string) => void;
+  disabled?: boolean;
+}
+
+function LocationCombobox({
+  value,
+  searchText,
+  onSearchTextChange,
+  searchResults,
+  searchLoading,
+  onChange,
+  onCreateNew,
+  disabled,
+}: LocationComboboxProps) {
+  const [open, setOpen] = useState(false);
+  const triggerLabel = value ? getLocationLabel(value) : "Search locations...";
+  const triggerDescription = value ? getLocationDescription(value) : null;
+
+  return (
+    <Popover open={open} onOpenChange={(o) => { setOpen(o); if (!o) onSearchTextChange(""); }}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="h-9 w-full justify-between text-xs font-normal bg-white"
+          disabled={disabled}
+          data-testid="select-location"
+        >
+          <span className={cn("truncate", !value && "text-muted-foreground")}>
+            {triggerLabel}
+          </span>
+          <ChevronsUpDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      {/* Optional one-line description rendered just below the trigger when
+          a location is selected. Helps users confirm the address without
+          opening the dropdown. */}
+      {triggerDescription && (
+        <p className="text-[11px] text-muted-foreground truncate mt-1">{triggerDescription}</p>
+      )}
+      <PopoverContent className="p-0 w-[--radix-popover-trigger-width]" align="start">
+        <Command shouldFilter={false}>
+          <CommandInput
+            placeholder="Search locations..."
+            value={searchText}
+            onValueChange={onSearchTextChange}
+            data-testid="input-location-search"
+          />
+          <CommandList>
+            {/* 2026-04-26 polish v6: create action sits at the TOP of the
+                dropdown, directly under the search input, so it's always
+                visible when the user types — even with many matching
+                results below. Without this, tenants with hundreds of
+                clients would have to scroll past the result list to find
+                "Add new client", and the affordance was effectively hidden. */}
+            {searchText.trim() && (
+              <CommandGroup heading="Not in your client list?">
+                <CommandItem
+                  value={`__create__${searchText}`}
+                  onSelect={() => {
+                    onCreateNew(searchText.trim());
+                    setOpen(false);
+                  }}
+                  className="text-primary"
+                  data-testid="option-location-create"
+                >
+                  <Plus className="mr-2 h-3.5 w-3.5" />
+                  <span className="truncate">
+                    Add new client / location: <span className="font-medium">"{searchText.trim()}"</span>
+                  </span>
+                </CommandItem>
+              </CommandGroup>
+            )}
+            {value && (
+              <CommandGroup>
+                <CommandItem
+                  value="__clear__"
+                  onSelect={() => {
+                    onChange(null);
+                    onSearchTextChange("");
+                    setOpen(false);
+                  }}
+                  data-testid="option-location-clear"
+                >
+                  <span className="text-muted-foreground">— No location —</span>
+                </CommandItem>
+              </CommandGroup>
+            )}
+            {searchLoading && (
+              <div className="px-3 py-2 text-xs text-muted-foreground flex items-center gap-1.5">
+                <Loader2 className="h-3 w-3 animate-spin" />Searching...
+              </div>
+            )}
+            {!searchLoading && searchResults.length > 0 && (
+              <CommandGroup heading="Matching locations">
+                {searchResults.map((loc) => (
+                  <CommandItem
+                    key={getLocationKey(loc)}
+                    value={getLocationKey(loc)}
+                    onSelect={() => {
+                      onChange(loc);
+                      onSearchTextChange("");
+                      setOpen(false);
+                    }}
+                    data-testid={`option-location-${getLocationKey(loc)}`}
+                  >
+                    <Check
+                      className={cn(
+                        "mr-2 h-3.5 w-3.5",
+                        value && getLocationKey(value) === getLocationKey(loc)
+                          ? "opacity-100"
+                          : "opacity-0",
+                      )}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium text-slate-800 truncate">{getLocationLabel(loc)}</div>
+                      {getLocationDescription(loc) && (
+                        <div className="text-[11px] text-muted-foreground truncate">
+                          {getLocationDescription(loc)}
+                        </div>
+                      )}
+                    </div>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            )}
+            {!searchLoading && searchResults.length === 0 && searchText.trim() && (
+              <CommandEmpty>No locations match "{searchText}".</CommandEmpty>
+            )}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// ============================================================================
+// Equipment Combobox (Service-style inline picker)
+// ============================================================================
+// 2026-04-26 polish v4: Service-style single-select equipment picker with
+// inline "Create equipment: '<typed text>'" action. Replaces the multi-
+// select EquipmentPicker (chips above + separate Add button). Uses the
+// canonical `GET /api/clients/:locationId/equipment` and the canonical
+// `AddEquipmentDialog` for inline creation. Keeps the dialog's array-
+// shaped state (`selectedEquipmentIds: string[]`) so the existing
+// `POST /api/jobs/:id/equipment` payload contract is unchanged — the
+// combobox just sets it to a 0- or 1-element array.
+
+interface LocationEquipment {
+  id: string;
+  name: string;
+  equipmentType?: string | null;
+  manufacturer?: string | null;
+  modelNumber?: string | null;
+  serialNumber?: string | null;
+  notes?: string | null;
+}
+
+/** Shape stored locally in `selectedServices`. Holds the minimum the form
+ *  needs to render the chip + recompute Summary / Duration. The full
+ *  ProductOption shape (sku, category, taxCode, ...) is irrelevant for
+ *  the create-time payload — `productOptionToCatalogItem` reconstructs
+ *  the canonical shape with safe defaults at submit time. */
+interface SelectedService {
+  id: string;
+  name: string;
+  estimatedDurationMinutes: number | null;
+  unitPrice?: string | null;
+  unitCost?: string | null;
+}
+
+function formatEquipmentLabel(eq: LocationEquipment): string {
+  const parts: string[] = [eq.name];
+  if (eq.modelNumber && eq.serialNumber) parts.push(`Model: ${eq.modelNumber} — S/N: ${eq.serialNumber}`);
+  else if (eq.modelNumber) parts.push(`Model: ${eq.modelNumber}`);
+  else if (eq.serialNumber) parts.push(`S/N: ${eq.serialNumber}`);
+  return parts.join(" — ");
+}
+
+function formatEquipmentTriggerLabel(eq: LocationEquipment): string {
+  if (eq.modelNumber) return `${eq.name} (${eq.modelNumber})`;
+  return eq.name;
+}
+
+interface EquipmentComboboxProps {
+  locationId: string | null;
+  selectedIds: string[];
+  onChange: (ids: string[]) => void;
+  disabled?: boolean;
+}
+
+function EquipmentCombobox({
+  locationId,
+  selectedIds,
+  onChange,
+  disabled,
+}: EquipmentComboboxProps) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [pendingCreateName, setPendingCreateName] = useState("");
+
+  const { data: equipment = [], isLoading } = useQuery<LocationEquipment[]>({
+    queryKey: ["/api/clients", locationId, "equipment"],
+    queryFn: async () => {
+      if (!locationId) return [];
+      const res = await fetch(`/api/clients/${locationId}/equipment`, { credentials: "include" });
+      if (!res.ok) return [];
+      return res.json();
+    },
+    enabled: !!locationId,
+  });
+
+  // Resolved selected items — preserves the user's selection order.
+  const selected = useMemo(
+    () => selectedIds
+      .map((id) => equipment.find((e) => e.id === id))
+      .filter(Boolean) as LocationEquipment[],
+    [equipment, selectedIds],
+  );
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return equipment;
+    return equipment.filter((e) => {
+      return (
+        e.name.toLowerCase().includes(q) ||
+        (e.modelNumber ?? "").toLowerCase().includes(q) ||
+        (e.serialNumber ?? "").toLowerCase().includes(q)
+      );
+    });
+  }, [equipment, search]);
+
+  const exactMatchExists = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return false;
+    return equipment.some((e) => e.name.trim().toLowerCase() === q);
+  }, [equipment, search]);
+
+  const triggerDisabled = disabled || !locationId;
+
+  // 2026-04-26 polish v6: trigger always shows the muted "Search or add"
+  // placeholder. Selected items render as white pill-cards underneath the
+  // trigger so the user can SEE every one — matches EditVisitModal exactly,
+  // and prevents the awkward "Pump A +1" compression the v5 trigger used.
+  const triggerContent: { text: string; muted: boolean } = (() => {
+    if (!locationId) return { text: "Location required", muted: true };
+    if (isLoading) return { text: "Loading equipment…", muted: true };
+    return { text: "Search or add equipment...", muted: true };
+  })();
+
+  function handleToggle(id: string) {
+    if (selectedIds.includes(id)) {
+      onChange(selectedIds.filter((x) => x !== id));
+    } else {
+      onChange([...selectedIds, id]);
+    }
+  }
+
+  function handleCreateNew(typed: string) {
+    setPendingCreateName(typed.trim());
+    setOpen(false);
+    setAddDialogOpen(true);
+  }
+
+  function handleEquipmentCreated(created: { id: string; name: string }) {
+    if (created?.id && !selectedIds.includes(created.id)) {
+      onChange([...selectedIds, created.id]);
+    }
+    setSearch("");
+    setPendingCreateName("");
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <Popover open={open} onOpenChange={(o) => { setOpen(o); if (!o) setSearch(""); }}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            className="h-9 w-full justify-between text-xs font-normal bg-white"
+            disabled={triggerDisabled}
+            data-testid="select-equipment"
+          >
+            <span className={cn("truncate", triggerContent.muted && "text-muted-foreground")}>
+              {triggerContent.text}
+            </span>
+            <ChevronsUpDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="p-0 w-[--radix-popover-trigger-width]" align="start">
+          <Command>
+            <CommandInput
+              placeholder="Search equipment..."
+              value={search}
+              onValueChange={setSearch}
+              data-testid="input-equipment-search"
+            />
+            <CommandList>
+              {selected.length > 0 && (
+                <CommandGroup>
+                  <CommandItem
+                    value="__clear-all__"
+                    onSelect={() => {
+                      onChange([]);
+                    }}
+                    data-testid="option-equipment-clear"
+                  >
+                    <span className="text-muted-foreground">— Clear all —</span>
+                  </CommandItem>
+                </CommandGroup>
+              )}
+              <CommandGroup heading={equipment.length === 0 ? undefined : "Equipment at this location"}>
+                {filtered.map((eq) => {
+                  const isChecked = selectedIds.includes(eq.id);
+                  return (
+                    <CommandItem
+                      key={eq.id}
+                      value={eq.name ?? eq.id}
+                      onSelect={() => handleToggle(eq.id)}
+                      data-testid={`option-equipment-${eq.id}`}
+                    >
+                      <Check
+                        className={cn(
+                          "mr-2 h-3.5 w-3.5",
+                          isChecked ? "opacity-100" : "opacity-0",
+                        )}
+                      />
+                      <span className="flex-1 truncate">{formatEquipmentLabel(eq)}</span>
+                    </CommandItem>
+                  );
+                })}
+              </CommandGroup>
+              {search.trim() && !exactMatchExists && locationId && (
+                <CommandGroup heading="Not at this location">
+                  <CommandItem
+                    value={`__create__${search}`}
+                    onSelect={() => handleCreateNew(search)}
+                    className="text-primary"
+                    data-testid="option-equipment-create"
+                  >
+                    <Plus className="mr-2 h-3.5 w-3.5" />
+                    <span className="truncate">
+                      Create equipment: <span className="font-medium">"{search.trim()}"</span>
+                    </span>
+                  </CommandItem>
+                </CommandGroup>
+              )}
+              {filtered.length === 0 && !search.trim() && equipment.length === 0 && (
+                <CommandEmpty>No equipment at this location yet. Type a name to add one.</CommandEmpty>
+              )}
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+
+      {/* 2026-04-26 polish v6: selected-equipment rows below the trigger,
+          always (was: only when ≥2 items in v5). Same white pill-card
+          pattern Edit Visit uses for its chip list — every item is fully
+          visible with a per-row remove X. The user complained the v5 "+N"
+          compression hid items; this restores explicit rows. */}
+      {selected.length > 0 && (
+        <div className="flex flex-col gap-1.5" data-testid="selected-equipment">
+          {selected.map((eq) => (
+            <div
+              key={eq.id}
+              className="flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
+              title={formatEquipmentLabel(eq)}
+              data-testid={`chip-equipment-${eq.id}`}
+            >
+              <div className="flex items-center gap-1.5 min-w-0">
+                <Wrench className="h-3 w-3 text-slate-500 shrink-0" />
+                <span className="truncate text-slate-800 font-medium">{formatEquipmentLabel(eq)}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleToggle(eq.id)}
+                aria-label={`Remove ${eq.name}`}
+                className="h-5 w-5 rounded-sm text-slate-400 hover:bg-slate-100 hover:text-slate-700 flex items-center justify-center shrink-0"
+                disabled={disabled}
+                data-testid={`chip-remove-equipment-${eq.id}`}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {locationId && (
+        <AddEquipmentDialog
+          locationId={locationId}
+          open={addDialogOpen}
+          onOpenChange={setAddDialogOpen}
+          defaultName={pendingCreateName}
+          onCreated={handleEquipmentCreated}
+        />
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// Services Multi-Select (Edit-Visit-pattern)
+// ============================================================================
+// 2026-04-26 polish v6: multi-select services for QuickAddJobDialog.
+// Mirrors EditVisitModal.ServiceMultiSelect — combobox trigger on top,
+// selected services rendered as white pill-cards underneath. Each card
+// shows the name + duration (when known) + an X to remove. A
+// `Create service: "<typed>"` action surfaces in the dropdown when the
+// typed text doesn't exact-match an existing service.
+//
+// QuickAddJobDialog is the create surface — the job doesn't exist yet
+// when the user picks services, so this component just owns the local
+// selection list. Persistence happens after job create via the canonical
+// `POST /api/jobs/:id/parts` call (same path Edit Visit uses).
+
+interface ServiceCatalogItem {
+  id: string;
+  name: string | null;
+  estimatedDurationMinutes: number | null;
+  unitPrice?: string | null;
+  cost?: string | null;
+}
+
+function ServicesMultiSelect({
+  services,
+  selected,
+  searchOpen,
+  onSearchOpenChange,
+  searchText,
+  onSearchTextChange,
+  filteredServices,
+  exactMatchExists,
+  onAdd,
+  onRemove,
+  onCreateNew,
+  createPending,
+  disabled,
+}: {
+  services: ServiceCatalogItem[];
+  selected: SelectedService[];
+  searchOpen: boolean;
+  onSearchOpenChange: (open: boolean) => void;
+  searchText: string;
+  onSearchTextChange: (text: string) => void;
+  filteredServices: ServiceCatalogItem[];
+  exactMatchExists: boolean;
+  onAdd: (svc: SelectedService) => void;
+  onRemove: (id: string) => void;
+  onCreateNew: (name: string) => void;
+  createPending: boolean;
+  disabled?: boolean;
+}) {
+  // Hide already-selected services from the dropdown (matches Edit Visit).
+  const selectedIds = useMemo(() => new Set(selected.map((s) => s.id)), [selected]);
+  const available = useMemo(
+    () => filteredServices.filter((s) => !selectedIds.has(s.id)),
+    [filteredServices, selectedIds],
+  );
+  // services unused at this layer (filtering happens in the parent's memo);
+  // accept it for API symmetry with Edit Visit.
+  void services;
+
+  return (
+    <div className="space-y-1.5">
+      {/* Search trigger — top */}
+      <Popover open={searchOpen} onOpenChange={onSearchOpenChange}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            role="combobox"
+            aria-expanded={searchOpen}
+            className="h-9 w-full justify-between text-xs font-normal bg-white"
+            disabled={disabled}
+            data-testid="select-service"
+          >
+            <span className="text-muted-foreground truncate">Search or add service...</span>
+            <ChevronsUpDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="p-0 w-[--radix-popover-trigger-width]" align="start">
+          <Command shouldFilter={false}>
+            <CommandInput
+              placeholder="Search services..."
+              value={searchText}
+              onValueChange={onSearchTextChange}
+              data-testid="input-service-search"
+            />
+            <CommandList>
+              {/* Inline create — at top so it's never buried by results. */}
+              {searchText.trim() && !exactMatchExists && (
+                <CommandGroup heading="Not in catalog">
+                  <CommandItem
+                    value={`__create__${searchText}`}
+                    onSelect={() => onCreateNew(searchText.trim())}
+                    className="text-primary"
+                    data-testid="option-service-create"
+                    disabled={createPending}
+                  >
+                    {createPending ? (
+                      <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Plus className="mr-2 h-3.5 w-3.5" />
+                    )}
+                    <span className="truncate">
+                      Create service: <span className="font-medium">"{searchText.trim()}"</span>
+                    </span>
+                  </CommandItem>
+                </CommandGroup>
+              )}
+              {available.length > 0 && (
+                <CommandGroup heading="Services">
+                  {available.map((svc) => (
+                    <CommandItem
+                      key={svc.id}
+                      value={svc.name ?? svc.id}
+                      onSelect={() => {
+                        onAdd({
+                          id: svc.id,
+                          name: svc.name ?? "Service",
+                          estimatedDurationMinutes: svc.estimatedDurationMinutes,
+                          unitPrice: svc.unitPrice ?? null,
+                          unitCost: svc.cost ?? null,
+                        });
+                        onSearchTextChange("");
+                      }}
+                      data-testid={`option-service-${svc.id}`}
+                    >
+                      <Check className="mr-2 h-3.5 w-3.5 opacity-0" />
+                      <span className="flex-1 truncate">{svc.name ?? "Service"}</span>
+                      {svc.estimatedDurationMinutes && svc.estimatedDurationMinutes > 0 && (
+                        <span className="ml-2 text-[11px] text-muted-foreground tabular-nums">
+                          {formatServiceDuration(svc.estimatedDurationMinutes)}
+                        </span>
+                      )}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              )}
+              {available.length === 0 && !searchText.trim() && services.length === 0 && (
+                <CommandEmpty>No services configured yet. Type a name to create one.</CommandEmpty>
+              )}
+              {available.length === 0 && searchText.trim() && exactMatchExists && (
+                <CommandEmpty>Already attached to this job.</CommandEmpty>
+              )}
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+
+      {/* Selected services — render as white pill-cards beneath the trigger.
+          Same visual pattern as the EditVisitModal Service chip list so
+          the two surfaces look identical when the user moves between them. */}
+      {selected.length > 0 && (
+        <div className="flex flex-col gap-1.5" data-testid="selected-services">
+          {selected.map((svc) => (
+            <div
+              key={svc.id}
+              className="flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
+              data-testid={`chip-service-${svc.id}`}
+            >
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="truncate text-slate-800 font-medium">{svc.name}</span>
+                {svc.estimatedDurationMinutes && svc.estimatedDurationMinutes > 0 && (
+                  <span className="text-[11px] text-muted-foreground tabular-nums shrink-0">
+                    {formatServiceDuration(svc.estimatedDurationMinutes)}
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => onRemove(svc.id)}
+                aria-label={`Remove ${svc.name}`}
+                className="h-5 w-5 rounded-sm text-slate-400 hover:bg-slate-100 hover:text-slate-700 flex items-center justify-center shrink-0"
+                disabled={disabled}
+                data-testid={`chip-remove-service-${svc.id}`}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// Duration hours input
+// ============================================================================
+// 2026-04-26 polish v5: replaces the Duration <Select> with a typeable
+// hours field. Accepts "1", "1.5", "2", etc. Stores minutes in canonical
+// state. Re-syncs the draft when external state changes (service prefill,
+// "Find next available" populating duration, etc).
+
+function formatDurationAsHours(minutes: number | null | undefined): string {
+  if (!minutes || minutes <= 0) return "";
+  const hours = minutes / 60;
+  if (Number.isInteger(hours)) return String(hours);
+  // Trim trailing zeroes from the fractional part.
+  return hours.toFixed(2).replace(/\.?0+$/, "");
+}
+
+interface DurationHoursInputProps {
+  durationMinutes: number;
+  onChange: (minutes: number) => void;
+  disabled?: boolean;
+}
+
+function DurationHoursInput({ durationMinutes, onChange, disabled }: DurationHoursInputProps) {
+  const [draft, setDraft] = useState(() => formatDurationAsHours(durationMinutes));
+
+  // Re-sync the visible draft whenever the canonical state changes from
+  // outside this input — e.g. service prefill bumping the duration to
+  // 90 min should display as "1.5" without the user having to refocus.
+  useEffect(() => {
+    const fresh = formatDurationAsHours(durationMinutes);
+    setDraft(fresh);
+  }, [durationMinutes]);
+
+  function handleChange(next: string) {
+    setDraft(next);
+    const n = parseFloat(next);
+    if (Number.isFinite(n) && n > 0) {
+      const minutes = Math.round(n * 60);
+      // Floor at 15 min so a typed "0.1" doesn't become a 6-min job.
+      const clamped = Math.max(15, minutes);
+      if (clamped !== durationMinutes) onChange(clamped);
+    }
+  }
+
+  function handleBlur() {
+    // Snap the visible draft back to the canonical formatting.
+    setDraft(formatDurationAsHours(durationMinutes));
+  }
+
+  return (
+    <div className="relative">
+      <Input
+        type="text"
+        inputMode="decimal"
+        value={draft}
+        onChange={(e) => handleChange(e.target.value)}
+        onBlur={handleBlur}
+        disabled={disabled}
+        placeholder="1"
+        className="h-9 w-full text-xs pr-6 bg-white"
+        data-testid="input-duration-hours"
+      />
+      <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground">
+        h
+      </span>
+    </div>
+  );
+}
 
 // ============================================================================
 // Main Dialog
@@ -116,9 +824,19 @@ interface QuickAddJobDialogProps {
   /** Mode control: "standard" = normal create with optional recurring toggle,
    *  "recurring" = opens with recurring ON by default, schedule row hidden */
   mode?: "standard" | "recurring";
+  /** 2026-04-25 CreateNewDialog embedding: when true, the parent shell owns
+   *  the Dialog wrapper / DialogContent / title, and this component renders
+   *  only the form body + footer. Lets the new tabbed `+ New` modal compose
+   *  the canonical job form alongside the canonical task form without
+   *  duplicating either. */
+  embedded?: boolean;
+  /** Embedded-mode density hint (e.g. tabbed shell). Currently a no-op flag —
+   *  the form is already compact — but reserved so callers can opt in to
+   *  future trims without a breaking-change to the prop set. */
+  compact?: boolean;
 }
 
-export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, editJob, onSuccess, initialSchedule, mode = "standard" }: QuickAddJobDialogProps) {
+export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, editJob, onSuccess, initialSchedule, mode = "standard", embedded = false, compact: _compact = false }: QuickAddJobDialogProps) {
   const { toast } = useToast();
   const { logActivity } = useActivityStore();
   // Location selector state (canonical)
@@ -135,6 +853,23 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
   const [showConflictAlert, setShowConflictAlert] = useState(false);
   const [formData, setFormData] = useState(getDefaultFormData());
   const [selectedEquipmentIds, setSelectedEquipmentIds] = useState<string[]>([]);
+  // 2026-04-26 polish v6: service is now multi-select, mirroring the EditVisitModal
+  // pattern. Each entry holds the minimum the form needs (id, name, duration) so
+  // the chip list can render without round-tripping back through `/api/items`.
+  // After job creation, each entry is POSTed to `/api/jobs/:id/parts` using the
+  // canonical productOptionToCatalogItem → catalogItemToDraft → draftToJobPartPayload
+  // pipeline. There is no parallel persistence layer — same backend route Edit
+  // Visit uses.
+  const [selectedServices, setSelectedServices] = useState<SelectedService[]>([]);
+  // 2026-04-26 polish v2: searchable service combobox state.
+  const [serviceComboOpen, setServiceComboOpen] = useState(false);
+  const [serviceSearchText, setServiceSearchText] = useState("");
+  // Dirty flags: once the user manually edits Summary or Duration, we stop
+  // auto-overwriting from the selected-services join. This matches the spec:
+  // "If user manually edits Summary, do not overwrite. If services removed
+  // and Summary auto-managed, recalculate."
+  const [summaryDirty, setSummaryDirty] = useState(false);
+  const [durationDirty, setDurationDirty] = useState(false);
 
   // Recurring job state — when enabled, submits to POST /api/recurring-templates instead of POST /api/jobs
   // In recurring mode, isRecurring defaults ON
@@ -190,6 +925,11 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
       setSelectedLocationOption(null);
       setShowConflictAlert(false);
       setSelectedEquipmentIds([]);
+      setSelectedServices([]);
+      setSummaryDirty(false);
+      setDurationDirty(false);
+      setServiceComboOpen(false);
+      setServiceSearchText("");
       // Reset recurring state on close — recurring mode defaults ON
       setIsRecurring(isRecurringMode);
       setRecurrencePreset("weekly");
@@ -208,6 +948,199 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
 
   // Derive effective selected location: user selection > resolved from ID > null
   const selectedLocation = selectedLocationOption ?? resolvedLocation ?? null;
+
+  // ── Service catalog (canonical /api/items?type=service) ─────────────
+  // 2026-04-26: surfaces the existing items table (rows where type='service')
+  // so users can pre-fill summary + duration from a configured service. The
+  // selector hides itself when the tenant has no services configured.
+  interface ServiceItem {
+    id: string;
+    name: string | null;
+    description: string | null;
+    estimatedDurationMinutes: number | null;
+  }
+  const { data: serviceData } = useQuery({
+    queryKey: ["/api/items", { type: "service" }],
+    queryFn: async () => {
+      const res = await apiRequest<ServiceItem[] | { data: ServiceItem[] }>(
+        "/api/items?type=service&limit=200",
+      );
+      // Endpoint returns a raw array when no `cursor`/`offset` is set, otherwise { data, meta }.
+      return Array.isArray(res) ? res : res.data ?? [];
+    },
+    enabled: open && !isEditMode,
+    staleTime: 60_000,
+  });
+  const services = useMemo<ServiceItem[]>(
+    () => (serviceData ?? []).filter((s) => s && s.id && s.name),
+    [serviceData],
+  );
+
+  /** Add a service to the multi-select list. Auto-recomputes Summary and
+   *  Duration when the user has not manually edited them since the last
+   *  service change. */
+  function addService(svc: SelectedService) {
+    setSelectedServices((prev) => {
+      if (prev.some((s) => s.id === svc.id)) return prev;
+      const next = [...prev, svc];
+      autoSyncFromServices(next);
+      return next;
+    });
+  }
+
+  function removeService(id: string) {
+    setSelectedServices((prev) => {
+      const next = prev.filter((s) => s.id !== id);
+      autoSyncFromServices(next);
+      return next;
+    });
+  }
+
+  /** When the services list changes, recompute Summary + Duration unless the
+   *  user has explicitly edited them. Per spec: changing services again
+   *  resets the auto-managed state, so this also clears the dirty flags
+   *  back to false (the next services list reset becomes the new baseline). */
+  function autoSyncFromServices(list: SelectedService[]) {
+    if (!summaryDirty) {
+      const joined = list
+        .map((s) => s.name)
+        .filter(Boolean)
+        .join(" + ");
+      setFormData((prev) => ({ ...prev, summary: joined }));
+    }
+    if (!durationDirty) {
+      const sum = list.reduce(
+        (acc, s) => acc + Math.max(0, s.estimatedDurationMinutes ?? 0),
+        0,
+      );
+      // Spec: "Services without duration = 0." But the schedule still needs
+      // a positive duration. When the sum is 0, fall back to a sensible 60-
+      // minute default so unscheduled-to-scheduled flips don't surprise the
+      // user with a 0-minute window.
+      setScheduleValue((prev) => ({
+        ...prev,
+        durationMinutes: sum > 0 ? sum : 60,
+      }));
+    }
+  }
+
+  /** Filter services by typed search text (case-insensitive match on name). */
+  const filteredServices = useMemo(() => {
+    const q = serviceSearchText.trim().toLowerCase();
+    if (!q) return services;
+    return services.filter((s) => (s.name ?? "").toLowerCase().includes(q));
+  }, [services, serviceSearchText]);
+
+  /** Whether the typed search text matches an existing service name exactly.
+   *  When false AND text is non-empty, we surface the "Create service: …" CTA. */
+  const exactMatchExists = useMemo(() => {
+    const q = serviceSearchText.trim().toLowerCase();
+    if (!q) return true; // nothing typed, no CTA needed
+    return services.some((s) => (s.name ?? "").trim().toLowerCase() === q);
+  }, [services, serviceSearchText]);
+
+  /** Quick-create a service with sensible defaults. Mirrors the EditVisit
+   *  pattern — one-shot POST /api/items with name + type, then auto-add
+   *  the new service to selectedServices. The user can edit the service's
+   *  details (cost, taxCode, etc.) later from Items management. The prior
+   *  full ProductServiceFormDialog flow was overkill for quick-add and
+   *  required closing the modal, filling fields, and re-opening — this
+   *  inline path keeps the user in the dialog. */
+  const createServiceQuickMutation = useMutation({
+    mutationFn: async (name: string) => {
+      return apiRequest<{
+        id: string;
+        name: string | null;
+        estimatedDurationMinutes: number | null;
+        unitPrice: string | null;
+        cost: string | null;
+      }>("/api/items", {
+        method: "POST",
+        body: JSON.stringify({
+          name: name.trim(),
+          type: "service",
+          isActive: true,
+          isTaxable: true,
+        }),
+      });
+    },
+    onSuccess: (created) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/items", { type: "service" }] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"], exact: false });
+      setServiceComboOpen(false);
+      setServiceSearchText("");
+      addService({
+        id: created.id,
+        name: created.name ?? "Service",
+        estimatedDurationMinutes: created.estimatedDurationMinutes,
+        unitPrice: created.unitPrice,
+        unitCost: created.cost,
+      });
+      toast({ title: "Service created", description: created.name ?? "New service" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Couldn't create service", description: err.message, variant: "destructive" });
+    },
+  });
+
+  // ── Find next available technician (capacity-aware tech pick) ────────
+  // Reuses the canonical /api/dashboard/capacity endpoint that powers the
+  // dashboard "Today's Schedule" rail. No shadow scheduling logic.
+  const findAvailableMutation = useMutation({
+    mutationFn: () => apiRequest<CapacityResponse>("/api/dashboard/capacity"),
+    onSuccess: (cap) => {
+      const wantedDuration =
+        scheduleValue.durationMinutes && scheduleValue.durationMinutes > 0
+          ? scheduleValue.durationMinutes
+          : 60;
+      // 2026-04-26: honor the user's pre-selected technicians. If they've
+      // already picked someone in the Schedule row, "Find next available"
+      // looks for THAT tech's earliest gap — not a random other tech's.
+      // When no tech is pre-selected, we consider everyone (legacy behavior).
+      const match = findNextAvailableSlot(cap, wantedDuration, {
+        preferredTechnicianIds: scheduleValue.assignedTechnicianIds,
+      });
+      if (!match) {
+        const hadPick = scheduleValue.assignedTechnicianIds.length > 0;
+        toast({
+          title: "No open slot today",
+          description: hadPick
+            ? "The selected technician has no open slot of this duration today. Clear the assignee or try a shorter duration."
+            : "No technician has an open slot of this duration today. Try a shorter duration or pick a date manually.",
+        });
+        return;
+      }
+      setScheduleValue((prev) => ({
+        ...prev,
+        unscheduled: false,
+        date: match.date,
+        time: match.time,
+        durationMinutes: wantedDuration,
+        assignedTechnicianIds: [match.technicianId],
+        isAllDay: false,
+      }));
+      // 2026-04-26 polish v3: format the toast time from the SAME date/time
+      // slices that populate the form (`match.date` + `match.time`) instead
+      // of `parseISO(match.startISO)`. The two interpretations diverged when
+      // the browser's local TZ differed from UTC: `<input type="time">`
+      // showed "14:00" as 2:00 PM (timezone-naive) while parseISO+format
+      // converted UTC 14:00 to local 10:00 AM. Using a single source of
+      // truth for the displayed time guarantees the toast and the form
+      // can never disagree.
+      const startLabel = formatSlotTimeLabel(match.date, match.time);
+      toast({
+        title: "Slot found",
+        description: `${match.technicianName} · ${startLabel} (today)`,
+      });
+    },
+    onError: () => {
+      toast({
+        title: "Couldn't check availability",
+        description: "Failed to load today's capacity. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
 
   // ── Schedule helpers ──
 
@@ -274,6 +1207,43 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
         }
         // Invalidate job equipment cache
         queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id, "equipment"] });
+      }
+
+      // 2026-04-26 polish v6: Persist selected services as job_part rows.
+      // Same canonical pipeline EditVisitModal uses:
+      //   ProductOption → catalogItemToDraft → draftToJobPartPayload →
+      //   POST /api/jobs/:id/parts. Failures don't block the create — the
+      //   job is already saved, services can be added later from job detail.
+      if (job?.id && selectedServices.length > 0) {
+        const partFailures: string[] = [];
+        for (const svc of selectedServices) {
+          try {
+            const draft = catalogItemToDraft(
+              productOptionToCatalogItem({
+                id: svc.id,
+                name: svc.name,
+                type: "service",
+                unitPrice: svc.unitPrice ?? null,
+                cost: svc.unitCost ?? null,
+              }),
+              { source: "manual", quantity: "1" },
+            );
+            await apiRequest(`/api/jobs/${job.id}/parts`, {
+              method: "POST",
+              body: JSON.stringify(draftToJobPartPayload(draft)),
+            });
+          } catch {
+            partFailures.push(svc.name);
+          }
+        }
+        if (partFailures.length > 0) {
+          toast({
+            title: "Job created",
+            description: `${partFailures.length} service(s) could not be attached. Add them from the job detail page.`,
+            variant: "destructive",
+          });
+        }
+        queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id, "parts"] });
       }
 
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
@@ -473,48 +1443,81 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     }
   };
 
-  return (
-    <>
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl" data-testid="dialog-quick-add-job">
-        <DialogHeader>
-          <DialogTitle data-testid="text-dialog-title">{isEditMode ? "Edit Job" : isRecurringMode ? "Create Recurring Job" : "Create New Job"}</DialogTitle>
-        </DialogHeader>
+  // 2026-04-25: in embedded mode the parent shell (CreateNewDialog) already
+  // renders the Dialog wrapper + title strip + tab-aware sizing, so we render
+  // only the form + footer. The conflict alert + quick-create-client toast
+  // logic stay live in both modes — they're not visual chrome.
+  const formBody = (
+    <form onSubmit={handleSubmit} className="space-y-2.5">
+          {/* ── Location ──
+              2026-04-26 polish v5: switched from CreateOrSelectField (inline
+              results that expanded the modal while typing) to a Service-style
+              Popover+Command combobox. Results overlay; modal shell stays
+              stable. */}
+          <div>
+            <Label className="text-xs font-medium mb-1 block">Location *</Label>
+            <LocationCombobox
+              value={selectedLocation}
+              searchText={locationSearch}
+              onSearchTextChange={setLocationSearchText}
+              searchResults={locationResults}
+              searchLoading={locationSearchLoading}
+              onChange={(loc) => {
+                setSelectedLocationOption(loc);
+                setFormData(prev => ({ ...prev, locationId: loc?.id ?? "" }));
+                setSelectedEquipmentIds([]); // Reset equipment on location change
+              }}
+              onCreateNew={(text) => quickCreateClientMutation.mutate(text)}
+              disabled={isPending}
+            />
+          </div>
 
-        <form onSubmit={handleSubmit} className="space-y-3">
-          {/* ── Location ── */}
-          {/* Canonical location selector */}
-          <CreateOrSelectField<LocationOption>
-            label="Location *"
-            value={selectedLocation}
-            onChange={(loc) => {
-              setSelectedLocationOption(loc);
-              setFormData(prev => ({ ...prev, locationId: loc?.id ?? "" }));
-              setSelectedEquipmentIds([]); // Reset equipment on location change
-            }}
-            searchResults={locationResults}
-            searchLoading={locationSearchLoading}
-            searchText={locationSearch}
-            onSearchTextChange={setLocationSearchText}
-            getKey={getLocationKey}
-            getLabel={getLocationLabel}
-            getDescription={getLocationDescription}
-            createLabel="Add New Client..."
-            onCreateNew={(text) => quickCreateClientMutation.mutate(text)}
-            placeholder="Search locations..."
-            disabled={isPending}
-          />
-
-          {/* ── Equipment (optional) ── */}
+          {/* ── Service + Equipment row ──
+              2026-04-26 polish v3: paired side-by-side on desktop/tablet,
+              stack on mobile. Service comes first per spec (left of Equipment).
+              Both are optional inputs that hang off the selected Location. */}
           {!isEditMode && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {/* Service (multi-select) ── 2026-04-26 polish v6
+                 Mirrors EditVisitModal's ServiceMultiSelect: search-only
+                 trigger on top, selected services rendered as white pill-
+                 cards underneath. Add multiple, sum duration, " + "-join
+                 summary auto-fill. Keeps the dialog state local; persists
+                 to /api/jobs/:id/parts after the job is created. */}
             <div>
-              <Label className="text-xs font-medium mb-1 block">Equipment</Label>
-              <EquipmentPicker
-                locationId={formData.locationId || null}
-                selectedEquipmentIds={selectedEquipmentIds}
-                onChange={setSelectedEquipmentIds}
+              <Label className="text-xs font-medium mb-1 block flex items-center gap-1.5">
+                <Wrench className="h-3 w-3 text-muted-foreground" />
+                Service (optional)
+              </Label>
+              <ServicesMultiSelect
+                services={services}
+                selected={selectedServices}
+                searchOpen={serviceComboOpen}
+                onSearchOpenChange={setServiceComboOpen}
+                searchText={serviceSearchText}
+                onSearchTextChange={setServiceSearchText}
+                filteredServices={filteredServices}
+                exactMatchExists={exactMatchExists}
+                onAdd={addService}
+                onRemove={removeService}
+                onCreateNew={(name) => createServiceQuickMutation.mutate(name)}
+                createPending={createServiceQuickMutation.isPending}
+                disabled={isPending}
               />
             </div>
+            <div>
+              <Label className="text-xs font-medium mb-1 block flex items-center gap-1.5">
+                <Wrench className="h-3 w-3 text-muted-foreground" />
+                Equipment (optional)
+              </Label>
+              <EquipmentCombobox
+                locationId={formData.locationId || null}
+                selectedIds={selectedEquipmentIds}
+                onChange={setSelectedEquipmentIds}
+                disabled={isPending}
+              />
+            </div>
+          </div>
           )}
 
           {/* ── Summary ── */}
@@ -523,16 +1526,26 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
             <Input
               id="summary"
               value={formData.summary}
-              onChange={(e) => setFormData(prev => ({ ...prev, summary: e.target.value }))}
+              onChange={(e) => {
+                // 2026-04-26 polish v6: a non-empty manual edit flips Summary
+                // into dirty mode so subsequent service changes don't overwrite
+                // the user's text. Clearing the field flips back to auto so
+                // the next service add re-fills the summary. Programmatic
+                // updates from autoSyncFromServices don't fire onChange, so
+                // they don't toggle the flag.
+                const val = e.target.value;
+                setFormData((prev) => ({ ...prev, summary: val }));
+                setSummaryDirty(val.trim().length > 0);
+              }}
               placeholder="Brief description of the job"
-              className="h-9"
+              className="h-9 bg-white"
               data-testid="input-summary"
             />
           </div>
 
-          {/* ── Make Recurring toggle — shown in standard create mode only (forced ON in recurring mode) ── */}
+          {/* ── Make Recurring toggle ── */}
           {!isEditMode && !isRecurringMode && (
-            <div className="flex items-center gap-2 py-1">
+            <div className="flex items-center gap-2">
               <Switch
                 id="make-recurring"
                 checked={isRecurring}
@@ -718,10 +1731,16 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
             </div>
           )}
 
-          {/* ── Scheduling Row (compact inline) — hidden in edit mode and when Make Recurring is ON (2026-04-03) ── */}
+          {/* ── Schedule row — labeled grid (2026-04-26 polish v3) ──
+              Visible labels above each control (Date / Start / Duration /
+              Assigned To) replace the old single-line wrap that left "1h"
+              naked next to "Date" / time / tech. The Time control is now
+              the canonical 15-min Select shared with JobScheduleFields,
+              not the OS-native `<input type="time">` that rendered as a
+              browser-specific 3-column popover on Windows/Chrome. */}
           {!isEditMode && !isRecurring && (
-          <div>
-            <div className="flex items-center gap-3 mb-2">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
               <Label className="text-xs font-medium">Schedule</Label>
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <Checkbox
@@ -733,91 +1752,146 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               </label>
             </div>
 
-            <div className={cn(
-              "flex flex-wrap items-center gap-2",
-              isScheduleDisabled && "opacity-40 pointer-events-none",
-            )}>
-              {/* Date picker */}
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className={cn("h-9 text-xs gap-1.5 min-w-[130px]", !scheduleValue.date && "text-muted-foreground")}
-                    disabled={isScheduleDisabled}
-                    data-testid="button-select-date"
-                  >
-                    <CalendarIcon className="h-3.5 w-3.5" />
-                    {scheduleValue.date ? format(selectedDate!, "MMM d, yyyy") : "Date"}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-auto p-0" align="start">
-                  <Calendar
-                    mode="single"
-                    selected={selectedDate}
-                    onSelect={(d) => d && updateSchedule({ date: format(d, "yyyy-MM-dd") })}
-                    initialFocus
-                  />
-                </PopoverContent>
-              </Popover>
-
-              {/* Time input — native type="time" for predictable entry */}
-              <Input
-                type="time"
-                value={scheduleValue.time || ""}
-                onChange={(e) => updateSchedule({ time: e.target.value, isAllDay: false })}
-                disabled={isScheduleDisabled}
-                className="h-9 w-[110px] text-xs"
-                step={900}
-                data-testid="input-time"
-              />
-
-              {/* Duration */}
-              {!scheduleValue.unscheduled && (
-                <Select
-                  value={String(scheduleValue.durationMinutes)}
-                  onValueChange={(v) => updateSchedule({ durationMinutes: Number(v) })}
-                  disabled={isScheduleDisabled}
-                >
-                  <SelectTrigger className="h-9 w-[80px] text-xs" data-testid="select-duration">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {DURATION_OPTIONS.map((opt) => (
-                      <SelectItem key={opt.value} value={String(opt.value)}>{opt.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+            <div
+              className={cn(
+                "grid grid-cols-2 sm:grid-cols-4 gap-2",
+                isScheduleDisabled && "opacity-40 pointer-events-none",
               )}
+            >
+              {/* Date */}
+              <div className="space-y-1 min-w-0">
+                <Label className="text-[11px] font-medium text-muted-foreground">Date</Label>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className={cn(
+                        "h-9 w-full text-xs justify-start gap-1.5 bg-white",
+                        !scheduleValue.date && "text-muted-foreground",
+                      )}
+                      disabled={isScheduleDisabled}
+                      data-testid="button-select-date"
+                    >
+                      <CalendarIcon className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">
+                        {scheduleValue.date ? format(selectedDate!, "MMM d, yyyy") : "Pick date"}
+                      </span>
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0" align="start">
+                    <Calendar
+                      mode="single"
+                      selected={selectedDate}
+                      onSelect={(d) => d && updateSchedule({ date: format(d, "yyyy-MM-dd") })}
+                      initialFocus
+                    />
+                  </PopoverContent>
+                </Popover>
+              </div>
 
-              {/* Technician multi-select */}
-              <TechnicianSelector
-                mode="multi"
-                value={scheduleValue.assignedTechnicianIds}
-                onChange={(ids) => updateSchedule({ assignedTechnicianIds: ids })}
-                disabled={isScheduleDisabled}
-              />
+              {/* Start — native time input. The OS native picker overlays
+                  (does not push layout) and accepts manual edits per spec. */}
+              <div className="space-y-1 min-w-0">
+                <Label className="text-[11px] font-medium text-muted-foreground">Start</Label>
+                <Input
+                  type="time"
+                  step={900}
+                  value={scheduleValue.time || ""}
+                  onChange={(e) => updateSchedule({ time: e.target.value, isAllDay: false })}
+                  disabled={isScheduleDisabled}
+                  className="h-9 w-full text-xs bg-white"
+                  data-testid="input-time"
+                />
+              </div>
+
+              {/* Duration — editable hours field. Accepts "1", "1.5", "2".
+                  Service-prefill still works (the parent updates
+                  scheduleValue.durationMinutes; an effect in the inner
+                  component re-syncs the draft string). */}
+              <div className="space-y-1 min-w-0">
+                <Label className="text-[11px] font-medium text-muted-foreground">Duration</Label>
+                <DurationHoursInput
+                  durationMinutes={scheduleValue.durationMinutes}
+                  onChange={(minutes) => {
+                    // 2026-04-26 polish v6: a manual duration edit flips
+                    // Duration into dirty mode so subsequent service changes
+                    // don't overwrite the user's value. autoSyncFromServices
+                    // skips when the flag is true, matching the spec's
+                    // "preserve until services change again" rule.
+                    setDurationDirty(true);
+                    updateSchedule({ durationMinutes: minutes });
+                  }}
+                  disabled={isScheduleDisabled}
+                />
+              </div>
+
+              {/* Assigned To — className override removes the selector's
+                  default `min-w-[120px] max-w-[220px]` so the trigger fits
+                  the grid column on narrow widths and never forces the
+                  modal to sideways-scroll. */}
+              <div className="space-y-1 min-w-0">
+                <Label className="text-[11px] font-medium text-muted-foreground">Assigned To</Label>
+                <TechnicianSelector
+                  mode="multi"
+                  value={scheduleValue.assignedTechnicianIds}
+                  onChange={(ids) => updateSchedule({ assignedTechnicianIds: ids })}
+                  disabled={isScheduleDisabled}
+                  className="!min-w-0 !max-w-full w-full"
+                />
+              </div>
             </div>
+
+            {/* 2026-04-26: capacity-aware tech pick. Reads the canonical
+                /api/dashboard/capacity feed and now honors a pre-selected
+                tech (see findNextAvailableSlot.preferredTechnicianIds). */}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs gap-1.5"
+              onClick={() => findAvailableMutation.mutate()}
+              disabled={findAvailableMutation.isPending || isScheduleDisabled}
+              data-testid="button-find-next-available"
+              title="Find the earliest open slot today (honors a pre-selected technician if set)"
+            >
+              {findAvailableMutation.isPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Wand2 className="h-3.5 w-3.5" />
+              )}
+              Find next available
+            </Button>
           </div>
           )}
 
-          {/* ── Description (optional, compact) ── */}
+          {/* ── Team Instructions (optional, compact 2-row) ──
+              2026-04-26 polish v4: rows=2 max with a small fixed height so
+              the textarea cannot grow and force the Job tab to scroll. */}
           <div>
-            <Label htmlFor="description" className="text-xs font-medium mb-1 block">Description</Label>
+            <Label htmlFor="description" className="text-xs font-medium mb-1 block">Team Instructions</Label>
             <Textarea
               id="description"
               value={formData.description}
               onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
-              placeholder="Optional details..."
+              placeholder="Add any notes or instructions for the team..."
               rows={2}
-              className="text-sm resize-none"
+              className="text-sm resize-none h-[52px] bg-white"
               data-testid="input-description"
             />
           </div>
 
-          {/* ── Footer ── */}
-          <DialogFooter className="pt-1">
+          {/* ── Footer ──
+              2026-04-26 polish v4: footer is a natural-flow element at the
+              end of the form. The previous v3 sticky version with
+              `-mx-6 px-6` overflowed the embedded wrapper (which is `px-5`)
+              by 8px and triggered the horizontal scrollbar at the bottom of
+              the modal. The form is now compact enough to fit without the
+              embedded scroll engaging on common desktop heights, so a
+              sticky footer isn't needed. The embedded `overflow-y-auto`
+              remains only as a small-screen safety net. */}
+          <DialogFooter className="pt-2">
             <Button
               type="button"
               variant="outline"
@@ -845,8 +1919,29 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
             </Button>
           </DialogFooter>
         </form>
-      </DialogContent>
-    </Dialog>
+  );
+
+  return (
+    <>
+    {embedded ? (
+      // 2026-04-26 polish v4: tighter padding (px-5 pt-3 pb-3) so the Job
+      // tab fits at common desktop heights without engaging the embedded
+      // scrollbar. `overflow-y-auto` stays as a safety net for very small
+      // viewports (max-h-[90vh] on the parent shell) and for when the
+      // recurring fields panel expands.
+      <div className="px-5 pt-3 pb-3 flex-1 min-h-0 overflow-y-auto" data-testid="embedded-quick-add-job">
+        {formBody}
+      </div>
+    ) : (
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="max-w-xl" data-testid="dialog-quick-add-job">
+          <DialogHeader>
+            <DialogTitle data-testid="text-dialog-title">{isEditMode ? "Edit Job" : isRecurringMode ? "Create Recurring Job" : "Create New Job"}</DialogTitle>
+          </DialogHeader>
+          {formBody}
+        </DialogContent>
+      </Dialog>
+    )}
 
     <AlertDialog open={showConflictAlert} onOpenChange={setShowConflictAlert}>
       <AlertDialogContent>
@@ -861,6 +1956,13 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+
+    {/* 2026-04-26 polish v6: full ProductServiceFormDialog mount removed.
+         The multi-select Service combobox now uses the simpler one-shot
+         POST /api/items pattern (createServiceQuickMutation) — same
+         pattern as EditVisitModal. Users wanting full service-edit fields
+         can still open Items management; the modal stays focused on
+         quick-create. */}
     </>
   );
 }

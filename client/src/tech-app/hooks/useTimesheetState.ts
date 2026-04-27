@@ -71,6 +71,10 @@ interface BackendTimeEntry {
   jobNumber: number | null;
   jobSummary: string | null;
   locationName: string | null;
+  // 2026-04-26: TimesheetEntry consumer added clientName to render the
+  // grouped header as `#{jobNumber} {clientName}`. The adapter was
+  // missing the field, blocking tsc — backfilled here.
+  clientName?: string | null;
   [key: string]: unknown;
 }
 
@@ -101,6 +105,7 @@ function toTimesheetEntry(e: BackendTimeEntry): TimesheetEntry {
     jobNumber: e.jobNumber ?? null,
     jobSummary: e.jobSummary ?? null,
     locationName: e.locationName ?? null,
+    clientName: e.clientName ?? null,
   };
 }
 

@@ -464,13 +464,34 @@ export async function getTodayCapacity(
     );
     const hasValidWorkday =
       isWorking && workStartMin != null && workEndMin != null && workEndMin > workStartMin;
-    const scheduleBlocks: ScheduleBlock[] = hasValidWorkday
-      ? buildScheduleBlocks(
+
+    // 2026-04-26 polish v6: schedule blocks now render for off-shift techs
+    // who have assigned visits. The dashboard's "Today's Schedule" used to
+    // show "No work" for these techs even though Dispatch Board showed the
+    // job — accidental bookings became invisible to dispatchers. The
+    // off_today state is preserved on the response so the client can label
+    // the tech "(off shift)" while still rendering the blocks.
+    const scheduleBlocks: ScheduleBlock[] = (() => {
+      if (hasValidWorkday) {
+        return buildScheduleBlocks(
           dayStartMs + workStartMin! * 60_000,
           dayStartMs + workEndMin! * 60_000,
           techVisits,
-        )
-      : [];
+        );
+      }
+      if (techVisits.length === 0) return [];
+      // No workday but there ARE assigned visits — derive a window from the
+      // visits themselves (earliest start → latest end) so buildScheduleBlocks
+      // has bounds. Clamp at the calendar day so a runaway visit doesn't
+      // produce a malformed window.
+      const minVisitStart = Math.min(...techVisits.map((v) => v.start));
+      const maxVisitEnd = Math.max(...techVisits.map((v) => v.end));
+      const dayEndMs = dayStartMs + 24 * 60 * 60_000;
+      const windowStart = Math.max(dayStartMs, minVisitStart);
+      const windowEnd = Math.min(dayEndMs, maxVisitEnd);
+      if (windowEnd <= windowStart) return [];
+      return buildScheduleBlocks(windowStart, windowEnd, techVisits);
+    })();
 
     if (!hasValidWorkday) {
       return {

@@ -324,7 +324,7 @@ router.get("/:companyId/contacts", asyncHandler(async (req: AuthedRequest, res: 
   const { companyId: customerCompanyId } = req.params;
 
   // Identity + Assignment model: returns company directory + flattened location assignments
-  const result = await clientContactRepository.getLegacyContactsForCustomerCompany(
+  const result = await clientContactRepository.getContactsForCustomerCompany(
     tenantCompanyId!,
     customerCompanyId
   );

@@ -48,6 +48,11 @@ export interface TodayVisit {
    *  per-technician grouping in manager cross-tech view. Empty array if the
    *  visit is currently unassigned. */
   assignedTechnicianIds: string[];
+  /** Geocoded location lat/lng (from clientLocations.lat/lng). Null when the
+   *  address has not been geocoded. Consumed by useGeofencePrompt to gate
+   *  the prompt — visits without coords are skipped. */
+  locationLat: number | null;
+  locationLng: number | null;
 }
 
 // ── Backend response shape ──
@@ -77,6 +82,8 @@ interface BackendVisit {
     province: string | null;
     postalCode: string | null;
     phone: string | null;
+    lat: number | null;
+    lng: number | null;
   } | null;
   [key: string]: unknown;
 }
@@ -104,6 +111,8 @@ function toTodayVisit(v: BackendVisit): TodayVisit {
     jobId: v.jobId,
     visitNumber: v.visitNumber,
     assignedTechnicianIds: Array.isArray(v.assignedTechnicianIds) ? v.assignedTechnicianIds : [],
+    locationLat: v.location?.lat ?? null,
+    locationLng: v.location?.lng ?? null,
   };
 }
 

@@ -25,8 +25,6 @@ import {
   Clock,
   LockKeyhole,
   Plus,
-  Pencil,
-  Trash2,
   Lock,
   Briefcase,
   User,
@@ -602,68 +600,157 @@ export default function PayrollPage() {
             <p className="text-sm">No time entries.</p>
           </div>
         ) : (
-          <div className="divide-y">
-            {entries.map((entry) => {
-              const typeInfo = TYPE_DISPLAY[entry.type] ?? TYPE_DISPLAY.other;
-              const locked = isEntryLocked(entry);
-              return (
-                <div key={entry.id} className={cn("flex items-center py-2 px-1 group", locked && "opacity-70")}>
-                  {/* Group 1: Type + Job # + Client */}
-                  <div className="flex items-center gap-1.5 shrink-0 mr-3">
-                    <Badge variant="outline" className={cn("text-xs shrink-0 whitespace-nowrap px-1.5 py-0", typeInfo.color)}>{typeInfo.label}</Badge>
-                    {entry.jobId ? (
-                      <>
-                        <button
-                          className="text-sm font-bold text-primary hover:underline cursor-pointer"
-                          onClick={() => setLocation(`/jobs/${entry.jobId}`)}
-                          title="View job"
-                        >
-                          #{entry.jobNumber}
-                        </button>
-                        {entry.locationName && (
-                          <button
-                            className="text-sm font-semibold text-primary hover:underline cursor-pointer truncate max-w-[160px]"
-                            onClick={() => entry.locationId && setLocation(`/clients/${entry.locationId}`)}
-                            title="View client"
-                          >
-                            {entry.locationName}
-                          </button>
-                        )}
-                      </>
-                    ) : (
-                      <span className="text-sm text-muted-foreground">No job</span>
-                    )}
-                    {locked && <Lock className="h-3.5 w-3.5 text-amber-500 shrink-0" />}
-                  </div>
-                  {/* Group 2: Time + Description */}
-                  <div className="flex items-center gap-2 min-w-0 mr-3">
-                    <span className="text-[13px] text-foreground/60 shrink-0 tabular-nums">
-                      {formatTime(entry.startAt)} – {formatTime(entry.endAt)}
-                    </span>
-                    {entry.jobSummary && (
-                      <span className="text-[13px] text-muted-foreground/70 truncate min-w-0 italic">{entry.jobSummary}</span>
-                    )}
-                  </div>
-                  {/* Group 3: Duration — close to content, not pinned far right */}
-                  <div className="shrink-0 ml-auto">
-                    <span className="text-sm font-mono font-bold">
-                      {entry.durationMinutes != null ? formatMinutes(entry.durationMinutes) : <span className="text-green-600 animate-pulse text-[13px]">Live</span>}
-                    </span>
-                    {!entry.billable && <span className="text-xs text-muted-foreground ml-1">non-bill</span>}
-                  </div>
-                  {/* Actions */}
-                  <div className="flex items-center ml-1.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => openEditEntry(entry)} title="Edit"><Pencil className="h-3 w-3" /></Button>
-                    {!locked && (
-                      <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive hover:text-destructive" onClick={() => setDeleteTarget({ id: entry.id, label: `${typeInfo.label} ${entry.durationMinutes ? formatMinutes(entry.durationMinutes) : ""}` })} title="Delete">
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          // 2026-04-26 Day View redesign — same compact grouped pattern
+          // applied to the tech-app PWA (`client/src/tech-app/pages/
+          // TimesheetPage.tsx`). Entries are bucketed by `jobId` (with
+          // a single "Other / Manual" fallback for entries without a
+          // job). Each group renders one header card with `#jobNumber
+          // locationName · locationCity · Total hh:mm`, then child
+          // rows that show only the type badge, time range, duration,
+          // and hover-revealed edit/delete actions — no repeated job
+          // number, client, or location text per row. No divider
+          // between Travel and On-Site rows. `jobSummary` (if present)
+          // moves into the group header as a faint trailing context
+          // string. `TimesheetDayEntry` shape, the type-display map,
+          // edit / delete mutations, and the lock / live badges are
+          // all unchanged.
+          (() => {
+            type Group = { key: string; entries: TimesheetDayEntry[]; sortKey: number };
+            const groups = new Map<string, Group>();
+            const NO_JOB_KEY = "__no_job__";
+            for (const e of entries) {
+              const key = e.jobId ?? NO_JOB_KEY;
+              const sortKey = new Date(e.startAt).getTime();
+              const g = groups.get(key);
+              if (!g) {
+                groups.set(key, { key, entries: [e], sortKey });
+              } else {
+                g.entries.push(e);
+                if (sortKey < g.sortKey) g.sortKey = sortKey;
+              }
+            }
+            const groupList = Array.from(groups.values()).sort((a, b) => a.sortKey - b.sortKey);
+            for (const g of groupList) {
+              g.entries.sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
+            }
+            return (
+              <div className="space-y-2">
+                {groupList.map((group) => {
+                  const first = group.entries[0];
+                  const isNoJob = group.key === NO_JOB_KEY;
+                  const totalMinutes = group.entries.reduce(
+                    (sum, e) => sum + (e.durationMinutes ?? 0),
+                    0,
+                  );
+                  const totalLabel = formatMinutes(totalMinutes);
+                  const groupHasLocked = group.entries.some((e) => isEntryLocked(e));
+                  return (
+                    <div
+                      key={group.key}
+                      className="bg-white dark:bg-gray-900 rounded-md border border-slate-200 dark:border-gray-700 overflow-hidden"
+                      data-testid={`day-entry-group-${group.key}`}
+                    >
+                      {/* Group header — single line:
+                            #jobNumber clientName     Total hh:mm
+                          2026-04-26: dropped the duplicated `jobSummary`
+                          italic context, the right-side `locationCity`
+                          chip, and the multi-segment header so the
+                          line never wraps and reads as a clean job
+                          identity + total. Lock icon stays inline so
+                          the locked state is still surfaced. */}
+                      <div className="px-3 py-2 border-b border-slate-100 bg-slate-50/60 dark:bg-gray-800/40 flex items-center gap-2">
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          {isNoJob ? (
+                            <span className="text-sm font-semibold text-muted-foreground truncate">Other / Manual</span>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => first.jobId && setLocation(`/jobs/${first.jobId}`)}
+                                className="text-sm font-bold text-primary hover:underline cursor-pointer tabular-nums shrink-0"
+                                title="View job"
+                              >
+                                #{first.jobNumber}
+                              </button>
+                              {first.locationName && (
+                                <button
+                                  type="button"
+                                  onClick={() => first.locationId && setLocation(`/clients/${first.locationId}`)}
+                                  className="text-sm font-semibold text-primary hover:underline cursor-pointer truncate min-w-0"
+                                  title="View client"
+                                >
+                                  {first.locationName}
+                                </button>
+                              )}
+                              {groupHasLocked && (
+                                <Lock className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                              )}
+                            </>
+                          )}
+                        </div>
+                        <span className="text-xs text-muted-foreground tabular-nums shrink-0">
+                          Total{" "}
+                          <strong className="ml-0.5 font-mono text-foreground">{totalLabel}</strong>
+                        </span>
+                      </div>
+                      {/* Child rows — entire row is the click target.
+                          2026-04-26: per-row Pencil + Trash2 hover icons
+                          were removed. Clicking anywhere on the row
+                          opens the canonical `TimeEntryModal` (which
+                          carries its own Delete button), so no
+                          functionality is lost — just the inline
+                          icon clutter. Hover background darkened to
+                          `bg-slate-100` so the click target reads as
+                          intentionally interactive. No divider between
+                          Travel and On-Site rows. */}
+                      <div>
+                        {group.entries.map((entry) => {
+                          const typeInfo = TYPE_DISPLAY[entry.type] ?? TYPE_DISPLAY.other;
+                          const locked = isEntryLocked(entry);
+                          return (
+                            <button
+                              type="button"
+                              key={entry.id}
+                              onClick={() => openEditEntry(entry)}
+                              className={cn(
+                                "w-full text-left flex items-center py-1.5 px-3 gap-2 hover:bg-slate-100 dark:hover:bg-gray-800/60 transition-colors cursor-pointer",
+                                locked && "opacity-70",
+                              )}
+                              data-testid={`day-entry-row-${entry.id}`}
+                              title={locked ? "View locked time entry" : "Edit time entry"}
+                            >
+                              <Badge
+                                variant="outline"
+                                className={cn(
+                                  "text-xs shrink-0 whitespace-nowrap px-1.5 py-0",
+                                  typeInfo.color,
+                                )}
+                              >
+                                {typeInfo.label}
+                              </Badge>
+                              <span className="text-[13px] text-foreground/60 shrink-0 tabular-nums">
+                                {formatTime(entry.startAt)} – {formatTime(entry.endAt)}
+                              </span>
+                              <div className="shrink-0 ml-auto">
+                                <span className="text-sm font-mono font-bold">
+                                  {entry.durationMinutes != null
+                                    ? formatMinutes(entry.durationMinutes)
+                                    : <span className="text-green-600 animate-pulse text-[13px]">Live</span>}
+                                </span>
+                                {!entry.billable && (
+                                  <span className="text-xs text-muted-foreground ml-1">non-bill</span>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()
         )}
       </CardContent>
     </Card>

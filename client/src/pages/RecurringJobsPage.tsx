@@ -460,7 +460,7 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
         </div>
       </div>
       )}
-      {/* Embedded mode: duplicate action buttons removed — workspace-level header provides New Recurring Job + New PM Contract */}
+      {/* Embedded mode: duplicate action buttons removed — workspace-level header provides New Recurring Job + New Maintenance Plan */}
 
       {/* Last generation result */}
       {lastGenerationResult && (

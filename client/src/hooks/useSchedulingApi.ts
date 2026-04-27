@@ -220,6 +220,9 @@ export interface ScheduleJobResponse {
 
 /**
  * Fetch scheduled jobs for a date range
+ *
+ * 2026-04-26: routed through canonical apiRequest so callers get ApiError
+ * (.status / .code / .data) on failure plus CSRF + session-expired handling.
  */
 export async function fetchCalendarRange(
   start: Date | string,
@@ -228,16 +231,9 @@ export async function fetchCalendarRange(
   const startISO = typeof start === "string" ? start : start.toISOString();
   const endISO = typeof end === "string" ? end : end.toISOString();
 
-  const res = await fetch(
+  const data = await apiRequest<CalendarRangeResponse>(
     `/api/calendar?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`,
-    { credentials: "include" }
   );
-
-  if (!res.ok) {
-    throw new Error("Failed to fetch calendar range");
-  }
-
-  const data = await res.json();
 
   // DEV validation
   if (process.env.NODE_ENV === "development") {

@@ -137,31 +137,6 @@ export class CustomerCompanyRepository extends BaseRepository {
   }
 
   /**
-   * Find customer company by name (tenant-scoped)
-   * Used for upsert/deduplication logic
-   */
-  async findCustomerCompanyByName(
-    companyId: string,
-    name: string
-  ): Promise<typeof customerCompanies.$inferSelect | null> {
-    this.assertCompanyId(companyId);
-
-    const [company] = await db
-      .select()
-      .from(customerCompanies)
-      .where(
-        and(
-          eq(customerCompanies.companyId, companyId),
-          eq(customerCompanies.name, name),
-          notDeletedCustomerCompanyFilter()
-        )
-      )
-      .limit(1);
-
-    return company ?? null;
-  }
-
-  /**
    * Create customer company (tenant-scoped)
    */
   async createCustomerCompany(
@@ -525,7 +500,7 @@ export class CustomerCompanyRepository extends BaseRepository {
    * project convention — `ilike()` is already used across
    * `server/storage/clients.ts` for name comparisons.
    */
-  async getUnlinkedLocationsByCompanyName(
+  async getOrphanLocationsByCompanyName(
     companyId: string,
     companyName: string
   ): Promise<Array<{ id: string; isPrimary: boolean | null; createdAt: Date | null }>> {

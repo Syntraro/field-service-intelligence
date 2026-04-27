@@ -35,6 +35,10 @@ import { useLocation } from "wouter";
 import { useTechTasks } from "../hooks/useTechTasks";
 // 2026-04-21 Phase 1 push notifications — subtle CTA on first load.
 import { usePushRegistration } from "../hooks/usePushRegistration";
+// 2026-04-26 geofence start prompt — opt-in, manual-confirm, prompt-only.
+import { useGeofencePrompt } from "../hooks/useGeofencePrompt";
+import { GeofenceStartPrompt } from "../components/GeofenceStartPrompt";
+import { useQueryClient } from "@tanstack/react-query";
 import { toEpochMsSafe, toLocalDateKey } from "../utils/safeDateTime";
 import { toTelHref, toMapsHref } from "../utils/externalLinks";
 import type { Task } from "@shared/schema";
@@ -407,6 +411,22 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
   const [shiftError, setShiftError] = useState<string | null>(null);
   const [shiftSuccess, setShiftSuccess] = useState<string | null>(null);
   const [showCreateMenu, setShowCreateMenu] = useState(false);
+
+  // 2026-04-26 geofence prompt — wired only on the tech-app TodayPage and
+  // only when the viewer is looking at their own schedule. Cross-tech
+  // (manager) views never see "you're on site"; their device location is
+  // unrelated to the assigned tech. The hook fails closed on every error
+  // path (config disabled, permission denied, no eligible visit).
+  const queryClient = useQueryClient();
+  const {
+    prompt: geofencePrompt,
+    dismissPrompt: dismissGeofencePrompt,
+    ackStarted: ackGeofenceStarted,
+  } = useGeofencePrompt({
+    visits,
+    isClockedIn,
+    enabled: isSelfScope,
+  });
 
   // ── Split tasks: timeline (scheduled today) vs section (overdue + unscheduled) ──
   // 2026-04-10: Tasks scheduled for the selected day are merged into the day
@@ -1040,6 +1060,28 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
           selfId={user?.id ?? null}
         />
       )}
+
+      {/* 2026-04-26 geofence start prompt. Renders only when the hook signals
+          a candidate visit within radius. Tapping "Start visit" forwards to
+          the canonical POST /api/tech/visits/:visitId/start path; the
+          orchestrator owns the status write and time-entry side effects. We
+          refetch today's visits on success so the moved card reflects the new
+          status, and invalidate /api/tech/time/summary so the running-timer
+          state surfaces in the shift strip. */}
+      <GeofenceStartPrompt
+        open={!!geofencePrompt}
+        visit={geofencePrompt?.visit ?? null}
+        distanceMeters={geofencePrompt?.distanceMeters ?? null}
+        onStarted={(visitId) => {
+          ackGeofenceStarted(visitId);
+          refetch();
+          queryClient.invalidateQueries({ queryKey: ["/api/tech/time/summary"] });
+        }}
+        onDismiss={dismissGeofencePrompt}
+        onError={(err) => {
+          console.error("[geofence] start failed", err);
+        }}
+      />
     </MobileShell>
   );
 }

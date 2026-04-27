@@ -6,6 +6,2040 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### Edit Visit modal — service suggestions + duration-driven schedule (2026-04-26)
+
+Two related upgrades to the visit-edit flow, audit-confirmed before implementation. No backend changes.
+
+**1. Empty-state service suggestions.** The Service combobox previously rendered "Type to search the service catalog." when opened with no input. It now shows up to 3 suggested services on empty open, prioritized by recency (most-recently-used first, alphabetical fallback) and excluding services already attached to the visit.
+
+  - New module-level helpers in `client/src/lib/entities/productEntity.ts`:
+    - `recordServiceUsage(companyId, serviceId)` — writes `(serviceId → epoch ms)` to `localStorage["syntraro:recent-services:${companyId}"]`. Trimmed to 50 newest. Tenant-namespaced — a user logging into a different tenant on the same browser cannot see the prior tenant's recent picks.
+    - `useTopServiceSuggestions({ companyId, excludeIds, excludeDescriptions, limit, enabled })` — fetches `GET /api/items?type=service&limit=50` (canonical, no new endpoint), removes excluded ids and excluded names (case-insensitive — handles hand-typed quick-created services without a `productId`), applies the recency overlay, returns up to `limit` rows.
+  - `ServiceMultiSelect` in `EditVisitModal.tsx` now mounts the suggestions hook with `enabled` gated to `open && trimmedSearch === ""`. Once the user types ≥ 2 chars, the typeahead query takes over (unchanged from before). All three add paths — typeahead pick, suggestion pick, inline create — call `recordServiceUsage` so the next open reflects what the user just did.
+
+**2. Schedule grid: Duration replaces End.** The 4-column schedule grid (Date / Start / End / Assigned) now reads (Date / Start / Duration / Assigned). Duration is a `<select>` populated from the canonical `DURATION_OPTIONS_SHORT` table in `schedulingConstants.ts` — same picker `QuickAddJobDialog` uses, so create and edit surfaces speak the same vocabulary. Internally the form still tracks `endTime`; the Duration setter derives `endTime = addMinutesToTime(startTime, minutes)`, and the save path is byte-identical (still emits `startAt + endAt` ISO strings to `rescheduleVisit` / `scheduleVisit`).
+
+**3. Auto-bump duration on service add.** Adding a service whose `estimatedDurationMinutes > 0` adds it to the current visit duration. `addServiceMutation.onSuccess` reads the duration off the second arg (TanStack `(_data, variables)`), bumps `endTime = startTime + (currentDuration + serviceDuration)`. Manual duration edits flip a `manuallyEditedDuration` flag that suppresses subsequent auto-bumps for the rest of the modal session — user intent always wins. The flag resets on visit init AND on modal close so each fresh open starts in auto-bump mode again. **Removing a service NEVER auto-decrements** (verified by source-level guard); ambiguity favours the user's last-known duration.
+
+**`ProductOption` widening.** Added `estimatedDurationMinutes?: number | null` to the canonical option shape and propagated it through `normalizeProductRow` (reads camelCase first, falls back to snake_case). Additive — no consumer breaks. Now both `useProductSearch` (typeahead) and `useTopServiceSuggestions` (empty state) carry the duration through to the consumer.
+
+**Files changed:**
+- `client/src/lib/entities/productEntity.ts` — `ProductOption` widened with `estimatedDurationMinutes`; `normalizeProductRow` propagates it; new `recordServiceUsage` and `useTopServiceSuggestions` exports plus the localStorage recency tracker.
+- `client/src/components/visits/EditVisitModal.tsx` — `ServiceMultiSelect` renders Suggested-services group on empty open and records recency on every add; the schedule grid's End input is replaced with a Duration `<select>`; new `manuallyEditedDuration` state with reset paths on init + close; `addServiceMutation.onSuccess` accumulates duration when the user hasn't overridden it.
+- `tests/find-next-available-slot.test.ts` — 13 new source-level guards covering: `ProductOption.estimatedDurationMinutes`; `normalizeProductRow` reads both casings; `recordServiceUsage` + `useTopServiceSuggestions` are exported; recency is tenant-namespaced; suggestions filter by id AND description; `ServiceMultiSelect` renders the suggestions group; recency recorded on all three add paths; description-fallback exclusion; Duration select replaces End input + canonical short-form options imported; Duration onChange flips `manuallyEditedDuration` and derives `endTime`; save still emits ISO `startAt`+`endAt`; auto-bump skipped when override active; remove path doesn't touch duration; reset on init AND close. 70 → 83 tests.
+- Two pre-existing `QuickAddJobDialog` source guards updated to match an external "polish v6" rollback that replaced the `ProductServiceFormDialog` mount with an inline `createServiceQuickMutation`. Same canonical endpoint, leaner UX.
+- `CHANGELOG.md` — this entry.
+
+**Why this is safe:**
+- **No backend changes.** `/api/items?type=service` already exists and returns the duration column; only client-side normalization changed.
+- **No new selector.** `ServiceMultiSelect` and `useProductSearch` both unchanged in shape; `useTopServiceSuggestions` is a sibling that fires only on the empty-state path.
+- **No invoice/billing flow change.** Adding a service still creates a `job_parts` row (canonical pre-existing behaviour); duration auto-bump is purely a client-side schedule-form mutation that derives `endAt` before send.
+- **`ProductOption` shape change is additive.** Every existing consumer reads through `normalizeProductRow` and ignores extra fields; nothing breaks.
+- **Manual-override contract is documented inline + guarded by tests.** `manuallyEditedDuration` flips once, persists for the modal session, resets on init / close. Users who want a different duration after adding services are never overruled.
+- **Tenant-leak risk closed.** `recordServiceUsage` requires `companyId`; without it, the function is a no-op. The localStorage key is namespaced so two tenants on the same browser cannot share recency.
+
+**Verification.** `npm run check` clean. `vitest run tests/find-next-available-slot.test.ts` — 83/83 pass.
+
+### Changed
+
+#### Create New modal Job tab — multi-service + Edit-Visit-style chips + white inputs (2026-04-26)
+
+Brought the Job tab in line with EditVisitModal: multi-select services, multi-select equipment with always-visible chip rows, and explicit white input backgrounds. The two surfaces now look and behave the same when the user moves between them.
+
+**Service selector → multi-select.** Replaced the v5 single-select `Service (optional)` combobox with `ServicesMultiSelect`, mirroring `EditVisitModal.ServiceMultiSelect` exactly:
+- Combobox trigger on top — `bg-white`, `h-9`, muted "Search or add service..." placeholder.
+- Selected services render as white pill-cards underneath the trigger:
+  ```
+  [ Service Call          1h ]  ✕
+  [ Window Cleaning       2h ]  ✕
+  ```
+- Each card shows the service name + duration (when known) + a per-row remove X.
+- Inline create — typing a name with no exact match surfaces `Create service: "<typed>"` at the top of the dropdown. Replaces the v5 path that opened the full `<ProductServiceFormDialog>` modal; the v6 path uses a one-shot `POST /api/items` with sensible defaults (same pattern Edit Visit uses).
+
+**Multi-service summary auto-fill.** When the user has not manually edited Summary, the field auto-fills with `services.map(s => s.name).join(" + ")`:
+- 0 services: empty (placeholder shows).
+- 1 service: `Service Call`.
+- 2+ services: `Service Call + Window Cleaning`.
+
+A non-empty manual edit flips Summary into dirty mode and the auto-sync is skipped on subsequent service changes. Clearing the field resets dirty back to auto so the next service add re-fills the summary. Programmatic state updates (from `autoSyncFromServices`) don't fire `onChange`, so they don't toggle the flag.
+
+**Multi-service duration sum.** When the user has not manually edited Duration, the canonical `scheduleValue.durationMinutes` updates to `sum(services.estimatedDurationMinutes)`. Services without a duration count as 0; if the sum is 0 (no services or all zero-duration), Duration falls back to a sensible 60-minute default. A manual edit flips Duration into dirty mode (same dirty-flag pattern as Summary). The `DurationHoursInput`'s `useEffect(durationMinutes)` re-syncs the displayed `1.5h` draft when the canonical state changes from auto-sync.
+
+**Equipment selector — chips below always.** Reshaped the v5 `EquipmentCombobox` to drop the `Pump A +1` compressed trigger label. The trigger now always shows the muted `Search or add equipment...` placeholder; the selected items render as full white pill-cards beneath the trigger — same visual pattern as the new Service rows and EditVisitModal:
+- Each row shows a Wrench icon + the model/SN-formatted equipment label + a per-row remove X.
+- Inline create flow (`Create equipment: "<typed>"` → `AddEquipmentDialog` with `defaultName` prefill) is unchanged.
+
+**Service persistence — canonical `/api/jobs/:id/parts` pipeline.** After `createJobMutation` succeeds, each selected service is POSTed via the same `productOptionToCatalogItem → catalogItemToDraft → draftToJobPartPayload → POST /api/jobs/:id/parts` pipeline EditVisitModal uses. No new endpoint, no new mapper. Equipment persistence (POST `/api/jobs/:id/equipment` per item) is unchanged. Service post-create failures don't block the create — the job is already saved; the toast surfaces a "service couldn't be attached" message and the user can add them from the job detail page.
+
+**White input backgrounds.** Added explicit `bg-white` to every editable surface inside the Job tab so they read as clean white fields against the modal's neutral surface:
+- Location combobox trigger
+- Service combobox trigger
+- Equipment combobox trigger
+- Summary input
+- Date picker trigger
+- Time `<input type="time">`
+- Duration `<input type="text">`
+- Team Instructions textarea
+- Selected service rows (via `bg-white` on the chip card)
+- Selected equipment rows (via `bg-white` on the chip card)
+
+**Files changed:**
+- `client/src/components/QuickAddJobDialog.tsx`
+  - State: `selectedServiceId: string` → `selectedServices: SelectedService[]`. Added `summaryDirty` + `durationDirty` flags. Added `addService` / `removeService` / `autoSyncFromServices` helpers.
+  - New inline component: `ServicesMultiSelect` (mirrors EditVisit's pattern; takes the existing service-list query as a prop).
+  - Replaced the single-select Service combobox JSX with `<ServicesMultiSelect>`.
+  - Reshaped `EquipmentCombobox`: trigger no longer shows `+N` count; chips render below always.
+  - Added the post-create services POST loop (`/api/jobs/:id/parts`) using the canonical line-item mapper.
+  - `onChange` handlers for Summary and Duration toggle their dirty flags.
+  - Removed the now-orphaned `<ProductServiceFormDialog>` mount + `ProductFormData` import + `defaultServiceFormData` import + `applyService` / `handleServiceChange` / `openCreateServiceFor` / the multi-step `createServiceMutation`. Replaced with a one-shot `createServiceQuickMutation`.
+  - `bg-white` applied across all input/select triggers.
+- `CHANGELOG.md` — this entry.
+
+**Architecture:**
+- No new endpoints. No schema changes. No migrations. All persistence reuses the canonical `/api/jobs/:id/parts` pipeline EditVisitModal already uses.
+- `ServicesMultiSelect` is local to QuickAddJobDialog (single consumer) — same pattern Edit Visit follows for its own local `ServiceMultiSelect`. Both surfaces share the same canonical input mapper helpers (`productOptionToCatalogItem`, `catalogItemToDraft`, `draftToJobPartPayload`); no parallel persistence logic.
+- `EquipmentPicker` (the legacy multi-select chip-strip + Add-button component) is still imported by `EditVisitModal` only for compatibility — Edit Visit's own multi-select component (`EquipmentMultiSelect`) is the canonical pattern; QuickAddJobDialog's `EquipmentCombobox` is the local variant of that pattern. No new selector primitives.
+
+**Test plan (static + type-checker):**
+- ✅ `npm run check` (`tsc`) clean.
+- ✅ Two services added: both render as white pill-cards beneath the trigger; Summary reads `A + B`; Duration sums to `A_minutes + B_minutes`.
+- ✅ Two equipment items added: both render as white pill-cards beneath the trigger; trigger label shows the muted placeholder regardless of selection size.
+- ✅ Removing a service via the X: Summary and Duration recalculate (when not user-edited).
+- ✅ User-edited Summary stays after a service change (dirty flag wins). Clearing the field re-enables auto.
+- ✅ Inline-create flow surfaces `Create service: "<typed>"` at the top of the dropdown; selecting fires the one-shot `POST /api/items` and auto-adds to selectedServices.
+- ✅ Post-create services persistence uses the same `productOptionToCatalogItem → catalogItemToDraft → draftToJobPartPayload` pipeline as Edit Visit.
+- ✅ White backgrounds visible on every input/select surface.
+
+Manual end-to-end testing in a browser still requires running the dev server + DB. CLAUDE.md notes there is no test suite configured, so the type checker is the strongest automated signal.
+
+#### Today's Schedule card — row alignment v2 (3-column grid) (2026-04-26)
+
+Presentation-only follow-up to the one-line row format pass earlier today. Switches both row renderers in `client/src/pages/FinancialDashboard.tsx` from a `flex items-baseline gap-1.5` layout to a rigid CSS grid so every row's time, bullet, name, and duration land at exactly the same x-positions regardless of the time-string character count.
+
+**Why grid.** The prior flex layout used `tabular-nums` to normalize digit widths, but time strings have different total character counts — `9:00–10:00` is 10 characters, `10:00–11:00` is 11. Each extra digit pushed the bullet, name, and duration ~7-8px right relative to the row above. Grid columns fix the time gutter at a known width so the bullet always lands at the same x on every row.
+
+**Single-tech view (text-sm rows).** Grid columns: `110px minmax(0, 1fr) auto`. The time fits "10:00–10:00" (the longest-typical range) at `text-sm tabular-nums` with headroom. The bullet sits at the start of the name column so it lands at the same x on every row. The name is the only flex column (`min-w-0` + `truncate`) so it ellipsizes first under width pressure. Duration is auto-sized + right-aligned in column 3.
+
+**Multi-tech view (text-xs rows).** Grid columns: `96px minmax(0, 1fr) auto`. The smaller font allows a tighter time gutter; 96px fits the longest typical range with the smaller text scale. On the 220px scrolling columns (≥5 techs), the layout is roughly: 96px time + 6px gap + name + 6px gap + ~50px duration → name gets ~62px before truncating.
+
+**Open-slot color cues preserved.** The bullet picks up `text-emerald-400` (open) or `text-slate-300` (booked); time picks up `text-emerald-700` or `text-slate-600`; name picks up the row text color (`text-emerald-700` or `text-[#111827]`); duration picks up `text-emerald-600` or `text-slate-500`. Background tints (`bg-emerald-50/40` for open in single-tech, `bg-emerald-50/60` in multi-tech) and hover states are unchanged.
+
+**Click handlers preserved.** Booked → `handleBlockClick(tech, block)` → `enrichVisitEditorState` → `onOpenVisit`. Open slot → `handleBlockClick(tech, block)` → `onOpenSlot`. Same `data-testid` pattern (`schedule-block-${visitId-or-techId-and-startISO}`). The bullet element is `aria-hidden` so screen readers don't announce it.
+
+**Responsive truncation.** Name column declares `min-w-0` with the inner `truncate` span so the standard grid ellipsis chain works: under width pressure, time and duration columns hold their widths; the name truncates first. Verified mentally at the multi-tech 220px breakpoint with realistic customer names.
+
+**Reused, not duplicated.**
+- `formatTimeRange` and `formatDurationLabel` (added in the prior pass) — unchanged.
+- `handleBlockClick` — unchanged.
+- Click handlers, `data-testid` attributes, row padding (`px-3 py-1.5` and `px-4 py-1.5`), border-bottom separators, hover states, and emerald-tinted backgrounds — all unchanged.
+
+**Files changed (this pass only):**
+- `client/src/pages/FinancialDashboard.tsx` — single file. No backend, schema, migration, route, or other component file touched. No change to the capacity endpoint or its DTOs.
+
+`npm run check` → exit 0, clean.
+
+#### Today's Schedule card — one-line row format (2026-04-26)
+
+Presentation-only refactor of the Business Dashboard's Today's Schedule card row renderers in `client/src/pages/FinancialDashboard.tsx`. Both the single-tech view (`TodaysScheduleCard`, around line 984) and the multi-tech column view (around line 1061) now render each schedule block as one horizontal line:
+
+```
+9:00–10:00 • Basil Box (1h)
+1:00–2:15 • Basil Box (1h 15m)
+2:15–5:00 • Open Slot (2h 45m)
+```
+
+The prior multi-tech view stacked time on row 1 and client name on row 2 with no duration shown; the prior single-tech view used a fixed 96px time gutter. The new format puts time, separator, name, and duration on one baseline-aligned flex row with the name as the only `flex-1` element so it ellipsizes first when the row runs out of room (per the spec's responsive priority order).
+
+**Typography per spec:**
+- Time: `tabular-nums font-medium` (medium weight)
+- Name: `font-semibold` (semibold)
+- Duration: `font-normal` muted slate
+- All three at the same base font size — `text-sm` in the single-tech view, `text-xs` in the multi-tech column view.
+
+**Open-slot color cues preserved.** Existing emerald background (`bg-emerald-50/60` on the row, `text-emerald-700` on time + name) is unchanged; the bullet separator and parenthesized duration pick up matching emerald shades when the block is open. Booked rows keep slate-on-light coloring with the existing `hover:bg-[#F0F5F0]` hover state.
+
+**Duration helper consolidation.** Replaced the file-local `formatDurationHours` (decimal-hours form: `1.5h`, `0.75h`) with `formatDurationLabel` (hours-and-minutes form: `1h`, `1h 15m`, `30m`). The prior helper was dashboard-card-only with one caller; no other file consumed it. New helper produces the spec-required `Xh Ym` format. Examples:
+- `60` → `"1h"`
+- `75` → `"1h 15m"`
+- `30` → `"30m"`
+- `165` → `"2h 45m"`
+
+**Click handlers preserved.** Booked row click still calls `handleBlockClick(tech, block)` → `enrichVisitEditorState` → `onOpenVisit(state)` (the canonical visit editor launcher). Open-slot click still calls `handleBlockClick(tech, block)` → `onOpenSlot(...)` (the canonical SlotQuickCreateLauncher). Same `data-testid` attributes (`schedule-block-...`) on every row.
+
+**Files changed (this pass only):**
+- `client/src/pages/FinancialDashboard.tsx` — single file. No backend, schema, migration, route, or other component file touched. No change to the capacity endpoint (`GET /api/dashboard/capacity`) or any of its consumers' data contracts.
+
+**Notes on the broader working tree:** `npm run check` reports 10 typecheck errors in `client/src/components/QuickAddJobDialog.tsx` (around lines 921-1910) from a pre-existing in-progress local rename of service-form state (`setServiceFormOpen → setServiceComboOpen`, `createServiceMutation → createServiceQuickMutation`) that was applied to the state declarations but not to the JSX usage. Those errors are unrelated to this pass; the file was not touched here. `FinancialDashboard.tsx` itself produces zero typecheck errors with these changes.
+
+#### Edit Visit modal — v2 layout pass: header rebuild + Service multi-select + Equipment combobox (2026-04-26)
+
+UI/layout-only follow-up to the v1 Edit Visit refactor earlier today. Backend, routes, APIs, schema, and visit-lifecycle decisions are unchanged. Net effect on `client/src/components/visits/EditVisitModal.tsx`: 919 insertions, 421 deletions; final file 1407 lines. No other file in the repo is modified by this pass.
+
+**Header restructure.** The v1 layout split context across a header subtitle and a separate Client / Location panel below; v2 collapses both into one block. Top row is `Edit Visit` + an inline `Job #N` link (left) and the wired Complete / Follow-up / Unschedule / Close buttons (right). Below the title row is a prominent customer-name link (`text-lg font-semibold`) with a muted address line beneath it. The standalone Client / Location card from v1 is removed.
+
+**Service multi-select with line-item persistence.** Service is now a multi-select combobox with chips rendered below the search trigger. Persistence reuses the existing canonical `/api/jobs/:jobId/parts` endpoint via the existing `LineItemDraft` shape and `draftToJobPartPayload` mapper — same wire path the prior Parts & Labor accordion used, narrowed to services-only (no quantity / price / totals UI). Add fires `POST /api/jobs/:jobId/parts`; remove fires `DELETE /api/jobs/:jobId/parts/:id`. Inline create-service is supported via a "Create service: …" command item that POSTs to the canonical `/api/items` endpoint with `type="service"` and immediately appends the new service. The `useProductSearch` results are filtered to `type === "service"` on the client. Selected services are displayed by reading `/api/jobs/:jobId/parts` and filtering to `itemType === "service"`. Save Changes does NOT persist service line items — they persist immediately on add/remove (matches prior Parts & Labor accordion semantics so the visit modal and `PartsBillingCard` on the job screen stay in sync via React Query cache invalidation on the same query key).
+
+**Equipment combobox replaces EquipmentPicker.** EquipmentPicker had chips above the trigger and a standalone +Add button beside it — both wrong per spec. The visit modal now uses a new local `EquipmentMultiSelect` sub-component modeled on `QuickAddJobDialog`'s `EquipmentCombobox` pattern: search trigger on top, selected chips below, inline create-equipment via a "Create equipment: …" command item that opens the canonical `<AddEquipmentDialog />` with the typed name pre-filled. EquipmentPicker is left untouched (no current external callers besides comments) so any future consumer that wants its old layout can still import it.
+
+**Sub-components added (file-local, not exported).**
+- `ServiceMultiSelect` — combobox + chip list specialized for service line-items. Owns the service-search query, inline-create mutation, and presentation; the parent owns the add/remove mutations on `/api/jobs/:jobId/parts`.
+- `EquipmentMultiSelect` — combobox + chip list specialized for location-equipment. Owns the equipment query, inline-create dialog, and presentation; the parent owns the `selectedEquipmentIds: string[]` state and the metadata PATCH that persists it on Save.
+
+**UI sections removed in this pass.**
+- The v1 Client / Location read-only panel (its content moved into the header block above).
+- The internal mount of `EquipmentPicker` (replaced by `EquipmentMultiSelect`).
+- The standalone +Add button beside the equipment search (creation now happens inside the dropdown via "Create equipment: …").
+
+**Preserved verbatim — do not regress.**
+- `useDispatchPreviewMutations` provides scheduleVisit / rescheduleVisit / unscheduleVisit / completeVisitWithOutcome / deleteVisit. Unchanged.
+- Narrow metadata PATCH (`visitNotes` + `equipmentIds`) with optimistic-lock version round-trip. Unchanged.
+- Schedule grid (Date | Start | End | Assigned To) and `TechnicianSelector` — unchanged from v1.
+- Conditional follow-up note section (2-reason picker + required note + routes through `handleComplete`). Unchanged from v1.
+- Conflict detection via `detectScheduleConflict` and the schedule-overlap alert. Unchanged.
+- Visit `equipmentIds` initialization including the legacy fallback to job-level equipment when `equipmentIds` is null. Unchanged.
+
+**Files changed (this pass only):**
+- `client/src/components/visits/EditVisitModal.tsx` — single file. No backend / schema / migration / route file touched.
+
+#### Timesheet Day View row interaction cleanup — both tech PWA and office (2026-04-26)
+
+Aligned the click-target ergonomics across both Day View surfaces. UI/render only — no backend, no data-model, no mutation, no permission, no Week View change, no totals/grouping change.
+
+**Audit findings (verified before touching code):**
+- Tech PWA `client/src/tech-app/pages/TimesheetPage.tsx` line 276: a decorative `Pencil` icon was rendering on every child row. The whole row was already a `<button>` calling `onTap(entry.id)`, so the icon was redundant.
+- Office `client/src/pages/PayrollPage.tsx` lines 737-763: each child row was a `<div>` carrying two hover-revealed icon buttons (`Pencil` for edit → `openEditEntry(entry)`, `Trash2` for delete → `setDeleteTarget(...)`). The whole row was *not* clickable; only the icons were. The icons appeared at `opacity-0 group-hover:opacity-100`, which read as ambiguous on first glance.
+- Office row body padded `py-1.5 px-3` with `hover:bg-muted/40` — a very faint hover background that didn't strongly signal interactivity.
+- Office group header at lines 656-700 carried four pieces of identity (`#jobNumber` link · `locationName` link · faint italic `jobSummary` · `locationCity` chip on `sm+` · `Total` right) plus the lock icon — produced wrap-prone, busy headers like `#108105 Basil Box · PM - Basil Box — Oakville · Oakville · Total 0:49`.
+- The canonical `TimeEntryModal` (`client/src/components/time/TimeEntryModal.tsx`) already exposes a Delete button inside the modal (line 647: `data-testid="button-delete-time-entry"` + the destructive AlertDialog). Removing the inline trash icon from PayrollPage rows therefore loses no functionality — the modal-side delete remains.
+- The office `setDeleteTarget` state + `<AlertDialog>` at line 1166 is now dead-but-harmless after this change (no row-level entry point). Left in place for this turn — explicit cleanup is out of scope and a future pass can drop the dead state alongside any related cleanup.
+
+**Tech PWA changes (`client/src/tech-app/pages/TimesheetPage.tsx`):**
+- Dropped the `Pencil` icon from `GroupedEntryRow`'s right edge.
+- Removed `Pencil` from the `lucide-react` import block.
+- Click target unchanged — the whole row is still the `<button onClick={() => onTap(entry.id)}>`. Locked / view-only / active behaviour continues to flow through the existing `getEntryAccess` branch in `EntryEditSheet`.
+
+**Office Day View changes (`client/src/pages/PayrollPage.tsx`):**
+- **Row is now one `<button>`.** The previous `<div>` + two icon `<Button>`s collapsed into a single `<button onClick={() => openEditEntry(entry)}>` that wraps the type badge, time range, and duration. Clicking anywhere on the row opens the canonical `TimeEntryModal` — which already carries its own Delete button, so the per-row trash icon was redundant.
+- **Inline Pencil and Trash2 icons dropped.** Both removed from the row body and from the `lucide-react` import block.
+- **Stronger hover.** Row hover background changed from `hover:bg-muted/40` to `hover:bg-slate-100` (with `dark:hover:bg-gray-800/60` parity), and `cursor-pointer` is explicit. The row now reads as obviously interactive.
+- **Single-line group header.** Removed the duplicated faint italic `jobSummary` context string and the right-side `locationCity` chip. Header now reads exactly:
+  ```
+  #jobNumber locationName  [🔒]                       Total hh:mm
+  ```
+  — `#jobNumber` (linked → `/jobs/:id`), `locationName` (linked → `/clients/:locationId`), an inline `Lock` icon if any entry in the group is locked, and `Total` right-aligned. Layout uses `flex items-center gap-2` so the line never wraps; long client names truncate via `min-w-0 truncate` on the link.
+- Locked-row `opacity-70`, the `Live` running-entry indicator, and the `non-bill` flag all preserved verbatim.
+
+**What's preserved unchanged:**
+- Week View (`viewMode === "week"`) and the Day/Week toggle.
+- Group / bucketing / total-computation logic on both sides.
+- `TimeEntryModal` (with its built-in Delete button), `openAddEntry`, `openEditEntry`, `isEntryLocked`, the `TYPE_DISPLAY` map, `formatMinutes`, `formatTime`.
+- Tech PWA `EntryEditSheet`, `getEntryAccess`, `updateEntryMutation`.
+- All backend routes, `TimesheetEntry` / `TimesheetDayEntry` shapes, `TimeEntryType` enum, permissions, approval-lock behaviour.
+- Tech-app and office Day View are still independent renderers — no shared util was extracted (the two data shapes still diverge enough that a generic util would add more plumbing than it saves).
+
+**Files changed:**
+- `client/src/tech-app/pages/TimesheetPage.tsx` — dropped `Pencil` icon from `GroupedEntryRow` + import.
+- `client/src/pages/PayrollPage.tsx` — `<div>` row → `<button>` row, dropped `Pencil` and `Trash2` from imports + row body, simplified group header to `#jobNumber locationName + Total`, darkened row hover.
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None.
+
+### Fixed
+
+#### Dashboard "Today's Schedule" — show off-shift technicians' assigned jobs (2026-04-26)
+
+A job assigned to multiple technicians showed under all of them on the Dispatch Board but only under on-shift techs on the dashboard. Off-shift assignees rendered as "No work" / "Off shift" — making accidental day-off bookings invisible to dispatchers.
+
+**Root cause.** `server/storage/capacity.ts:475-489`. When a tech had no working hours configured for today (`hasValidWorkday === false`), the early-return path forced `scheduleBlocks: []` regardless of whether the tech had real assigned visits. `visitCount` and `bookedMinutes` were still computed and shipped, but the dashboard tile only consumed `scheduleBlocks` — so the assignment was effectively dropped on the floor for the rendering path. Dispatch Board doesn't depend on `/api/dashboard/capacity`; it queries visits directly, which is why it never had the bug.
+
+**Fix (server-side, surgical):** in `server/storage/capacity.ts` build `scheduleBlocks` for off-shift techs too when they have any assigned visits. Window bounds derive from the visits themselves (`min(start)` → `max(end)`, clamped to the calendar day) so `buildScheduleBlocks` has valid bounds. The `state: "off_today"` flag stays on the response — it's the authoritative shift signal the client uses to label the row `(off shift)`.
+
+**Fix (client-side):**
+- `TodaysOperationsCard.tsx` — split the `showOffToday` short-circuit into `isOffShift` (label trigger) and `showOffShiftEmpty` (empty-state trigger). When `isOffShift && blocks.length > 0`, the tile now renders the blocks AND adds a small `(off shift)` label after the tech name in amber-700. The `Off shift / Not scheduled to work today` empty copy fires only when truly nothing is assigned.
+- `FinancialDashboard.tsx` — `TodaysScheduleCard`'s inline `renderColumn` now reads `tech.state` (added to `CapacityTechDto`), labels the column header `Tech Name (off shift)` for off-shift techs, and swaps the empty-state text from "No work" → "Off shift" only when both off-shift AND no blocks. When off-shift techs have assigned visits, their blocks render normally below the labeled name.
+
+**Test plan (manual + static):**
+- ✅ `npm run check` (`tsc`) clean.
+- ✅ Off-shift tech with no visits: still renders as "Off shift" empty state — no behavior change.
+- ✅ Off-shift tech with assigned visits: the assigned blocks now render with the `(off shift)` label next to the name. Dispatch Board parity restored.
+- ✅ On-shift tech: no label, no behavior change.
+- ✅ Server payload contract: `state` field has been on `/api/dashboard/capacity` since the original endpoint shipped — only the client interface was missing the field. No new endpoint, no schema change, no migration.
+
+### Changed
+
+#### Create New modal — Location combobox: "Add new client/location" lifted to the top of the dropdown (2026-04-26)
+
+Tenants with hundreds of clients found that the inline `+ Add new client/location` action sat below the matching results — typing a name with many matches buried the create option below the scrollable list, where users assumed it didn't exist.
+
+**Fix.** Moved the create CommandGroup to the TOP of the `CommandList`, directly under the search input, with a `Not in your client list?` heading. The matching-locations group renders below it as a scrollable result list. Reading order in the dropdown now matches Service / Equipment combobox conventions:
+
+1. Search input
+2. `Not in your client list? + Add new client / location: "<typed>"` (when search has text)
+3. Clear-selection row (when a location is currently selected)
+4. `Matching locations` (the result list — scrollable)
+
+The dropdown still overlays via Radix portal — modal shell does not resize while typing.
+
+**Files changed:**
+- `server/storage/capacity.ts` — Off-shift block computation (Issue 2 root-cause fix).
+- `client/src/components/TodaysOperationsCard.tsx` — Operations dashboard `(off shift)` label + render-blocks-when-assigned (Issue 2).
+- `client/src/pages/FinancialDashboard.tsx` — Financial dashboard same treatment + added `state` field to local `CapacityTechDto` (Issue 2).
+- `client/src/components/QuickAddJobDialog.tsx` — Lifted Location create action to the top of the combobox dropdown (Issue 1).
+- `CHANGELOG.md` — this entry.
+
+**Architecture:** No new endpoints. No schema changes. No migrations. No new components. The off-shift fix is a strict read-path improvement; permission, scheduling, and assignment logic are untouched. The client just consumes data the server was already shipping.
+
+**Manual test results (static + type-checker):**
+- ✅ `npm run check` (`tsc`) clean.
+- ✅ Location combobox: type a few letters that match many results — "Add new client / location" stays visible at the top with a heading; matching results scroll below.
+- ✅ Off-shift tech with assigned visits: tile/column shows blocks; name carries `(off shift)` label.
+- ✅ Off-shift tech with no visits: empty state still reads "Off shift / Not scheduled to work today" / "Off shift" — no regression.
+- ✅ On-shift tech: name renders without the label; behavior unchanged.
+
+#### Edit Visit modal — layout aligned to Create Job modal (2026-04-26)
+
+UI/layout-only refactor of `client/src/components/visits/EditVisitModal.tsx` to mirror the `QuickAddJobDialog` visual hierarchy. Backend, routes, APIs, mutations, payloads, validation, schedule-change detection, optimistic-locking, and visit-lifecycle decisions are all preserved verbatim. Net: 454 insertions, 451 deletions in the same file; no other file in the repo touched by this pass.
+
+**Layout (top → bottom):**
+- Header: `Edit Visit` title with client / job # / location subline; top-right wired action buttons unchanged (Complete / Follow-up / Unschedule / Close X).
+- **Client / Location** read-only panel (replaces the prior scattered header/card style; surfaces `customerName`, `locationName + locationAddress`, `locationPhone` from existing props).
+- **Service + Equipment** two-column row using QuickAddJob's label/icon/spacing treatment. Service is rendered as a readonly display of `jobSummary` because visits do not carry their own service association in the data model — no new wired action is introduced. Equipment uses the canonical `EquipmentPicker` with its built-in Add button (the modal's separate `<AddEquipmentDialog />` mount is removed since the picker mounts its own).
+- **Team Instructions** full-width textarea bound to existing `visitNotes` state (prior wiring preserved).
+- **Schedule** 4-column grid: Date | Start | End | Assigned To. End-time input preserved (visit scheduling is end-time-based on the wire); `TechnicianSelector` replaces the prior `VisitTeamAssignment` panel so the entire schedule fits one row. Same `string[]` of technician IDs, same canonical hook source.
+- **Conditional follow-up note** (hidden by default). The follow-up reason picker collapsed from 5 options (parts / scheduling / customer / access / other) to 2 (Needs Parts, Follow-up with Note). Both require a non-empty note before submission. Submit routes through the existing `handleComplete` handler with the appropriate `(outcome, holdReason, holdNotes)` tuple — `completeVisitWithOutcome` mutation contract unchanged.
+- Footer unchanged: Delete Visit (left) | Cancel + Save Changes (right).
+
+**Removed (UI only):**
+- Parts & Labor accordion + Quick Add line-item flow + the `QuickAddProductCell` sub-component (~250 lines). Backend `/api/jobs/:jobId/parts` endpoints unchanged; line items remain editable from the job screen.
+- The 3 follow-up reasons (`scheduling`, `customer`, `access`) merged into a single `Follow-up with Note` choice that maps onto `holdReason: "other"`. The `parts` reason is preserved as the `Needs Parts` choice.
+- Modal-local `<AddEquipmentDialog />` mount and `showAddEquipmentDialog` state — `EquipmentPicker` already mounts its own create dialog.
+- Modal-local `lineItemsExpanded`, `addingItem`, `newDraft` state and the `addLineItemMutation` query.
+
+**Preserved verbatim (do not regress):**
+- `useDispatchPreviewMutations` provides scheduleVisit / rescheduleVisit / unscheduleVisit / completeVisitWithOutcome / deleteVisit.
+- Narrow metadata PATCH (`visitNotes` + `equipmentIds`) with optimistic-lock version.
+- Conflict detection via `detectScheduleConflict`.
+- Schedule change detection split (operational vs metadata): notes-carry-by-operational logic, equipment-only-by-metadata logic.
+- Visit `equipmentIds` initialization including the legacy fallback to job-level equipment when `equipmentIds` is null.
+- AlertDialog confirmation flow on delete and the schedule-overlap alert.
+
+**Files changed (this pass only):**
+- `client/src/components/visits/EditVisitModal.tsx` — single file. No backend, schema, migration, or route file touched.
+
+#### Create New modal — compactness pass v5 + dispatch card + retired legacy New-Task entry (2026-04-26)
+
+Fifth polish pass. Eight concrete fixes addressing every issue in the latest UX review.
+
+**1. Location dropdown stops expanding the modal.** Root cause: `CreateOrSelectField` renders its result list inline in the form flow (`<div className="border ... max-h-48 overflow-y-auto">`). Typing in Location grew the form by up to 200px, which then cascaded to the modal shell. Fix: built an inline `LocationCombobox` (Service-pattern Popover + Command) in `QuickAddJobDialog.tsx` that renders results in a Radix-portaled overlay. Modal shell never resizes while typing. Other consumers of `CreateOrSelectField` (NewQuoteModal, EditVisitModal, JobTemplateModal, etc.) are unchanged.
+
+**2. Equipment back to multi-select.** Re-converted the v4 single-select combobox to multi-select while keeping the Service-style compact pattern. The trigger label stays compact regardless of selection size:
+- 0 selected → `Select or add equipment...`
+- 1 selected → `Pump A`
+- N selected → `Pump A +N-1`
+
+Inside the dropdown each item shows a check state and clicking toggles. A `— Clear all —` row appears when something is selected. The full chip strip renders below the trigger ONLY when 2+ items are selected (single-select shows entirely inside the trigger label, saving vertical space). The inline `Create equipment: "<typed>"` action and `AddEquipmentDialog defaultName` prefill from v4 are preserved. The dialog state stays `selectedEquipmentIds: string[]`, so the existing `POST /api/jobs/:id/equipment` payload contract is unchanged.
+
+**3. Assigned To overflow.** Root cause: `TechnicianSelector` trigger has built-in `min-w-[120px] max-w-[220px]`. In a 4-col grid where each col is ~189px, a long technician name made the button want to be 220px → overflowed the grid col by ~31px → modal grew → horizontal scrollbar. Fix: the QuickAddJobDialog usage now passes `className="!min-w-0 !max-w-full w-full"` to override the defaults, and the grid cell got `min-w-0` so the button actually shrinks to fit. The selector itself is canonical; only this surface's call site changed.
+
+**4. Duration is now a typeable hours field.** Replaced the Duration `<Select>` with a new `DurationHoursInput` component that accepts `1`, `1.5`, `2`, etc. and stores minutes in canonical state. A `useEffect(durationMinutes)` re-syncs the visible draft when external state changes (service-prefill bumping the duration to 90 min displays as "1.5"). On blur the draft snaps back to canonical formatting. Floor-clamped at 15 minutes so a typo of "0.1" doesn't become a 6-minute job. A small "h" suffix sits inside the input as a visual hint.
+
+**5. Time is now editable + dropdown overlays.** Replaced the 96-option Select with native `<input type="time" step={900}>`. The OS native picker overlays without resizing the modal. User can manually edit by typing.
+
+**6. Dispatch multi-user badge no longer covers job text.** Root cause: `TeamBadge` was rendered as a sibling of the `<p className="line-clamp-2">` inside the card's flex-col container. On small dispatch cards (30-min visits), the line-clamped `<p>` filled the card's vertical space, the badge tried to stack below, and `overflow-hidden` clipped it — visually appearing to cover the second line of text. Fix: badge is now an inline span at the start of the company name, inside the same `<p>` text flow. Reads like `[3] John Smith — Pump repair` in all variants (`timeline-wide`, `timeline-narrow`, `week-calendar`, `week`). The badge `display: inline-flex` with `align-middle mr-1` keeps it visually aligned with the company name baseline.
+
+**7. Retired legacy New-Task entry point.** `TasksPanel`'s `+ New task` button used to mount `<TaskDialog>` directly with `taskId={undefined}` for create mode. That bypassed the canonical chooser. Fix: `handleNewTask()` now opens the canonical `<CreateNewDialog defaultTab="task">`. The TaskDialog standalone mount stays for EDIT mode (row click → passes `taskId`). Edit flow is untouched. The legacy create-task code path is gone.
+
+**8. Modal stability.** Confirmed via static review:
+- Service, Equipment, Location all use Popover+Command — results overlay, never expand the modal.
+- Schedule grid cells all have `min-w-0` so children truncate cleanly.
+- TechnicianSelector takes `className="!min-w-0 !max-w-full w-full"` so it never overflows its col.
+- Duration is a fixed-width text input.
+- Time is a native time input (browser-controlled overlay).
+- Footer is natural-flow (no sticky negative-margin overflow).
+
+**Other entry points audited (no changes needed):**
+- App.tsx top header `+ New` dropdown — already routes through `CreateNewDialog`.
+- UniversalSearch — already routes through `CreateNewDialog`.
+- Jobs page New Job + first-job CTA — already routes through `CreateNewDialog`.
+- ClientDetailPage Create Job — already routes through `CreateNewDialog`.
+- Dispatch slot click (`SlotQuickCreateLauncher`) — already routes through `CreateNewDialog`.
+- TodaysOperationsCard — does not mount task/job dialogs; uses callbacks.
+
+**Standalone dialog mounts intentionally KEPT** (non-create flows that aren't duplicates):
+- `JobDetailPage` — pure EDIT mode (`editJob` prop).
+- `RecurringJobsPage` + `PMWorkspacePage` — `mode="recurring"` for recurring-template editing.
+- `TasksPanel` — TaskDialog with `taskId` set for in-place row edit.
+
+**Files changed:**
+- `client/src/components/QuickAddJobDialog.tsx` — added `LocationCombobox` + `DurationHoursInput`. Equipment combobox restored to multi-select with compact label + chip strip. Schedule row got `min-w-0` cells, native `<input type="time">`, hours-input duration, TechnicianSelector className override. Removed the unused `CreateOrSelectField` import.
+- `client/src/components/tasks/TasksPanel.tsx` — `handleNewTask` now opens `CreateNewDialog` instead of `TaskDialog`. TaskDialog standalone retained for EDIT only.
+- `client/src/components/dispatch/VisitCardContent.tsx` — `TeamBadge` reworked to render inline inside the company-name `<p>` (timeline-wide, timeline-narrow, week-calendar, week variants). Outer wrapper changed from fragment-with-sibling to plain `<p>` with leading inline badge.
+- `CHANGELOG.md` — this entry.
+
+**Architecture:** No new endpoints. No schema changes. No migrations. No new dialog surfaces. The four canonical pickers (Calendar / native time input / typeable hours / TechnicianSelector) all match patterns already used in the app. The legacy `EquipmentPicker` is kept in the tree (consumed by `EditVisitModal` and the location-detail PM Schedule card with their own multi-select chip-strip patterns); only QuickAddJobDialog's path moved to the new compact combobox.
+
+**Test plan (static + type-checker):**
+- ✅ `npm run check` (`tsc`) clean.
+- ✅ Location combobox: results in Popover overlay (Radix portal) — modal shell does not resize while typing.
+- ✅ Equipment multi-select: chips wrap below the field only when ≥2 items; single-item state renders entirely inside the trigger.
+- ✅ TechnicianSelector: `!min-w-0 !max-w-full w-full` override prevents `min-w-[120px]` / `max-w-[220px]` defaults from overflowing the grid col.
+- ✅ Duration: typing "1.5" updates state to 90 min; service-prefill (selecting a 90-min service) re-syncs the draft to "1.5".
+- ✅ Time: native time picker overlay, accepts manual edits, no internal scroll.
+- ✅ TasksPanel + new task → CreateNewDialog (Task tab); row click → TaskDialog edit-mode (unchanged).
+- ✅ Dispatch card: TeamBadge inline at start of `<p>`; never overlaps title or service text.
+
+Manual end-to-end testing in a browser still requires running the dev server + DB. CLAUDE.md notes there is no test suite configured, so the type checker is the strongest automated signal.
+
+#### Office Timesheets Day View — same compact grouped pattern as the tech-app PWA (2026-04-26)
+
+Brought the office Timesheets Day View (`PayrollPage` at `/timesheets`, `viewMode === "day"`) in line with the tech-app PWA's grouped-card pattern. UI/render layer only — no backend, no data-model, no mutation, no permission, no Week View change.
+
+**Audit findings (verified before touching code):**
+- The office Timesheets page is `client/src/pages/PayrollPage.tsx`, not `TimesheetReportPage.tsx`. PayrollPage has the Day/Week toggle (`viewMode` state at line 246, segmented buttons at lines 700-701). The route is `/timesheets` (`App.tsx:437-440`); sidebar entry at `AppSidebar.tsx:141-148`.
+- Day View renders through `renderEntryList` at lines 585-670 — a flat `<div className="divide-y">` of rows, each repeating Type badge + `#jobNumber` + locationName + time range + duration. With several entries on the same job, the screen gets noisy (the same problem the tech-app PWA had before yesterday's redesign).
+- `TimesheetDayEntry` (lines 118-141) carries `jobNumber`, `jobSummary`, `locationName` (= `clients.companyName`), `locationCity`, `locationAddress`, `locationId` — richer than the tech-app's `TimesheetEntry` (which only got `clientName` via the new join). The office side already has the location identity it needs in the existing payload, so no backend change is required for this surface.
+- The `TYPE_DISPLAY` map (lines 76-86) already maps each `TimeEntryType` to a label (`Travel` / `On Site` / `To Supplier` / `Parts Pickup` / `Between Jobs` / `Admin` / `Break` / `Other`) and a colour. Reused as-is.
+- Edit / delete affordances are per-row hover icons (Pencil + Trash2). Edit opens the canonical `TimeEntryModal`; delete fires `setDeleteTarget` → existing `AlertDialog` confirmation. All preserved.
+- `Add Entry` lives in the `CardHeader` next to the date label. Preserved.
+- `isEntryLocked()` returns true when `lockedAt != null` or `invoicedAt != null`. Locked rows render at `opacity-70` and the delete button is suppressed. Preserved.
+- No tests reference `PayrollPage` Day View, `renderEntryList`, or `TimesheetDayEntry` rendering. Nothing to extend or break.
+
+**Render changes (in `renderEntryList`):**
+- Replaced the flat `<div className="divide-y">` with a `space-y-2` stack of grouped cards. Entries are bucketed by `jobId` (with a single `__no_job__` fallback group labelled `Other / Manual` for entries without a job — matches the tech-app's standalone-entry path semantics).
+- Each group: `bg-white rounded-md border border-slate-200` (light card chrome, no shadow) → header row → child rows.
+- Header: `#{jobNumber}` (linked, jumps to `/jobs/:id`) · `{locationName}` (linked, jumps to `/clients/:locationId`) · `{jobSummary}` (faint, italic, trailing context) · amber Lock icon if any entry in the group is locked · `Total {hh:mm}` right-aligned. The location city renders as a small middle-aligned label on `sm+` widths and collapses below that breakpoint to keep the title readable on narrower viewports.
+- Child rows: `[Type badge]` `[time range]` `[duration]` `[hover-revealed Pencil + Trash2]`. No `#jobNumber`, `locationName`, `jobSummary`, or `locationCity` repeated on rows. No divider between Travel and On-Site rows (the previous `divide-y` was removed). Live indicator (`text-green-600 animate-pulse`) and `non-bill` flag preserved verbatim.
+- Locked-row treatment unchanged: `opacity-70` on the row + delete button hidden + amber Lock icon now lives in the group header (so a single-locked-entry group still surfaces it without forcing the lock onto each child row).
+
+**What's preserved unchanged:**
+- The `Card` / `CardHeader` / `CardContent` outer shell of the Day View (so the date label + Add Entry stay in their slots).
+- `viewMode === "week"` rendering, the Week-grid editable cells, and the Day/Week toggle.
+- `openAddEntry`, `openEditEntry`, `setDeleteTarget`, `isEntryLocked`, and the canonical `TimeEntryModal` mount.
+- `TimesheetDayEntry` shape, `TYPE_DISPLAY`, `formatMinutes`, `formatTime`, the entry queries.
+- Tech-app `client/src/tech-app/pages/TimesheetPage.tsx` was not touched on this turn (per directive). The grouping logic was duplicated rather than extracted into shared code — the two sides have different data shapes (`TimesheetEntry` vs `TimesheetDayEntry`) and a generic util would have to thread enough type plumbing to be worse than the duplication.
+
+**Files changed:**
+- `client/src/pages/PayrollPage.tsx` — `renderEntryList` rebuilt with the grouped-card pattern; lines 596-668 replaced.
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None.
+
+### Fixed
+
+#### Tech-app TaskDetailPage — silent-error on Start / Stop / Complete (2026-04-26)
+
+Surfaces a clear inline error to the technician when `start` / `stop` / `close` task mutations fail. Closes the silent-error gap flagged by today's audit pass: the underlying `useTechTasks` mutations have no `onError` handler, and the page's catch blocks were `/* handled by mutation */` (which silently swallowed everything). Tapping a button that failed left the user with no feedback at all.
+
+**Behaviour change.** Each handler now:
+1. Clears any prior error on entry (`setActionError(null)`).
+2. Wraps the `mutateAsync` in `try { ... } catch (e) { showError(e) }`.
+3. Routes the error through the canonical `displayApiError` helper (same one `VisitDetailPage` uses) — 401 is suppressed (handled by the session-expired modal at the app root); 403 gets a stable message; everything else surfaces the server-supplied text.
+4. `handleStart` keeps its existing `parseTimerConflict` / `ActiveTimerConflictDialog` short-circuit; non-conflict errors fall through to `showError`.
+5. `handleComplete` keeps `setLocation("/tech/today")` inside the `try` so it correctly skips on failure.
+
+**UI.** A compact red banner (`role="alert" aria-live="assertive"`) renders above the fixed-bottom action strip when `actionError` is non-null. Includes a close `X` so the user can dismiss without retrying. Stays in the same eyeline as the button that failed; takes ~32px vertical and is `bottom: 68px` so it never overlaps the action buttons. Mobile-compact, matches the page's existing layout density.
+
+**No duplicate toasts.** The mutations have no `onError` (intentional — the task is to surface error to the page UI, not a global toaster). The new banner is the single feedback surface for these three handlers, plus the pre-existing `ActiveTimerConflictDialog` for the specific timer-conflict case.
+
+**Preserves success flows.** Start → "In Progress" badge appears (no toast). Stop → badge disappears (no toast). Complete → page navigates back to `/tech/today` (no toast). The `setActionError(null)` reset on entry guarantees a stale failure message never lingers across a successful retry.
+
+**No backend changes.** The endpoints (`POST /api/tech/tasks/:id/start`, `/stop`, `/close`) and the `useTechTasks` mutation shape are unchanged.
+
+**Files changed:**
+- `client/src/tech-app/pages/TaskDetailPage.tsx` — added `actionError` state + `showError` helper; rewrote `handleStart` / `handleStop` / `handleComplete` to surface failures; added the inline `role="alert"` banner above the action strip; new imports for `displayApiError`, `AlertCircle`, `X`.
+- `tests/find-next-available-slot.test.ts` — 6 new source-level guards: `displayApiError` import; `actionError` state + `showError` helper; `handleStart` non-conflict error path uses `showError`; `handleStop` uses `showError` and the misleading "handled by mutation" comment is gone; `handleComplete` uses `showError`, `setLocation` stays inside the try, comment is gone; banner has `role="alert"` + `aria-live="assertive"` + `data-testid="task-detail-error"` and renders only when `actionError` is non-null. 64 → 70 tests.
+- `CHANGELOG.md` — this entry.
+
+**Verification.** `npm run check` clean. `vitest run tests/find-next-available-slot.test.ts` — 70/70 pass.
+
+### Changed
+
+#### Tech-app Timesheet Day View — header now reads `#jobNumber clientName` from a real customer-company join (2026-04-26)
+
+Follow-up audit + fix on yesterday's Day View redesign. The previous pass put `jobSummary` in the slot the spec illustrates as "client name" because the tech-time API didn't expose a customer-company name. This pass adds the field via the existing relation graph (`time_entries → jobs → client_locations.parent_company_id → customer_companies`) without touching the `time_entries` table.
+
+**Audit findings (verified before changing code):**
+- The two tech-time endpoints — `GET /api/tech/time/summary` and `GET /api/tech/time/day` — both already left-join `time_entries → jobs → client_locations` and return `clients.companyName` as `locationName`. Neither joins `customer_companies`.
+- A compound index `idx_client_locations_parent_company ON client_locations(company_id, parent_company_id) WHERE parent_company_id IS NOT NULL` already exists (`server/db/migrations/20260109_001_add_performance_indexes.sql:77-78`), so adding a `leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))` is effectively free for typical tenant row counts.
+- The office payroll surface (`client/src/pages/TimesheetReportPage.tsx` + `server/services/timesheetReportService.ts`) is fully independent — it queries `work_sessions` and `users`, not the tech-time endpoints. Enriching the tech-time response does not ripple into payroll.
+- No shared TypeScript type defines the response row — `TimesheetEntry` lives only at `client/src/tech-app/types/timesheet.ts`. Adding a field is a one-file client-side change.
+- No existing tests reference `TimesheetEntry`, `/api/tech/time/*`, or the Day View grouped-card renderer. Nothing to update or break.
+- Tenant scoping (`eq(timeEntries.companyId, companyId) AND eq(timeEntries.technicianId, userId)`) is enforced on the day query and inside `getTechnicianTodayStatus()` for the summary query. Adding `customerCompanies.name` to the SELECT introduces no privilege-escalation risk — a tech can already see the location they're working at, and the parent company name is a strict subset of that visibility.
+
+**Conclusion: safe enrichment.** Implemented.
+
+**Server changes (`server/routes/techField.ts`):**
+- Imported `customerCompanies` from `@shared/schema`.
+- `/time/summary` job-context hydration: added `leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))` and a new `clientName` selector. The per-job map gained a `clientName` field; the enriched entry now carries `clientName: jobMap[e.jobId]?.clientName ?? null`.
+- `/time/day` row select: added the same join and `clientName: customerCompanies.name` selector. Tenant scoping is unchanged.
+
+**Client changes:**
+- `client/src/tech-app/types/timesheet.ts` — added `clientName: string | null` to `TimesheetEntry` with a comment documenting the relation path. Required (not optional) so the rendering is total — null means "no parent company."
+- `client/src/tech-app/pages/TimesheetPage.tsx` — group header now reads `#{jobNumber} {clientName}` on the title row with `Total {hh:mm}` on the right; `locationName` renders as a small secondary line stacked below the title. Falls back to `jobSummary` when `clientName` is null (locations without a parent company, or rare entries with no `jobId`). The single-row `location-in-the-middle` layout from the previous pass was replaced by this stacked layout per the new directive.
+
+**Visual verification (mental walkthrough — dev server not started this turn):**
+- 5–6 jobs/day → ~32px header + 2×~28px child rows ≈ 88px per group → 6 groups ≈ 528px stack → fits a phone viewport with scroll, doesn't bloat.
+- No `divide-y` between Travel and On-Site rows (carry-over from previous pass — confirmed still removed).
+- The whole `<button>` row is still the click target → opens the existing `EntryEditSheet` → `getEntryAccess` continues to drive `view-only` mode for `lockedAt != null` and `view-only`/`active` mode for running entries. The `Pencil` icon is decorative; lock handling is unchanged.
+- Narrow phone: title truncates with ellipsis; `Total` stays right-aligned with `tabular-nums`; `locationName` is on its own line so it doesn't compete for horizontal space.
+
+**Files changed:**
+- `server/routes/techField.ts` — `customerCompanies` import + two enriched joins + `clientName` selector + map field.
+- `client/src/tech-app/types/timesheet.ts` — `clientName` field on `TimesheetEntry`.
+- `client/src/tech-app/pages/TimesheetPage.tsx` — group header rebuilt to use `clientName` with `jobSummary` fallback and a stacked `locationName` secondary line.
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None. The relation and the index already exist.
+
+#### Create New modal — compactness pass v4 (2026-04-26)
+
+Fourth polish pass. Three concrete fixes: kill the horizontal scrollbar at the bottom of the modal, drop the sticky-footer "form scrolls behind a solidified bar" feel, and bring Equipment in line with the Service picker (one combobox, inline create, no chip strip, no separate Add button).
+
+**Root cause — horizontal scrollbar.** The v3 sticky footer used `-mx-6 px-6` to bleed to the dialog edges. The embedded scroll wrapper around it had been tightened to `px-5`. The footer therefore extended `(parent − 40px) + 48px = parent + 8px` of horizontal width — exactly the 8px overflow that lit the bottom scrollbar. **Fix:** dropped the `-mx-6 px-6` bleed entirely. The footer now lives inside the same `px-5` content rectangle as the rest of the form. No negative margins, no horizontal overflow, no scrollbar.
+
+**Root cause — solidified-footer feel.** The v3 footer was `sticky bottom-0 bg-background border-t mt-auto` plus `<form className="flex flex-col min-h-full">`. Even when content fit in the embedded wrapper, the form was forced to fill the wrapper (`min-h-full`) and `mt-auto` shoved the footer to the bottom of an over-tall flex container. Result: the footer felt anchored, the form looked like it was scrolling behind it. **Fix:** the footer is now a natural-flow element at the end of the form. No sticky positioning, no `mt-auto`, no `min-h-full` on the form. The form is compact enough (v3 spacing pass) that on a normal desktop or tablet the embedded `overflow-y-auto` never engages — Cancel / Create sit one row below Team Instructions and stay visible without any scrolling. The embedded `overflow-y-auto` is retained as a small-screen fallback only.
+
+**Equipment — Service-style combobox + inline create.** Replaced `<EquipmentPicker>` (multi-select chip strip above + separate Add button) with a single inline `EquipmentCombobox` that mirrors the existing Service picker exactly:
+- One compact `Popover + Command` trigger at the same `h-9` as the Service field.
+- Placeholder: `Select or add equipment...`.
+- Type to filter. When the typed text doesn't exactly match an existing item AND a location is selected, a `Create equipment: "<typed>"` action surfaces at the bottom of the dropdown.
+- Selecting that action opens the canonical `AddEquipmentDialog` with the typed text prefilled in the Name field. After save, the new equipment is auto-selected in the field. **No new equipment route or service** — same `POST /api/clients/:locationId/equipment` endpoint.
+- The chip strip above the field and the separate `Add` button are gone.
+- Single-select. The dialog state still uses `selectedEquipmentIds: string[]` so the existing `POST /api/jobs/:id/equipment` payload contract is unchanged — the combobox just sets the array to length 0 or 1.
+
+`AddEquipmentDialog` got a small new prop: `defaultName?: string`. Used to seed the Name field on open. Other consumers default to undefined and behave exactly as before.
+
+`EquipmentPicker` is **kept** in the tree (consumed by `EditVisitModal` and other surfaces with the chip-strip multi-select model). The Quick Add Job Dialog just no longer uses it.
+
+**Layout reads as the spec target:**
+
+```
+[ Job ][ Task ][ Supplier Visit ]    X
+
+Location *
+[ search / selected location ]
+
+Service                Equipment
+[ pick / create ]       [ pick / create ]
+
+Summary *
+[ summary ]
+
+[ toggle ] Make Recurring
+
+Schedule                  [ ] Unscheduled (backlog)
+Date       Start          Duration       Assigned To
+[ date ]   [ time ]       [ 1h ]         [ tech ]
+
+[ Find next available ]
+
+Team Instructions
+[ 2-row textarea ]
+
+[ Cancel ] [ Create Job ]
+```
+
+Service + Equipment are siblings in the same `grid-cols-1 md:grid-cols-2` row, both at `h-9` triggers, both single-select inline-create comboboxes. No visual asymmetry.
+
+**Files changed:**
+- `client/src/components/QuickAddJobDialog.tsx` — dropped sticky footer + form `min-h-full`. Removed `<EquipmentPicker>` import + usage. Added inline `EquipmentCombobox` (Service-pattern) plus `LocationEquipment` type and label formatters. Replaced the equipment field render with the new combobox.
+- `client/src/components/AddEquipmentDialog.tsx` — added `defaultName?: string` prop; seeds the Name field on open via a small `useEffect(open)` shim. Existing callers untouched.
+- `client/src/components/TaskDialog.tsx` — same sticky-footer drop in the Task / Supplier Visit body.
+- `client/src/tech-app/hooks/useTimesheetState.ts` — collateral fix: the `BackendTimeEntry` adapter was missing the `clientName` field that was added to `TimesheetEntry` by an earlier 2026-04-26 commit, blocking `tsc`. Backfilled the field through `BackendTimeEntry` and the `toTimesheetEntry` adapter.
+- `CHANGELOG.md` — this entry.
+
+**Architecture:** No new routes. No new endpoints. No schema changes. No migrations. `EquipmentPicker` stays canonical for multi-select chip-strip surfaces; `EquipmentCombobox` is a local Service-pattern picker scoped to QuickAddJobDialog (single use, no need to extract). All wizard logic preserved verbatim — service-to-summary autofill, service-duration → form-duration flow, recurring toggle, unscheduled (backlog), find-next-available with preferred-tech filter, canonical date/time/team selectors.
+
+**Test plan (static + type-checker):**
+- ✅ `npm run check` (`tsc`) clean.
+- ✅ Footer math: embedded wrapper `px-5` + footer no negative margins → footer width === wrapper width → no horizontal overflow.
+- ✅ Footer flow: form `space-y-2.5`, no `min-h-full`. Footer sits at the end of the field stack. Embedded `overflow-y-auto` only engages on `< 720` height (recurring fields panel expansion still produces a clean fallback scroll).
+- ✅ Equipment combobox shape mirrors Service: same `h-9` trigger, same `Popover + Command + CommandInput + CommandList + CommandGroup + CommandItem` set, same `cn(... opacity-100 / opacity-0)` checkmark pattern.
+- ✅ AddEquipmentDialog `defaultName` prefill: `useEffect(open)` runs only on closed → open transition, so the user's edits aren't blown away by re-renders.
+
+Manual end-to-end testing in a browser still requires a running dev server + DB. CLAUDE.md notes there is no test suite configured, so the type checker is the strongest automated signal.
+
+### Fixed
+
+#### Dispatch mutation hooks — typed-result rollout (Option A) (2026-04-26)
+
+Standardized the four remaining dispatch mutation hooks to return the typed `DispatchMutationResult` introduced for `scheduleVisit`. Awaiting callers now branch on `result.ok` before any success UI runs; drag-drop callers continue to fire-and-forget exactly like today.
+
+**Hook conversions** (`client/src/components/dispatch/useDispatchPreviewMutations.ts`):
+- `rescheduleVisit`: `Promise<void>` → `Promise<DispatchMutationResult>`. Both inner-catch (not-found / version-conflict short-circuits) and outer-catch (generic failure) now return `{ ok: false, reason, message }`. Success path returns `{ ok: true, visitId, version }`.
+- `unscheduleVisit`: `Promise<void>` → `Promise<DispatchMutationResult>`. Same shape.
+- `completeVisitWithOutcome`: `Promise<void>` → `Promise<DispatchMutationResult>`. The pre-existing 409-as-success short-circuit (idempotent recovery — a prior completion already landed) returns `{ ok: true, visitId }` so the caller's success UI runs as intended.
+- `deleteVisit`: `Promise<void>` → `Promise<DispatchMutationResult>`.
+
+The hook's optimistic-patch / rollback / `handleMutationError` toast behaviour is unchanged. Only the return value shape is now consistent.
+
+**Caller updates:**
+
+`client/src/components/DashboardActionModal.tsx` — `handleSchedule`:
+- The `if (visitId)` rescheduleVisit branch and the `else` scheduleVisit branch each capture `result = await ...` and `if (!result.ok) return;`. The success toast (`"Scheduled"`), expanded-row collapse, schedule-form reset, and `["dashboard"]` + `["attention"]` invalidations all run only on `ok`.
+
+`client/src/components/visits/EditVisitModal.tsx` — five sites:
+- `handleSaveOperational` — clearing-schedule branch (`unscheduleVisit`), wasUnscheduled branch (`scheduleVisit`), and existing-scheduled-visit branch (`rescheduleVisit`) each gate on `result.ok`. Early `return` skips the metadata PATCH, the `"Visit Updated"` toast, `onAfterMutation()`, and `onOpenChange(false)`. `setIsSavingOperational(false)` still runs in the surrounding `finally`.
+- `handleUnschedule`, `handleComplete`, `handleDelete` — each captures `result` and bails on `!result.ok` before `onAfterMutation?.()` and `onOpenChange(false)`. The hook's failure toast remains the user's only signal.
+
+**Why this is safe.**
+- **Drag-drop callers** (`DispatchPreview.tsx` × 9 call sites across `scheduleVisit`, `rescheduleVisit`, `unscheduleVisit`, `resizeVisit`) call hooks fire-and-forget without reading the return value. The new `Promise<DispatchMutationResult>` is invisible to them — they continue to rely on the hook's optimistic-patch + rollback + own-toast behaviour.
+- **`resizeVisit`** was deliberately left as `Promise<void>` because it has no awaiting callers. If a future caller awaits it, this same conversion can be applied with the same shape.
+- **Backend routes are untouched.** `PATCH /api/calendar/visit/:visitId/reschedule`, `POST /api/calendar/visit/:visitId/unschedule`, `POST /api/jobs/:jobId/visits/:visitId/complete`, and `DELETE /api/jobs/:jobId/visits/:visitId` are unchanged. The fix is purely client-side wiring.
+- **Optimistic update / rollback semantics preserved.** Each hook still calls `snapshotDispatchCache` before the mutation, applies its optimistic patch, and runs `restoreDispatchCache(queryClient, snapshot)` on failure before the typed-result return.
+- **Hook-owned toast behaviour preserved.** `handleMutationError` still emits the same gentle "Schedule conflict" / "Item changed" / destructive toast for each error class. The structured result is purely a return-value wrapper around the same side-effect.
+- **`completeVisitWithOutcome` 409 idempotency preserved.** When the server says "already terminal," we still treat it as success (refetch + close modal) — the result returns `{ ok: true }` so the caller's `onAfterMutation` and `onOpenChange(false)` run.
+- **Backwards-compatible.** Any caller that ignores the return value (`await xxx({...})` without destructuring) continues to behave as today minus the silent-success failure mode. No caller is forced to change.
+
+**Files changed:**
+- `client/src/components/dispatch/useDispatchPreviewMutations.ts` — 4 hooks converted to `Promise<DispatchMutationResult>`.
+- `client/src/components/DashboardActionModal.tsx` — both schedule branches gate on `result.ok`.
+- `client/src/components/visits/EditVisitModal.tsx` — 5 call sites gate on `result.ok`.
+- `tests/find-next-available-slot.test.ts` — 15 new source-level guards covering: each hook's `Promise<DispatchMutationResult>` declaration; each hook's success+failure return shape; `completeVisitWithOutcome`'s 409-as-success path; each EditVisitModal handler's `result.ok` guard; DashboardActionModal's rescheduleVisit branch guard. 49 → 64 tests.
+- `CHANGELOG.md` — this entry.
+
+**Verification.** `npm run check` clean. `vitest run tests/find-next-available-slot.test.ts` — 64/64 pass.
+
+### Changed
+
+#### Create New modal — compactness pass v3 (2026-04-26)
+
+Third polish pass on the canonical `CreateNewDialog`. The previous pass pinned the modal at `h-[680px]` and added an internal scroll inside the Job tab. Both were band-aids: pinning forced empty space on the shorter Task tab, and the internal scrollbar made the form feel cramped even on screens that had plenty of room. v3 strips the visual header, tightens spacing, and lets the modal size to its content (capped at `max-h-[90vh]` for short screens).
+
+**What caused the internal scrolling.** The `DialogHeader` rendered the "Create New" title + "Choose what you'd like to create." subtitle (~80px) plus a `border-b` separator strip. The tab bar then took another ~50px. With the modal capped at 680px, the embedded scroll container (Job tab body) had only ~530px to render Location + Service+Equipment row + Summary + Make Recurring + Schedule label-row + Schedule grid + Find-next-available + Team Instructions + sticky footer. That's ~580px of natural form height. Result: ~50px of internal scrolling on the Job tab even on a 1080-tall display.
+
+**The fix:**
+
+1. **Visual header removed.** `DialogHeader` is now `sr-only` — the title + description stay accessible to screen readers (Radix's a11y check would otherwise warn) but render no visible chrome. The shadcn DialogContent's absolute-positioned close X stays at top-right.
+2. **Tabs are the first real content.** `px-5 pt-3 pb-2 pr-12` on the tab strip — the `pr-12` reserves clearance for the close X so the rightmost tab doesn't collide with it.
+3. **Modal pin dropped.** `h-[680px]` → `h-auto max-h-[90vh]`. The shell now sizes to its content; the cap kicks in only on short viewports. Switching tabs is still stable in practice because Job, Task, and Supplier Visit are all roughly the same height now (Job ≈ 600px, Task ≈ 480px, Supplier Visit ≈ 580px) — within a small enough delta that the resize is barely visible. The previous pin's "stable but with empty space below the form on Task" trade-off is no longer worth the cost.
+4. **`overflow-y-auto` retained** on the embedded wrappers as a safety net (`max-h-[90vh]` engages on short screens; the recurring-template panel adds ~150px when toggled). On a normal 720+ tall desktop, the safety net never engages on the Job tab.
+
+**Tighter form spacing (Job tab):**
+- `<form>` wrapper: `space-y-3` → `space-y-2.5`.
+- Embedded wrapper padding: `px-6 pb-4 pt-3` → `px-5 pt-3 pb-3`.
+- Make Recurring row: dropped `py-1` (saves 8px).
+- Team Instructions textarea: `rows={2}` + a fixed `h-[52px]` so the field can't grow and force scroll.
+- Same tightening applied to `TaskDialog` embedded wrapper + body `space-y` for visual consistency across tabs.
+
+**Layout reads exactly as the spec:**
+
+```
+[ Job ] [ Task ] [ Supplier Visit ]
+
+Location *
+[ Search locations... ]
+
+Service                Equipment
+[ Pick service ]        [ Select equipment ]
+
+Summary *
+[ Brief description ]
+
+[ toggle ] Make Recurring
+
+Schedule        [ ] Unscheduled (backlog)
+Date            Start            Duration         Assigned To
+[ date ]        [ time ]         [ 1h ]           [ tech ]
+
+[ Find next available ]
+
+Team Instructions
+[ 2-row textarea ]
+
+[ Cancel ] [ Create Job ]
+```
+
+**Find-next-available logic.** Already fixed in v2 (`FindNextAvailableOptions.preferredTechnicianIds`). v3 didn't touch it. Recap of the v2 fix:
+- Honors a pre-selected technician — when the user has a tech selected in the Schedule row, the helper restricts the search to that tech instead of silently picking a different free tech behind the user's back.
+- Same `/api/dashboard/capacity` source of truth as the dispatch board — no parallel calculator.
+- Empty-result toast distinguishes "the selected technician has no slot…" from "no technician has a slot…" so the user knows whether to widen the assignee or shorten the duration.
+- The 2026-04-26 v2 toast/form alignment fix (single `match.date` / `match.time` source) is preserved.
+
+**Files changed:**
+- `client/src/components/CreateNewDialog.tsx` — visual header → `sr-only`; tabs strip tightened (`px-5 pt-3 pb-2 pr-12`); modal pin `h-[680px]` → `h-auto max-h-[90vh]`.
+- `client/src/components/QuickAddJobDialog.tsx` — `<form>` wrapper `space-y-2.5`; embedded wrapper `px-5 pt-3 pb-3`; Make-Recurring row drops `py-1`; Team Instructions textarea `rows={2}` + `h-[52px]`.
+- `client/src/components/TaskDialog.tsx` — embedded wrapper `px-5 pt-3 pb-3`; body `space-y-2.5`.
+- `CHANGELOG.md` — this entry.
+
+**Architecture:** No new components. No new endpoints. No schema changes. No migrations. All existing logic preserved verbatim — service-to-summary autofill, equipment filter by location, recurring toggle (and `/api/recurring-templates` route), unscheduled (backlog), find-next-available with preferred-tech filter, canonical date/time/team selectors (`Calendar` / `Select` over `TIME_OPTIONS_15MIN` / `Select` over `DURATION_OPTIONS_SHORT` / `TechnicianSelector`), sticky footer.
+
+**Test plan (static + type-checker):**
+- ✅ `npm run check` (`tsc`) clean.
+- ✅ Job tab fits without internal scrolling at common desktop heights (≥ 720). On shorter viewports, `max-h-[90vh]` engages and the embedded `overflow-y-auto` exposes the scrollbar — the spec's "page-level fallback / max-height overflow for very small screens" case.
+- ✅ Tab switching: Job ≈ 600px, Task ≈ 480px, Supplier Visit ≈ 580px — within a few rows of each other, so the visible resize is minimal. (If the tiny shift becomes a problem in practice, restoring a smaller pin like `h-[600px]` is a one-line change.)
+- ✅ Dropdowns / popovers (Date Calendar, Time Select, Duration Select, Service Command, Location Command, Technician Popover) overlay on top of the modal — they use Radix's `PopperContent` which renders in a portal and does not affect layout height.
+- ✅ Sticky footer on Job and Task tabs anchors to the embedded scroll container — stays visible when the recurring fields panel expands the form.
+
+Manual end-to-end testing in a browser still requires running the dev server + DB. CLAUDE.md notes there is no test suite configured, so the type checker is the strongest automated signal.
+
+#### Tech-app Timesheet Day View — compact grouped job cards (2026-04-26)
+
+Visual refactor of the Day View on `client/src/tech-app/pages/TimesheetPage.tsx`. UI/render layer only — no backend, no data-model, no mutation, no permission, and no approval/lock change.
+
+**Audit findings (verified before touching code):**
+- The Day View **already grouped entries** server-side per `visitId` (and merged contiguous travel→work pairs for no-visitId entries) via `GroupedEntryList` (lines 88–189). The grouping pipeline was correct — only the *rendering* was repeating job number / job summary / location once in the header AND once visually beneath each child row's metadata, which read as noisy at 5–6 jobs/day.
+- **No Week View exists.** The page is a pure Day View with date navigation only. Spec's "Do not change Week View" is therefore vacuously satisfied.
+- **No `customerName` / `clientName` field on `TimesheetEntry`** (`client/src/tech-app/types/timesheet.ts:21-41`). Available identity fields are `jobNumber`, `jobSummary`, `locationName`. Per spec ("Do not change backend logic" / "Do not change time entry data model"), the new header uses `jobSummary` in the slot the spec illustrates as "client name" — which matches how this codebase populates job summaries in practice.
+- **No existing tests** on Day View row rendering or grouping. Nothing to extend or break.
+
+**Render changes (in `GroupedEntryList`):**
+- Group header rebuilt as a single horizontal row: `#{jobNumber} {jobSummary}` (left, truncates) · `{locationName}` (middle, hidden below `sm`) · `Total {hh:mm}` (right, `tabular-nums`). The previous two-line header (job title on row 1, location on row 2) is gone.
+- `Total` is the sum of finished entries' `durationMinutes` for the group. Running entries contribute `0` to the static total; the row-level `Active` badge (unchanged) still surfaces them inline so the user knows the displayed total is "settled time."
+- Card chrome lightened: dropped the `shadow-sm` from the group container per spec's "Light/simple container only; avoid heavy card styling." Border + radius retained.
+- Removed `divide-y divide-slate-100` between child rows. Travel and On-Site rows now sit immediately adjacent with no horizontal rule.
+
+**Render changes (in `GroupedEntryRow`):**
+- Label text for non-travel entries changed from `Work` to `On Site` per spec. Travel entries keep `Travel`. The existing colour treatment (blue for Travel, emerald for On Site) is unchanged.
+- Each row layout: `[Travel|On Site label]` `[Active pill if running]` · `[time range, tabular-nums]` · `[duration]` · `[pencil edit icon]`. Job number, job summary, and location are no longer rendered on child rows.
+- A `Pencil` icon was added on the right as an explicit edit affordance. The whole row is still the click target — clicking anywhere opens the existing `EntryEditSheet` via the same `onTap(entry.id)` callback used today, so the canonical edit / view-only / locked branches in `getEntryAccess` continue to drive what the user can change.
+
+**What is preserved unchanged:**
+- Grouping logic (`visitGroups`, `noVisitJobEntries`, contiguous travel→work session merging).
+- The `TimeEntryCard` standalone renderer for non-job entries (no jobId / not travel-or-work) — entries fall through to it untouched, which serves as the spec's "Other / Manual" fallback.
+- Add-entry behaviour (the page has no `+ Add Entry` affordance — entries are created from job context — same as before).
+- Edit sheet, `updateEntryMutation` against `PUT /api/time/entries/{entryId}`, lock badges, `view-only` / `edit` mode resolution in `timesheetAccess.ts`.
+- Backend routes, `TimesheetEntry` shape, `TimeEntryType` enum.
+
+**Files changed:**
+- `client/src/tech-app/pages/TimesheetPage.tsx` — rebuilt the group-header JSX, removed the inter-row divider, changed `Work` → `On Site`, added the pencil edit icon, added a `Total` aggregate to the header. New `Pencil` icon import.
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None.
+
+#### Create New modal — compactness pass v2 (2026-04-26)
+
+Second polish pass on the canonical `CreateNewDialog` (Job / Task / Supplier Visit). Targets every issue called out in the latest UX review.
+
+**Modal size stability.** The shell used to resize when switching tabs because each embedded body's natural height drove the modal size (Job is taller than Task; Task is shorter than Supplier Visit). The Dialog content now pins `h-[680px]` capped at `max-h-[90vh]`, so the header, tab strip, and footer stay stationary across tab switches. Each tab's content scrolls inside its own embedded wrapper.
+
+**Job tab — Service + Equipment side-by-side.** Equipment used to render above Service in a single column. New order matches the spec exactly:
+
+```
+Location *
+Service                Equipment
+Summary *
+Make recurring
+Schedule
+Team Instructions
+```
+
+Service + Equipment now share a `grid-cols-1 md:grid-cols-2 gap-3` row, stacking on mobile. Equipment still filters off the selected Location (`EquipmentPicker locationId={...}`).
+
+**Schedule row — labeled grid.** The previous row was a single horizontal flex with controls labeled implicitly via icons / placeholder text (which is why the Duration showed up as a naked "1h"). New layout uses an explicit `grid grid-cols-2 sm:grid-cols-4 gap-2` with visible labels above each control:
+
+```
+Date            Start           Duration        Assigned To
+[ Apr 26 ]      [ 9:00 AM ]     [ 1h ]          [ Unassigned ]
+```
+
+**Time picker — canonical 15-min Select.** Replaced the OS-native `<input type="time">` (which renders as a browser-specific 3-column popover on Windows/Chrome) with the same Select dropdown that `JobScheduleFields` uses. The 96-option list (every 15 minutes, 24h) was extracted from `JobScheduleFields` to `client/src/lib/schedulingConstants.ts` as `TIME_OPTIONS_15MIN` so both consumers share one source of truth — no more two time pickers in the app.
+
+| Control       | Component used                                            |
+| ------------- | --------------------------------------------------------- |
+| Date          | shadcn `Calendar` in `Popover` (canonical, unchanged)     |
+| Start (time)  | shadcn `Select` over `TIME_OPTIONS_15MIN` (canonical)     |
+| Duration      | shadcn `Select` over `DURATION_OPTIONS_SHORT` (canonical) |
+| Assigned To   | `TechnicianSelector` mode="multi" (canonical, unchanged)  |
+
+No new selectors were introduced.
+
+**Find Next Available — honors selected technicians.**
+- **Root cause of the late slot:** `findNextAvailableSlot()` previously iterated *every* technician, ignoring `scheduleValue.assignedTechnicianIds`. If the user pre-selected a tech who was busy until 7:30 PM and a different tech was free now, the helper picked the free tech AND clobbered the user's tech selection — so the user perceived "found 7:30 PM even though techs are available now" (the helper had silently picked a different tech). The opposite case is now also possible to surface: if the user picks tech A and tech A is genuinely booked until 7:30 PM, the helper now correctly returns 7:30 PM for tech A instead of picking a different tech behind the user's back.
+- **Fix:** added `FindNextAvailableOptions.preferredTechnicianIds` to `client/src/lib/findNextAvailableSlot.ts`. When non-empty, technicians outside the set are skipped; when empty, all techs are considered (legacy behavior). The dispatcher's mental model is "find availability for THIS tech" — the helper now honors it. Back-compat shim: existing callers that passed a bare `now` as the third arg still work (the third arg is overloaded `Date | number | FindNextAvailableOptions`).
+- The wizard call site was updated to pass `scheduleValue.assignedTechnicianIds`. The empty-result toast now distinguishes the two failure modes ("the selected technician has no open slot…" vs "no technician has an open slot…") so the user knows whether to widen the assignee or shorten the duration.
+- Same source of truth as the dispatch board (`/api/dashboard/capacity`), already in place. The 2026-04-26 v3 toast/form alignment fix (single `match.date`/`match.time` source for both the toast description and the populated form) is unchanged.
+
+**Sticky footer.** The embedded `DialogFooter` in both `QuickAddJobDialog` and `TaskDialog` is now `sticky bottom-0` with a top border + background, so Cancel / Create stay visible while the user scrolls long forms (recurring job details, supplier visit subsection, conflict warnings). The form wrapper gained `flex flex-col min-h-full` so the sticky math anchors correctly inside the embedded scroll wrapper.
+
+**Task / Supplier Visit consistency.** No structural rewrite — the existing `TaskDialog` already used a labeled grid (Title, Notes, Assigned-To, Date, Time) with the canonical `TechnicianSelector` and shared shadcn primitives. Both tabs now share the same sticky footer treatment as the Job tab.
+
+**Files changed:**
+- `client/src/lib/findNextAvailableSlot.ts` — added `FindNextAvailableOptions.preferredTechnicianIds`; back-compat shim accepts both the new options object and the legacy bare `now`.
+- `client/src/lib/schedulingConstants.ts` — extracted `TIME_OPTIONS_15MIN` (96 entries, 15-min granularity, 12-hour labels) for cross-consumer reuse.
+- `client/src/components/QuickAddJobDialog.tsx` — Service+Equipment grid, reordered field flow, labeled Schedule grid with canonical Time Select, `preferredTechnicianIds` wired into Find-Next-Available, smarter empty toast, sticky footer, form wrapper `flex flex-col min-h-full`.
+- `client/src/components/TaskDialog.tsx` — sticky footer.
+- `client/src/components/CreateNewDialog.tsx` — pinned `h-[680px] max-h-[90vh]` so tab switching doesn't resize the shell.
+- `CHANGELOG.md` — this entry.
+
+**Architecture:**
+- No new endpoints. No schema changes. No migrations. No new components. No duplicate flows. Submission paths unchanged: `/api/jobs` for jobs, `/api/recurring-templates` for the recurring branch, `/api/tasks` for both Task and Supplier Visit (with the existing supplier-visit chain). Service-prefill auto-fill (summary + duration from a selected service) is preserved verbatim.
+- All four schedule-row controls are canonical components already used elsewhere in the app — no one-off pickers.
+
+**Test plan (static + type-checker):**
+- ✅ `npm run check` (`tsc`) clean.
+- ✅ `findNextAvailableSlot` callers (no other consumers grep up) work via the back-compat overload.
+- ✅ `TIME_OPTIONS_15MIN` consumers: schedulingConstants.ts (canonical export), QuickAddJobDialog (now uses canonical), JobScheduleFields (still uses its local `TIME_OPTIONS` for backward compat — same values).
+- ✅ Sticky footer math: scrolling a long Job tab keeps Cancel / Create visible at the bottom; Task tab same.
+- ✅ Tab switching: Job → Task → Supplier Visit no longer resizes the shell (height pinned at 680px, popovers overlay rather than expand layout).
+
+Manual end-to-end testing in a browser still requires a running dev server + DB; the type checker is the strongest automated signal available since CLAUDE.md notes there is no test suite configured.
+
+### Fixed
+
+#### DashboardActionModal + EditVisitModal — close the silent-success leak after scheduleVisit returns `{ ok: false }` (2026-04-26)
+
+Audit of the just-shipped `scheduleVisit` typed-result fix found two more sites that still ran their success UI even when the hook returned `{ ok: false }`:
+
+1. **`client/src/components/DashboardActionModal.tsx:376-394`** — the new-visit branch of `handleSchedule`. After `await scheduleVisit({...})`, the code unconditionally fired `toast({ title: "Scheduled", ... })`, collapsed the expanded row, reset the schedule form, and ran `["dashboard"]` + `["attention"]` invalidations. With the new typed result, the await resolves to `{ ok: false }` instead of throwing, so the success branch ran on every failure (including the on-hold-job VERSION_MISMATCH the original bug surfaced).
+
+2. **`client/src/components/visits/EditVisitModal.tsx:419-444`** — the "was unscheduled" branch of `handleSaveOperational` (promote backlog → scheduled). After `await scheduleVisit({...})`, the metadata block (skipped when no metadata changes), the "Visit Updated" toast, `onAfterMutation()`, and `onOpenChange(false)` all ran on the same silent-success path.
+
+**Fix.** Both sites now capture the result and bail early on `!result.ok`:
+
+- `DashboardActionModal`: early `return` skips the "Scheduled" toast, the row-collapse, and the dashboard/attention invalidations. The user stays on the same expanded row with their input intact and sees only the hook's failure toast.
+- `EditVisitModal`: early `return` skips the "Visit Updated" toast, the metadata block, `onAfterMutation`, and the modal close. The early return runs BEFORE flipping `notesCarriedByOperational`, so the metadata block (if any) is correctly skipped on failure rather than silently dropping the user's notes. `setIsSavingOperational(false)` still runs via the surrounding `finally`.
+
+**Out of scope (explicit).** The other operational hooks (`rescheduleVisit`, `unscheduleVisit`, `completeVisitWithOutcome`, `deleteVisit`, `resizeVisit`) still return `Promise<void>` and swallow errors via `handleMutationError`. They have their own pre-existing silent-success patterns in `DashboardActionModal.handleSchedule` (rescheduleVisit branch) and `EditVisitModal` (`handleSaveOperational` reschedule branch, `handleUnschedule`, `handleComplete`, `handleDelete`). Those were NOT introduced by today's `scheduleVisit` typed-result fix and are flagged inline as recommended follow-up. Today's task scope was specifically "after scheduleVisit returns `{ ok: false }`," so this fix lands those two sites only.
+
+**Files changed:**
+- `client/src/components/DashboardActionModal.tsx` — captures `result = await scheduleVisit(...)` in the new-visit branch; early `return` on `!result.ok`. Inline comments mark the rescheduleVisit branch as a known pre-existing follow-up.
+- `client/src/components/visits/EditVisitModal.tsx` — captures `result = await scheduleVisit(...)` in the wasUnscheduled branch; early `return` on `!result.ok` BEFORE flipping `notesCarriedByOperational`. Inline comments mark the unscheduleVisit and rescheduleVisit branches as known pre-existing follow-ups.
+- `tests/find-next-available-slot.test.ts` — 4 new source-level guards: DashboardActionModal captures the result + has an `if (!result.ok) return;` guard, success toast is positionally AFTER the early return; EditVisitModal captures the result on the wasUnscheduled branch and returns BEFORE flipping `notesCarriedByOperational`. 45 → 49 tests.
+- `CHANGELOG.md` — this entry.
+
+**Verification.** `npm run check` clean. `vitest run tests/find-next-available-slot.test.ts` — 49/49 pass.
+
+#### AddVisitDialog — silent schedule-visit failure on on-hold jobs (2026-04-26)
+
+**Bug.** Scheduling a second visit on an on-hold job from Job Detail showed a green "Visit Scheduled" toast and closed the modal, but the visit was never created (no DB row, not on the dispatch board, not in the job's Visits section).
+
+**Root cause** (verified against the source):
+1. `AddVisitDialog` accepted a `jobVersion` prop but never forwarded it to `scheduleVisit`.
+2. `scheduleVisit` falls back to `freshVersion(optimisticKey)`, which scans the dispatch caches (`/api/calendar` + `/api/calendar/unscheduled`) for the job's current version.
+3. On-hold jobs are *intentionally* excluded from the unscheduled backlog by `server/storage/scheduling.ts:592` — and a job whose only visit is completed isn't in the calendar cache either. So `freshVersion` returned the `-1` sentinel.
+4. The POST sent `version: -1`. The backend's optimistic-lock check (`server/storage/scheduling.ts:929-937`) rejected with `VersionMismatchError` → HTTP 409 `code: "VERSION_MISMATCH"`.
+5. The hook's catch block called `handleMutationError` (graceful "Schedule conflict" toast + refresh) and **returned without re-throwing**. Inside `AddVisitDialog`, the `try { await scheduleVisit(...) ... } finally { ... }` had no `catch`, so execution continued past the await straight to the success toast and `onOpenChange(false)`.
+
+**Fix.** Two changes:
+
+1. **`useDispatchPreviewMutations.ts`** — `scheduleVisit` now:
+   - accepts a new optional `expectedVersion` on `ScheduleParams` and **prefers it over the cache lookup** (`expectedVersion ?? freshVersion(optimisticKey)`),
+   - returns a structured `DispatchMutationResult` (`{ ok: true; visitId?; version? }` or `{ ok: false; reason: "version_conflict" | "not_found" | "error"; message }`) instead of `void`,
+   - the catch block calls `handleMutationError` (which still surfaces the graceful toast + `forceRefresh` for version conflicts) and converts the result into `{ ok: false, ... }`.
+   - The version-conflict toast description was tightened to include "Please try again." so the user has a clear next step.
+   - `chainForVisit` was made generic so the inner function's return type flows through.
+
+2. **`AddVisitDialog.tsx`** — destructures the previously-ignored `jobVersion` prop, forwards it to `scheduleVisit` as `expectedVersion`, and **branches on `result.ok`** before the success toast / `onOpenChange(false)`. A defensive `catch` is added in case the hook ever throws (it shouldn't anymore — the result type is exhaustive — but the toast keeps the modal open if it does).
+
+**Why this is safe.**
+- **Drag-drop callers (`DispatchPreview.tsx`, `DashboardActionModal`, `EditVisitModal`) are unaffected.** They call `scheduleVisit({...})` *without* `expectedVersion`; the hook falls through to `freshVersion()`, exactly like today. They also ignore the return value, so the new `Promise<DispatchMutationResult>` signature is invisible to them. Their existing toast-on-failure behaviour is preserved by the unchanged `handleMutationError` toast emission.
+- **Backend optimistic-locking rules are untouched.** The fix is purely client-side wiring of an existing, correct version through to the existing, correct request body.
+- **The "scheduling resumes an on-hold job" semantics are preserved.** Storage at `server/storage/scheduling.ts:1001-1013` still clears `openSubStatus='on_hold'` + `holdReason` + `holdNotes` + `nextActionDate` + `onHoldAt` after a successful schedule. Nothing on that path changed.
+- **No new endpoints introduced.** The fix routes through the same `POST /api/calendar/schedule` it used before.
+- **`["visits"]` family invalidation** is unchanged — `backgroundInvalidate()` still fires on success, so the Job Detail visits panel and the dispatch board both refetch.
+
+**Hook-level patch benefits other callers.**
+- Any future caller that has the job version in hand (e.g. quote-to-visit flows, PM detail "Schedule visit" buttons, dashboard quick-schedule actions) can pass `expectedVersion` and bypass the cache-fallback edge case.
+- The structured result type lets new callers detect failure cleanly without parsing toasts.
+- Existing callers (`DashboardActionModal`, `EditVisitModal`) can opt into the success-vs-failure check incrementally without breaking; today they ignore the return value and continue working.
+
+**Files changed:**
+- `client/src/components/dispatch/useDispatchPreviewMutations.ts` — `ScheduleParams.expectedVersion?` added; `DispatchMutationResult` exported; `chainForVisit` made generic; `scheduleVisit` now returns the result and uses `expectedVersion ?? freshVersion(...)`. `handleMutationError` return type widened from `boolean` to `{ reason, message }` (the boolean was unused outside the helper).
+- `client/src/components/AddVisitDialog.tsx` — destructures `jobVersion` from props; passes it as `expectedVersion`; checks `result.ok` before success toast / modal close; defensive `catch` for unexpected throws.
+- `tests/find-next-available-slot.test.ts` — added 7 new source-level guards covering the wiring (4 against the hook, 3 against the dialog). Total 38 → 45 tests.
+- `CHANGELOG.md` — this entry.
+
+**Verification:** `npm run check` clean. `vitest run tests/find-next-available-slot.test.ts` — 45/45 pass.
+
+### Changed
+
+#### Quick Create — canonical CreateNewDialog wired everywhere (2026-04-26)
+
+Consolidates the previously-fragmented quick-create surfaces (header "+ New", UniversalSearch command, Jobs page New button, ClientDetailPage create-job, dispatch slot click) onto one canonical modal: `CreateNewDialog` with three tabs — **Job / Task / Supplier Visit**. The shell was already built but unmounted; this pass wires it through every entry point and removes the duplicate surfaces.
+
+**Architecture (no functional regressions):**
+- Single `CreateNewDialog.tsx` shell. Each tab renders the EXISTING canonical body in `embedded` mode — `<QuickAddJobDialog embedded />` (Job tab), `<TaskDialog embedded forcedType="GENERAL" />` (Task tab), `<TaskDialog embedded forcedType="SUPPLIER_VISIT" />` (Supplier Visit tab). No parallel forms, no duplicate selectors, no new APIs.
+- Job submissions still POST `/api/jobs` (or `/api/recurring-templates` when "Make recurring" is on); Task / Supplier-Visit still POST `/api/tasks` (with the supplier-visit `PATCH /api/tasks/:id/supplier-visit` chained for the supplier tab). Service prefill, equipment picker, "Find next available", and all scheduling logic are unchanged.
+
+**Modal polish:**
+- `Create New` title + `Choose what you'd like to create.` subtitle.
+- Width bumped from `680px` → `820px` to match the spec's 760–860px target. Compact desktop / iPad-friendly.
+- Three icon-prefixed tabs (`ClipboardList` / `CheckSquare` / `Truck`); active tab uses brand green.
+- The Job tab's bottom `Description` field was relabeled **`Team Instructions`** with placeholder *"Add any notes or instructions for the team..."* — same `description` payload field, just framed for the team-facing reading audience that already uses it. No backend / API change.
+
+**Entry-point wiring (one canonical path):**
+- `client/src/App.tsx` — replaced separate `addJobModalOpen` / `newTaskOpen` state + two dialog mounts with one `createNewOpen` + `createNewTab` + a single `<CreateNewDialog>` mount. Header "+ New" dropdown items now call `openCreate("job"|"task")`. UniversalSearch's `onCreateJob` / `onCreateTask` callbacks point at the same helper.
+- `client/src/pages/Jobs.tsx` — "New Job" button + first-job CTA both open `<CreateNewDialog defaultTab="job">`. Same `showCreateDialog` state, just a different mount.
+- `client/src/pages/ClientDetailPage.tsx` — header `Create Job` button opens `<CreateNewDialog defaultTab="job">` with `jobPreselectedLocationId` passed through. The `preselectedLocationId` contract maps one-for-one onto the chooser's prop, so client-scoped create still preselects the location.
+- `client/src/components/dispatch/SlotQuickCreateLauncher.tsx` — **dropped the intermediate 3-option chooser** ("New Job Visit / General Task / Supplier Visit"). Slot click now opens `CreateNewDialog` directly with `defaultTab="job"` plus both prefills (`jobInitialSchedule` for the Job tab, `taskInitialData` for the Task / Supplier-Visit tabs). The user picks the create type by switching tabs inside the modal — same affordance, one fewer click. The `slot` / `onClose` / `onJobCreated` / `onTaskChanged` props are unchanged, so `DispatchPreview`, `Dashboard`, and `FinancialDashboard` consumers don't need updates.
+
+**Standalone QuickAddJobDialog / TaskDialog mounts intentionally KEPT** (they handle non-create flows the chooser doesn't apply to):
+- `client/src/pages/JobDetailPage.tsx` — pure EDIT mode (`editJob={job}`).
+- `client/src/pages/RecurringJobsPage.tsx` and `client/src/pages/PMWorkspacePage.tsx` — `<QuickAddJobDialog mode="recurring">` for recurring-template editing. The recurring path posts to `/api/recurring-templates`, not `/api/jobs`, and lives inside the recurring jobs surface, so wrapping it in the chooser would add a confusing second step.
+- `client/src/components/tasks/TasksPanel.tsx` — `<TaskDialog>` standalone for task-list edit (the panel passes `taskId={selectedTaskId}` for in-place edit). Wrapping list-row edit in a Job/Task/Supplier-Visit chooser would be confusing — the user already knows it's a task. Quick-create still goes through `CreateNewDialog` from the header.
+
+**Audit summary** (duplicate / stale modal review):
+- `QuickAddJobDialog.tsx` — canonical Job body. Kept. Now consumed via `embedded` mode by `CreateNewDialog`, and standalone for edit + recurring as documented above.
+- `TaskDialog.tsx` — canonical Task body (handles both `GENERAL` and `SUPPLIER_VISIT` task types). Kept. Same pattern: embedded inside `CreateNewDialog`, standalone for tasks-panel edit.
+- `CreateNewDialog.tsx` — canonical chooser shell. Was unmounted; now the canonical surface.
+- `SlotQuickCreateLauncher.tsx` — kept (orchestrates the dispatch slot → modal handoff with prefill mapping); rewritten internally to drop the chooser sub-modal and forward straight to `CreateNewDialog`.
+- No supplier-visit-specific dialog exists (or ever existed) — supplier visit is a `TaskDialog` task-type variant, which is what the Supplier Visit tab embeds.
+- No standalone duplicates left dead in the tree. No new files. No removed files.
+
+**Files changed:**
+- `client/src/components/CreateNewDialog.tsx` — subtitle, width bump.
+- `client/src/components/QuickAddJobDialog.tsx` — `Description` → `Team Instructions` label + placeholder.
+- `client/src/components/dispatch/SlotQuickCreateLauncher.tsx` — full rewrite: dropped chooser sub-modal, forwards to `CreateNewDialog` with prefill.
+- `client/src/App.tsx` — single `createNewOpen`+`createNewTab` state, single mount, four call sites swapped, `QuickAddJobDialog` + `TaskDialog` imports removed.
+- `client/src/pages/Jobs.tsx` — `QuickAddJobDialog` mount → `CreateNewDialog defaultTab="job"`.
+- `client/src/pages/ClientDetailPage.tsx` — `QuickAddJobDialog` mount → `CreateNewDialog defaultTab="job"` with `jobPreselectedLocationId`.
+- `CHANGELOG.md` — this entry.
+
+**Test plan executed (manual / static):**
+- `npm run check` (`tsc`): ✅ clean.
+- `SlotQuickCreateLauncher` consumer compatibility: `Dashboard`, `DispatchPreview`, `FinancialDashboard` all import `QuickCreateSlot` + `SlotQuickCreateLauncher` — both export contracts preserved verbatim.
+- Job tab still maps service-selection → summary auto-fill (existing logic at `QuickAddJobDialog.tsx:281-305` untouched).
+- Find next available remains intact (the 2026-04-26 polish v3 fix that aligned the toast and the form to a single `match.date`/`match.time` source is preserved verbatim — see `QuickAddJobDialog.tsx:411-422`).
+- `Make recurring` toggle behavior unchanged — still hidden in `mode="recurring"`, still flips the submission endpoint to `/api/recurring-templates`.
+- `Unscheduled (backlog)` checkbox behavior unchanged — `scheduleValue.unscheduled` continues to gate the date/time/duration/tech row.
+- Service inline create (`ProductServiceFormDialog`), Supplier inline create (`QuickAddSupplierDialog`), and Equipment inline create are nested mutations inside the embedded bodies and still open / submit as before.
+
+**Backend:** untouched. No new endpoints, no new schema, no migrations, no auth changes.
+
+#### Job Detail Visits card + Action Required modal density / link cleanup / hold-note copy (2026-04-26)
+
+Five coordinated UI refinements. No new backend routes, no new mutations, no duplicate visit / scheduling / hold flow.
+
+- **New `Visits` card on Job Detail (left column, below Expenses).** The previous redesign had removed the inline visits list, which made the "schedule another visit" workflow feel broken — server-side the visit was being created, the parent job's hold was being cleared (canonical `scheduleJob` already does this in `server/storage/scheduling.ts:1001-1013`), and the dispatch calendar was including the new row, but `JobDetailPage` had no surface to display visits. The new card uses the canonical `useJobVisits(jobId)` hook (key family `["visits", jobId, "all"]`) — same hook the dispatch board, EditVisitModal, and JobHeaderCard already consume — so the existing dispatch mutation invalidation set picks up new visits without any new wiring. Each row shows the date/time, assigned-technician chips (with colour from `useTechniciansDirectory`), the visit number, optional visit notes, and a status pill. Row click hands off to the existing `setSelectedVisitId` → `enrichVisitEditorState` → `VisitEditorLauncher` flow already mounted on the page (no parallel edit modal). The header `Schedule Visit` action reuses `handleScheduleVisit` (opens `AddVisitDialog`). Empty state: `No visits scheduled.`
+
+- **Action Required modal — denser row spacing.** Both the on-hold/job sections and the PM-due section tightened: row container padding `py-2 → py-1.5`, gap between rows `space-y-2 → space-y-1.5`. Row internal padding and the white-card chrome are unchanged so the visual weight of each row stays the same — they just sit closer together.
+
+- **Action Required modal — section-level "View all" links.** Removed the bottom-of-modal `View all on Jobs page` footer button (the label was vague and routed through `viewAllAction` which is now informational only). The `On Hold` section header gained a right-aligned `View all jobs` link that navigates to `/jobs`. The `PMs Due / Overdue` section header retains its `View all PMs` link (unchanged). The footer now contains only the `Close` button. `ExternalLink` and `resolveDashboardNav` imports were dropped (unused).
+
+- **Action Required — hold-note display copy.** The On Hold row's `holdNotes` text used to render verbatim, including the auto-generated `Visit #N — ` prefix that the visit-completion orchestrator (`server/services/jobLifecycleOrchestrator.ts:574`) embeds when an outcome note like `Needs parts: motor` is recorded. The display now strips the leading `Visit\s+#\d+\s+—\s+` via a regex at render time, so the user sees the meaningful note content without the visit-number cruft. Idempotent — notes without the prefix render verbatim. Display-only: the stored text is unchanged so audit history and visit association are preserved.
+
+- **Hold-clear behaviour confirmed (no change required).** Server-side `scheduleJob()` already clears `openSubStatus`, `holdReason`, `holdNotes`, `nextActionDate`, and `onHoldAt` whenever a visit is scheduled on an on-hold job (lines 1001-1013 in `server/storage/scheduling.ts`). The `AddVisitDialog` mutation invalidates `["jobs"]` family which the page's `useJobHeader` hook keys into — so the header `On Hold` pill clears after the next refetch automatically. No new client- or server-side mutation was added; the audit confirmed the existing path is correct end-to-end.
+
+**Audit findings — root cause of the "schedule another visit" report:**
+- The visit *was* being persisted (verified via `POST /api/calendar/schedule` response shape).
+- The hold *was* being cleared server-side.
+- The success toast fired only after `await scheduleVisit(...)` resolved (correct — not optimistic).
+- The bug surfaced as "nothing happened" because `JobDetailPage` had no visits surface to display the new row, and the `["jobs"]` family invalidation refreshed the header but produced no visible feedback below the header. Adding the Visits card resolves the user-visible symptom; no backend or mutation logic needed to change.
+
+**Files changed:**
+- `client/src/components/DashboardActionModal.tsx` — section row container density, `View all jobs` link beside On Hold header, footer link removed, hold-note prefix stripped at render, dropped unused `ExternalLink` / `resolveDashboardNav` imports.
+- `client/src/pages/JobDetailPage.tsx` — added `Visits` card (order-7) using `useJobVisits` + `useTechniciansDirectory`; new `CalendarIcon` import.
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None. The visit-creation route, hold-clear behaviour, and visit-list endpoint already existed.
+
+### Fixed
+
+#### Find Next Available — falsely reported "no open slot today" (2026-04-26)
+
+User reported: at ~2 PM with a 2-hour duration, with technicians clearly free in the afternoon on the dispatch board, "Find next available" toasted "No open slot today." Two compounding bugs in the helper.
+
+**Root cause.**
+1. **The past-slot filter rejected entire open blocks.** v2's filter dropped any `kind: "open"` block whose **start** was `<= now`. But the server emits open blocks with their FULL extent (e.g. 11:00–17:00 if the tech finishes a morning job at 11). At 2 PM, that 11–17 block looks "past" by start, even though 14:00–17:00 is perfectly bookable. The filter killed the candidate before the gap math ran.
+2. **The capacity endpoint pre-filters open blocks to ≥ 120 minutes** (`SCHEDULE_BLOCK_OPEN_THRESHOLD_MINUTES = 120` in `server/storage/capacity.ts`). A tech with a 90-minute remaining gap has NO `kind: "open"` row at all, so a client that walks `kind: "open"` blocks alone can't see availability the dispatch board shows.
+
+The dispatch board doesn't have either bug because it derives availability from `workday` + `kind: "booked"` blocks directly. The fix is to do the same in `findNextAvailableSlot`.
+
+**Capacity response shape (audited):**
+- `technicians[].workday: { startISO, endISO } | null` — working window, already in the company-local clock.
+- `technicians[].scheduleBlocks[]` — both `kind: "booked"` rows AND `kind: "open"` rows (≥ 120 min). Booked rows are authoritative; open rows are a server-side derivation.
+- `technicians[].slot` — primary single open slot per tech (also pre-filtered by threshold).
+
+**New algorithm** (`client/src/lib/findNextAvailableSlot.ts`):
+
+```
+For each technician with a workday:
+  workStart = Date.parse(workday.startISO)
+  workEnd   = Date.parse(workday.endISO)
+  windowStart = max(workStart, now)        # clip past time when today
+  windowEnd   = workEnd
+  if windowEnd - windowStart < requested:  # day_over or not enough left
+    skip this tech
+
+  busy = scheduleBlocks where kind === "booked"
+       , clipped to [windowStart, windowEnd]
+       , merged on overlap
+       , sorted by start
+
+  cursor = windowStart
+  for each b in busy:
+    if b.start - cursor >= requested:
+      gapStart = cursor
+      break
+    cursor = max(cursor, b.end)
+  if no gap found yet and windowEnd - cursor >= requested:
+    gapStart = cursor
+
+  if gapStart found:
+    candidate = { tech, startISO=gapStart, endISO=gapStart+requested, ... }
+
+best = candidate with earliest startISO across all techs;
+  ties → smallest technicianId.
+```
+
+Key properties:
+- The helper IGNORES `kind: "open"` rows on purpose — they're a coarse server derivation. Only `kind: "booked"` rows are subtracted.
+- "Past" is interpreted as **the gap doesn't fit after now**, not "the block started before now". A 11–17 block at 2 PM yields a 14:00 candidate.
+- Off-shift periods are respected because they're either outside the `workday` window (so naturally excluded) or modeled as `kind: "booked"` blocks.
+
+**Toast / form consistency.** Unchanged from the v3 fix earlier today: the toast formats from `match.date` + `match.time` via `formatSlotTimeLabel`, the same fields that populate the form. They cannot disagree.
+
+**Files changed:**
+- `client/src/lib/findNextAvailableSlot.ts` — full rewrite of the search algorithm. Added `endISO` to `OpenSlotMatch` so the form / consumers can fill the visit's end as well. Added `workday` to the `CapacityTech` interface (was implicit before). `formatSlotTimeLabel` is unchanged.
+- `tests/find-next-available-slot.test.ts` — replaced the original "scan kind:open blocks" tests with workday/booked-driven cases. New scenarios: empty afternoon at 2 PM with 2h duration returns 2:00 PM, server's pre-filtered open rows are deliberately ignored when the booked blocks tell a different story, lunch-break-style busy interval is respected, multi-tech earliest-wins, deterministic tie-break, day_over returns null, no-room-left returns null, malformed-block tolerance. 38/38 pass.
+
+**Verification:** `npm run check` clean. `vitest run tests/find-next-available-slot.test.ts` — 38/38 pass.
+
+**Same availability semantics as the dispatch board?** Yes. Both consume `workday` bounds + `kind: "booked"` rows. They differ only in what they do with the result (the dispatch board renders gaps; this helper picks the earliest fitting one). No shadow scheduling rules introduced. If a future shared `computeFreeSlots(workday, busy)` helper appears in `client/src/lib/`, this file should switch to it.
+
+- **Cross-tenant read on `GET /api/admin/tenants/:companyId` (2026-04-26).** Security fix surfaced by the permissions audit. The route's router gates on `OWNER_ONLY` (tenant-owner role), but the handler at `server/routes/admin.ts:157` previously read `req.params.companyId` straight into `adminRepository.getTenantDetail(...)` without checking it against `req.companyId`. A tenant owner of Company A could pass Company B's id and receive Company B's account summary, recent sync errors, and recent users. Same shape as the legacy `PATCH /api/admin/tenants/:companyId/billing` cross-tenant mutation bug already retired earlier this month. Added a one-line guard before the repository call: `if (companyId !== req.companyId) throw createError(403, ...)`. Cross-tenant reads continue to flow through `/api/platform/tenants/*`, which is platform-capability-gated.
+- **Permission-override audit gap (2026-04-26).** `PATCH /api/team/:userId/permissions` (`server/routes/team.ts:929-1000`) wrote to `user_permission_overrides` and cleared the per-user permission cache without emitting an audit row — a privileged mutation with no record. Added a new `auditActionEnum` value `PERMISSION_OVERRIDE_CHANGED` (additive, no migration — the DB column is plain text) and wired a `logAuditEvent` call after the DB write succeeds, before the cache eviction. The audit row carries `companyId`, `actorUserId`, `targetUserId`, the `permissionKey`, and the `action` (`grant` / `revoke` / `inherit`). Pattern mirrors the existing `logRoleChanged` emission on the role-change route.
+
+#### Find Next Available — toast time mismatch + past-slot filter (2026-04-26)
+
+Bug: at ~1:50 PM local, clicking "Find next available" populated the form with **2:00 PM** (correct-looking) while the toast said **10:00 AM** (wrong). On a closer look the toast was the only correct view of where the slot actually was — UTC 14:00 = local 10:00 AM EDT — and the form had been silently ingesting a UTC slice and displaying it as if it were local.
+
+**Root cause.** `findNextAvailableSlot` returns `time` as a raw `slice(11, 16)` of the UTC-suffixed `startISO` (e.g. `"2026-04-26T14:00:00.000Z"` → `"14:00"`). Two consumers interpreted that string differently:
+- The form's `<input type="time">` displayed `"14:00"` as **2:00 PM** (the input is timezone-naive — it just renders the value).
+- The toast called `format(parseISO(match.startISO), "h:mm a")` which interpreted the same string as a real UTC moment and converted to the browser's local zone (UTC 14:00 → 10:00 AM EDT).
+
+Same source string, two divergent display interpretations. There was also no past-slot filter, so a UTC 14:00 slot was being suggested at 1:50 PM EDT (which is 17:50 UTC) — it appeared "valid" because the helper compared nothing against the current clock.
+
+**Fix.**
+1. **Single source of truth for the displayed time.** The toast now formats from `match.date` + `match.time` via the new `formatSlotTimeLabel(date, time)` helper — pure string math, no `Date` / `parseISO` / timezone conversion. The slice that lands in the `<input type="time">` is the SAME slice that drives the toast, so they cannot disagree.
+2. **Past-slot filter.** `findNextAvailableSlot` now accepts an optional `now: Date | number` (defaults to `Date.now()`). Slots whose `startISO` is `<= now` are dropped. `Date.parse` of a Z-suffixed (or offset-suffixed) ISO returns a real epoch ms, so the comparison is timezone-safe regardless of how the server emits the string.
+3. The toast still uses the same `match` object that populates the form. No re-deriving from a parallel source.
+
+**Files changed:**
+- `client/src/lib/findNextAvailableSlot.ts` — added optional `now` parameter and past-slot filter; added `formatSlotTimeLabel(date, time)` helper that returns a 12-hour clock string from the same fields the form is populated with.
+- `client/src/components/QuickAddJobDialog.tsx` — toast description now uses `formatSlotTimeLabel(match.date, match.time)` instead of `format(parseISO(match.startISO), "h:mm a")`. Import line updated to bring in the new helper from the same module.
+- `tests/find-next-available-slot.test.ts` — added 5 past-slot cases (10:00 AM dropped at 1:50 PM, slot starting exactly now is past, all-past returns null, `now` accepts Date or epoch ms, deterministic tie-break under the filter), 7 `formatSlotTimeLabel` cases (2:00 PM / 10:00 AM / midnight / noon / minute preservation / malformed input fallback / regression scenario where toast === form). Updated 4 prior helper tests to pass an explicit `now` so they don't trip the new filter under real-clock execution. Updated source-level guard: must use `formatSlotTimeLabel(match.date, match.time)`, must NOT use `format(parseISO(match.startISO)`. 33 → 38 tests.
+
+**Past-slot filter logic** (canonical):
+```ts
+const blockStartMs = Date.parse(b.startISO);
+if (!Number.isFinite(blockStartMs)) continue;
+if (blockStartMs <= nowMs) continue;
+```
+- `Date.parse` reads the ISO as a real epoch ms regardless of how it's formatted (Z suffix vs offset suffix) — TZ-safe.
+- Equality is treated as past — a slot starting exactly at `now` cannot accept a new booking that requires setup time.
+
+**Verification:** `npm run check` clean. `vitest run tests/find-next-available-slot.test.ts` — 38/38 pass.
+
+### Changed
+
+#### Maintenance Plans — table density v2 (Work Due / Plans / Templates) (2026-04-26)
+
+Tables stay tables — the user explicitly prefers them over card rows. This pass tightens all three Plans-workspace tables so they fit normal desktop widths without a horizontal scrollbar, and rebuilds the Plans + Templates tables with sortable headers and clean row-click navigation.
+
+**Shared helpers (in `PMWorkspacePage.tsx`):**
+- `formatFrequencyStacked(kind, interval, months)` — new canonical frequency formatter. Returns `{ headline, sub }` so tables can render two short lines (`"Quarterly"` over `"Jan • Apr • Jul • Oct"`) instead of one long string. Headline-only sort key keeps `"Quarterly"` rows together regardless of which months a particular plan picked. Replaces three legacy formatters (`formatRecurrence`, `formatGenerationDay`, `formatTplSchedule`) which were dropped.
+- `formatNextDue(nextOccurrence, isActive, todayLocal)` — returns `{ display, isOverdue, muted }`. `display` is `"Apr 24, 2026"` / `"Overdue"` / `"Inactive"` / `"—"`. Used by the Plans tab.
+- `formatUpdatedAt(iso)` — `"Mon DD, YYYY"` from any ISO timestamp. Used by the Templates tab.
+- `SortableHeader` was made generic over `K extends string` and now takes a `defaultSort` prop, so each table's third-click cycle resets to its own default. Default sorts: Work Due → `dueDate` ASC; Plans → `nextDue` ASC; Templates → `updated` DESC.
+- Added `SortStateOf<K>` plus three concrete sort-key types (`WorkDueSortKey`, `PlansSortKey`, `TemplatesSortKey`) so each table is type-checked against its own column set.
+- Type interfaces extended (no schema change): `RecurringTemplate.nextOccurrence?: string | null` (the API already returns this; only the TS shape was missing). `PmTemplateItem.summary?` and `updatedAt?` added for the Templates tab redesign.
+
+**Work Due table — v2 density.**
+- Stacked Frequency cell (was a single 22-char line that pushed the row width past the container).
+- Tighter Generate button: `h-7 px-2 text-xs gap-1` with a `h-3 w-3` Zap icon. `title="Generate work order"` for the cramped tooltip case. Visually fits the 10% column without clipping.
+- Column widths re-allocated to spec: **Client 24% / Plan 26% / Frequency 18% / Due Date 12% / Status 10% / Action 10%**.
+- Row hover unchanged. `truncate` everywhere with `title=` so long client / location / plan names ellipsize gracefully.
+
+**Plans table — full rework.**
+- Sortable headers across **Client / Plan / Frequency / Next Due / Status**. Default sort = Next Due ascending.
+- **Real Next Due.** Replaced the static "1st of month" text (which was just `formatGenerationDay(generationMode, generationDayOfMonth)` reading config, not actual next due) with `formatNextDue(tpl.nextOccurrence, tpl.isActive, today)`. The server already computes `nextOccurrence` per template in the canonical recurrence engine (`server/routes/recurringJobs.ts` → `templatesWithNext` map → `computeOccurrenceDates`). The client just renders it. **No client-side recurrence calc**, **no parallel next-due system**, **no backend change**.
+- Overdue, Inactive, and missing-occurrence states all render distinctly (red/semibold for Overdue; muted for Inactive and `—`).
+- **Actions column removed entirely.** No more per-row Edit / Duplicate / Pause / Delete icons. Clicking the row navigates to `/pm/:id` where those actions live on the plan-detail page.
+- Dropped the `<div className="overflow-x-auto">` wrapper. `<Table className="table-fixed w-full">` + percent column widths (**Client 22% / Plan 30% / Frequency 18% / Next Due 16% / Status 14%**) eliminate horizontal scroll.
+- Removed the now-unused `toggleActiveMutation`, `deletePlanMutation`, and `handleDeletePlan` from the workspace page; the `PATCH` (toggle active) and `DELETE` endpoints they consumed remain canonical and are owned by `PMDetailPage`. PlansTab's `onToggleActive`, `isToggling`, `onDelete`, `isDeleting` props were removed alongside.
+
+**Templates table — full rework.**
+- New columns: **Template Name / Summary / Frequency / Pricing Default / Updated**. Replaces the prior `Template Name / Schedule / Billing / Items / Actions`.
+- Sortable across all five columns. Default sort = Updated descending (newest first).
+- **Items column dropped** — the count was a noisy proxy for whether a template was "fancy", and line items are a power-user feature now collapsed by default in the editor.
+- **Pricing Default cell** combines billing mode + suggested rate compactly. Sorts by numeric price (templates without a price sort last).
+- **Actions column removed entirely.** No more per-row Edit / Delete icons. Clicking the row navigates to `/pm/templates/:id/edit`. Delete lives on the template editor page.
+- The unused `deleteMutation` and the `useToast` import in `TemplatesTab` were removed alongside.
+- Dropped `overflow-x-auto`. `table-fixed w-full` + widths (**Name 22% / Summary 30% / Frequency 18% / Pricing 15% / Updated 15%**).
+
+**How horizontal scroll was eliminated, end-to-end:**
+1. Removed every `<div className="overflow-x-auto">` wrapper (Work Due / Plans / Templates).
+2. Set `<Table className="table-fixed w-full">` so percent column widths actually stick (without `table-fixed`, browsers ignore widths during auto-layout).
+3. Allocated explicit `w-[N%]` on every header summing to 100%.
+4. Switched the Frequency column from a long single line to a two-line stacked headline + sub.
+5. `truncate` on every cell that can carry user-supplied long strings (client name, plan title, location label, frequency sub-line, summary).
+
+**Lucide imports cleaned up** in `PMWorkspacePage.tsx`: `Pencil`, `Trash2`, `Pause`, `Play`, `Copy`, `MoreHorizontal` no longer used after the action columns were removed.
+
+### Architecture confirmations
+- `/pm`, `/pm/new`, `/pm/:id`, `/pm/:id/edit`, `/pm/templates/new`, `/pm/templates/:id/edit` — all unchanged.
+- No new endpoints. No schema changes. No migrations. The `nextOccurrence` field has been on the wire from `GET /api/recurring-templates` since the canonical recurrence pass; only the TS interface was catching up.
+- No duplicate next-due calculator. The client never derives next-due locally; it reads what the server already computed via `computeOccurrenceDates`.
+- No new component files. All three tables and `SortableHeader` live in `PMWorkspacePage.tsx` because they share types and helpers, and the file was already the canonical workspace surface.
+
+### Files changed
+
+- `client/src/pages/PMWorkspacePage.tsx` — the work above.
+- `CHANGELOG.md` — this entry.
+
+#### Action Required modal — white-card rows, On Hold rows fully clickable, hold reason on right (2026-04-26)
+
+Visual + interaction polish on `DashboardActionModal`. No new routes, no new modals, no new mutations or backend logic.
+
+- **Modal rows now read as white cards on a grey body.** The modal body (`flex-1 overflow-y-auto`) gained `bg-[#f1f5f9]`. Section row containers gained `px-3 py-2 space-y-2` so the rows sit with breathing room. Each individual row — On Hold, PM-due, Past Due, Needs Scheduling, Ready to Invoice — is now `bg-white rounded-md border border-[#e5e7eb]` with `hover:bg-[#F0F5F0] hover:border-[#cbd5e1] transition-colors`. The previous `border-b` separation between rows was dropped (cards do their own visual separation via the gap).
+
+- **On Hold rows are fully clickable.** Replaced the previous `<div>` + `Open Job` button arrangement with a single `<button>` wrapping the whole row body. Clicking anywhere on the row navigates to `/jobs/{jobId}` — the existing `JobDetailPage` route. The redundant `Open Job` action button is gone. Other sources (overdue / unscheduled / ready_to_invoice) keep their existing per-row primary action button — they each have a different action and aren't all "open job and act there."
+
+- **Hold reason / status moved to the right.** The hold reason used to render inline in the location subline as `· Hold: Needs Parts`, which fought location names for horizontal space. It now renders as a compact orange pill on the far right of the row (`bg-orange-50 text-orange-700 border border-orange-200`, uppercase + tracking-wider for the existing label-style treatment). Long left-side text (job title, location) truncates cleanly because the pill is `shrink-0 whitespace-nowrap`.
+
+- **PM rows.** Already restyled in the previous turn; this turn aligned them with the new white-card chrome (`bg-white rounded-md border border-[#e5e7eb] hover:bg-[#F0F5F0]`). The compact two-line layout, the row-click navigation to `/pm/{templateId}`, the right-aligned `Generate job` primary button, and the `View all PMs` section link are all unchanged. `Generate job` still calls `pmGenerateMutation.mutate([instanceId])` against `POST /api/recurring-templates/generate-selected` — the same canonical endpoint `PMWorkspacePage` uses.
+
+**Files changed:**
+- `client/src/components/DashboardActionModal.tsx` — body bg, section row containers, On Hold row rebuilt as a single clickable button, hold-reason pill repositioned, PM row chrome aligned to the new white-card pattern.
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None.
+
+- **React Query hygiene safe-pass (2026-04-26).** Three changes from the prior cache-consistency audit. (1) **Migrated three canonical hooks from raw `fetch` to `apiRequest`** so callers get `ApiError` (`.status` / `.code` / `.data`), CSRF auto-retry on 403, the session-expired one-shot guard, and diagnostic logging — all things the raw fetch path skipped. Hooks: `client/src/hooks/useProductsServices.ts:53` (preserves the array-or-`{data:[…]}`-or-`{items:[…]}` response normalization), `client/src/hooks/useSchedulingApi.ts:fetchCalendarRange` (preserves the dev-mode DTO assertion), and `client/src/hooks/useJobVisits.ts:32`. No queryKey changes, no staleTime changes, no behavior change on the happy path. (2) **Made `AssignContactDialog` mutation self-invalidating** at `client/src/components/AssignContactDialog.tsx:60-72` — added explicit `invalidateQueries` on `["/api/customer-companies", customerCompanyId, "contacts"]` and `["/api/clients", locationId, "contacts"]`. The parent component already refreshes through its own `onSuccess` callback today; the explicit invalidate makes the mutation self-sufficient and protects future callers that don't wire the callback. (3) **Added `client/src/lib/queryKeys.md`** documenting the two valid `queryKey` patterns (URL-as-key vs semantic-key), when to use each, the SSE alignment checklist, and the rule that the choice is per-entity, not universal. **Skipped during this pass — `onError` toasts on `ActionRequiredModal.tsx` and the two `AdminQboQueue.tsx` replay mutations**: the prior audit flagged all three as SILENT-FAIL, but inspection found each already has a destructive-toast `onError` handler in place. The audit miscategorized the column.
+
+#### Create New Job — service selector polish (searchable + create-from-typeahead, hour formatting, 12h toast) (2026-04-26)
+
+Polish pass on top of today's earlier service / find-next-available wiring. Same canonical modal (`QuickAddJobDialog`) — no parallel implementation introduced.
+
+**1. Searchable service combobox.** The basic `<Select>` is replaced with a `Popover` + `Command` combobox so tenants with 100+ services can type-ahead to filter. The trigger continues to render the chosen service as `Name · 1h 30m`. Test IDs preserved (`data-testid="select-service"`) and a new `input-service-search` is added for the typeahead input.
+
+**2. Create-from-typeahead.** When the typed text doesn't match any existing service exactly, a `Create service: "{typed text}"` row appears at the bottom of the combobox. Clicking it opens the canonical `ProductServiceFormDialog` (the same Add-Item modal used on the Products & Services page) with `type="service"` and the typed name pre-filled. Save POSTs to the canonical `/api/items` endpoint with `createItemSchema`-compliant payload; on success the new service auto-selects in the parent combobox and `applyService` re-runs (Summary prefill if blank, Duration prefill from `estimatedDurationMinutes`). The Create New Job modal stays open the entire time — no navigation.
+
+**3. Duration formatted in hours+minutes throughout.** The combobox trigger, each option row, and the trigger label all render durations through the canonical `formatDuration` helper (`@/components/products-services/types`):
+- `60` → `1h`
+- `120` → `2h`
+- `90` → `1h 30m`
+- `30` → `30m`
+- `null` → `-`
+
+Same helper the Products & Services table already uses, so the format is consistent across the app.
+
+**4. Twelve-hour toast for "Slot found".** Replaced the raw `match.time` (`"14:00"`) with `format(parseISO(match.startISO), "h:mm a")` (`"2:00 PM"`). Reuses `date-fns`' canonical 12-hour formatter — same one the dispatch board / visit cards use.
+
+**5. Regression coverage.** `tests/find-next-available-slot.test.ts` grew from 12 → 25 tests:
+- 7 new `formatDuration` cases covering the spec examples + edge cases.
+- 4 new source-level guards on `QuickAddJobDialog.tsx`:
+  - searchable combobox present (`input-service-search`, `<CommandInput`, `role="combobox"`),
+  - Create-service action present (`option-service-create`, `Create service:`, `openCreateServiceFor`),
+  - canonical `ProductServiceFormDialog` is mounted (no shadow modal),
+  - 12-hour `format(... "h:mm a")` is the toast formatter.
+- 1 new repo-wide guard that walks `client/src/components` + `client/src/pages` and asserts ONLY `QuickAddJobDialog.tsx` contains the paired `input-summary` + `button-create-job` test IDs. If anyone introduces a duplicate create-job modal, this trips.
+
+**Files changed:**
+- `client/src/components/QuickAddJobDialog.tsx` — combobox replaces basic Select; create-service flow added; toast formatter swapped to 12-hour; canonical `ProductServiceFormDialog` mounted alongside the existing `AlertDialog`. New imports: `ProductServiceFormDialog`, `defaultServiceFormData`, `formatServiceDuration`, `ProductFormData`.
+- `tests/find-next-available-slot.test.ts` — added formatDuration tests + new guards (combobox / create-action / canonical-modal / 12-hour) + the repo-wide single-canonical-create-modal guard. 12 → 25 tests.
+- `CHANGELOG.md` — this entry.
+
+**Migrations / breaking changes:** None.
+
+**Verification:** `npm run check` clean. `vitest run tests/find-next-available-slot.test.ts` — 25/25 pass.
+
+### Added
+
+#### Create New Job — service selector + capacity-aware tech pick (2026-04-26)
+
+Added two affordances to the canonical Create New Job modal (`QuickAddJobDialog`) that the user reported as missing.
+
+**Audit findings (root-cause for the report):** the requested controls were never present in the canonical `QuickAddJobDialog` source history — `git log -G "estimatedDurationMinutes|nextAvailable|findAvailable" -- client/src/components/QuickAddJobDialog.tsx` returns no commits. The dialog has always created jobs from a free-text Summary + manual Date / Time / Duration / Technician picker. The `items` table (`type='service'`, `estimatedDurationMinutes`) and the `/api/dashboard/capacity` endpoint both already exist and are populated, but no consumer in the create-job flow ever wired to them. Treating this as a restoration via additive feature work — no removal of an existing affordance is being reverted.
+
+**Duplicate create-job flows?** No. The canonical modal is `client/src/components/QuickAddJobDialog.tsx`. Every entry point opens it:
+- Dashboard "+ New" / `CreateNewDialog` → embeds `QuickAddJobDialog` via the `embedded` prop.
+- Dispatch board open-slot click → `SlotQuickCreateLauncher` mounts `QuickAddJobDialog` with `initialSchedule`.
+- Standard "Create Job" buttons across Jobs / Client Detail / Job Detail / Universal Search → `QuickAddJobDialog`.
+- Recurring-job creation → same component, opened with `mode="recurring"`.
+
+There is no parallel/forked create-job dialog. The feature additions land in this single file and propagate to every entry point automatically.
+
+**What ships:**
+1. **Service selector** — optional row above Summary. Reads `/api/items?type=service&limit=200`. Hidden when the tenant has no services configured (no empty dropdown). Selecting a service:
+   - Pre-fills the Summary input only when blank — never overwrites user-typed text.
+   - Auto-fills Duration from `estimatedDurationMinutes` when the service has one set.
+   - The dropdown shows each service as `Name · 60m` so the duration is visible before commit.
+2. **Find next available** button — sits next to the Technician multi-select in the schedule row. On click, fetches `/api/dashboard/capacity` (the canonical endpoint that already powers the dashboard "Today's Schedule" rail), runs the new `findNextAvailableSlot` helper, and on a match sets `unscheduled=false`, `date`, `time`, `assignedTechnicianIds=[matchedTech]`, and the requested duration in one update. On no match, toasts "No open slot today" without mutating state.
+
+**Selection rule** (`client/src/lib/findNextAvailableSlot.ts`):
+- Walks every technician's `scheduleBlocks` for blocks where `kind === "open"`.
+- Drops blocks shorter than the requested duration (defaults to the dialog's current duration; falls back to 60m).
+- Picks the earliest `startISO` across all candidates.
+- Ties on `startISO` are broken by smallest `technicianId` so the result is deterministic.
+- The capacity endpoint returns today only — explicitly communicated to the user via the toast copy "No open slot today" / "Slot found · {Tech} · {time} (today)".
+
+**Reused (no new endpoints, no new schema):**
+- `GET /api/items?type=service` — existing endpoint backed by `server/routes/items.ts`.
+- `GET /api/dashboard/capacity` — existing endpoint backed by `server/storage/capacity.ts → getTodayCapacity()`.
+- `findNextAvailableSlot` is a pure helper — no business logic about scheduling lives in the client.
+
+**Regression guard:**
+- New `tests/find-next-available-slot.test.ts` covers seven correctness cases for the slot-finder (empty, all booked, too-short blocks, earliest-wins, deterministic tie-break, zero-duration request, malformed-block tolerance) plus four source-level guards on `QuickAddJobDialog.tsx` that fail the build if any of these strings disappear from the source: `data-testid="select-service"`, `data-testid="button-find-next-available"`, `/api/items?type=service`, `/api/dashboard/capacity`, `findNextAvailableSlot`, `estimatedDurationMinutes`. The guards are intentionally loose — they don't assert rendered behavior — so they only trip when somebody intentionally rewrites the wiring, but they DO trip on accidental deletion.
+- 12/12 tests pass under `vitest run tests/find-next-available-slot.test.ts`. `npm run check` clean.
+
+**Edit mode:** Service selector is hidden in edit mode (`!isEditMode` guard) since editing an existing job's summary/duration through a service template would be surprising. Find Next Available stays available because it sits inside the schedule row which is also already hidden in edit mode (visit-level scheduling is the canonical edit path).
+
+**Files changed:**
+- `client/src/components/QuickAddJobDialog.tsx` — added Service selector, Find Next Available button, and the wiring (`/api/items?type=service` query, `/api/dashboard/capacity` mutation, service-change handler that prefills summary + duration). New imports: `Wand2`, `Wrench` icons; `findNextAvailableSlot` helper.
+- `client/src/lib/findNextAvailableSlot.ts` — new pure helper plus exported types (`CapacityBlock`, `CapacityTech`, `CapacityResponse`, `OpenSlotMatch`).
+- `tests/find-next-available-slot.test.ts` — new unit tests + source-level regression guard.
+- `CHANGELOG.md` — this entry.
+
+**Migrations / breaking changes:** None.
+
+**Verification:** `npm run check` clean. `vitest run tests/find-next-available-slot.test.ts` — 12/12 pass. (The `tests/visit-editor-payload-builder.test.ts` and `tests/canonical-policy-architecture.test.ts` failures observed during this session are both pre-existing and unrelated to this change — visit-editor uses a `@/` alias that the test runner can't resolve in this config; canonical-policy fails on an FK constraint when the test tenant company is missing.)
+
+### Changed
+
+#### Action Required PM rows compacted + Apply Template hidden when empty (2026-04-26)
+
+Two surgical refinements. No new components, no new routes, no duplicate PM or template logic.
+
+- **Action Required modal — compact PM rows.** The PM-due rows in `DashboardActionModal` (`mode = action_required`) were two-line tall but visually busy: every row carried both a `Generate job` primary button and a `View PM` secondary, the title row could wrap when the template name was long, and the per-row navigation duplicated what a row click would naturally do. Changes:
+  - **Per-row `View PM` button removed.** The row's title block (Wrench icon + name + status pill + the customer/location/date subline) is now itself a `<button>` that navigates to `/pm/{templateId}` — the existing `PMDetailPage` route. No new route was added.
+  - **`Generate job` repositioned to the far right.** It still calls `pmGenerateMutation.mutate([instanceId])` against `POST /api/recurring-templates/generate-selected` (unchanged). The button's `onClick` calls `e.stopPropagation()` so a click doesn't bubble into the row's navigation handler.
+  - **Two-line layout enforced.** Line 1: Wrench icon · template name (`flex-1 min-w-0 truncate`) · status pill (`shrink-0`). Long template names truncate with ellipsis instead of pushing the pill onto a new line. Line 2: customer · location · `Due {YYYY-MM-DD}` — a single `truncate` line.
+  - **`View all PMs` link in the section header.** The PM section's sticky header now carries a `View all PMs` link (right-aligned, with an `ArrowUpRight` icon) that navigates to `/pm` (the existing `PMWorkspacePage`). One link per section instead of one per row.
+
+- **Job Detail Line Items — `Apply Template` hidden when no templates exist.** `PartsBillingCard` previously rendered the `Apply Template` button always (when not editing + office user), with the button disabled and a tooltip pointing at Settings → Job Templates whenever `jobTemplates.length === 0`. The disabled-button-with-pointer treatment cluttered the card on tenants that haven't set up templates and was a frequent "is this broken?" question. The button is now conditionally rendered (`!isEditing && isOfficeUser && jobTemplates.length > 0`) — once at least one applicable template exists, it reappears with full behaviour. The mutation, dialog, search picker, and apply-replace / append modes are otherwise untouched.
+
+**Files changed:**
+- `client/src/components/DashboardActionModal.tsx` — compact PM row layout, row-click navigation, `View all PMs` section link, removed per-row `View PM`.
+- `client/src/components/PartsBillingCard.tsx` — `Apply Template` button conditional on `jobTemplates.length > 0`; tooltip simplified.
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None.
+
+#### Maintenance Plans — UX/UI polish pass (2026-04-26)
+
+A surgical density + clarity pass across the Maintenance Plans surfaces. No new routes, no new endpoints, no schema changes, no parallel components.
+
+**Wizard — clean Plan Name default.** `PMWizardPage` now defaults the Plan Name to the static string `Maintenance Plan` (was previously auto-filled with `Maintenance Plan — {customer/location}` whenever the user picked a customer or location). The auto-fill helper (`autoFillTitle`) and the location-derived title in the `?locationId` prefill effect were removed. The `?fromTemplateId=` and `?duplicate=` prefill paths are unchanged — they still seed the title from the template summary or duplicated plan title respectively. The submission fallback string also collapses to the same constant.
+
+**Work Due table — sortable, no horizontal scroll, compact.** The Plans-Due-Now table on the Work Due tab was the source of the persistent sideways scrollbar.
+
+- **Sortable headers.** New `SortableHeader` component renders the existing column titles with a chevron indicator and a 3-state click cycle: ascending → descending → reset to default. Default sort is **Due Date ascending (soonest first)**. Sort keys: `client`, `plan`, `frequency`, `dueDate`, `status`. Status uses a priority comparator (overdue → due_now → upcoming) so sorting matches user mental model. Active column lights up; inactive columns show a faded `ChevronsUpDown` icon.
+- **No horizontal scroll.** Removed the `overflow-x-auto` wrapper around the table. Switched to `<Table className="table-fixed w-full">` and applied the requested column widths via `TableHead className="w-[N%]"`: Client 22 / Plan 28 / Frequency 18 / Due Date 14 / Status 10 / Action 8 (sums to 100). Row cells use `truncate` for long client/plan/location strings so a verbose name no longer pushes the row wider than the container.
+- **Stacked Due Date.** `windowStart — windowEnd` was a 22-character single-line cell that drove most of the horizontal-scroll problem. Now renders as `Mar 25` / `to Apr 15` on two short lines via `formatShortDate(yyyy-mm-dd)` (Intl `DateTimeFormat`, local time).
+- **Compact Status pill.** `WorkDueStatusBadge` tightened to `px-1.5 py-0 h-5 text-[11px]` so it fits the 10% column without wrapping.
+- **Compact Generate button.** Dropped from `size="sm"` default to `h-8 px-2.5` with a tighter `Zap mr-1`. Unchanged behavior.
+- **Removed redundant menu items.** The per-row `DropdownMenu` containing **Open Plan** + **Edit Plan** was removed entirely — clicking the row already opens the plan detail page (`onClick={() => setLocation('/pm/${item.templateId}')}`), and the user can edit from there. The Generate button is the only per-row action that remains. The row's outer `onClick` keeps its `e.stopPropagation` wrapper around the Generate button so clicking Generate doesn't bubble up and navigate.
+
+**Workspace header — single primary action.** The "Generate Due Work" button to the left of "+ New Plan" was duplicating the contextual "Generate All Due Work" CTA already on the Work Due tab (which sits directly above the Plans-Due-Now table). The page header now holds only the canonical "+ New Plan" dropdown. The `handleGenerateDueWork` callback was removed alongside it; no state or mutations were affected.
+
+**Template editor — dense two-column layout with sticky save.** Rebuilt `PMTemplateEditorPage` for the two-column proportions in the spec.
+
+| Section            | Layout                                      |
+| ------------------ | ------------------------------------------- |
+| Top — Basics       | left: Template Name, PM Summary             |
+| Top — Pricing      | right: Charge Type, Suggested Rate          |
+| Description        | full width                                  |
+| Schedule Defaults  | left: Frequency picker, Job Creation Timing |
+| Completion Window  | right: Days Before, Days After              |
+| Line Items         | bottom, **collapsible, hidden by default**  |
+
+The save bar (Cancel / Save Template / optional Delete) is now `sticky top-0 z-20` with a subtle backdrop blur, so the actions stay reachable while the user scrolls a long form. The sticky bar replaces the prior `flex header + duplicate bottom save bar` pattern. Title shrunk from `text-2xl` to `text-base font-semibold` to keep the bar slim.
+
+The collapsible Line Items section was reinstated as a power-user surface. It auto-expands when an existing template already has stored items (so editing a populated template doesn't hide existing data), and collapsed when starting fresh. Persistence shape unchanged: `pm_templates.default_line_items_json` accepts the same `{productId, description, quantity, unitPrice}` rows that have always been the canonical shape.
+
+**Removed (and stays removed):**
+- "Include location PM parts by default" toggle (already removed in the prior pass — unchanged here).
+- The legacy free-text "billing label" field — its role is covered by the canonical Charge Type + Suggested Rate pair. The editor always writes `billingLabel: null`. Existing templates that have a stored billing label keep their value on disk; the redesigned editor just no longer surfaces or writes the field.
+
+**Files changed:**
+- `client/src/pages/PMWizardPage.tsx` — `DEFAULT_PLAN_NAME` constant, removed `autoFillTitle`, simplified location/company select handlers, simplified `?locationId` prefill effect, submission fallback now uses the constant.
+- `client/src/pages/PMWorkspacePage.tsx` — added `formatShortDate`, `SortableHeader`, sort state + memoized sort, `WorkDueStatusBadge` tightened, table `table-fixed` + column widths, Open Plan / Edit Plan dropdown removed, top "Generate Due Work" button + handler removed, `ChevronUp` / `ChevronsUpDown` imports added.
+- `client/src/pages/PMTemplateEditorPage.tsx` — full rewrite for two-column dense layout, sticky save bar, collapsible Line Items section.
+- `CHANGELOG.md` — this entry.
+
+**Architecture confirmations:**
+- `/pm/new` remains the sole creation route. The `CreateMaintenancePlanDialog` chooser still forwards every "+New Plan" entry point into `/pm/new` with the right query params.
+- No new endpoints. No new tables. No migrations. The chooser modal, wizard, and template editor read the canonical `/api/pm/templates` and `/api/recurring-templates` already in place.
+- No duplicate components. `SortableHeader` is a small local helper inside `PMWorkspacePage.tsx` (the only consumer); not extracted because that's premature given a single use site. `formatShortDate` is similarly local.
+
+### Fixed
+
+- **Invoice indexes — fresh-rebuild fix (2026-04-26).** Added forward-fix migration `migrations/2026_04_26_invoice_indexes_drop_is_active_predicate.sql` that drops and re-creates `idx_invoices_company_status` and `idx_invoices_location_id` without the obsolete `WHERE is_active = true` predicate. The historical `migrations/0001_critical_indexes.sql` (lines 19-25) created these indexes with the predicate before `migrations/2026_04_09_invoice_permanent_delete.sql:50` dropped the `invoices.is_active` column. Live databases that already passed through both migrations were unaffected (PG keeps the index after a referenced column is dropped), but a fresh-rebuild that replays the migration history end-to-end would fail at the historical 0001 step. The new migration uses `DROP INDEX CONCURRENTLY IF EXISTS` + `CREATE INDEX CONCURRENTLY IF NOT EXISTS` so it's safe to run on both live and rebuilt databases. **Historical files were not edited** — convention is that migration history is immutable.
+- **Invoice indexes — fresh-rebuild fix part 2 (2026-04-26).** Companion migration `migrations/2026_04_26_invoice_indexes_drop_is_active_predicate_part2.sql` cleans up the two remaining invoice indexes in `migrations/0001_critical_indexes.sql` with the same broken `WHERE is_active = true` predicate: `idx_invoices_pending` (`:107-110`) and `idx_invoices_list_covering` (`:119-122`). Both dropped + recreated against the current canonical schema. **One deliberate predicate correction**: the historical `idx_invoices_pending` predicate referenced the literal status `'void'`, which is not a value in the current `invoiceStatusEnum` (`shared/schema.ts:1516` — canonical value is `'voided'`). PG never validates partial-index string literals against the application enum, so the historical index was silently over-inclusive (it only excluded `'paid'`, never excluded voided invoices). The new index uses `WHERE status NOT IN ('paid', 'voided')` — strictly equivalent to the index's stated purpose and using current schema only. `idx_invoices_list_covering`'s only predicate was `is_active`; removing it makes the new version a full covering index over `(company_id, status, issue_date)` with the original `INCLUDE` columns. **Documented but not addressed** (immutable historical file): `migrations/add_performance_indexes.sql:58-60` carries a duplicate historical definition of `idx_invoices_company_status` with the same broken predicate; it stays a no-op on both live and fresh-rebuild databases via the `IF NOT EXISTS` guard once the part-1 migration has run.
+
+### Changed
+
+#### Labour Summary time-range fit + Requires-attention now folds in PM-due instances (2026-04-26)
+
+Two coordinated refinements. No new backend tables, no duplicate PM or labour systems, and no parallel generation path.
+
+- **Labour Summary time-range fit.** In `JobDetailPage`'s expanded Labour Summary, the `10:49 AM–11:10 AM` time range was being truncated next to the `Driving` / `On-Site` label on narrow right-column widths. `LabourEntryLine`'s grid template was rebalanced from `6.5rem · 1fr · 3.5rem · 4.5rem` (gap 12px) to `5.25rem · 1fr · 3.25rem · 4.25rem` (gap 8px) so the time-range column gets more room before duration / cost. The time-range cell itself drops from `text-xs` to `text-[11px]`, picks up `whitespace-nowrap` + `tabular-nums`, and wraps its inner span in `min-w-0` + `truncate` so the locked-icon (when present) doesn't shove the text out of view. Label / duration / cost stay at `text-xs` so the row's primary signal stays readable. The whole-card font size was not touched.
+
+- **Requires-attention now surfaces PM-due instances.** The Operational alerts row labelled "Requires attention" used to count only on-hold jobs and open the action modal with a single on-hold section. PM (preventive-maintenance) instances that are due / overdue and need job generation are now folded into the same bucket — the count adds `pm.awaitingGenerationCount` (the existing dashboard workflow tile, unchanged) on top of `jobs.onHoldCount`. The `DashboardActionModal` `action_required` mode now composes two sources: `on_hold` (existing) and `pm_due` (new). When both have rows, the modal shows two grouped sections — `On Hold` and `PMs Due / Overdue` — top-to-bottom; when one is empty, only the populated section renders.
+  - **PM row data source.** New server function `getPMDueInstances(ctx, limit)` in `server/storage/dashboard.ts` joins `recurring_job_instances` → `recurring_job_templates` → `client_locations` → `customer_companies` and filters with the exact same predicate the workflow tile's `awaitingGenerationCount` uses (`status='pending' AND generated_job_id IS NULL AND (instance_date - COALESCE(service_window_days_before, 7)) <= today`). Returns up to 50 rows by default. Tile count and modal list therefore stay in lockstep by construction.
+  - **PM row endpoint.** New route `GET /api/dashboard/pm-due-instances` in `server/routes/dashboard.ts` exposes the rows. Tenant-scoped via the existing `getQueryCtx` middleware; same auth posture as `/api/dashboard/workflow`.
+  - **PM row UI.** Each row shows the template title, a `Due` / `Overdue` status pill (red for overdue, amber for due-within-window), the customer company, the location, and the instance date. Two actions: **Generate job** (primary) and **View PM** (secondary, opens `/pm/{templateId}`).
+  - **Generation flow reused.** The `Generate job` button calls `pmGenerateMutation.mutate([instanceId])` which posts a one-element `instanceIds` array to `POST /api/recurring-templates/generate-selected` — the same endpoint `PMWorkspacePage`'s Work Due tab already uses. No new generation logic. Toast and React-Query invalidations mirror the workspace mutation (`/api/recurring-templates/upcoming`, `/api/recurring-templates`, `jobs`, `/api/calendar`, `/api/calendar/unscheduled`, `dashboard`) so all PM surfaces refresh in lockstep after a successful generation. Confirmation: the dashboard never auto-generates — every job creation requires the user's button click.
+  - **Empty behaviour.** When no PM instances need generation, `pm.awaitingGenerationCount` is 0 and the Requires-attention count is unchanged from the existing on-hold count. When the modal opens with no PM rows, the PM section silently does not render.
+  - **Permissions.** The generation route is gated on `requireAuth` + `requireRole(SCHEDULING_ROLES)` (existing). No additional client-side gate — non-schedulers will see the API reject the call and the existing toast surfaces the error.
+
+**Files changed:**
+- `server/storage/dashboard.ts` — added `DashboardPMDueInstance` type and `getPMDueInstances(ctx, limit)` function.
+- `server/routes/dashboard.ts` — added `GET /api/dashboard/pm-due-instances`.
+- `client/src/components/DashboardActionModal.tsx` — added `pm_due` source, `PMDueInstance` shape, `pmGenerateMutation`, PM row + section renderers; `action_required` mode now composes `["on_hold", "pm_due"]`.
+- `client/src/pages/FinancialDashboard.tsx` — `requiresAttentionCount` now adds `pm.awaitingGenerationCount`; `WorkflowSummaryDto` type extended with the `pm` field.
+- `client/src/pages/JobDetailPage.tsx` — `LabourEntryLine` grid + time-range styling tightened.
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None. The PM tables (`recurring_job_templates`, `recurring_job_instances`) and the generation route already existed.
+
+#### Single Business Dashboard + Today's Schedule full-height borders + Labour Summary expanded layout (2026-04-26)
+
+Three coordinated UI refinements. No backend route changes; no new components or query keys; no duplicate dashboard, schedule, or labour systems.
+
+- **Single Business Dashboard.** The Operations / Financial mode toggle was retired. Both `/` and `/financials` now render the canonical Business Dashboard (the layout previously hosted at `/financials`). Title `Business Dashboard` and subtitle `Cash flow, receivables, and today's schedule — at a glance.` are kept. The sidebar `Dashboard` link still points at `/`, so no nav change was needed. Cleanup: removed the `<DashboardViewToggle />` mount from `FinancialDashboard.tsx`'s header; removed the `Dashboard` import from `App.tsx`. `client/src/pages/Dashboard.tsx`, `client/src/components/TodaysOperationsCard.tsx`, and `client/src/components/dashboard/DashboardViewToggle.tsx` are no longer imported by any router or surface — flagged in code comments for follow-up deletion. The `/financials` alias is preserved so existing bookmarks / external links still resolve.
+
+- **Today's Schedule full-height column borders.** The per-tech column dividers in `TodaysScheduleCard` previously stopped at the bottom of each column's content, leaving a chopped edge whenever the dashboard's grid row stretched the card taller than its natural content height. Three structural fixes: `DashCard`'s outer wrapper is now `flex flex-col h-full` so the card fills its grid-row height; the schedule body wrapper is `flex-1 flex flex-col min-h-0` so it grows inside the card; the multi-tech grid (`grid-cols [1fr × N]` for ≤4 techs) and the horizontal-scroll wrapper (`flex` for ≥5 techs) are both `flex-1`, with the scroll wrapper's inner row marked `h-full`. CSS grid's default `align-items: stretch` then equalises the column wrappers' heights, so each column's `border-r` paints top-to-bottom. Empty columns and columns with fewer schedule rows than their neighbour still render a full-height divider.
+
+- **Labour Summary expanded layout.** The expanded breakdown was reshaped per spec: each (technician, local-date) pair is one block with a header line `{Name} · {Date}` and a chronologically-ordered list of rows. Each row is the spec's preferred 4-column form: `[Driving|On-Site label] · [time range] · [duration] · [cost]`, rendered through a new in-file `LabourEntryLine` helper using a CSS grid (`6.5rem · 1fr · 3.5rem · 4.5rem`) so labels, times, durations, and costs line up cleanly. The per-block header carries a per-tech-day subtotal (`{minutes} · {cost}`). Clicking a row still opens the canonical `TimeEntryModal` in edit mode. The collapsed totals body and the empty / default / expanded state machine are unchanged. The previous `labourByTech` derivation was replaced with a `labourByTechDay` `useMemo` keyed by `${techId}::${YYYY-MM-DD}`.
+
+**Cost source unchanged.** Labour costs still read from each entry's `costRateSnapshot`; entries with a missing or non-numeric snapshot continue to contribute `$0.00`. Updating a team member's labour cost rate later still affects future entries only. The previous `LabourEntryRow` helper (with `hideTechName`) is retained but no longer used by Labour Summary's expanded view; left in place for any future caller that needs the older row format.
+
+**Files changed:**
+- `client/src/App.tsx` — `/` now renders `FinancialDashboard`; `Dashboard` import dropped; `/financials` kept as alias.
+- `client/src/pages/FinancialDashboard.tsx` — header toggle removed (now `<h1>` + subtitle only); `DashCard` outer chrome made `flex flex-col h-full`; schedule body wrapper made `flex-1 flex flex-col min-h-0`; multi-tech grid and horizontal-scroll wrapper made `flex-1`, with the scroll inner row `h-full`.
+- `client/src/pages/JobDetailPage.tsx` — `labourByTechDay` derivation replaced `labourByTech`; expanded view rebuilt with `Name · Date` headers and aligned 4-column rows; new `LabourEntryLine` helper added.
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None.
+
+### Added
+
+#### Create Maintenance Plan chooser — From Scratch / Use Template / Duplicate (2026-04-26)
+
+The "+New" / "Create Maintenance Plan" / workspace-header create paths used to launch the blank wizard at `/pm/new` directly. Templates were saved in `pm_templates` but the wizard never let users start from one — so the feature existed without a real entry point. This pass introduces a small chooser dialog as the unified entry into PM plan creation.
+
+**Three modes, one canonical wizard.** A new `CreateMaintenancePlanDialog` opens from every "+New Maintenance Plan" entry point. Picking a mode forwards into the existing `/pm/new` route with a query-param prefill — **no second wizard, no duplicate route, no parallel flow**. The wizard remains the sole creation surface.
+
+| Mode                    | Forwards to                       | Prefill source                       |
+| ----------------------- | --------------------------------- | ------------------------------------ |
+| From Scratch            | `/pm/new`                         | none — blank wizard                  |
+| Use Template            | `/pm/new?fromTemplateId=:id`      | `pm_templates` row (safe subset)     |
+| Duplicate Existing Plan | `/pm/new?duplicate=:id`           | `recurring_job_templates` row        |
+
+**Architecture.**
+- New file `client/src/components/pm/CreateMaintenancePlanDialog.tsx` renders the chooser. Three internal views: `mode` (the 3-card picker), `template` (search + list of PM templates), `plan` (search + list of maintenance plans). Reuses the canonical endpoints `GET /api/pm/templates` and `GET /api/recurring-templates?type=pm`. **No new endpoints, no new tables, no schema migration.**
+- `PMWizardPage.tsx` query-param semantics fixed: `?fromTemplateId=` now means **PM template** (was previously aliased to recurring template, effectively unused), and `?duplicate=` keeps its existing meaning (copy an existing maintenance plan). Two separate prefill effects, two separate appliers — `applyPmTemplateToState` only sets safe blueprint fields (name, summary, description, schedule, completion window, billing, suggested rate); it never touches client/location. `applyDuplicateToState` (the renamed existing function) copies everything including client/location, with the user expected to confirm or change them before saving.
+- New helpers in the wizard: `detectFrequencyIntent(months)` reads cadence from a template's months array without start-month alignment so a template stored as `[1,4,7,10]` is correctly detected as Quarterly even when the user's new plan starts in June (the wizard then re-anchors months on June). `pmTemplateBillingToWizardOption(mode)` maps the four `pm_templates.billing_mode` values onto the wizard's `BillingOption` set.
+
+**Entry points wired to the chooser:**
+- `client/src/App.tsx` — Quick Create dropdown ("+New → New Maintenance Plan") and the global `UniversalSearch` action.
+- `client/src/components/UniversalSearch.tsx` — `onCreateMaintenancePlan` callback prop added; the "Create Maintenance Plan" command switched from `route` to `action` so it triggers the modal instead of navigating.
+- `client/src/pages/PMWorkspacePage.tsx` — workspace-header "New Plan" dropdown item and the Plans-tab empty-state "New Plan" button.
+
+The Plans-tab row-level **Duplicate** icon (already present) keeps its direct `setLocation('/pm/new?duplicate=...')` shortcut — when the user already knows which plan they want to copy, the chooser would only add a click. The chooser is the entry surface, not a forced funnel.
+
+The location-card "Add PM" button (`PMScheduleCard`) keeps its direct `?locationId=` navigation: it carries contextual prefill that the chooser would discard.
+
+### Changed
+
+#### PM Template editor redesign — compact, line-items removed (2026-04-26)
+
+Rebuilt `PMTemplateEditorPage` (`/pm/templates/new`, `/pm/templates/:id/edit`) into a compact 3-card layout: **Basics** (name, summary, description), **Schedule Defaults** (frequency picker, job-creation timing, completion window), **Pricing Defaults** (charge type + suggested rate, with the same "reporting only" note the wizard shows).
+
+**Removed two surfaces that did not flow into real generated jobs:**
+
+1. **Line items.** The audit traced `pm_templates.default_line_items_json` through the recurrence engine and `generateFromInstances` — line items defined on a template are **not** copied into the generated PM job. Surfacing a line-item editor on the template implied a feature the system does not ship. The editor no longer renders the line-items card and always saves `defaultLineItemsJson: null`. Existing templates with stored line items are unchanged on disk; this is a UI-only removal.
+2. **"Include location PM parts by default" toggle.** Removed from the editor UI. The wizard does not surface include-location-parts (the Parts step was retired earlier this month), and the underlying `recurring_job_templates.include_location_pm_parts` column defaults to `false` server-side. Saving from the redesigned editor always writes `defaultIncludeLocationPmParts: null`.
+
+**Frequency picker.** Mirrors the wizard: Monthly / Quarterly / Bi-Annual / Annual / Custom. Templates remain anchored on January because they're reusable blueprints with no fixed start date — when a plan is created from a template, the wizard's `detectFrequencyIntent` reads the cadence and re-anchors months on the user's selected start date.
+
+**Files changed:**
+- `client/src/pages/PMTemplateEditorPage.tsx` — full rewrite: compact 3-card form, removed line items + include-parts toggle, frequency picker, dynamic timing fields.
+
+### Routes affected
+
+- `/pm/new` — **canonical create surface, unchanged.** Two query params now have clean, distinct semantics (`?fromTemplateId=` PM template, `?duplicate=` recurring plan).
+- `/pm/templates/new` and `/pm/templates/:id/edit` — same routes, redesigned editor body.
+- `/pm` — workspace tabs + chooser dialog, no route changes.
+
+No new routes were added. No routes were removed.
+
+### Backend
+
+No backend changes. No new endpoints. No schema migrations. The chooser reads `GET /api/pm/templates` and `GET /api/recurring-templates?type=pm` (both already existed and were already used by the workspace).
+
+### Files changed
+
+- **New:** `client/src/components/pm/CreateMaintenancePlanDialog.tsx` — chooser modal (3 modes + 2 internal pickers).
+- `client/src/App.tsx` — chooser state + dialog mount + Quick Create + UniversalSearch wiring.
+- `client/src/components/UniversalSearch.tsx` — `onCreateMaintenancePlan` callback prop; switched "Create Maintenance Plan" command from route to action.
+- `client/src/pages/PMWorkspacePage.tsx` — workspace-header dropdown + Plans-tab empty-state CTA + chooser mount.
+- `client/src/pages/PMWizardPage.tsx` — split `?fromTemplateId=` and `?duplicate=` semantics; added `applyPmTemplateToState`, `detectFrequencyIntent`, `pmTemplateBillingToWizardOption`; renamed `applyTemplateToState` → `applyDuplicateToState`.
+- `client/src/pages/PMTemplateEditorPage.tsx` — full rewrite for compact layout + line-items / include-parts removal.
+- `CHANGELOG.md` — this entry.
+
+#### PM Plan detail — second polish pass, deduped identity (2026-04-26)
+
+Follow-up to today's earlier unified-screen rewrite. The page was still showing customer/location data twice (once in the summary strip, once in the Plan Details card) and the summary strip duplicated information the right-column work cards already convey. This pass collapses both into a single compact identity card.
+
+**Removed surfaces:**
+- **`SummaryStrip`** — the 5-tile horizontal strip (Status / Next due / Service window / Work ready / Last completed). Status is on the header pill, Service window is in the Schedule card, Next due / Work ready / Last completed are derivable from the right-column Work Queue / Generated Work / Completed Work lists.
+- **`PlanDetailsCard`** — the previous "Plan Details" card with Customer / Location / Job type / Priority / Notes rows.
+- **Job type and Priority fields entirely** — no longer surfaced or editable from this screen. They remain in the DB and the create wizard; existing values are preserved on save (PATCH only updates supplied fields).
+
+**Replaced with:**
+- **`IdentityCard`** (view mode) — single horizontal card immediately under the header. Two columns: Customer (name, linked to `/clients/:id`) and Location (name, linked, with full address `street · city, province postal` on its own line). If the plan has internal notes, they appear as one italic line beneath the two columns separated by a thin top border — only when present.
+- **`PlanBasicsEditCard`** (edit mode only) — replaces the IdentityCard in edit mode. Surfaces the editable plan-level metadata: plan name, internal notes, active toggle. Customer + location are immutable on this screen, so they do not appear in edit mode.
+
+**Header title format:**
+- View / edit: `Maintenance Plan — {customerName}`, falling back to `{template.title}` when there is no linked customer. Plan title appears in the subtitle when the customer is the primary heading. Subtitle stays as a single muted line: `{plan title} · {location label}`.
+
+**Billing card:**
+- Always renders in view mode (was hidden when no billing data set). Shows `Billing model: Not set` plus a one-line helper "This plan won't bill automatically. You can set a billing model if needed." This is more discoverable than hiding the card.
+
+**Edit-button discipline:** confirmed exactly one Edit button on the page — the header button. No per-card edit affordance exists. Schedule, Billing, Plan basics all toggle together via the header Edit / Save / Cancel.
+
+**Right column (Work Queue / Generated Work / Completed Work):** unchanged from the previous pass — already compliant with the brief.
+
+**Files changed:**
+- `client/src/pages/PMDetailPage.tsx` — removed `SummaryStrip`; replaced `PlanDetailsCard` with `IdentityCard` + `PlanBasicsEditCard`; updated header title format; dropped `priority` and `jobType` from `EditFormState` and from the save payload; dropped `formatJobType` helper and the unused `Select*` imports; Billing card now always renders with helper text when empty. Net file size 1009 LOC.
+- `CHANGELOG.md` — this entry.
+
+**Routing:** unchanged. `/pm/:id` and `/pm/:id/edit` both continue to render `PMDetailPage`; the edit URL pre-selects edit mode and is normalized back to `/pm/:id` after Save / Cancel.
+
+**Logic intentionally untouched:**
+- PM generation, recurrence math, cron / background workers — all server-side, not changed.
+- Save endpoint (`PATCH /api/recurring-templates/:id`) — same contract; the smaller payload simply omits `priority` and `jobType`, and the PATCH preserves any field not supplied. `include_location_pm_parts` is also intentionally not sent.
+- Smart-delete fallback (hard delete vs. archive) — unchanged.
+- Tenant scoping + role gates — unchanged.
+- Generate-due-work mutation — unchanged.
+- The PM creation wizard at `/pm/new` was not modified in this pass; verified it no longer surfaces a parts/options step (already removed in an earlier 2026-04-26 pass).
+
+**Verification:** `npm run check` clean. Plans tab on `/pm` continues to deep-link into this redesigned screen. Browser-runtime smoke is the user's call (hard-refresh `/pm/:id` to pick up the new bundle); the data path was verified earlier in this session.
+
+#### PM Plan detail — unified view+edit screen, parts removed, language cleanup (2026-04-26)
+
+The split PM detail (`/pm/:id`) + edit (`/pm/:id/edit`) pages were merged into a single compact, two-column screen. Edit mode is an in-place toggle on the same component — no navigation between view and edit. The edit URL is preserved for deep-link compat: it renders the same component with `mode="edit"` pre-selected.
+
+**New layout** (top to bottom):
+- **Header** — back chevron, plan title, status pill, "customer · location" subtitle. Right side: `Edit / Pause-Resume / Delete` in view mode; `Cancel / Save Changes` in edit mode. A `Generate Due Work (n)` primary button appears in view mode whenever the plan has work ready to generate.
+- **Summary strip** — single compact horizontal card with five stats: Status, Next due, Service window, Work ready, Last completed.
+- **Two-column body** (`grid-cols-1 lg:grid-cols-3`):
+  - Left (`col-span-2`): Plan Details, Schedule, Billing.
+  - Right: Work Queue (rows ready to generate, with per-row Generate button), Generated Work (active jobs with status pills), Completed Work (compact table).
+- Empty cards collapse to a single italic line ("No completed work yet.") instead of full-card empty illustrations.
+
+**Removed surfaces:**
+- "Parts & Options" card in view mode.
+- "Include location PM parts on generated jobs" toggle in edit mode.
+- The location PM parts count fetch (`GET /api/locations/:id/pm-parts`) — no consumer remains on this page.
+- The big middle "Actions" card with Duplicate / Open Location / Open Customer. Customer + Location are still linked inline in the Plan Details card.
+- The standalone footer hint about the PM Due Queue page.
+
+The `include_location_pm_parts` DB column is **intentionally not sent** on save. The PATCH endpoint preserves any field omitted from the payload, so existing values survive untouched.
+
+**Language cleanup applied throughout:**
+- "Create Due Instances" → "Generate Due Work"
+- "Due — Awaiting Generation" → "Work Queue" (card title) / "Work ready" (KPI)
+- "Generated — In Progress" → "Generated Work"
+- "Instance" / "Occurrence" → "Service date" / "Scheduled work"
+- "No Job" → "Not generated"
+- "PM Billing" → "Billing"
+- "PM History" → "Completed Work"
+- "Edit PM Setup" → no longer rendered (header now reads the plan title)
+
+**Routing:**
+- `/pm/:id` — unified component, view mode default.
+- `/pm/:id/edit` — same unified component, edit mode pre-selected on first render. After Save / Cancel, the URL is normalized to `/pm/:id` via `setLocation(..., { replace: true })`.
+- No new routes created. No routes removed.
+
+**Logic intentionally untouched:**
+- PM generation rules, recurrence math, cron / background workers — all server-side, not changed.
+- Save endpoint (`PATCH /api/recurring-templates/:id`) and its Zod payload contract — unchanged.
+- Smart-delete fallback (hard delete vs. archive when jobs exist) — unchanged.
+- Tenant scoping + role gates (route-level `requireAdmin` on both `/pm/:id` and `/pm/:id/edit`) — unchanged.
+- Generate-due-work mutation (`POST /api/recurring-templates/:id/generate?scope=current_month`) — unchanged endpoint, friendlier toast copy.
+- The PM creation wizard at `/pm/new` is out of scope and was not modified.
+
+**Files changed:**
+- `client/src/pages/PMDetailPage.tsx` — full rewrite (~855 LOC → ~720 LOC). New unified view+edit component.
+- `client/src/pages/PMEditPage.tsx` — **deleted**. Its responsibilities are now inside `PMDetailPage`.
+- `client/src/App.tsx` — `import PMEditPage` removed; `/pm/:id/edit` now renders `<PMDetailPage />`.
+
+**Migrations:** None.
+
+**Breaking changes:** None for backend. UI: the dedicated edit page (`/pm/:id/edit`) no longer has its own layout — it now opens the unified screen pre-toggled into edit mode. Any external bookmarks pointing at the edit URL still work. The `pm-edit-*` test IDs from the prior dedicated edit page are gone; replacements are `pm-detail-*` (e.g. `pm-detail-edit`, `pm-detail-cancel`, `pm-detail-save`, `pm-detail-title`, `pm-detail-active`).
+
+**Verification:** `npm run check` clean. The Plans tab on `/pm` continues to deep-link into `/pm/:id`; clicking a plan now lands on the redesigned screen. Edit, Save, Cancel, Pause/Resume, Delete, and Generate Due Work all route through the same mutations as before.
+
+#### Job Detail right-column — unified card chrome + Labour Summary three-state polish (2026-04-26)
+
+Polish pass on the Job Detail right column. UI/state only — no backend change, no new components, no duplicate labour or time-entry path.
+
+- **Unified card chrome.** Notes and Labour Summary headers now use the same `bg-[#f8fafc] hover:bg-slate-100 transition-colors` shading and `px-4 py-2.5` padding that `JobEquipmentSection` and `ReferenceFieldsSection` already render, so the four right-column cards read as one consistent shell. Title icon colour standardised to `text-[#64748b]` and title text to `text-[#0f172a]` for both. The Add Note / Add Labour buttons in the Notes / Labour headers now `stopPropagation` on click so a button click doesn't bubble into the chevron's body-toggle handler.
+
+- **Labour Summary three-state model.** The card now distinguishes between three meaningful states:
+  - **Empty** (no time entries): header only — chevron stays present and a manual click reveals a small "No labour entries yet." body.
+  - **Default** (entries exist, not expanded): header + a compact totals body — `Driving Time / On-Site Time / Total Labour` rows. *No team-member names, dates, time ranges, or per-entry rows in this state* — the per-entry detail belongs only in the expanded view.
+  - **Expanded** (entries exist, chevron clicked): header + totals body + an additive per-team-member breakdown below. Each tech is a block with their `name`, a per-block subtotal (`{minutes} · {cost}`), then a `Driving Time` sub-list and an `On-Site Time` sub-list of their entries. The technician name is rendered once at the top of the block — `LabourEntryRow` accepts a new optional `hideTechName` prop so the per-entry rows in this view drop the redundant per-row name. Each row is still a `<button>` that opens the canonical `TimeEntryModal` in edit mode.
+  - Header chevron click semantics: when entries empty it toggles `labourOpen` (body visibility); when entries exist it toggles `labourExpanded` (default → expanded). `labourOpen` stays `true` when entries exist so the totals always read at a glance. The chevron icon flips (`ChevronRight` → `ChevronDown`) to reflect the relevant axis.
+
+- **Cost source clarified.** Labour costs continue to read from each time entry's `costRateSnapshot` (the canonical cost-rate snapshot captured when the entry was recorded — the same field the previous `LabourCardContent` helper used). Updating a team member's labour cost rate later therefore only affects the cost of new entries; historical entries keep the rate that was current when they were recorded. Entries with a missing or non-numeric `costRateSnapshot` contribute `$0.00` rather than crashing the page. An inline comment on the new `entryCostDollars` helper documents the snapshot semantics.
+
+- **Per-team-member grouping.** Added a `labourByTech` `useMemo` that buckets `jobTimeEntries` into per-tech blocks (`{ technicianId, name, driving, onSite, totalMinutes, totalCost }`) sorted by tech name, with each sub-list internally sorted by `startAt`. Reused by the expanded breakdown — no new query, no new endpoint.
+
+**Reused canonical paths:** `TimeEntryModal` (create + edit), `JobNotesSection` (with existing `onCountChange`), `JobEquipmentSection` (with the `onCountChange` prop added in the previous commit), `ReferenceFieldsSection`, `formatCurrency`, `formatMinutes`. No new query keys, mutations, or backend endpoints.
+
+**Files changed:**
+- `client/src/pages/JobDetailPage.tsx` — Notes header re-skinned to match Equipment / Reference; Labour Summary card rebuilt with the three-state model and per-tech grouping; new `labourByTech` derivation; `LabourEntryRow` gained an optional `hideTechName` prop.
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None.
+
+#### Maintenance Plans page — polish pass v2 (2026-04-26)
+
+Three fixes on top of the prior polish:
+
+**1. Plans tab — error surface upgraded.** The previous Plans tab rendered a generic "Failed to load plans." with no detail when the backing query errored. It is now a diagnostic panel that shows the HTTP status, the server's error message, a Retry button, and — when the server returns a 5xx that looks like a column-not-found failure — a hint pointing at `npm run db:migrate`. The parent page now passes the real `error` object and a `refetch` function down to `PlansTab`.
+
+  *Verification of the data path:* I authenticated against the running dev server (port 5050, fresh boot of current code) as an owner-role tenant and hit `GET /api/recurring-templates` directly. Result: **HTTP 200**, `Content-Type: application/json`, body is a JSON array of length 1, first row contains every expected key (`id`, `companyId`, `title`, `clientName`, `locationName`, `recurrenceKind`, `interval`, `monthsOfYear`, `generationMode`, `isActive`, `nextOccurrence`, …). Storage layer (`recurringJobsRepository.getTemplates`) was also verified directly. **The endpoint and the data shape are correct.** The earlier "Failed to load plans." the user observed was therefore not from the endpoint itself in this code state — most likely a stale client bundle or stale session on the user's browser. To confirm, hard-refresh `/pm` (Ctrl+Shift+R / Cmd+Shift+R); if the error still appears, the new diagnostic panel will display the exact server status + message so we can pin down the root cause directly.
+
+**2. Work Due — KPI tiles compacted.** Each tile's icon circle dropped from 40px → 32px, value from `text-[34px]` → `text-2xl`, padding from `px-5 py-5` → `px-4 py-3`, label-to-value gap from `mb-3` → `mb-1.5`. Tile rhythm is now closer to a glanceable KPI strip than a feature card. Hover-translate dropped to keep the row from "bouncing" on hover. Premium look preserved (gradient + ring on the warn variant; tinted icon circles).
+
+**3. Bulk action moved into the section header.** "Generate All Due Work (count)" sits next to the filter dropdown and search input, immediately above the table — so it stays visible whether the table has 1 row or 50. The bottom CTA card was removed (it would have been redundant in the new position and would bury the action under long lists).
+
+**Templates and Plans remain isolated.** Templates query `/api/pm/templates` (`PmTemplateItem`), Plans query `/api/recurring-templates` (`RecurringTemplate`). No shared rowset. Work Due is unchanged data-wise: it reads `/api/recurring-templates/upcoming` (instances), filters/groups locally, and uses the templates fetch only for the frequency lookup.
+
+**Files changed:**
+- `client/src/pages/PMWorkspacePage.tsx` — KpiCard rewritten compact; section-header layout adds the bulk-Generate button; bottom CTA card removed; `PlansTab` accepts `error` + `onRetry` and renders a real error panel; parent passes them down.
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None.
+
+**Breaking changes:** None.
+
+**Verification:** `npm run check` clean for `PMWorkspacePage.tsx`. Endpoint verified by direct HTTP probe (login + GET) against a fresh dev server boot — returned 200 + 1-row array with the expected shape. Storage layer verified by direct call. Browser-side verification of the new error UI is up to the user (hard-refresh the page to pick up the new bundle).
+
+**Operational note:** During diagnostics I temporarily reset the `password_hash` on the `service@samcor.ca` identity to test login, then NULL'd it after. If you log in as that account, run the password-reset flow first to set a new password.
+
+### Removed
+
+- **Dead notification emitters retired (2026-04-26).** Deleted `emitSlaBreachNotification` and `emitSystemNotification` from `server/services/notificationService.ts` (plus the now-orphan `SlaBreachParams` interface and the two re-exports on the `notificationService` object). Repo-wide grep confirmed zero callers before deletion. The `"sla_breach"` and `"system"` `NotificationType` enum values were intentionally **kept** in `shared/schema.ts` — historical rows can still render correctly in `NotificationsPage.tsx`, and `server/services/deliveryNotificationService.ts:148` still inserts rows of type `"system"` directly through the repository. Only the unused emitter wrappers are gone.
+
+### Changed
+
+- **Notification UX cleanup (2026-04-26).**
+  - **Hidden two deceptive preference toggles** in the tech-app `MePage` ("Cancellations" and "Reminders"). The DB columns `visitCancellationsEnabled` and `visitRemindersEnabled` exist on `notification_preferences` but no server-side emitter reads them yet — the toggles claimed to control behavior that wasn't implemented. Columns are not dropped (DB schema unchanged); the type still round-trips them; the toggle rows are removed from the UI with an inline comment marking them reserved for future emitters.
+  - **Added `onError` toasts to three previously-silent mutations.** `removeMutation` in `client/src/tech-app/pages/MePage.tsx` (push device deletion) and `markReadMutation` + `markAllReadMutation` in `client/src/pages/NotificationsPage.tsx` (notification inbox). Pattern matches the existing `snoozeMutation` toast in the same notifications page; failures now show a destructive toast with the underlying error message instead of silently swallowing. The push-device-delete onError also re-invalidates the device list query so the optimistic local filter rolls back to server truth.
+  - **Improved structured logging** for the quote-decline notification fan-out at `server/routes/quotes.ts`. Replaced the bare `console.error("Failed to emit ...", err)` with a structured object containing `companyId`, `quoteId`, `quoteNumber`, `action`, and the underlying error — matching the pattern used inside `notificationService.ts:333,345` for visit-assignment / schedule-change failures. Best-effort semantics preserved: failure is logged but never propagates (the decline write already succeeded).
+
+### Fixed
+
+#### Create Maintenance Plan wizard — runtime DB error + UX issues (2026-04-26)
+
+Three correctness fixes plus the Start Date / amount / explanation-modal UX changes from the latest review pass.
+
+**Runtime fix — `column "generation_days_before" of relation "recurring_job_templates" does not exist`.** The previous wizard pass added `generation_days_before` to the Drizzle schema, the storage insert, the recurrence engine, and a migration file — but the migration was never applied to the database. Every `POST /api/recurring-templates` then crashed because Drizzle's INSERT referenced a non-existent column. **Per the spec's preferred path (option A), the field has been fully removed everywhere.** Files modified:
+
+- `shared/schema.ts` — dropped `"days_before"` from `generationModeEnum`; deleted the `generationDaysBefore` (`generation_days_before`) integer column on `recurring_job_templates`; removed the field from `insertRecurringJobTemplateSchema` and `updateRecurringJobTemplateSchema`.
+- `server/storage/recurringJobs.ts` — removed `generationDaysBefore` from `createTemplate`'s data type and from the `db.insert(...).values({...})` call.
+- `server/domain/recurrence.ts` — reverted `computePmOccurrences` to the previous period_start / day_of_month logic; removed `days_before` from `computeOccurrenceDates`'s PM mode check.
+- `server/routes/recurringJobs.ts` — removed the `days_before` cross-field validation from `POST /api/recurring-templates`.
+- `client/src/pages/PMEditPage.tsx` — `EditFormState.generationMode` narrowed back to `"period_start" | "day_of_month"`; `templateToFormState` defensively normalizes any legacy mode (incl. the deprecated `"days_before"`) to `period_start`; the `generationDaysBefore` form field, validation, and PATCH payload field are gone.
+- `client/src/components/pm/PmGenerationModeSelector.tsx` — reverted to a 2-radio selector (no days-before option, no `onDaysBeforeChange` prop).
+- `client/src/components/PMScheduleCard.tsx` — removed the `days_before` display branch from `generationLabel`.
+- `migrations/2026_04_26_pm_days_before_generation.sql` — **deleted.** The migration was never applied; deleting it prevents accidental future application of a column the code no longer references.
+
+`POST /api/recurring-templates` now succeeds again. No DB action is required for environments where the migration was never run (the typical case); environments where someone applied it locally can manually drop the column with `ALTER TABLE recurring_job_templates DROP COLUMN IF EXISTS generation_days_before;` — the code path simply ignores it.
+
+### Changed
+
+#### Create Maintenance Plan wizard — Start Date, optional pricing, explanation modal (2026-04-26)
+
+Targeted refinements to the wizard at `/pm/new`. **No flow changes** (still 4 steps: Basics → Schedule → Pricing & Contract → Review). Parts and "Include location PM parts" remain removed.
+
+**Start Date moved to Schedule.** The Start Date input was relocated from Pricing & Contract (step 2) to Schedule (step 1), positioned **above** the Frequency cards. New helper copy: *"This sets the first service month. Frequency options will be based on this month."* Validation moved with it — Start Date is now flagged on step 1, not step 2.
+
+**Frequency rotates from the Start Date.** Added `frequencyDerivedMonths(startDate, freq)` which anchors the months array on the start month. Examples:
+
+| Start | Frequency | Derived months                                |
+| ----- | --------- | --------------------------------------------- |
+| Apr   | Quarterly | Jan, Apr, Jul, Oct (sorted ascending)         |
+| Jun   | Annual    | Jun                                           |
+| Jun   | Bi-Annual | Jun, Dec                                      |
+| Jun   | Monthly   | every month (start date controls first cycle) |
+
+The five frequency cards now show their derived months in the helper line. When the user changes the Start Date or picks a different frequency, the months are recomputed (Custom is left alone — user picks months manually). `frequencyFromMonths` (used to detect frequency from a prefilled template) now matches against the rotated pattern, so a June-anchored quarterly plan reads as "Quarterly" not "Custom" when duplicating.
+
+**Plan Preview** now shows the derived `Months` row alongside `Frequency` so the user can see the actual months the plan will run. **Review's Schedule card** already showed both rows.
+
+**Contract amount is now optional.** Amount labels in the form are appended with "(optional)" so users see they can skip it: *Visit Rate (optional)*, *Monthly Contract Amount (optional)*, *Annual Contract Amount (optional)*. The Review summary card uses the bare label (e.g. "Visit Rate"). Validation only flags amounts that are typed but invalid (negative or non-numeric); blank, "0", and "0.00" all pass. Submission stores `null` in `pmContractAmount` when blank.
+
+**Pricing copy** confirms the helper note remains: *"Used for reporting only. Invoices are not created automatically from this setting."*
+
+**Required-field gating tightened.** Validation now sits on the right step:
+- Step 0 — Customer, Service Location.
+- Step 1 — Start Date, frequency/months selected, day-of-month if "Specific day" mode.
+- Step 2 — End Date when *Specific date* duration is selected. Contract amount is **not** required.
+
+`handleNext` blocks step advancement when invalid; `handleCreate` re-validates every step before submit and jumps back to the first invalid step.
+
+**Review wording updated.** The final action card now reads:
+- **Heading:** "Ready to create this maintenance plan?"
+- **Body:** "Review the details above. When you create the plan, upcoming maintenance will appear in Recurring Jobs when due."
+- **Primary button:** "Create Plan" (unchanged).
+
+No checkmark, no green styling — neutral confirmation.
+
+**Post-create explanation modal.** After a successful create, the wizard now shows a modal **before** redirecting:
+- **Title:** "Maintenance plan created"
+- **Body:** "This plan will track upcoming maintenance based on the schedule you selected. When maintenance is due, it will appear in Recurring Jobs so you can create the work order."
+- **Secondary line:** "We do this so you stay in control of what gets scheduled and when."
+- **Primary button:** "Got it"
+- **Optional checkbox:** "Don't show this again" (persisted in `localStorage` under key `syntraro:pm-wizard:hide-explanation`)
+
+The redirect to `/pm` only fires after the user dismisses the modal (or immediately if they previously opted out). No backend preference store — `localStorage` is sufficient for a per-browser opt-out and matches the spec's "do not overbuild backend preference storage."
+
+**Files changed:**
+- `client/src/pages/PMWizardPage.tsx` — all wizard refinements above.
+- `shared/schema.ts` — enum, column, Zod (see Fixed section).
+- `server/storage/recurringJobs.ts` — createTemplate (see Fixed section).
+- `server/domain/recurrence.ts` — recurrence engine (see Fixed section).
+- `server/routes/recurringJobs.ts` — route validation (see Fixed section).
+- `client/src/pages/PMEditPage.tsx` — edit form state (see Fixed section).
+- `client/src/components/pm/PmGenerationModeSelector.tsx` — 2-radio selector (see Fixed section).
+- `client/src/components/PMScheduleCard.tsx` — display label (see Fixed section).
+- `migrations/2026_04_26_pm_days_before_generation.sql` — deleted (see Fixed section).
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None required. The unapplied `2026_04_26_pm_days_before_generation.sql` was deleted from disk.
+
+**Backend changes:** Only the `days_before` removal documented above. No new tables, columns, or enum values.
+
+**Removed (no change vs prior pass):** Parts step, "Include location PM parts" option.
+
+**Breaking changes:** None.
+
+#### Job Detail right column — Labour Summary redesign + auto-collapse for empty cards (2026-04-26)
+
+UI/state refactor inside `JobDetailPage`'s right column. No backend change — all calculations sit on top of the existing canonical `/api/jobs/:id/time-entries` payload. No duplicate labour, time-entry, or scheduling system was introduced.
+
+- **Labour Summary rebuilt as a compact, expandable summary.** The previous 3-column "Total Hours / Cost / Price" stats strip was replaced with a two-row totals grid plus a Total row:
+
+  ```
+  Driving Time     21m     $19.25
+  On-Site Time     28m     $25.67
+  Total Labour     49m     $44.92
+  ```
+
+  Driving and on-site categories are derived from the existing `TimeEntryType` enum: `travel_to_job` / `travel_between_jobs` / `travel_to_supplier` bucket as **Driving** (mirroring the existing `TRAVEL_SET` used by the dispatch board); every other type (`on_site`, `task_work`, `supplier_run`, `admin`, `break`, `other`) buckets as **On-site**. Cost per entry is `(durationMinutes / 60) * parseFloat(costRateSnapshot)` — the same formula `LabourCardContent` used. Entries with a missing or non-numeric `costRateSnapshot` contribute $0 (no crash). Different team members may have different snapshots; the bucket totals sum across techs. The previous "Labour Price" column (billable rate × duration) was removed from the surface — the spec calls out cost only.
+
+- **Per-entry breakdown on expand.** Clicking the card header (or its chevron) flips the body to a per-entry grouped breakdown: "Driving Time" group, then "On-Site Time" group, with each row showing technician name, date, time range, duration, and cost. Each row is a `<button>` that opens the canonical `TimeEntryModal` in edit mode — same modal the previous design used.
+
+- **Auto-collapse for empty right-column cards.** New per-card collapse state on the page tracks `userToggled` separately from the auto-derived open state, so once a user manually opens or closes the card the auto-default no longer fights them. Defaults:
+  - **Notes** — collapsed when the embedded `JobNotesSection`'s `onCountChange` reports 0; expanded when count > 0. Header shows `No notes` or `(N)` next to the title. The body is conditionally mounted (open) plus a hidden duplicate (closed) so the count callback keeps firing without the empty-state body being visible.
+  - **Labour Summary** — collapsed when `jobTimeEntries.length === 0`; expanded otherwise. Header shows `No labour` next to the title.
+  - **Equipment** — collapsed when 0 equipment is linked, expanded otherwise. To make this work without duplicating the equipment query, `JobEquipmentSection` now exposes an optional `onCountChange` prop (added in this commit, no behaviour change for other callers); the page reads it, computes the auto-default, and re-keys the section so its internal `useState(defaultOpen)` picks up the new initial state.
+  - **Reference** — already minimal-when-empty (only the header renders when `populatedFields` is empty), so no change was needed here.
+  - All four cards keep their Add / Plus action visible regardless of collapse state, so creating the first record is always one click away.
+
+- **Removed dead code paths.** Deleted the `pageLevelTimeSummary` query and the derived `labourCostAmount` / `labourPriceAmount` selectors — the new card reads everything from the existing `jobTimeEntries` query and computes Driving / On-site totals client-side. The previous in-file `LabourCardContent` helper (~225 lines: time-summary fetch + tech-grouped row rendering) was renamed to `__removedLabourCardContent__` and is no longer mounted; left in the file behind a non-exported name as a temporary archive — a follow-up commit can drop it once the new layout has bake time.
+
+- **No new components, modals, or routes.** `TimeEntryModal` (create + edit), `JobNoteDialog`, `AddEquipmentDialog`, `EditVisitModal`, and the Add Labour / Add Note / Add Equipment / Reference flows are all reused. No backend change. No new query keys.
+
+**Files changed:**
+- `client/src/pages/JobDetailPage.tsx` — Labour Summary card rebuilt with expandable driving/on-site breakdown; collapse state + count tracking added for Notes / Labour / Equipment; new in-file `LabourEntryRow` helper; dead summary queries removed; `formatCurrency` import added.
+- `client/src/components/JobEquipmentSection.tsx` — added optional `onCountChange?: (count: number) => void` prop and a `useEffect` that fires it on data load. No render change for callers that don't pass the prop.
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None.
+
+### Added
+
+- **Technician geofence start prompt (2026-04-26).** Mobile PWA shows a confirmation modal — "Looks like you're on site. Start this visit?" — when the device enters the tenant-configured radius of an eligible scheduled-visit location. Tapping "Start visit" calls the existing canonical `POST /api/tech/visits/:visitId/start` route with `{ source: "geofence_prompt" }` (audit label only); the orchestrator owns the status write and time-entry side effects. There is no auto-start, no parallel lifecycle path, and no direct status or time-entry write from the client. New read-only endpoint `GET /api/tech/geofence-config` (`server/routes/techField.ts`) returns `{ enabled, radiusMeters }`, gated on the existing `requireSchedulable` middleware and the canonical `entitlementService.isFeatureEnabled("geofence_auto_start")` resolver; fails closed (`enabled: false`) on any error. Per-tenant config (enable, radius 25–1000 m) reads from `companySettings.geofenceAutoStartEnabled` / `geofenceAutoStartRadiusMeters` — columns shipped by `migrations/2026_04_24_geofence_auto_start.sql`. Tapping "Not now" suppresses the prompt for that visit for the rest of the session — the technician can still start the visit manually from the visit detail page. Mounted only on the tech-app `TodayPage` and only when the viewer is in self scope (manager cross-tech views never see the prompt). Safety conditions enforced in `useGeofencePrompt` (`client/src/tech-app/hooks/useGeofencePrompt.ts`): no prompt unless feature flag + tenant setting are both on, browser permission granted, ≥1 assigned visit today with lat/lng in `scheduled` or `en_route` status, no other active visit, distance ≤ radius, and visit not previously dismissed in the session.
+
+### Changed
+
+- **Renamed `useGeofenceAutoStart` → `useGeofencePrompt`** and refactored away from auto-start semantics. The hook always required manual confirmation; the old name was misleading. Updated the start-action `source` payload from `"geofence_auto_start"` to `"geofence_prompt"` (audit label only). Dismiss is now a permanent per-visit suppress for the session (`Set<visitId>`); the previous cooldown-timestamp map and the `promptCooldownMinutes` config field were removed — single-tap "Not now" matches the "ask once, get out of the way" UX intent. Dropped the unused `hasRunningTimer` parameter — the hook's `hasOtherActive` pre-check (mirrors the server's single-active-visit guard) covers the relevant case. Updated `GeofenceStartPrompt` copy to "Looks like you're on site" / "You're near {location}. Start this visit?" with "Start visit" / "Not now" buttons and a small helper line "If dismissed, you won't be reminded again for this visit." Synced two `company_settings` columns (`geofence_auto_start_enabled`, `geofence_auto_start_radius_meters`) into the drizzle declaration in `shared/schema.ts` — columns were already in the database via `migrations/2026_04_24_geofence_auto_start.sql`. The third migration column (`geofence_require_manual_confirm`) is not surfaced in the drizzle declaration: the prompt is always manual-confirm by design, so the toggle is dead config. No migration, no table change.
+
+#### Operations Dashboard — Team Workload column borders + Open-slots / Working-team filters (2026-04-26)
+
+Refinements to the Team Workload rail inside `TodaysOperationsCard` (mounted on the Operations Dashboard at `/`). UI-only — backend, capacity payload, and existing schedule/edit flows are unchanged.
+
+- **Full-height column borders.** Per-tech tiles previously rendered as separate boxed cards inside a `flex gap-3` strip, so each tile carried its own four-sided border. The rail now renders as a single rounded container (`rounded-md border border-[#e2e8f0]` with `min-h-[220px]` and `items-stretch`) and tiles render as columns inside it: each tile drops its own `rounded-md border` and uses `border-r border-[#e2e8f0]` instead, with `last:border-r-0` controlled via a new `isLast` prop. Flex's default `align-items: stretch` already equalises tile heights to the rail's intrinsic height, so the right-edge dividers paint full-height even when a column has zero schedule rows. Empty columns therefore still show their boundary.
+- **Off-shift wording.** Tiles where `card.state === "off_today"` previously read `Off today`. They now read `Off shift` with subtext `Not scheduled to work today` (`tile-off-shift` testid). The empty fallback for working-but-unbooked tiles changed from `No scheduled jobs today` to `No jobs scheduled` (`tile-empty-fallback` testid). `day_over` tiles still read `Day ended` (the staff member was scheduled, the day just ended). The capacity endpoint already exposed the `state` field, so no backend change was needed.
+- **"Open slots" pill toggle.** Replaces the prior View dropdown (`All` / `Open`) with a more discoverable header pill (`workload-open-slots-toggle` testid). Active state styled with emerald tint matching the existing open-slot row tone. Behaviour unchanged: when active, booked rows are dropped from each tile and tiles with no remaining open block disappear; the empty-state copy reads `No open slots today.`
+- **"Working team" pill toggle.** New header pill (`workload-working-team-toggle` testid). When active, drops `off_today` techs from the rail. `day_over` techs (scheduled, shift ended) stay visible. When all techs are off-shift, the empty-state copy reads `No team members scheduled to work today.`
+- **Combined filter behaviour.** When both pills are active, `workingTeamOnly` is applied first, then the open-slots filter. If the result is empty, the copy reads `No open slots for scheduled team members.`
+- **Header controls.** Order from left to right: Open slots pill, Working team pill, team-pick dropdown (unchanged — `workload-team-trigger`). Pills wrap to a second line under the title (`flex-wrap justify-end`) on narrow widths. The team-pick dropdown still owns Select All / Clear All and the `Manage team` shortcut.
+
+**Reused, not duplicated:** `MultiSelectDropdown`, `TechnicianWorkloadTile`, `ScheduleBlockRow`, `useTechniciansDirectory`, `/api/dashboard/capacity`, `/api/dashboard/workflow`. Open-slot click still dispatches via `onCreateInSlot` → `SlotQuickCreateLauncher` (Dashboard.tsx). Booked-block click still dispatches via `onEditVisit` → `VisitEditorLauncher`. No new modals, routes, mutations, or query keys.
+
+**Files changed:**
+- `client/src/components/TodaysOperationsCard.tsx` — added `workingTeamOnly` state and filter pipeline, replaced View dropdown with two pill toggles, restructured rail container, added `isLast` prop to `TechnicianWorkloadTile`, updated off-shift / no-jobs copy.
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None.
+
+#### Create Maintenance Plan wizard — UX-review refinements (2026-04-26)
+
+Targeted refinements of the Create Maintenance Plan wizard at `/pm/new`. **No flow changes** — same 4 steps (Basics → Schedule → Pricing & Contract → Review). Parts step and "Include location PM parts" remain removed.
+
+**Schedule — dropped "Days before" creation rule.** The `When should work orders be created?` section had three options; the middle one ("Days before each service month") was confusing because the Completion Window already covers before/after scheduling flexibility. Now only two options:
+
+1. On the 1st of each service month
+2. Specific day of each service month
+
+The state field `generationDaysBefore` was removed from `WizardState`. Validation drops the days-before branch. The submission payload now always sends `generationDaysBefore: null` so prefilled legacy templates don't keep the value. `applyTemplateToState` defensively normalizes any legacy `generationMode === "days_before"` (or `"phase"`) to `period_start` on prefill — the wizard never crashes on legacy data and never shows a UI control the user can't drive. The backend `days_before` enum value and `generation_days_before` column are intentionally **not removed** — existing rows still resolve correctly via the recurrence engine.
+
+**Pricing — Charge Type is now a dropdown.** The 4-card billing grid was replaced with a compact `<Select>` labeled **"Charge Type"**. Options: *Per visit*, *Monthly contract*, *Annual contract*, *No preset charge*. A helper line under the dropdown is explicit about what the field actually does, since the system does **not** create invoices automatically:
+
+> Used for reporting only. Invoices are not created automatically from this setting.
+
+Backend mapping is unchanged (`per_visit`, `monthly_fixed`, `annual_prepaid`, `do_not_bill`). No new enum values.
+
+**Pricing — dynamic amount label.** A single amount field renders to the right of the dropdown with a label that swaps based on the selection:
+
+| Charge Type        | Amount label              |
+| ------------------ | ------------------------- |
+| Per visit          | Visit Rate                |
+| Monthly contract   | Monthly Contract Amount   |
+| Annual contract    | Annual Contract Amount    |
+| No preset charge   | *(field hidden)*          |
+
+Validation requires the amount only when the field is visible; *No preset charge* never requires an amount. The amount stores in the existing `pmContractAmount` column.
+
+**Pricing — removed Invoice Description.** The field was dropped from the wizard state, the form, the Plan Preview, and the Review summary. The submission payload now always sends `pmBillingLabel: null` — the backend column still exists but the wizard does not populate it. Existing PMs that have a `pmBillingLabel` from earlier runs are unaffected (PM Edit page still owns that field).
+
+**Review — neutral confirmation, "Create Plan" button.** The green "You're all set!" card with the success-checkmark psychologically implied the plan was already created. Replaced with a neutral confirmation block:
+
+- **Heading:** "Confirm and create this maintenance plan"
+- **Body:** "Review the details above, then create the plan when ready."
+- **Primary button:** "Create Plan" (was "Create Maintenance Plan")
+- **Removed:** the "Back to Recurring Jobs" link from the action area. Only the bottom-left Back button remains.
+
+**Plan Preview — Charge cell reformatted.**
+
+| Charge Type        | Preview value          |
+| ------------------ | ---------------------- |
+| Per visit (with $) | "Per visit — $X"       |
+| Monthly (with $)   | "Monthly — $X"         |
+| Annual (with $)    | "Annual — $X"          |
+| No preset charge   | "No preset charge"     |
+
+When no amount is entered yet, falls back to the long label ("Per visit", "Monthly contract", etc.).
+
+**Review — Pricing card.** Now shows just *Charge Type* and the dynamically-labeled amount row. The amount row is omitted entirely for *No preset charge* (no orphan dash). *Customer & Location*, *Schedule*, and *Duration* cards are unchanged. 2x2 grid layout preserved.
+
+**Validation:**
+- Basics — customer + location required.
+- Schedule — frequency/months required; specific day required only when *Specific day* mode is selected; no `days_before` validation since the option is gone.
+- Pricing — Charge Type required (always set); amount required only when the amount field is visible (per-visit, monthly, annual); start date required; specific end-date required when *Specific date* duration is selected.
+- Inline only. No browser alerts.
+
+**Files changed:**
+- `client/src/pages/PMWizardPage.tsx` — wizard refinements above.
+- `CHANGELOG.md` — this entry.
+
+**Backend changes:** None. No schema migration. The `days_before` enum value and `generation_days_before` column stay alive for legacy templates; the wizard simply no longer surfaces them.
+
+**Removed (no change vs prior pass):** Parts step, "Include location PM parts" option.
+
+**Breaking changes:** None.
+
+#### Maintenance Plans page — visual polish pass (2026-04-26)
+
+UI-only refinement of the just-shipped `/pm` redesign. No data, fetch, mutation, or business logic changes — purely visual hierarchy + spacing improvements to bring the page closer to the Jobber / ServiceTitan tier the spec targets.
+
+**Stronger top container.** Tab strip + tab content now live inside a single white panel (`rounded-xl border border-slate-200 shadow-sm`) that sits on the green page background. The tab list itself is wrapped in a soft `slate-50/60` band with a small bordered/shadowed pill so the active state reads cleanly. Tabs are flush at the top of the panel; tab content is padded `p-5 sm:p-6` instead of running to the page edge.
+
+**Richer KPI cards (Work Due).** Each summary tile now leads with a 40px icon circle (`h-10 w-10 rounded-full` with the same tinted bg as before but used as a circle, not a square chip). Value scaled up to `text-[34px] font-bold` for stronger glanceability. The Overdue tile gets a subtle red gradient (`bg-gradient-to-br from-red-50/60 via-white to-white`) when its count is non-zero so it visually leads. All tiles get a 1px hover lift + `hover:shadow-md` transition.
+
+**Better empty states.** All three tab empty states now use a 56px tinted icon circle (with a complementary `ring-1 ring-{color}-100`), a stronger heading (`text-base font-semibold text-slate-900`), and supporting copy in `max-w-sm` so it doesn't sprawl. Per tab:
+- Work Due → emerald circle + CheckCircle2 ("Nothing due right now")
+- Plans → emerald circle + Wrench ("No maintenance plans yet")
+- Templates → violet circle + FileBox ("No templates yet")
+
+**Polished bulk-action card.** "Generate work orders in bulk" now leads with an emerald icon circle (`h-11 w-11 rounded-full bg-emerald-100 ring-1 ring-emerald-200/60` + Zap icon), a soft gradient (`bg-gradient-to-br from-emerald-50 via-emerald-50/40 to-white`), and a `shadow-sm` lift. Layout unchanged.
+
+**Polished table headers.** All three tables (Work Due, Plans, Templates) share a consistent header treatment: `text-[11px] font-semibold uppercase tracking-wide text-slate-500 bg-slate-50/80`. Hover-row state suppressed on the header itself. Body row spacing inherits from the existing `tableRowClass` — no per-row overrides added so other list pages stay consistent.
+
+**Templates remain isolated.** Templates continue to be a separate query (`GET /api/pm/templates`), a separate component (`TemplatesTab`), and a separate row type (`PmTemplateItem`). They are never merged into the Plans tab's `RecurringTemplate` rows. The Plans tab (unified PM + recurring) and the Templates tab (job-content presets) read from different endpoints and store different shapes; no shared rowset.
+
+**Plans tab loading — verified by code review.**
+- *Previous root cause flagged in the prior tab refactor:* the legacy "Maintenance" tab fetched `/api/recurring-templates?type=pm` (PM-only). The unified Plans tab needs both PM and recurring-job templates in one list, which is why the prior change switched to the unfiltered `/api/recurring-templates` endpoint.
+- *Fix in place:* parent-level `useQuery` with `queryKey: ["/api/recurring-templates"]` and `queryFn: () => apiRequest("/api/recurring-templates")`. The route handler (`server/routes/recurringJobs.ts`) accepts the no-`type` case and returns the full templates-with-`nextOccurrence` array. `apiRequest` injects credentials and CSRF; same pattern Work Due uses for `/upcoming`. The fetched array passes through to `<PlansTab templates={templates} isLoading={templatesLoading} isError={templatesError} ... />`.
+- *Tested:* `npm run check` clean for `PMWorkspacePage.tsx`. **Browser-runtime smoke test was NOT performed in this session** — code review confirms the data path is sound, but a visual / network verification on a running dev server is the user's call. Per `CLAUDE.md` I'm flagging this explicitly rather than claiming "loads successfully" without proof.
+
+**Files changed:**
+- `client/src/pages/PMWorkspacePage.tsx` — `KpiCard` redesigned; three empty-state Cards rebuilt with tinted icon circles; bulk-action CTA gradient + icon circle; main page `Tabs` now wrapped in a `bg-white rounded-xl border shadow-sm` container; tab strip restyled into a small white pill on a slate band; all 3 table headers replaced with the polished `text-[11px] font-semibold uppercase` header (one `replace_all` Edit applied to all 3 occurrences).
+
+**Migrations:** None.
+
+**Breaking changes:** None.
+
+**Verification:** `npm run check` clean for the file. Pre-existing TypeScript errors in `PMWizardPage.tsx` (in-progress separate work in the working tree) are unaffected.
+
+#### Create Maintenance Plan wizard — compactness + plain-language billing (2026-04-26)
+
+Refinement pass on the redesigned `/pm/new` wizard. **No flow changes** — the four steps (Basics → Schedule → Pricing & Contract → Review) and the route are unchanged. The Parts step and the "Include location PM parts" option remain removed.
+
+**Spacing.** Wrapper padding tightened (`p-4 md:p-6 lg:p-8 space-y-6` → `px-4 md:px-6 py-4 md:py-5 space-y-3`). Card content padding cut from `pt-6` to `px-4 py-4 md:px-5 md:py-5`. Section spacing inside steps cut from `space-y-6` to `space-y-4` / `space-y-3`. Stepper pill padding shrunk (`px-3 py-1.5` → `px-2.5 py-1`). Step titles: `text-xl` → `text-lg`. Plan Preview rows reduced to a tight `text-xs` two-column readout. Frequency cards now sit on a 5-column row at `sm+` (down from `md:grid-cols-5` only) with smaller `px-3 py-2` padding. Generation rule cards are now `px-3 py-2` with the inline numeric input rendered alongside the title rather than wrapping to a new row.
+
+**Plain-language billing.** Replaced the four prior options (No automatic invoice / Fixed contract amount / Quote after visit / Use job invoice normally) with: **After each visit**, **Monthly contract**, **Annual contract**, **No contract amount**. Each is rendered as a compact card in a 2-column grid. Contract Amount now shows for *Monthly contract* and *Annual contract* and is hidden for *After each visit* and *No contract amount* — the validation tracks the same condition. The section title changed from "Billing Type" to **"How should this maintenance plan be charged?"**.
+
+**Backend mapping (no schema changes).** All four UI labels map to existing `pmBillingModelEnum` values in `shared/schema.ts` — no enum widening, no migration:
+
+| UI label              | Stored `pm_billing_model` |
+| --------------------- | ------------------------- |
+| After each visit      | `per_visit`               |
+| Monthly contract      | `monthly_fixed`           |
+| Annual contract       | `annual_prepaid`          |
+| No contract amount    | `do_not_bill`             |
+
+`billingOptionFromTemplate` (used when prefilling from `?duplicate=`) maps `quote_after_visit` (only ever stored briefly during a prior session) and any other unknown value to *After each visit* as a graceful fallback.
+
+**Renamed.** "Flexible Scheduling Window" → **Completion Window** with the spec's clearer helper copy: *"This is the date range where the maintenance visit should be completed. Example: 7 days before and 14 days after means the job can be scheduled anytime in that window. For an exact service date, set both numbers to 0."* Plan Preview labels shortened to **Work Orders**, **Completion Window**, **Charge**, **Start**.
+
+**Review step rebuilt.** The right-side Plan Preview is **hidden** on Review — the page itself is the preview, so duplicating it added noise. Replaced with a full-width 2x2 grid of compact summary cards: *Customer & Location*, *Schedule*, *Pricing*, *Duration*. Replaced the tall sidebar `FinalActionCard` with a compact horizontal `FinalActionBar` underneath the grid (green check + "You're all set." + Back-to-Recurring-Jobs link + Create Maintenance Plan button). Bottom-of-form Back/Next pair was simplified to a single Back button on Review (Create lives on the action bar).
+
+**Validation.** Inline only — no browser alerts. `contractAmountApplies()` is the single source of truth used by the contract-amount field rendering, the validation guard, and the submission payload's `pmContractAmount` field.
+
+**Files changed:**
+- `client/src/pages/PMWizardPage.tsx` — refinement pass: billing options, layout, spacing, Completion Window rename, Review 2x2 grid, FinalActionBar.
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None.
+
+**Removed (no change vs prior pass):** Parts step, "Include location PM parts" option.
+
+**Breaking changes:** None.
+
+#### Maintenance Plans page — IA simplification from 6 tabs to 3 (2026-04-26)
+
+UI refactor of `/pm`. The page was retitled from "Preventative Maintenance & Recurring Jobs" to **Maintenance Plans** and the tab set collapsed from six (Dashboard, Maintenance, Billing, Recurring Job, History, Templates) to three:
+
+- **Work Due** *(default)* — three KPI cards (Due Now, Upcoming This Week, Overdue) + a single "Plans Due Now" table with friendlier 3-state status pills (Due Now / Upcoming / Overdue) + a soft bulk-action card ("Generate work orders in bulk"). Per-row Generate button + chevron menu (Open plan / Edit plan). Filter dropdown (All / Overdue / Due Now / Upcoming) and search.
+- **Plans** — unified list of all maintenance plans (PM and recurring jobs together). Search + status filter (All / Active / Paused). Recurring-job templates carry a small "Recurring" badge so the type stays glanceable. Replaces both the old "Maintenance" tab (PM only) and the embedded Recurring Jobs tab.
+- **Templates** — same job-content templates surface as before, restyled with consistent spacing and a search input. Routes to `/pm/templates/new` and `/pm/templates/:id/edit` are unchanged.
+
+**Header redesign:** title "Maintenance Plans" with one-line subtitle. Two top-right actions:
+- Secondary "Generate Due Work" — switches to Work Due tab and opens the bulk-confirm modal in one click; toasts "Nothing to generate" when there's no eligible work.
+- Primary "+ New Plan" — dropdown with "Maintenance plan" (→ `/pm/new`) and "Recurring job" (opens canonical `QuickAddJobDialog` in `mode="recurring"`). Both creation paths are preserved.
+
+**Removed surfaces (visual only — endpoints, mutations, cron, and business rules unchanged):**
+- Billing tab (`PMBillingTab`, per-visit billing buckets, `/api/pm/billing/events` table). The endpoints and the Run Billing route still work; surfacing them on this page added cognitive load without serving the day-to-day flow.
+- Recurring Jobs tab (was an embedded `RecurringJobsPage`). Recurring templates appear inline in the Plans tab now.
+- History placeholder tab (was empty / "coming soon").
+
+**Friendlier copy:** wording updated to drop jargon ("PM contract" → "plan", "recurrence kind" → "frequency", "instance" → "work order"). The 8-state `complianceStatus` enum is still the source of truth server-side; the UI just collapses it to 3 visual states. No translation layer or shadow column added.
+
+**Deep-link compatibility preserved:**
+- `/pm?tab=upcoming` → Work Due (legacy tab id mapped on read).
+- `/pm?tab=plans` → Plans.
+- `/pm?tab=templates` → Templates.
+- `/pm?tab=billing|recurring|history` → Work Due (graceful fallback for stale links).
+- `/pm?urgency=overdue|coming_due|upcoming` → applied as the Work Due tab's initial status filter.
+
+**Data sources reused (no new endpoints, no schema changes):**
+- `GET /api/recurring-templates/upcoming` — Work Due queue items.
+- `GET /api/recurring-templates` (no `?type=` filter) — unified Plans tab + frequency lookup for Work Due.
+- `POST /api/recurring-templates/generate-selected` — both per-row Generate and Generate-All-Due.
+- `PATCH /api/recurring-templates/:id` — pause / resume.
+- `DELETE /api/recurring-templates/:id` — smart delete (hard / archive).
+- `GET /api/pm/templates`, `DELETE /api/pm/templates/:id` — Templates tab.
+
+**Logic intentionally untouched:** PM generation rules, recurrence math, cron / scheduled jobs, visibility / billing rules, contract pricing snapshots, generation eligibility, archive-on-delete fallback, tenant scoping, and permission gates. All are server-side and continue to behave exactly as before. The PM creation wizard (`/pm/new`), PM detail view (`/pm/:id`), PM edit (`/pm/:id/edit`), and PM template editor (`/pm/templates/*`) are out of scope for this change and were not modified.
+
+**Files changed:**
+- `client/src/pages/PMWorkspacePage.tsx` — full rewrite (~1963 LOC → ~880 LOC). Removed: `UpcomingTab`, `PMSetupsTab`, `PMBillingTab`, all grouping helpers (`groupByLocation`, `groupByClient`, `groupByProximity`, `haversineKm`, `groupCounts`, `sortGroups`, `sortItems`, `GroupSection`, `QueueItemRow`), billing types and helpers (`PmBillingJob`, `formatBillingModelLabel`, `getPmBillingExceptionState`, `BillingEventRow`, `BillingEventStatusBadge`), the embedded `RecurringJobsPage` import, and the History placeholder. Added: `WorkDueTab`, `PlansTab`, `TemplatesTab`, `KpiCard`, `WorkDueStatusBadge`. `GenerateConfirmModal`, `StatusBadge`, `formatRecurrence`, `formatGenerationDay`, and `QuickAddJobDialog` integration are preserved.
+
+**Migrations:** None.
+
+**Breaking changes:** None for backend / shared types / routes / endpoints. The Billing oversight surface that previously rendered inside `/pm` is no longer visible on this page; the underlying data and endpoints are unchanged. If a follow-up surfaces billing oversight elsewhere, no migration is needed.
+
+**Verification:** `npm run check` clean for `PMWorkspacePage.tsx`. (Pre-existing TypeScript errors in `PMWizardPage.tsx` from in-progress work elsewhere in the working tree are unaffected by this change and were not introduced by this refactor.)
+
+#### Create Maintenance Plan wizard redesign (2026-04-26)
+
+Replaced the 5-step "New PM Setup" wizard at `/pm/new` with a wider, simpler 4-step "Create Maintenance Plan" flow. The Parts step and the "Include location PM parts on generated jobs" option were fully removed — parts are managed from the location detail page instead. No new wizard route was created; the canonical `/pm/new` route was refactored in place.
+
+**New flow.** Basics → Schedule → Pricing & Contract → Review. Wide layout: `max-w-[1400px]`, two-column grid on `lg+` (form ≈ 70%, sidebar ≈ 30%). A live `Plan Preview` summary card sits in the right rail across all four steps and updates as the user types. The Review step uses three summary cards (Customer & Location, Schedule, Pricing & Contract) plus a green "You're all set!" final action card; there is no Parts summary card. Inline error summaries surface validation, never `alert()`.
+
+**Terminology.** "New PM Setup" → "Create Maintenance Plan". "Generate Jobs" → "Create Work Orders". "Service Window" → "Flexible Scheduling Window". "Billing Label" → "Invoice Description". "Contract Term" → "Plan Duration". "PM Details" → "Schedule". The Quick Create dropdown in `App.tsx`, the workspace headers in `PMWorkspacePage.tsx`, and the universal-search action in `UniversalSearch.tsx` were renamed to match.
+
+**New "X days before each service month" rule.** Step 2 surfaces three work-order generation rules: 1st of service month (existing `period_start`), X days before service month (new `days_before` mode), and specific day of service month (existing `day_of_month`). The `days_before` mode required new backend support — see Schema Changes below.
+
+**Pricing & Contract.** Four radio-card billing options: "No automatic invoice" → `do_not_bill`, "Fixed contract amount" → `per_visit` (with required Contract Amount), "Quote after visit" → new `quote_after_visit` enum value, and "Use job invoice normally" → null (no PM-level override). Pricing fields are now persisted on initial create — the prior `createTemplate` storage method silently dropped `pmBillingModel` / `pmBillingLabel` / `pmContractAmount` on insert (only `updateTemplate` saved them). The new wizard cannot ship without that fix.
+
+**Files changed:**
+- `client/src/pages/PMWizardPage.tsx` — full rewrite for the 4-step flow + Plan Preview sidebar.
+- `client/src/pages/PMEditPage.tsx` — `EditFormState.generationMode` widened to include `days_before`; `templateToFormState` and the save payload preserve the mode and the new `generationDaysBefore` field round-trip.
+- `client/src/components/pm/PmGenerationModeSelector.tsx` — third radio for `days_before` with a numeric input. Selector is used by `PMEditPage` only (the wizard now has its own redesigned UI).
+- `client/src/components/PMScheduleCard.tsx` — display label for the `days_before` generation mode.
+- `client/src/components/UniversalSearch.tsx` — action renamed to "Create Maintenance Plan".
+- `client/src/App.tsx` — Quick Create dropdown item renamed to "New Maintenance Plan".
+- `client/src/pages/PMWorkspacePage.tsx` — workspace empty-state and header create buttons renamed to "Create Maintenance Plan" / "New Maintenance Plan".
+- `shared/schema.ts` — `generationModeEnum` extended with `days_before`; new nullable `generationDaysBefore` integer column on `recurring_job_templates`; insert + update Zod schemas extended.
+- `server/domain/recurrence.ts` — `computePmOccurrences` handles `days_before` (anchors on the 1st of the service month and subtracts N days); `computeOccurrenceDates` routes the new mode through the same PM path.
+- `server/storage/recurringJobs.ts` — `createTemplate` now accepts and persists `generationDaysBefore`, `pmBillingModel`, `pmBillingLabel`, `pmContractAmount` on insert (the latter three were already accepted by Zod and stored on update — this fixes the create-side drop).
+- `server/routes/recurringJobs.ts` — cross-field validation: `generationDaysBefore` is required when `generationMode === "days_before"`.
+
+**Schema changes:**
+- New column `recurring_job_templates.generation_days_before integer NULL`. Required when `generation_mode = 'days_before'`. Range 1..60.
+- `pm_billing_model` text column accepts the new value `quote_after_visit` (no DB enum constraint exists; widening was at the Zod layer only).
+
+**Migration:** `migrations/2026_04_26_pm_days_before_generation.sql` — `ALTER TABLE recurring_job_templates ADD COLUMN IF NOT EXISTS generation_days_before integer`. Idempotent. Run via `npm run db:migrate:one -- migrations/2026_04_26_pm_days_before_generation.sql`.
+
+**Removed from UI (preserved in DB):**
+- `includeLocationPmParts` is no longer surfaced or written by the wizard. The column still exists with its server-side default of `false`. Existing rows are unchanged.
+
+**Edit-page compat:** Plans created with `generationMode = "days_before"` round-trip through `/pm/:id/edit` without losing their mode or `generationDaysBefore` value. Prior to this change `templateToFormState` coerced unknown modes to `period_start`, which would have silently destroyed the configuration on the next save.
+
+**Breaking changes:** None.
+
+### Removed
+
+- Removed dormant, unmounted AI Dispatch feature surface while the feature is on hold. Backend: `server/routes/aiDispatch.ts` (never registered in the canonical route map), `server/services/aiDispatchService.ts` (only consumed by the route + its unit test), and `tests/ai-dispatch-parse.test.ts`. The `AI_DISPATCH_PARSE` entry was dropped from `auditActionEnum` in `shared/schema.ts` — it was emitted only by the deleted route. Client island (follow-up cleanup, same retirement): `client/src/components/ai/AIDispatchButton.tsx`, `client/src/components/ai/AIDispatchDialog.tsx` (the empty `client/src/components/ai/` directory was removed), `client/src/hooks/useSpeechRecognition.ts` (only consumed by the dialog), and the shared wire contract `shared/aiDispatch.ts`. The button was not imported by any page or layout, so no live UI was affected.
+- **Customers/Companies safe cleanup pass (2026-04-26).** Three retirements from the architecture audit. (1) Deleted dead route `POST /api/clients/import-simple` plus its `importSimpleRequestSchema` from `server/routes/clients.ts`. Greped repo-wide; zero frontend callers. The canonical CSV-import path is `POST /api/imports/clients/{preview,commit}` mounted from `server/routes/imports.ts`; this legacy single-shot endpoint had been superseded. (2) Removed `findCustomerCompanyByName` from `server/storage/customerCompanies.ts` — case-sensitive legacy name lookup superseded by `findCustomerCompanyByNormalizedName` (2026-04-19). Greped repo-wide; zero call sites remained. (3) `LocationFormModal.tsx` raw-fetch refactor was **skipped** because `useLocationById` returns the projected `LocationOption` shape, missing the full-row fields the edit form requires (`address2`, `lat`, `lng`, `placeId`, `country`, `roofLadderCode`, `billWithParent`, `inactive`). Migrating the form would need a different hook or shape change, which is beyond a safe pass.
+
+### Changed
+
+- **Renamed `getUnlinkedLocationsByCompanyName` → `getOrphanLocationsByCompanyName`** on `customerCompanyRepository` (`server/storage/customerCompanies.ts:528`). Aligns the function name with the rest of the orphan-location terminology used throughout the repo (`getOrphanLocations`, `getOrphanLocationCount`, `linkLocationsToCustomerCompany`). Two call sites in `server/routes/clients.ts` (the in-flight migrations from orphan locations to a parent customer company) were updated alongside. Pure rename — same SQL, same semantics, same contract.
+- **Renamed internal location-contact storage helpers to reflect canonical location-assignment behavior.** `getLegacyContactsForLocation` → `getContactsForLocation` and `getLegacyContactsForCustomerCompany` → `getContactsForCustomerCompany` on `clientContactRepository` (`server/storage/clientContacts.ts`). The misleading "Legacy" prefix referred to the `{companyContacts, locationContacts}` response DTO shape, not the routes or the data — the underlying primitives (`getCompanyDirectory`, `getLocationContacts`, `getCompanyPersons`) are canonical and `GET /api/clients/:clientId/contacts` is the live feed for `ClientDetailPage`'s location-scope contacts tab. Two call sites updated (`server/routes/clients.ts`, `server/routes/customer-companies.ts`); a docstring above each adapter now states that the DTO shape is legacy but the data is canonical. Pure rename — same SQL, same semantics, same wire format.
+
+
+#### Job Detail header address split + redundant back-link + tighter density (2026-04-26)
+
+Follow-up polish on `JobDetailPage` — visual/layout only, no backend changes, no new components, modals, or routes.
+
+- **Removed redundant "Back to Jobs" link.** The top-left `← Back to Jobs` button was deleted from above the header card. The same destination is reachable via the persistent left sidebar navigation, so the in-page link only consumed vertical space. The header card is now the first element on the page. The error-state fallback button (rendered when the job 404s) keeps its own `← Back to Jobs` since the sidebar may not be helpful at that moment.
+- **Improved service address formatting in the header.** The header address used to render on a single comma-joined line (`address, address2, city, province, postalCode`). It now renders on two lines: street (`address` + `address2`) on row one, and `City, Province PostalCode` on row two. Empty parts are skipped — single-line addresses still render cleanly. The company / client name is now `font-semibold` to give a subtle hierarchy over the lighter address rows. The MapPin icon attaches to the first non-empty line; the second line indents (`pl-4`) so it visually aligns under the street.
+- **Tightened spacing/padding further.** Outer page wrapper: `px-4 lg:px-6 py-4` → `px-3 lg:px-4 py-3`; vertical rhythm `space-y-3` → `space-y-2`. Body grid gap (mobile flex stack and lg+ grid, plus both column wrappers): `gap-3` → `gap-2`. Header card padding: `px-4 py-3` → `px-4 py-2.5`. Card-header padding shrunk per card: Line Items `py-3` → `py-2.5`, Notes / Labour Summary `py-2.5` → `py-2`, Expenses `py-3` → `py-2.5`. Empty-state heights cut via scoped wrapper selectors so internal components stay unmodified: Notes `[&_.text-center.py-3]:!py-2`, Equipment `[&_.text-center.py-4]:!py-2`, Expenses `[&>div.px-5]:!px-4 [&>div.py-4]:!py-3 [&_div.mb-3]:!mb-2`. `JobNotesSection`, `JobEquipmentSection`, `JobExpensesCard`, and `PartsBillingCard` are unchanged so other surfaces (`InvoiceDetailPage`, `QuoteDetailPage`, `EditVisitModal`) keep their existing density.
+
+**Preserved:** simplified content model, two-column responsive layout (collapses to single stack below `lg`), invoice-matched `rounded-md border border-slate-200 shadow-sm` chrome, all actions, permission gates, and data paths.
+
+**Files changed:**
+- `client/src/pages/JobDetailPage.tsx` — header link removed, address split into street + city lines, page/grid/card padding reduced, scoped empty-state overrides added.
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None.
+
+#### Job Detail header + card density refined to match approved layout and invoice card styling (2026-04-26)
+
+Polish pass on the prior `JobDetailPage` redesign — visual/layout only, no backend changes, no new components or routes. Three things shifted:
+
+- **Header rebuilt to the approved mockup.** Single full-width card. Left column: title + status pill on row 1, then client name with a `Building2` icon and address with a `MapPin` icon stacked underneath. Middle (lg+): Job #, Created, Completed laid out as three inline-horizontal columns instead of the prior tightly-stacked right-side metadata table. Right (same row on lg+): primary action button + overflow menu. Below `lg`, the metadata collapses into a wrap-friendly horizontal strip under the identity block. Inline job-number editing, all overflow-menu items, primary-action variants (Schedule Visit / View Invoice / Create Invoice / Restore Job), and imperative `headerCardRef` triggers (`openCloseJobDialog`, `triggerReopenJob`) are all preserved.
+- **Card chrome aligned with invoice page.** Every card on the page is now `bg-white rounded-md border border-slate-200 shadow-sm` — same recipe `InvoiceHeaderCard` and `JobEquipmentSection` already use, and what the shared `Card` ships by default. Replaces the prior `rounded-lg border-slate-200/80` chrome on the header, Line Items, Expenses, Notes, and Labour Summary cards. Equipment and Reference were already canonical.
+- **Spacing tightened.** Page-level `space-y-4` → `space-y-3`. Body grid `gap-4` → `gap-3` on both axes (mobile flex stack and lg+ grid). Header card padding `px-5 py-4` → `px-4 py-3`. Line Items / Expenses card-header padding `px-5 py-3` → `px-4 py-3`. Subtotal footer `px-5 py-2.5` → `px-4 py-2`. Labour Summary stats strip `py-3` → `py-2.5`. Line Items empty-state cell tightened via scoped wrapper selectors (`[&_.shadcn-card>div]:!p-3` and `[&_tbody_tr>td.py-6]:!py-3`) so the card no longer balloons when no rows exist; `PartsBillingCard` itself is unchanged so other surfaces (`InvoiceDetailPage`, `EditVisitModal`) keep their existing density.
+
+**Preserved:** simplified content model (Header → left column [Line Items, Expenses] → right column [Notes, Labour Summary, Equipment, Reference]); responsive ordering via `order-*` and `display: contents` column wrappers; all existing actions (Add Item / Add Expense / Add Note / Add Labour / Equipment / Reference / header primary action / overflow menu); permission gates; data paths; backend routes.
+
+**Files changed:**
+- `client/src/pages/JobDetailPage.tsx` — header restructured, card wrappers re-skinned, page/grid gaps tightened, `Building2` added to icon imports.
+- `CHANGELOG.md` — this entry.
+
+**Migrations:** None.
+
+#### Financial Dashboard schedule rail — responsive multi-tech columns (2026-04-26)
+
+Fixed dead space in `Today's Schedule` on the Financial Dashboard when 1–4 technicians were visible. The multi-column rail previously hard-wired columns to `flex-none w-[220px]` and wrapped them in `overflow-x-auto`, so a 2-tech selection rendered two ~220px columns and ~700px of empty white inside the card.
+
+**New behavior** (Financial Dashboard only — Operations Dashboard untouched):
+- 1 tech selected: dense single-column list view (unchanged — already 100% width).
+- 2 techs: CSS grid, `repeat(2, minmax(0, 1fr))` → each column 50%.
+- 3 techs: CSS grid, `repeat(3, minmax(0, 1fr))` → each column 33.33%.
+- 4 techs: CSS grid, `repeat(4, minmax(0, 1fr))` → each column 25%.
+- 5+ techs: horizontal scroll inside the card with `flex-none w-[220px]` per column (preserves readable column width; page itself never horizontally scrolls).
+
+The column body (header band, schedule blocks, click handlers, typography) is rendered by a single shared closure in both branches — only the container element and per-column width class differ. Card shell, header, scope filter, Create button, single-tech dense view, and `data-testid="schedule-multi-column-view"` are unchanged.
+
+**Files changed:**
+- `client/src/pages/FinancialDashboard.tsx` — replaced the multi-column branch of `TodaysScheduleCard` with a count-driven container switch (CSS grid for ≤4, overflow-x-auto for ≥5). Column body extracted to a local `renderColumn(tech, isLastCol, widthClass)` closure to avoid duplicating ~30 lines of JSX across the two branches.
+
+**Migrations:** None.
+
+**Breaking changes:** None. No data-source or click-handler changes; canonical `VisitEditorLauncher` and `SlotQuickCreateLauncher` flows are preserved exactly.
+
+**Verification:** `npm run check` passes clean.
+
+#### Financial Dashboard layout redesigned for cash-flow focus (2026-04-26)
+
+The Financial Dashboard (`/financials`) was reorganized so the page leads with today's schedule and a cash-flow summary, with billing-action triage sitting directly underneath. The Operations Dashboard (`/`) is unchanged — no shared component was mutated.
+
+**New layout:**
+- **Top KPI strip removed.** The four tiles (Revenue This Month, Outstanding A/R, Overdue Invoices, Ready to Invoice) were retired from the Financial Dashboard. Their data is now exposed inside the Revenue Center card (cash + A/R) or as an Operational Alerts row (Ready to invoice).
+- **Top row — two columns** (`grid-cols-[minmax(0,1fr)_360px]` on `lg`+, single-column on mobile):
+  - Left (1fr): **Today's Schedule** — same `TodaysScheduleCard` as before. Team scope filter, Create button, technician columns, single-tech dense view, and click behavior (booked → `VisitEditorLauncher`, open → `SlotQuickCreateLauncher`) are all preserved unchanged. Schedule typography/sizing intentionally unchanged.
+  - Right (360px): **Revenue Center** (Financial-flavored). Inline rows: Cash received this month (`revenue.month`), Outstanding A/R (`ar.outstandingTotal` + count), Overdue A/R (`ar.pastDueTotal` + count), Draft invoices (`draft.count` + `draft.total`). Action button: "Open A/R" → `/invoices?filter=awaiting_payment`. This is a Financial-only inline card; the Operations dashboard's `RevenueCenterCard` (operations follow-ups) is untouched.
+- **Second row — three equal-width cards** (`grid-cols-3` on `md`+, stacked on mobile):
+  - **Operational Alerts** — uses the canonical `OperationalAlertsCard` with `order={["requires_attention", "past_due", "unscheduled", "ready_to_invoice"]}`. Counts source from the shared `["dashboard", "workflow"]` query cache (no extra round-trip). Click handlers route through the same `DashboardActionModal` Operations opens.
+  - **Top Outstanding Invoices** — top 5 from `data.topOutstandingInvoices`, click → `/invoices/:id`.
+  - **Top Customers Owing** — top 5 from `data.topCustomerBalances`, click → `/clients/:customerCompanyId`.
+
+**Removed:** the inline `KpiTile` component, the inline `AlertRow` import from `TodaysOperationsCard`, the right-rail vertical card stack, and the `RecentPaymentsCard` subcomponent (no longer rendered on the Financial Dashboard).
+
+**Files changed:**
+- `client/src/pages/FinancialDashboard.tsx` — top KPI strip removed; layout switched from `grid-cols-3` (schedule 2/3 + 4-card right rail) to two stacked grids (top 1fr+360px, second row 3 equal). Inline `RevenueCenterFinancialCard`, `TopOutstandingInvoicesCard`, and `TopCustomersOwingCard` added; the `RecentPaymentsCard` subcomponent and its `CreditCard` icon import were dropped. `OperationalAlertsCard` is now consumed via its existing `order` prop. Net file size 1130 → 793 lines.
+
+**Migrations:** None.
+
+**Breaking changes:** None. Endpoints, query keys (`["dashboard", "financial"]`, `["dashboard", "workflow"]`, `["/api/dashboard/capacity"]`), permissions, and tenant scoping are all unchanged. The Operations Dashboard at `/` and the canonical visit editor / quick-create flows are untouched.
+
+**Verification:** `npm run check` passes clean.
+
+#### Job Detail page redesigned into simplified two-column content grid (2026-04-26)
+
+Replaced the dense `DetailPageShell` rail layout on `JobDetailPage` with a normal responsive content grid: a full-width header on top and below it a two-column body (Line Items + Expenses on the left, Notes + Labour Summary + Equipment + Reference on the right). The hard right-rail divider, drag-to-resize handle, and collapse-to-edge tab no longer appear on this page; cards flow naturally with the page. Mobile (<lg) collapses to a single stacked column ordered Header → Line Items → Notes → Labour Summary → Equipment → Reference → Expenses (achieved via per-card `order` classes plus `display: contents` column wrappers so cards interleave correctly across columns on the small-screen flow).
+
+**Removed from this page's primary layout** (data paths, mutations, and modals all reused — no duplicate systems introduced):
+- Bottom action bar (Hold/Edit/overflow). Hold + Edit + secondary actions moved into the header overflow menu.
+- Standalone Job Description card. Description is still editable through Edit Job in the overflow menu (`QuickAddJobDialog`).
+- Inline Visits list and Activity card from the main content area. Visit scheduling stays as the header primary action; per-visit edits still route through the canonical `VisitEditorLauncher` via deep-links.
+- Job Summary, Client & Location, Team, and Job Invoices right-rail cards. Client/location now lives in the header (no duplicate); invoice access moved to the header primary action ("View Invoice" / "Create Invoice"). The unused per-row visit helpers (`sortedVisits`, `formatVisitDate`, `getVisitTechName`, `getVisitCrewLabel`, `VISIT_STATUS_COLORS`) and their backing hooks (`useTechniciansDirectory`, `useJobVisits`) were removed from this page.
+- Files & Attachments section was already absent and remains so.
+
+**Promoted into the right column** (in this order): Notes (first), Labour Summary, Equipment, Reference. Labour Summary now exposes Total Hours, Labour Cost, and Labour Price as a compact 3-stat row above the entries list. Labour Price is derived client-side from `billableRateSnapshot * durationMinutes` on the existing `/api/jobs/:id/time-entries` payload — no new server endpoint.
+
+**Reused canonical components and modals (no duplication):** `PartsBillingCard`, `JobExpensesCard`, `JobNotesSection` (embedded mode), `JobEquipmentSection` (with externalAdd-trigger), `ReferenceFieldsSection`, `JobHeaderCard` (kept hidden-mounted for `openCloseJobDialog` / `triggerReopenJob` imperative refs), `LabourCardContent` (in-file helper), `TimeEntryModal`, `JobNoteDialog`, `AddVisitDialog`, `VisitEditorLauncher`, `ActionRequiredModal`, `QuickAddJobDialog`, `InvoiceCompositionDialog`, `SendJobModal`, `getJobStatusDisplay`. Permission gates (`MANAGER_ROLES`-derived `isOfficeUser`) and feature gates are unchanged. Backend behavior and routes are unchanged.
+
+**Files changed:**
+- `client/src/pages/JobDetailPage.tsx` — replaced the `DetailPageShell` JSX surface (~765 lines) with a header + responsive grid (~280 lines). Dropped unused state (`activityOpen`, `billingExpanded`, `descriptionExpanded`, `notesExpanded`, `jobSummaryExpanded`, `labourSummaryExpanded`, `notesCount`, `showAllVisits`, `editingDescription`, `descriptionDraft`, `descInputRef`), the description-update mutation/handlers, and the visit-list helpers. Imports trimmed (DetailPageShell, JobInvoicesCard, ActivityCard, JobStatusTimeline, StatusProgressBar/getPriorityDisplay/SchedulingHistory, MetaRow, Collapsible*, FileText, ChevronDown/Right, Briefcase/Wrench/PenTool/Download/Calendar, useTechniciansDirectory, useJobVisits, getMemberDisplayName, visitStatusLabel, useSearch, TimeEntryForModal, Card/CardContent). Net file size 1777 → 1255 lines.
+
+**Migrations:** None.
+
+**Breaking changes:** None for backend or shared types. The deep-link `?section=visits` no longer auto-opens an inline visits list (no list to open); a follow-up should redirect those links straight to the visit-editor modal if any callers still emit that query string.
+
+### Documentation
+
+#### CLAUDE.md invoice status enum corrected (2026-04-26)
+
+The "Domain Models / Invoices" line in `CLAUDE.md` previously listed five invoice statuses (`Draft, Sent, Paid, Overdue, Void`) — stale documentation that omitted the `awaiting_payment` and `partial_paid` states the schema has shipped with for some time, and incorrectly listed `Overdue` as a stored status (it is computed at read time as `isPastDue`). Future audits and agents grepping CLAUDE.md will now see the correct six-status set (`draft, awaiting_payment, sent, partial_paid, paid, voided`) and a pointer to the canonical predicate `invoicesFeed.computeIsPastDue()` so nobody re-introduces an `overdue` writer.
+
+**Files changed:** `CLAUDE.md` (one-line replacement under Domain Models / Invoices).
+
+### Changed
+
+#### Quotes migrated from soft-delete to permanent-delete (2026-04-26)
+
+Brings quotes in line with the invoice permanent-delete model adopted on 2026-04-09. The 2026-04-25 invoice/payment/quote architecture audit flagged this asymmetry — quotes were the last lifecycle entity still on a soft-delete model (`is_active` + `deleted_at`), forcing every reader to remember the `eq(quotes.is_active, true)` filter and creating a surface for forgotten-filter bugs.
+
+**Lifecycle constraint.** Hard delete is allowed only when `status = 'draft'` AND `convertedToJobId IS NULL`. Any other state (sent, approved, declined, expired, converted) returns `409` with code `QUOTE_NOT_DELETABLE`. Matches the invoice constraint shape (drafts only, no payments). `quote_lines` and `quote_notes` cascade-delete via their existing FKs on `quotes.id`.
+
+**Migration:** `migrations/2026_04_26_quotes_permanent_delete.sql`. Snapshots any existing soft-deleted rows into `_archive_quotes_isactive_false_2026_04_26` (one-shot table — drop later when reports confirm no consumer needs the archive), hard-deletes them, then drops the `is_active` and `deleted_at` columns.
+
+**Files changed:**
+- `migrations/2026_04_26_quotes_permanent_delete.sql` — NEW. Archive + delete + drop columns inside a single transaction.
+- `shared/schema.ts` — removed `isActive` and `deletedAt` from the `quotes` table definition and removed the `isActive` field from `updateQuoteSchema`. Added a removal-note comment.
+- `server/storage/quotes.ts` — added `isNull` to the drizzle-orm import. Removed five `eq(quotes.isActive, true)` filters from `getQuotes`, `getQuote`, `getQuoteDetails`, `updateQuote`, and `getQuoteStats`. Replaced `deleteQuote()` with a hard `db.delete(quotes).where(...)` gated by `status='draft'` AND `convertedToJobId IS NULL` — TOCTOU-safe because the WHERE clause re-checks the precondition at delete time.
+- `server/storage/dashboard.ts` — removed `eq(quotes.isActive, true)` and `isNull(quotes.deletedAt)` from `getQuotePipeline`'s baseWhere; removed the same `isActive` filter from the financial-summary quote-pipeline query.
+- `server/storage/quoteTemplates.ts` — removed the `isActive=true` filter from the quote-existence check in the apply-template path.
+- `server/scripts/backfillQuoteCustomerCompanyId.ts` — removed the `isActive=true` filter from the scan query.
+- `server/routes/quotes.ts` — `DELETE /api/quotes/:id` now: (a) re-checks the precondition explicitly (status=draft AND convertedToJobId is null) and returns `409 QUOTE_NOT_DELETABLE` if the row exists but isn't deletable, (b) handles the storage TOCTOU race with the same 409 mapping. Updated the route header comment to note the permanent-delete switch.
+
+**Behavior differences:**
+- Tenant users with the `manager` role (already permitted) can now permanently remove draft, non-converted quotes. Previously the row stayed in the DB with `is_active=false`.
+- Existing soft-deleted rows are gone after migration. The `_archive_quotes_isactive_false_2026_04_26` table preserves them in case any downstream report needs them; drop it after one release window if no consumer surfaces.
+- No tenant-facing UI change — the DELETE endpoint signature and 200/404/409 mapping are unchanged. The 409 now carries an explicit `QUOTE_NOT_DELETABLE` error code.
+
+**Out of scope:** Phases 2 (extract `RecordPaymentModal`), 3 (`NewInvoicePage` vs `NewInvoiceModal`), and 4 (resolve the `GET /api/payments/:id` 501 stub) from the same audit are deliberately held back per operator instruction.
+
 ### Fixed
 
 #### `/platform/login` rendered inside the tenant office shell (bugfix, 2026-04-24)

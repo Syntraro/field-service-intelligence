@@ -271,6 +271,11 @@ export const auditActionEnum = [
   "USER_DISABLED",
   "INVITATION_CREATED",
   "INVITATION_RESENT",
+  // 2026-04-26 — Per-user permission override write
+  // (PATCH /api/team/:userId/permissions). Closes the audit gap surfaced
+  // by the permissions audit. The DB column is plain text so the new
+  // action is a TS-level enum widening with no migration.
+  "PERMISSION_OVERRIDE_CHANGED",
 ] as const;
 export type AuditAction = typeof auditActionEnum[number];
 
@@ -818,6 +823,16 @@ export const companySettings = pgTable("company_settings", {
   invoiceRemindersEnabled: boolean("invoice_reminders_enabled").notNull().default(true),
   invoiceReminderFirstDelayDays: integer("invoice_reminder_first_delay_days").notNull().default(3),
   invoiceReminderRepeatEveryDays: integer("invoice_reminder_repeat_every_days").notNull().default(7),
+  // Geofence start prompt — columns shipped by
+  // migrations/2026_04_24_geofence_auto_start.sql. The drizzle declaration
+  // mirrors only the two columns the prompt feature actually reads:
+  //   - geofence_auto_start_enabled       → tenant on/off toggle
+  //   - geofence_auto_start_radius_meters → DB CHECK enforces 25..1000
+  // The third column (`geofence_require_manual_confirm`) shipped in the
+  // migration but is unused — the prompt is always manual-confirm by
+  // design. Left in the database for migration compat; not surfaced here.
+  geofenceAutoStartEnabled: boolean("geofence_auto_start_enabled").notNull().default(false),
+  geofenceAutoStartRadiusMeters: integer("geofence_auto_start_radius_meters").notNull().default(100),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
@@ -3839,9 +3854,10 @@ export const quotes = pgTable("quotes", {
   // Notes
   notesInternal: text("notes_internal"),
   notesCustomer: text("notes_customer"),
-  // Soft delete
-  isActive: boolean("is_active").notNull().default(true),
-  deletedAt: timestamp("deleted_at"),
+  // 2026-04-26: isActive + deletedAt REMOVED — quotes use permanent-delete
+  // model (matches invoices). Hard delete is allowed only when status='draft'
+  // AND convertedToJobId IS NULL. See migration
+  // 2026_04_26_quotes_permanent_delete.sql.
   // Optimistic locking
   // Phase 2: Quote ownership — who is commercially responsible for advancing this quote
   salesOwnerUserId: varchar("sales_owner_user_id").references(() => users.id, { onDelete: "set null" }),
@@ -3892,7 +3908,8 @@ export const updateQuoteSchema = z.object({
   declinedAt: z.date().nullable().optional(),
   notesInternal: z.string().nullable().optional(),
   notesCustomer: z.string().nullable().optional(),
-  isActive: z.boolean().optional(),
+  // 2026-04-26: isActive removed from updateQuoteSchema along with the
+  // underlying column. Quotes use permanent-delete now.
   salesOwnerUserId: z.string().nullable().optional(),
   assessmentStatus: z.enum(["required", "scheduled", "completed"]).nullable().optional(),
 });

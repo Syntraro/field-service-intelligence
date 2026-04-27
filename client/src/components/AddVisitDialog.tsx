@@ -43,6 +43,7 @@ interface AddVisitDialogProps {
 
 export function AddVisitDialog({
   jobId,
+  jobVersion,
   open,
   onOpenChange,
   defaultTechnicianId,
@@ -92,7 +93,14 @@ export function AddVisitDialog({
 
     setSubmitting(true);
     try {
-      await scheduleVisit({
+      // 2026-04-26 fix: pass `expectedVersion` so the hook does NOT fall
+      // back to the cache-derived `freshVersion` lookup. For an on-hold
+      // job whose only visit is completed, the cache lookup misses (the
+      // job isn't in `/api/calendar` and on-hold jobs are excluded from
+      // `/api/calendar/unscheduled`) and the hook would otherwise send
+      // `version: -1` → backend rejects with VERSION_MISMATCH → silent
+      // failure with a misleading "Visit Scheduled" toast.
+      const result = await scheduleVisit({
         jobId,
         // When `targetVisitId` is set, the hook forwards it as `targetVisitId`
         // and the backend updates that exact placeholder in place. When
@@ -102,12 +110,29 @@ export function AddVisitDialog({
         startAt: start.toISOString(),
         endAt: end.toISOString(),
         visitNotes: visitNotes.trim() || null,
+        expectedVersion: jobVersion,
       });
+
+      // 2026-04-26 fix: only fire the success toast / close the dialog
+      // when the mutation actually succeeded. The hook handles its own
+      // error toast (version-conflict, not-found, generic) so this branch
+      // simply returns and keeps the modal open for the user to retry.
+      if (!result.ok) {
+        return;
+      }
+
       toast({
         title: "Visit Scheduled",
         description: "The visit has been added to the job.",
       });
       onOpenChange(false);
+    } catch (err) {
+      // Defensive fallback. The hook is supposed to convert all failures
+      // into `{ ok: false, ... }` — if anything DOES throw (e.g. a bug
+      // in the request builder) we want a clear destructive toast and
+      // the modal must stay open.
+      const msg = (err as any)?.message ?? "Failed to schedule visit";
+      toast({ variant: "destructive", title: "Schedule failed", description: msg });
     } finally {
       setSubmitting(false);
     }

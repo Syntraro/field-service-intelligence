@@ -76,11 +76,22 @@ interface TaskDialogProps {
   onChanged?: () => void;
   /** Prefill fields when creating from dispatch board quick-create */
   initialData?: TaskPrefill;
+  /** 2026-04-25 CreateNewDialog embedding: when true, the parent shell owns
+   *  the Dialog wrapper / title strip; this component renders only the form
+   *  body + footer. Used by the tabbed `+ New` modal so a single shell can
+   *  compose the canonical task form alongside the canonical job form. */
+  embedded?: boolean;
+  /** Lock the task type to a specific value and hide the type-toggle row.
+   *  The +New modal uses `forcedType="GENERAL"` for the Task tab and
+   *  `forcedType="SUPPLIER_VISIT"` for the Supplier-Visit tab so each tab
+   *  is single-purpose; the user picks the kind by choosing a tab, not by
+   *  toggling inside the form. */
+  forcedType?: TaskType;
 }
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
-export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData }: TaskDialogProps) {
+export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData, embedded = false, forcedType }: TaskDialogProps) {
   const { user } = useAuth();
   const { toast } = useToast();
   const isEditMode = !!taskId;
@@ -88,7 +99,10 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
   // Form state
   const [title, setTitle] = useState("");
   const [notes, setNotes] = useState("");
-  const [type, setType] = useState<TaskType>("GENERAL");
+  // forcedType (e.g. from the +New tabbed modal) seeds the initial value AND
+  // disables the in-form type toggle. Falls back to GENERAL for the legacy
+  // standalone-modal entry points.
+  const [type, setType] = useState<TaskType>(forcedType ?? "GENERAL");
   const [assignedToUserId, setAssignedToUserId] = useState("");
   const [startDate, setStartDate] = useState("");
   const [startTime, setStartTime] = useState("08:00");
@@ -193,8 +207,11 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
         if (initialData.startTime) setStartTime(initialData.startTime);
         if (initialData.taskType) setType(initialData.taskType);
       }
+      // forcedType wins over initialData.taskType — the embedding shell's
+      // tab choice is the explicit user intent.
+      if (forcedType) setType(forcedType);
     }
-  }, [task, isEditMode, open]);
+  }, [task, isEditMode, open, forcedType]);
 
   useEffect(() => {
     if (supplierVisitData && isEditMode && type === "SUPPLIER_VISIT") {
@@ -208,7 +225,9 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
   const resetForm = () => {
     setTitle("");
     setNotes("");
-    setType("GENERAL");
+    // Honor a forced type when resetting so the embedded shell never bounces
+    // back to GENERAL after a successful create on the Supplier Visit tab.
+    setType(forcedType ?? "GENERAL");
     setAssignedToUserId("");
     setStartDate("");
     setStartTime("08:00");
@@ -353,22 +372,22 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
-  return (
+  // 2026-04-25: in embedded mode the parent shell (CreateNewDialog) renders
+  // the Dialog wrapper + title strip + tab-aware sizing; we render only the
+  // form body + footer. The supplier quick-add nested dialog and the conflict
+  // alert stay live in both modes — neither is part of the visual chrome.
+  const body = (
     <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="sm:max-w-3xl p-5">
-          <DialogHeader className="pb-2">
-            <DialogTitle>{isEditMode ? "Edit Task" : "New Task"}</DialogTitle>
-          </DialogHeader>
-
           {isLoadingTask && isEditMode ? (
             <div className="py-8 text-center text-sm text-muted-foreground">
               Loading task...
             </div>
           ) : (
-            <div className="space-y-3">
-              {/* Row 1: Title + Type */}
-              <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 items-end">
+            <div className="space-y-2.5">
+              {/* Row 1: Title + Type. The Type toggle is hidden when the
+                  parent shell forces a type (e.g. each tab in the +New
+                  modal is single-purpose). */}
+              <div className={forcedType ? "space-y-1" : "grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 items-end"}>
                 <div className="space-y-1">
                   <Label className="text-xs">Title</Label>
                   <Input
@@ -378,6 +397,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
                     className="h-9"
                   />
                 </div>
+                {!forcedType && (
                 <div className="space-y-1">
                   <Label className="text-xs">Type</Label>
                   <div className="flex gap-1">
@@ -399,6 +419,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
                     </Button>
                   </div>
                 </div>
+                )}
               </div>
 
               {/* Row 2: Notes (full width) */}
@@ -604,7 +625,10 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
             </div>
           )}
 
-          <DialogFooter className="pt-3 flex justify-between items-center">
+          {/* 2026-04-26 polish v4: natural-flow footer (was sticky with
+              `-mx-6 px-6`, which overflowed the embedded `px-5` wrapper and
+              caused a horizontal scrollbar at the bottom of the shell). */}
+          <DialogFooter className="pt-2 flex justify-between items-center">
             {isEditMode ? (
               <Button
                 type="button"
@@ -635,8 +659,28 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
               </Button>
             </div>
           </DialogFooter>
-        </DialogContent>
-      </Dialog>
+    </>
+  );
+
+  return (
+    <>
+      {embedded ? (
+        // 2026-04-26 polish v4: tighter padding + space-y to match the Job
+        // tab. Footer is sticky inside `body`. overflow-y-auto stays as a
+        // safety net for the Supplier-Visit subsection on small viewports.
+        <div className="px-5 pt-3 pb-3 flex-1 min-h-0 overflow-y-auto" data-testid="embedded-task-dialog">
+          {body}
+        </div>
+      ) : (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+          <DialogContent className="sm:max-w-3xl p-5">
+            <DialogHeader className="pb-2">
+              <DialogTitle>{isEditMode ? "Edit Task" : "New Task"}</DialogTitle>
+            </DialogHeader>
+            {body}
+          </DialogContent>
+        </Dialog>
+      )}
 
       <QuickAddSupplierDialog
         open={quickAddOpen}

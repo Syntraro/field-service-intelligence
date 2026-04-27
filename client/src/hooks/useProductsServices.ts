@@ -50,11 +50,13 @@ export function useProductsServices(options: UseProductsServicesOptions = {}) {
   const { data: partsData, isLoading, refetch } = useQuery<Part[]>({
     queryKey: ["/api/items", { limit: 1000 }],
     queryFn: async () => {
-      const res = await fetch("/api/items?limit=1000", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch parts");
-      const json = await res.json();
-      // Normalize: server returns { data: [...] } when ?limit is explicit, or raw array
-      return Array.isArray(json) ? json : json.data || json.items || [];
+      // 2026-04-26: routed through canonical apiRequest for ApiError + CSRF +
+      // session-expired handling. Response shape is unchanged: server returns
+      // a raw array OR { data: [...] } / { items: [...] } when ?limit is explicit.
+      const json = await apiRequest<unknown>("/api/items?limit=1000");
+      if (Array.isArray(json)) return json as Part[];
+      const obj = json as { data?: Part[]; items?: Part[] };
+      return obj.data ?? obj.items ?? [];
     },
   });
 

@@ -30,7 +30,10 @@ import {
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
+// 2026-04-26: Routed through the canonical CreateNewDialog (Job / Task /
+// Supplier Visit tabs). Same defaults — opens on the Job tab. Avoids a
+// second create entry point for the same flow.
+import { CreateNewDialog } from "@/components/CreateNewDialog";
 import { ApplyTemplateModal } from "@/components/ApplyTemplateModal";
 import { tableRowClass, listPrimaryClass, listSecondaryClass, listResultsClass } from "@/components/ui/list-surface";
 import { isJobScheduled, isJobOverdue } from "@shared/schema";
@@ -731,7 +734,7 @@ export default function Jobs() {
         )}
       </div>
 
-      <QuickAddJobDialog open={showCreateDialog} onOpenChange={setShowCreateDialog} />
+      <CreateNewDialog open={showCreateDialog} onOpenChange={setShowCreateDialog} defaultTab="job" />
 
       {applyTemplateJob && (
         <ApplyTemplateModal

@@ -33,6 +33,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TaskDialog } from "@/components/TaskDialog";
+import { CreateNewDialog } from "@/components/CreateNewDialog";
 import { ClipboardList, Plus, CheckSquare, Square, X } from "lucide-react";
 
 // Local shape matching the /api/tasks payload — same fields the prior
@@ -99,8 +100,13 @@ export function TasksPanel({ deferFetch = false, onRequestClose }: TasksPanelPro
   const currentUserId = user?.id;
   const { teamMembers } = useTechniciansDirectory();
 
+  // 2026-04-26 polish v5: legacy New-Task entry retired. Edit flow still
+  // uses TaskDialog standalone; create flow now routes through the canonical
+  // CreateNewDialog (Task tab). `dialogOpen` is the EDIT-mode state; the
+  // CreateNewDialog has its own state.
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>(undefined);
+  const [createNewOpen, setCreateNewOpen] = useState(false);
   const [tab, setTab] = useState<"active" | "completed">("active");
   const [techFilter, setTechFilter] = useState<string>("all");
   const [typeFilter, setTypeFilter] = useState<string>("all");
@@ -147,8 +153,9 @@ export function TasksPanel({ deferFetch = false, onRequestClose }: TasksPanelPro
     setDialogOpen(true);
   };
   const handleNewTask = () => {
-    setSelectedTaskId(undefined);
-    setDialogOpen(true);
+    // Routes through the canonical CreateNewDialog with the Task tab active.
+    // The user can still flip to Job or Supplier Visit from inside the modal.
+    setCreateNewOpen(true);
   };
 
   return (
@@ -316,11 +323,23 @@ export function TasksPanel({ deferFetch = false, onRequestClose }: TasksPanelPro
         )}
       </div>
 
+      {/* TaskDialog standalone — EDIT mode only. The TasksPanel row click
+          path passes a taskId; New-task creation flows through the canonical
+          CreateNewDialog below. */}
       <TaskDialog
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         taskId={selectedTaskId}
         onChanged={invalidateAllTaskQueries}
+      />
+
+      {/* Canonical CreateNewDialog — Task tab. Replaces the prior path that
+          opened TaskDialog directly for create. */}
+      <CreateNewDialog
+        open={createNewOpen}
+        onOpenChange={setCreateNewOpen}
+        defaultTab="task"
+        onTaskChanged={invalidateAllTaskQueries}
       />
     </div>
   );

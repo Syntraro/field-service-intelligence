@@ -365,6 +365,7 @@ export class QuoteTemplateRepository extends BaseRepository {
     }
 
     // Verify quote exists and belongs to company
+    // 2026-04-26: isActive filter removed — quotes use permanent-delete now.
     const [quote] = await db
       .select()
       .from(quotes)
@@ -372,7 +373,6 @@ export class QuoteTemplateRepository extends BaseRepository {
         and(
           eq(quotes.id, quoteId),
           eq(quotes.companyId, companyId),
-          eq(quotes.isActive, true)
         )
       )
       .limit(1);

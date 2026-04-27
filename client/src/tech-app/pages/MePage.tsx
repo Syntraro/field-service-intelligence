@@ -22,6 +22,7 @@ import { ArrowLeft, Bell, BellOff, Loader2, Laptop, Smartphone, Tablet, Trash2 }
 import { useLocation } from "wouter";
 import { MobileShell } from "../components/MobileShell";
 import { apiRequest } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 import { usePushRegistration } from "../hooks/usePushRegistration";
 
 // ---------------------------------------------------------------------------
@@ -171,6 +172,7 @@ function DeviceIcon({ kind }: { kind: "laptop" | "phone" | "tablet" }) {
 
 function DevicesSection() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const { data, isLoading, error } = useQuery<NotificationDevice[]>({
     queryKey: DEVICES_QUERY_KEY,
     queryFn: () => apiRequest<NotificationDevice[]>("/api/tech/me/notification-devices"),
@@ -187,6 +189,19 @@ function DevicesSection() {
         DEVICES_QUERY_KEY,
         (prev) => prev?.filter((d) => d.id !== id),
       );
+      queryClient.invalidateQueries({ queryKey: DEVICES_QUERY_KEY });
+    },
+    onError: (err: unknown) => {
+      // Surface the failure — without this the optimistic filter would
+      // succeed visually and the user would assume the device was
+      // removed when the server rejected the call.
+      const message = err instanceof Error ? err.message : "Could not remove device.";
+      toast({
+        title: "Remove device failed",
+        description: message,
+        variant: "destructive",
+      });
+      // Revert the optimistic filter by refetching truth.
       queryClient.invalidateQueries({ queryKey: DEVICES_QUERY_KEY });
     },
   });
@@ -405,22 +420,14 @@ export default function MePage() {
                 disabled={mutation.isPending}
                 testId="toggle-visit-schedule-changes"
               />
-              <ToggleRow
-                label="Cancellations"
-                description="When a visit you're on is cancelled."
-                checked={draft.visitCancellationsEnabled}
-                onChange={(next) => setToggle("visitCancellationsEnabled", next)}
-                disabled={mutation.isPending}
-                testId="toggle-visit-cancellations"
-              />
-              <ToggleRow
-                label="Reminders"
-                description="Upcoming-visit reminders."
-                checked={draft.visitRemindersEnabled}
-                onChange={(next) => setToggle("visitRemindersEnabled", next)}
-                disabled={mutation.isPending}
-                testId="toggle-visit-reminders"
-              />
+              {/* 2026-04-26: "Cancellations" and "Reminders" toggles hidden.
+                  The DB columns `visitCancellationsEnabled` and
+                  `visitRemindersEnabled` exist on `notification_preferences`
+                  but no emitter on the server reads them yet — surfacing
+                  the toggles here was deceptive. Columns are reserved for
+                  future emitters; restore the rows below when the
+                  notificationService gains a cancellation emitter and a
+                  visit-reminder emitter that consult these flags. */}
             </>
           )}
         </div>

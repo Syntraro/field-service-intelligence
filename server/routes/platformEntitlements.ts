@@ -292,8 +292,12 @@ router.post(
 // Tenant subscription (plan assignment)
 // ---------------------------------------------------------------------------
 
+// 2026-04-26: subscriptionPlan made optional so trial-extend (sets only
+// trialEndsAt) can route through this canonical platform endpoint after
+// the legacy `PATCH /api/admin/tenants/:companyId/billing` was removed.
+// At least one mutable field must be present — enforced post-parse.
 const assignPlanSchema = z.object({
-  subscriptionPlan: z.string().min(1),
+  subscriptionPlan: z.string().min(1).optional(),
   subscriptionStatus: z.enum(["trial", "active", "past_due", "cancelled", "paused"]).optional(),
   trialEndsAt: z.string().datetime().nullable().optional(),
 });
@@ -310,8 +314,22 @@ router.patch(
   asyncHandler(async (req: Request, res: Response) => {
     const tenantId = req.params.tenantId;
     const data = validateSchema(assignPlanSchema, req.body);
-    const plan = await entitlementStorage.getPlanByName(data.subscriptionPlan);
-    if (!plan) throw createError(400, `Unknown plan '${data.subscriptionPlan}'`);
+
+    if (
+      data.subscriptionPlan === undefined &&
+      data.subscriptionStatus === undefined &&
+      data.trialEndsAt === undefined
+    ) {
+      throw createError(
+        400,
+        "At least one of subscriptionPlan, subscriptionStatus, or trialEndsAt is required",
+      );
+    }
+
+    if (data.subscriptionPlan !== undefined) {
+      const plan = await entitlementStorage.getPlanByName(data.subscriptionPlan);
+      if (!plan) throw createError(400, `Unknown plan '${data.subscriptionPlan}'`);
+    }
     const before = await billingRepository.getBilling(tenantId);
     if (!before) throw createError(404, "Tenant not found");
 
@@ -330,13 +348,17 @@ router.patch(
         ...(trialEndsAtValue !== undefined && { trialEndsAt: trialEndsAtValue }),
         source: "platform_plan_assign",
         actorUserId: (req as any).user?.id,
-        reason: `Platform plan assignment → ${data.subscriptionPlan}`,
+        reason: data.subscriptionPlan
+          ? `Platform plan assignment → ${data.subscriptionPlan}`
+          : "Platform subscription update",
       });
     }
 
-    await billingRepository.updateBilling(tenantId, {
-      subscriptionPlan: data.subscriptionPlan,
-    });
+    if (data.subscriptionPlan !== undefined) {
+      await billingRepository.updateBilling(tenantId, {
+        subscriptionPlan: data.subscriptionPlan,
+      });
+    }
 
     const after = await billingRepository.getBilling(tenantId);
     entitlementService.invalidateEntitlementsCache(tenantId);

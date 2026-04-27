@@ -164,19 +164,58 @@ function GroupedEntryList({ entries, onTap }: { entries: TimesheetEntry[]; onTap
           return <TimeEntryCard key={item.entry.id} entry={item.entry} onTap={onTap} />;
         }
         const first = item.entries[0];
+        // 2026-04-26 Day View redesign — compact grouped job card.
+        // - Header: job# + jobSummary on the left, locationName in the
+        //   middle, Total on the right (sum of finished entries'
+        //   durationMinutes; running entries contribute 0 until they
+        //   finish — the row-level Active badge still surfaces them).
+        // - Child rows: no divider between Travel and On-Site, no
+        //   repeated job/client/location text — just label + time
+        //   range + duration + edit affordance.
+        // - "Work" label changed to "On Site" per spec.
+        // The grouping logic, the data model, the click-to-edit flow,
+        // and the lock/active visuals are all unchanged.
+        const totalMinutes = item.entries.reduce(
+          (sum, e) => sum + (e.durationMinutes ?? 0),
+          0,
+        );
+        const totalLabel = formatDurationMinutes(totalMinutes);
         return (
-          <div key={`grp-${item.key}`} className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
-            {/* Job header */}
+          <div
+            key={`grp-${item.key}`}
+            className="bg-white rounded-md border border-slate-200 overflow-hidden"
+            data-testid={`day-view-group-${item.key}`}
+          >
+            {/* Job header — 2026-04-26: now uses the canonical
+                customer-company name (`clientName`) pulled via the
+                tech-time API's enriched join. Layout:
+                  Row 1 — `#jobNumber clientName` (left, truncates) ·
+                          `Total hh:mm` (right).
+                  Row 2 — `locationName` (stacked under the title,
+                          smaller / lighter so it reads as secondary).
+                Falls back to `jobSummary` when `clientName` is null
+                (location with no parent company OR an entry without a
+                jobId). */}
             <div className="px-2.5 py-1.5 border-b border-slate-100 bg-slate-50/60">
-              <p className="text-sm font-semibold text-slate-800 truncate">
-                #{first.jobNumber}{first.jobSummary ? ` — ${first.jobSummary}` : ""}
-              </p>
+              <div className="flex items-center gap-3">
+                <p className="text-sm font-semibold text-slate-800 truncate flex-1 min-w-0">
+                  <span className="tabular-nums">#{first.jobNumber}</span>
+                  {(first.clientName || first.jobSummary) && (
+                    <span className="font-normal text-slate-700"> {first.clientName || first.jobSummary}</span>
+                  )}
+                </p>
+                <span className="text-xs text-slate-500 tabular-nums shrink-0">
+                  Total <strong className="ml-0.5 text-slate-800">{totalLabel}</strong>
+                </span>
+              </div>
               {first.locationName && (
-                <p className="text-[11px] text-slate-400 truncate">{first.locationName}</p>
+                <p className="text-[11px] text-slate-400 truncate mt-0.5">
+                  {first.locationName}
+                </p>
               )}
             </div>
-            {/* Child rows */}
-            <div className="divide-y divide-slate-100">
+            {/* Child rows — no divider between rows per spec. */}
+            <div>
               {item.entries.map((entry) => (
                 <GroupedEntryRow key={entry.id} entry={entry} onTap={onTap} />
               ))}
@@ -198,18 +237,42 @@ function GroupedEntryRow({ entry, onTap }: { entry: TimesheetEntry; onTap: (id: 
     ? `${formatClockTime(entry.startAt)} — now`
     : entry.endAt ? `${formatClockTime(entry.startAt)} — ${formatClockTime(entry.endAt)}` : formatClockTime(entry.startAt);
   const isTravel = TRAVEL_TYPES.has(entry.type);
+  const labelText = isTravel ? "Travel" : "On Site";
 
   return (
-    <button type="button" onClick={() => onTap(entry.id)}
-      className="w-full text-left px-2.5 py-1.5 active:bg-slate-50 transition-colors flex items-center gap-2">
-      <div className="flex items-center gap-1.5 flex-1 min-w-0">
-        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 ${isTravel ? "bg-blue-50 text-blue-600" : "bg-emerald-50 text-emerald-600"}`}>
-          {isTravel ? "Travel" : "Work"}
+    <button
+      type="button"
+      onClick={() => onTap(entry.id)}
+      className="w-full text-left px-2.5 py-1.5 active:bg-slate-50 hover:bg-slate-50 transition-colors flex items-center gap-2"
+      data-testid={`day-view-entry-${entry.id}`}
+    >
+      <span
+        className={`text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 ${
+          isTravel ? "bg-blue-50 text-blue-600" : "bg-emerald-50 text-emerald-600"
+        }`}
+      >
+        {labelText}
+      </span>
+      {isRunning && (
+        <span className="text-[10px] font-medium text-emerald-600 bg-emerald-50 px-1 py-0.5 rounded-full shrink-0">
+          Active
         </span>
-        {isRunning && <span className="text-[10px] font-medium text-emerald-600 bg-emerald-50 px-1 py-0.5 rounded-full shrink-0">Active</span>}
-        <span className="text-[11px] text-slate-400 truncate">{timeRange}</span>
-      </div>
-      <span className={`text-sm font-semibold tabular-nums shrink-0 ${isRunning ? "text-emerald-600" : "text-slate-700"}`}>{duration}</span>
+      )}
+      <span className="text-[11px] text-slate-500 tabular-nums truncate flex-1 min-w-0">
+        {timeRange}
+      </span>
+      {/* 2026-04-26: pencil icon removed — the whole row is the click
+          target and the visual affordance was redundant. Locked /
+          view-only handling still routes through the existing
+          `getEntryAccess` branch in `EntryEditSheet` once the row
+          opens. */}
+      <span
+        className={`text-sm font-semibold tabular-nums shrink-0 ${
+          isRunning ? "text-emerald-600" : "text-slate-700"
+        }`}
+      >
+        {duration}
+      </span>
     </button>
   );
 }
