@@ -5,6 +5,11 @@
  * Ensures the database schema is up-to-date before tests run.
  */
 
+// 2026-04-29 Stripe completion: bootstrap `.env` before any other import
+// runs so DATABASE_URL (and STRIPE_* keys, when needed) are available
+// to modules that read process.env at import time. Side-effect import.
+import "./loadEnv";
+
 import { beforeAll, afterAll, vi } from "vitest";
 
 // Set test environment BEFORE importing the invariants module

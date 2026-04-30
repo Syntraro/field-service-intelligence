@@ -127,7 +127,7 @@ export default function ImportCenterPage() {
   const [wizardStep, setWizardStep] = useState<Step>("upload");
 
   return (
-    <div className="min-h-screen bg-[#F4F8F4]" data-testid="import-center-page">
+    <div className="min-h-screen bg-app-bg" data-testid="import-center-page">
       <main className="mx-auto max-w-6xl px-4 sm:px-5 lg:px-6 py-6 space-y-6">
         {/* Page header — stays constant as the user switches types. */}
         <header className="flex items-start justify-between gap-4">

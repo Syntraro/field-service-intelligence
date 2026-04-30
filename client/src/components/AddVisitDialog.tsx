@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { Loader2 } from "lucide-react";
 // 2026-04-12 UI consistency: use the canonical visit team assignment pattern,
 // not the legacy single-select TechnicianSelector. Matches EditVisitModal.
@@ -161,12 +162,11 @@ export function AddVisitDialog({
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label htmlFor="scheduledDate">Date</Label>
-                <Input
+                <CanonicalDatePicker
                   id="scheduledDate"
-                  type="date"
                   value={scheduledDate}
-                  onChange={(e) => setScheduledDate(e.target.value)}
-                  required
+                  onChange={(next) => setScheduledDate(next ?? "")}
+                  className="w-full h-9 text-sm"
                   data-testid="input-visit-date"
                 />
               </div>

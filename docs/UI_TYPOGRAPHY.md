@@ -1,6 +1,109 @@
 # UI Typography Standard
 
-Owner: frontend · Last updated: 2026-04-13
+Owner: frontend · Last updated: 2026-04-29 (Typography Phase A + B)
+
+## Canonical semantic tokens (2026-04-29 Typography Phase A)
+
+The app exposes 10 named typography tokens via Tailwind utilities. **Use
+these by role, not the legacy `text-xs`/`-sm`/`-base`/etc. by size.** Each
+token bundles `font-size`, `line-height`, and (where applicable)
+`font-weight` and `letter-spacing`. The `text-label` token additionally
+applies `text-transform: uppercase` via a `@layer components` rule in
+`client/src/index.css`.
+
+### Headings
+
+| Utility | Size / line-height / weight | Use for |
+|---|---|---|
+| `text-display` | 28 / 32 / 700 | Single biggest visible value on a page (totals, KPI emphasis). Rare. |
+| `text-page-title` | 22 / 28 / 600 | h1 for a detail page (Job, Invoice, Quote, PM). One per page. |
+| `text-section-title` | 16 / 22 / 600 | h2 for a card / panel / modal. **CardTitle defaults to this.** |
+| `text-subhead` | 14 / 20 / 500 | h3 for groups inside a card; table sub-headers. |
+
+### Body / row
+
+| Utility | Size / line-height / weight | Use for |
+|---|---|---|
+| `text-body` | 14 / 20 / 400 | Default reading text — forms, dialogs, prose, descriptions. |
+| `text-row` | 13 / 18 / 400 | Default table / list row content. |
+| `text-row-emphasis` | 13 / 18 / 500 | Primary identifier in a row (entity name, the "first column"). |
+
+### Small text
+
+| Utility | Size / line-height / weight | Use for |
+|---|---|---|
+| `text-caption` | 12 / 16 / 400 | Secondary text alongside row content (timestamps, sub-amounts, technician name). **CardDescription defaults to this.** |
+| `text-label` | 11 / 14 / 500 / `tracking-[0.04em]` / `uppercase` | Form field labels, table column headers, metadata keys ("BILL TO", "ISSUED"). |
+| `text-helper` | 11 / 14 / 400 | Tooltip body, hint text, "?" popover content, footnotes. |
+
+### Compositional utilities
+
+- **Color** comes from the canonical color tokens (color Phase 1 / 2.7):
+  pair size with `text-text-primary` / `text-text-secondary` /
+  `text-text-muted` / `text-text-disabled`, or with `text-success` /
+  `-warning` / `-danger` / `-info` for state.
+- **Numeric / mono** money fields: append `tabular-nums font-mono` to
+  any size token.
+- **Override** any bundled property by adding the explicit utility:
+  `<span className="text-row font-semibold">` overrides the default
+  weight (400) with semibold (600).
+
+### Why these specific sizes
+
+Each px value maps onto a size already in widespread use across the
+codebase via `text-[NNpx]` arbitrary classes (see the 2026-04-29
+typography audit). The semantic tokens formalize the de facto scale —
+they don't introduce new sizes. The migration from `text-[Npx]` to a
+named token is therefore a pure renaming, not a visual change, in
+~95% of cases.
+
+The pixel values are absolute (not rem) so the rendered size is
+predictable regardless of the (non-standard 19px) html root font-size.
+Pre-Phase-A typography reasoning had to compensate for the 19px root in
+every consumer; the new tokens neutralize this.
+
+## CardTitle and CardDescription defaults (2026-04-29 Typography Phase B)
+
+`client/src/components/ui/card.tsx` was updated:
+
+| Slot | Was | Now |
+|---|---|---|
+| `CardTitle` | `text-2xl font-semibold leading-none tracking-tight` (28.5px on the 19px root) | `text-section-title` (16 / 22 / 600) |
+| `CardDescription` | `text-sm text-muted-foreground` (17.1px, legacy shadcn color) | `text-caption text-text-muted` (12 / 16, canonical text-muted token) |
+
+Pages that override the default with their own `className` (most pages)
+are unchanged because the override className still wins via `cn()`.
+Pages that did NOT override (~30 admin / settings / auth pages) now
+render at the new canonical sizes — see CHANGELOG entry for the audit
+list of impacted consumers.
+
+## Legacy ramp (deprecated — retained for backward compat)
+
+The pre-existing Tailwind size scale stays available so consumers can
+migrate at their own cadence. **All new code should use the semantic
+tokens above.** Legacy classes will be removed in a future Phase H lint
+sweep once consumers have migrated.
+
+| Legacy | Renders at (19px html root) | Migration target |
+|---|---|---|
+| `text-xs` | 15.2px / 22.8px line-height | `text-caption` (closest) or `text-label` (if uppercase metadata) |
+| `text-sm` | 17.1px / 24.7px | `text-body` (forms) or `text-row` (lists/tables) |
+| `text-base` | 19px / 28.5px | `text-body` (forms) or `text-section-title` (titles) |
+| `text-lg` | 21.4px / 30.4px | `text-page-title` |
+| `text-xl` | 23.8px / 33.3px | `text-page-title` (slightly bigger) |
+| `text-2xl` | 28.5px / 38px | `text-display` (rare emphasis) or `text-page-title` |
+
+> **Note on the previous standard ("default body = `text-xs`"):**
+> Superseded. The Phase A tokens express role explicitly; pages should
+> render `<span className="text-row text-text-muted">` (or similar)
+> instead of relying on a global `text-xs` default. The 19px root
+> mismatch that caused the "default = text-xs" rule to misfire is
+> neutralized by the new px-based tokens.
+
+---
+
+## Pre-Phase-A guidance (historical — kept for context)
+
 
 ## Default body font size
 

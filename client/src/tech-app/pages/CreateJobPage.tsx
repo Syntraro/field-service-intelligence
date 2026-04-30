@@ -15,6 +15,7 @@ import { MobileShell } from "../components/MobileShell";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { useLocationSearch, useLocationById, type LocationResult } from "@/hooks/useLocationSearch";
+import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { getMemberDisplayName } from "@/lib/displayName";
 
@@ -246,8 +247,11 @@ export function CreateJobPage() {
             <div className="flex gap-2">
               <div className="flex-1">
                 <label className="text-[10px] font-semibold text-slate-400 mb-0.5 block">Date</label>
-                <input type="date" value={schedDate} onChange={e => setSchedDate(e.target.value)}
-                  className="w-full h-8 px-2 text-xs border border-slate-200 rounded-md" />
+                <CanonicalDatePicker
+                  value={schedDate}
+                  onChange={(next) => setSchedDate(next ?? "")}
+                  className="w-full h-8 text-xs"
+                />
               </div>
               <div className="flex-1">
                 <label className="text-[10px] font-semibold text-slate-400 mb-0.5 block">Start Time</label>

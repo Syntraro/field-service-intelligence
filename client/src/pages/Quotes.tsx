@@ -46,10 +46,10 @@ function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg }: {
         <div className={`p-1.5 rounded-md ${iconBg}`}>
           <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
         </div>
-        <div className="text-xs font-medium text-slate-500">{label}</div>
+        <div className="text-caption font-medium text-slate-500">{label}</div>
       </div>
-      <div className="text-2xl font-bold text-slate-900 tabular-nums mt-2">{value}</div>
-      <div className="text-xs text-slate-500 mt-1">{note}</div>
+      <div className="text-page-title font-bold text-slate-900 tabular-nums mt-2">{value}</div>
+      <div className="text-caption text-slate-500 mt-1">{note}</div>
     </div>
   );
 }
@@ -163,14 +163,14 @@ export default function Quotes() {
 
   // List stability: single return path — loading state renders inside content area only
   return (
-    <div className="min-h-screen bg-[#F4F8F4]" data-testid="quotes-page">
+    <div className="min-h-screen bg-app-bg" data-testid="quotes-page">
       <div className="p-6 space-y-5">
 
         {/* ── 1. Header Row ── */}
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-slate-900">Quotes</h1>
-            <p className="text-sm text-slate-500 mt-0.5">Quote pipeline overview with full quote list.</p>
+            <h1 className="text-page-title font-semibold text-slate-900">Quotes</h1>
+            <p className="text-row text-slate-500 mt-0.5">Quote pipeline overview with full quote list.</p>
           </div>
           <Button size="sm" className="gap-1.5 h-9 rounded-md" onClick={() => setNewQuoteModalOpen(true)} data-testid="button-new-quote">
             <Plus className="h-4 w-4" />
@@ -226,7 +226,7 @@ export default function Quotes() {
                     key={filter}
                     variant={activeFilter === filter ? "default" : "outline"}
                     size="sm"
-                    className="h-7 text-xs rounded-full"
+                    className="h-7 text-caption rounded-full"
                     onClick={() => setActiveFilter(filter)}
                     data-testid={`button-filter-${filter}`}
                   >
@@ -253,13 +253,13 @@ export default function Quotes() {
             <Table>
               <TableHeader>
                 <TableRow className="bg-slate-50">
-                  <TableHead className="text-xs font-medium text-slate-600">Client / Location</TableHead>
-                  <TableHead className="text-xs font-medium text-slate-600">Quote #</TableHead>
-                  <TableHead className="text-xs font-medium text-slate-600">Title</TableHead>
-                  <TableHead className="text-xs font-medium text-slate-600">Status</TableHead>
-                  <TableHead className="text-xs font-medium text-slate-600">Owner</TableHead>
-                  <TableHead className="text-xs font-medium text-slate-600 text-right">Total</TableHead>
-                  <TableHead className="text-xs font-medium text-slate-600">Updated</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600">Client / Location</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600">Quote #</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600">Title</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600">Status</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600">Owner</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600 text-right">Total</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600">Updated</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -272,44 +272,44 @@ export default function Quotes() {
                   >
                     <TableCell>
                       <div>
-                        <p className="text-sm font-medium text-slate-800" data-testid={`text-quote-client-${quote.id}`}>
+                        <p className="text-row font-medium text-slate-800" data-testid={`text-quote-client-${quote.id}`}>
                           {quote.customerCompany?.name || quote.location?.companyName || "Unknown"}
                         </p>
                         {quote.customerCompany?.name && quote.location?.companyName && (
-                          <p className="text-xs text-slate-500">{quote.location.companyName}</p>
+                          <p className="text-caption text-slate-500">{quote.location.companyName}</p>
                         )}
                       </div>
                     </TableCell>
                     <TableCell>
-                      <span className="font-mono text-sm text-slate-800" data-testid={`text-quote-number-${quote.id}`}>
+                      <span className="font-mono text-row text-slate-800" data-testid={`text-quote-number-${quote.id}`}>
                         {quote.quoteNumber || `Q-${quote.id.slice(0, 8)}`}
                       </span>
                     </TableCell>
                     <TableCell>
-                      <span className="text-sm text-slate-500">{quote.title || "-"}</span>
+                      <span className="text-row text-slate-500">{quote.title || "-"}</span>
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-1.5">
                         <Badge variant={quote.statusInfo.variant}>{quote.statusInfo.label}</Badge>
                         {(quote as any).assessmentStatus === "required" && (
-                          <Badge variant="outline" className="text-[9px] border-amber-300 text-amber-700">Assessment needed</Badge>
+                          <Badge variant="outline" className="text-helper border-amber-300 text-amber-700">Assessment needed</Badge>
                         )}
                         {(quote as any).assessmentStatus === "scheduled" && (
-                          <Badge variant="outline" className="text-[9px] border-amber-400 text-amber-800 bg-amber-50">Assessment scheduled</Badge>
+                          <Badge variant="outline" className="text-helper border-amber-400 text-amber-800 bg-amber-50">Assessment scheduled</Badge>
                         )}
                         {(quote as any).assessmentStatus === "completed" && (
-                          <Badge variant="outline" className="text-[9px] border-emerald-300 text-emerald-700">Assessment done</Badge>
+                          <Badge variant="outline" className="text-helper border-emerald-300 text-emerald-700">Assessment done</Badge>
                         )}
                       </div>
                     </TableCell>
                     <TableCell>
-                      <span className="text-sm text-slate-500">{(quote as any).salesOwnerUserId ? userNameMap.get((quote as any).salesOwnerUserId) || "—" : "—"}</span>
+                      <span className="text-row text-slate-500">{(quote as any).salesOwnerUserId ? userNameMap.get((quote as any).salesOwnerUserId) || "—" : "—"}</span>
                     </TableCell>
                     <TableCell className="text-right">
-                      <span className="text-sm text-slate-700 tabular-nums">{formatCurrency(quote.total)}</span>
+                      <span className="text-row text-slate-700 tabular-nums">{formatCurrency(quote.total)}</span>
                     </TableCell>
                     <TableCell>
-                      <span className="text-sm text-slate-500">{safeFormatDate(quote.updatedAt || quote.createdAt)}</span>
+                      <span className="text-row text-slate-500">{safeFormatDate(quote.updatedAt || quote.createdAt)}</span>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -319,7 +319,7 @@ export default function Quotes() {
         </div>
 
         {filteredQuotes.length > 0 && (
-          <div className="text-xs text-slate-500 mt-2" data-testid="text-quote-count">
+          <div className="text-caption text-slate-500 mt-2" data-testid="text-quote-count">
             Showing {filteredQuotes.length} quote{filteredQuotes.length !== 1 ? "s" : ""}
           </div>
         )}

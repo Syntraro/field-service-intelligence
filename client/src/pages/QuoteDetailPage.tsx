@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, useLocation, Link } from "wouter";
 import { format, isValid, parseISO, isPast } from "date-fns";
@@ -59,22 +59,25 @@ import { ApplyQuoteTemplateModal } from "@/components/ApplyQuoteTemplateModal";
 import { QuoteHeaderCard } from "@/components/QuoteHeaderCard";
 import { ActivityCard } from "@/components/activity/ActivityCard";
 import { QuoteNotesSection } from "@/components/QuoteNotesSection";
-import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
+// 2026-04-29 (Phase 2 canonical extraction): the local CreateOrSelectField
+// + useProductSearch + product-helper imports have moved into the canonical
+// `<LineItemsCard>` / `<LineItemRow>` / `<AddLineItemForm>` components.
+// The page only needs the adapter-level pieces below.
 import {
-  useProductSearch, getProductKey, getProductLabel, getProductDescription,
-  productOptionToCatalogItem,
+  normalizeProductRow,
   type ProductOption,
 } from "@/lib/entities/productEntity";
+import { type LineItemDraft, parseMoney } from "@shared/lineItem";
 import {
-  type LineItemDraft,
-  parseMoney,
-  formatMoney,
-} from "@shared/lineItem";
-import {
-  catalogItemToDraft,
-  blankDraft,
+  hydrateDraft,
   draftToQuoteLinePayload,
 } from "@/lib/entities/lineItemMapper";
+import { AddProductModal } from "@/components/PartsBillingCard";
+import {
+  LineItemsCard,
+  useLineItemsDrafts,
+  type LineItemsAdapter,
+} from "@/components/line-items";
 import { Briefcase as BriefcaseIcon, FileSearch, CalendarCheck } from "lucide-react";
 import { MetaRow } from "@/components/ui/meta-row";
 import { DetailPageShell } from "@/components/layout/DetailPageShell";
@@ -103,54 +106,84 @@ export default function QuoteDetailPage() {
   const [showApproveConfirm, setShowApproveConfirm] = useState(false);
   const [showDeclineConfirm, setShowDeclineConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [showAddLineDialog, setShowAddLineDialog] = useState(false);
   const [showApplyTemplateModal, setShowApplyTemplateModal] = useState(false);
   const [showConvertToJobConfirm, setShowConvertToJobConfirm] = useState(false);
-  // 2026-04-09 (P9-P10 Phase A): The five separate add-line state vars
-  // (newLineDescription, newLineQuantity, newLinePrice, newLineProductId,
-  // selectedProduct) have been collapsed into a single canonical
-  // `LineItemDraft`. Catalog selection runs through `catalogItemToDraft`,
-  // save runs through `draftToQuoteLinePayload`. The CreateOrSelectField's
-  // `value` is reconstructed from the draft, eliminating the parallel
-  // `selectedProduct` source of truth.
-  const [addLineDraft, setAddLineDraft] = useState<LineItemDraft>(() => blankDraft());
-  const [productSearch, setProductSearch] = useState("");
 
-  // 2026-04-14 Phase 3E parity pass — collapse state, inline-edit state,
-  // and inline-add state, mirroring JobDetailPage. Defaults chosen to
-  // match Job Detail: description collapsed, line items expanded, notes
-  // collapsed (right rail).
+  // 2026-04-29 (Phase 2 canonical extraction): line-items state +
+  // selector state + add-row dialog state moved into the canonical
+  // `<LineItemsCard>` + `useLineItemsDrafts` set. The previously-mounted
+  // (but never-opened) modal at the bottom of the file is removed; the
+  // inline add-row state likewise migrates to the hook's `appendNew`.
+  // Quote-specific adapter is built further down, after the mutations.
+
+  // Description / notes collapse state — unchanged.
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
-  const [lineItemsExpanded, setLineItemsExpanded] = useState(true);
   const [notesExpanded, setNotesExpanded] = useState(false);
   const [editingDescription, setEditingDescription] = useState(false);
   const [descriptionDraft, setDescriptionDraft] = useState("");
-  const [showInlineAddRow, setShowInlineAddRow] = useState(false);
   const [notesOpenSignal, setNotesOpenSignal] = useState(0);
 
-  // Reset the draft each time the dialog opens so users always see a clean form.
-  useEffect(() => {
-    if (showAddLineDialog) {
-      setAddLineDraft(blankDraft());
-      setProductSearch("");
-    }
-  }, [showAddLineDialog]);
+  // Canonical Product/Service create flow — same pattern as Invoice.
+  // One AddProductModal instance lives at the page level; the canonical
+  // selector inside `<AddLineItemForm>` / `<LineItemRow>` calls
+  // `requestCreateProduct(name)` to open it.
+  const [createProductOpen, setCreateProductOpen] = useState(false);
+  const [createProductInitialName, setCreateProductInitialName] = useState("");
+  const [savingCreatedProduct, setSavingCreatedProduct] = useState(false);
+  const createProductResolverRef = useRef<((value: ProductOption | null) => void) | null>(null);
 
-  // Product search for add line dialog
-  const { data: productResults = [], isLoading: productSearchLoading } = useProductSearch(productSearch, { enabled: showAddLineDialog });
+  const requestCreateProduct = (name: string): Promise<ProductOption | null> =>
+    new Promise((resolve) => {
+      createProductResolverRef.current = resolve;
+      setCreateProductInitialName(name);
+      setCreateProductOpen(true);
+    });
 
-  // Reconstruct the selector's "current value" purely from the canonical draft —
-  // no parallel `selectedProduct` state. The selector renders the chip when
-  // `addLineDraft.productId` is set; otherwise the input is in search mode.
-  const addLineSelectedProduct: ProductOption | null = addLineDraft.productId
-    ? {
-        id: addLineDraft.productId,
-        name: addLineDraft.description,
-        type: addLineDraft.productType ?? "product",
-        unitPrice: addLineDraft.unitPrice,
-        cost: addLineDraft.unitCost,
+  const handleCreateProductCancel = () => {
+    setCreateProductOpen(false);
+    createProductResolverRef.current?.(null);
+    createProductResolverRef.current = null;
+  };
+
+  const handleCreateProductSave = async (data: { name: string; description?: string; cost: string; unitPrice: string; type: string }) => {
+    setSavingCreatedProduct(true);
+    try {
+      const response = await apiRequest<any>("/api/items", {
+        method: "POST",
+        body: JSON.stringify({
+          name: data.name,
+          type: data.type,
+          ...(data.description ? { description: data.description } : {}),
+          ...(data.cost ? { cost: data.cost } : {}),
+          ...(data.unitPrice ? { unitPrice: data.unitPrice } : {}),
+        }),
+      });
+      const matched = response?._matched === true;
+      const productOption = normalizeProductRow(response);
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
+      if (matched) {
+        const existingType = response?.type === "service" ? "service" : "product";
+        toast({
+          title: "Reusing existing item",
+          description: `"${data.name}" already exists as a ${existingType}. Selecting the existing item.`,
+        });
+      } else {
+        toast({ title: "Product created", description: `"${data.name}" added to the catalog.` });
       }
-    : null;
+      setCreateProductOpen(false);
+      createProductResolverRef.current?.(productOption);
+      createProductResolverRef.current = null;
+    } catch (err) {
+      toast({
+        title: "Failed to create product",
+        description: (err as Error)?.message ?? "Unexpected error",
+        variant: "destructive",
+      });
+      // Modal stays open on error so the user can retry.
+    } finally {
+      setSavingCreatedProduct(false);
+    }
+  };
 
   // Phase 13 (2026-04-12): legacy send-quote modal state removed. Send flow
   // now lives in <SendQuoteModal>, driven by backend preview + overrides.
@@ -217,25 +250,21 @@ export default function QuoteDetailPage() {
     // before the payload projection so the final draft has the right totals.
     // The server quote-line route stores client-supplied values as-is; no
     // server-side recomputation, which is why we project here.
+    // 2026-04-29 (Phase 2): now invoked exclusively by the quote adapter's
+    // `saveAll`. The success toast was demoted from "Line item added" to a
+    // silent success because the canonical card's `cancel()` / `save()`
+    // cycle handles the UX feedback.
     mutationFn: (draft: LineItemDraft) => {
-      const qty = parseMoney(draft.quantity);
-      const price = parseMoney(draft.unitPrice);
-      const subtotal = formatMoney(qty * price);
-      const finalDraft: LineItemDraft = {
-        ...draft,
-        lineSubtotal: subtotal,
-        lineTotal: subtotal,
-      };
+      // The hook already computes lineSubtotal / lineTotal when
+      // building the save plan. We keep this defensive recomputation
+      // for direct callers (none today, but harmless and cheap).
       return apiRequest(`/api/quotes/${quoteId}/lines`, {
         method: "POST",
-        body: JSON.stringify(draftToQuoteLinePayload(finalDraft)),
+        body: JSON.stringify(draftToQuoteLinePayload(draft)),
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
-      setShowAddLineDialog(false);
-      // useEffect on showAddLineDialog handles draft reset on next open.
-      toast({ title: "Line item added" });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to add line item", description: error.message, variant: "destructive" });
@@ -247,10 +276,29 @@ export default function QuoteDetailPage() {
       apiRequest(`/api/quotes/${quoteId}/lines/${lineId}`, { method: "DELETE" }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
-      toast({ title: "Line item removed" });
+      // 2026-04-29 (Phase 2): demoted to silent success — canonical card
+      // surfaces the save UX. Errors still toast via onError.
     },
     onError: (error: Error) => {
       toast({ title: "Failed to remove line item", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // 2026-04-29 (Phase 2): canonical edit-on-save needs an UPDATE mutation
+  // for existing rows. Server route already exists at
+  // PATCH /api/quotes/:id/lines/:lineId (gated on quote.status === "draft"
+  // server-side, same as the create route).
+  const updateLineMutation = useMutation({
+    mutationFn: ({ lineId, draft }: { lineId: string; draft: LineItemDraft }) =>
+      apiRequest(`/api/quotes/${quoteId}/lines/${lineId}`, {
+        method: "PATCH",
+        body: JSON.stringify(draftToQuoteLinePayload(draft)),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update line item", description: error.message, variant: "destructive" });
     },
   });
 
@@ -405,6 +453,96 @@ export default function QuoteDetailPage() {
   const isSent = quote.status === "sent";
   const isApproved = quote.status === "approved";
 
+  // ─── 2026-04-29 (Phase 2 canonical extraction): line-items adapter ──
+  // Quote semantics:
+  //   • showCost: false (quote schema has no unit_cost column).
+  //   • showTax: false (no per-line tax editor in canonical row).
+  //   • allowReorder: false (no reorder mutation on the quote API).
+  //   • allowEditExisting: true (server PATCH route exists at
+  //     /api/quotes/:id/lines/:lineId; gated on draft status server-side).
+  //   • isLocked: !isDraft (quote rows are immutable once sent / approved /
+  //     declined; the card hides the pencil + Save/Cancel/Add-another
+  //     affordances when locked).
+  // The adapter's saveAll runs the same Promise.allSettled strategy as
+  // Invoice; failures stay toasted by the per-mutation onError.
+  const quoteLineItemsAdapter = useMemo<LineItemsAdapter<QuoteLine>>(() => ({
+    surface: "quote",
+    showCost: false,
+    showTax: false,
+    allowReorder: false,
+    allowEditExisting: true,
+    emptyStateLabel: "No line items yet.",
+    emptyStateCtaLabel: "Add line item",
+    hydrateDraft: (line) => hydrateDraft(line as unknown as Record<string, unknown>),
+    resolveProduct: (line) =>
+      line.productId
+        ? {
+            id: line.productId,
+            name: line.description || "(unnamed item)",
+            type:
+              line.lineItemType === "service" ? "service" : "product",
+            unitPrice: line.unitPrice,
+            cost: null,
+          }
+        : null,
+    validateEntry: (entry) => {
+      if (entry.serverId) return null;
+      const typed = entry.draft.description.trim();
+      const fallback = entry.uiSelectedProduct?.name?.trim() ?? "";
+      const finalDesc = typed || fallback;
+      const qty = parseMoney(entry.draft.quantity);
+      if (!finalDesc || qty <= 0) {
+        return "Select or create an item before saving this row.";
+      }
+      return null;
+    },
+    requestCreateProduct: async (name) => requestCreateProduct(name),
+    saveAll: async (plan) => {
+      const promises: Promise<unknown>[] = [];
+      for (const draft of plan.creates) {
+        promises.push(addLineMutation.mutateAsync(draft));
+      }
+      for (const u of plan.updates) {
+        promises.push(updateLineMutation.mutateAsync({ lineId: u.serverId, draft: u.draft }));
+      }
+      for (const serverId of plan.deletes) {
+        promises.push(deleteLineMutation.mutateAsync(serverId));
+      }
+      try {
+        const results = await Promise.allSettled(promises);
+        const failures = results.filter((r) => r.status === "rejected").length;
+        if (failures > 0) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[QuoteDetailPage] line-items save: ${failures}/${promises.length} mutation(s) rejected`,
+          );
+        }
+        return { ok: failures === 0, failures, skipped: plan.skipped };
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[QuoteDetailPage] line-items save: unexpected error", err);
+        toast({
+          title: "Failed to save line items",
+          description: (err as any)?.message ?? "Unexpected error",
+          variant: "destructive",
+        });
+        return { ok: false, failures: 1, skipped: plan.skipped };
+      }
+    },
+    onInformationalToast: (title, description) => toast({ title, description }),
+  }), [
+    addLineMutation, updateLineMutation, deleteLineMutation, toast,
+    // requestCreateProduct uses refs / setters that are stable; eslint
+    // wants it in the deps but the captured closure is correct from the
+    // first render onward.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ]);
+
+  const lineItemsDrafts = useLineItemsDrafts<QuoteLine>({
+    adapter: quoteLineItemsAdapter,
+    serverItems: details?.lines ?? [],
+  });
+
   // PDF handlers
   const handleDownloadPdf = () => {
     window.open(`/api/quotes/${quoteId}/pdf`, "_blank");
@@ -415,8 +553,12 @@ export default function QuoteDetailPage() {
 
   return (
     <>
+      {/* 2026-04-29 Color Phase 2.5: dropped `background="#F4F8F4"` so
+          the shell stays transparent and the new canonical `bg-app-bg`
+          on App.tsx's <main> shows through. The shell still accepts
+          `background` as an escape hatch for pages that need a
+          page-specific surface. */}
       <DetailPageShell
-        background="#F4F8F4"
         dataTestId="quote-detail-page"
         leftColumn={
           <>
@@ -540,216 +682,38 @@ export default function QuoteDetailPage() {
                 </Collapsible>
               </div>
 
-              {/* Line Items — 2026-04-14 Phase 3E parity pass.
-                  Mirrors JobDetailPage "Parts, Labour & Expenses"
-                  Collapsible card: DollarSign + text-xl bold title,
-                  `rounded-md border border-slate-200 bg-white shadow-sm`
-                  shell, `bg-slate-50` header bar. Quote divergence: title
-                  is "Line Items" (no labour/expenses on quotes), totals
-                  split as Subtotal / Tax / Total (quote schema lacks
-                  unit_cost — no cost/profit reporting until that
-                  additive migration lands). Add flow is now INLINE —
-                  the previous modal is still mounted for now as a
-                  fallback but hidden behind the inline row control. */}
-              <div id="quote-items-section" className="rounded-md border border-slate-200 bg-white shadow-sm overflow-hidden" data-testid="quote-main-card">
-                <Collapsible open={lineItemsExpanded} onOpenChange={setLineItemsExpanded}>
-                  <CollapsibleTrigger asChild>
-                    <button
-                      className={cn(
-                        "w-full flex items-center justify-between px-5 py-3 transition-colors bg-slate-50 hover:bg-slate-100",
-                        lineItemsExpanded && "border-b border-slate-200",
-                      )}
-                      data-testid="trigger-quote-line-items"
-                    >
-                      <div className="flex items-center gap-2">
-                        <DollarSign className="h-5 w-5 text-slate-900" />
-                        <span className="text-xl font-bold text-slate-900 tracking-tight">Line Items</span>
+              {/* Line Items — canonical 2026-04-29 (Phase 2). The card
+                  chrome / header metrics / column header / row bodies /
+                  bottom action row / empty state all live in
+                  <LineItemsCard>. Quote-specific subtotal/tax/total
+                  block stays here as the renderTotalsFooter slot. The
+                  prior Collapsible wrapper + branded "Line Items"
+                  trigger were removed in favor of the canonical
+                  always-visible card pattern (matches Invoice). */}
+              <LineItemsCard
+                adapter={quoteLineItemsAdapter}
+                drafts={lineItemsDrafts}
+                serverItems={lines}
+                isLocked={!isDraft}
+                renderTotalsFooter={
+                  <div className="border-t border-slate-200 px-5 py-2.5 bg-slate-50/60" data-testid="card-totals-footer">
+                    <div className="flex flex-col items-end gap-1 text-xs">
+                      <div className="flex justify-between w-56">
+                        <span className="text-slate-400">Subtotal</span>
+                        <span className="font-medium text-slate-700 tabular-nums">{formatCurrency(quote.subtotal)}</span>
                       </div>
-                      <div className="flex items-center gap-3">
-                        {!lineItemsExpanded && (
-                          <span className="text-xs font-bold text-slate-700">
-                            {lines.length} item{lines.length !== 1 ? "s" : ""} · {formatCurrency(quote.total)}
-                          </span>
-                        )}
-                        {lineItemsExpanded
-                          ? <ChevronDown className="h-4 w-4 text-slate-400 shrink-0" />
-                          : <ChevronRight className="h-4 w-4 text-slate-400 shrink-0" />}
+                      <div className="flex justify-between w-56">
+                        <span className="text-slate-400">Tax</span>
+                        <span className="font-medium text-slate-700 tabular-nums">{formatCurrency(quote.taxTotal)}</span>
                       </div>
-                    </button>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <div className="p-0">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="w-[50%]">Description</TableHead>
-                            <TableHead className="text-center w-[80px]">Qty</TableHead>
-                            <TableHead className="text-right w-[100px]">Rate</TableHead>
-                            <TableHead className="text-right w-[100px]">Total</TableHead>
-                            {isDraft && <TableHead className="w-[50px]"></TableHead>}
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {lines.length === 0 && !showInlineAddRow ? (
-                            <TableRow>
-                              <TableCell colSpan={isDraft ? 5 : 4} className="text-center py-10 text-muted-foreground text-sm">
-                                No line items yet. {isDraft && "Click \"Add Line Item\" below to start."}
-                              </TableCell>
-                            </TableRow>
-                          ) : (
-                            lines.map((line) => (
-                              <TableRow key={line.id} data-testid={`row-line-${line.id}`}>
-                                <TableCell>
-                                  <p className="font-medium">{line.description}</p>
-                                </TableCell>
-                                <TableCell className="text-center">{line.quantity}</TableCell>
-                                <TableCell className="text-right">{formatCurrency(line.unitPrice)}</TableCell>
-                                <TableCell className="text-right font-medium">{formatCurrency(line.lineTotal)}</TableCell>
-                                {isDraft && (
-                                  <TableCell>
-                                    <Button
-                                      variant="ghost"
-                                      size="icon"
-                                      onClick={() => deleteLineMutation.mutate(line.id)}
-                                      disabled={deleteLineMutation.isPending}
-                                      data-testid={`button-delete-line-${line.id}`}
-                                    >
-                                      <Trash2 className="h-4 w-4 text-muted-foreground hover:text-destructive" />
-                                    </Button>
-                                  </TableCell>
-                                )}
-                              </TableRow>
-                            ))
-                          )}
-                        </TableBody>
-                      </Table>
-
-                      {/* Inline "Add Line Item" control + row — mirrors the
-                          Parts "Add Line Item" affordance on Job Detail.
-                          Reuses the existing `addLineMutation` + `addLineDraft`
-                          state that previously drove the modal. */}
-                      {isDraft && (
-                        <div className="px-5 py-3 border-t border-slate-100">
-                          {!showInlineAddRow ? (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="w-full justify-center border-slate-400 bg-slate-50 hover:bg-slate-100"
-                              onClick={() => {
-                                setAddLineDraft(blankDraft());
-                                setProductSearch("");
-                                setShowInlineAddRow(true);
-                              }}
-                              data-testid="button-add-line"
-                            >
-                              <Plus className="h-4 w-4 mr-1" />Add Line Item
-                            </Button>
-                          ) : (
-                            <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50/60 p-3">
-                              <CreateOrSelectField<ProductOption>
-                                label=""
-                                compact
-                                value={addLineDraft.productId ? {
-                                  id: addLineDraft.productId,
-                                  name: addLineDraft.description,
-                                  type: addLineDraft.productType ?? "product",
-                                  unitPrice: addLineDraft.unitPrice,
-                                  cost: addLineDraft.unitCost,
-                                } : null}
-                                onChange={(product) => {
-                                  if (product) {
-                                    const fresh = catalogItemToDraft(
-                                      productOptionToCatalogItem(product),
-                                      { source: "manual", quantity: addLineDraft.quantity || "1" },
-                                    );
-                                    setAddLineDraft(fresh);
-                                    setProductSearch("");
-                                  } else {
-                                    setAddLineDraft({ ...addLineDraft, productId: null });
-                                    setProductSearch("");
-                                  }
-                                }}
-                                searchResults={productResults}
-                                searchLoading={productSearchLoading}
-                                searchText={productSearch || (addLineDraft.productId ? "" : addLineDraft.description)}
-                                onSearchTextChange={(t) => {
-                                  setProductSearch(t);
-                                  if (!addLineDraft.productId) setAddLineDraft({ ...addLineDraft, description: t });
-                                }}
-                                getKey={getProductKey}
-                                getLabel={getProductLabel}
-                                getDescription={getProductDescription}
-                                placeholder="Search products or type description"
-                              />
-                              <div className="grid grid-cols-[1fr_120px_120px] gap-2">
-                                <Input
-                                  type="number"
-                                  min="0.01"
-                                  step="0.01"
-                                  placeholder="Qty"
-                                  value={addLineDraft.quantity}
-                                  onChange={(e) => setAddLineDraft({ ...addLineDraft, quantity: e.target.value })}
-                                  data-testid="input-line-qty"
-                                />
-                                <Input
-                                  type="number"
-                                  min="0"
-                                  step="0.01"
-                                  placeholder="Rate"
-                                  value={addLineDraft.unitPrice}
-                                  onChange={(e) => setAddLineDraft({ ...addLineDraft, unitPrice: e.target.value })}
-                                  data-testid="input-line-price"
-                                />
-                                <div className="flex items-center justify-end gap-2">
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    disabled={addLineMutation.isPending}
-                                    onClick={() => setShowInlineAddRow(false)}
-                                  >Cancel</Button>
-                                  <Button
-                                    size="sm"
-                                    disabled={!addLineDraft.description.trim() || addLineMutation.isPending}
-                                    onClick={() => {
-                                      addLineMutation.mutate(addLineDraft, {
-                                        onSuccess: () => setShowInlineAddRow(false),
-                                      });
-                                    }}
-                                    data-testid="button-save-line"
-                                  >
-                                    {addLineMutation.isPending && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
-                                    Save
-                                  </Button>
-                                </div>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Totals footer — right-aligned, mirrors Job Detail's
-                          `card-totals-footer` pattern but with quote-domain
-                          lines (Subtotal / Tax / Total). */}
-                      <div className="border-t border-slate-200 px-5 py-2.5 bg-slate-50/60" data-testid="card-totals-footer">
-                        <div className="flex flex-col items-end gap-1 text-xs">
-                          <div className="flex justify-between w-56">
-                            <span className="text-slate-400">Subtotal</span>
-                            <span className="font-medium text-slate-700 tabular-nums">{formatCurrency(quote.subtotal)}</span>
-                          </div>
-                          <div className="flex justify-between w-56">
-                            <span className="text-slate-400">Tax</span>
-                            <span className="font-medium text-slate-700 tabular-nums">{formatCurrency(quote.taxTotal)}</span>
-                          </div>
-                          <div className="flex justify-between w-56 pt-1.5 border-t border-slate-200 mt-1">
-                            <span className="font-semibold text-slate-700">Total</span>
-                            <span className="text-sm font-bold text-slate-900 tabular-nums">{formatCurrency(quote.total)}</span>
-                          </div>
-                        </div>
+                      <div className="flex justify-between w-56 pt-1.5 border-t border-slate-200 mt-1">
+                        <span className="font-semibold text-slate-700">Total</span>
+                        <span className="text-sm font-bold text-slate-900 tabular-nums">{formatCurrency(quote.total)}</span>
                       </div>
                     </div>
-                  </CollapsibleContent>
-                </Collapsible>
-              </div>
+                  </div>
+                }
+              />
 
             </div>
         </>
@@ -979,113 +943,18 @@ export default function QuoteDetailPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Add Line Item Dialog */}
-      {/* 2026-04-09 (P9-P10 Phase A): All inputs bind to the canonical
-          `addLineDraft`. Selection runs through `catalogItemToDraft`; the
-          selector's `value` is reconstructed from the draft. There is no
-          parallel `selectedProduct`/`newLine*` state. */}
-      <Dialog open={showAddLineDialog} onOpenChange={setShowAddLineDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add Line Item</DialogTitle>
-            <DialogDescription>
-              Add a new item to this quote.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            {/* Product search / description */}
-            <CreateOrSelectField<ProductOption>
-              label="Product / Service"
-              value={addLineSelectedProduct}
-              onChange={(product) => {
-                if (product) {
-                  // Replace the draft via the canonical mapper. Preserve the
-                  // user's existing quantity (if any) so a late product swap
-                  // doesn't reset it to "1".
-                  setAddLineDraft(
-                    catalogItemToDraft(productOptionToCatalogItem(product), {
-                      quantity: addLineDraft.quantity,
-                    }),
-                  );
-                  setProductSearch("");
-                } else {
-                  // Clear the catalog binding but keep what the user has typed.
-                  setAddLineDraft({ ...addLineDraft, productId: null });
-                }
-              }}
-              searchResults={productResults}
-              searchLoading={productSearchLoading}
-              searchText={productSearch}
-              onSearchTextChange={(text) => {
-                setProductSearch(text);
-                // Manual-entry fallback: when no product is bound, the search
-                // input doubles as the description field.
-                if (!addLineDraft.productId) {
-                  setAddLineDraft({ ...addLineDraft, description: text });
-                }
-              }}
-              getKey={getProductKey}
-              getLabel={getProductLabel}
-              getDescription={getProductDescription}
-              placeholder="Search products or type description..."
-            />
-            {/* Manual description override (visible once a product is bound) */}
-            {addLineDraft.productId && (
-              <div>
-                <Label htmlFor="line-description">Description</Label>
-                <Input
-                  id="line-description"
-                  value={addLineDraft.description}
-                  onChange={(e) =>
-                    setAddLineDraft({ ...addLineDraft, description: e.target.value })
-                  }
-                  data-testid="input-line-description"
-                />
-              </div>
-            )}
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="line-quantity">Quantity</Label>
-                <Input
-                  id="line-quantity"
-                  type="number"
-                  min="1"
-                  value={addLineDraft.quantity}
-                  onChange={(e) =>
-                    setAddLineDraft({ ...addLineDraft, quantity: e.target.value })
-                  }
-                  data-testid="input-line-quantity"
-                />
-              </div>
-              <div>
-                <Label htmlFor="line-price">Unit Price</Label>
-                <Input
-                  id="line-price"
-                  type="number"
-                  step="0.01"
-                  placeholder="0.00"
-                  value={addLineDraft.unitPrice}
-                  onChange={(e) =>
-                    setAddLineDraft({ ...addLineDraft, unitPrice: e.target.value })
-                  }
-                  data-testid="input-line-price"
-                />
-              </div>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowAddLineDialog(false)}>Cancel</Button>
-            <Button
-              onClick={() => addLineMutation.mutate(addLineDraft)}
-              disabled={!addLineDraft.description.trim() || addLineMutation.isPending}
-              data-testid="button-save-line"
-            >
-              {addLineMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Add Item
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* 2026-04-29 (Phase 2 canonical extraction): one AddProductModal
+          instance per page, opened by `requestCreateProduct(name)` from
+          any LineItemsCard child row's "Create '<X>'" affordance. Uses
+          the canonical type-agnostic POST /api/items route — same one
+          Invoice's modal uses. */}
+      <AddProductModal
+        open={createProductOpen}
+        initialName={createProductInitialName}
+        onClose={handleCreateProductCancel}
+        onSave={handleCreateProductSave}
+        isSaving={savingCreatedProduct}
+      />
 
       {/* Apply Template Modal */}
       <ApplyQuoteTemplateModal

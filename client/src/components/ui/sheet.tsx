@@ -31,7 +31,10 @@ const SheetOverlay = React.forwardRef<
 SheetOverlay.displayName = SheetPrimitive.Overlay.displayName
 
 const sheetVariants = cva(
-  "fixed z-50 gap-4 bg-[#F8FAFC] dark:bg-background p-6 shadow-[0_10px_25px_rgba(0,0,0,0.08)] transition ease-in-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:duration-500",
+  // 2026-04-29 Color Phase 3: hardcoded `bg-[#F8FAFC]` migrated to
+  // canonical `bg-card`. Heavier modal elevation shadow stays
+  // hardcoded — same rationale as Dialog primitive.
+  "fixed z-50 gap-4 bg-card dark:bg-background p-6 shadow-[0_10px_25px_rgba(0,0,0,0.08)] transition ease-in-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:duration-500",
   {
     variants: {
       side: {

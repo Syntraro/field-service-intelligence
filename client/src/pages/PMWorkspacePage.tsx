@@ -354,9 +354,9 @@ function SortableHeader<K extends string>({
 }
 
 function WorkDueStatusBadge({ status }: { status: UpcomingQueueItem["complianceStatus"] }) {
-  // 2026-04-26: tightened padding (px-1.5) + smaller text (text-[11px]) so
+  // 2026-04-26: tightened padding (px-1.5) + smaller text (text-helper) so
   // the Status column can hold a 10% width without wrapping.
-  const base = "gap-1 px-1.5 py-0 h-5 text-[11px] font-medium";
+  const base = "gap-1 px-1.5 py-0 h-5 text-helper font-medium";
   if (status === "overdue") {
     return (
       <Badge variant="outline" className={`${base} border-red-300 bg-red-50 text-red-700`}>
@@ -405,7 +405,7 @@ function GenerateConfirmModal({
             workflow. They will need to be scheduled on your dispatch board.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-2 text-sm py-2">
+        <div className="space-y-2 text-row py-2">
           <MetaRow label="Customers:" value={String(customerCount)} />
           <MetaRow label="Locations:" value={String(locationCount)} />
         </div>
@@ -450,25 +450,25 @@ function KpiCard({
     >
       {/* 2026-04-26 polish v2: tighter KPI tile — closer to a stat tile than a
           feature card. Padding `px-4 py-3` (was `px-5 py-5`); icon circle 32px
-          (was 40px); value `text-2xl` (was 34px). Hover lift translate dropped
+          (was 40px); value `text-page-title` (was 34px). Hover lift translate dropped
           to keep the row from "bouncing". */}
       <CardContent className="px-4 py-3">
         <div className="flex items-center gap-2.5 mb-1.5">
           <div className={`flex items-center justify-center h-8 w-8 rounded-full ${iconBg}`}>
             <Icon className={`h-4 w-4 ${iconColor}`} />
           </div>
-          <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.06em]">
+          <span className="text-helper font-semibold text-slate-500 uppercase tracking-[0.06em]">
             {label}
           </span>
         </div>
         <div
-          className={`text-2xl font-bold tabular-nums leading-none ${
+          className={`text-page-title font-bold tabular-nums leading-none ${
             warn ? "text-red-600" : "text-slate-900"
           }`}
         >
           {isLoading ? "—" : count}
         </div>
-        <p className="text-[11px] text-slate-500 mt-1.5">{sub}</p>
+        <p className="text-helper text-slate-500 mt-1.5">{sub}</p>
       </CardContent>
     </Card>
   );
@@ -633,10 +633,10 @@ function WorkDueTab({
           card was removed — putting the action above the table avoids
           burying it under 20–50 rows. */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h2 className="text-base font-semibold text-slate-900">
+        <h2 className="text-body font-semibold text-slate-900">
           Plans Due Now
           {!isLoading && (
-            <span className="ml-2 text-sm font-normal text-slate-500">({filtered.length})</span>
+            <span className="ml-2 text-row font-normal text-slate-500">({filtered.length})</span>
           )}
         </h2>
         <div className="flex items-center gap-2">
@@ -691,8 +691,8 @@ function WorkDueTab({
               <CheckCircle2 className="h-7 w-7 text-emerald-600" />
             </div>
             <div className="space-y-1">
-              <p className="text-base font-semibold text-slate-900">Nothing due right now</p>
-              <p className="text-sm text-slate-500 max-w-sm">When a plan enters its service window, it will appear here automatically.</p>
+              <p className="text-body font-semibold text-slate-900">Nothing due right now</p>
+              <p className="text-row text-slate-500 max-w-sm">When a plan enters its service window, it will appear here automatically.</p>
             </div>
           </CardContent>
         </Card>
@@ -704,7 +704,7 @@ function WorkDueTab({
               persistent horizontal scrollbar. */}
           <Table className="table-fixed w-full">
             <TableHeader>
-              <TableRow className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 bg-slate-50/80 dark:bg-gray-900/50 hover:bg-slate-50/80">
+              <TableRow className="text-helper font-semibold uppercase tracking-wide text-slate-500 bg-slate-50/80 dark:bg-gray-900/50 hover:bg-slate-50/80">
                 <SortableHeader label="Client"    sortKey="client"    state={sort} onChange={setSort} defaultSort={DEFAULT_WORK_DUE_SORT} testIdPrefix="work-due-sort" className="w-[24%]" />
                 <SortableHeader label="Plan"      sortKey="plan"      state={sort} onChange={setSort} defaultSort={DEFAULT_WORK_DUE_SORT} testIdPrefix="work-due-sort" className="w-[26%]" />
                 <SortableHeader label="Frequency" sortKey="frequency" state={sort} onChange={setSort} defaultSort={DEFAULT_WORK_DUE_SORT} testIdPrefix="work-due-sort" className="w-[18%]" />
@@ -772,7 +772,7 @@ function WorkDueTab({
                       <div onClick={(e) => e.stopPropagation()} className="inline-block">
                         <Button
                           size="sm"
-                          className="h-7 px-2 text-xs gap-1"
+                          className="h-7 px-2 text-caption gap-1"
                           disabled={!eligible || isGenerating}
                           onClick={() => onGenerateOne(item.instanceId)}
                           title="Generate work order"
@@ -929,11 +929,11 @@ function PlansTab({
         <CardContent className="flex flex-col items-start gap-3 py-6 px-5">
           <div className="flex items-center gap-2 text-red-700">
             <AlertCircle className="h-5 w-5 shrink-0" />
-            <span className="font-semibold text-sm">Failed to load plans{status}</span>
+            <span className="font-semibold text-row">Failed to load plans{status}</span>
           </div>
-          <p className="text-xs text-slate-600 font-mono break-all">{detail}</p>
+          <p className="text-caption text-slate-600 font-mono break-all">{detail}</p>
           {looks500 && (
-            <p className="text-xs text-slate-500 leading-relaxed">
+            <p className="text-caption text-slate-500 leading-relaxed">
               If this is a fresh schema, the recently added <code className="font-mono px-1 py-0.5 bg-slate-100 rounded">generation_days_before</code> column may not have been applied. Run:
               <br />
               <code className="font-mono inline-block mt-1 px-2 py-1 bg-slate-100 rounded">npm run db:migrate</code>
@@ -979,8 +979,8 @@ function PlansTab({
               <Wrench className="h-7 w-7 text-emerald-600" />
             </div>
             <div className="space-y-1">
-              <p className="text-base font-semibold text-slate-900">No maintenance plans yet</p>
-              <p className="text-sm text-slate-500 max-w-sm">Create your first plan to start scheduling recurring service visits and generating work orders.</p>
+              <p className="text-body font-semibold text-slate-900">No maintenance plans yet</p>
+              <p className="text-row text-slate-500 max-w-sm">Create your first plan to start scheduling recurring service visits and generating work orders.</p>
             </div>
             <Button onClick={onCreatePlan}>
               <Plus className="mr-2 h-4 w-4" />New Plan
@@ -996,7 +996,7 @@ function PlansTab({
                 row to the container — no horizontal scroll. */}
             <Table className="table-fixed w-full">
               <TableHeader>
-                <TableRow className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 bg-slate-50/80 dark:bg-gray-900/50 hover:bg-slate-50/80">
+                <TableRow className="text-helper font-semibold uppercase tracking-wide text-slate-500 bg-slate-50/80 dark:bg-gray-900/50 hover:bg-slate-50/80">
                   <SortableHeader label="Client"    sortKey="client"    state={sort} onChange={setSort} defaultSort={DEFAULT_PLANS_SORT} testIdPrefix="plans-sort" className="w-[22%]" />
                   <SortableHeader label="Plan"      sortKey="plan"      state={sort} onChange={setSort} defaultSort={DEFAULT_PLANS_SORT} testIdPrefix="plans-sort" className="w-[30%]" />
                   <SortableHeader label="Frequency" sortKey="frequency" state={sort} onChange={setSort} defaultSort={DEFAULT_PLANS_SORT} testIdPrefix="plans-sort" className="w-[18%]" />
@@ -1036,7 +1036,7 @@ function PlansTab({
                             {tpl.title}
                           </span>
                           {!isPm && (
-                            <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-slate-300 text-slate-600 shrink-0">
+                            <Badge variant="outline" className="text-label px-1.5 py-0 border-slate-300 text-slate-600 shrink-0">
                               Recurring
                             </Badge>
                           )}
@@ -1052,7 +1052,7 @@ function PlansTab({
                       </TableCell>
                       <TableCell className="whitespace-nowrap">
                         <span
-                          className={`text-sm ${
+                          className={`text-row ${
                             nextDue.isOverdue
                               ? "text-red-700 font-semibold"
                               : nextDue.muted
@@ -1069,7 +1069,7 @@ function PlansTab({
                 })}
                 {sortedFiltered.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center py-8 text-sm text-muted-foreground">
+                    <TableCell colSpan={5} className="text-center py-8 text-row text-muted-foreground">
                       No plans match your filters.
                     </TableCell>
                   </TableRow>
@@ -1166,7 +1166,7 @@ function TemplatesTab() {
           <Plus className="mr-2 h-4 w-4" />New Template
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground">
+      <p className="text-caption text-muted-foreground">
         Reusable presets for maintenance plans. Templates prefill the new-plan wizard with default content.
       </p>
 
@@ -1182,8 +1182,8 @@ function TemplatesTab() {
               <FileBox className="h-7 w-7 text-violet-600" />
             </div>
             <div className="space-y-1">
-              <p className="text-base font-semibold text-slate-900">No templates yet</p>
-              <p className="text-sm text-slate-500 max-w-sm">Create a template to prefill plan content with one click — useful when you bill the same maintenance package to multiple clients.</p>
+              <p className="text-body font-semibold text-slate-900">No templates yet</p>
+              <p className="text-row text-slate-500 max-w-sm">Create a template to prefill plan content with one click — useful when you bill the same maintenance package to multiple clients.</p>
             </div>
             <Button onClick={() => setLocation("/pm/templates/new")}>
               <Plus className="mr-2 h-4 w-4" />Create First Template
@@ -1197,7 +1197,7 @@ function TemplatesTab() {
               Delete). Same width contract as the other two tables. */}
           <Table className="table-fixed w-full">
             <TableHeader>
-              <TableRow className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 bg-slate-50/80 dark:bg-gray-900/50 hover:bg-slate-50/80">
+              <TableRow className="text-helper font-semibold uppercase tracking-wide text-slate-500 bg-slate-50/80 dark:bg-gray-900/50 hover:bg-slate-50/80">
                 <SortableHeader label="Template Name"   sortKey="name"      state={sort} onChange={setSort} defaultSort={DEFAULT_TEMPLATES_SORT} testIdPrefix="templates-sort" className="w-[22%]" />
                 <SortableHeader label="Summary"         sortKey="summary"   state={sort} onChange={setSort} defaultSort={DEFAULT_TEMPLATES_SORT} testIdPrefix="templates-sort" className="w-[30%]" />
                 <SortableHeader label="Frequency"       sortKey="frequency" state={sort} onChange={setSort} defaultSort={DEFAULT_TEMPLATES_SORT} testIdPrefix="templates-sort" className="w-[18%]" />
@@ -1263,7 +1263,7 @@ function TemplatesTab() {
               })}
               {sortedFiltered.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-sm text-muted-foreground">
+                  <TableCell colSpan={5} className="text-center py-8 text-row text-muted-foreground">
                     No templates match your search.
                   </TableCell>
                 </TableRow>
@@ -1413,13 +1413,13 @@ export default function PMWorkspacePage() {
   }, [tabParam]);
 
   return (
-    <div className="min-h-screen bg-[#F4F8F4]" data-testid="pm-workspace-page">
+    <div className="min-h-screen bg-app-bg" data-testid="pm-workspace-page">
       <div className="p-6 space-y-5">
         {/* Header */}
         <div className="flex items-start justify-between gap-3 flex-wrap">
           <div>
-            <h1 className="text-2xl font-semibold text-slate-900">Maintenance Plans</h1>
-            <p className="text-sm text-slate-500 mt-0.5">
+            <h1 className="text-page-title font-semibold text-slate-900">Maintenance Plans</h1>
+            <p className="text-row text-slate-500 mt-0.5">
               Create service plans, schedule recurring work, and generate jobs.
             </p>
           </div>
@@ -1456,9 +1456,9 @@ export default function PMWorkspacePage() {
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <div className="border-b border-slate-200 bg-slate-50/60 px-3 pt-3">
               <TabsList className="h-auto p-1 bg-white border border-slate-200 shadow-sm">
-                <TabsTrigger value="work_due" className="px-4 py-1.5 text-sm" data-testid="tab-work-due">Work Due</TabsTrigger>
-                <TabsTrigger value="plans" className="px-4 py-1.5 text-sm" data-testid="tab-plans">Plans</TabsTrigger>
-                <TabsTrigger value="templates" className="px-4 py-1.5 text-sm" data-testid="tab-templates">Templates</TabsTrigger>
+                <TabsTrigger value="work_due" className="px-4 py-1.5 text-row" data-testid="tab-work-due">Work Due</TabsTrigger>
+                <TabsTrigger value="plans" className="px-4 py-1.5 text-row" data-testid="tab-plans">Plans</TabsTrigger>
+                <TabsTrigger value="templates" className="px-4 py-1.5 text-row" data-testid="tab-templates">Templates</TabsTrigger>
               </TabsList>
             </div>
 

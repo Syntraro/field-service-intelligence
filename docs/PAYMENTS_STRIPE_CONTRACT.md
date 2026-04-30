@@ -20,14 +20,22 @@ All columns on `payments` that relate to provider ownership are
 | Column | Manual row | QBO-synced row | Stripe-synced row |
 |---|---|---|---|
 | `providerSource` | `'manual'` (default) | `'qbo'` (backfilled) | `'stripe'` (set by Stripe writer) |
-| `providerEventId` | `NULL` | `NULL` | Stripe event id (`evt_...`) — set once on first webhook insert |
+| `providerEventId` | `NULL` | `NULL` | Stripe event id (`evt_...`) on payment rows; Stripe refund id (`re_...`) on refund rows — set once on first webhook insert |
 | `reference` | free-text (cheque number, etc.) | free-text | Stripe object id (`ch_...` for payment row, `re_...` for refund row) |
 | `qboPaymentId` | `NULL` | QBO `Payment.Id` / `RefundReceipt.Id` | `NULL` |
 | `qboSyncStatus` | `NOT_SYNCED` | `SYNCED` / `PENDING` / `ERROR` | `NOT_SYNCED` until QBO pass-through ships |
 | `amount` | free | set by QBO | set by Stripe event payload |
-| `method` | free enum | free enum | `'card'` for payment, `'card_refund'` for refund |
+| `method` | free enum | free enum | `'credit'` on both payment and refund rows (sole canonical value the Stripe writer emits — keeps the `paymentMethodEnum` allowlist intact and lets manual UI surfaces render the row with the same icon as a credit-card payment) |
 | `paymentType` | `'payment'` (default) | `'payment'` | `'payment'` for charge, `'refund'` for refund |
 | `parentPaymentId` | null for payments; non-null for refunds/reversals | same | null for charges; non-null for refunds pointing at the charge row |
+
+> **Drift note (2026-04-29):** earlier drafts of this table specified
+> `'card'` / `'card_refund'` for the Stripe `method` column. The
+> canonical writer (`paymentApplicationService.handlePaymentSucceeded` /
+> `handleRefundCreated`) emits `'credit'` on both rows, and
+> `paymentMethodEnum` does not include `'card_refund'`. The table above
+> reflects what code actually writes; do not reintroduce `'card_refund'`
+> without first extending the enum and the Zod validators.
 
 `providerSource` and `providerEventId` are both checked by the canonical
 predicate `isProviderLinked(row)` in `server/lib/paymentPredicates.ts`.

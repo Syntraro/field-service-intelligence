@@ -1286,7 +1286,7 @@ export default function DispatchPreview() {
   // ── Error state ──
   if (error) {
     return (
-      <div className="flex h-full items-center justify-center bg-[#F4F8F4]">
+      <div className="flex h-full items-center justify-center bg-app-bg">
         <div className="text-center">
           <AlertCircle className="mx-auto h-8 w-8 text-red-400 mb-2" />
           <p className="text-sm font-medium text-foreground">Failed to load dispatch data</p>
@@ -1409,7 +1409,7 @@ export default function DispatchPreview() {
       onDragMove={handleDragMove}
       onDragEnd={handleDragEnd}
     >
-      <div className="flex h-full flex-col bg-[#F4F8F4]">
+      <div className="flex h-full flex-col bg-app-bg">
         {/* Header with view toggle */}
         <DispatchBoardHeader
           selectedDate={selectedDate}

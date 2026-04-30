@@ -34,7 +34,7 @@ export default function PortalLayout({ children }: PortalLayoutProps) {
   ];
 
   return (
-    <div className="flex flex-col min-h-screen bg-[#F4F8F4]">
+    <div className="flex flex-col min-h-screen bg-app-bg">
       {/* ── Header ─────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-sm">
         <div className="flex items-center justify-between gap-3 px-4 h-16 max-w-3xl mx-auto">

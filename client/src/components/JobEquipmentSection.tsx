@@ -215,7 +215,14 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
           </button>
         </CollapsibleTrigger>
         <CollapsibleContent>
-          <div className="border-t border-slate-200 px-4 pb-4 pt-3">
+          {/* 2026-04-29 final polish: body padding tightened from
+              `px-4 pb-4 pt-3` → `px-3 pb-3 pt-1` to match the Notes
+              embedded body density. Per-row padding reduced from
+              `px-4 py-3` → `px-3 py-2`. Make/Model/S/N collapsed onto
+              one inline meta line ("Model: X · S/N: Y") instead of
+              three stacked rows. Click-to-open detail and trash-to-
+              remove behavior preserved. */}
+          <div className="border-t border-slate-200 px-3 pb-3 pt-1">
             {!locationId ? (
               <div className="text-center py-4 text-muted-foreground">
                 <Info className="h-6 w-6 mx-auto mb-2 opacity-50" />
@@ -228,12 +235,20 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
                 <p className="text-xs mt-1">Use the + button to link or create equipment.</p>
               </div>
             ) : (
-              <div className="space-y-2">
+              <div className="divide-y divide-slate-200 -mx-3">
                 {jobEquipment.map(je => {
                   const eq = je.equipment;
+                  const metaParts: string[] = [];
+                  if (eq?.manufacturer) metaParts.push(`Make: ${eq.manufacturer}`);
+                  if (eq?.modelNumber) metaParts.push(`Model: ${eq.modelNumber}`);
+                  if (eq?.serialNumber) metaParts.push(`S/N: ${eq.serialNumber}`);
                   return (
-                    <div key={je.id} className="rounded-md border p-3 cursor-pointer hover:bg-muted/30 transition-colors" data-testid={`row-job-equipment-${je.id}`}
-                      onClick={() => eq && setDetailEquipment(eq)}>
+                    <div
+                      key={je.id}
+                      className="px-3 py-2 cursor-pointer hover:bg-muted/30 transition-colors"
+                      data-testid={`row-job-equipment-${je.id}`}
+                      onClick={() => eq && setDetailEquipment(eq)}
+                    >
                       {/* Primary row: name + type badge + remove */}
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 min-w-0">
@@ -256,13 +271,15 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
                       </div>
-                      {/* Secondary meta: only render fields that exist */}
-                      {(eq?.manufacturer || eq?.modelNumber || eq?.serialNumber || je.notes) && (
-                        <div className="mt-1 pl-[22px] text-xs text-muted-foreground space-y-0.5">
-                          {eq?.manufacturer && <div>Make: {eq.manufacturer}</div>}
-                          {eq?.modelNumber && <div>Model: {eq.modelNumber}</div>}
-                          {eq?.serialNumber && <div>S/N: {eq.serialNumber}</div>}
-                          {je.notes && <div className="text-foreground/70">{je.notes}</div>}
+                      {/* Secondary meta: collapsed onto a single line. */}
+                      {(metaParts.length > 0 || je.notes) && (
+                        <div className="mt-0.5 pl-[22px] text-xs text-muted-foreground">
+                          {metaParts.length > 0 && (
+                            <div className="truncate">{metaParts.join(" · ")}</div>
+                          )}
+                          {je.notes && (
+                            <div className="text-foreground/70 truncate">{je.notes}</div>
+                          )}
                         </div>
                       )}
                       {/* Catalog items per equipment */}

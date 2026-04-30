@@ -105,7 +105,7 @@ export class ItemRepository extends BaseRepository {
     companyId: string,
     userId: string,
     itemData: any,
-  ): Promise<Item> {
+  ): Promise<Item & { _matched?: boolean }> {
     const rawName = typeof itemData?.name === "string" ? itemData.name.trim() : "";
     const type = typeof itemData?.type === "string" ? itemData.type : null;
     if (!rawName) {
@@ -115,15 +115,20 @@ export class ItemRepository extends BaseRepository {
       throw new Error("Item type is required");
     }
 
-    // Case-insensitive lookup against the canonical natural key. Includes
-    // soft-deleted rows so a returning name doesn't bypass the unique index.
+    // 2026-04-29: Type-AGNOSTIC dedupe (was type-scoped on (companyId, type,
+    // lower(name)) before this change). Per UX requirement: a Product
+    // "Thermostat" and a Service "Thermostat" must NOT coexist. The natural
+    // key is now (companyId, lower(trim(name))) regardless of type. If a
+    // match is found across any type, return it as-is and flag `_matched`
+    // so the route handler / client can show "Reusing existing item"
+    // instead of "Created". Includes soft-deleted rows so a returning
+    // name doesn't bypass the unique index.
     const existing = await db
       .select()
       .from(items)
       .where(
         and(
           eq(items.companyId, companyId),
-          eq(items.type, type),
           sql`lower(${items.name}) = lower(${rawName})`,
         ),
       )
@@ -132,18 +137,19 @@ export class ItemRepository extends BaseRepository {
     if (existing[0]) {
       const row = existing[0];
       const isLive = row.isActive && row.deletedAt === null;
-      if (isLive) return row;
+      if (isLive) return { ...row, _matched: true };
       // Reactivate the archived row so it's pickable from selectors again.
       const [reactivated] = await db
         .update(items)
         .set({ isActive: true, deletedAt: null, updatedAt: new Date() })
         .where(eq(items.id, row.id))
         .returning();
-      return reactivated;
+      return { ...reactivated, _matched: true };
     }
 
     // No match — fall through to the canonical insert with auto-priced unitPrice.
-    return this.createItem(companyId, userId, { ...itemData, name: rawName });
+    const created = await this.createItem(companyId, userId, { ...itemData, name: rawName });
+    return { ...created, _matched: false };
   }
 
   /**
@@ -159,6 +165,40 @@ export class ItemRepository extends BaseRepository {
       const cost = parseFloat(String(patch.cost));
       const markup = parseFloat(String(patch.markupPercent));
       patch.unitPrice = (cost * (1 + markup / 100)).toFixed(2);
+    }
+
+    // 2026-04-29: Rename-conflict guard. If the patch renames the item,
+    // verify no other ACTIVE row in the tenant already owns the new
+    // (case-insensitive, trimmed) name. The DB unique index would also
+    // catch this on commit, but we throw a typed error here so the
+    // route handler can return a clean 409 instead of a raw constraint
+    // violation. Type-agnostic per the same dedupe rule used in
+    // createOrGet().
+    if (typeof patch.name === "string") {
+      const newName = patch.name.trim();
+      if (newName.length === 0) {
+        throw new Error("Item name cannot be empty");
+      }
+      const conflict = await db
+        .select({ id: items.id })
+        .from(items)
+        .where(
+          and(
+            eq(items.companyId, companyId),
+            sql`lower(${items.name}) = lower(${newName})`,
+            sql`${items.id} != ${itemId}`,
+            sql`${items.deletedAt} is null`,
+            eq(items.isActive, true),
+          ),
+        )
+        .limit(1);
+      if (conflict[0]) {
+        const err: any = new Error(`An item named "${newName}" already exists.`);
+        err.code = "ITEM_NAME_CONFLICT";
+        err.statusCode = 409;
+        throw err;
+      }
+      patch.name = newName;
     }
 
     const rows = await db

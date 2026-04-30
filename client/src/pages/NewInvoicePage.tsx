@@ -50,7 +50,7 @@ export default function NewInvoicePage() {
   });
 
   return (
-    <div className="min-h-screen bg-[#F4F8F4]">
+    <div className="min-h-screen bg-app-bg">
       <div className="p-6 max-w-lg mx-auto space-y-6">
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="sm" onClick={() => setLocation("/invoices")}>

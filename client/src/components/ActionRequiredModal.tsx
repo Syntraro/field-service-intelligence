@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -183,11 +184,13 @@ export function ActionRequiredModal({
             {/* Next Action Date (optional) */}
             <div className="space-y-2">
               <Label htmlFor="nextActionDate">Next Action Date (optional)</Label>
-              <Input
+              <CanonicalDatePicker
                 id="nextActionDate"
-                type="date"
                 value={nextActionDate}
-                onChange={(e) => setNextActionDate(e.target.value)}
+                onChange={(next) => setNextActionDate(next ?? "")}
+                placeholder="Optional"
+                clearable
+                className="w-full h-9 text-sm"
                 data-testid="input-next-action-date"
               />
             </div>

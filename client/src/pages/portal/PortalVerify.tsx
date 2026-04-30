@@ -61,7 +61,7 @@ export default function PortalVerify() {
   }, [search, setLocation]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#F4F8F4] px-4">
+    <div className="min-h-screen flex items-center justify-center bg-app-bg px-4">
       <Card className="w-full max-w-md">
         <CardContent className="flex flex-col items-center gap-4 py-10 text-center">
           {error ? (

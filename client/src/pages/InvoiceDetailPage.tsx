@@ -1,16 +1,13 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef, Fragment, type ReactNode } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, useLocation, Link } from "wouter";
 import { format } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { getInvoiceStatusBadge } from "@/lib/statusBadges";
 import { getClientDisplayName } from "@shared/clientDisplayName";
 import { useToast } from "@/hooks/use-toast";
 import {
-  Send, Plus, DollarSign, Trash2,
-  FileText, GripVertical, Check, X,
-  MessageSquare, ChevronDown, ChevronRight, Settings,
-  Percent, Tag, AlertTriangle, Pencil
+  Plus, DollarSign, Trash2, GripVertical, X,
+  ChevronDown, Percent, Tag, Pencil, MoreHorizontal,
 } from "lucide-react";
 import {
   DndContext,
@@ -31,18 +28,15 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ReferenceFieldsSection } from "@/components/shared/ReferenceFieldsSection";
 import JobNotesSection from "@/components/JobNotesSection";
 import { InvoiceCompositionDialog } from "@/components/InvoiceCompositionDialog";
 import { PaymentHistoryCard } from "@/components/invoice/PaymentHistoryCard";
-import { InvoiceTimelineCard } from "@/components/invoice/InvoiceTimelineCard";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -66,24 +60,35 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { Invoice, InvoiceLine, Payment, Client, CustomerCompany, Job } from "@shared/schema";
-import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
+// `Invoice` import retained — still used on the InvoiceDetails DTO above.
+// 2026-04-29 (Phase 1 canonical extraction): The product/service search
+// helpers + canonical `catalogItemToDraft` / `blankDraft` /
+// `formatMoney` / `productOptionToCatalogItem` / `CreateOrSelectField`
+// are now consumed entirely by `<LineItemsCard>` / `<LineItemRow>` /
+// `<AddLineItemForm>` / `useLineItemsDrafts`. The page only needs the
+// adapter-level pieces below.
 import {
-  useProductSearch, getProductKey, getProductLabel, getProductDescription,
-  productOptionToCatalogItem,
+  normalizeProductRow,
   type ProductOption,
 } from "@/lib/entities/productEntity";
+import { AddProductModal } from "@/components/PartsBillingCard";
 import {
-  type LineItemDraft,
-  parseMoney,
-  formatMoney,
-} from "@shared/lineItem";
+  LineItemsCard,
+  useLineItemsDrafts,
+  type LineItemsAdapter,
+} from "@/components/line-items";
+import { type LineItemDraft, parseMoney } from "@shared/lineItem";
 import {
-  catalogItemToDraft,
-  blankDraft,
   hydrateDraft,
   draftToInvoiceLinePayload,
 } from "@/lib/entities/lineItemMapper";
-import { InvoiceHeaderCard } from "@/components/InvoiceHeaderCard";
+// 2026-04-27 Invoice Detail redesign: `InvoiceHeaderCard` was replaced by
+// an in-page `InvoiceMetaCard` (identity card with status pill + action
+// cluster in the chrome). A separate sticky `InvoiceCommandBar` was tried
+// briefly but folded into the meta card per the canonical Studio reference
+// — the meta card now carries the chrome at the top of its body. The
+// earlier `InvoiceStatusBanner` was also removed because it duplicated
+// information the status pill already conveys.
 // 2026-04-19 Reminders UI refactor — replaced the full-width
 // InvoiceRemindersCard with a compact header dropdown.
 import { InvoiceRemindersButton } from "@/components/invoice/InvoiceRemindersButton";
@@ -93,17 +98,22 @@ import { SendInvoiceModal } from "@/components/communication/SendInvoiceModal";
 // 2026-04-19 Portal activation: office-side CTAs for the customer portal.
 import { SendPaymentLinkDialog } from "@/components/portal/SendPaymentLinkDialog";
 import { buildPortalInvoiceUrl } from "@/lib/portalUrls";
+// 2026-04-29 Stripe completion: staff card-take + refund surfaces. Both
+// dialogs delegate to the canonical paymentApplicationService via the
+// existing checkout / refund routes; no new backend writes.
+import { StaffTakeCardDialog } from "@/components/invoice/StaffTakeCardDialog";
+import { RefundPaymentDialog } from "@/components/invoice/RefundPaymentDialog";
+import { computeAlreadyOffset } from "@shared/paymentRefundability";
 // 2026-04-21 Phase 2 canonical policy architecture: portal gating reads
 // through the canonical entitlement resolver.
 import { useEntitlements } from "@/hooks/useEntitlements";
-// 2026-04-14: DeliveryStatusCard retired from this page; send/viewed
-// metadata now lives inline in `InvoiceHeaderCard`'s metadata table.
-import { ActivityCard } from "@/components/activity/ActivityCard";
+// 2026-04-27: ActivityCard removed in favour of the canonical
+// InvoiceTimelineCard, which is invoice-specific and assembles the same
+// data without the cross-entity overhead.
 import { ConfirmVoidModal } from "@/components/invoice/ConfirmVoidModal";
 import { QboSyncBanner, isQboSynced, isBillingLocked } from "@/components/invoice/QboSyncBanner";
 import { QboOverrideModal, useQboOverride } from "@/components/invoice/QboOverrideModal";
 import { formatCurrency } from "@/lib/formatters";
-import { DetailPageShell } from "@/components/layout/DetailPageShell";
 
 // JobNote interface removed — notes now rendered by canonical JobNotesSection component
 
@@ -149,341 +159,553 @@ function getBalanceColor(balance: string, isPastDue: boolean): string {
   return "text-amber-600";
 }
 
-
-// Add Line Item — compact inline form using canonical product selector
-
-// 2026-04-09 (P9-P10 Phase A): The five separate state vars (`desc`, `qty`,
-// `price`, `selectedProduct`, `productCost`) have been collapsed into a single
-// canonical `LineItemDraft`. Selection runs through `catalogItemToDraft` and
-// the parent's `onAdd` callback now receives a `LineItemDraft` directly. The
-// parent mutation projects via `draftToInvoiceLinePayload`.
-//
-// Add Line Item — table-row-based editor matching PartsBillingCard add-row pattern
-function AddLineItemRow({ onAdd, isPending, onCancel }: {
-  onAdd: (draft: LineItemDraft) => void;
-  isPending: boolean;
-  onCancel: () => void;
-}) {
-  const [draft, setDraft] = useState<LineItemDraft>(() => blankDraft());
-  const [productSearch, setProductSearch] = useState("");
-
-  // Canonical product search via productEntity
-  const { data: searchResults = [], isLoading: searchLoading } = useProductSearch(productSearch);
-
-  // Reconstruct the selector's "current value" from the canonical draft —
-  // no parallel `selectedProduct` state.
-  const selectedProduct: ProductOption | null = draft.productId
-    ? {
-        id: draft.productId,
-        name: draft.description,
-        type: draft.productType ?? "product",
-        unitPrice: draft.unitPrice,
-        cost: draft.unitCost,
-      }
-    : null;
-
-  const handleSubmit = () => {
-    if (!draft.description.trim() || !parseMoney(draft.unitPrice)) return;
-    // Compute line subtotal/total with canonical money helpers right before
-    // handing the draft to the parent. The server invoice-lines POST route
-    // will recompute tax server-side via batchApplyLineTax if a tax group is
-    // active, but the unitPrice/quantity-based subtotal must be set here.
-    const qty = parseMoney(draft.quantity);
-    const price = parseMoney(draft.unitPrice);
-    const subtotal = formatMoney(qty * price);
-    onAdd({
-      ...draft,
-      lineSubtotal: subtotal,
-      lineTotal: subtotal,
-    });
-    // Reset for the next add (parent also closes the row, but resetting
-    // ensures a clean state if it's reopened).
-    setDraft(blankDraft());
-    setProductSearch("");
-  };
-
-  const lineTotal = parseMoney(draft.quantity) * parseMoney(draft.unitPrice);
-
-  // Render as a table row matching PartsBillingCard edit-row pattern
-  return (
-    <tr className="border-b border-border/50 bg-primary/5" data-testid="add-line-item-form">
-      <td className="py-2.5 pr-2 align-top w-8" />
-      <td className="py-2.5 pr-3 align-top">
-        {/* Product/service search — canonical selector. The onChange callback
-            is intentionally inline (no named handleSelectProduct wrapper) so the
-            only catalog→draft mapping site is the canonical mapper itself. */}
-        <CreateOrSelectField<ProductOption>
-          label=""
-          compact
-          value={selectedProduct}
-          onChange={(product) => {
-            if (product) {
-              // Preserve the user's existing quantity on a late product swap.
-              setDraft(
-                catalogItemToDraft(productOptionToCatalogItem(product), {
-                  quantity: draft.quantity,
-                }),
-              );
-              setProductSearch("");
-            } else {
-              // Clear the catalog binding but keep what the user has typed.
-              setDraft({ ...draft, productId: null });
-            }
-          }}
-          searchResults={searchResults}
-          searchLoading={searchLoading}
-          searchText={productSearch}
-          onSearchTextChange={setProductSearch}
-          getKey={getProductKey}
-          getLabel={getProductLabel}
-          getDescription={getProductDescription}
-          placeholder="Search product / service..."
-        />
-
-        {/* Description / notes — matches PartsBillingCard notes textarea placement */}
-        <Textarea
-          className="mt-1.5 text-xs min-h-[2.25rem] resize-y"
-          rows={2}
-          placeholder="Description / notes..."
-          value={draft.description}
-          onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-          data-testid="input-new-line-desc"
-        />
-
-        {/* Save/Cancel buttons — matches PartsBillingCard button group */}
-        <div className="flex items-center gap-2 mt-2">
-          <Button
-            size="sm"
-            onClick={handleSubmit}
-            disabled={isPending || !draft.description.trim() || !parseMoney(draft.unitPrice)}
-            className="h-7 text-xs"
-            data-testid="button-confirm-add-line"
-          >
-            <Check className="h-3 w-3 mr-1" />
-            Save
-          </Button>
-          <Button variant="outline" size="sm" onClick={onCancel} className="h-7 text-xs">
-            <X className="h-3 w-3 mr-1" />
-            Cancel
-          </Button>
-        </div>
-      </td>
-      <td className="py-2.5 px-3 align-top">
-        <Input
-          type="number"
-          min={0}
-          className="text-xs text-right w-full"
-          value={draft.quantity}
-          onChange={(e) => setDraft({ ...draft, quantity: e.target.value || "1" })}
-          step="0.01"
-          data-testid="input-new-line-qty"
-        />
-      </td>
-      <td className="py-2.5 px-3 align-top">
-        <div className="relative">
-          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">$</span>
-          <Input
-            type="number"
-            min={0}
-            step="0.01"
-            placeholder="0.00"
-            className="text-xs text-right w-full pl-5 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-            value={draft.unitPrice}
-            onChange={(e) => setDraft({ ...draft, unitPrice: e.target.value })}
-            data-testid="input-new-line-price"
-          />
-        </div>
-      </td>
-      <td className="py-2.5 px-3 align-top" />
-      <td className="py-2.5 pl-3 pr-1 align-top text-right text-xs font-semibold">
-        {parseMoney(draft.unitPrice) ? formatCurrency(lineTotal) : ""}
-      </td>
-    </tr>
-  );
+// 2026-04-28: HTML <input type="date"> requires YYYY-MM-DD. The API
+// returns issueDate/dueDate as ISO strings (`date` column → "YYYY-MM-DD")
+// or `Date` objects depending on the path. Coerce defensively so the
+// header edit inputs never receive a malformed value.
+function toDateInputValue(value: string | Date | null | undefined): string {
+  if (!value) return "";
+  if (value instanceof Date) return format(value, "yyyy-MM-dd");
+  if (/^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10);
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : format(parsed, "yyyy-MM-dd");
 }
 
-// Sortable line item row — matches PartsBillingCard row structure
-//
-// 2026-04-09 (P9-P10 Phase A): The three edit state vars (`editDesc`,
-// `editQty`, `editPrice`) have been collapsed into a single canonical
-// `LineItemDraft`. The draft is hydrated from the persisted line via
-// `hydrateDraft(line)` on entering edit mode (synchronously, in the click
-// handler, so the edit row never flashes stale values). On save, the parent
-// receives the full canonical draft and projects it via
-// `draftToInvoiceLinePayload`. unitCost / taxRate / taxAmount survive the
-// edit because they are carried through on the draft from `hydrateDraft`,
-// then sent back unchanged in the PATCH payload — preserving server-side
-// fields the user didn't touch.
-function SortableLineRow({ line, isEditing, onEdit, onDelete }: {
-  line: InvoiceLine;
-  isEditing: boolean;
-  onEdit?: (lineId: string, draft: LineItemDraft) => void;
-  onDelete?: (lineId: string) => void;
-}) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: line.id });
-
-  const [inlineEdit, setInlineEdit] = useState(false);
-  const [editDraft, setEditDraft] = useState<LineItemDraft>(() => hydrateDraft(line as unknown as Record<string, unknown>));
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-  };
-
-  // Synchronously hydrate a fresh draft from the current line whenever the
-  // user enters edit mode. Batched with `setInlineEdit` so the edit row
-  // renders with the up-to-date line values immediately.
-  const handleEnterEdit = () => {
-    setEditDraft(hydrateDraft(line as unknown as Record<string, unknown>));
-    setInlineEdit(true);
-  };
-
-  const handleSaveEdit = () => {
-    // Recompute line subtotal/total client-side because the PATCH route does
-    // not recompute on update. unitCost, taxRate, taxAmount survive untouched
-    // from the hydrated draft.
-    const qty = parseMoney(editDraft.quantity);
-    const price = parseMoney(editDraft.unitPrice);
-    const subtotal = formatMoney(qty * price);
-    onEdit?.(line.id, {
-      ...editDraft,
-      lineSubtotal: subtotal,
-      lineTotal: subtotal,
-    });
-    setInlineEdit(false);
-  };
-
-  const handleCancelEdit = () => {
-    setEditDraft(hydrateDraft(line as unknown as Record<string, unknown>));
-    setInlineEdit(false);
-  };
-
-  // Edit mode — matches PartsBillingCard edit row: product search in desc cell,
-  // save/cancel/delete buttons below, numeric inputs in aligned columns
-  if (isEditing && inlineEdit) {
-    return (
-      <tr ref={setNodeRef} style={style} className="border-b border-border/50 bg-primary/5" data-testid={`row-line-item-edit-${line.id}`}>
-        <td className="py-2.5 pr-2 align-top w-8">
-          <div className="cursor-grab touch-none text-muted-foreground hover:text-foreground" {...attributes} {...listeners} data-testid={`drag-handle-${line.id}`}>
-            <GripVertical className="h-4 w-4" />
-          </div>
-        </td>
-        <td className="py-2.5 pr-3 align-top">
-          <Input
-            value={editDraft.description}
-            onChange={(e) => setEditDraft({ ...editDraft, description: e.target.value })}
-            className="text-xs"
-            placeholder="Description"
-            data-testid={`input-edit-desc-${line.id}`}
-          />
-          <div className="flex items-center gap-2 mt-2">
-            <Button size="sm" onClick={handleSaveEdit} className="h-7 text-xs" data-testid={`button-save-line-${line.id}`}>
-              <Check className="h-3 w-3 mr-1" />
-              Save
-            </Button>
-            <Button variant="outline" size="sm" onClick={handleCancelEdit} className="h-7 text-xs">
-              <X className="h-3 w-3 mr-1" />
-              Cancel
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => onDelete?.(line.id)} className="h-7 text-xs text-destructive hover:text-destructive" data-testid={`button-delete-line-${line.id}`}>
-              <Trash2 className="h-3 w-3 mr-1" />
-              Delete
-            </Button>
-          </div>
-        </td>
-        <td className="py-2.5 px-3 align-top">
-          <Input
-            type="number"
-            value={editDraft.quantity}
-            onChange={(e) => setEditDraft({ ...editDraft, quantity: e.target.value })}
-            className="text-xs text-right w-full"
-            step="0.01"
-            min="0"
-            data-testid={`input-edit-qty-${line.id}`}
-          />
-        </td>
-        <td className="py-2.5 px-3 align-top">
-          <div className="relative">
-            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">$</span>
-            <Input
-              type="number"
-              value={editDraft.unitPrice}
-              onChange={(e) => setEditDraft({ ...editDraft, unitPrice: e.target.value })}
-              className="text-xs text-right w-full pl-5 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-              step="0.01"
-              min="0"
-              placeholder="0.00"
-              data-testid={`input-edit-price-${line.id}`}
-            />
-          </div>
-        </td>
-        <td className="py-2.5 px-3 align-top" />
-        <td className="py-2.5 pl-3 pr-1 align-top text-right text-xs font-semibold">
-          {formatCurrency(parseMoney(editDraft.quantity) * parseMoney(editDraft.unitPrice))}
-        </td>
-      </tr>
-    );
-  }
-
-  return (
-    <tr
-      ref={setNodeRef}
-      style={style}
-      data-testid={`row-line-item-${line.id}`}
-      className={`border-b border-border/50 hover:bg-muted/50 ${isEditing ? "cursor-pointer" : ""} ${isDragging ? "bg-muted" : ""}`}
-      onClick={isEditing ? handleEnterEdit : undefined}
-    >
-      <td className="py-3 pr-2 align-top w-8">
-        {isEditing && (
-          <div
-            className="cursor-grab touch-none text-muted-foreground hover:text-foreground"
-            {...attributes}
-            {...listeners}
-            onClick={(e) => e.stopPropagation()}
-            role="button"
-            tabIndex={0}
-            data-testid={`drag-handle-${line.id}`}
-          >
-            <GripVertical className="h-4 w-4" />
-          </div>
-        )}
-      </td>
-      <td className="py-3 pr-3 align-top">
-        <div className="flex items-center gap-2">
-          <div className="text-xs font-medium">
-            {line.description}
-          </div>
-        </div>
-        {line.date && (
-          <div className="mt-0.5 text-xs font-normal text-muted-foreground whitespace-pre-line">
-            {format(new Date(line.date), "MMM d, yyyy")}
-          </div>
-        )}
-      </td>
-      <td className="py-3 px-3 text-right align-top text-xs">{line.quantity}</td>
-      <td className="py-3 px-3 text-right align-top text-xs">{formatCurrency(line.unitPrice)}</td>
-      <td className="py-3 px-3 text-center align-top text-xs text-muted-foreground">
-        {parseFloat(line.taxRate) > 0 ? "Yes" : "No"}
-      </td>
-      <td className="py-3 pl-3 pr-1 text-right align-top text-xs font-semibold">
-        {formatCurrency(line.lineSubtotal)}
-      </td>
-    </tr>
-  );
-}
+// 2026-04-29 (Phase 1 canonical extraction): The previous local
+// AddLineItemRow + SortableLineRowEditCells + SortableLineRow
+// components were retired and replaced by the canonical
+// `<LineItemsCard>` + `<LineItemRow>` + `<AddLineItemForm>` +
+// `useLineItemsDrafts` set in `client/src/components/line-items/`.
+// The invoice adapter (saveAll / validateEntry / requestCreateProduct
+// / onReorder / hydrateDraft / resolveProduct) lives inline near the
+// invoice page's mutations to keep the migration narrow.
 
 // Helper to validate UUID format
 function isValidUUID(str: string): boolean {
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   return uuidRegex.test(str);
+}
+
+// =============================================================================
+// 2026-04-27 Invoice Detail redesign — Studio-style command bar + 2-col layout.
+// Sub-components live local to the page so the data plumbing stays explicit.
+// Every visual slot is wired to existing schema OR shows a clean empty state
+// with a TODO pointing at the future field. No fake data, no schema additions.
+// =============================================================================
+
+const META_LABEL_CLASS = "text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500";
+const MONO = "font-mono tabular-nums";
+
+// 2026-04-28 — Mirror of FieldDTO returned by GET /api/reference-fields/entities/:type/:id.
+// Defined locally so the meta card can render reference fields inline without
+// importing the right-rail card's internal type. Source of truth: server/services/referenceFieldsService.ts.
+type ReferenceFieldDTO = {
+  definitionId: string;
+  label: string;
+  key: string;
+  type: string;
+  searchable: boolean;
+  active: boolean;
+  displayOrder: number;
+  textValue: string | null;
+};
+
+/** Status pill — warm-gray-on-tint palette mapped from the existing badge variant. */
+function StatusPill({ status, isPastDue }: { status: string; isPastDue: boolean }) {
+  // Map canonical invoice status (+ derived isPastDue) to the design's tones.
+  // Display label is the user-friendly form. `getInvoiceStatusBadge` is the
+  // canonical owner of label/variant; we re-derive here only for the dot+bg
+  // colors the design uses.
+  const tone = (() => {
+    if (isPastDue) return { label: "PAST DUE", bg: "bg-rose-100", text: "text-rose-700", dot: "bg-rose-600" };
+    switch (status) {
+      case "draft":           return { label: "Draft — not sent", bg: "bg-stone-200",  text: "text-stone-700",  dot: "bg-stone-500" };
+      case "awaiting_payment":
+      case "sent":            return { label: "AWAITING PAYMENT", bg: "bg-teal-50",    text: "text-teal-700",   dot: "bg-teal-600" };
+      case "partial_paid":    return { label: "PARTIALLY PAID",   bg: "bg-amber-50",   text: "text-amber-700",  dot: "bg-amber-600" };
+      case "paid":            return { label: "PAID IN FULL",     bg: "bg-emerald-50", text: "text-emerald-700",dot: "bg-emerald-600" };
+      case "voided":          return { label: "VOIDED",           bg: "bg-stone-200",  text: "text-stone-600",  dot: "bg-stone-500" };
+      default:                return { label: status.toUpperCase(),bg: "bg-stone-200", text: "text-stone-700",  dot: "bg-stone-500" };
+    }
+  })();
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold tracking-wide ${tone.bg} ${tone.text}`} data-testid="invoice-status-pill">
+      <span className={`h-1.5 w-1.5 rounded-full ${tone.dot}`} />
+      {tone.label}
+    </span>
+  );
+}
+
+/** Label inside the meta card. */
+function MetaLabel({ children }: { children: ReactNode }) {
+  return <div className={`${META_LABEL_CLASS} mb-1.5`}>{children}</div>;
+}
+
+/** Identity + meta card — the dominant card at the top of the invoice
+ *  workspace. Mirrors the canonical Studio reference: a chrome strip with
+ *  the status pill (left) and action cluster (right), then a 2-col body
+ *  with the customer / addresses on the left and a vertical key-value list
+ *  on the right. The chrome's actions are passed in by the caller so the
+ *  page keeps its handler scope. */
+function InvoiceMetaCard({
+  // Body data
+  customerName, customerCompanyId, billLine1, billLine2,
+  serviceAddress, locationName,
+  invoiceNumber, issueDate, dueDate, isPastDue, paymentTermsDays,
+  jobNumber, jobId,
+  // Chrome — `status` removed 2026-04-29: the status pill moved to the new
+  // top action bar above this card; this card's chrome is now just the
+  // edit-pencil affordance.
+  headerActions,
+  // 2026-04-28 — header inline edit
+  isEditing, draft, onDraftChange, onSave, onCancel, isSaving,
+  // 2026-04-28 — reference fields driven by canonical /api/reference-fields
+  referenceFields, referenceDraft, onReferenceDraftChange,
+  // 2026-04-29 (header cleanup pass): Job Description shares the meta
+  // card's edit lifecycle. The card no longer accepts independent
+  // "is editing description" / "save description" / "cancel description"
+  // props — clicking the single header pencil opens edit mode for the
+  // meta rows AND the description; the single Save/Cancel pair below
+  // the description commits or discards both. The parent only has to
+  // pass the description value, the live draft, and a draft setter.
+  jobDescription, jobDescriptionDraft, onChangeJobDescriptionDraft,
+}: {
+  customerName: string;
+  /** Optional canonical client id. When present, the H1 customer name
+   *  becomes a link to `/clients/:id`; otherwise plain text. */
+  customerCompanyId: string | null;
+  billLine1: string | null;
+  billLine2: string | null;
+  serviceAddress: StructuredAddress | null | undefined;
+  locationName: string;
+  invoiceNumber: string | null | undefined;
+  issueDate: string | Date | null | undefined;
+  dueDate: string | Date | null | undefined;
+  isPastDue: boolean;
+  paymentTermsDays: number | null | undefined;
+  jobNumber: string | null | undefined;
+  jobId: string | null;
+  headerActions: ReactNode;
+  isEditing: boolean;
+  draft: { invoiceNumber: string; issueDate: string; dueDate: string; paymentTermsDays: string } | null;
+  onDraftChange: (patch: Partial<{ invoiceNumber: string; issueDate: string; dueDate: string; paymentTermsDays: string }>) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  isSaving: boolean;
+  referenceFields: ReferenceFieldDTO[];
+  referenceDraft: Record<string, string>;
+  onReferenceDraftChange: (definitionId: string, value: string) => void;
+  jobDescription: string;
+  jobDescriptionDraft: string;
+  onChangeJobDescriptionDraft: (value: string) => void;
+}) {
+  const dash = <span className="text-slate-400">—</span>;
+  const fmtDate = (d: string | Date | null | undefined) =>
+    d ? format(new Date(d), "MMM d, yyyy") : dash;
+  const serviceCity = [serviceAddress?.city, serviceAddress?.province, serviceAddress?.postalCode].filter(Boolean).join(", ");
+  const editing = isEditing && draft != null;
+
+  // Compact edit-mode input — matches the read-mode value typography
+  // (text-xs, right-aligned) so swapping in/out of edit mode does not
+  // shift row height. 2026-04-29 (header cleanup pass): dropped the
+  // `font-mono` mixin so values render in the page's standard sans
+  // typography instead of monospace; the trailing decorative icons on
+  // Job # / Issued / Due / Terms were also removed in this pass.
+  const inputClass = "h-7 w-32 px-2 py-0 text-right text-xs";
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-card-border bg-card shadow-card" data-testid="card-invoice-meta">
+      {/* 2026-04-29: Status pill moved to the top action bar above this
+          card. The chrome row remains because the inline meta-card edit
+          pencil (a section-scoped affordance, distinct from the lifecycle
+          actions) lives here. */}
+      <div className="flex items-center justify-end gap-2 px-5 pt-3 pb-2">
+        {headerActions}
+      </div>
+
+      {/* Body — 2-col: identity / addresses on the left, meta list on the right */}
+      <div className="grid grid-cols-1 md:grid-cols-[1.2fr_1fr]">
+        <div className="px-5 pb-4 md:border-r border-card-border">
+          {/* 2026-04-28 — H1 mb tightened (was mb-4) so the address block
+              sits closer to the customer name. Font size kept at 3xl. */}
+          {/* 2026-04-29: Customer name links to its canonical client detail
+              page (`/clients/:id`) when the company id is known. Falls back to
+              plain text when the id is missing (e.g. legacy invoices without
+              a customerCompany row). The visual treatment keeps the existing
+              text style — link affordance is only the cursor + hover
+              underline. */}
+          <h1 className="m-0 mb-2 text-3xl font-bold tracking-tight text-slate-900" data-testid="meta-customer-name">
+            {customerCompanyId ? (
+              <Link
+                href={`/clients/${customerCompanyId}`}
+                className="hover:underline"
+                data-testid="link-customer-name"
+              >
+                {customerName || dash}
+              </Link>
+            ) : (
+              customerName || dash
+            )}
+          </h1>
+
+          {/* 2026-04-28 — Address text reduced to text-xs (12px) per
+              standard app body and label-to-value gap tightened. */}
+          <div>
+            <div className={`${META_LABEL_CLASS} mb-0.5`}>Billing Address</div>
+            <div className="text-xs text-slate-700">{billLine1 || dash}</div>
+            {billLine2 && <div className="text-xs text-slate-700">{billLine2}</div>}
+          </div>
+
+          <div className="my-2 border-t border-card-border" />
+
+          <div>
+            <div className={`${META_LABEL_CLASS} mb-0.5`}>Service Address</div>
+            <div className="text-xs font-semibold text-slate-900" data-testid="meta-service-location-name">{locationName || dash}</div>
+            {serviceAddress?.street && <div className="text-xs text-slate-700">{serviceAddress.street}</div>}
+            {serviceCity && <div className="text-xs text-slate-700">{serviceCity}</div>}
+          </div>
+        </div>
+
+        {/* Vertical field list with hairline row dividers */}
+        <div className="md:pl-0">
+          <MetaRow
+            label="Invoice #"
+            value={
+              editing ? (
+                <Input
+                  value={draft!.invoiceNumber}
+                  onChange={(e) => onDraftChange({ invoiceNumber: e.target.value })}
+                  className={inputClass}
+                  placeholder="INV-…"
+                  data-testid="input-meta-invoice-number"
+                />
+              ) : (
+                invoiceNumber || dash
+              )
+            }
+            testId="meta-invoice-number"
+          />
+          <MetaRow
+            label="Job #"
+            value={
+              jobNumber && jobId ? (
+                <Link
+                  href={`/jobs/${jobId}`}
+                  className="text-teal-600 hover:underline"
+                  data-testid="meta-job-number-link"
+                >
+                  {jobNumber}
+                </Link>
+              ) : (
+                jobNumber || dash
+              )
+            }
+            testId="meta-job-number"
+          />
+          <MetaRow
+            label="Issued"
+            value={
+              editing ? (
+                <CanonicalDatePicker
+                  value={draft!.issueDate}
+                  onChange={(next) => onDraftChange({ issueDate: next ?? "" })}
+                  className="h-8 text-xs"
+                  data-testid="input-meta-issue-date"
+                />
+              ) : (
+                fmtDate(issueDate)
+              )
+            }
+          />
+          <MetaRow
+            label="Due"
+            value={
+              editing ? (
+                <CanonicalDatePicker
+                  value={draft!.dueDate}
+                  onChange={(next) => onDraftChange({ dueDate: next ?? "" })}
+                  clearable
+                  placeholder="No due date"
+                  className="h-8 text-xs"
+                  data-testid="input-meta-due-date"
+                />
+              ) : (
+                fmtDate(dueDate)
+              )
+            }
+            accent={!editing && isPastDue}
+          />
+          {/* 2026-04-28: Terms is now the last fixed row. PO # was removed
+              (no canonical storage and never linked). The "Reference"
+              placeholder was replaced by the canonical reference-fields
+              rows below — read mode shows only populated fields, edit mode
+              shows every configured (active) definition. */}
+          {(() => {
+            const visibleRefs = editing
+              ? referenceFields.filter((f) => f.active || f.textValue)
+              : referenceFields.filter((f) => !!f.textValue);
+            const termsIsLast = !editing && visibleRefs.length === 0;
+            return (
+              <>
+                <MetaRow
+                  label="Terms"
+                  value={
+                    editing ? (
+                      <Input
+                        type="number"
+                        min={0}
+                        max={365}
+                        value={draft!.paymentTermsDays}
+                        onChange={(e) => onDraftChange({ paymentTermsDays: e.target.value })}
+                        className={`${inputClass} w-20`}
+                        placeholder="30"
+                        data-testid="input-meta-payment-terms"
+                      />
+                    ) : (
+                      paymentTermsDays != null ? `Net ${paymentTermsDays}` : dash
+                    )
+                  }
+                  last={termsIsLast}
+                />
+                {visibleRefs.map((f, idx) => {
+                  const isLast = idx === visibleRefs.length - 1;
+                  return (
+                    <MetaRow
+                      key={f.definitionId}
+                      label={f.label}
+                      value={
+                        editing ? (
+                          <Input
+                            value={referenceDraft[f.definitionId] ?? ""}
+                            onChange={(e) => onReferenceDraftChange(f.definitionId, e.target.value)}
+                            disabled={!f.active || isSaving}
+                            className={inputClass}
+                            placeholder={`Enter ${f.label.toLowerCase()}…`}
+                            data-testid={`input-meta-ref-${f.key}`}
+                          />
+                        ) : (
+                          f.textValue
+                        )
+                      }
+                      last={!editing && isLast}
+                      testId={`meta-ref-${f.key}`}
+                    />
+                  );
+                })}
+              </>
+            );
+          })()}
+        </div>
+      </div>
+
+      {/*
+        Job Description — 2026-04-29 (header cleanup pass): now shares
+        the meta card's edit lifecycle. The section's own pencil +
+        Save/Cancel pair were removed; the single header pencil opens
+        edit for both meta rows AND the description, and the unified
+        Save/Cancel pair below this section commits or discards both.
+
+        Three render states:
+          • Empty + not editing: label only ("Job description (optional)").
+            No placeholder text, no pencil — entry point is the header
+            pencil at the top of this card.
+          • Populated + not editing: label + description text below it.
+          • Editing: label + textarea. Save / Cancel sit in the unified
+            footer further down.
+      */}
+      {/*
+        Outer wrapper carries the horizontal inset (px-5) and the
+        compact mt-2 / pb-4 vertical rhythm so the description sits
+        snugly under the body grid above. The inner wrapper carries
+        the border — because its parent has px-5, the divider is
+        inset to the content column instead of running card-edge to
+        card-edge. Mirrors the Billing → Service Address inset
+        divider pattern further up the card (`my-2 border-t
+        border-card-border`). The `data-testid` stays on the outer
+        wrapper so existing test selectors keep working.
+
+        2026-04-29 (refinement): the entire section — wrapper,
+        divider, label, body — collapses to nothing when the
+        description is empty AND the header is not editing. Avoids
+        a label + divider with no payload underneath, which read as
+        visual noise on invoices that simply never used the
+        description field. While editing, the section always renders
+        so the user has a place to type.
+      */}
+      {(editing || jobDescription.trim().length > 0) && (
+        <div
+          className="mt-2 px-5 pb-4"
+          data-testid="card-invoice-description"
+        >
+          <div className="border-t border-card-border pt-2">
+            <h3 className="m-0 text-xs uppercase tracking-wide text-slate-500">
+              Job description (optional)
+            </h3>
+            {editing ? (
+              <Textarea
+                value={jobDescriptionDraft}
+                maxLength={600}
+                onChange={(e) => onChangeJobDescriptionDraft(e.target.value)}
+                placeholder="Describe the work performed for this invoice. This appears above the line items on the client's PDF."
+                className="mt-2 min-h-[88px] text-sm text-slate-900"
+                data-testid="textarea-invoice-description"
+              />
+            ) : (
+              <p
+                className="m-0 mt-2 whitespace-pre-wrap text-[13px] leading-5 text-slate-900"
+                data-testid="text-invoice-description"
+              >
+                {jobDescription}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/*
+        Unified Save / Cancel — saves the entire header card edit state
+        (meta rows + reference fields + job description) in one shot.
+        Outline Cancel + primary (green) Save per the cleanup spec, so
+        the action pair reads as primary affordances rather than blending
+        into the surrounding card chrome.
+      */}
+      {editing && (
+        <div className="flex items-center justify-end gap-2 border-t border-card-border px-5 py-3">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onCancel}
+            disabled={isSaving}
+            data-testid="button-meta-cancel"
+          >
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={onSave}
+            disabled={isSaving}
+            data-testid="button-meta-save"
+          >
+            {isSaving ? "Saving…" : "Save"}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A single label/value row in the meta card's right column.
+ *  2026-04-29 (header cleanup pass): dropped the `mono` and `icon`
+ *  props. Values now render in the page's standard sans typography
+ *  (no `font-mono`); the trailing decorative icon slot was removed
+ *  because Job # / Issued / Due / Terms no longer carry icons. The
+ *  `accent` flag is preserved for the past-due Due-date variant.
+ */
+function MetaRow({
+  label, value, accent, last, testId,
+}: {
+  label: string;
+  value: ReactNode;
+  accent?: boolean;
+  last?: boolean;
+  testId?: string;
+}) {
+  return (
+    <div className={`flex items-center justify-between gap-3 px-5 py-1.5 ${last ? "" : "border-b border-stone-100"}`}>
+      <span className="text-xs text-slate-500">{label}</span>
+      <span
+        className={`text-right text-xs ${accent ? "font-semibold text-rose-600" : "text-slate-900"}`}
+        data-testid={testId}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/** Section header used by the rail cards. */
+function CardSectionHeader({ title, count, badge, right }: { title: string; count?: number; badge?: ReactNode; right?: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between border-b border-card-border px-4 py-3">
+      <div className="flex items-center gap-2">
+        <h3 className={`m-0 ${META_LABEL_CLASS} tracking-[0.12em]`}>
+          {title}
+          {count != null && <span className="ml-2 font-medium normal-case tracking-normal text-slate-400">{count}</span>}
+        </h3>
+        {badge}
+      </div>
+      {right}
+    </div>
+  );
+}
+
+/** Group label for an invoice line group (services / parts / fees / discounts). */
+const LINE_TYPE_GROUPS: Array<{ kind: string; label: string }> = [
+  { kind: "service",  label: "Services" },
+  { kind: "material", label: "Parts & materials" },
+  { kind: "fee",      label: "Fees" },
+  { kind: "discount", label: "Discounts" },
+];
+// TODO: design grouped lines as Labour / Parts / Expenses. Our schema's
+// `invoice_lines.line_item_type` enum is service|material|fee|discount —
+// the closest semantic match. If we later want a tighter Labour split,
+// add an explicit `kind` column on invoice_lines and update grouping
+// here. No fake categorisation in this pass.
+
+/** Client visibility card (redesigned): always-on toggle list with on-count.
+ *  Wires the same six canonical visibility columns the legacy card wrote.
+ *
+ *  2026-04-29: Preview PDF action removed — the canonical Preview PDF
+ *  control now lives in the new top action header above the meta card.
+ *  The `onPreview` prop is dropped from the component contract entirely.
+ */
+function ClientVisibilityCardV2({
+  draft, server, onToggle, onSave, onReset, dirty, isSaving,
+}: {
+  draft: { showJobDescription: boolean; showLineItems: boolean; showQuantity: boolean; showUnitPrice: boolean; showLineTotals: boolean; showBalance: boolean };
+  server: typeof draft;
+  onToggle: (key: keyof typeof draft, value: boolean) => void;
+  onSave: () => void;
+  onReset: () => void;
+  dirty: boolean;
+  isSaving: boolean;
+}) {
+  // 2026-04-29 UI compact pass: per-row helper hints removed; rows now show
+  // label + toggle only.
+  const ROWS: Array<{ key: keyof typeof draft; label: string }> = [
+    { key: "showJobDescription", label: "Job description"     },
+    { key: "showLineItems",      label: "Line item breakdown" },
+    { key: "showQuantity",       label: "Quantities"          },
+    { key: "showUnitPrice",      label: "Unit prices"         },
+    { key: "showLineTotals",     label: "Line totals"         },
+    { key: "showBalance",        label: "Account balance"     },
+  ];
+  const onCount = ROWS.reduce((n, r) => n + (draft[r.key] ? 1 : 0), 0);
+  return (
+    <div className="overflow-hidden rounded-lg border border-card-border bg-card shadow-card" data-testid="card-invoice-client-visibility">
+      <CardSectionHeader title="Client visibility" count={onCount} />
+      <div>
+        {ROWS.map((r) => (
+          <label key={r.key} className="grid grid-cols-[1fr_auto] items-center gap-3 border-b border-stone-100 px-4 py-2 last:border-b-0">
+            <div className="min-w-0 text-[13px] font-medium text-slate-900">{r.label}</div>
+            <Switch
+              checked={draft[r.key]}
+              onCheckedChange={(v) => onToggle(r.key, v)}
+              data-testid={`switch-vis-${r.key}`}
+            />
+          </label>
+        ))}
+      </div>
+      {dirty && (
+        <div className="flex justify-end gap-2 border-t border-card-border px-4 py-2">
+          <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={onReset} disabled={isSaving}>Reset</Button>
+          <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onSave} disabled={isSaving} data-testid="button-save-vis-v2">
+            {isSaving ? "Saving..." : "Save"}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function InvoiceDetailPage() {
@@ -501,21 +723,129 @@ export default function InvoiceDetailPage() {
     );
   }
   
-  const [isEditing, setIsEditing] = useState(false);
+  // 2026-04-29: Section-scoped edit state. Replaces the previous page-level
+  // `isEditing` flag, which conflated the header meta card and the line-items
+  // table — clicking "Edit" on the header would also flip the line-items
+  // table into edit mode. Each editable card now owns its own toggle so
+  // entering / exiting edit on one card never affects another.
+  const [editingHeader, setEditingHeader] = useState(false);
+  const [editingClientMessage, setEditingClientMessage] = useState(false);
+
+  // 2026-04-29 (Phase 1): line-items state moved to the canonical
+  // `useLineItemsDrafts` hook. `editingLineItems` is now `lineDrafts.editing`,
+  // `savingLineItems` is `lineDrafts.saving`, and the entry shape +
+  // helpers (updateDraftAt / markDeleted / removeNewDraft / appendNew /
+  // selectProduct / setShowDescription / reorderLocal) all live in the
+  // hook. The invoice adapter (defined further down, near the
+  // mutations) provides saveAll / validateEntry / requestCreateProduct
+  // / onReorder / hydrateDraft / resolveProduct.
+  // 2026-04-29 v3: Canonical Product/Service create flow. One AddProductModal
+  // instance lives at the page level. AddLineItemRow children call
+  // `requestCreateProduct(name)` which opens the modal pre-filled with
+  // `name`; the returned promise resolves with the freshly-created
+  // ProductOption (or null on cancel) so the originating row can
+  // auto-select. The mutation here is the SAME `POST /api/items` route
+  // the canonical inline-create path uses (PartsSelectorModal.handleInlineCreate),
+  // just routed through the modal.
+  const [createProductOpen, setCreateProductOpen] = useState(false);
+  const [createProductInitialName, setCreateProductInitialName] = useState("");
+  const [savingCreatedProduct, setSavingCreatedProduct] = useState(false);
+  const createProductResolverRef = useRef<((value: ProductOption | null) => void) | null>(null);
+
+  const requestCreateProduct = (name: string): Promise<ProductOption | null> => {
+    return new Promise((resolve) => {
+      createProductResolverRef.current = resolve;
+      setCreateProductInitialName(name);
+      setCreateProductOpen(true);
+    });
+  };
+
+  const handleCreateProductCancel = () => {
+    setCreateProductOpen(false);
+    createProductResolverRef.current?.(null);
+    createProductResolverRef.current = null;
+  };
+
+  const handleCreateProductSave = async (data: { name: string; description?: string; cost: string; unitPrice: string; type: string }) => {
+    setSavingCreatedProduct(true);
+    try {
+      // 2026-04-29: Backend `createOrGetItem` is type-agnostic — when an
+      // active item with the same case-insensitive name already exists
+      // (regardless of product/service type), the response carries
+      // `_matched: true` and the existing row. We distinguish the two
+      // outcomes in the toast so the user knows whether they actually
+      // created a new catalog item or are reusing an existing one. The
+      // returning ProductOption auto-selects on the originating row
+      // either way — UX is "you got your item, here's how it landed."
+      const response = await apiRequest<any>("/api/items", {
+        method: "POST",
+        body: JSON.stringify({
+          name: data.name,
+          type: data.type,
+          ...(data.description ? { description: data.description } : {}),
+          ...(data.cost ? { cost: data.cost } : {}),
+          ...(data.unitPrice ? { unitPrice: data.unitPrice } : {}),
+        }),
+      });
+      const matched = response?._matched === true;
+      const productOption = normalizeProductRow(response);
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
+      if (matched) {
+        const existingType = response?.type === "service" ? "service" : "product";
+        toast({
+          title: "Reusing existing item",
+          description: `"${data.name}" already exists as a ${existingType}. Selecting the existing item.`,
+        });
+      } else {
+        toast({ title: "Product created", description: `"${data.name}" added to the catalog.` });
+      }
+      setCreateProductOpen(false);
+      createProductResolverRef.current?.(productOption);
+      createProductResolverRef.current = null;
+    } catch (err) {
+      toast({
+        title: "Failed to create product",
+        description: (err as Error)?.message ?? "Unexpected error",
+        variant: "destructive",
+      });
+      // Modal stays open on error so the user can retry; don't resolve yet.
+    } finally {
+      setSavingCreatedProduct(false);
+    }
+  };
+  // 2026-04-28: Header meta-card edit draft. Seeded from current invoice
+  // values when entering edit mode; reset on Cancel; cleared after Save.
+  // Only the four canonical schema-backed fields are persisted here:
+  // invoiceNumber, issueDate, dueDate, paymentTermsDays.
+  type MetaDraft = {
+    invoiceNumber: string;
+    issueDate: string;
+    dueDate: string;
+    paymentTermsDays: string;
+  };
+  const [metaDraft, setMetaDraft] = useState<MetaDraft | null>(null);
+  // 2026-04-28: Reference-field draft, keyed by definitionId. Seeded from
+  // current values when entering edit mode; reset on Cancel; cleared after
+  // Save. Persists through canonical /api/reference-fields/entities PUT.
+  const [referenceDraft, setReferenceDraft] = useState<Record<string, string>>({});
   const [showPaymentDialog, setShowPaymentDialog] = useState(false);
   const [showSendConfirm, setShowSendConfirm] = useState(false);
   const [showVoidConfirm, setShowVoidConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   // 2026-04-19 Portal activation: dialog state for "Send payment link".
   const [showSendPaymentLink, setShowSendPaymentLink] = useState(false);
+  // 2026-04-29 Stripe completion: staff card-take dialog state.
+  const [showTakeCardDialog, setShowTakeCardDialog] = useState(false);
+  // 2026-04-29 Stripe completion: refund target. `null` when closed.
+  const [refundTarget, setRefundTarget] = useState<Payment | null>(null);
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("e-transfer");
   const [paymentReference, setPaymentReference] = useState("");
   const [paymentNotes, setPaymentNotes] = useState("");
-  const [workDescOpen, setWorkDescOpen] = useState(true);
-  const [isEditingDescription, setIsEditingDescription] = useState(false);
+  // 2026-04-29 (header cleanup pass): the standalone `editingJobDescription`
+  // flag was retired — the header card's `editingHeader` flag now drives
+  // both the meta-row editor and the job-description editor.
   const [workDescDraft, setWorkDescDraft] = useState("");
-  const [visibilityOpen, setVisibilityOpen] = useState(false);
   const [visibilityDraft, setVisibilityDraft] = useState({
     showLineItems: true,
     showQuantity: true,
@@ -524,7 +854,6 @@ export default function InvoiceDetailPage() {
     showBalance: true,
     showJobDescription: true,
   });
-  const [showAddRow, setShowAddRow] = useState(false);
 
   // Phase 11: Discount editing state
   const [discountPercent, setDiscountPercent] = useState<string>("");
@@ -731,11 +1060,21 @@ export default function InvoiceDetailPage() {
   });
 
   const updateLineMutation = useMutation({
-    mutationFn: ({ lineId, draft }: { lineId: string; draft: LineItemDraft }) =>
-      apiRequest(`/api/invoices/${invoiceId}/lines/${lineId}`, {
+    mutationFn: ({ lineId, draft }: { lineId: string; draft: LineItemDraft }) => {
+      // 2026-04-29 v3 schema-drift fix: server-side `updateInvoiceLineSchema`
+      // is `.strict()` and intentionally does NOT accept `lineItemType` or
+      // `source` on PATCH (those are set at row creation time and should
+      // not change). The canonical `draftToInvoiceLinePayload` carries
+      // them through for the POST path, so on PATCH we strip them here.
+      // Without this strip the server returns
+      //   "Validation error: Unrecognized key(s) in object: 'lineItemType', 'source'"
+      // and the line save appears broken to the user.
+      const { lineItemType: _t, source: _s, ...payload } = draftToInvoiceLinePayload(draft);
+      return apiRequest(`/api/invoices/${invoiceId}/lines/${lineId}`, {
         method: "PATCH",
-        body: JSON.stringify(draftToInvoiceLinePayload(draft)),
-      }),
+        body: JSON.stringify(payload),
+      });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
@@ -856,6 +1195,57 @@ export default function InvoiceDetailPage() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update invoice", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // 2026-04-28: Reference fields surfaced inline in the meta card.
+  // Mirrors the right-rail card's entity choice (job if present, else
+  // invoice) so both surfaces share the same query cache and stay in
+  // sync after any save. Uses the canonical /api/reference-fields
+  // endpoint — no second storage path.
+  const refEntityType: "job" | "invoice" = jobId ? "job" : "invoice";
+  const refEntityId = (jobId ?? invoiceId ?? "") as string;
+  const referenceFieldsQueryKey = ["/api/reference-fields/entities", refEntityType, refEntityId] as const;
+  const { data: referenceFieldsData } = useQuery<{
+    entityType: string;
+    entityId: string;
+    fields: ReferenceFieldDTO[];
+  }>({
+    queryKey: referenceFieldsQueryKey,
+    queryFn: async () => {
+      const res = await fetch(`/api/reference-fields/entities/${refEntityType}/${refEntityId}`, { credentials: "include" });
+      if (!res.ok) {
+        if (res.status === 404) return { entityType: refEntityType, entityId: refEntityId, fields: [] };
+        throw new Error("Failed to load reference fields");
+      }
+      return res.json();
+    },
+    enabled: !!refEntityId,
+    staleTime: 60_000,
+  });
+  const referenceFields = referenceFieldsData?.fields ?? [];
+
+  const saveReferenceFieldsMutation = useMutation({
+    mutationFn: async (values: Record<string, string>) => {
+      const payload = referenceFields
+        .filter((f) => f.active)
+        .map((f) => ({
+          fieldDefinitionId: f.definitionId,
+          textValue: (values[f.definitionId] ?? "").trim() || null,
+        }));
+      return apiRequest(`/api/reference-fields/entities/${refEntityType}/${refEntityId}`, {
+        method: "PUT",
+        body: JSON.stringify({ values: payload }),
+      });
+    },
+    onSuccess: (result) => {
+      // Server returns the same shape as GET — write through to the
+      // shared cache so the right-rail card reflects the new values
+      // without a second round-trip.
+      queryClient.setQueryData(referenceFieldsQueryKey, result);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to save reference fields", description: error.message, variant: "destructive" });
     },
   });
 
@@ -985,9 +1375,28 @@ export default function InvoiceDetailPage() {
     name: string;
     rates: { id: string; name: string; rate: string }[];
   }
+  // 2026-04-29 v2: tax architecture note (read before changing this query).
+  //   • The schema stores tax at the INVOICE level via
+  //     `invoices.taxGroupId`; per-line `invoice_lines.taxRate` is a
+  //     denormalised cascade written by `batchApplyLineTax` in
+  //     `server/storage/invoices.ts`. There is NO per-line `tax_group_id`
+  //     column — line-level tax granularity isn't supported by the
+  //     schema today.
+  //   • The visible per-line "Yes / No" cell is therefore READ-ONLY by
+  //     design — it reflects whichever cascade rate the invoice's tax
+  //     group resolves to.
+  //   • The CANONICAL tax selector lives in the totals footer (popover
+  //     wired to `applyTaxMutation` → `POST /api/invoices/:id/apply-tax`)
+  //     and writes through the canonical service. Picking a tax group
+  //     there updates all line-item rates and the totals atomically.
+  //   • staleTime reduced from 5min → 30s so a tax group created in
+  //     tenant settings appears in this popover within 30 seconds
+  //     without forcing a hard reload. A longer staleTime previously
+  //     made it look like the new group wasn't selectable.
   const { data: taxGroups = [], isError: taxGroupsError } = useQuery<TaxGroupOption[]>({
     queryKey: ["/api/tax/groups"],
-    staleTime: 5 * 60 * 1000,
+    staleTime: 30 * 1000,
+    refetchOnMount: true,
     retry: 2,
   });
 
@@ -1059,13 +1468,130 @@ export default function InvoiceDetailPage() {
     }
   }, [serverVisibility]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Sync work description draft — only when not actively editing (protects typed content)
+  // Sync work description draft — only when not actively editing the
+  // header (protects typed content while the user has the unified header
+  // editor open). Re-keyed from the retired `editingJobDescription` flag
+  // to the canonical `editingHeader` per 2026-04-29 cleanup.
   const serverWorkDesc = details?.invoice?.workDescription || details?.job?.description || "";
   useEffect(() => {
-    if (!isEditingDescription) {
+    if (!editingHeader) {
       setWorkDescDraft(serverWorkDesc);
     }
   }, [serverWorkDesc]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─────────────────────────────────────────────────────────────────
+  // 2026-04-29 (Phase 1 canonical extraction): line-items state +
+  // save orchestration moved into the shared `useLineItemsDrafts`
+  // hook. The invoice adapter below provides the surface-specific
+  // pieces (mutations, validation rule, create-product modal, reorder
+  // trigger). Hard rule: behavior must remain identical.
+  //   - saveAll uses Promise.allSettled across the same three
+  //     mutations + the `lineItemType`/`source` strip on PATCH.
+  //   - validateEntry skips a NEW row only when neither typed text
+  //     nor `uiSelectedProduct.name` resolves a description, OR when
+  //     qty <= 0. Existing rows always pass.
+  //   - onReorder fires `reorderLinesMutation` immediately (matches
+  //     the existing per-DnD trigger).
+  //   - requestCreateProduct opens the canonical AddProductModal.
+  //   - resolveProduct seeds the saved-row chip from the server line
+  //     so the user can change the bound product without a fetch.
+  // ─────────────────────────────────────────────────────────────────
+  const invoiceLineItemsAdapter = useMemo<LineItemsAdapter<InvoiceLine>>(() => ({
+    surface: "invoice",
+    showCost: false,
+    showTax: false,
+    allowReorder: true,
+    allowEditExisting: true,
+    emptyStateLabel: "No line items yet.",
+    emptyStateCtaLabel: "Add line item",
+    hydrateDraft: (line) => hydrateDraft(line as unknown as Record<string, unknown>),
+    resolveProduct: (line) =>
+      line.productId
+        ? {
+            id: line.productId,
+            name: line.description || "(unnamed item)",
+            type:
+              line.lineItemType === "material" || line.lineItemType === "service"
+                ? (line.lineItemType === "service" ? "service" : "product")
+                : "product",
+            unitPrice: line.unitPrice,
+            cost: line.unitCost ?? null,
+          }
+        : null,
+    validateEntry: (entry) => {
+      if (entry.serverId) return null;
+      const typed = entry.draft.description.trim();
+      const fallback = entry.uiSelectedProduct?.name?.trim() ?? "";
+      const finalDesc = typed || fallback;
+      const qty = parseMoney(entry.draft.quantity);
+      if (!finalDesc || qty <= 0) {
+        return "Select or create an item before saving this row.";
+      }
+      return null;
+    },
+    onReorder: (orderedServerIds) => {
+      const orderData = orderedServerIds.map((id, i) => ({ id, lineNumber: i + 1 }));
+      if (orderData.length > 0) reorderLinesMutation.mutate(orderData);
+    },
+    requestCreateProduct: async (name) => requestCreateProduct(name),
+    saveAll: async (plan) => {
+      const promises: Promise<unknown>[] = [];
+      // Adds
+      for (const draft of plan.creates) {
+        promises.push(addLineMutation.mutateAsync(draft));
+      }
+      // Updates — strip lineItemType + source (PATCH schema is .strict()
+      // and rejects them; canonical mapper carries them through for the
+      // POST path). Identical to the prior page-level updateLineMutation
+      // behavior.
+      for (const u of plan.updates) {
+        promises.push(updateLineMutation.mutateAsync({ lineId: u.serverId, draft: u.draft }));
+      }
+      // Deletes
+      for (const serverId of plan.deletes) {
+        promises.push(deleteLineMutation.mutateAsync(serverId));
+      }
+      // Reorder is intentionally NOT bundled here — the adapter's
+      // onReorder fires per-DnD against persisted rows. This matches
+      // pre-extraction behavior. A future migration can flip to the
+      // batched plan.reorder path if desired.
+      try {
+        const results = await Promise.allSettled(promises);
+        const failures = results.filter((r) => r.status === "rejected").length;
+        if (failures > 0) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[InvoiceDetailPage] line-items save: ${failures}/${promises.length} mutation(s) rejected`,
+          );
+        }
+        return { ok: failures === 0, failures, skipped: plan.skipped };
+      } catch (err) {
+        // Defensive — Promise.allSettled doesn't reject, but if it
+        // somehow does, toast and keep the page rendered.
+        // eslint-disable-next-line no-console
+        console.error("[InvoiceDetailPage] line-items save: unexpected error", err);
+        toast({
+          title: "Failed to save line items",
+          description: (err as any)?.message ?? "Unexpected error",
+          variant: "destructive",
+        });
+        return { ok: false, failures: 1, skipped: plan.skipped };
+      }
+    },
+    onInformationalToast: (title, description) => toast({ title, description }),
+  }), [
+    reorderLinesMutation, addLineMutation, updateLineMutation, deleteLineMutation,
+    toast,
+    // requestCreateProduct is stable across renders (defined below); not
+    // included to avoid TDZ. The adapter is reconstructed on every
+    // render anyway since the hook callbacks aren't memoized.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ]);
+
+  const lineItemsDrafts = useLineItemsDrafts<InvoiceLine>({
+    adapter: invoiceLineItemsAdapter,
+    serverItems: details?.lines ?? [],
+  });
 
   // Phase 11: Discount calculation helpers
   const handleDiscountPercentChange = (value: string) => {
@@ -1150,7 +1676,6 @@ export default function InvoiceDetailPage() {
   const { invoice, lines, location, customerCompany, job, billingAddress, serviceAddress, primaryContact } = details;
   // Use API-derived isPastDue flag for consistent behavior
   const isPastDue = invoice.isPastDue ?? false;
-  const statusInfo = getInvoiceStatusBadge(invoice.status, isPastDue);
   const balanceColor = getBalanceColor(invoice.balance, isPastDue);
   const clientName = customerCompany ? getClientDisplayName(customerCompany) : (location.companyName || "");
   const canEdit = invoice.status !== "paid" && invoice.status !== "voided";
@@ -1196,597 +1721,664 @@ export default function InvoiceDetailPage() {
     });
   };
 
+  // 2026-04-27 redesign — view-model bits the new layout needs.
+  const isClientMessageDirty = clientMessageDraft !== (invoice.clientMessage || "");
+
+  // Primary action — state-driven. `null` for paid/voided "Send receipt"
+  // and "Duplicate as new" because we don't have those flows yet.
+  const primaryAction = (() => {
+    if (isPastDue) {
+      // Reminders surface lives in the command bar's `remindersSlot`. No
+      // separate primary "Send reminder" until we have a one-click variant.
+      return null;
+    }
+    if (invoice.status === "draft") return { label: "Send invoice", onClick: () => setShowSendConfirm(true) };
+    if (invoice.status === "sent" || invoice.status === "awaiting_payment" || invoice.status === "partial_paid") {
+      return { label: "Record payment", onClick: () => setShowPaymentDialog(true) };
+    }
+    if (invoice.status === "paid") {
+      // TODO: wire a dedicated "Send receipt" flow. SendInvoiceModal currently
+      // sends as an invoice; receipt-mode email subject/body is not yet
+      // available. Render disabled so the action slot is preserved without
+      // pretending the send works as a receipt.
+      return { label: "Send receipt", onClick: () => {}, disabled: true };
+    }
+    if (invoice.status === "voided") {
+      // TODO: wire "Duplicate as new" — needs a backend endpoint that copies
+      // line items + meta into a fresh draft. Not built yet.
+      return { label: "Duplicate as new", onClick: () => {}, disabled: true };
+    }
+    return null;
+  })();
+
+  const primaryDisabledHint =
+    invoice.status === "paid" ? "Receipt-mode email is not yet available."
+      : invoice.status === "voided" ? "Duplicate-as-new flow is not yet wired."
+      : undefined;
+
+  // Reminder dropdown lives only on collectable invoices.
+  const remindersSlot = invoice.status !== "draft" && invoice.status !== "paid" && invoice.status !== "voided"
+    ? <InvoiceRemindersButton invoice={invoice as any} />
+    : undefined;
+
+  // 2026-04-29: Action cluster split into two surfaces.
+  //   • `headerActions` — the section-scoped edit pencil that lives on the
+  //     meta card chrome. Distinct from the lifecycle / PDF / send flows.
+  //   • `actionBarDropdown` — the More dropdown with every lifecycle and
+  //     PDF action; rendered in the new top action bar above the meta
+  //     card (alongside Status pill / Send invoice / Preview PDF).
+  // Splitting them keeps the meta card focused on identity / billing, and
+  // surfaces the most-used lifecycle actions as visible buttons rather
+  // than buried inside a kebab.
+  const headerActions = (
+    <>
+      {!editingHeader && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
+          onClick={() => {
+            setMetaDraft({
+              invoiceNumber: invoice.invoiceNumber ?? "",
+              issueDate: toDateInputValue(invoice.issueDate),
+              dueDate: toDateInputValue(invoice.dueDate),
+              paymentTermsDays: invoice.paymentTermsDays != null ? String(invoice.paymentTermsDays) : "",
+            });
+            const seed: Record<string, string> = {};
+            referenceFields.forEach((f) => { seed[f.definitionId] = f.textValue ?? ""; });
+            setReferenceDraft(seed);
+            // 2026-04-29 (header cleanup): the same pencil now opens the
+            // job-description editor too, so seed its draft from the
+            // server value (workDescription falls back to the job's
+            // description when the invoice copy is unset).
+            setWorkDescDraft(invoice.workDescription || job?.description || "");
+            setEditingHeader(true);
+          }}
+          aria-label="Edit invoice details"
+          data-testid="button-meta-edit"
+        >
+          <Pencil className="h-4 w-4 text-slate-500" />
+        </Button>
+      )}
+    </>
+  );
+
+  // Visible primary action: only render the inline button when the
+  // primary action IS "Send invoice". Other primary actions (Record
+  // payment / Send receipt / Duplicate as new) remain inside the
+  // dropdown — the user spec listed Send invoice + Preview PDF as the
+  // visible buttons.
+  const showSendInvoiceButton = primaryAction?.label === "Send invoice" && !primaryAction.disabled;
+
+  const actionBarDropdown = (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" size="sm" className="h-8 w-8 p-0" data-testid="button-meta-more" aria-label="More actions">
+          <MoreHorizontal className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-56">
+        {primaryAction && primaryAction.label !== "Send invoice" && (
+          <>
+            <DropdownMenuItem
+              onClick={primaryAction.onClick}
+              disabled={primaryAction.disabled}
+              title={primaryAction.disabled ? primaryDisabledHint : undefined}
+              data-testid="menu-primary-action"
+            >
+              {primaryAction.label}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        )}
+        <DropdownMenuItem onClick={handleDownloadPdf} disabled={pdfPending}>Download PDF</DropdownMenuItem>
+        <DropdownMenuItem onClick={handlePrintPdf} disabled={pdfPending}>Print PDF</DropdownMenuItem>
+        {/* 2026-04-29: "Refresh from job" and "Choose items from job…"
+            removed from the overflow menu per UX spec. The mutations
+            (`refreshFromJobMutation`, the composition dialog setter)
+            remain wired in case they're surfaced from another entry
+            point later — only the menu items are removed. */}
+        {portalCtasAvailable && <DropdownMenuSeparator />}
+        {portalCtasAvailable && <DropdownMenuItem onClick={handleCopyPaymentLink}>Copy payment link</DropdownMenuItem>}
+        {portalCtasAvailable && <DropdownMenuItem onClick={handleOpenClientPortal}>Open client portal</DropdownMenuItem>}
+        {portalCtasAvailable && <DropdownMenuItem onClick={() => setShowSendPaymentLink(true)}>Email payment link…</DropdownMenuItem>}
+        {!isDraft &&
+          invoice.status !== "voided" &&
+          invoice.status !== "paid" &&
+          parseFloat(invoice.balance ?? "0") > 0 && (
+            <DropdownMenuItem
+              onClick={() => setShowTakeCardDialog(true)}
+              data-testid="menu-item-take-card-payment"
+            >
+              Take card payment
+            </DropdownMenuItem>
+          )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => handleToggleSent(!invoice.sentAt)} disabled={toggleSentPending}>
+          {invoice.sentAt ? "Mark as not sent" : "Mark as sent"}
+        </DropdownMenuItem>
+        {invoice.status !== "voided" && invoice.status !== "draft" && (
+          <DropdownMenuItem onClick={() => setShowVoidConfirm(true)} disabled={voidMutation.isPending} className="text-rose-600">
+            Void invoice
+          </DropdownMenuItem>
+        )}
+        {invoice.status === "draft" && (
+          <DropdownMenuItem onClick={() => setShowDeleteConfirm(true)} disabled={deleteMutation.isPending} className="text-rose-600">
+            Delete draft
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+
+  // Bill-to lines for the meta card body. `primaryContact` is no longer
+  // surfaced inline — the picture shows just the address lines under
+  // "Billing Address" without an Attn row.
+  const billLine1 = billingAddress?.street ?? null;
+  const billLine2 = [billingAddress?.city, billingAddress?.province, billingAddress?.postalCode].filter(Boolean).join(", ") || null;
+
+  // Group invoice lines by canonical `lineItemType`. Falls back to a single
+  // "Line items" group if every row is the default service kind.
+  const sortedLines = [...lines].sort((a, b) => a.lineNumber - b.lineNumber);
+  const linesByGroup = LINE_TYPE_GROUPS.map((g) => ({
+    ...g,
+    rows: sortedLines.filter((l) => (l.lineItemType || "service") === g.kind),
+  })).filter((g) => g.rows.length > 0);
+  const ungroupedFallback = linesByGroup.length <= 1; // collapse single-group view to flat table
+
   return (
     <>
-      <DetailPageShell
-        background="#f1f5f9"
-        dataTestId="invoice-detail-page"
-        leftColumn={
-          <>
+      {/* 2026-04-27 — single-scroll layout. Replaces DetailPageShell on this
+          page only: the shell's lg+ chain gave the left column and right rail
+          their own `overflow-y-auto`, producing nested scrollbars inside the
+          app shell's <main overflow-auto>. The redesigned page content scrolls
+          as one unit with the page. */}
+      {/* 2026-04-29 Color Phase Path A: root wrapper migrated from
+          `bg-[#FAF8F5]` (warm cream — predated the canonical token set)
+          to `bg-app-bg` so the page now adopts the global `#F3F5F7`.
+          Internal cards (`border-card-border bg-white`) were already
+          neutral and need no further migration in this pass. */}
+      <div className="bg-app-bg" data-testid="invoice-detail-page">
+        <div className="px-4 lg:px-6 py-4">
+          {/* 2026-04-29 v2 — Floating top action HEADER (thin bar, full
+              page width). Sits ABOVE the two-column grid so it visually
+              spans both the main column and the right rail. No card
+              chrome (no border, no rounded corners) — just a flat
+              translucent bar with a subtle bottom hairline. Status pill
+              left, lifecycle actions right. */}
+          {/* 2026-04-29 v4: Tightened vertical padding (py-2 → py-1.5)
+              and wrapped both clusters in `items-center` (already present)
+              to keep the status pill and the right-hand action buttons
+              on the same baseline regardless of pill height. */}
+          {/* 2026-04-29 Color Phase 2.7: frosted-edge restored. The
+              `--app-bg` token is now an HSL channel triple wrapped as
+              `hsl(var(--app-bg) / <alpha-value>)` in tailwind.config.ts,
+              so `bg-app-bg/95` compiles to a real alpha-modulated
+              background-color rule. This recovers the original 5%
+              translucent scroll-edge polish that Path A had to drop
+              while the token was in opaque-hex form. */}
+          <div
+            className="mb-3 flex items-center justify-between gap-3 bg-app-bg/95 px-1 py-1.5"
+            data-testid="invoice-action-header"
+          >
+            <StatusPill status={invoice.status} isPastDue={isPastDue} />
+            <div className="flex items-center gap-2">
+              {remindersSlot}
+              {showSendInvoiceButton && primaryAction && (
+                <Button
+                  size="sm"
+                  className="h-8 text-xs"
+                  onClick={primaryAction.onClick}
+                  disabled={primaryAction.disabled}
+                  data-testid="button-send-invoice"
+                >
+                  {primaryAction.label}
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 text-xs"
+                onClick={() => window.open(`/api/invoices/${invoiceId}/pdf`, "_blank")}
+                data-testid="button-preview-pdf"
+              >
+                Preview PDF
+              </Button>
+              {actionBarDropdown}
+            </div>
+          </div>
 
-              {/* 2026-04-14: email send / viewed metadata now lives in
-                  `InvoiceHeaderCard`'s metadata block. The former
-                  standalone `DeliveryStatusCard` (top status + resend)
-                  and the amber "Invoice has been sent" banner were
-                  removed to avoid duplicate email-status surfaces. */}
-
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="min-w-0 space-y-2.5">
               <QboSyncBanner invoice={invoice} />
 
-              {isPastDue && (
-                <div className="p-3 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-md">
-                  <div className="flex items-start gap-2">
-                    <AlertTriangle className="h-4 w-4 text-red-600 dark:text-red-400 mt-0.5" />
-                    <div>
-                      <p className="text-sm font-medium text-red-800 dark:text-red-200">Invoice is past due</p>
-                      <p className="text-xs text-red-600 dark:text-red-400 mt-1">
-                        Due date was {invoice.dueDate ? format(new Date(invoice.dueDate), "MMM d, yyyy") : "not set"}.
-                      </p>
+              {/* 2026-04-27 — Identity card (per Studio reference). 2026-04-29:
+                  Status pill + lifecycle dropdown moved to the new top action
+                  header above. The card retains only the inline meta-edit
+                  pencil. */}
+              <InvoiceMetaCard
+                customerName={clientName || ""}
+                customerCompanyId={customerCompany?.id ?? null}
+                billLine1={billLine1}
+                billLine2={billLine2}
+                serviceAddress={serviceAddress ?? null}
+                locationName={location.companyName || location.location || ""}
+                invoiceNumber={invoice.invoiceNumber}
+                issueDate={invoice.issueDate}
+                dueDate={invoice.dueDate}
+                isPastDue={isPastDue}
+                paymentTermsDays={invoice.paymentTermsDays ?? null}
+                jobNumber={job?.jobNumber != null ? String(job.jobNumber) : null}
+                jobId={jobId ?? null}
+                headerActions={headerActions}
+                isEditing={editingHeader}
+                draft={metaDraft}
+                onDraftChange={(patch) => setMetaDraft((prev) => prev ? { ...prev, ...patch } : prev)}
+                referenceFields={referenceFields}
+                referenceDraft={referenceDraft}
+                onReferenceDraftChange={(definitionId, value) =>
+                  setReferenceDraft((prev) => ({ ...prev, [definitionId]: value }))
+                }
+                onCancel={() => {
+                  // 2026-04-29 (header cleanup): unified Cancel discards
+                  // every draft this card owns — meta canonical fields,
+                  // reference fields, AND the job description — then
+                  // exits edit mode. The job description used to have
+                  // its own restore handler; that flow was removed.
+                  setMetaDraft(null);
+                  setReferenceDraft({});
+                  setWorkDescDraft(invoice.workDescription || job?.description || "");
+                  setEditingHeader(false);
+                }}
+                onSave={async () => {
+                  if (!metaDraft) return;
+                  // Canonical-fields delta: send only changed fields through
+                  // the canonical PATCH path to avoid no-op writes.
+                  const payload: Record<string, unknown> = {};
+                  const trimmedNum = metaDraft.invoiceNumber.trim();
+                  if (trimmedNum && trimmedNum !== (invoice.invoiceNumber ?? "")) {
+                    payload.invoiceNumber = trimmedNum;
+                  }
+                  if (metaDraft.issueDate && metaDraft.issueDate !== toDateInputValue(invoice.issueDate)) {
+                    payload.issueDate = metaDraft.issueDate;
+                  }
+                  if (metaDraft.dueDate !== toDateInputValue(invoice.dueDate)) {
+                    payload.dueDate = metaDraft.dueDate || null;
+                  }
+                  const termsRaw = metaDraft.paymentTermsDays.trim();
+                  const termsNum = termsRaw === "" ? null : Number(termsRaw);
+                  const currentTerms = invoice.paymentTermsDays ?? null;
+                  if (termsNum !== currentTerms && (termsRaw === "" || Number.isFinite(termsNum))) {
+                    payload.paymentTermsDays = termsNum;
+                  }
+
+                  // 2026-04-29 (header cleanup): job description is now
+                  // part of this same save delta. It rides the existing
+                  // `updateInvoiceFieldsMutation` route (which already
+                  // accepts workDescription), so no new request is added.
+                  const serverDescription = invoice.workDescription || job?.description || "";
+                  if (workDescDraft !== serverDescription) {
+                    payload.workDescription = workDescDraft;
+                  }
+
+                  // Reference-fields delta: only fire the PUT if any active
+                  // field changed against its server value. PUT replaces all
+                  // active values atomically (canonical contract).
+                  const refChanged = referenceFields.some((f) => {
+                    if (!f.active) return false;
+                    const draftVal = (referenceDraft[f.definitionId] ?? "").trim() || null;
+                    const serverVal = (f.textValue ?? "").trim() || null;
+                    return draftVal !== serverVal;
+                  });
+
+                  const tasks: Promise<unknown>[] = [];
+                  if (Object.keys(payload).length > 0) {
+                    tasks.push(updateInvoiceFieldsMutation.mutateAsync(payload));
+                  }
+                  if (refChanged) {
+                    tasks.push(saveReferenceFieldsMutation.mutateAsync(referenceDraft));
+                  }
+                  if (tasks.length === 0) {
+                    setMetaDraft(null);
+                    setReferenceDraft({});
+                    setEditingHeader(false);
+                    return;
+                  }
+                  try {
+                    await Promise.all(tasks);
+                    setMetaDraft(null);
+                    setReferenceDraft({});
+                    setEditingHeader(false);
+                  } catch {
+                    // Per-mutation onError toasts already fired; stay in edit
+                    // mode so the user can retry or cancel.
+                  }
+                }}
+                isSaving={updateInvoiceFieldsMutation.isPending || saveReferenceFieldsMutation.isPending}
+                jobDescription={invoice.workDescription || job?.description || ""}
+                jobDescriptionDraft={workDescDraft}
+                onChangeJobDescriptionDraft={setWorkDescDraft}
+              />
+
+              {/* ─── Line items card — canonical 2026-04-29 (Phase 1).
+                  The card chrome / header metrics / column header / row
+                  bodies / DnD context / bottom action row / empty state
+                  all live in <LineItemsCard>. The invoice-specific
+                  totals + discount editor + tax popover stay here as
+                  the renderTotalsFooter slot. */}
+              <LineItemsCard
+                adapter={invoiceLineItemsAdapter}
+                drafts={lineItemsDrafts}
+                serverItems={lines}
+                isLocked={!canEdit}
+                renderTotalsFooter={
+                <div className="flex justify-end border-t border-card-border bg-surface-subtle px-5 py-4">
+                  <div className="w-full min-w-0 md:w-[320px]">
+                    {/* Subtotal */}
+                    <div className="flex items-center justify-between py-1">
+                      <span className="text-xs text-slate-500">Subtotal</span>
+                      <span className={`text-xs ${MONO} text-slate-700`}>{formatCurrency(invoice.subtotal)}</span>
+                    </div>
+
+                    {/* Discount editor (preserved). Gated on the canonical
+                        line-items edit mode — opens whenever the user has
+                        the LineItemsCard in edit. */}
+                    {canEdit && lineItemsDrafts.editing ? (
+                      <div className="rounded-md border border-card-border bg-card px-3 py-2 my-2 space-y-2">
+                        <div className="flex items-center gap-2 text-xs text-slate-600">
+                          <Tag className="h-3.5 w-3.5" />
+                          <span className="font-medium">Discount</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-1 flex-1">
+                            <Input
+                              type="number"
+                              inputMode="decimal"
+                              step="0.01"
+                              min="0"
+                              max="100"
+                              placeholder="0"
+                              value={discountPercent}
+                              onChange={(e) => handleDiscountPercentChange(e.target.value)}
+                              className="h-7 w-16 text-right text-xs [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                              data-testid="input-discount-percent"
+                            />
+                            <Percent className="h-3.5 w-3.5 text-slate-400" />
+                          </div>
+                          <span className="text-slate-400 text-xs">or</span>
+                          <div className="flex items-center gap-1 flex-1">
+                            <DollarSign className="h-3.5 w-3.5 text-slate-400" />
+                            <Input
+                              type="number"
+                              inputMode="decimal"
+                              step="0.01"
+                              min="0"
+                              placeholder="0.00"
+                              value={discountAmount}
+                              onChange={(e) => handleDiscountAmountChange(e.target.value)}
+                              className="h-7 w-20 text-right text-xs [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                              data-testid="input-discount-amount"
+                            />
+                          </div>
+                        </div>
+                        <div className="flex justify-end gap-2">
+                          {(discountPercent || discountAmount) && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 text-xs"
+                              onClick={handleClearDiscount}
+                              disabled={updateDiscountMutation.isPending}
+                              data-testid="button-clear-discount"
+                            >
+                              <X className="h-3 w-3 mr-1" />Clear
+                            </Button>
+                          )}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs"
+                            onClick={handleSaveDiscount}
+                            disabled={updateDiscountMutation.isPending || (!discountPercent && !discountAmount)}
+                            data-testid="button-save-discount"
+                          >
+                            {updateDiscountMutation.isPending ? "Saving..." : "Apply"}
+                          </Button>
+                        </div>
+                      </div>
+                    ) : invoice.discountAmount && parseFloat(invoice.discountAmount) > 0 ? (
+                      <div className="flex items-center justify-between py-1">
+                        <span className="text-xs text-emerald-700">Discount{invoice.discountPercent ? ` (${invoice.discountPercent}%)` : ""}</span>
+                        <span className={`text-xs ${MONO} text-emerald-700`}>−{formatCurrency(invoice.discountAmount)}</span>
+                      </div>
+                    ) : null}
+
+                    {/* Tax row */}
+                    <div className="flex items-center justify-between py-1">
+                      {lineItemsDrafts.editing && canEdit ? (
+                        <Popover open={taxSelectorOpen} onOpenChange={setTaxSelectorOpen}>
+                          <PopoverTrigger asChild>
+                            <button
+                              type="button"
+                              className="flex items-center gap-1 text-xs text-teal-700 hover:underline"
+                              data-testid="button-tax-selector"
+                            >
+                              {currentTaxLabel}
+                              <ChevronDown className="h-3 w-3" />
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-64 p-2" align="start">
+                            <div className="space-y-1">
+                              <p className="text-xs font-medium text-slate-500 px-2 py-1">Select tax for this invoice</p>
+                              <button
+                                type="button"
+                                className={`w-full text-left px-2 py-1.5 rounded text-sm hover:bg-stone-100 ${!invoice.taxGroupId ? "bg-stone-100 font-medium" : ""}`}
+                                onClick={() => applyTaxMutation.mutate(null)}
+                                disabled={applyTaxMutation.isPending}
+                                data-testid="tax-option-no-tax"
+                              >
+                                No Tax
+                              </button>
+                              {taxGroups.map((group) => {
+                                const combinedRate = group.rates.reduce((s, r) => s + parseFloat(r.rate || "0"), 0);
+                                const isSelected = invoice.taxGroupId === group.id;
+                                return (
+                                  <button
+                                    key={group.id}
+                                    type="button"
+                                    className={`w-full text-left px-2 py-1.5 rounded text-sm hover:bg-stone-100 ${isSelected ? "bg-stone-100 font-medium" : ""}`}
+                                    onClick={() => applyTaxMutation.mutate(group.id)}
+                                    disabled={applyTaxMutation.isPending}
+                                    data-testid={`tax-option-${group.id}`}
+                                  >
+                                    <span>{group.name}</span>
+                                    <span className="text-slate-500 ml-1">({combinedRate.toFixed(2)}%)</span>
+                                  </button>
+                                );
+                              })}
+                              {taxGroups.length === 0 && !taxGroupsError && (
+                                <p className="text-xs text-slate-500 px-2 py-1">No tax groups configured. Set up tax rates in Settings.</p>
+                              )}
+                              {taxGroupsError && (
+                                <p className="text-xs text-rose-600 px-2 py-1">Failed to load tax groups. Check permissions or try again.</p>
+                              )}
+                            </div>
+                          </PopoverContent>
+                        </Popover>
+                      ) : (
+                        <span className="text-xs text-slate-500">{currentTaxLabel}</span>
+                      )}
+                      <span className={`text-xs ${MONO} text-slate-700`}>{formatCurrency(invoice.taxTotal)}</span>
+                    </div>
+
+                    <div className="my-2 h-px bg-stone-200" />
+                    <div className="flex items-center justify-between py-1">
+                      <span className="text-sm font-bold text-slate-900">Total</span>
+                      <span className={`text-base font-bold ${MONO} text-slate-900`}>{formatCurrency(invoice.total)}</span>
+                    </div>
+
+                    {parseFloat(invoice.amountPaid) > 0 && (
+                      <div className="flex items-center justify-between py-1">
+                        <span className="text-xs text-slate-500">Paid</span>
+                        <span className={`text-xs ${MONO} text-emerald-700`}>− {formatCurrency(invoice.amountPaid)}</span>
+                      </div>
+                    )}
+
+                    <div className="my-2 h-px bg-stone-200" />
+                    <div className="flex items-center justify-between py-1">
+                      <span className="text-sm font-bold text-slate-900">{isPastDue ? "Past due" : "Balance due"}</span>
+                      <span className={`text-base font-bold ${MONO} ${balanceColor}`}>{formatCurrency(invoice.balance)}</span>
                     </div>
                   </div>
                 </div>
-              )}
-
-              {/* Invoice Header Card — inside left column (matches Job Detail) */}
-              <InvoiceHeaderCard
-                invoice={invoice as Invoice}
-                location={location}
-                customerCompany={customerCompany ?? null}
-                job={job ?? null}
-                billingAddress={billingAddress}
-                serviceAddress={serviceAddress}
-                primaryContact={primaryContact}
-                onEdit={() => setIsEditing(!isEditing)}
-                onSend={() => setShowSendConfirm(true)}
-                onCollectPayment={() => setShowPaymentDialog(true)}
-                onVoid={() => setShowVoidConfirm(true)}
-                onDelete={() => setShowDeleteConfirm(true)}
-                onRefreshFromJob={() => refreshFromJobMutation.mutate(undefined)}
-                onChooseItemsFromJob={jobId ? () => setShowCompositionDialog(true) : undefined}
-                refreshPending={refreshFromJobMutation.isPending}
-                voidPending={voidMutation.isPending}
-                deletePending={deleteMutation.isPending}
-                onDownloadPdf={handleDownloadPdf}
-                onPrintPdf={handlePrintPdf}
-                pdfPending={pdfPending}
-                onPreview={() => window.open(`/api/invoices/${invoiceId}/pdf`, "_blank")}
-                onCopyPaymentLink={portalCtasAvailable ? handleCopyPaymentLink : undefined}
-                onOpenClientPortal={portalCtasAvailable ? handleOpenClientPortal : undefined}
-                onSendPaymentLink={portalCtasAvailable ? () => setShowSendPaymentLink(true) : undefined}
-                remindersSlot={
-                  // 2026-04-19 Reminders UI refactor — header dropdown only
-                  // shown for sendable/unpaid invoices. Drafts, paid, and
-                  // voided invoices never carry reminders (matches the
-                  // visibility rule of the old InvoiceRemindersCard).
-                  invoice.status !== "draft" &&
-                  invoice.status !== "paid" &&
-                  invoice.status !== "voided"
-                    ? <InvoiceRemindersButton invoice={invoice as any} />
-                    : undefined
                 }
-                onToggleSent={handleToggleSent}
-                toggleSentPending={toggleSentPending}
-                canEdit={canEdit}
-                isDraft={isDraft}
-                isEditing={isEditing}
-                sendPending={false}
-                statusLabel={statusInfo.label}
-                statusVariant={statusInfo.variant}
-                isPastDue={isPastDue}
-                onUpdateInvoiceNumber={(num) => updateInvoiceNumberMutation.mutate(num)}
-                invoiceNumberPending={updateInvoiceNumberMutation.isPending}
-                onUpdatePaymentTerms={(data) => updatePaymentTermsMutation.mutate({ ...data, paymentTermsDays: data.paymentTermsDays ?? null })}
-                paymentTermsPending={updatePaymentTermsMutation.isPending}
-                onUpdateIssueDate={(date) => updateInvoiceFieldsMutation.mutate({ issueDate: date })}
-                issueDatePending={updateInvoiceFieldsMutation.isPending}
               />
 
-              {/* 2026-04-19 Reminders UI refactor — former full-width
-                  `InvoiceRemindersCard` removed from the main content stack.
-                  Reminder actions now live in the invoice header action bar
-                  via the `remindersSlot` prop on InvoiceHeaderCard above. */}
-
-              {/* Job Description — editable from invoice page */}
-              {(job?.description || invoice.workDescription || isEditingDescription) && (
-                <div className="rounded-md border border-[#e5e7eb] bg-[#ffffff] shadow-sm overflow-hidden" data-testid="card-job-description">
-                  <Collapsible open={workDescOpen} onOpenChange={setWorkDescOpen}>
-                    <CollapsibleTrigger asChild>
-                      <button
-                        className={`w-full flex items-center justify-between px-5 py-4 transition-colors bg-[#FAFCFA] hover:bg-slate-100 ${workDescOpen ? "border-b border-[#e2e8f0]" : ""}`}
-                        data-testid="trigger-job-description"
-                      >
-                        <div className="flex items-center gap-2">
-                          <FileText className="h-4 w-4 text-[#64748b]" />
-                          <span className="text-sm font-semibold text-[#0f172a]">Job Description</span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          {canEdit && !isEditingDescription && (
-                            <Button
-                              variant="ghost" size="icon" className="h-6 w-6"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setWorkDescDraft(invoice.workDescription || job?.description || "");
-                                setIsEditingDescription(true);
-                                if (!workDescOpen) setWorkDescOpen(true);
-                              }}
-                              data-testid="button-edit-description"
-                            >
-                              <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
-                            </Button>
-                          )}
-                          {workDescOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground/50" /> : <ChevronRight className="h-4 w-4 text-muted-foreground/50" />}
-                        </div>
-                      </button>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent>
-                      <div className="px-5 py-4">
-                        {isEditingDescription ? (
-                          <div className="space-y-2">
+              {/* ─── Client message card (2026-04-29 UI compact pass) ────
+                  Extracted from the Line items footer into its own card.
+                  Edit affordance is now an icon-only pencil with its own
+                  section-scoped `editingClientMessage` state — no longer
+                  piggybacks on the line-items toggle. Writes through the
+                  same canonical `updateInvoiceFieldsMutation` — no new
+                  backend logic. */}
+              {/* 2026-04-29 v3: When empty AND not editing, render compact
+                  (header-only) — same pattern as Job Description. The
+                  pencil in the header is the only affordance; the body
+                  with "No client message." placeholder is hidden. */}
+              {(() => {
+                const messageEmpty = !invoice.clientMessage || invoice.clientMessage.length === 0;
+                const compactCollapsed = messageEmpty && !editingClientMessage;
+                return (
+                  <div className="overflow-hidden rounded-lg border border-card-border bg-card shadow-card" data-testid="card-invoice-client-message">
+                    <CardSectionHeader
+                      title="Client message"
+                      right={!editingClientMessage ? (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 flex-shrink-0"
+                          onClick={() => {
+                            setClientMessageDraft(invoice.clientMessage || "");
+                            setEditingClientMessage(true);
+                          }}
+                          aria-label="Edit client message"
+                          data-testid="button-edit-client-message"
+                        >
+                          <Pencil className="h-3.5 w-3.5 text-slate-400" />
+                        </Button>
+                      ) : null}
+                    />
+                    {!compactCollapsed && (
+                      <div className="p-4">
+                        {editingClientMessage ? (
+                          <>
                             <Textarea
-                              value={workDescDraft}
-                              onChange={(e) => setWorkDescDraft(e.target.value)}
-                              placeholder="Describe the work performed..."
-                              className="min-h-[100px] text-sm"
-                              data-testid="textarea-work-description"
+                              value={clientMessageDraft}
+                              onChange={(e) => setClientMessageDraft(e.target.value)}
+                              placeholder="Optional message that appears under the line items on the client's PDF — payment instructions, follow-up scope, thanks."
+                              className="min-h-[88px] resize-y text-sm leading-relaxed text-slate-700"
+                              data-testid="textarea-client-message"
                             />
-                            <div className="flex justify-end gap-2">
-                              <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => {
-                                setWorkDescDraft(invoice.workDescription || job?.description || "");
-                                setIsEditingDescription(false);
-                              }}>
+                            <div className="mt-2 flex justify-end gap-2">
+                              <Button
+                                variant="ghost" size="sm" className="h-7 text-xs"
+                                onClick={() => {
+                                  setClientMessageDraft(invoice.clientMessage || "");
+                                  setEditingClientMessage(false);
+                                }}
+                              >
                                 Cancel
                               </Button>
                               <Button
                                 variant="outline" size="sm" className="h-7 text-xs"
-                                disabled={updateInvoiceFieldsMutation.isPending}
-                                onClick={() => {
-                                  updateInvoiceFieldsMutation.mutate(
-                                    { workDescription: workDescDraft },
-                                    { onSuccess: () => setIsEditingDescription(false) }
-                                  );
-                                }}
-                                data-testid="button-save-description"
+                                disabled={updateInvoiceFieldsMutation.isPending || !isClientMessageDirty}
+                                onClick={() => updateInvoiceFieldsMutation.mutate(
+                                  { clientMessage: clientMessageDraft },
+                                  { onSuccess: () => setEditingClientMessage(false) }
+                                )}
+                                data-testid="button-save-client-message"
                               >
                                 {updateInvoiceFieldsMutation.isPending ? "Saving..." : "Save"}
                               </Button>
                             </div>
-                          </div>
+                          </>
                         ) : (
-                          <p className="text-sm text-muted-foreground/80 whitespace-pre-wrap" data-testid="text-job-description">
-                            {invoice.workDescription || job?.description || "No description."}
+                          <p className="m-0 whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
+                            {invoice.clientMessage}
                           </p>
                         )}
                       </div>
-                    </CollapsibleContent>
-                  </Collapsible>
-                </div>
-              )}
-
-              {/* Products & Services — matches job detail Parts & Billing pattern */}
-              <div className="rounded-md border border-[#e5e7eb] bg-[#ffffff] shadow-sm overflow-hidden" data-testid="card-products-services">
-                <div className="flex items-center justify-between px-5 py-4 bg-[#FAFCFA] border-b border-[#e2e8f0]">
-                  <div className="flex items-center gap-2">
-                    <DollarSign className="h-4 w-4 text-[#64748b]" />
-                    <span className="text-sm font-semibold text-[#0f172a]">Products & Services</span>
-                  </div>
-                  {/* Inline financial summary — matches job detail Parts & Billing header */}
-                  {profitSummary.totalCost > 0 && (
-                    <div className="flex items-center gap-4 text-xs text-[#4b5563]">
-                      <span>Revenue <strong className="font-semibold text-[#0f172a]">{formatCurrency(profitSummary.totalPrice)}</strong></span>
-                      <span>Cost <strong className="font-semibold text-[#0f172a]">{formatCurrency(profitSummary.totalCost)}</strong></span>
-                      <span>Profit <strong className={`font-semibold ${profitSummary.profit >= 0 ? "text-[#16a34a]" : "text-red-600"}`}>{formatCurrency(profitSummary.profit)}</strong> <span className="text-[#94a3b8]">({profitSummary.margin.toFixed(0)}%)</span></span>
-                    </div>
-                  )}
-                </div>
-                {/* Table + buttons container — matches PartsBillingCard CardContent pattern */}
-                <div className="pt-4 space-y-4">
-                  <div className="overflow-visible">
-                    <DndContext
-                      sensors={sensors}
-                      collisionDetection={closestCenter}
-                      onDragEnd={(event: DragEndEvent) => {
-                        const { active, over } = event;
-                        if (over && active.id !== over.id) {
-                          const sortedLines = [...lines].sort((a, b) => a.lineNumber - b.lineNumber);
-                          const oldIndex = sortedLines.findIndex((l) => l.id === active.id);
-                          const newIndex = sortedLines.findIndex((l) => l.id === over.id);
-                          const reordered = arrayMove(sortedLines, oldIndex, newIndex);
-                          const orderData = reordered.map((line, i) => ({ id: line.id, lineNumber: i + 1 }));
-                          reorderLinesMutation.mutate(orderData);
-                        }
-                      }}
-                    >
-                      <table className="min-w-full text-xs">
-                        <thead className="border-b text-xs uppercase tracking-wide text-muted-foreground">
-                          <tr>
-                            <th className="py-2 pr-2 w-8"></th>
-                            <th className="py-2 pr-3 text-left font-medium">Description</th>
-                            <th className="py-2 px-3 text-right font-medium w-20">Qty</th>
-                            <th className="py-2 px-3 text-right font-medium w-28">Rate</th>
-                            <th className="py-2 px-3 text-center font-medium w-20">Tax</th>
-                            <th className="py-2 pl-3 text-right font-medium w-28">Total</th>
-                          </tr>
-                        </thead>
-                        <SortableContext
-                          items={[...lines].sort((a, b) => a.lineNumber - b.lineNumber).map(l => l.id)}
-                          strategy={verticalListSortingStrategy}
-                        >
-                          <tbody>
-                            {lines.length === 0 && !showAddRow ? (
-                              <tr>
-                                <td colSpan={6} className="py-6 text-center text-xs text-muted-foreground">
-                                  No line items yet. Add products or services to this invoice.
-                                </td>
-                              </tr>
-                            ) : (
-                              [...lines].sort((a, b) => a.lineNumber - b.lineNumber).map((line) => (
-                                <SortableLineRow
-                                  key={line.id}
-                                  line={line}
-                                  isEditing={isEditing}
-                                  onEdit={(lineId, draft) => updateLineMutation.mutate({ lineId, draft })}
-                                  onDelete={(lineId) => deleteLineMutation.mutate(lineId)}
-                                />
-                              ))
-                            )}
-                            {/* Add row renders inside tbody, matching PartsBillingCard pattern */}
-                            {isEditing && canEdit && showAddRow && (
-                              <AddLineItemRow
-                                onAdd={(draft) => { addLineMutation.mutate(draft); setShowAddRow(false); }}
-                                isPending={addLineMutation.isPending}
-                                onCancel={() => setShowAddRow(false)}
-                              />
-                            )}
-                          </tbody>
-                        </SortableContext>
-                      </table>
-                    </DndContext>
-                  </div>
-
-                  {/* Add Line Item button — matches PartsBillingCard button bar below table */}
-                  {isEditing && canEdit && !showAddRow && (
-                    <div className="flex items-center gap-2">
-                      <Button variant="outline" size="sm" onClick={() => setShowAddRow(true)} data-testid="button-add-line-item">
-                        <Plus className="h-3 w-3 mr-1" />
-                        Add Line Item
-                      </Button>
-                    </div>
-                  )}
-
-                </div>
-                {/* Totals section — outside the space-y-4 container */}
-                <div className="p-4 border-t bg-muted/30">
-                    <div className="flex flex-col items-end gap-1">
-                      <div className="flex justify-between w-56">
-                        <span className="text-sm text-muted-foreground">Subtotal</span>
-                        <span className="text-sm">{formatCurrency(invoice.subtotal)}</span>
-                      </div>
-
-                      {/* Phase 11: Discount Section */}
-                      {canEdit ? (
-                        <div className="w-72 py-2 space-y-2">
-                          <div className="flex items-center gap-2">
-                            <Tag className="h-4 w-4 text-muted-foreground" />
-                            <span className="text-sm text-muted-foreground font-medium">Discount</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <div className="flex items-center gap-1 flex-1">
-                              <Input
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                max="100"
-                                placeholder="0"
-                                value={discountPercent}
-                                onChange={(e) => handleDiscountPercentChange(e.target.value)}
-                                className="h-8 w-20 text-right text-sm"
-                                data-testid="input-discount-percent"
-                              />
-                              <Percent className="h-4 w-4 text-muted-foreground" />
-                            </div>
-                            <span className="text-muted-foreground text-sm">or</span>
-                            <div className="flex items-center gap-1 flex-1">
-                              <DollarSign className="h-4 w-4 text-muted-foreground" />
-                              <Input
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                placeholder="0.00"
-                                value={discountAmount}
-                                onChange={(e) => handleDiscountAmountChange(e.target.value)}
-                                className="h-8 w-24 text-right text-sm"
-                                data-testid="input-discount-amount"
-                              />
-                            </div>
-                          </div>
-                          <div className="flex justify-end gap-2">
-                            {(discountPercent || discountAmount) && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 text-xs"
-                                onClick={handleClearDiscount}
-                                disabled={updateDiscountMutation.isPending}
-                                data-testid="button-clear-discount"
-                              >
-                                <X className="h-3 w-3 mr-1" />
-                                Clear
-                              </Button>
-                            )}
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-7 text-xs"
-                              onClick={handleSaveDiscount}
-                              disabled={updateDiscountMutation.isPending || (!discountPercent && !discountAmount)}
-                              data-testid="button-save-discount"
-                            >
-                              {updateDiscountMutation.isPending ? "Saving..." : "Apply Discount"}
-                            </Button>
-                          </div>
-                        </div>
-                      ) : invoice.discountAmount && parseFloat(invoice.discountAmount) > 0 ? (
-                        <div className="flex justify-between w-56 text-green-600">
-                          <span className="text-sm">
-                            Discount ({invoice.discountPercent}%)
-                          </span>
-                          <span className="text-sm">-{formatCurrency(invoice.discountAmount)}</span>
-                        </div>
-                      ) : null}
-
-                      <div className="flex justify-between w-56 items-center">
-                        {isEditing && canEdit ? (
-                          <Popover open={taxSelectorOpen} onOpenChange={setTaxSelectorOpen}>
-                            <PopoverTrigger asChild>
-                              <button
-                                type="button"
-                                className="text-sm text-primary hover:underline cursor-pointer flex items-center gap-1"
-                                data-testid="button-tax-selector"
-                              >
-                                {currentTaxLabel}
-                                <ChevronDown className="h-3 w-3" />
-                              </button>
-                            </PopoverTrigger>
-                            <PopoverContent className="w-64 p-2" align="start">
-                              <div className="space-y-1">
-                                <p className="text-xs font-medium text-muted-foreground px-2 py-1">Select tax for this invoice</p>
-                                {/* No Tax option */}
-                                <button
-                                  type="button"
-                                  className={`w-full text-left px-2 py-1.5 rounded text-sm hover:bg-muted ${!invoice.taxGroupId ? "bg-muted font-medium" : ""}`}
-                                  onClick={() => applyTaxMutation.mutate(null)}
-                                  disabled={applyTaxMutation.isPending}
-                                  data-testid="tax-option-no-tax"
-                                >
-                                  No Tax
-                                </button>
-                                {/* Tax group options */}
-                                {taxGroups.map((group) => {
-                                  const combinedRate = group.rates.reduce((s, r) => s + parseFloat(r.rate || "0"), 0);
-                                  const isSelected = invoice.taxGroupId === group.id;
-                                  return (
-                                    <button
-                                      key={group.id}
-                                      type="button"
-                                      className={`w-full text-left px-2 py-1.5 rounded text-sm hover:bg-muted ${isSelected ? "bg-muted font-medium" : ""}`}
-                                      onClick={() => applyTaxMutation.mutate(group.id)}
-                                      disabled={applyTaxMutation.isPending}
-                                      data-testid={`tax-option-${group.id}`}
-                                    >
-                                      <span>{group.name}</span>
-                                      <span className="text-muted-foreground ml-1">({combinedRate.toFixed(2)}%)</span>
-                                    </button>
-                                  );
-                                })}
-                                {taxGroups.length === 0 && !taxGroupsError && (
-                                  <p className="text-xs text-muted-foreground px-2 py-1">No tax groups configured. Set up tax rates in Settings.</p>
-                                )}
-                                {taxGroupsError && (
-                                  <p className="text-xs text-destructive px-2 py-1">Failed to load tax groups. Check permissions or try again.</p>
-                                )}
-                              </div>
-                            </PopoverContent>
-                          </Popover>
-                        ) : (
-                          <span className="text-sm text-muted-foreground">
-                            {currentTaxLabel}
-                          </span>
-                        )}
-                        <span className="text-sm">{formatCurrency(invoice.taxTotal)}</span>
-                      </div>
-                      <div className="flex justify-between w-56 pt-2 border-t mt-1">
-                        <span className="text-sm font-medium">Total</span>
-                        <span className="text-sm font-medium">{formatCurrency(invoice.total)}</span>
-                      </div>
-                      <div className="flex justify-between w-56">
-                        <span className="text-sm text-muted-foreground">Paid</span>
-                        <span className="text-sm">{formatCurrency(invoice.amountPaid)}</span>
-                      </div>
-                      <div className="flex justify-between w-56 pt-2 border-t mt-1">
-                        <span className="text-sm font-semibold">Balance Due</span>
-                        <span className={`text-sm font-bold ${balanceColor}`}>
-                          {formatCurrency(invoice.balance)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-              </div>
-          </>
-        }
-        rightRail={
-          <>
-              {/* Notes — writable technician notes (when linked job exists)
-                  merged with inherited client/location/company notes flagged
-                  show_on_invoices. 2026-04-18: always mounted; when no job is
-                  linked, the component still renders inherited notes and
-                  hides its own Add button. */}
-              <Card>
-                <CardContent className="p-0">
-                  <JobNotesSection
-                    jobId={jobId ?? ""}
-                    source="invoice"
-                    invoiceId={invoiceId}
-                    embedded
-                    hideHeader={false}
-                    showCount={false}
-                    hideAddButton={!jobId}
-                  />
-                </CardContent>
-              </Card>
-
-              {/* 2026-04-18 Phase 10 (payments clarity): canonical
-                  payment history for this invoice. Consumes the
-                  already-fetched payments[] cache — no new query. */}
-              <PaymentHistoryCard payments={payments as any} />
-
-              {/* 2026-04-19 Phase 12: read-only invoice activity
-                  timeline assembled from invoices / email_deliveries /
-                  payments. Fetched independently so the card stays
-                  decoupled from existing invoice state. */}
-              {invoiceId && <InvoiceTimelineCard invoiceId={invoiceId} />}
-
-              {/* Client Message - customer-facing message on invoice */}
-              {(invoice.clientMessage || isEditing) && (
-                <Card>
-                  <CardHeader className="pb-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <CardTitle className="text-sm font-medium flex items-center gap-2">
-                        <MessageSquare className="h-4 w-4 text-muted-foreground" />
-                        Client Message
-                      </CardTitle>
-                      {isEditing ? (
-                        <span className="text-xs text-muted-foreground">Visible on invoice</span>
-                      ) : null}
-                    </div>
-                  </CardHeader>
-                  <CardContent className="pt-0">
-                    {isEditing ? (
-                      <div className="space-y-2">
-                        <Textarea
-                          placeholder="Add a message for the client (appears on invoice PDF)..."
-                          value={clientMessageDraft}
-                          onChange={(e) => setClientMessageDraft(e.target.value)}
-                          className="min-h-[80px] text-sm"
-                          data-testid="textarea-client-message"
-                        />
-                        {clientMessageDraft !== (invoice.clientMessage || "") && (
-                          <div className="flex justify-end gap-2">
-                            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setClientMessageDraft(invoice.clientMessage || "")}>
-                              Cancel
-                            </Button>
-                            <Button
-                              variant="outline" size="sm" className="h-7 text-xs"
-                              disabled={updateInvoiceFieldsMutation.isPending}
-                              onClick={() => updateInvoiceFieldsMutation.mutate({ clientMessage: clientMessageDraft })}
-                              data-testid="button-save-client-message"
-                            >
-                              {updateInvoiceFieldsMutation.isPending ? "Saving..." : "Save"}
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <p className="text-sm text-muted-foreground whitespace-pre-wrap min-h-[40px]">
-                        {invoice.clientMessage || "No client message."}
-                      </p>
                     )}
-                  </CardContent>
-                </Card>
-              )}
+                  </div>
+                );
+              })()}
+            </div>
+            <aside className="min-w-0 space-y-3">
+              {/* ─── Client visibility toggles (6 canonical fields). */}
+              <ClientVisibilityCardV2
+                draft={visibilityDraft}
+                server={serverVisibility}
+                onToggle={(key, value) => setVisibilityDraft((d) => ({ ...d, [key]: value }))}
+                onSave={() => updateInvoiceFieldsMutation.mutate(visibilityDraft)}
+                onReset={() => setVisibilityDraft(serverVisibility)}
+                dirty={isVisibilityDirty}
+                isSaving={updateInvoiceFieldsMutation.isPending}
+              />
 
-              {/* 2026-04-14: Internal Notes card removed — the
-                  Notes section already covers the same internal-only
-                  use case; a duplicate "Internal Notes" surface was
-                  redundant. `notes_internal` column remains untouched
-                  in the schema and continues to round-trip through
-                  `updateInvoiceFieldsMutation` for any caller. */}
+              {/* ─── Notes (canonical JobNotesSection). Order per user spec:
+                  immediately below Client visibility. The `notes_internal`
+                  schema column continues to round-trip via
+                  `updateInvoiceFieldsMutation` for non-UI consumers (QBO
+                  PrivateNote mapper, import pipeline snapshot) but no longer
+                  has a competing UI surface here. */}
+              <div className="overflow-hidden rounded-lg border border-card-border bg-card shadow-card" data-testid="card-invoice-notes">
+                <JobNotesSection
+                  jobId={jobId ?? ""}
+                  source="invoice"
+                  invoiceId={invoiceId}
+                  embedded
+                  hideHeader={false}
+                  showCount={false}
+                  hideAddButton={!jobId}
+                />
+              </div>
 
-              {/* Client Visibility Settings — local draft + explicit Save */}
-              <Collapsible open={visibilityOpen} onOpenChange={setVisibilityOpen}>
-                <Card>
-                  <CollapsibleTrigger asChild>
-                    <button className="w-full flex items-center justify-between px-4 py-3 hover-elevate" data-testid="trigger-visibility">
-                      <span className="text-sm font-medium flex items-center gap-2">
-                        <Settings className="h-4 w-4 text-muted-foreground" />
-                        Client Visibility
-                      </span>
-                      {visibilityOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-                    </button>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <div className="border-t px-4 pb-4 pt-3 space-y-3">
-                      <p className="text-xs text-muted-foreground mb-3">
-                        Control what the client sees on the invoice PDF.
-                      </p>
-                      <div className="flex items-center justify-between">
-                        <Label htmlFor="showLineItems" className="text-sm">Show line item breakdown</Label>
-                        <Switch id="showLineItems" checked={visibilityDraft.showLineItems}
-                          onCheckedChange={(checked) => setVisibilityDraft(d => ({ ...d, showLineItems: checked }))}
-                          data-testid="switch-show-line-items" />
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <Label htmlFor="showQuantity" className="text-sm">Show quantities</Label>
-                        <Switch id="showQuantity" checked={visibilityDraft.showQuantity}
-                          onCheckedChange={(checked) => setVisibilityDraft(d => ({ ...d, showQuantity: checked }))}
-                          data-testid="switch-show-quantity" />
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <Label htmlFor="showUnitPrice" className="text-sm">Show unit prices</Label>
-                        <Switch id="showUnitPrice" checked={visibilityDraft.showUnitPrice}
-                          onCheckedChange={(checked) => setVisibilityDraft(d => ({ ...d, showUnitPrice: checked }))}
-                          data-testid="switch-show-unit-price" />
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <Label htmlFor="showLineTotals" className="text-sm">Show line totals</Label>
-                        <Switch id="showLineTotals" checked={visibilityDraft.showLineTotals}
-                          onCheckedChange={(checked) => setVisibilityDraft(d => ({ ...d, showLineTotals: checked }))}
-                          data-testid="switch-show-line-totals" />
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <Label htmlFor="showBalance" className="text-sm">Show account balance</Label>
-                        <Switch id="showBalance" checked={visibilityDraft.showBalance}
-                          onCheckedChange={(checked) => setVisibilityDraft(d => ({ ...d, showBalance: checked }))}
-                          data-testid="switch-show-balance" />
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <Label htmlFor="showJobDescription" className="text-sm">Show job description</Label>
-                        <Switch id="showJobDescription" checked={visibilityDraft.showJobDescription}
-                          onCheckedChange={(checked) => setVisibilityDraft(d => ({ ...d, showJobDescription: checked }))}
-                          data-testid="switch-show-job-description" />
-                      </div>
-                      {/* Save/Reset — only visible when draft differs from server state */}
-                      {isVisibilityDirty && (
-                        <div className="flex justify-end gap-2 pt-2 border-t">
-                          <Button variant="ghost" size="sm" className="h-7 text-xs"
-                            disabled={updateInvoiceFieldsMutation.isPending}
-                            onClick={() => setVisibilityDraft(serverVisibility)}>
-                            Reset
-                          </Button>
-                          <Button
-                            variant="outline" size="sm" className="h-7 text-xs"
-                            disabled={updateInvoiceFieldsMutation.isPending}
-                            onClick={() => updateInvoiceFieldsMutation.mutate(visibilityDraft)}
-                            data-testid="button-save-visibility"
-                          >
-                            {updateInvoiceFieldsMutation.isPending ? "Saving..." : "Save"}
-                          </Button>
-                        </div>
-                      )}
-                      </div>
-                    </CollapsibleContent>
-                  </Card>
-                </Collapsible>
+              {/* ─── Payment history. */}
+              {/* 2026-04-29 Stripe completion: per-row refund initiator.
+                  PaymentHistoryCard owns visibility (only paymentType='payment'
+                  rows with remaining refundable amount get a refund button);
+                  this page owns the dialog state. */}
+              <PaymentHistoryCard
+                payments={payments as any}
+                onRefund={(p) => setRefundTarget(p as unknown as Payment)}
+              />
 
-              {/* Reference — show job's reference fields when invoice is job-backed */}
-              {jobId ? (
-                <ReferenceFieldsSection entityType="job" entityId={jobId} />
-              ) : (
-                <ReferenceFieldsSection entityType="invoice" entityId={invoiceId!} />
-              )}
+              {/* 2026-04-29: Activity timeline removed from this page per
+                  product request. The InvoiceTimelineCard component is still
+                  exported and used elsewhere; only the right-rail mount on
+                  InvoiceDetailPage is gone. Backend audit / email / payment
+                  history sources are unchanged. */}
 
-              {/* Activity — bottom of rail; reference history. */}
-              <ActivityCard entityType="invoice" entityId={invoiceId!} />
-          </>
-        }
+              {/* 2026-04-29: Reference card removed from the invoice right
+                  rail. Reference fields already render inline in the meta
+                  card (see InvoiceMetaCard reference rows). The
+                  ReferenceFieldsSection component is unchanged and stays
+                  mounted on Job Detail / Customer pages. Backend reference
+                  field schema, mutations, and storage are not touched. */}
+            </aside>
+          </div>
+        </div>
+      </div>
+
+      {/* 2026-04-29 v3: Canonical Product/Service create modal — one
+          instance per page; opened via `requestCreateProduct(name)`
+          from any AddLineItemRow's "Create '<X>'" affordance. */}
+      <AddProductModal
+        open={createProductOpen}
+        initialName={createProductInitialName}
+        onClose={handleCreateProductCancel}
+        onSave={handleCreateProductSave}
+        isSaving={savingCreatedProduct}
       />
 
       <Dialog open={showPaymentDialog} onOpenChange={setShowPaymentDialog}>
@@ -1887,6 +2479,44 @@ export default function InvoiceDetailPage() {
         defaultEmail={primaryContact?.email ?? null}
         invoiceNumber={invoice.invoiceNumber ?? null}
       />
+
+      {/* 2026-04-29 Stripe completion: staff card-take dialog.
+          Backend route: POST /api/invoices/:invoiceId/payments/checkout
+          (provider-neutral; resolves to Stripe via paymentApplicationService).
+          The Stripe webhook is the canonical writer — this dialog only
+          opens an intent and refetches on success. */}
+      <StaffTakeCardDialog
+        open={showTakeCardDialog}
+        onOpenChange={setShowTakeCardDialog}
+        invoiceId={invoiceId}
+        invoiceNumber={invoice.invoiceNumber ?? null}
+        balanceDue={invoice.balance ?? "0"}
+        invoiceQueryKey={["invoices", "detail", invoiceId]}
+        paymentsQueryKey={["invoices", "detail", invoiceId, "payments"]}
+      />
+
+      {/* 2026-04-29 Stripe completion: per-row refund initiator. The
+          dialog handles both manual (ledger-only) and Stripe-linked
+          (provider call + ledger insert with reconciliation_pending fallback)
+          parents — branching is server-side via paymentApplicationService.
+          alreadyOffset is computed locally for UX only; the server's
+          assertRefundAmountWithinParent is authoritative on the cap. */}
+      {refundTarget && (
+        <RefundPaymentDialog
+          open={!!refundTarget}
+          onOpenChange={(o) => { if (!o) setRefundTarget(null); }}
+          payment={{
+            id: refundTarget.id,
+            amount: refundTarget.amount,
+            method: refundTarget.method,
+            reference: refundTarget.reference ?? null,
+            providerSource: (refundTarget.providerSource as any) ?? "manual",
+          }}
+          alreadyOffset={computeAlreadyOffset(refundTarget.id, payments as Payment[])}
+          invoiceQueryKey={["invoices", "detail", invoiceId]}
+          paymentsQueryKey={["invoices", "detail", invoiceId, "payments"]}
+        />
+      )}
 
       {/* Delete Draft Confirmation */}
       <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>

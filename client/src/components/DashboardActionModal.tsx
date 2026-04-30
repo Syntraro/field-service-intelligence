@@ -606,7 +606,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
             </div>
             {job.holdReason && (
               <span
-                className="shrink-0 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider rounded bg-orange-50 text-orange-700 border border-orange-200 whitespace-nowrap"
+                className="shrink-0 px-2 py-1 text-label font-semibold uppercase tracking-wider rounded bg-orange-50 text-orange-700 border border-orange-200 whitespace-nowrap"
                 data-testid={`hold-reason-pill-${job.id}`}
               >
                 Hold: {getHoldReasonLabel(job.holdReason)}
@@ -727,7 +727,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
       <div key={source}>
         {showHeader && (
           <div className="sticky top-0 z-10 bg-[#f1f5f9] px-5 py-1.5 border-b border-[#e5e7eb] flex items-center justify-between gap-2">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-[#64748b]">
+            <span className="text-helper font-semibold uppercase tracking-wider text-[#64748b]">
               {SOURCE_SECTION_LABEL[source]}
               <span className="ml-2 text-[#94a3b8] tabular-nums normal-case">({rows.length})</span>
             </span>
@@ -735,7 +735,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
               <button
                 type="button"
                 onClick={() => { handleOpenChange(false); setLocation("/jobs"); }}
-                className="text-[11px] font-medium text-[#76B054] hover:text-[#5F9442] inline-flex items-center gap-1"
+                className="text-helper font-medium text-[#76B054] hover:text-[#5F9442] inline-flex items-center gap-1"
                 data-testid="action-required-view-all-jobs"
               >
                 View all jobs
@@ -799,7 +799,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
               <span className="text-sm font-medium text-[#111827] truncate min-w-0 flex-1">
                 {row.templateTitle}
               </span>
-              <span className={`text-[10px] font-semibold uppercase tracking-wider rounded px-1.5 py-0.5 shrink-0 ${statusTone}`}>
+              <span className={`text-label font-semibold uppercase tracking-wider rounded px-1.5 py-0.5 shrink-0 ${statusTone}`}>
                 {statusLabel}
               </span>
             </div>
@@ -838,7 +838,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
             so the link is reachable even when on-hold has no rows. */}
         {showHeader && (
           <div className="sticky top-0 z-10 bg-[#f1f5f9] px-5 py-1.5 border-b border-[#e5e7eb] flex items-center justify-between gap-2">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-[#64748b]">
+            <span className="text-helper font-semibold uppercase tracking-wider text-[#64748b]">
               {SOURCE_SECTION_LABEL.pm_due}
               <span className="ml-2 text-[#94a3b8] tabular-nums normal-case">({rows.length})</span>
             </span>
@@ -848,7 +848,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
                 handleOpenChange(false);
                 setLocation("/pm");
               }}
-              className="text-[11px] font-medium text-[#76B054] hover:text-[#5F9442] inline-flex items-center gap-1"
+              className="text-helper font-medium text-[#76B054] hover:text-[#5F9442] inline-flex items-center gap-1"
               data-testid="pm-due-view-all"
             >
               View all PMs

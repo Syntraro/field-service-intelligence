@@ -20,10 +20,19 @@ import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { asyncHandler } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
-import type { AuthedRequest } from "../auth/tenantIsolation";
+import { rateLimitPerTenant, type AuthedRequest } from "../auth/tenantIsolation";
 import { paymentApplicationService } from "../services/payments/paymentApplicationService";
 
 const router = Router();
+
+// 2026-04-29 Stripe completion: same scope as the canonical staff
+// checkout limiter so both URLs share the same per-tenant bucket. The
+// legacy alias is slated for removal once access logs prove zero hits.
+const staffPaymentCheckoutLimiter = rateLimitPerTenant({
+  scope: "staff-payment-checkout",
+  windowMs: 60_000,
+  max: 12,
+});
 
 const legacyIntentSchema = z
   .object({
@@ -36,6 +45,7 @@ const legacyIntentSchema = z
 router.post(
   "/invoices/:invoiceId/stripe/payment-intent",
   requireRole(MANAGER_ROLES),
+  staffPaymentCheckoutLimiter,
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { amount } = validateSchema(legacyIntentSchema, req.body);
     const result = await paymentApplicationService.createCheckout({

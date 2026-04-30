@@ -20,8 +20,13 @@ import {
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/formatters";
+// 2026-04-29 Stripe completion: refund-affordance visibility helper.
+// Pure logic shared with the regression test suite — UX hint only;
+// server-side `assertRefundAmountWithinParent` is authoritative.
+import { isPaymentRefundable } from "@shared/paymentRefundability";
 
 export interface PaymentHistoryRow {
   id: string;
@@ -39,6 +44,16 @@ export interface PaymentHistoryRow {
 interface PaymentHistoryCardProps {
   payments: PaymentHistoryRow[];
   isLoading?: boolean;
+  /**
+   * 2026-04-29 Stripe completion: per-row refund initiator. When provided,
+   * a Refund action button renders on each `paymentType='payment'` parent
+   * row that still has remaining refundable amount (parent amount minus
+   * sum of |child amounts|). Visibility is computed locally for UX only;
+   * server `assertRefundAmountWithinParent` is authoritative on the cap.
+   *
+   * Omit to render history read-only (e.g., portal context).
+   */
+  onRefund?: (payment: PaymentHistoryRow) => void;
 }
 
 function methodIcon(method: string) {
@@ -83,11 +98,16 @@ function providerBadge(providerSource: string, qboPaymentId?: string | null) {
   return null;
 }
 
-export function PaymentHistoryCard({ payments, isLoading }: PaymentHistoryCardProps) {
+export function PaymentHistoryCard({ payments, isLoading, onRefund }: PaymentHistoryCardProps) {
   // Order newest-first by receivedAt.
   const sorted = [...payments].sort(
     (a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime(),
   );
+
+  // 2026-04-29 Stripe completion: refund-button visibility delegates to
+  // the canonical shared helper so the rule lives in one testable place.
+  const isRefundable = (row: PaymentHistoryRow): boolean =>
+    isPaymentRefundable(row, payments);
 
   return (
     <Card data-testid="card-payment-history">
@@ -164,6 +184,24 @@ export function PaymentHistoryCard({ payments, isLoading }: PaymentHistoryCardPr
                     </div>
                     {p.notes && (
                       <p className="text-[11px] text-slate-500 whitespace-pre-wrap">{p.notes}</p>
+                    )}
+                    {/* 2026-04-29 Stripe completion: refund affordance.
+                        Only renders for parent payments with remaining
+                        refundable amount; the dialog enforces the rest. */}
+                    {onRefund && isRefundable(p) && (
+                      <div className="pt-0.5">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-[11px] text-rose-700 hover:text-rose-900 hover:bg-rose-50"
+                          onClick={() => onRefund(p)}
+                          data-testid={`button-refund-${p.id}`}
+                        >
+                          <Undo2 className="h-3 w-3 mr-1" />
+                          Refund
+                        </Button>
+                      </div>
                     )}
                   </div>
                 </div>

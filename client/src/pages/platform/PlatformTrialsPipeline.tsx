@@ -20,6 +20,7 @@ import { PlatformLayout } from "./PlatformLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import {
   Table,
   TableBody,
@@ -462,11 +463,11 @@ function ExtendTrialDialog({
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="trial-end-date">New end date</Label>
-              <Input
+              <CanonicalDatePicker
                 id="trial-end-date"
-                type="date"
                 value={newEnd}
-                onChange={(e) => setNewEnd(e.target.value)}
+                onChange={(next) => setNewEnd(next ?? "")}
+                className="w-full h-9 text-sm"
                 data-testid="input-trial-end-date"
               />
             </div>

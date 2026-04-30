@@ -3,14 +3,13 @@ import * as React from "react"
 import { cn } from "@/lib/utils"
 
 /**
- * UI typography standard (see docs/UI_TYPOGRAPHY.md):
- *   Default body font size for table rows = 12px (`text-xs`). Headers may
- *   stay at `text-sm` if they're acting as a section title.
+ * UI typography standard (see docs/UI_TYPOGRAPHY.md).
  *
- * Current runtime default is `text-sm` (14px) on the root <table>. Do not
- * change this without sweeping every consumer — it shrinks every table in
- * the app. Use `className="text-xs"` on the page-level <Table> first,
- * then flip the default once everyone has caught up.
+ * 2026-04-29 Typography Phase D: root <table> default migrated from
+ * `text-sm` (17.1px) to canonical `text-row` (13px / 18px). Cells
+ * (`<TableCell>`) inherit this — `TableCell` itself has no size class
+ * and never did, so its rendered size is whatever the root table sets.
+ * `<TableHead>` overrides with `text-label` separately (see below).
  */
 const Table = React.forwardRef<
   HTMLTableElement,
@@ -19,7 +18,7 @@ const Table = React.forwardRef<
   <div className="relative w-full overflow-auto">
     <table
       ref={ref}
-      className={cn("w-full caption-bottom text-sm", className)}
+      className={cn("w-full caption-bottom text-row", className)}
       {...props}
     />
   </div>
@@ -76,6 +75,17 @@ const TableRow = React.forwardRef<
 ))
 TableRow.displayName = "TableRow"
 
+// 2026-04-29 Typography Phase D: size class swapped from `text-xs`
+// (15.2px) to canonical `text-label` (11px + bundled letter-spacing
+// 0.04em + bundled font-weight 500 + uppercase via @layer components).
+// The pre-existing `font-semibold` override (600) keeps headers visually
+// stronger than the token's default 500. The pre-existing `tracking-wide`
+// (0.025em) overrides text-label's bundled 0.04em — table headers
+// therefore use slightly less wide tracking than other text-label
+// surfaces. The explicit `uppercase` is now redundant with text-label's
+// component-layer rule but retained for grep-ability and zero behavior
+// change. Color (`text-[#4b5563]`) untouched per Phase D scope (color
+// migration is a separate phase).
 const TableHead = React.forwardRef<
   HTMLTableCellElement,
   React.ThHTMLAttributes<HTMLTableCellElement>
@@ -83,7 +93,7 @@ const TableHead = React.forwardRef<
   <th
     ref={ref}
     className={cn(
-      "h-10 px-4 text-left align-middle text-xs font-semibold uppercase tracking-wide text-[#4b5563] dark:text-gray-400 [&:has([role=checkbox])]:pr-0",
+      "h-10 px-4 text-left align-middle text-label font-semibold uppercase tracking-wide text-[#4b5563] dark:text-gray-400 [&:has([role=checkbox])]:pr-0",
       className
     )}
     {...props}

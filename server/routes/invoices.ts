@@ -117,6 +117,11 @@ const updateInvoiceSchema = z.object({
   showLineTotals: z.boolean().optional(),
   showLineItems: z.boolean().optional(),
   showBalance: z.boolean().optional(),
+  // 2026-04-29: Added to align with shared/schema.ts updateInvoiceSchema and
+  // the existing `show_job_description` column. Without this entry, the
+  // strict() route schema rejected the toggle with
+  // "Unrecognized key(s) in object: 'showJobDescription'".
+  showJobDescription: z.boolean().optional(),
   amountPaid: z.number().min(0).max(999999.99).optional(),
   version: z.number().int().nonnegative().optional(),
   // Phase 11: Discount fields

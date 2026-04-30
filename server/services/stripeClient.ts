@@ -20,17 +20,56 @@ import Stripe from "stripe";
  * Validate Stripe configuration at startup. Warns loudly — the server
  * boots in all environments, but Stripe endpoints return 503 until
  * required vars are set. Mirrors `validateEmailConfig`.
+ *
+ * 2026-04-29 Stripe completion: the warning lists every missing key
+ * with the surface it gates so operators don't have to grep the source
+ * to figure out what stops working. STRIPE_PUBLISHABLE_KEY is included
+ * because the customer-portal Elements mount cannot load Stripe.js
+ * without it; it is intentionally NOT marked critical for the staff
+ * surface, which can use Elements server-side via clientSecret alone.
  */
 export function validateStripeConfig(): { valid: boolean; missing: string[] } {
   const missing: string[] = [];
-  if (!process.env.STRIPE_SECRET_KEY) missing.push("STRIPE_SECRET_KEY");
-  if (!process.env.STRIPE_WEBHOOK_SECRET) missing.push("STRIPE_WEBHOOK_SECRET");
+  const detail: Array<{ key: string; impact: string }> = [];
+  if (!process.env.STRIPE_SECRET_KEY) {
+    missing.push("STRIPE_SECRET_KEY");
+    detail.push({
+      key: "STRIPE_SECRET_KEY",
+      impact:
+        "all server-side Stripe calls return HTTP 503; checkout, refund, and webhook verification cannot run",
+    });
+  }
+  if (!process.env.STRIPE_WEBHOOK_SECRET) {
+    missing.push("STRIPE_WEBHOOK_SECRET");
+    detail.push({
+      key: "STRIPE_WEBHOOK_SECRET",
+      impact:
+        "webhook signature verification fails; payment-success events cannot be applied to the canonical ledger",
+    });
+  }
+  if (!process.env.STRIPE_PUBLISHABLE_KEY) {
+    missing.push("STRIPE_PUBLISHABLE_KEY");
+    detail.push({
+      key: "STRIPE_PUBLISHABLE_KEY",
+      impact:
+        "customer-portal Pay-Now Elements cannot load Stripe.js; staff card-take dialog will also fail to mount",
+    });
+  }
 
   if (missing.length > 0) {
     console.warn(
-      `[Stripe] Missing env vars: ${missing.join(", ")}. ` +
-        "In-app card payments and webhook reconciliation will fail until these are set.",
+      `[Stripe] Missing env vars (${missing.length}): ${missing.join(", ")}.`,
     );
+    for (const { key, impact } of detail) {
+      console.warn(`  - ${key}: ${impact}`);
+    }
+    console.warn(
+      "[Stripe] Set the keys in the deployment environment, then restart. " +
+        "See docs/PAYMENTS_STRIPE_CONTRACT.md for the dashboard webhook URL " +
+        "to register and the env var conventions.",
+    );
+  } else {
+    console.info("[Stripe] All required env vars present.");
   }
   return { valid: missing.length === 0, missing };
 }

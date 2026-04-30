@@ -170,8 +170,13 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
     }
   }
 
+  // 2026-04-29 Color Phase 2: removed inline `background: '#222b36'`
+  // override — `bg-sidebar` already resolves to the same value via the
+  // `--sidebar` HSL token. `borderRight: 'none'` stays inline because
+  // it overrides shadcn Sidebar's default 1px border, which is layout,
+  // not color.
   return (
-    <Sidebar collapsible="icon" className="bg-sidebar text-sidebar-foreground" style={{ background: '#222b36', borderRight: 'none' }}>
+    <Sidebar collapsible="icon" className="bg-sidebar text-sidebar-foreground" style={{ borderRight: 'none' }}>
       {/* Sidebar collapse/expand toggle */}
       <SidebarHeader className="px-2 py-2">
         <SidebarTrigger data-testid="button-sidebar-toggle" className="text-white/50 hover:text-white/90 hover:bg-white/[0.08] h-8 w-8" />

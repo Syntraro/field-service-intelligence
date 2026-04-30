@@ -42,6 +42,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -377,19 +378,21 @@ function ScheduleCard({
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label className="text-xs">Start date</Label>
-              <Input
-                type="date"
+              <CanonicalDatePicker
                 value={form.startDate}
-                onChange={(e) => onChange({ startDate: e.target.value })}
+                onChange={(next) => onChange({ startDate: next ?? "" })}
+                className="w-full h-9 text-sm"
                 data-testid="pm-detail-start-date"
               />
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs">End date (optional)</Label>
-              <Input
-                type="date"
+              <CanonicalDatePicker
                 value={form.endDate}
-                onChange={(e) => onChange({ endDate: e.target.value })}
+                onChange={(next) => onChange({ endDate: next ?? "" })}
+                placeholder="Optional"
+                clearable
+                className="w-full h-9 text-sm"
                 data-testid="pm-detail-end-date"
               />
             </div>
@@ -813,14 +816,14 @@ export default function PMDetailPage() {
   // ── Render guards ─────────────────────────────────────────────────────
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-[#F4F8F4] flex items-center justify-center">
+      <div className="min-h-screen bg-app-bg flex items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
     );
   }
   if (isError || !template) {
     return (
-      <div className="min-h-screen bg-[#F4F8F4] flex flex-col items-center gap-4 py-24">
+      <div className="min-h-screen bg-app-bg flex flex-col items-center gap-4 py-24">
         <AlertCircle className="h-8 w-8 text-destructive" />
         <p className="text-muted-foreground">Plan not found.</p>
         <Button variant="outline" onClick={() => setLocation("/pm")}>Back to Plans</Button>
@@ -862,7 +865,7 @@ export default function PMDetailPage() {
   const subtitle = subtitleParts.join(" · ");
 
   return (
-    <div className="min-h-screen bg-[#F4F8F4]" data-testid="pm-detail-page">
+    <div className="min-h-screen bg-app-bg" data-testid="pm-detail-page">
       <div className="max-w-7xl mx-auto px-4 sm:px-5 lg:px-6 py-4 space-y-3">
         {/* Header */}
         <div className="flex items-start justify-between gap-3 flex-wrap">

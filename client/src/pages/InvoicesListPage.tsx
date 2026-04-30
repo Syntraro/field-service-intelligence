@@ -77,10 +77,10 @@ function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg }: {
         <div className={`p-1.5 rounded-md ${iconBg}`}>
           <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
         </div>
-        <div className="text-xs font-medium text-slate-500">{label}</div>
+        <div className="text-caption font-medium text-slate-500">{label}</div>
       </div>
-      <div className="text-2xl font-bold text-slate-900 tabular-nums mt-2">{value}</div>
-      <div className="text-xs text-slate-500 mt-1">{note}</div>
+      <div className="text-page-title font-bold text-slate-900 tabular-nums mt-2">{value}</div>
+      <div className="text-caption text-slate-500 mt-1">{note}</div>
     </div>
   );
 }
@@ -255,14 +255,14 @@ export default function InvoicesListPage() {
 
   // List stability: single return path — loading state renders inside content area only
   return (
-    <div className="min-h-screen bg-[#F4F8F4]" data-testid="invoices-page">
+    <div className="min-h-screen bg-app-bg" data-testid="invoices-page">
       <div className="p-6 space-y-5">
 
         {/* ── 1. Header Row ── */}
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-slate-900">Invoices</h1>
-            <p className="text-sm text-slate-500 mt-0.5">Invoice performance overview with full invoice list.</p>
+            <h1 className="text-page-title font-semibold text-slate-900">Invoices</h1>
+            <p className="text-row text-slate-500 mt-0.5">Invoice performance overview with full invoice list.</p>
           </div>
           <Link href="/invoices/new">
             <Button size="sm" className="gap-1.5 h-9 rounded-md" data-testid="button-new-invoice">
@@ -308,16 +308,16 @@ export default function InvoicesListPage() {
           >
             <AlertTriangle className="h-4 w-4 text-amber-700 mt-0.5 shrink-0" />
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium text-amber-900">
+              <div className="text-row font-medium text-amber-900">
                 {reconciliationIssues.length} invoice
                 {reconciliationIssues.length === 1 ? "" : "s"} need
                 {reconciliationIssues.length === 1 ? "s" : ""} reconciliation
               </div>
-              <div className="text-xs text-amber-800 mt-0.5">
+              <div className="text-caption text-amber-800 mt-0.5">
                 Status and payment totals have drifted on these rows. Open
                 each to review and correct.
               </div>
-              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs">
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-caption">
                 {reconciliationIssues.slice(0, 6).map((iss) => {
                   const label =
                     iss.kind === "paid_with_balance"
@@ -369,7 +369,7 @@ export default function InvoicesListPage() {
                     key={filter}
                     variant={activeFilter === filter ? "default" : "outline"}
                     size="sm"
-                    className="h-7 text-xs rounded-full"
+                    className="h-7 text-caption rounded-full"
                     onClick={() => setActiveFilter(filter)}
                     data-testid={`button-filter-${filter}`}
                   >
@@ -382,12 +382,12 @@ export default function InvoicesListPage() {
             {(statusCounts["qbo_synced"] || statusCounts["qbo_out_of_sync"]) ? (
               <FilterSection label="QuickBooks Sync">
                 <div className="flex flex-wrap gap-1.5">
-                  <Button variant={activeFilter === "qbo_synced" ? "default" : "outline"} size="sm" className="h-7 text-xs rounded-full gap-1" onClick={() => setActiveFilter("qbo_synced")} data-testid="button-filter-qbo-synced">
+                  <Button variant={activeFilter === "qbo_synced" ? "default" : "outline"} size="sm" className="h-7 text-caption rounded-full gap-1" onClick={() => setActiveFilter("qbo_synced")} data-testid="button-filter-qbo-synced">
                     <RefreshCw className="h-3 w-3" />
                     Synced {statusCounts["qbo_synced"] ? `(${statusCounts["qbo_synced"]})` : ""}
                   </Button>
                   {statusCounts["qbo_out_of_sync"] > 0 && (
-                    <Button variant={activeFilter === "qbo_out_of_sync" ? "destructive" : "outline"} size="sm" className="h-7 text-xs rounded-full gap-1" onClick={() => setActiveFilter("qbo_out_of_sync")} data-testid="button-filter-qbo-out-of-sync">
+                    <Button variant={activeFilter === "qbo_out_of_sync" ? "destructive" : "outline"} size="sm" className="h-7 text-caption rounded-full gap-1" onClick={() => setActiveFilter("qbo_out_of_sync")} data-testid="button-filter-qbo-out-of-sync">
                       <AlertTriangle className="h-3 w-3" />
                       Out of Sync ({statusCounts["qbo_out_of_sync"]})
                     </Button>
@@ -416,7 +416,7 @@ export default function InvoicesListPage() {
                   className="flex items-center justify-between gap-3 px-4 py-2 border-b border-slate-200 bg-blue-50"
                   data-testid="bulk-action-bar"
                 >
-                  <div className="text-sm text-slate-700">
+                  <div className="text-row text-slate-700">
                     <span className="font-medium">{selectedIds.size}</span> selected
                   </div>
                   <div className="flex items-center gap-2">
@@ -466,7 +466,7 @@ export default function InvoicesListPage() {
                 </div>
               )}
               <div
-                className="grid items-center border-b border-[#e5e7eb] py-2 text-xs font-medium text-slate-600 bg-slate-50"
+                className="grid items-center border-b border-[#e5e7eb] py-2 text-caption font-medium text-slate-600 bg-slate-50"
                 style={{ gridTemplateColumns: INVOICES_GRID_COLS }}
               >
                 <div className="px-4 flex items-center">
@@ -517,30 +517,30 @@ export default function InvoicesListPage() {
                     />
                   </div>
                   <div className="px-4 min-w-0 py-2.5">
-                    <p className="text-sm font-medium text-slate-800 truncate" data-testid={`text-invoice-client-${invoice.id}`}>
+                    <p className="text-row font-medium text-slate-800 truncate" data-testid={`text-invoice-client-${invoice.id}`}>
                       {invoice.locationDisplayName || invoice.locationName || "Unknown"}
                     </p>
                     {invoice.locationName && invoice.locationDisplayName && (
-                      <p className="text-xs text-slate-500 truncate">{invoice.locationName}</p>
+                      <p className="text-caption text-slate-500 truncate">{invoice.locationName}</p>
                     )}
                   </div>
                   <div className="px-4 min-w-0 py-2.5">
-                    <p className="text-xs text-slate-500 truncate">{invoice.workDescription || "-"}</p>
+                    <p className="text-caption text-slate-500 truncate">{invoice.workDescription || "-"}</p>
                   </div>
                   <div className="px-4 py-2.5">
-                    <span className="font-mono text-sm text-slate-800" data-testid={`text-invoice-number-${invoice.id}`}>
+                    <span className="font-mono text-row text-slate-800" data-testid={`text-invoice-number-${invoice.id}`}>
                       {invoice.invoiceNumber || `INV-${invoice.id.slice(0, 8)}`}
                     </span>
                   </div>
-                  <div className="px-4 text-sm text-slate-700 py-2.5">{safeFormatDate(invoice.dueDate)}</div>
+                  <div className="px-4 text-row text-slate-700 py-2.5">{safeFormatDate(invoice.dueDate)}</div>
                   <div className="px-4 py-2.5">
                     <div className="flex items-center gap-2 flex-wrap">
                       <Badge variant={invoice.statusInfo.variant}>{invoice.statusInfo.label}</Badge>
                       <QboSyncBadge invoice={invoice} />
                     </div>
                   </div>
-                  <div className="px-4 text-right whitespace-nowrap tabular-nums text-sm text-slate-700 py-2.5">{formatCurrency(invoice.total)}</div>
-                  <div className="px-4 text-right whitespace-nowrap tabular-nums text-sm py-2.5">
+                  <div className="px-4 text-right whitespace-nowrap tabular-nums text-row text-slate-700 py-2.5">{formatCurrency(invoice.total)}</div>
+                  <div className="px-4 text-right whitespace-nowrap tabular-nums text-row py-2.5">
                     <span className={parseFloat(invoice.balance) > 0 ? "font-medium text-slate-900" : "text-slate-400"}>
                       {formatCurrency(invoice.balance)}
                     </span>
@@ -568,7 +568,7 @@ export default function InvoicesListPage() {
         </div>
 
         {filteredInvoices.length > 0 && (
-          <div className="text-xs text-slate-500 mt-2" data-testid="text-invoice-count">
+          <div className="text-caption text-slate-500 mt-2" data-testid="text-invoice-count">
             Showing {filteredInvoices.length} invoice{filteredInvoices.length !== 1 ? "s" : ""}
           </div>
         )}

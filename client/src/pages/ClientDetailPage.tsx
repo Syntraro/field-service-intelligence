@@ -960,7 +960,7 @@ export default function ClientDetailPage() {
   const scopeTags = scopeType === "company" ? companyTags : locationTags;
 
   return (
-    <div className="flex h-full flex-col bg-[#F4F8F4]" data-testid="client-detail-root">
+    <div className="flex h-full flex-col bg-app-bg" data-testid="client-detail-root">
 
       {/* ═══ PAGE HEADER: IDENTITY + CREATE ACTIONS + KPI + OVERFLOW ═══
            Create actions (Job / Quote / Invoice) live directly under the

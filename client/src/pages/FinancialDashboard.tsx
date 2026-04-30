@@ -301,7 +301,7 @@ export default function FinancialDashboard() {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-[#F4F8F4]">
+      <div className="min-h-screen bg-app-bg">
         <main className="mx-auto px-4 sm:px-5 lg:px-6 py-4">
           <div className="p-6 bg-white rounded-md border border-red-200">
             <div className="flex items-center gap-2 text-red-600 mb-2">
@@ -316,7 +316,7 @@ export default function FinancialDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F4F8F4]" data-testid="financial-dashboard-page">
+    <div className="min-h-screen bg-app-bg" data-testid="financial-dashboard-page">
       <main className="mx-auto px-4 sm:px-5 lg:px-6 py-4">
         {/* Header */}
         <div
@@ -1003,11 +1003,7 @@ function TodaysScheduleCard({
                     key={`${tech.technicianId}-${block.startISO}-${block.visitId ?? "open"}-${idx}`}
                     type="button"
                     onClick={() => handleBlockClick(tech, block)}
-                    className={`w-full text-left px-4 py-1.5 transition-colors flex items-center gap-3 group ${!isLast ? "border-b border-[#e2e8f0]" : ""} ${
-                      isOpen
-                        ? "bg-emerald-50/40 hover:bg-emerald-50/80"
-                        : "hover:bg-[#F0F5F0]"
-                    }`}
+                    className={`w-full text-left px-4 py-1.5 transition-colors flex items-center gap-3 group hover:bg-[#F0F5F0] ${!isLast ? "border-b border-[#e2e8f0]" : ""}`}
                     data-testid={`schedule-block-${block.visitId ?? `${tech.technicianId}-${block.startISO}`}`}
                   >
                     {/* 2026-04-26 v2: rigid 3-column grid for row
@@ -1090,12 +1086,8 @@ function TodaysScheduleCard({
                           key={`${tech.technicianId}-${block.startISO}-${block.visitId ?? "open"}`}
                           type="button"
                           onClick={() => handleBlockClick(tech, block)}
-                          className={`w-full text-left px-3 py-1.5 transition-colors ${
+                          className={`w-full text-left px-3 py-1.5 transition-colors hover:bg-[#F0F5F0] ${
                             !isLastBlock ? "border-b border-slate-100" : ""
-                          } ${
-                            isOpen
-                              ? "bg-emerald-50/60 hover:bg-emerald-50"
-                              : "hover:bg-[#F0F5F0]"
                           }`}
                           data-testid={`schedule-block-${block.visitId ?? `${tech.technicianId}-${block.startISO}`}`}
                         >

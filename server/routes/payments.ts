@@ -11,7 +11,7 @@ import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
-import { AuthedRequest } from "../auth/tenantIsolation";
+import { AuthedRequest, rateLimitPerTenant } from "../auth/tenantIsolation";
 import { paymentRepository } from "../storage/payments";
 import { invoiceRepository } from "../storage/invoices";
 import { isInvoicePaid } from "../lib/invoicePredicates";
@@ -67,6 +67,19 @@ const updatePaymentSchema = z
 // the provider-named /stripe/payment-intent route (kept live as a
 // forwarder). Response contract is the same for every future provider;
 // only the `providerId` + `clientToken` semantics differ.
+//
+// 2026-04-29 Stripe completion: rate limiter mirrors the portal
+// `portal-payment-intent` cap. Staff is authenticated and trusted, but
+// every call mints a new Stripe PaymentIntent (a real provider cost).
+// 12/min/tenant is double the portal allowance — generous for legitimate
+// retries from a busy office while still capping scripted abuse if a
+// session is compromised.
+const staffPaymentCheckoutLimiter = rateLimitPerTenant({
+  scope: "staff-payment-checkout",
+  windowMs: 60_000,
+  max: 12,
+});
+
 const checkoutSchema = z
   .object({
     amount: z
@@ -80,6 +93,7 @@ const checkoutSchema = z
 router.post(
   "/invoices/:invoiceId/payments/checkout",
   requireRole(MANAGER_ROLES),
+  staffPaymentCheckoutLimiter,
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { amount, currency } = validateSchema(checkoutSchema, req.body ?? {});
     const result = await paymentApplicationService.createCheckout({

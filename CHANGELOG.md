@@ -6,6 +6,3562 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### JobDetailPage final polish pass (2026-04-29)
+
+Surgical UI polish pass scoped to `client/src/pages/JobDetailPage.tsx`
+and `client/src/components/JobEquipmentSection.tsx`. **No backend,
+schema, route, mutation, query, or token changes.** Pure layout /
+typography / density tweaks to land the four remaining UX gaps from
+the precision-UI review.
+
+- **Labour card header restyled to match Notes / Equipment chrome.**
+  The Labour `SectionCard` previously had a custom uppercase header
+  ("LABOUR") plus an in-body summary row that duplicated the totals
+  shown in the per-tech grouped list. Replaced with a single
+  inline-summary header in the same chrome as the Notes and Equipment
+  cards (`bg-[#f8fafc] border-b border-[#e2e8f0]`,
+  `text-sm font-semibold text-[#0f172a]`, leading `Clock` icon).
+  Header reads "Labour · 10h 43m · $589.42" (mixed case, mono totals
+  with hairline separators). The "+ Time Entry" button mirrors the
+  "+ Add Note" button styling exactly
+  (`text-xs text-[#76B054] hover:text-[#5F9442] font-medium`). Body
+  no longer renders the separate totals row — the header carries that
+  information now.
+- **Client name hierarchy reverted to `text-section-title font-semibold`.**
+  Earlier in the pass the customer/location name (when shown beneath
+  a job-summary H1) was bumped to `text-page-title` (22/600) to mirror
+  the InvoiceMetaCard prominence. In practice it competed with the H1
+  for visual weight. Reverted to the canonical secondary-heading
+  token: Job summary stays at `text-page-title` (22), Client name at
+  `text-section-title` (16/600), Service Address at `text-row` (14).
+- **Right metadata column — Invoice value styled to mirror Job # value.**
+  In the right-side meta stack the four rows (Status / Job # /
+  Scheduled / Invoice) already share padding and divider chrome. The
+  Invoice link previously used `text-brand hover:underline`, breaking
+  the visual rhythm with Job # which uses
+  `text-text-primary hover:text-brand`. Standardized the Invoice link
+  to the same pattern: `text-caption font-mono tabular-nums
+  text-text-primary hover:text-brand transition`. The "Not invoiced"
+  empty state (`text-text-disabled`) is unchanged.
+- **`client/src/components/JobEquipmentSection.tsx` — density matched
+  to Notes embedded body.** Body padding tightened from
+  `px-4 pb-4 pt-3` → `px-3 pb-3 pt-1` (matches `JobNotesSection`'s
+  embedded mode). Per-row padding reduced from `px-4 py-3` →
+  `px-3 py-2`. Negative margin updated from `-mx-4` → `-mx-3` so the
+  hairline divider continues to span the card edge-to-edge. Make /
+  Model / Serial — previously rendered as three stacked rows — are
+  now collapsed onto a single inline meta line
+  ("Make: X · Model: Y · S/N: Z") joined with `·`. Equipment
+  click-to-open and trash-to-remove behavior preserved.
+
+Files affected: `client/src/pages/JobDetailPage.tsx`,
+`client/src/components/JobEquipmentSection.tsx`. No migrations,
+no breaking changes.
+
+#### Color Phase 3 — canonical card surface tokens applied across shared primitives (2026-04-29)
+
+Pure token-migration pass. **No new tokens defined; one CSS variable
+added (`--card-shadow`) mirroring the existing `boxShadow.card`
+Tailwind utility, completing the user-spec'd token set.** No backend /
+schema / route / mutation / query changes. Visible change: cards now
+share one canonical lift instead of a flat 1px hairline shadow.
+
+- **Audit found that all canonical tokens already exist** at the values
+  specified in the design target:
+  - `--app-bg = 210 20% 96%` (#F3F5F7) ✅
+  - `--card = 0 0% 100%` (#FFFFFF) ✅
+  - `--card-border = 220 13% 91%` (≈ #E2E8F0) ✅
+  - `boxShadow.card = 0 8px 18px rgba(15, 23, 42, 0.04)` ✅
+  - `--surface-subtle = 210 31% 95%` (#EEF2F6) for muted footer / header
+    strips ✅
+  - Tailwind classes already exposed: `bg-app-bg`, `bg-card`,
+    `border-card-border`, `bg-surface-subtle`, `shadow-card`.
+- **`client/src/index.css`** — added `--card-shadow:
+  0 8px 18px rgba(15, 23, 42, 0.04);` so the canonical lift is
+  reachable as a raw `var()` outside Tailwind. Mirrors `boxShadow.card`
+  in `tailwind.config.ts` (single source of truth for designers, both
+  must move together).
+- **`client/src/components/ui/card.tsx`** — `<Card>` primitive's
+  hardcoded `shadow-[0_1px_2px_rgba(0,0,0,0.05)]` (flat 1px hairline)
+  migrated to canonical `shadow-card`. Every `<Card>` consumer now
+  shares the soft 8px-elevation lift specified by the design target.
+  Other classes (`bg-card border-card-border`) were already canonical.
+- **`client/src/components/ui/dialog.tsx`** — `<DialogContent>`
+  hardcoded `bg-[#F8FAFC]` and `border-[#E2E8F0]` migrated to canonical
+  `bg-card` / `border-card-border`. The heavier modal elevation shadow
+  (`0 10px 25px rgba(0,0,0,0.08)`) intentionally stays hardcoded —
+  modals warrant heavier elevation than the in-flow `shadow-card`.
+- **`client/src/components/ui/sheet.tsx`** — `<SheetContent>`
+  hardcoded `bg-[#F8FAFC]` migrated to canonical `bg-card`. Same
+  rationale on the elevation shadow.
+- **`client/src/pages/JobDetailPage.tsx`** — local `SectionCard`
+  primitive: `bg-white border border-border-default` →
+  `bg-card border border-card-border` plus `shadow-card` so every
+  Job Detail section card lifts consistently with the canonical
+  `<Card>`. (Both border tokens resolve to ≈ #E2E8F0 today; using
+  `border-card-border` keeps card surfaces on a single token.)
+- **`client/src/pages/InvoiceDetailPage.tsx`** — 14 occurrences of
+  `border-stone-200` migrated to `border-card-border`. Four card
+  chrome wrappers (`card-invoice-meta`, `card-invoice-client-visibility`,
+  `card-invoice-client-message`, `card-invoice-notes`) had `bg-white`
+  switched to `bg-card` and gained `shadow-card`. One footer's
+  `bg-stone-50` migrated to `bg-surface-subtle`. One inline sub-card's
+  `bg-white` migrated to `bg-card`. Status-pill backgrounds
+  (`bg-stone-200` for `draft` / `voided`) intentionally **kept** — those
+  are semantic status colors, not card surfaces.
+- **`client/src/components/line-items/LineItemsCard.tsx`** — outer
+  card chrome: `border-stone-200 bg-white` → `border-card-border bg-card`
+  plus `shadow-card`. Header divider `border-stone-200` →
+  `border-card-border`. Column header strip `border-stone-200 bg-stone-50`
+  → `border-card-border bg-surface-subtle`. Footer
+  `border-stone-200 bg-white` → `border-card-border bg-card`.
+
+### Pages verified
+
+- **Dashboard** (`Dashboard.tsx`) — page wrapper `bg-app-bg` (already
+  canonical, untouched). Cards use `<Card>` primitive → adopts new
+  `shadow-card` lift automatically.
+- **Job Detail** (`JobDetailPage.tsx`) — page wrapper `bg-app-bg`;
+  `SectionCard` migrated this pass.
+- **Invoice Detail** (`InvoiceDetailPage.tsx`) — page wrapper
+  `bg-app-bg`; ad-hoc card chrome migrated this pass; embedded
+  `<LineItemsCard>` also migrated.
+- **Clients** (`Clients.tsx`) — uses `<TablePageShell>` which is
+  bg-less and inherits `bg-app-bg` from the `<main>` wrapper in
+  `App.tsx`. No change needed.
+- **Invoices list** (`InvoicesListPage.tsx`) — page wrapper
+  `bg-app-bg`. List cards use `<Card>` primitive → adopt new shadow.
+
+### Intentionally left alone (semantic / out-of-scope)
+
+- `bg-background` callers (`AccountsReceivablePage`, `ManageRoles`,
+  `Reports`, `PlatformLayout`, `TeamMemberDetail`, `not-found`) —
+  `--background` is the Phase 1 alias of `--app-bg` with the same color
+  value. Visually correct today; a Phase 6 cleanup task will dedupe.
+- `MobileShell.tsx` `bg-slate-50` — separate tech-app PWA shell with
+  its own design system.
+- `PlatformLogin.tsx` `bg-slate-950` — intentionally dark platform
+  admin login.
+- Status pill backgrounds (`bg-stone-200`, `bg-emerald-50`, etc.) —
+  semantic state colors, not card surfaces.
+- Modal elevation shadows on `<Dialog>` and `<Sheet>` — heavier than
+  `shadow-card` by design.
+
+### TypeScript
+
+`npx tsc --noEmit -p tsconfig.json` passes clean.
+
+#### JobDetailPage final header + labour polish (2026-04-29)
+
+Two-part follow-up to the prior polish pass. **No backend, route,
+mutation, data-model, or global-token changes. No other files touched.**
+
+**Files changed (1 + CHANGELOG):**
+- `client/src/pages/JobDetailPage.tsx` — three discrete edits.
+
+---
+
+##### 1. Labour card — summary moved into the card header
+
+The Labour card now reads "LABOUR · 10h 43m · $589.42" inline in the
+header strip; the body starts directly with the empty state OR the
+per-(technician, day) grouped entries. The previous body-level summary
+strip is removed entirely.
+
+Before:
+```
+┌─────────────────────────────────────────────┐
+│ LABOUR                       [+ Time Entry] │  ← SectionHead (label only)
+├─────────────────────────────────────────────┤
+│ Labour · 10h 43m · $589.42                  │  ← body summary row (removed)
+├─────────────────────────────────────────────┤
+│ Group 1 · Tech name · date · time-range     │
+│   Travel    1h 15m                  $50.00  │
+│   On-site   3h 45m                 $187.50  │
+└─────────────────────────────────────────────┘
+```
+
+After:
+```
+┌─────────────────────────────────────────────┐
+│ LABOUR · 10h 43m · $589.42  [+ Time Entry]  │  ← inline summary header
+├─────────────────────────────────────────────┤
+│ Group 1 · Tech name · date · time-range     │
+│   Travel    1h 15m                  $50.00  │
+│   On-site   3h 45m                 $187.50  │
+└─────────────────────────────────────────────┘
+```
+
+**Implementation note:** the local `SectionHead` component's `label` prop
+is `string`-only, which doesn't allow the totals to render in mixed-case
+mono next to the uppercase label. To preserve `SectionHead`'s API
+elsewhere on the page, the Labour card uses a custom inline header
+with the same chrome (`flex items-center justify-between gap-3 px-4 h-11
+border-b border-border-default`) instead. SectionHead is unchanged and
+still used by the Visits / Equipment / Notes / Office Actions /
+Activity / Line Items sections.
+
+**Behavior preserved:**
+- "+ Time Entry" button: same `setTimeEntryModal({ open: true, mode: "create", entry: null })` handler, same disabled-state logic (`canAddTime = job.status === "open" && job.isActive !== false`), same tooltip. Class chain is unchanged.
+- Empty-state branch: when `jobTimeEntries.length === 0`, the totals are omitted from the header and `EmptyState` renders in the body verbatim.
+- Per-group click-to-edit: each Travel / On-site bucket line still opens the FIRST entry of the bucket in the existing `TimeEntryModal`.
+
+**Net density gain:** ~38–42px shaved (one full body row of `border-b` +
+`px-4 py-1.5` + line-height) on top of the Phase L-1 + Polish 2 gains.
+
+---
+
+##### 2. Header hierarchy — client name promoted; Scheduled relocated
+
+**Customer/location name** below the H1 was previously
+`text-section-title font-semibold` (16px / 600). Now
+`text-page-title font-semibold` (22px / 600). At the same SIZE as the
+H1 (which is `text-page-title font-bold` 22 / 700) but with lighter
+weight, so the hierarchy reads as: H1 (heaviest) → customer name
+(prominent peer) → service address (text-row, secondary). Aligns with
+the InvoiceMetaCard's customer-name prominence pattern.
+
+**Service-address block:** unchanged. `text-label uppercase tracking-[0.08em]`
+for the heading; `text-row` for the lines.
+
+**Scheduled block on the LEFT side: removed.** Was at lines 1482–1493
+inside the address column.
+
+**Right-side metadata stack** now reads:
+- Status (StatusPill) — unchanged
+- Job # (inline-editable) — unchanged
+- Scheduled — **NEW**, populated from the same `nextVisit?.scheduledStart`
+  data the left-side block previously consumed. When `nextVisit` is
+  null, surfaces `"Not scheduled"` in `text-text-disabled` so the row
+  stays present (consistent meta-stack height across job states).
+- Invoice — was previously **conditional** (only shown when an invoice
+  existed). Now **always shown**, with `"Not invoiced"` muted fallback
+  when no invoice exists. The invoice-link branch is unchanged: same
+  `jobInvoice ?? firstJobInvoice` resolution from existing
+  `useQuery<Invoice | null>` and `useQuery<{ data: Invoice[] }>` data
+  sources, same `setLocation('/invoices/${id}')` navigation, same
+  display logic (`#${invoiceNumber}` or `View invoice` fallback).
+
+**Data sources used (no new queries, no backend changes):**
+- `nextVisit` — already in scope from the existing Visits feed
+  (`["/api/jobs", jobId, "visits"]`).
+- `jobInvoice` — `useQuery<Invoice | null>` at
+  `/api/jobs/:id/invoice` (line 997).
+- `jobInvoiceCount`, `firstJobInvoice` — derived from the existing
+  `useQuery<{ data: Invoice[] }>` at `/api/jobs/:id/invoices` (line
+  1015–1031). Same fallback chain the page already uses for the
+  primary "View Invoice" CTA.
+- `setLocation` — wouter's existing route navigator.
+
+---
+
+**Verification:**
+- `npx vite build` — exit 0, production build clean.
+- `tests/payment-*.test.ts` — 43/43 still pass.
+- Re-grep confirms zero `labour-summary-strip` references in the file
+  body.
+- Re-grep confirms zero `block-scheduled-left` references in the file
+  body (the left-side Scheduled block is fully removed).
+- New right-meta `data-testid` attributes present: `meta-scheduled`,
+  `meta-scheduled-empty`, `meta-invoice-link`, `meta-invoice-empty`.
+- `npm run check` — pre-existing TypeScript errors in
+  `InvoiceDetailPage.tsx` (carried from pre-session uncommitted state,
+  unrelated). JobDetailPage compiles cleanly.
+
+**Out of scope (per user):**
+- Equipment card density — `JobEquipmentSection.tsx` is a separate
+  file and was again excluded from this scope.
+
+#### JobDetailPage polish pass — buttons + Labour cleanup + header hierarchy (2026-04-29)
+
+Three-part polish on `client/src/pages/JobDetailPage.tsx`. **No
+backend, route, mutation, data-model, global-token, or
+InvoiceDetailPage changes.** No other files touched. The fourth
+requested polish (Equipment card density) was deferred — see "Out of
+scope" below.
+
+**Files changed (1 + CHANGELOG):**
+- `client/src/pages/JobDetailPage.tsx` — three discrete edits.
+
+---
+
+##### Polish 1 — Standardize Job primary buttons to canonical default
+
+The three status-driven primary CTAs ("Schedule Visit", "Close & Invoice"
+/ "View Invoice", "Restore Job") were repainting what the canonical
+`<Button>` primitive's default variant already provides. Stripped the
+overrides; primitive defaults now drive the chrome.
+
+**Before:**
+```tsx
+<Button size="sm" className="h-9 px-4 bg-brand hover:bg-brand-hover text-white text-row font-medium shadow-sm" onClick={...}>
+  Close & Invoice
+</Button>
+```
+
+**After:**
+```tsx
+<Button size="sm" onClick={...}>
+  Close & Invoice
+</Button>
+```
+
+**Why this works:** the `<Button>` `default` variant in
+`client/src/components/ui/button.tsx` is `bg-primary text-primary-foreground
+border-primary-border` — and `--primary` resolves to brand green via the
+canonical color-token chain (same value as `--brand`: `98 37% 51%`).
+`size="sm"` provides `min-h-8 rounded-md px-3 text-xs` and the bundled
+`hover-elevate active-elevate-2` interaction states. The Job CTAs now
+render **identical chrome to the Invoice page's "Send Invoice" button**
+which has used this exact pattern (`<Button size="sm" className="h-8 text-xs">`)
+all along.
+
+**Visible deltas:**
+- Height: `h-9` (36px) → `min-h-8` (32px). 4px shorter.
+- Padding: `px-4` → `px-3`. 4px tighter horizontally.
+- Text size: `text-row font-medium` (13/18/500) → `text-xs` (15.2px,
+  via the primitive's bundled size class). The primitive's `text-xs`
+  is itself due for migration to `text-row` in a future Button-primitive
+  pass; out of scope here.
+- Color/weight/border/focus/hover: unchanged (was already brand green
+  via direct hex; now brand green via the canonical token chain).
+
+**3 edits.** No mutation, route, or click-handler change.
+
+---
+
+##### Polish 2 — Labour card cleanup
+
+Builds on Phase L-1 with three further density gains:
+
+1. **Top summary line** simplified from `Driving Xm · On-site Ym ·
+   Total Zm  $cost` to `Labour · {totalMinutes} · {totalCost}`.
+   Per-bucket breakdown was duplicate of what every group below already
+   shows.
+2. **Avatar removed** from each technician/day group header row. The
+   24px initials chip + 10px gap added 34px of left-margin to every
+   group without conveying information the technician name doesn't
+   already carry. Groups now flush-align with the bucket lines below
+   them.
+3. **Per-group total row dropped** entirely. The page-level summary at
+   the top of the card carries the aggregate; per-group totals were
+   restating what the two bucket lines already showed.
+
+**Net density gain:** ~32px shorter per group on the canonical
+"one tech, four entries on one day" case (no avatar = -32px row height,
+no group total = no extra row). Combined with Phase L-1, the Labour
+card is now ~70px tall per group vs the original ~320px. **~4–5×
+density gain end-to-end.**
+
+**Behavior preserved:**
+- Click each bucket line (Travel / On-site) → opens the FIRST entry
+  of that bucket in the existing `TimeEntryModal` (same handler,
+  unchanged).
+- Multi-entry buckets surface a `· N entries` hint.
+- Running indicator (animated pulse-Clock chip in `text-warning`)
+  remains in the group header when any entry has `durationMinutes
+  == null` or `endAt == null`.
+- Empty state and the "+ Time Entry" create button (in the section
+  header above) are unchanged.
+
+**Removed:** local `Avatar` import / use inside the labour groups.
+The `Avatar` primitive is still used elsewhere in the page (note feed,
+comment threads); only the labour rendering drops it.
+
+---
+
+##### Polish 3 — Promote client/location name in header hierarchy
+
+The job summary `<h1>` was `text-display` (28/32/700), which dwarfed
+the customer-name secondary line at `text-body` (14/20/400). After
+this change, the H1 reads as a clear primary heading and the
+customer/location reads as a secondary heading peer (not a caption).
+
+| Slot | Was | Now |
+|---|---|---|
+| Job summary `<h1>` | `text-display font-bold tracking-tight` (28 / 32 / 700) | `text-page-title font-bold tracking-tight` (22 / 28 / 700 — `font-bold` retained, overrides token's bundled 600) |
+| Customer/location link (when below summary) | `text-body text-text-secondary` (14 / 20 / 400) | `text-section-title font-semibold text-text-secondary` (16 / 22 / 600) |
+
+**Visible deltas:** H1 shrinks 6px (28 → 22) — slightly less shouty.
+Customer name grows 2px AND bumps weight from 400 to 600 — visually
+promotes from "tiny caption" to "secondary heading peer." Aligns with
+the InvoiceMetaCard's prominent customer name.
+
+**Behavior preserved:** the customer-name link still navigates to
+`/clients/${job.locationId}` via `setLocation`. The conditional H1
+rendering (summary OR customer name when no summary) is unchanged.
+Service-address and scheduled blocks below already use `text-row` /
+`text-label` correctly; no changes there.
+
+---
+
+##### Polish 4 — Equipment card density (DEFERRED)
+
+The Equipment card on Job Detail is rendered by
+`client/src/components/JobEquipmentSection.tsx` — a **separate file**
+imported at line 30 of JobDetailPage. The user's stated scope for this
+polish pass is "JobDetailPage.tsx only, unless Button standardization
+requires checking client/src/components/ui/button.tsx or
+InvoiceDetailPage for comparison." JobEquipmentSection does not fall
+under that exemption.
+
+**Polish 4 was therefore not implemented.** The recommended changes
+(combine model + serial onto one line, tighten vertical padding to
+match Notes, reduce gap to header) are documented here for a follow-up
+pass that includes JobEquipmentSection.tsx in scope.
+
+---
+
+**Verification:**
+- `npx vite build` — exit 0, production build clean.
+- `tests/payment-*.test.ts` — 43/43 still pass.
+- Re-grep confirms zero `bg-brand hover:bg-brand-hover` repaint
+  classes remain on the three Job CTAs (only a doc-comment quoting
+  the old style for context).
+- Re-grep confirms zero `<Avatar name={block.name}` references in
+  labour groups.
+- `npm run check` — pre-existing TypeScript errors in
+  `InvoiceDetailPage.tsx` (carried from pre-session uncommitted
+  state, unrelated). JobDetailPage compiles cleanly.
+
+**Out of scope (deferred):**
+- Equipment card density (Polish 4) — requires editing
+  `JobEquipmentSection.tsx`.
+- Button primitive `size="sm"` migrating from `text-xs` to `text-row`
+  — separate primitive pass (would update Invoice's "Send Invoice"
+  button text size in lockstep).
+- Inline summary edit replacing the QuickAddJobDialog trigger
+  (Phase E-1).
+
+#### Phase L-1 — JobDetailPage Labour card density redesign (2026-04-29)
+
+Single-file scope: `client/src/pages/JobDetailPage.tsx`.
+Replaces the Labour card's bulky 3-tile summary strip and flat
+per-entry list with a one-line summary header and a per-(technician, day)
+grouped entry render. **No backend, route, mutation, data-model,
+TimeEntryModal, color-token, layout-outside-the-card, or InvoiceDetailPage
+changes.** No other files touched.
+
+**The `labourByTechDay` memo (lines 868–905) was already computed but
+unused by the previous render** — Phase L-1 wires it as the new render's
+data source. Backend continues to return flat `TimeEntryDisplay[]` from
+`GET /api/jobs/:id/time-entries`; grouping is purely client-side from
+existing fields (no new query, no schema change).
+
+**Layout change inside the Labour card only:**
+
+Before (per `TimeEntryDisplay`, repeated for every entry):
+```
+┌─[avatar md=32px]─[ "Jane Smith"  [TRAVEL]  ]─────[1h 15m]─┐
+│                  [Jun 14 · 9:00am–10:15am]      [$50.00]  │
+└────────────────────────────────────────────────────────────┘
+```
+Plus a 3-tile Driving / On-Site / Total strip at the top (~85px tall).
+
+After (per `(technicianId, dateSortKey)` group):
+```
+┌─[avatar sm=24px]─Jane Smith                 Jun 14 · 9:00a–4:30p─┐
+│                  Travel    1h 15m                          $50.00 │
+│                  On-site   3h 45m                         $187.50 │
+│                  Total                                    $237.50 │
+└───────────────────────────────────────────────────────────────────┘
+```
+Plus a single-line summary header at the top:
+`Driving 1h 30m · On-site 3h 45m · Total 5h 15m              $232.50`
+
+**Density math:** a "one tech, four entries on a day" case (drive +
+on-site AM + drive + on-site PM) used to render at ~320px (4 entries
+× ~80px). Now renders as ~85px (1 group header + 2 bucket lines + 1
+optional total). **~4× density gain on the same data.**
+
+**Behavior preserved:**
+- **Click-to-edit:** each bucket line (Travel / On-site) opens the
+  FIRST entry of that bucket in the existing `TimeEntryModal` via
+  `setTimeEntryModal({ open: true, mode: "edit", entry: entries[0] })`.
+  Entries within a block are sorted by `startAt` ascending (line 896–899);
+  first entry = earliest. Single-entry buckets behave identically to
+  the prior per-entry click. For multi-entry buckets a
+  `· N entries` hint surfaces the additional entries; users navigate
+  to specific other entries via the dispatch / calendar surfaces if
+  they need direct access.
+- **Running entry indicator:** any entry in the group with
+  `durationMinutes == null` OR `endAt == null` surfaces an animated
+  pulse-Clock chip (`<Clock className="h-3 w-3 animate-pulse" />Running`)
+  in the group's header row, in `text-warning text-caption`. This
+  collapses what was previously a per-row indicator (one per running
+  entry) into one per affected group.
+- **Empty state:** preserved verbatim. `<EmptyState title="No time logged yet." hint="Track time against this job to roll travel and on-site hours into the labour total." />`.
+- **"Time Entry" create button** in the section header (line 1730 area):
+  unchanged. `setTimeEntryModal({ open: true, mode: "create", entry: null })`
+  still fires from the `<Plus />` button.
+- **`labourBuckets` memo:** still the source for the top summary line
+  (now a single-line strip instead of 3 tiles). `labourCost` derived
+  value (line 1183) untouched.
+
+**Scope discipline — what was deliberately NOT touched:**
+
+- `TimeEntryModal` import + behavior — same modal opens with same payload shape.
+- `jobTimeEntries` query (line 768 area) — no query/key change.
+- `labourBuckets`, `labourByTech`, `labourByTechDay` memos — pre-existing structures, no schema or computation change. `labourByTechDay` was already correct; just newly consumed by the render.
+- `TRAVEL_TYPES` set, `entryCostDollars` helper — unchanged.
+- `Avatar` component (local) — same primitive, switched from `size="md"` (32px) to `size="sm"` (24px) per the component's documented two-size variants for tighter density. No new prop, no new variant.
+- All other JobDetailPage sections — Header, Visits, Equipment, Notes, Line Items, Office Actions, Activity — untouched.
+- All other pages, including `InvoiceDetailPage`, `ClientDetailPage`, `PMDetailPage`, dashboard cards — untouched.
+- All canonical tokens used (`text-row-emphasis`, `text-caption`, `text-text-muted`, `text-text-secondary`, `text-warning`, `bg-surface-subtle`, `border-border-default`) — pre-existing from the typography + color migrations.
+
+**Removed pill chrome:**
+The colored TRAVEL/ON-SITE pills (`bg-blue-50 text-blue-700` /
+`bg-emerald-50 text-emerald-700`, lines 1803–1810 of the prior render)
+are gone. The Travel vs On-site distinction now reads from the
+text label of each bucket line. Tailwind blue-50 / emerald-50 were
+not canonical color tokens and are removed without replacement.
+
+**Verification:**
+- `npx vite build` — exit 0, production build clean.
+- `tests/payment-*.test.ts` — 43/43 still pass.
+- Data flow re-verified by grep: `labourBuckets`, `labourByTechDay`,
+  `setTimeEntryModal`, `TRAVEL_TYPES`, `entryCostDollars` all still
+  referenced from JobDetailPage.tsx in the expected places.
+- `npm run check` — pre-existing TypeScript errors in
+  `InvoiceDetailPage.tsx` (carried from pre-session uncommitted state,
+  unrelated). JobDetailPage compiles cleanly.
+
+**Out of scope (deferred to later L-* / B-* / H-* / E-* phases):**
+- Button mismatch between Job and Invoice CTAs (Phase B-1).
+- Header / client hierarchy adjustment (Phase H-1).
+- Inline summary edit replacing modal trigger (Phase E-1).
+- Inline job-number edit surface (Phase E-2).
+
+#### Typography Phase H + JobDetailPage color migration (2026-04-29)
+
+Dual-scope canonicalization pass:
+- **Part A — Typography**: full sweep of legacy `text-xs`/`text-sm`/`text-base`/`text-2xl` and arbitrary `text-[Npx]` literals across 6 list/table pages.
+- **Part B — Color**: full migration of every hardcoded hex literal and the one inline style color in `JobDetailPage.tsx` to canonical color tokens.
+
+**No layout, spacing, structure, logic, mutations, routes, or backend changes. No other files touched.**
+
+---
+
+### Part A — Typography sweep (6 list pages)
+
+Every legacy named-ramp class (`text-xs`/`text-sm`/`text-base`/`text-2xl`) and every arbitrary `text-[Npx]` in the 6 scope files migrated to canonical semantic tokens. Mechanical mapping (one canonical per legacy class):
+
+| Legacy / arbitrary | Canonical |
+|---|---|
+| `text-2xl` | `text-page-title` (28.5px → 22px) |
+| `text-base` | `text-body` (19px → 14px) |
+| `text-sm` | `text-row` (17.1px → 13px) |
+| `text-xs` | `text-caption` (15.2px → 12px) |
+| `text-[10px]` | `text-label` (10px → 11px + uppercase + tracking) |
+| `text-[11px]` | `text-helper` (no visible change) |
+| `text-[9px]` | `text-helper` (closest token, 9px → 11px) |
+
+**Files changed:**
+- `client/src/pages/Jobs.tsx` — 32 literals replaced
+- `client/src/pages/InvoicesListPage.tsx` — 21 literals replaced
+- `client/src/pages/Quotes.tsx` — 24 literals replaced (incl. 3× `text-[9px]`)
+- `client/src/pages/LeadsPage.tsx` — 19 literals replaced
+- `client/src/pages/RecurringJobsPage.tsx` — 20 literals replaced
+- `client/src/pages/PMWorkspacePage.tsx` — 32 literals replaced (incl. 1× `text-[10px]`, 7× `text-[11px]`)
+
+**Total: 148 size literals removed across 6 files.**
+
+**Behavior contract preserved:** `text-sm font-medium` becomes `text-row font-medium` — `font-medium` (500) override remains explicit. `text-row` bundles weight 400, override wins. Same final visual weight (500). Same approach for `text-xs font-semibold` (becomes `text-caption font-semibold`), etc. The token rename does NOT collapse role-bearing weight modifiers.
+
+**Color tokens not touched** (out of Part A scope) — `text-muted-foreground`, `text-foreground`, etc. remain intact. A separate phase will collapse them into `text-text-muted` / `text-text-primary`.
+
+**Visual impact:** all 6 list pages get noticeably denser. Page titles shrink 6.5px (28.5 → 22). Row text shrinks 4px (17.1 → 13). Secondary captions shrink 3px (15.2 → 12). This is the documented Jobber-density target.
+
+---
+
+### Part B — JobDetailPage color migration
+
+Every hardcoded hex literal and the one inline-style color in
+`client/src/pages/JobDetailPage.tsx` migrated to canonical color tokens.
+**0 hex literals remain.** Only file touched.
+
+**22 distinct replacements applied (replace_all per pattern; substring magic also handles `hover:` / `focus:` / alpha variants automatically):**
+
+| Was | Now | Notes |
+|---|---|---|
+| `text-[#64748B]` (18) | `text-text-muted` | Exact value match |
+| `text-[#0B0F19]` (18) | `text-text-primary` | Slight shift toward `#0F172A` (canonical) — visually identical |
+| `text-[#475569]` (11) | `text-text-secondary` | Exact match |
+| `text-[#94A3B8]` (6) | `text-text-disabled` | Exact match |
+| `text-[#CBD5E1]` (3) | `text-text-disabled` | Slate-300 → slate-400 (1 shade darker) — flagged below |
+| `text-[#1F2937]` (2) | `text-text-primary` | gray-800 → slate-900 |
+| `border-[#E5E1D5]` (8) | `border-border-default` | **Warm beige → cool slate (visual shift)** |
+| `border-[#EDEAE0]` (5) | `border-border-default` | Same warm → cool shift |
+| `divide-[#EDEAE0]` (3) | `divide-border-default` | Same |
+| `border-[#0B0F19]` (1) | `border-text-primary` | Strong-text border (uncommon pattern) |
+| `bg-[#FAF8F5]` (1) | `bg-app-bg` | **Warm cream root → cool gray (canonical app bg)** |
+| `bg-[#FAFAF7]` (3 + 1 hover) | `bg-surface-subtle` | Same warm → cool shift |
+| `hover:bg-[#F8F7F4]` (3) | `hover:bg-surface-subtle` | Same |
+| `text-[#0E5A5A]` (7 + 3 hover + 1 alpha) | `text-brand` | **Teal accent → green brand** |
+| `bg-[#0E5A5A]` (4) | `bg-brand` | Teal CTA → green CTA |
+| `hover:bg-[#0B4848]` (3) | `hover:bg-brand-hover` | Teal hover → green hover |
+| `hover:text-[#0B4848]` (1) | `hover:text-brand-hover` | Same |
+| `focus:ring-[#0E5A5A]` (1, plus 1 alpha) | `focus:ring-brand` | Teal focus ring → brand ring |
+| `focus:border-[#0E5A5A]` (1) | `focus:border-brand` | Same |
+| `hover:bg-[#EEF5F4]` (1) | `hover:bg-brand/10` | Teal-tinted hover → brand-tinted hover (uses Phase 2.7 alpha-capable token) |
+| `text-[#B45309]` (1) | `text-warning` | Amber-700 → canonical warning |
+| `style={{ backgroundColor: color || "#64748B" }}` | `style={{ backgroundColor: color || "hsl(var(--text-muted))" }}` | Avatar fallback now references the canonical CSS variable directly. Resolves to identical color (`--text-muted` HSL = `#64748B` exact). |
+
+**Visual shifts that are part of the intended canonicalization:**
+
+1. **Page background:** warm cream `#FAF8F5` → cool gray `#F3F5F7` (matches app-wide canonical app bg).
+2. **Internal warm-beige sections:** `#FAFAF7` → `#EEF2F6` (cool subtle surface). Aligns with the Card primitive's stone-200 chrome on InvoiceDetailPage.
+3. **Borders:** warm beige `#E5E1D5` / `#EDEAE0` → cool slate `#E2E8F0`. Aligns with the rest of the app.
+4. **Teal accents → brand green:** the entire teal palette (`#0E5A5A` primary, `#0B4848` hover, `#EEF5F4` soft) collapses to brand green. **JobDetailPage's CTAs (Schedule visit, Reopen job, etc.) now match the app-wide brand green** instead of being a teal outlier. Aligns the page with InvoiceDetailPage's brand-green Pay/Send actions per the user's "JobDetailPage visually aligned with InvoiceDetailPage" goal.
+5. **`text-[#CBD5E1]` (3 sites) → `text-text-disabled`:** slate-300 mapped to the closest text token (slate-400). 1 shade darker than original. Flag for visual review.
+
+**Verification:**
+- `npx vite build` — exit 0, production build clean.
+- Re-grep of JobDetailPage for `[a-z:-]+-\[#[0-9a-fA-F]{3,8}\]` — **zero remaining hex literals.**
+- Re-grep of all 6 Part A list pages for `text-(xs|sm|base|lg|xl|2xl)` and `text-\[[0-9]+px\]` — **zero remaining.**
+- `tests/payment-*.test.ts` — 43/43 pass.
+- `npm run check` — pre-existing TypeScript errors in `InvoiceDetailPage.tsx` (carried from pre-session uncommitted state, unrelated). Phase H + Part B files compile cleanly.
+
+**Out of scope (deferred):**
+- No table.tsx / list-surface.tsx changes — both already migrated in Phase D.
+- No status pill / badge component changes — separate scope.
+- No font-weight / leading / tracking modifier cleanup on the 148 sweep — preserved as overrides.
+- All other pages (Clients, Locations, Reports, etc.) — separate phase.
+- `text-foreground` / `text-muted-foreground` legacy color tokens not migrated to `text-text-*` — separate color-token-collapse phase.
+
+#### Invoice Detail: header cleanup pass — single edit control + sans typography (2026-04-29)
+
+Five-point cleanup of `<InvoiceMetaCard>` after the Job Description merge.
+**No backend / route / payload changes** beyond folding `workDescription`
+into the existing meta `PATCH /api/invoices/:id` payload (the route
+already accepts the field — earlier flow simply called the same mutation
+twice).
+
+**Files changed:**
+
+- `client/src/pages/InvoiceDetailPage.tsx`
+
+**1 — Single edit control.** The Job Description section's pencil
+(`button-edit-invoice-description`) was deleted. The header card's
+existing pencil (`button-meta-edit`, top-right of the card chrome) is
+now the only entry point to edit mode and unlocks the meta rows AND the
+description simultaneously.
+
+**2 — Single Save / Cancel pair, primary styling.** Removed both prior
+button pairs:
+- the meta-rows footer pair (`variant="ghost"` Cancel + `variant="outline"` Save) that lived inside the right column.
+- the description-section pair (`variant="ghost"` + `variant="outline"`) that lived below the textarea.
+
+In their place, a single Save / Cancel pair now sits below the Job
+Description section, separated by `border-t border-stone-200 px-5 py-3`:
+- Cancel: `variant="outline" size="sm"` — clearly visible against the card chrome.
+- Save: `size="sm"` (no `variant` — defaults to `bg-primary`, the
+  project's primary green at HSL `98 37% 51%` / legacy `#76B054`).
+
+Both buttons commit / discard the entire header card edit state. The
+unified `onSave` handler builds one payload that includes
+`workDescription` when its draft differs from the server value (existing
+delta-build pattern, just one extra `if`); `onCancel` clears all three
+drafts (`metaDraft`, `referenceDraft`, `workDescDraft`) and exits edit
+mode. The standalone `editingJobDescription` state was retired —
+`editingHeader` is now the canonical edit-mode flag.
+
+**3 — Decorative icons removed from meta rows.** The trailing icons on
+Job # (`<ExternalLink>`), Issued (`<Calendar>`), Due (`<Calendar>`), and
+Terms (`<ChevronDown>`) are gone. Edit affordance is unchanged — every
+row still becomes editable via the header pencil. The Job # link still
+navigates to `/jobs/:id` (link styling preserved); just the icon is
+removed. The `MetaRow` component's `icon` prop was dropped from its
+type signature now that nothing passes it.
+
+**4 — Sans typography on meta values.** The `mono` flag on `MetaRow`
+forced every right-side value (Invoice #, Job #, Issued, Due, Terms,
+reference fields) into `font-mono tabular-nums`. Removed: values now
+inherit the page's standard sans typography. Edit-mode inputs likewise
+dropped the `${MONO}` mixin from `inputClass`.
+
+**5 — Imports pruned.** `Calendar` and `ExternalLink` from `lucide-react`
+were removed from the file's import list (no remaining call sites).
+`ChevronDown` is kept (still used in the totals footer's tax popover).
+
+**Confirmed not changed:** `<LineItemsCard>`, the Client Visibility
+card, `<JobNotesSection>`, `<PaymentHistoryCard>`, the totals footer
+slot (subtotal / discount / tax / total / paid / balance — still in
+`MONO` per the existing finance-panel convention), the QBO sync banner,
+PDF / send / preview actions, and every server-side route.
+
+#### Invoice Detail: Job Description merged into header card (2026-04-29)
+
+The standalone "Job Description" card on the invoice detail page is gone.
+Its content now sits at the bottom of the existing identity / meta header
+card (`<InvoiceMetaCard>`), separated by a hairline top border. Reduces
+right-rail card stacking by one and removes the visual seam that the
+empty-state compact-collapsed form previously occupied.
+
+**Files changed:**
+
+- `client/src/pages/InvoiceDetailPage.tsx`
+  - `<InvoiceMetaCard>` now accepts eight new props for the job description
+    (`jobDescription`, `jobDescriptionDraft`, `isEditingJobDescription`,
+    `onEnterJobDescriptionEdit`, `onChangeJobDescriptionDraft`,
+    `onSaveJobDescription`, `onCancelJobDescription`,
+    `isSavingJobDescription`).
+  - The merged section renders inside the card outline, after the body
+    grid (identity left + meta-rows right), with
+    `border-t border-slate-200 mt-4 pt-4 px-5 pb-4` providing the divider
+    + horizontal padding parity with the rest of the card.
+  - Empty + not editing: only the label `Job description (optional)`
+    (rendered uppercase via `text-xs uppercase tracking-wide
+    text-slate-500`) and the pencil — no placeholder text.
+  - Populated + not editing: label + description directly beneath in
+    `text-sm text-slate-900`.
+  - Editing: label + textarea (`maxLength={600}` preserved invisibly) +
+    Save / Cancel pair right-aligned.
+  - The `<JobDescriptionRedesignCard>` component definition (~85 LOC,
+    including the `compactCollapsed` empty-state branch and the
+    sibling-card chrome) was deleted as dead code along with its mount
+    at the page level.
+  - Edit / save / cancel logic on the parent (`workDescDraft`,
+    `editingJobDescription`, `updateInvoiceFieldsMutation`) is
+    unchanged — only the rendering layer moved.
+
+**Not in scope:** `<LineItemsCard>`, the Client Visibility card, notes,
+payment history, the QBO sync banner, and every server-side route. The
+backend `invoice.workDescription` field, its mutation, and the
+`serverVisibility.showJobDescription` flag (which still gates whether
+the description appears on the client PDF / portal — controlled from
+the Client Visibility card) are all unchanged.
+
+#### `<LineItemsCard>` UI fixes — Critical + High audit items (2026-04-29)
+
+Audit-driven UI fixes to the canonical line-items card. Applied to the
+shared shell only; **no adapter, mutation, or backend changes** — Invoice,
+Quote, and Job consume the same fixed shell.
+
+**Critical (visual bugs)**
+
+1. **Header / body horizontal alignment.** The grid column header strip
+   used `px-5 + gap-2` while the body `<table>` had no horizontal inset
+   and no inter-cell gap, so column header labels drifted ~20px right of
+   their data cells. Fix: dropped `gap-2` from the header grid, added
+   per-cell paddings on each header `<span>` matching the corresponding
+   `<td>` paddings (`pr-2` / `pr-3` / `px-3 text-right` / `pl-3 pr-1
+   text-right` / `pl-1 pr-2`), wrapped the body table in
+   `<div className="px-5">` so its first/last data cells line up with the
+   header strip's `px-5` inset.
+2. **Single spacing system.** Inter-column spacing now comes solely from
+   per-cell paddings — both header and body. Removing `gap-2` while
+   adding the matching paddings means right-edges of "Qty" / "Rate" /
+   "Cost" / "Amount" headers sit exactly above the right edges of their
+   data cells.
+3. **Mobile overflow.** Header + body are now siblings inside a shared
+   `overflow-x-auto` container with an inner `min-w-[640px]` (or
+   `min-w-[720px]` when `showCost` is true). Previously the body
+   wrapper was `overflow-visible` and the card was `overflow-hidden` →
+   on viewports below ~620px columns silently clipped. They now scroll
+   horizontally as one piece, header staying aligned with rows.
+
+**High (UX / accessibility)**
+
+4. **Manual line items reachable from `<AddLineItemForm>`.** Dropped
+   the "product must be picked first" gate that hid qty / rate / cost /
+   amount inputs until a catalog product was bound. Numeric inputs and
+   the "+ Add description" affordance now render unconditionally on new
+   draft rows — matching the always-on behavior of `<LineItemRow>` in
+   edit mode. Users can now type a description + qty + price for a
+   one-off line without permanently adding to the catalog. Also
+   removed the `|| "1"` fallback on the qty `onChange` so clearing the
+   field does not snap back to "1" (matches existing-row behavior).
+5. **Description button parity.** `<AddLineItemForm>` previously
+   gated the "+ Add description" button on `productPicked`; existing
+   rows in `<LineItemRow>` always rendered it. Both now always render
+   it (subject to `showDescription === false`). Same progressive-
+   disclosure rule on both row types.
+6. **Row-height jitter on edit toggle.** Display row in `<LineItemRow>`
+   used `py-3` (24px combined) while edit + new-draft rows used
+   `py-2.5` (20px). Saving caused every row to shrink ~4px. Standardized
+   on `py-2.5` for the display branch — no jitter on Save / Cancel.
+7. **Tap targets.** Bumped icon-only buttons from `h-7 w-7` (28×28) to
+   `h-9 w-9` (36×36):
+   - Header pencil (edit lines toggle) in `<LineItemsCard>`.
+   - Per-row delete button in `<LineItemRow>` edit branch.
+   - Per-row discard button in `<AddLineItemForm>`.
+   Inner icon size bumped from `h-3.5 w-3.5` to `h-4 w-4` to match the
+   larger button. Brings touch targets above the 36px floor that
+   WCAG / iOS HIG / Material recommend.
+
+**Files changed**
+
+- `client/src/components/line-items/LineItemsCard.tsx`
+- `client/src/components/line-items/LineItemRow.tsx`
+- `client/src/components/line-items/AddLineItemForm.tsx`
+
+**Not in scope** — every Medium and Low audit item (title casing,
+footer slot styling/widths, button height parity between top/bottom
+strips, margin formatting, header revenue gate, locked empty-state
+parity, drag handle placeholder on draft rows, row tint tokens, amount
+cell flicker, etc.) is deliberately untouched.
+
+#### Phase 3: Job Parts surface migrated to canonical `<LineItemsCard>` (2026-04-29)
+
+The Job Detail page's line-items grid now uses the same canonical
+`<LineItemsCard>` shell as Invoice and Quote. The prior inline
+`LineItemsTable` (per-row immediate-save Linear/Stripe-style grid) was
+replaced with a wrapper around `<LineItemsCard>` driven by an inline
+`jobPartsAdapter`. **No backend route or schema changes** — same
+`POST/PUT/DELETE/PATCH` job-parts endpoints are called.
+
+**Files changed:**
+
+- **`client/src/pages/JobDetailPage.tsx`** —
+  - Replaced `LineItemsTable` body and deleted `EditableLineRow`
+    sub-component (~280 lines removed).
+  - New `LineItemsTable` is a thin wrapper that hosts the
+    `useLineItemsDrafts<JobPartDisplayLine>` hook, the inline
+    `jobPartsAdapter`, an `<AddProductModal>` resolver, and the
+    canonical `<LineItemsCard>` mount.
+  - Adapter capabilities: `surface: "job-parts"`, `showCost: true`,
+    `showTax: false`, `allowReorder: true`, `allowEditExisting: true`,
+    no `onReorder` callback (drag is local-only; PATCH /reorder fires
+    inside `saveAll`).
+  - `saveAll`: sequential **halt-on-fail** (`POST` creates → `PUT`
+    updates → `DELETE` deletes → `PATCH /reorder`). Builds a
+    `localToServerId` map during the create pass so the reorder payload
+    can include rows added during the same Save.
+  - `validateEntry`: new rows need a description AND `qty > 0`;
+    existing rows always pass.
+  - `requestCreateProduct`: opens the canonical `AddProductModal` via
+    a Promise resolver ref — same pattern as Invoice + Quote.
+  - `billingTotals` state shape extended from
+    `{ totalPrice, totalCost, profit }` to
+    `{ totalPrice, totalCost, profit, margin }`. Emitted from the
+    hook's `headerMetrics` so the parent's KPI strip + finance panel
+    stay in sync with in-flight edits (revenue updates live, not just
+    on save).
+  - Outer `<SectionCard>` + `<SectionHead label="Line Items">` wrapper
+    dropped — the canonical card owns its own chrome. The Expenses
+    sub-section + Parts/Labour/Expenses → Subtotal/Tax → Total finance
+    panel were moved into a new `<SectionCard data-testid="card-billing-summary">`
+    sibling card so they keep their existing Studio-style cream chrome
+    while the line items adopt the canonical stone/slate card.
+  - Imports cleaned: dropped `Check`, `X as XIcon`, `Trash`, and
+    `blankDraft` (all only used by the deleted per-row editor); added
+    `LineItemsCard`, `useLineItemsDrafts`, `LineItemsAdapter`,
+    `normalizeProductRow`, `ProductOption`, `parseMoney`, `formatMoney`,
+    `AddProductModal`.
+
+- **`client/src/components/PartsBillingCard.tsx`** —
+  - Deleted dead code: the `PartsBillingCard` component body,
+    `SortableLineItemRow`, `TemplatePickerList`, `rowIsChanged`,
+    `formatCurrency`, `OFFICE_ROLES`, `PartsBillingCardProps`,
+    `SortableLineItemRowProps`, default export. None of these had
+    consumers — JobDetailPage already moved off `<PartsBillingCard>`
+    earlier in this session.
+  - File now contains only `AddProductModal` (used by Invoice, Quote,
+    and the new Job-Parts wrapper) and `AddProductModalProps`. File
+    shrunk from 1296 to ~165 lines.
+  - Path kept as `PartsBillingCard.tsx` so the three existing
+    `import { AddProductModal } from "@/components/PartsBillingCard"`
+    callsites keep working — header documents the actual purpose and
+    flags a future rename to `AddProductModal.tsx`.
+
+**Behavior preserved:**
+
+- Same canonical `/api/jobs/:jobId/parts` routes (no schema changes).
+- Same `draftToJobPartPayload` / `hydrateDraft` mappers.
+- `onTotalsChange` callback signature is a strict superset of the
+  prior shape (added `margin`); the only consumer
+  (`partsTotal = billingTotals?.totalPrice ?? 0`) is unaffected.
+- `AddProductModal` is still exported and reused by Invoice + Quote.
+
+**Behavior changed (intentionally):**
+
+- Edit lifecycle is now section-level (Save/Cancel pair on the card
+  header + bottom action row), not per-row immediate-save.
+- Deletes are staged locally until Save (Cancel restores them).
+- Drag reorder is local-only during edit; `PATCH /reorder` fires once
+  inside `saveAll`.
+
+### Added
+
+#### Canonical `<GlobalNotice />` system + trial-ending migration (2026-04-29)
+
+Single canonical UI notice surface for the app shell. Replaces the
+ad-hoc `SubscriptionBanner`; future notice types
+(subscription-expired, payment-failed, maintenance, admin/system,
+system-wide warnings) plug in via a provider hook — no new banner
+components. **No backend / schema / route / mutation changes.**
+
+- **`client/src/lib/globalNotices/types.ts`** (new) — `Notice`,
+  `NoticeSeverity`, `NoticeAction`, `NoticeProvider`. Each notice
+  carries `id`, `severity`, `message`, optional `action`,
+  `dismissible`, `priority`, optional `version`, optional
+  `cooldownHours`.
+- **`client/src/lib/globalNotices/dismissal.ts`** (new) —
+  `useIsDismissed` / `useDismissNotice`. localStorage-backed,
+  scoped key `gn:${noticeId}:${version}:${companyId}:${userId}`.
+  Honors `cooldownHours`; falls back to permanent dismissal within a
+  `version` when no cooldown is set. Cross-tab + same-tab updates
+  via a hand-rolled `StorageEvent`.
+- **`client/src/lib/globalNotices/providers/trialEnding.ts`** (new) —
+  `useTrialEndingNotice`. Reads canonical
+  `useEntitlements()` (same `accountState.entitled / reason /
+  trialEndsAt` source the legacy banner used). Emits
+  `id: "trial-ending"`, severity `warning` (≤ 7 days) or `error`
+  (expired / past-due), action `{ label: "Upgrade", href: "/billing" }`,
+  priority `40` / `70`, `version = trialEndsAt`.
+- **`client/src/hooks/useGlobalNotices.ts`** (new) — orchestrator.
+  Calls every provider in `PROVIDERS[]`, filters `null`s, sorts by
+  `priority` descending, returns the top non-dismissed notice plus a
+  stable `dismiss` callback. Hook-of-hooks pattern with a fixed
+  `MAX_DEPTH = 5` to keep the rules of hooks intact.
+- **`client/src/components/GlobalNotice.tsx`** (new) — render-only.
+  Compact dark-header strip (`h-8 max-w-[520px]`, severity-colored dot
+  + accent border, truncated message, optional inline action button,
+  optional dismiss ×). `role="alert"` on `error|critical`, `role="status"`
+  otherwise; `aria-live="polite"` (or `"assertive"` for `critical`).
+  Hidden under `md` so search keeps full width on narrow viewports.
+
+### Changed
+
+- **`client/src/App.tsx`** — mounted `<GlobalNotice />` in the dark
+  header between the company-greeting `<Link>` and the spacer
+  preceding `<UniversalSearch />`. Replaced the import
+  `SubscriptionBanner` → `GlobalNotice`. Removed the
+  `<SubscriptionBanner />` mount from the page-content banner stack
+  (no more page-layout shift on trial users). `ImpersonationBanner`
+  (security-critical, non-dismissible) and `TimezoneSetupBanner`
+  (server-gated visibility) intentionally **left in the existing
+  banner stack** — different lifecycle requirements, can migrate
+  later if needed.
+
+### Removed
+
+- **`client/src/components/SubscriptionBanner.tsx`** (deleted) —
+  page-content trial banner replaced by the canonical
+  `<GlobalNotice />` + trial-ending provider. `App.tsx` was its only
+  caller.
+
+#### Typography Phase G — JobDetailPage arbitrary-size sweep (2026-04-29)
+
+Mechanical migration of arbitrary `text-[Npx]` literals in
+`client/src/pages/JobDetailPage.tsx` to canonical semantic typography
+tokens. **One file touched.** No layout, spacing, colors, logic,
+routes, or backend changes. No other files modified.
+
+**Inventory before (67 occurrences total — audit's 91-count was loose):**
+
+| Arbitrary size | Count | Migration target |
+|---:|---:|---|
+| `text-[10px]` | 9 | `text-label` (11px + bundled weight 500 + 0.04em + uppercase) |
+| `text-[11px]` | 6 | `text-helper` (11px + weight 400) |
+| `text-[12px]` | 21 | `text-caption` (12 / 16 + weight 400) |
+| `text-[13px]` | 17 | `text-row` (13 / 18 + weight 400) |
+| `text-[14px]` | 8 | `text-body` × 5 / `text-subhead` × 3 (contextual — see below) |
+| `text-[18px]` | 4 | `text-section-title` (16 / 22 + weight 600) |
+| `text-[24px]` | 1 | `text-display` (28 / 32 + weight 700) |
+| `text-[26px]` | 1 | `text-display` (closest token, +2px — outlier; see below) |
+
+**Total: 67 → 0 arbitrary text-[Npx] literals.**
+
+**Contextual `text-[14px]` decisions (8 sites):**
+
+| Line | Pre-existing context | Mapping | Reason |
+|---|---|---|---|
+| 274 | `<div className="min-w-0 text-[14px] text-[#0B0F19]">{children}</div>` | `text-body` | Generic Field-component value display |
+| 330 | `<div className="text-[14px] font-medium text-[#1F2937]">{title}</div>` | `text-subhead` (drops the now-redundant `font-medium`) | Group/section title |
+| 531 | `<div className="text-[14px] font-medium text-[#0B0F19] truncate">` | `text-subhead` (drops `font-medium`) | Row primary identifier with emphasis |
+| 543 | `text-[14px] tabular-nums font-mono font-semibold ... w-[96px] text-right` | `text-body` (`font-semibold` retained) | Money cell — body text, font-semibold provides the visual emphasis |
+| 680 | same as 543 | `text-body` | Same money-cell role |
+| 1490 | `text-[14px] text-[#475569] hover:text-[#0E5A5A] transition-colors text-left` | `text-body` | Clickable text link |
+| 1637 | `text-[14px]` on a row container `<div>` | `text-body` | Row container default text |
+| 1862 | `text-[14px] font-semibold text-[#0B0F19] leading-none` | `text-subhead` (`font-semibold` retained) | Heading-style label with leading-none |
+
+**`text-[26px]` outlier — single occurrence at line 1463:**
+
+```jsx
+<h1 className="m-0 text-[26px] font-bold tracking-tight text-[#0B0F19] truncate">
+```
+
+This is the JobDetailPage h1 (job title). Not in the user's mapping
+table. Mapped to `text-display` (28px / 32 / 700) — the closest
+token. The 2-pixel size increase is the smallest available delta;
+`text-page-title` (22px) would have been a 4-pixel decrease which
+would visibly shrink the page heading. `text-display` bundles
+`font-weight: 700` matching the existing `font-bold`, so weight is
+unchanged. `tracking-tight` overrides the bundled normal letter-spacing.
+
+**Net visual impact for the h1:** 26px → 28px (slightly larger), same
+weight, same tight tracking, same color — flagging as a 2-pixel
+visible change for review.
+
+**`font-medium` redundancy notes (2 sites):**
+
+When migrating `text-[14px] font-medium` to `text-subhead`, the
+explicit `font-medium` (500) is dropped because `text-subhead` bundles
+the same weight. Net visual: identical. Lines 330 and 531.
+
+When migrating `text-[14px] font-semibold`, `font-semibold` (600) is
+retained — it overrides text-subhead/text-body's bundled weight to
+keep the heavier emphasis the original design chose. Lines 543, 680,
+1862.
+
+**Verification:**
+- `npx vite build` — exit 0, production build clean.
+- Re-grep of `JobDetailPage.tsx` for `text-\[[0-9]+px\]` — **zero
+  remaining occurrences.**
+- `tests/payment-*.test.ts` — 43/43 still pass.
+- Phase A semantic tokens (`text-label`, `text-helper`, `text-caption`,
+  `text-row`, `text-body`, `text-subhead`, `text-section-title`,
+  `text-display`) all already emit valid CSS from prior phases —
+  Phase G adds 67 new consumers but no new tokens.
+- `npm run check` — pre-existing TypeScript errors in
+  `client/src/pages/InvoiceDetailPage.tsx` (carried from pre-session
+  uncommitted state) remain. JobDetailPage compiles cleanly.
+
+**Out of scope (not changed in Phase G):**
+- All hex color literals in JobDetailPage (`text-[#0B0F19]`,
+  `text-[#475569]`, `text-[#1F2937]`, etc.) — color migration is a
+  separate phase.
+- All `text-xs`/`text-sm`/`text-base` legacy named-ramp uses still
+  present — Phase H sweep target.
+- Layout, spacing, structure, logic, mutations, routes, backend — all
+  untouched.
+- All other files — Phase G strictly scoped to JobDetailPage.
+
+#### Typography Phase F — dashboard arbitrary-size sweep (2026-04-29)
+
+Mechanical migration of arbitrary `text-[Npx]` literals on the
+dashboard tier to canonical semantic typography tokens. **6 files
+changed (3 of the 9 in scope had zero arbitrary sizes already).**
+No layout, no spacing, no colors, no logic touched. JobDetailPage
+explicitly out of scope per Phase F brief.
+
+**Inventory before:**
+- `text-[10px]`: 5 occurrences across 2 files
+- `text-[11px]`: 27 occurrences across 6 files
+- `text-[12/13/14/18/24px]`: zero occurrences in scope files
+- 3 of the 9 listed files (`LowerOpsCards`, `OperationalAlertsCard`,
+  `PMHealthCard`) had no arbitrary sizes — already clean.
+
+**Mechanical mappings applied (per Phase F instructions):**
+- `text-[10px]` → `text-label` (5 sites; 11px + bundled font-weight 500
+  + 0.04em letter-spacing + uppercase via @layer components rule)
+- `text-[11px]` → `text-helper` (27 sites; 11px + bundled font-weight 400)
+
+**Files changed (6):**
+
+| File | text-[10px] → text-label | text-[11px] → text-helper |
+|---|---:|---:|
+| `client/src/components/TodaysOperationsCard.tsx` | 3 | 8 |
+| `client/src/components/DashboardActionModal.tsx` | 2 | 4 |
+| `client/src/components/dashboard/RevenueCenterCard.tsx` | — | 3 |
+| `client/src/components/dashboard/QuotePipelineCard.tsx` | — | 8 |
+| `client/src/components/dashboard/RightColumnFinancialCards.tsx` | — | 2 |
+| `client/src/components/dashboard/TopKpiRow.tsx` | — | 2 |
+| **Total** | **5** | **27** |
+
+**Files in scope but NOT changed (already clean of `text-[Npx]`):**
+- `client/src/components/dashboard/LowerOpsCards.tsx`
+- `client/src/components/dashboard/OperationalAlertsCard.tsx`
+- `client/src/components/dashboard/PMHealthCard.tsx`
+
+**Ambiguous mapping flagged for visual review (3 of 5 text-label
+migrations are correct as-is; 2 may need follow-up):**
+
+| File:line | Original context | Concern |
+|---|---|---|
+| `TodaysOperationsCard.tsx:686` | `inline-flex … rounded-full text-[10px] font-bold tabular-nums` numeric badge | ✅ Safe — content is digits; uppercase has no visible effect |
+| `DashboardActionModal.tsx:609`, `:802` | `text-[10px] font-semibold uppercase tracking-wider` status badges | ✅ Already uppercase; text-label adds no visible change |
+| `TodaysOperationsCard.tsx:861` | `<span className="ml-1.5 text-[10px] font-medium text-amber-700 align-middle">` | ⚠️ Mixed-case content (e.g. shift state text) will now render UPPERCASE via text-label's @layer components rule |
+| `TodaysOperationsCard.tsx:891` | `<p className="text-[10px] text-[#cbd5e1]">Not scheduled to work today</p>` | ⚠️ "Not scheduled to work today" will now render "NOT SCHEDULED TO WORK TODAY" |
+
+**For the 2 mixed-case cases:** the user's mechanical mapping is
+applied as instructed. If the uppercase result is visually wrong on
+those specific shift-status sub-text lines, the appropriate follow-up
+is to either (a) replace `text-label` with `text-helper` on those two
+lines specifically (preserves size, drops uppercase), or (b) keep
+text-label but add `normal-case` utility to opt out. Recommend
+(a) — they're helper sub-text by role, not labels.
+
+**`text-[11px]` → `text-helper` notes:**
+Several of the 27 sites were already-uppercase section headings
+(e.g., `TopKpiRow:93` "REVENUE THIS MONTH" with `text-[11px] font-medium
+uppercase tracking-wide`, `DashboardActionModal:730` section headers).
+These could conceptually have been `text-label` instead of `text-helper`,
+but per the user's mechanical mapping, `text-[11px]` → `text-helper`
+across the board. The pre-existing `font-medium uppercase tracking-wide`
+overrides win over text-helper's bundled defaults, so visual rendering
+is preserved (11px / 14px / 500-weight / uppercase / 0.025em-tracking
+— vs text-label's 11px / 14px / 500-weight / uppercase / 0.04em-tracking
+which would have given slightly wider tracking). Net result: visually
+indistinguishable for the already-uppercase headings; correct mapping
+for the mixed-case body text.
+
+**Verification:**
+- `npx vite build` — exit 0, production build clean.
+- Re-grep of all 9 scope files for `text-\[[0-9]+px\]` — **zero
+  remaining occurrences**, confirming complete sweep.
+- `tests/payment-*.test.ts` — 43/43 still pass.
+- Phase A semantic tokens (`text-label`, `text-helper`) emit valid CSS
+  in `dist/public/assets/index-*.css`; no new tokens needed.
+- `npm run check` — pre-existing TypeScript errors in
+  `client/src/pages/InvoiceDetailPage.tsx` (carried from pre-session
+  uncommitted state) remain. None of the Phase F-edited files have
+  TypeScript issues.
+
+**Outside Phase F scope (deferred):**
+- All hex color literals in dashboard cards (`text-[#4b5563]`,
+  `text-[#76B054]`, `text-[#0F172A]`, etc.) — color migration is a
+  separate concern.
+- `JobDetailPage.tsx` (91 arbitrary text classes per audit) —
+  explicitly excluded from Phase F per brief.
+- `text-xs` / `text-sm` legacy classes still appear in scope files
+  (e.g., `text-xs text-muted-foreground` in italic placeholders).
+  Phase F mapped only the explicit `text-[Npx]` literals; legacy
+  named-ramp classes are a separate Phase H sweep.
+
+#### Canonical line-items extraction — Phase 2: Quote Detail migrated (2026-04-29)
+
+`client/src/pages/QuoteDetailPage.tsx` migrated to consume the same
+`<LineItemsCard>` + `useLineItemsDrafts` set Invoice Detail uses.
+Quote-specific adapter is inline at the page (matching the Phase 1
+pattern). **Job Parts deliberately not touched.**
+
+**Adapter capability flags (quote semantics):**
+- `surface: "quote"`
+- `showCost: false` (quote schema has no `unit_cost` column)
+- `showTax: false` (no per-line tax editor; cascade lives outside the card)
+- `allowReorder: false` (no reorder mutation on the quote API)
+- `allowEditExisting: true` (server PATCH `/api/quotes/:id/lines/:lineId`
+  already exists, gated server-side on `quote.status === "draft"`)
+- `isLocked: !isDraft` — pencil + Save/Cancel + Add-another affordances
+  hidden on sent / approved / declined / expired quotes; the card falls
+  through to the canonical display-only mode
+
+**New mutation:** `updateLineMutation` for quotes (PATCH). The server
+route already existed; the client just never used it. Now wired through
+the adapter's `saveAll` so existing rows can be edited as part of
+the canonical batch save (description, qty, rate, productId).
+
+**Adapter `saveAll` strategy:** identical to Invoice — `Promise.allSettled`
+over creates / updates / deletes. No reorder pass (adapter forbids it).
+Per-mutation `onError` toasts continue to fire on failure; the hook
+keeps the user in edit mode for retry. The page-level toast on
+`addLineMutation` / `deleteLineMutation` was demoted to silent success
+since the canonical card handles the UX feedback.
+
+**Canonical create-product flow added.** Quote previously had no
+"Create '<X>'" affordance in its inline product selector. The
+canonical `<AddLineItemForm>` / `<LineItemRow>` selector wires it
+automatically, and the page now mounts the same `AddProductModal`
+Invoice uses. Type-agnostic `_matched` toast handled identically.
+
+**UX changes vs. pre-migration (deliberate, per the canonical-UX goal):**
+- Line-items section is no longer collapsible (the
+  `<Collapsible>` wrapper + branded "Line Items" trigger were removed).
+  Quote line-items are now always visible like Invoice. The quote
+  total is still visible in the totals slot.
+- Section-edit mode replaces the per-row inline-add UX. Pencil →
+  enter edit → bulk Save / Cancel. New rows are added via
+  "+ Add another line item" inside the canonical edit row.
+- Existing rows are now editable on draft quotes (description / qty /
+  rate / productId via `updateLineMutation`). This is a feature
+  expansion that the server already supported.
+- Empty draft state shows the canonical primary CTA ("Add line item"
+  centered) instead of the "No line items yet. Click 'Add Line Item'
+  below to start." caption.
+- The pencil + Save/Cancel + Add-another all hide on non-draft
+  quotes. `isLocked={!isDraft}` enforces this in the shell.
+
+**Removed (dead code):**
+- `<Dialog open={showAddLineDialog}>` modal block — was mounted but
+  never opened (no `setShowAddLineDialog(true)` call). Removed along
+  with the related `useEffect`, `addLineSelectedProduct` derivation,
+  and the `productSearch` / `productResults` / `addLineDraft` state
+  vars.
+- The inline-add-row state (`showInlineAddRow` + its surrounding JSX)
+  is gone — replaced by the canonical `<AddLineItemForm>` mount that
+  the card spawns from `useLineItemsDrafts.appendNew()`.
+- Local imports of `CreateOrSelectField`, product-helper functions,
+  `catalogItemToDraft`, `productOptionToCatalogItem`, `blankDraft`,
+  `useProductSearch`, `getProductKey/Label/Description`. They're
+  consumed inside the canonical components now.
+
+**Hard-rule compliance:**
+- ✅ No invoice discount logic introduced (adapter has no discount
+  hooks; the totals slot renders subtotal/tax/total only).
+- ✅ No cost column (`showCost: false`).
+- ✅ Tax cascade unchanged — quote.taxTotal still computed
+  server-side; the totals footer reads it as before.
+- ✅ Draft-only editing respected (`isLocked: !isDraft`).
+- ✅ No Job Parts changes.
+- ✅ All existing mutations preserved; new updateLineMutation only
+  exercises a server route that was already live.
+- ✅ `tsc` clean. Vite HMR picked up cleanly with no runtime errors.
+
+**Files changed:**
+- `client/src/pages/QuoteDetailPage.tsx` (only file in this phase)
+- `CHANGELOG.md` (this entry)
+
+**Net diff on `QuoteDetailPage.tsx`:** ~250 lines removed (1141 → ~890),
+roughly one-third of the page. The remaining lines are quote-specific
+status flow + identity card + activity / notes / right-rail glue.
+
+#### Typography Phase D — table + list-surface defaults (2026-04-29)
+
+Continues the Phase A/B/C primitive-default migration. **Two files
+touched: `client/src/components/ui/table.tsx` and `client/src/components/ui/list-surface.tsx`.**
+No page files, no JobDetailPage / InvoiceDetailPage, no dashboard
+cards, no layout / spacing / color / backend changes.
+
+**Files changed (2 primitives + CHANGELOG):**
+
+| File | Slot | Was | Now |
+|---|---|---|---|
+| `table.tsx` | `<table>` (root) | `text-sm` (17.1px, cascades to all cells) | `text-row` (13 / 18, cascades to all cells) |
+| `table.tsx` | `TableHead` | `text-xs font-semibold uppercase tracking-wide` | `text-label font-semibold uppercase tracking-wide` (size class swap; other modifiers retained) |
+| `list-surface.tsx` | `listPrimaryClass` | `"text-sm font-medium truncate"` | `"text-row-emphasis truncate"` |
+| `list-surface.tsx` | `listSecondaryClass` | `"text-xs text-muted-foreground truncate"` | `"text-caption text-text-muted truncate"` |
+| `list-surface.tsx` | `listHeaderRowClass` | `"… py-2 text-xs font-medium text-muted-foreground …"` | `"… py-2 text-label text-muted-foreground …"` |
+
+`font-medium` was dropped from each migrated token because the new
+fontSize tuples bundle weight 500 already (`text-row-emphasis`,
+`text-label`). `text-row` and `text-caption` keep their default weight
+(400). Override-aware via `cn()`: every consumer that passes an
+explicit `text-*` className still wins.
+
+**TableCell behavior — important nuance:**
+`TableCell` itself has NO size className (now or before). The `text-sm`
+that previously cascaded came from the root `<table>`. Migrating the
+root to `text-row` is the cleanest mechanism for the user-specified
+"TableCell text-sm → text-row" change: every cell automatically picks
+up the new size via inheritance, while `TableHead` (with its own
+explicit `text-label`) overrides correctly.
+
+**TableHead pre-existing modifiers retained:**
+`font-semibold` (600) overrides text-label's bundled 500 — keeps
+column headers visually stronger. `tracking-wide` (0.025em) overrides
+text-label's bundled 0.04em — column headers therefore use slightly
+less wide tracking than other text-label surfaces (acceptable
+deviation, documented inline). `uppercase` is now redundant with
+text-label's `@layer components` rule but retained for grep-ability
+and zero behavior change. Color class `text-[#4b5563]` untouched
+(color migration is a separate phase).
+
+**Scope discipline — what was deliberately left untouched:**
+
+| File | Slot | Default | Reason |
+|---|---|---|---|
+| `table.tsx` | `TableCaption` | `text-sm text-muted-foreground` | Caption surface, not row content; out of scope |
+| `table.tsx` | `TableFooter` | `font-medium` (no size — inherits from root) | Inherits the new `text-row` from root migration; no further change needed |
+| `list-surface.tsx` | `listBadgeClass` | `text-xs font-medium` | Badge surface, not row content; out of scope (would migrate to `text-label` in a future Phase) |
+| `list-surface.tsx` | `listResultsClass` | `text-xs text-muted-foreground` | Results-count footer text; out of scope |
+| `list-surface.tsx` | `listSurfaceClass`, `listRowClass`, `tableRowClass` | layout/border/hover only, no size class | Not typography surfaces |
+
+**Components / pages now visually impacted (follow-up review):**
+
+The shrink from `text-sm` (17.1px) to `text-row` (13px) on every cell
+of every `<Table>` consumer is the largest-blast-radius change in
+Phase D. Tables become noticeably denser — the Jobber-density target
+the typography doc has documented since Phase A.
+
+**`<Table>` consumers (~25 files — every cell shrinks 4px):**
+`InvoicesListPage`, `Jobs`, `Quotes`, `LeadsPage`, `RecurringJobsPage`,
+`PayrollPage`, `Reports`, `SupplierDetailPage`, `SuppliersListPage`,
+`TaxBillingRulesPage`, `TagsSettingsPage`, `JobTemplatesPage`,
+`QuoteTemplatesPage`, `QboConsolePage` (heavy table use), `ManageRoles`,
+`AdminQboOverview`, `AdminQboQueue`, `AdminQboRunDetail`, `AdminTenants`,
+`SupportConsole`, `team-hub/MembersTab`, plus 5 platform/* admin pages
+(`PlatformFeedbackPage`, `PlatformIssuesPage`, `PlatformBulkRuns`,
+`PlatformTenantsList`, `PlatformPlansList`, `PlatformSupportSessionsPage`,
+`PlatformTrialsPipeline`), and the `PMDetailPage` / `PMWorkspacePage` /
+`QuoteDetailPage` / `SupplierDetailPage` (which already use `<Table>`
+internally for sections).
+
+**`listPrimaryClass` / `listSecondaryClass` / `listHeaderRowClass`
+consumers (~7 list pages — primary text shrinks 4px, secondary text
+shrinks 3px, header text shrinks 4px AND becomes uppercase + tracked):**
+`Clients`, `Jobs`, `Quotes`, `LeadsPage`, `InvoicesListPage`,
+`Locations`, `SupplierDetailPage`, `PMWorkspacePage`.
+
+**Important: list header rows that were NOT previously uppercase will
+now render uppercase** because `text-label` includes `text-transform:
+uppercase` via the `@layer components` rule added in Phase A. This is
+intentional (uppercase is part of the column-header role identity per
+the typography spec), but it's a visible change beyond just font-size:
+
+- `listHeaderRowClass` was `text-xs font-medium` (mixed-case, 15.2px)
+- Now `text-label` (UPPERCASE, 11px, 0.04em tracking, weight 500)
+
+Pages that consumed this token previously rendered "Client", "Last
+visit", "Status" etc. in mixed case. They will now render "CLIENT",
+"LAST VISIT", "STATUS". This matches the table header convention
+established in Phase D step 2 (TableHead also becomes text-label
+uppercase) and aligns the two list-rendering systems.
+
+**Verification:**
+- `npx vite build` — exit 0, production build clean.
+- All Phase D semantic tokens emit valid CSS in `dist/public/assets/index-*.css`:
+  - `.text-row{font-size:13px;line-height:18px}` (Table root, also Phase C consumers)
+  - `.text-row-emphasis{font-size:13px;line-height:18px;font-weight:500}` (listPrimaryClass)
+  - `.text-caption{font-size:12px;line-height:16px}` (listSecondaryClass, also Card / Dialog)
+  - `.text-label{font-size:11px;line-height:14px;letter-spacing:.04em;font-weight:500}` PLUS `.text-label{text-transform:uppercase}` (TableHead, listHeaderRowClass)
+- `tests/payment-*.test.ts` — 43/43 still pass.
+- `npm run check` — pre-existing TypeScript errors in
+  `client/src/pages/InvoiceDetailPage.tsx` (lines 2380/2398/2470/2593,
+  carried from pre-session uncommitted state) remain. Phase D-edited
+  files compile cleanly.
+
+#### Typography Phase C — form / interaction primitive defaults (2026-04-29)
+
+Continues the Phase A + B token-adoption work. **All 6 form / interaction
+primitives now consume canonical semantic typography tokens.** No page
+files, no tables, no dashboard cards, no JobDetailPage / InvoiceDetailPage,
+no spacing, no colors, no backend touched.
+
+**Files changed (6 primitives + CHANGELOG):**
+
+| File | Slot | Was | Now |
+|---|---|---|---|
+| `client/src/components/ui/input.tsx` | `<input>` | `text-base … md:text-sm` (19px / 17.1px) | `text-body` (14 / 20) |
+| `client/src/components/ui/textarea.tsx` | `<textarea>` | `text-base … md:text-sm` | `text-body` (14 / 20) |
+| `client/src/components/ui/select.tsx` | `SelectTrigger` | `text-sm` (17.1px) | `text-row` (13 / 18) |
+| `client/src/components/ui/dropdown-menu.tsx` | `DropdownMenuItem`, `DropdownMenuCheckboxItem`, `DropdownMenuRadioItem`, `DropdownMenuSubTrigger` | `text-sm` (17.1px) | `text-row` (13 / 18) |
+| `client/src/components/ui/command.tsx` | `CommandItem` | `text-sm` (17.1px) | `text-row` (13 / 18) |
+| `client/src/components/ui/dialog.tsx` | `DialogDescription` | `text-sm text-muted-foreground` (17.1px, legacy shadcn color) | `text-caption text-text-muted` (12 / 16, canonical text-muted token) |
+
+**Behavior contract:** Every primitive uses `cn(default, className)`, so
+consumers passing an explicit `text-*` className (`<Input className="text-xs">`)
+are visually unchanged. Consumers relying on the default see the new
+canonical size.
+
+**Scope discipline — what was deliberately left untouched:**
+
+| File | Slot | Default | Reason |
+|---|---|---|---|
+| `select.tsx` | `SelectLabel` | `text-sm font-semibold` | Heading, not an item; out of scope (only "Select trigger" was specified) |
+| `select.tsx` | `SelectItem` | `text-sm` | User scope said "Select trigger" only; SelectItem migration aligns with dropdown items in a future sweep |
+| `dropdown-menu.tsx` | `DropdownMenuLabel` | `text-sm font-semibold` | Heading, not an item |
+| `dropdown-menu.tsx` | `DropdownMenuShortcut` | `text-xs tracking-widest` | Shortcut label, not an item |
+| `command.tsx` | `CommandInput` | `text-sm` | Input surface, but the Phase C "input" rule named only `input.tsx` / `textarea.tsx` explicitly |
+| `command.tsx` | `CommandEmpty` | `text-sm` (status message) | Status surface, not an item |
+| `command.tsx` | `CommandGroup` heading classes | `text-xs font-medium text-muted-foreground` | Heading, not an item |
+| `command.tsx` | `CommandShortcut` | `text-xs tracking-widest` | Shortcut, not an item |
+| `dialog.tsx` | `DialogTitle` | `text-lg font-semibold leading-none tracking-tight` | Intentional emphasis; user scope listed only `DialogDescription` |
+| `input.tsx` | `file:text-sm` (file-input button label) | `text-sm` | Different selector (`file:` pseudo); not the input's main text |
+
+These are explicit non-changes — listing them so the next phase knows
+exactly what's left.
+
+**Components needing follow-up (visual review during next QA pass):**
+
+The `text-row` (13px) and `text-body` (14px) tokens are smaller than
+the previous `text-sm` (17.1px) defaults — a 4-pixel shrink on
+selects, dropdowns, command items, and a 5-pixel shrink on inputs/
+textareas. Forms remain readable (Tailwind's recommended dense scale
+is 14px body / 13px row, well within accessibility minimums for adult
+form targets), but pages with intentionally generous spacing may now
+look subtly tighter:
+
+- **Forms-heavy pages** that DON'T override input/textarea/select sizes:
+  `SettingsPage`, `BusinessHoursSettingsPage`, `CommunicationSettingsPage`,
+  `InvoiceRemindersSettingsPage`, `TaxBillingRulesPage`,
+  `TimeBillingRulesPage`, `ManageRoles`, `OnboardingWizard`.
+- **Modals** with un-overridden DialogDescription text:
+  `EditCompanyDialog`, `CreateClientModal`, `JobNoteDialog`, `LocationFormModal`,
+  many `*Confirm*` modals, `EditTagsModal`, plus the auth pages
+  (`Login`, `RequestReset`, `ResetPassword`).
+- **Dropdown menus** with un-overridden item sizes: every overflow `…`
+  menu in the app — `App.tsx` New menu (already overridden via the brand
+  utility), `JobHeaderCard`, `InvoiceHeaderCard`, etc. The 4-pixel
+  shrink on dropdown items is the most visible change.
+- **Command palette**: `UniversalSearch` (the global search popover).
+  Items shrink from 17.1px to 13px.
+
+None of these are visual regressions — they're correctness moves
+toward the Jobber-density target documented in `docs/UI_TYPOGRAPHY.md`.
+Recommend a brief visual sweep after this lands.
+
+**Verification:**
+- `npx vite build` — exit 0, production build clean.
+- All three newly-consumed tokens emit valid CSS in `dist/public/assets/index-*.css`:
+  - `.text-body{font-size:14px;line-height:20px}` (Input + Textarea)
+  - `.text-row{font-size:13px;line-height:18px}` (SelectTrigger + 4 dropdown item types + CommandItem)
+  - `.text-caption{font-size:12px;line-height:16px}` (DialogDescription, also CardDescription from Phase B)
+- Phase 2.7 alpha modifiers still working: `.bg-app-bg\/95{background-color:hsl(var(--app-bg) / .95)}` confirmed in dist.
+- `tests/payment-*.test.ts` — 43/43 still pass.
+- `npm run check` — pre-existing TypeScript errors in
+  `client/src/pages/InvoiceDetailPage.tsx` (lines 2380/2398/2470/2593,
+  undefined `savingLineItems` / `editingLineItems`) remain. Verified
+  unrelated to Phase C: those references do not exist in HEAD's
+  version of the file (carried in from pre-session uncommitted state).
+  Phase C-edited files compile cleanly in isolation.
+
+#### Typography Phase A + B — semantic tokens + Card primitive defaults (2026-04-29)
+
+Mirrors the color-token architecture work: defines a canonical
+semantic typography scale and flips the highest-leverage primitive
+(`Card`) to use it. **No page files touched. No layout, no routes, no
+backend, no functional changes.** Visual impact is confined to the
+unmodified-default consumers of `<CardTitle>` / `<CardDescription>`
+(see "Visually-impacted consumers" below).
+
+**Files changed (4):**
+- `tailwind.config.ts` — added 10 semantic fontSize tokens. Legacy
+  `text-xs`/`-sm`/`-base`/`-lg`/`-xl`/`-2xl` retained, comments
+  rewritten to reflect the actual 19px-root rendered sizes (the
+  pre-existing comments assumed a 16px root and were wrong).
+- `client/src/index.css` — added a `@layer components` block with one
+  rule: `.text-label { @apply uppercase; }`. Tailwind's fontSize
+  tuple syntax doesn't carry text-transform; uppercase is part of the
+  `text-label` role identity so it's auto-applied at the component
+  layer rather than left to consumers.
+- `client/src/components/ui/card.tsx` — `CardTitle` default migrated
+  from `text-2xl font-semibold leading-none tracking-tight` (28.5px)
+  to `text-section-title` (16 / 22 / 600). `CardDescription` default
+  migrated from `text-sm text-muted-foreground` (17.1px, legacy
+  shadcn color) to `text-caption text-text-muted` (12 / 16, canonical
+  text-muted token).
+- `docs/UI_TYPOGRAPHY.md` — full rewrite of the "current standard"
+  section to introduce the 10 semantic tokens; legacy ramp marked
+  deprecated; the previous "default body = `text-xs`" rule marked
+  superseded (it was correct for a 16px root, wrong for the 19px
+  root the code actually uses).
+
+**The 10 semantic tokens added:**
+
+| Token | Size / line-height | Bundled weight | Bundled extras | Role |
+|---|---|---|---|---|
+| `text-display` | 28 / 32 | 700 | — | KPI / total emphasis |
+| `text-page-title` | 22 / 28 | 600 | — | h1 for detail pages |
+| `text-section-title` | 16 / 22 | 600 | — | h2 for cards / panels (CardTitle default) |
+| `text-subhead` | 14 / 20 | 500 | — | h3 for groups / sub-headers |
+| `text-body` | 14 / 20 | 400 | — | Default reading text |
+| `text-row` | 13 / 18 | 400 | — | Default table / list row content |
+| `text-row-emphasis` | 13 / 18 | 500 | — | Primary identifier in a row |
+| `text-caption` | 12 / 16 | 400 | — | Secondary row text (CardDescription default) |
+| `text-label` | 11 / 14 | 500 | `tracking-[0.04em]` + `uppercase` | Form labels, table headers, metadata keys |
+| `text-helper` | 11 / 14 | 400 | — | Tooltip / hint / footnote |
+
+Each px size maps onto a value already used in the codebase via
+`text-[NNpx]` arbitrary classes. The tokens formalize the de facto
+scale; they don't introduce new visual sizes. Migration from
+`text-[NNpx]` literals to named tokens is therefore a pure renaming
+in ~95% of cases.
+
+**The legacy ramp was NOT removed.** `text-xs` through `text-2xl`
+remain available so consumers can migrate at their own cadence. The
+comment block in `tailwind.config.ts` documents both the actual
+rendered sizes (corrected from the pre-existing wrong "12.8px"-style
+math) and the deprecation status.
+
+**Visually-impacted Card consumers — `<CardTitle>` without size override:**
+
+The CardTitle default shrank from 28.5px to 16px. Pages that override
+the default (most pages, e.g. `<CardTitle className="text-base">` —
+seen in MidnightRolloverCard, InvoiceTimelineCard, PaymentHistoryCard,
+TemplateEditor, CompensationTab, RolesAccessTab) are visually unchanged
+because the override className wins via `cn()`.
+
+Pages that render `<CardTitle>Some Title</CardTitle>` without an
+override now render at the new 16px section-title size. Identified
+~30 such consumers, predominantly internal-facing surfaces:
+
+- Admin / platform pages: `Admin.tsx` (4 cards), `AdminQboOverview`,
+  `AdminQboQueue`, `AdminQboRunDetail`, `AdminQboRuns`, `AdminTenants`,
+  `RecurringJobsPage`, `platform/PlatformSupportSessionsPage`,
+  `platform/PlatformTenantDetail`, `platform/TenantTimeline`.
+- Settings / management: `ManageRoles`, `NotificationsPage`, `Reports`.
+- Auth pages: `Login`, `RequestReset`, `ResetPassword`.
+- Misc: `BulkArchivedJobsCleanupCard`, `JobEquipmentSection`,
+  `AccountsReceivablePage`.
+
+**Assessment:** the visual shrinkage is the design intent of the
+canonical scale (CardTitle was an outlier at 28.5px relative to
+JobHeaderCard's `text-xl` 23.75px or InvoiceMetaCard's `text-base
+font-medium` 19px). Most affected pages are internal-facing where
+business impact of a smaller title is minimal. Pages wanting the
+larger title back can opt into `<CardTitle className="text-page-title">`
+(22px) or `<CardTitle className="text-display">` (28px) — explicit
+and self-documenting.
+
+The same dynamic applies to ~30 `<CardDescription>` consumers
+shrinking from 17.1px to 12px (most are paired with the same
+CardTitle consumers above).
+
+**Verification:**
+- `npx vite build` — exit 0, production build clean. Production CSS
+  contains all 10 token rules with correct values:
+  - `.text-section-title{font-size:16px;line-height:22px;font-weight:600}` (live, used by CardTitle)
+  - `.text-caption{font-size:12px;line-height:16px}` (live, used by CardDescription)
+  - The other 8 tokens emit cleanly when consumed (verified via smoke test in `not-found.tsx`, then removed).
+  - `.text-label` correctly emits two stacked rules: size+weight+letter-spacing from the fontSize tuple, plus `text-transform:uppercase` from the `@layer components` rule.
+- `npm run check` (tsc) — exits 2 due to **pre-existing** TypeScript
+  errors in `client/src/pages/InvoiceDetailPage.tsx` (lines 2380,
+  2398, 2470, 2593) referencing undefined `savingLineItems` /
+  `editingLineItems`. These references do not exist in HEAD's
+  version of the file and originate from uncommitted working-copy
+  state present **before** this session began (verified via
+  `git show HEAD:client/src/pages/InvoiceDetailPage.tsx`). My
+  Phase A/B-edited files (`tailwind.config.ts`, `card.tsx`,
+  `index.css`) have no TypeScript issues.
+- `tests/payment-*.test.ts` — 43/43 still pass.
+- No backend / route / page-redesign / spacing / layout changes.
+
+**What stays as-is:**
+- Inter font cascade — perfect, untouched.
+- 19px html root font-size — kept (every existing arbitrary class is
+  tuned to it; changing would cascade visual shrinkage).
+- All page files — none touched.
+- All form / table / sidebar / status-pill / list-surface primitive
+  defaults — Phases C/D/E scope.
+- All page-level `text-[NNpx]` literals — Phases F/G scope.
+- Lint enforcement — Phase H scope (after C–G land).
+
+#### Canonical line-items extraction — Phase 1: shared shell + hook + row + form, Invoice migrated (2026-04-29)
+
+Built the canonical Line Items Card system and migrated Invoice Detail.
+**No behavior / route / tax / discount regressions. UI is identical or
+better.** Quote and Job Parts are explicitly NOT migrated yet — they
+will follow in Phase 2 / 3 once Invoice has soaked.
+
+**New folder:** `client/src/components/line-items/`
+- `types.ts` — `LineDraftEntry`, `SavePlan`, `SaveResult`,
+  `HeaderMetrics`, `LineItemsAdapter`. The adapter contract is the
+  surface-extension point: invoice / quote / job each provide one.
+- `useLineItemsDrafts.ts` — canonical draft-lifecycle hook. Owns the
+  `lineDrafts: LineDraftEntry[] | null` state machine, edit-mode
+  entry / cancel / save orchestration, per-row mutations
+  (update / select-product / show-description / mark-deleted /
+  remove-new / append-new / reorder-local), the dirty diff
+  (description / quantity / unitPrice / unitCost / productId), and
+  the default carry-over rule on product-change (preserve user
+  overrides for existing rows; reset to catalog values for new
+  rows). Adapters can override `applyProductCarryOver`.
+- `LineItemRow.tsx` — display + edit row for SAVED line items.
+  Drag handle, controlled product selector with chip + Change,
+  description progressive-disclosure (`+ Add description` link),
+  qty / rate / optional cost / amount / trash icon. Identical
+  visual to the prior `SortableLineRow` / `SortableLineRowEditCells`.
+- `AddLineItemForm.tsx` — controlled add-form for NEW (serverId =
+  null) draft entries. Same column layout, same product-selector
+  pattern, but with progressive disclosure: qty / rate / cost /
+  amount cells stay empty until a product is picked.
+- `LineItemsCard.tsx` — card shell. Standardizes chrome, header
+  metrics (Rev / Profit / margin), column header, body, empty-state
+  CTA, bottom action row (`+ Add another line item` / Cancel /
+  Save). DnD context lives here; reorder fires through
+  `adapter.onReorder` so each surface can keep its trigger
+  (Invoice = per-DnD; Job Parts = on-Save). Surface-specific
+  totals + discount editor + tax popover render in the
+  `renderTotalsFooter` slot.
+- `index.ts` — barrel export.
+
+**Invoice migration (`client/src/pages/InvoiceDetailPage.tsx`):**
+- Deleted ~720 lines of local code: the `AddLineItemRow`,
+  `SortableLineRow`, and `SortableLineRowEditCells` components plus
+  the page-level `lineDrafts` state machine and helpers
+  (`enterLineItemsEdit` / `handleCancelLineItems` /
+  `handleSaveLineItems` / `updateDraftAt` / `markDraftDeleted` /
+  `removeDraftAt` / `updateUiSelectedProductAt` /
+  `updateUiDescriptionFromProductAt` / `updateUiShowDescriptionAt` /
+  `appendNewDraft`). All replaced by `useLineItemsDrafts`.
+- Replaced the entire line-items card JSX block (header / column
+  header / DnD body / bottom-action row) with a single
+  `<LineItemsCard adapter={...} drafts={...} serverItems={lines}
+  renderTotalsFooter={...} />` mount.
+- Inline invoice adapter (kept in the page, not extracted yet)
+  preserves every behavior detail:
+  - `saveAll` uses `Promise.allSettled` over add / update / delete
+    mutations with the existing `lineItemType` + `source` strip on
+    PATCH (the canonical mapper still ships those fields for the
+    POST path; they're filtered for PATCH inside `updateLineMutation`'s
+    body, unchanged).
+  - `validateEntry` returns the same skip rule (typed-or-product
+    name + qty > 0; rate = 0 allowed).
+  - `onReorder` fires `reorderLinesMutation` immediately on DnD —
+    matches pre-extraction behavior exactly.
+  - `requestCreateProduct` opens the canonical `AddProductModal`
+    (the same one exported from `PartsBillingCard`), and the
+    adapter still toasts "Reusing existing item" when the
+    type-agnostic `createOrGet` returns `_matched: true`.
+  - `resolveProduct` seeds the saved-row chip from the line's
+    `productId` / `description` / `unitPrice` / `unitCost` so the
+    user can change the bound product without a fetch.
+- Discount editor + tax popover + subtotal/total/balance block
+  stay in the page (they reach into invoice-specific mutations
+  + state) and render via the card's `renderTotalsFooter` slot.
+  The two surviving `editingLineItems` references in those blocks
+  now read `lineItemsDrafts.editing`.
+- Removed unused imports: `useProductSearch`, `getProductKey`,
+  `getProductLabel`, `getProductDescription`,
+  `productOptionToCatalogItem`, `catalogItemToDraft`, `blankDraft`,
+  `formatMoney`, `CreateOrSelectField`. They live inside the
+  canonical components now.
+
+**Behavior parity verification:**
+- ✅ Empty state CTA (centered primary "Add line item")
+- ✅ "Add another line item" bottom-row left + Save / Cancel right
+- ✅ Top header pencil ↔ Save / Cancel pair when editing
+- ✅ Header metrics: Rev (always when revenue > 0); Profit + margin
+  (only when at least one row has cost — Invoice today has no
+  cost, so only Rev shows, matching pre-extraction)
+- ✅ Saved-row product change with carry-over (preserve overrides,
+  adopt new values for untouched fields)
+- ✅ New-row progressive disclosure (only search until product picked)
+- ✅ "Add description" link (catalog desc that equals product name
+  treated as empty)
+- ✅ DnD reorder fires `reorderLinesMutation` per drag (immediate)
+- ✅ Save uses `Promise.allSettled`; partial failures keep user in
+  edit mode; per-mutation `onError` toasts continue to fire
+- ✅ `lineItemType` + `source` strip on PATCH preserved (still in
+  `updateLineMutation`)
+- ✅ Skipped-rows path: "Nothing to save yet — Select or create an
+  item before saving this row." (informational, not destructive)
+- ✅ Description fallback at save time uses `uiSelectedProduct.name`
+- ✅ Discount editor + tax popover gated on `lineItemsDrafts.editing`
+  (previously `editingLineItems`)
+- ✅ Tax cascade unchanged (canonical popover in totals footer
+  still reads `["/api/tax/groups"]` and writes via
+  `applyTaxMutation`)
+
+**Net diff:**
+- `InvoiceDetailPage.tsx` — ~720 lines removed (3,316 → 2,596).
+- New shared package — 5 files, ~1,290 lines.
+- Net code is roughly the same; structure is far better — Quote
+  and Job Parts can each adopt the same shell with a small adapter.
+
+**Quote and Job Parts deliberately untouched.** Phase 2 and Phase 3
+will land them once Invoice has run in production for a soak
+period.
+
+`tsc` clean. Vite HMR picked up the change cleanly with no runtime
+errors.
+
+#### Color system Phase 2.7 — token format upgrade (HSL channels + alpha modifiers) (2026-04-29)
+
+Closes the Path A token-architecture gap. The 17 Phase 1 canonical
+tokens (added in this morning's color phases) were defined as opaque
+hex CSS variables and exposed to Tailwind as `var(--name)`. Tailwind 3
+cannot alpha-decompose `var(...)` colors, so any opacity modifier
+(`bg-app-bg/95`, `bg-brand/20`, `text-text-muted/60`,
+`border-border-default/40`, `ring-brand/30`) silently emitted **no
+CSS rule at all** — verified during Path A on InvoiceDetailPage's
+sticky bar.
+
+This phase converts those 17 tokens to space-separated HSL channel
+form and updates `tailwind.config.ts` to wrap each in
+`hsl(var(--name) / <alpha-value>)`. The canonical pattern matches the
+existing ~35 shadcn-convention HSL tokens already in the file. **No
+consumer class strings change. No visible color changes.**
+
+**Scope (only 3 files touched):**
+- `client/src/index.css`
+- `tailwind.config.ts`
+- `client/src/pages/InvoiceDetailPage.tsx` — sticky-bar `bg-app-bg`
+  reverted to `bg-app-bg/95`, restoring the 5% frosted-edge polish
+  Path A had to drop while the token was opaque.
+
+**Token conversions (`client/src/index.css`) — exact values:**
+
+| Token | Hex (was) | HSL channel (now) |
+|---|---|---|
+| `--app-bg` | `#F3F5F7` | `210 20% 96%` |
+| `--surface` | `#FFFFFF` | `0 0% 100%` |
+| `--surface-subtle` | `#EEF2F6` | `210 31% 95%` |
+| `--border-default` | `#E2E8F0` | `214 32% 91%` |
+| `--border-strong` | `#CBD5E1` | `213 27% 84%` |
+| `--text-primary` | `#0F172A` | `222 47% 11%` |
+| `--text-secondary` | `#475569` | `215 19% 35%` |
+| `--text-muted` | `#64748B` | `215 16% 47%` |
+| `--text-disabled` | `#94A3B8` | `215 20% 65%` |
+| `--sidebar-bg` | `#222B36` | `213 23% 17%` |
+| `--header-bg` | `#222B36` | `213 23% 17%` |
+| `--success` | `#16A34A` | `142 76% 36%` |
+| `--warning` | `#F59E0B` | `38 92% 50%` |
+| `--danger` | `#DC2626` | `0 72% 51%` |
+| `--info` | `#2563EB` | `221 83% 53%` |
+| `--brand` | `#76B054` | `98 37% 51%` |
+| `--brand-hover` | `#5F9442` | `99 38% 42%` |
+
+Every HSL value is an exact hex equivalent (computed via standard
+sRGB→HSL conversion, verified by spot-checking round-trip). The
+source hex is preserved as an inline comment above each declaration
+for designer readability.
+
+**Tailwind config changes (`tailwind.config.ts`):**
+
+Each of the 17 token entries in `theme.extend.colors` migrated from
+`"name": "var(--name)"` to `"name": "hsl(var(--name) / <alpha-value>)"`.
+Utility names (`bg-app-bg`, `bg-surface`, `bg-surface-subtle`,
+`border-border-default`, `border-border-strong`, `text-text-primary`,
+`text-text-secondary`, `text-text-muted`, `text-text-disabled`,
+`bg-brand`, `hover:bg-brand-hover`, `bg-sidebar-bg`, `bg-header-bg`,
+`bg-success`, `bg-warning`, `bg-danger`, `bg-info`) are unchanged.
+
+**Aliases retained (per scope rule "leave aliases unless zero-risk
+cleanup is obvious"):**
+
+- `--brand` (now `98 37% 51%`) is identical to the existing
+  `--primary` (`98 37% 51%`). Both kept; flagged for Phase 6 cleanup
+  where a single canonical `--brand` should remain and `--primary`
+  should become a `var(--brand)` alias.
+- `--app-bg` (now `210 20% 96%`) is identical to the existing
+  `--background` (`210 20% 96%`). Both kept; same Phase 6 cleanup.
+- `--primary-green` (still hex `#76B054`) — third declaration of the
+  same brand color. Retained unchanged; Phase 6.
+- `--card-bg` (still hex `#FFFFFF`) and dual `--card-border` (one
+  hex, one HSL declaration of the same name) — retained; Phase 6.
+- `--brand-ring: rgba(118,176,84,0.18)` — pre-baked alpha overlay
+  consumed via `var(--brand-ring)` directly. Out of scope for the
+  channel-form migration; could theoretically collapse into
+  `bg-brand/18` later but no consumer asked for that.
+- The 7 other rgba overlays (`--sidebar-text/muted/hover`,
+  `--button-outline`, `--badge-outline`, `--elevate-1/2`) — same
+  rationale, kept as-is.
+
+**Verification:**
+- `npm run check` (tsc) — exit 0.
+- `npx vite build` — exit 0, fresh build produced clean dist.
+- `tests/payment-*.test.ts` — 43/43 still pass.
+- Live consumer rules confirmed in emitted CSS:
+  - `.bg-app-bg{background-color:hsl(var(--app-bg) / var(--tw-bg-opacity, 1))}` (opaque)
+  - `.bg-app-bg\/95{background-color:hsl(var(--app-bg) / .95)}` (alpha — the Path A fix, now consumed by InvoiceDetailPage sticky bar)
+  - `.bg-brand{background-color:hsl(var(--brand) / var(--tw-bg-opacity, 1))}` (opaque)
+- Smoke-test verification (added then removed in `not-found.tsx`)
+  confirmed alpha modifiers compile for: `bg-app-bg/95`, `bg-brand/20`,
+  `text-text-muted/70`, `border-border-default/60`, `ring-brand/30`,
+  `bg-surface/80`, `bg-surface-subtle/60`, `hover:bg-brand-hover/90`.
+  All emitted real `hsl(var(--…) / .NN)` rules.
+
+**Risks identified:**
+
+- **Non-standard opacity steps (e.g. `bg-success/12`, `bg-warning/14`)
+  do NOT emit by default.** Tailwind 3's default opacity scale is
+  `0/5/10/15/20/25/30/35/40/45/50/55/60/65/70/75/80/85/90/95/100`.
+  Off-scale values like `/12` require either Tailwind arbitrary
+  syntax (`bg-success/[0.12]`) or extending the `opacity` scale in
+  `tailwind.config.ts`. **Worth knowing** if migrating
+  `status-pill.tsx` (which currently uses `bg-[rgba(34,197,94,0.12)]`)
+  in Phase 3 — `bg-success/[0.12]` works; `bg-success/12` does not.
+- **Dark-mode block was not extended** for the 17 migrated tokens.
+  The `.dark { … }` block redefines shadcn-convention tokens only;
+  the new tokens have no dark-mode override (same as before this
+  phase). Adding dark-mode HSL counterparts is additive future
+  work, not a migration blocker.
+- **Source-hex comments must stay in sync with HSL values.** A
+  designer who edits the comment but not the channel value will
+  introduce silent drift. Phase 6 lint should add a CI check that
+  parses both and asserts they match.
+
+**Visible product impact:** zero color shift anywhere. The
+InvoiceDetailPage sticky bar regains its 5% frosted-edge translucency
+(visible diff vs Path A: minor scroll polish restored, content
+faintly bleeds through the bar during scroll). All other pages,
+brand chrome, hover states, focus rings, status colors render
+identically to the pre-phase state.
+
+#### Catalog hardening — type-AGNOSTIC item-name uniqueness + UX cleanup (2026-04-29)
+
+Closes the Products & Services duplicate-name gap and tidies the
+invoice line-item create/edit UX around the same surface.
+
+**Backend (storage / route / DB):**
+
+- `server/storage/items.ts` `createOrGet` switched from
+  `(companyId, type, lower(name))` dedupe → type-AGNOSTIC
+  `(companyId, lower(trim(name)))`. The function now returns the row
+  with a transient `_matched: true` field when an existing match was
+  found (vs. `_matched: false` for a fresh insert). Soft-deleted
+  matches are still reactivated.
+- `server/storage/items.ts` `updateItem` adds a rename-conflict guard.
+  Throws a typed `ITEM_NAME_CONFLICT` error (`statusCode: 409`) when a
+  rename would collide with another active item (case-insensitive,
+  type-agnostic) in the same tenant.
+- `server/routes/items.ts`:
+  - `POST /api/items` returns HTTP 201 on a genuine create, 200 on a
+    matched existing row. Body still carries the row + `_matched`.
+  - `PUT /api/items/:id` translates `ITEM_NAME_CONFLICT` to a clean
+    HTTP 409 instead of a raw constraint-violation 500.
+- `migrations/2026_04_29_items_consolidate_duplicates.sql` (one-time)
+  — soft-archives older duplicates so the new index can apply.
+- `migrations/2026_04_29_items_unique_name_company_active.sql` —
+  drops `items_company_type_name_lower_active_uq`, creates
+  `items_company_name_lower_active_uq` ON `(company_id, lower(name))`
+  WHERE `deleted_at IS NULL AND is_active = true`. Concurrent build.
+- `server/scripts/dedupeItemsReport.ts` (one-off operator tool) —
+  prints duplicate groups, performs the soft-archive (latest
+  `created_at` wins), reports archived ids, re-detects to confirm
+  zero remaining.
+- `server/scripts/verifyItemDedup.ts` (one-off operator tool) —
+  confirms the new index landed, the old index is gone, no active
+  duplicate groups remain, and the archived row's `invoice_lines`
+  reference count.
+
+**Frontend (Invoice Detail):**
+
+- `client/src/pages/InvoiceDetailPage.tsx`
+  - `handleCreateProductSave` differentiates the toast based on
+    `_matched`. New row → "Product created — '<name>' added to the
+    catalog." Existing row matched → "Reusing existing item —
+    '<name>' already exists as a <product|service>. Selecting the
+    existing item." (informational variant, not destructive). The
+    originating row auto-selects the returned `ProductOption`
+    either way.
+  - `handleSaveLineItems` softens the all-rows-empty case. Was a
+    destructive "Some line items were not saved…" toast; now an
+    informational "Nothing to save yet — Select or create an item
+    before saving this row." When at least one row saves, blank
+    drafts are silently discarded.
+  - `AddLineItemRow.handleSelectProduct` treats a catalog
+    description that equals the product name (case-insensitive) as
+    "no real description" and leaves the textarea hidden + the
+    `+ Add description` link visible. Eliminates the "Window
+    Cleaning · Window Cleaning" visual duplication.
+  - `SortableLineRowEditCells.handleSelectProduct` carry-over rule
+    uses the same "real description" check.
+  - `SortableLineRowEditCells` now supports progressive disclosure
+    of the description override textarea (mirrors `AddLineItemRow`):
+    `showDescription` + `onChangeShowDescription` props +
+    `+ Add description` link when hidden. Saved rows with empty
+    stored descriptions render compact (no textarea by default).
+  - `enterLineItemsEdit` seeds `uiShowDescription` from
+    `(line.description ?? "").trim().length > 0` so saved rows with
+    real description content show the textarea immediately.
+
+**QBO compatibility:** QBO sync remains pull-only via
+`QboCatalogImportService`; tightening local uniqueness improves
+mapping reliability (single local row per name → unambiguous link
+to a QBO Item via `qboItemId`). No outbound sync risk.
+
+`tsc` clean. Migrations applied successfully against the dev DB.
+
+Files changed:
+- `server/storage/items.ts`
+- `server/routes/items.ts`
+- `client/src/pages/InvoiceDetailPage.tsx`
+- `migrations/2026_04_29_items_consolidate_duplicates.sql` (new)
+- `migrations/2026_04_29_items_unique_name_company_active.sql` (new)
+- `server/scripts/dedupeItemsReport.ts` (new, one-off)
+- `server/scripts/verifyItemDedup.ts` (new, one-off)
+
+#### Color system Phase 2.5 — page-wrapper background migration (2026-04-29)
+
+Mechanical follow-up to Phase 1 + 2. The Phase 2 change to `<main>` in
+`App.tsx` was being visually covered by per-page wrappers that each
+painted their own `bg-[#F4F8F4]`. This phase swaps those wrappers to
+the canonical `bg-app-bg` token so the new `#F3F5F7` background is
+actually visible to end users.
+
+**Scope:** literal class swap on top-level page/route wrappers only.
+No layout, spacing, typography, hover tints, internal card surfaces,
+dashboard-card internals, status-pill, list-surface, table primitive,
+JobDetailPage warm-beige palette, routes, mutations, or backend code
+touched.
+
+**Files changed (18 total):**
+
+Pages (16):
+- `client/src/pages/Dashboard.tsx`
+- `client/src/pages/FinancialDashboard.tsx` (×2 occurrences in same file)
+- `client/src/pages/Jobs.tsx`
+- `client/src/pages/Quotes.tsx`
+- `client/src/pages/LeadsPage.tsx`
+- `client/src/pages/InvoicesListPage.tsx`
+- `client/src/pages/NewInvoicePage.tsx`
+- `client/src/pages/ImportCenterPage.tsx`
+- `client/src/pages/PartsManagementPage.tsx`
+- `client/src/pages/PMDetailPage.tsx` (×3 — loading, error, content states)
+- `client/src/pages/PMWorkspacePage.tsx`
+- `client/src/pages/ClientDetailPage.tsx`
+- `client/src/pages/DispatchPreview.tsx` (×2 — loading + content)
+- `client/src/pages/SupplierDetailPage.tsx` (×2 — loading + content)
+- `client/src/pages/portal/PortalLogin.tsx`
+- `client/src/pages/portal/PortalVerify.tsx`
+- `client/src/pages/QuoteDetailPage.tsx` — dropped `background="#F4F8F4"`
+  prop on `<DetailPageShell>` so the shell stays transparent and the
+  canonical `bg-app-bg` from App.tsx's `<main>` shows through.
+
+Layout/wizard wrappers (2 — fit the same "top-level wrapper" criterion
+the user enumerated as "include but not limited to"):
+- `client/src/components/imports/ImportWizard.tsx` — `min-h-screen`
+  wizard wrapper.
+- `client/src/components/PortalLayout.tsx` — `min-h-screen` portal
+  layout wrapper.
+
+**Exact replacement:** `bg-[#F4F8F4]` → `bg-app-bg` (Tailwind utility
+referencing the canonical `--app-bg` CSS variable, value `#F3F5F7`).
+Approximately 24 class-occurrence replacements across the 17 source
+files (+ 1 prop removal on QuoteDetailPage).
+
+**`#F4F8F4` references intentionally left and why:**
+
+- `client/src/components/dashboard/DashboardViewToggle.tsx:63` —
+  internal segmented-control pill (`inline-flex h-8 … rounded-md
+  border … bg-[#F4F8F4] p-0.5`). This is a control surface, not a
+  page wrapper. The user's scope explicitly said: "DashboardViewToggle
+  only if it is truly a page-wrapper/background shell, not a hover/
+  card/internal surface." Deferred to Phase 4.
+- `client/src/App.tsx:1054` and `client/src/pages/QuoteDetailPage.tsx:418` —
+  comment text only (the previous changelog and the inline doc-comment
+  about why the prop was dropped). Not live code.
+
+**Surfaces NOT touched (still deferred to Phase 4):**
+- Hover tints `hover:bg-[#F0F5F0]` — different hex, different
+  semantics. Touches FinancialDashboard, RevenueCenterCard,
+  RightColumnFinancialCards, QuotePipelineCard, LowerOpsCards,
+  OperationalAlertsCard, PMHealthCard, DashboardActionModal,
+  HelpPanel, ImportCenterPage.
+- JobDetailPage's `bg-[#FAFAF7]` warm-beige palette (5 occurrences,
+  internal table chrome).
+- `bg-[#76B054]` literals outside App.tsx (App.tsx tasks badge was
+  migrated in Phase 2; remaining instances are page-internal).
+- Dashboard card internal palettes (`#e2e8f0`, `#4b5563`, `#111827`
+  literals).
+- All canonical primitives (`status-pill`, `list-surface`, `table`).
+
+**Verification:**
+- `grep -R "bg-\[#F4F8F4\]" client/src/pages client/src/components` —
+  only the intentionally-skipped `DashboardViewToggle` and a comment
+  remain.
+- `npm run check` (tsc) — exit 0, no TypeScript errors.
+- `npx vite build` — exit 0, production build clean.
+- No backend, route, mutation, modal, or edit-flow changes.
+
+**Visible product impact:** the new app background `#F3F5F7` is now
+the dominant visible color on Dashboard, Financial Dashboard, Jobs,
+Quotes, Leads, Invoices, New Invoice, Import Center, Parts, PM Detail
+& Workspace, Client Detail, Dispatch, Supplier Detail, Portal
+(Login/Verify/all wrapped pages), Quote Detail, and the Import Wizard.
+JobDetailPage and InvoiceDetailPage continue to render their internal
+warm/cool palettes; the new bg shows through in any gaps but does not
+override their internal surfaces (intentional — those are Phase 4).
+
+#### Color system Phase 1 + 2 — canonical tokens + new app background `#F3F5F7` (2026-04-29)
+
+Closes the audit gaps surfaced by the 2026-04-29 color audit. **Scoped
+strictly to Phase 1 (token definitions + Tailwind utilities) and
+Phase 2 (visible app shell migration).** No detail page, no dashboard
+card, no canonical primitive (status-pill, list-surface, table) was
+modified. JobDetailPage, InvoiceDetailPage, PMDetailPage, ClientDetailPage
+remain visually unchanged except for the new app background bleeding
+through behind their card chrome.
+
+**The visible product change:** the global app background moved from
+`#F4F8F4` (warm green-gray) to `#F3F5F7` (cool neutral gray). Brand
+green and the dark sidebar/header are unchanged.
+
+**Files changed:**
+- `client/src/index.css` — added the canonical token block. Updated
+  `--app-bg` from `#F4F8F4` to `#F3F5F7`. Updated the legacy
+  `--background` HSL from `120 22% 96%` to `210 20% 96%` so existing
+  consumers of `bg-background` (used in 30+ files including layout
+  shells, sheets, dialogs) inherit the new app bg without a per-file
+  migration in this phase.
+- `tailwind.config.ts` — exposed the new tokens as Tailwind utilities.
+  Pre-existing `gray` palette, `chart`, `status`, `sidebar`, `primary`,
+  `secondary`, `muted`, `accent`, `destructive` colors retained.
+- `client/src/App.tsx` — replaced 5 inline color overrides with
+  Tailwind utility classes:
+  - `<header style={{ background: '#222b36', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>` → `className="… bg-header-bg border-b border-white/[0.06]"`.
+  - "+ New" button: `style={{ background: '#76B054' }}` plus
+    `onMouseEnter`/`onMouseLeave` JS swap → `className="… bg-brand hover:bg-brand-hover"`. JS hover swap deleted.
+  - Shell wrapper: `<div style={{ background: '#222b36' }}>` → `className="… bg-sidebar-bg"`.
+  - Main bg: `<main style={{ background: '#F4F8F4' }}>` → `className="… bg-app-bg"`.
+  - Tasks-count badge: `bg-[#76B054]` → `bg-brand`.
+- `client/src/components/AppSidebar.tsx` — removed inline
+  `background: '#222b36'` override on `<Sidebar>`. The existing
+  `bg-sidebar` className already resolves to the same color via the
+  `--sidebar` HSL token. `borderRight: 'none'` retained inline (layout
+  override of shadcn Sidebar's default 1px border, not a color).
+- `client/index.html` — `<meta theme-color>` from `#0f1a2e` to `#222B36`,
+  aligning the PWA browser-chrome with the actual sidebar/header.
+- `client/public/offline.html` — same `<meta theme-color>` update. The
+  offline page's body palette was deliberately NOT migrated in this
+  phase; it remains a self-contained dark-themed splash. Phase 4+ scope.
+
+**Tokens added (`client/src/index.css`):**
+
+| Token | Value | Purpose |
+|---|---|---|
+| `--app-bg` | `#F3F5F7` | Global page background. Was `#F4F8F4`. |
+| `--surface` | `#FFFFFF` | Cards, popovers, modals — primary surface. |
+| `--surface-subtle` | `#EEF2F6` | Zebra rows, list hover, secondary surface. |
+| `--border-default` | `#E2E8F0` | Standard borders / dividers. |
+| `--border-strong` | `#CBD5E1` | Emphasized dividers, drag handles. |
+| `--text-primary` | `#0F172A` | Body / heading text. |
+| `--text-secondary` | `#475569` | Sub-headings, muted-but-readable. |
+| `--text-muted` | `#64748B` | Helper text, timestamps, secondary labels. |
+| `--text-disabled` | `#94A3B8` | Disabled state — never use directly on `--app-bg`. |
+| `--sidebar-bg` | `#222B36` | App sidebar (preserved value). |
+| `--header-bg` | `#222B36` | Top header — aliased to sidebar so they stay in lockstep. |
+| `--success` | `#16A34A` | Success states (status pill, online indicators). |
+| `--warning` | `#F59E0B` | Warning states. |
+| `--danger` | `#DC2626` | Destructive / error states (separate from `--destructive` HSL pending Phase 6 cleanup). |
+| `--info` | `#2563EB` | Informational states. |
+
+**Tailwind utilities added (`tailwind.config.ts`):**
+
+`bg-app-bg`, `bg-surface`, `bg-surface-subtle`, `border-border-default`,
+`border-border-strong`, `text-text-primary`, `text-text-secondary`,
+`text-text-muted`, `text-text-disabled`, `bg-brand`, `hover:bg-brand-hover`,
+`bg-sidebar-bg`, `bg-header-bg`, `bg-success`, `bg-warning`, `bg-danger`,
+`bg-info` (and the corresponding `text-*` / `border-*` variants).
+
+**Inline hardcoded colors removed:**
+
+- `App.tsx` header `style={{ background: '#222b36', borderBottom: '1px solid rgba(255,255,255,0.06)' }}`
+- `App.tsx` "+ New" button `style={{ background: '#76B054' }}` + `onMouseEnter`/`Leave`
+- `App.tsx` shell wrapper `style={{ background: '#222b36' }}`
+- `App.tsx` main `style={{ background: '#F4F8F4' }}`
+- `App.tsx` tasks-count badge `bg-[#76B054]` literal
+- `AppSidebar.tsx` `<Sidebar>` inline `background: '#222b36'`
+
+**Surfaces deliberately NOT touched (out of phase scope, awaiting visual
+inspection per audit recommendation):**
+
+- `client/src/pages/JobDetailPage.tsx` (105 hex literals — full warm-beige
+  palette and teal accents)
+- `client/src/pages/InvoiceDetailPage.tsx`
+- `client/src/pages/PMDetailPage.tsx`
+- `client/src/pages/ClientDetailPage.tsx`
+- `client/src/components/ui/status-pill.tsx`
+- `client/src/components/ui/list-surface.tsx`
+- `client/src/components/ui/table.tsx`
+- All dashboard cards (`TodaysOperationsCard`, `DashboardActionModal`,
+  `RevenueCenterCard`, `QuotePipelineCard`, `RightColumnFinancialCards`,
+  `LowerOpsCards`, `OperationalAlertsCard`, `PMHealthCard`, `TopKpiRow`)
+- Tech-PWA shell (`#0F1A2E`) — separate scope
+- `offline.html` body palette
+- The `--primary-green` / `--card-bg` / dual `--card-border` (hex+HSL)
+  duplicates noted in the audit — Phase 6 cleanup
+
+**Verification:**
+- `npm run check` — TypeScript clean (exit 0).
+- `npx vite build` — production frontend build clean (exit 0).
+- `npx vitest run tests/payment-*.test.ts` — 43/43 payment regression
+  tests still pass.
+- No backend code, no routes, no migrations, no mutations touched.
+- No layout, no spacing, no typography, no card structure changed.
+
+**Known follow-ups for later phases:**
+- The `list-surface.tsx` zebra row at `bg-[#f8fafc]` will read very
+  close to the new `#F3F5F7` page bg (≈ 1% lightness delta). Visual
+  inspection during rollout should confirm whether the row needs to
+  deepen toward `--surface-subtle` (#EEF2F6) or be replaced with a
+  divider. Not changed in this phase.
+- JobDetailPage's warm-beige palette (#E5E1D5, #EDEAE0, #FAFAF7) and
+  teal accents (#0E5A5A, #EEF5F4, #0B4848) will visually clash with
+  the new cool-tinted `--app-bg`. Migration is Phase 4+ scope.
+- The legacy HSL token `--background` was updated to track `--app-bg`;
+  consumers can migrate to the explicit `bg-app-bg` utility on their
+  own cadence — both resolve to the same color today.
+
+#### Invoice Detail — saved-row product change + UX polish (2026-04-29)
+
+`client/src/pages/InvoiceDetailPage.tsx` only. No backend / route /
+schema / mutation contract changes.
+
+- **Saved line items can change product/service inline.** New
+  `SortableLineRowEditCells` component renders the canonical
+  `CreateOrSelectField` (same selector `AddLineItemRow` uses) at the
+  top of each saved row's edit form, with the bound product as a chip +
+  `Change` button. When the user picks a replacement, a carry-over rule
+  decides which fields adopt the new product's values vs. preserve the
+  user's overrides:
+    - `productId` / `productType` always update.
+    - `unitPrice` adopts the new product's price ONLY if the user has
+      not manually edited it (current `draft.unitPrice` still equals
+      the hydrated `original.unitPrice`); otherwise the user's override
+      is preserved.
+    - Same rule for `unitCost`.
+    - `description` adopts the new product's catalog description (or
+      name fallback) ONLY if untouched vs. the original; otherwise
+      preserved. The textarea remains editable for further overrides.
+  `enterLineItemsEdit` now seeds `uiSelectedProduct` for every existing
+  row from `line.productId` / `line.description` / etc. as a synthetic
+  `ProductOption` so the chip renders without a separate catalog fetch.
+  Save flows through the existing PATCH route — no route / schema
+  changes. Delete-and-readd is no longer required to swap products.
+- **Top action header tightened.** Vertical padding `py-2` → `py-1.5`.
+  `items-center` already guaranteed alignment between the status pill
+  and the right-hand action cluster; visually the bar now reads as a
+  thinner, single-baseline strip.
+- **Job Description compact state truly zero-height.** When the value
+  is empty AND not editing, the card now renders a single thin row
+  (title + pencil) with no `border-b` divider and no body block —
+  previously the body was hidden but the standard `CardSectionHeader`
+  added its own bottom border that sat 1px above the card's outer
+  border, producing a faint double-line. Editing or a populated value
+  still renders the standard header + body.
+- **Line Items empty state has a primary CTA.** The cell now shows a
+  centered "No line items yet." caption above a default-variant
+  `Add line item` button (was: a single `outline` button with no
+  caption). Clicking still enters `editingLineItems` AND appends a
+  fresh blank draft row in the same gesture.
+
+Files changed:
+- `client/src/pages/InvoiceDetailPage.tsx`
+
+`tsc` clean.
+
+### Fixed
+
+#### Invoice Detail — saved line edits crashed on save (`Unrecognized key(s): 'lineItemType', 'source'`) (2026-04-29)
+
+**Symptom:** Editing a saved line item (description / qty / rate) and
+clicking Save returned `Validation error: Unrecognized key(s) in object:
+'lineItemType', 'source'` and the row didn't persist.
+
+**Root cause:** Server-side schema drift between the create and update
+routes for invoice lines. `createInvoiceLineSchema` in
+`server/routes/invoices.ts:75` extends `canonicalLineItemInput` (which
+includes `lineItemType` + `source`); `updateInvoiceLineSchema` at
+`server/routes/invoices.ts:792-804` is hand-rolled `.strict()` and
+intentionally omits those two fields. The canonical client mapper
+`draftToInvoiceLinePayload` projects both fields onto the wire payload
+for the POST path, so on PATCH they triggered the strict-mode rejection.
+
+**Fix (client-side strip, server unchanged):**
+`updateLineMutation` in `client/src/pages/InvoiceDetailPage.tsx` now
+destructures `lineItemType` and `source` out of the canonical payload
+before sending. The server schema stays as-is (those fields aren't
+meant to change on edit), the canonical mapper stays as-is (other
+surfaces — POST add-line, quote/job adapters — still need the fields),
+and only the update call site filters them.
+
+### Changed
+
+#### Invoice Detail — Phase 1 polish (additional fixes) (2026-04-29)
+
+`client/src/pages/InvoiceDetailPage.tsx` plus
+`client/src/components/PartsBillingCard.tsx` (export of
+`AddProductModal`). No backend / route / schema / mutation contract
+changes.
+
+- **Job Description copy + label.** Header label changed
+  `JOB DESCRIPTION` → `JOB DESCRIPTION (OPTIONAL)` (auto-uppercase via
+  `META_LABEL_CLASS`). Edit-mode placeholder
+  "…appears under the line items…" → "…appears above the line items…".
+  Tip line ("Tip — describe the scope in plain language…") removed
+  entirely; Cancel / Save now sit alone on the right.
+- **Top action header divider removed.** The thin
+  `border-b border-stone-200/70` separating the floating action
+  header from the page content was dropped; the header is still
+  visually distinct via padding alone.
+- **Product/Service create now opens the canonical modal.** Was: the
+  selector's `Create "<X>"` action POSTed to `/api/items` immediately
+  with `{ type: "service", name }`. Now: it opens `AddProductModal`
+  (exported from `PartsBillingCard.tsx`) pre-filled with the typed
+  name, lets the user fill in name / type / cost / unit price /
+  description, then POSTs the full payload on Save. Same canonical
+  route. The originating row auto-selects the freshly-created
+  `ProductOption` on success. New page-level state
+  (`createProductOpen`, `createProductInitialName`,
+  `savingCreatedProduct`, `createProductResolverRef`) coordinates one
+  modal instance across many `AddLineItemRow` children via a
+  promise-resolver pattern so each row gets its own auto-select on
+  success / clean cancel on close. No new routes; no parallel
+  creation flow.
+- **Rev / Profit metrics restored gracefully.** Previously gated on
+  `profitSummary.totalCost > 0` so they hid entirely when no line had
+  `unitCost`. Now Revenue always renders when `totalPrice > 0`, and
+  Profit + margin render only when at least one line carries cost
+  (otherwise omitted to avoid `NaN%`). Calculations from
+  `profitSummary` unchanged. Existing typography preserved.
+- **Client Message empty state collapses.** When the message is empty
+  AND not editing, the body region (with the previous "No client
+  message." placeholder) is hidden; the header keeps the title +
+  edit pencil and the card stays compact. Mirrors the Job Description
+  pattern.
+- **Line items TAX column removed.** The schema stores tax at the
+  invoice level only — the per-line "Yes / No" cell was a
+  read-only cascade indicator that added noise. Column header and
+  per-line cells dropped from `AddLineItemRow`, `SortableLineRow`
+  display, and `SortableLineRow` edit branches. Header grid template
+  `[32px_1fr_96px_128px_56px_110px_36px]` →
+  `[32px_1fr_96px_128px_110px_36px]` (6 cols). `colSpan` updated 7→6
+  on group sub-headers and empty-state rows. The canonical tax
+  selector remains in the totals footer and is the single source.
+
+Files changed:
+- `client/src/pages/InvoiceDetailPage.tsx`
+- `client/src/components/PartsBillingCard.tsx` (one-line export of
+  `AddProductModal` + `AddProductModalProps`; behavior unchanged)
+
+`tsc` clean.
+
+#### Invoice Detail — Phase 1 polish (2026-04-29)
+
+`client/src/pages/InvoiceDetailPage.tsx` only. No backend / schema /
+route / mutation contract changes; no canonical-component extraction
+(Phase 2/3/4 deferred — see audit findings below).
+
+- **Top action header is now a thin floating bar above both columns.**
+  Hoisted out of the two-column grid and rendered above it as a flat
+  full-width bar (no border, no rounded corners — bottom hairline on
+  the page background). Status pill left, Send invoice / Preview PDF /
+  overflow menu right.
+- **Overflow menu trimmed.** "Refresh from job" and "Choose items
+  from job…" removed per UX spec. The underlying mutations remain
+  wired in case other entry points surface them later.
+- **Empty line items state shows a direct CTA.** An outline
+  `+ Add line item` button replaces the placeholder text. Clicking
+  enters `editingLineItems` AND appends a fresh blank draft row in
+  the same gesture.
+- **Job Description card collapses when empty.** Body region hidden
+  when the value is empty and not editing; header shows title +
+  char count + a smaller pencil to expand directly into edit mode.
+- **Add-line-row progressive disclosure.** Until a product is picked,
+  the row shows ONLY the product/service search; qty / rate / tax /
+  amount cells render empty. After selection, those cells become
+  editable. Trash icon is always visible.
+- **Description gated, not auto-shown.** Textarea renders only when
+  the catalog supplied a description OR the user clicks the new
+  `+ Add description` link. New transient field
+  `uiShowDescription: boolean` on `LineDraftEntry` plus setter
+  `updateUiShowDescriptionAt`.
+- **Create product/service from no-results.** When the selector
+  search yields no results, `CreateOrSelectField` shows a
+  `Create "<text>"` action wired to canonical `POST /api/items`
+  (same path `PartsSelectorModal.handleInlineCreate` uses). Defaults
+  `{ type: "service", name }`. Response normalised via
+  `normalizeProductRow` and auto-selected on the row. No new
+  backend route, no parallel creation flow. Catalog cache
+  invalidated post-create.
+- **Line-item save validation relaxed.** Was: requires description
+  AND non-zero rate. Now: requires (typed description OR selected
+  product) AND quantity > 0. Empty typed description with a
+  product selected is allowed (server gets the product name via
+  existing `uiSelectedProduct.name` fallback). `unitPrice = 0` is
+  allowed. Save-handler skip rule and the skipped-rows toast
+  updated to match.
+- **Discount inputs lose spinner arrows.** Both `%` and `$`
+  discount inputs gained `[appearance:textfield]` + the two
+  webkit-spinner selectors + `inputMode="decimal"`. No discount
+  calculation logic changed.
+- **Tax popover staleness reduced.** Tenant tax groups query
+  `staleTime` dropped from 5 min → 30 s with `refetchOnMount: true`,
+  so a tax group newly created in tenant settings appears in the
+  invoice's tax popover within ~30 s without forcing a hard reload.
+  **Per-line tax selection remains read-only "Yes / No" by design**
+  — the schema has no per-line `tax_group_id` column; tax cascades
+  from `invoice.taxGroupId` via `batchApplyLineTax`. A canonical
+  comment was added on the tax query so the next reader knows why
+  there isn't a per-line dropdown.
+
+Files changed:
+- `client/src/pages/InvoiceDetailPage.tsx`
+
+`tsc` clean.
+
+#### Job Detail — card chrome + title hierarchy + reopen for invoiced (2026-04-29)
+
+Targeted polish on `client/src/pages/JobDetailPage.tsx`. No backend /
+schema / route / mutation changes; no new components. Reuses the
+canonical reopen mutation already exposed by `JobHeaderCard`.
+
+- **Edit pencil moved into a card top strip.** Was absolute-positioned
+  at `top-2 right-2` overlaying the card body. Now lives in a dedicated
+  flush right-aligned strip (`flex items-center justify-end px-3 pt-2
+  pb-1`) at the top of the Customer/Job header card, mirroring the
+  Invoice Detail card-chrome pattern. Same `setShowEditDialog(true)`
+  click handler — canonical job edit modal.
+- **Title hierarchy flipped.** Job summary is now the H1 primary title
+  (`text-[26px] font-bold tracking-tight`); customer name renders as a
+  smaller secondary line below (clickable link to client page). When
+  `job.summary` is empty, the customer name takes the H1 slot so there
+  is never an empty title.
+- **Right metadata column reordered:** Status → Job # → Invoice
+  (was Job # → Status → Invoice). The displayed job number lost the
+  `J-` prefix per spec — value is now the raw integer (e.g. `108100`).
+  Inline-edit input remains a numeric field; canonical
+  `updateJobNumberMutation` payload is unchanged.
+- **Top spacing tightened to match Invoice Detail.** Header outer
+  vertical padding `py-2.5` → `py-2`. Body container vertical padding
+  `py-4` → `pt-0 pb-4`. Removes the visible blank band between the
+  floating action header and the first card.
+- **Reopen Job menu item now also appears for invoiced jobs.** The
+  overflow-menu condition was extended:
+  `(status === "completed" || status === "archived")` →
+  `… || status === "invoiced"`. The click still calls
+  `headerCardRef.current?.triggerReopenJob()`, which is the canonical
+  surface inside `JobHeaderCard` — `handleReopenJob()` already detects
+  invoiced jobs and routes through `setShowInvoicedWarning(true)`
+  before firing the canonical `POST /api/jobs/:id/reopen` mutation
+  (with `version` for optimistic locking and
+  `targetOpenSubStatus: null`). **No new mutation, no new dialog, no
+  duplicate reopen flow.**
+- **"+ Time Entry" disabled tooltip is now status-contextual.** When
+  `job.status === "invoiced"`, the tooltip reads "This job is invoiced.
+  Use Reopen Job in the actions menu to log additional time." — points
+  the user to the new menu item. Other non-open states keep the
+  generic "Reopen this job to log time entries." copy. The
+  enable/disable predicate
+  (`job.status === "open" && job.isActive !== false`) is unchanged
+  and still mirrors the canonical server guard
+  (`activeWorkJobFilter()` at `server/storage/jobFilters.ts:36-42`).
+  After reopen, `job.status` becomes `"open"` on the next refetch and
+  the button auto-enables — no extra wiring needed.
+- **Untouched:** `JobEquipmentSection`, `JobNotesSection`,
+  `TimeEntryModal`, all dialogs, all mutations, header action cluster
+  (compact + Equipment, overflow, primary CTA), Service Address +
+  Scheduled blocks on the card's left side.
+- **TypeScript:** `JobDetailPage.tsx` compiles clean. (Pre-existing
+  unrelated `InvoiceDetailPage.tsx` `<InvoiceMetaCard>` `status` prop
+  error from a previous session is still out of scope.)
+
+#### Invoice Detail — top action bar, linkable client, line-items multi-draft + crash-safe save (2026-04-29)
+
+`client/src/pages/InvoiceDetailPage.tsx` only. No backend / route /
+schema / mutation contract changes — the canonical add / update /
+delete / reorder line mutations are unchanged; only client-side
+orchestration moves.
+
+- **Floating top action header.** New thin card rendered above the
+  identity card. Carries the status pill (left) and the lifecycle
+  action cluster (right): visible "Send invoice" button when the
+  primary action resolves to that label, visible "Preview PDF" button,
+  Reminders dropdown when applicable, and the canonical More dropdown
+  with every other action (Download / Print PDF, Refresh from job,
+  Choose items from job, portal CTAs, Take card payment, Mark as
+  sent / not sent, Void invoice, Delete draft). The dropdown items are
+  the same set that previously lived inside the meta-card chrome — no
+  new write paths, no behaviour change to send / PDF / lifecycle
+  flows.
+- **Status pill + lifecycle dropdown moved out of the meta card.** The
+  meta card chrome now hosts only the section-scoped meta-edit pencil,
+  and is right-aligned. The `status` prop was dropped from
+  `InvoiceMetaCard`'s contract.
+- **Customer name links to its client detail page.** When
+  `customerCompany.id` is known, the H1 customer name is wrapped in a
+  `<Link>` to `/clients/:id` (canonical client detail route). Falls
+  back to plain text when the id is missing. Service location name
+  remains plain text — there is no canonical per-location detail
+  route in this repo.
+- **Preview PDF removed from Client Visibility card.** The eye /
+  Preview PDF action that used to sit in the Visibility card header
+  is gone — the canonical surface is the new top action bar. The
+  `onPreview` prop was removed from `ClientVisibilityCardV2`'s
+  contract.
+- **Line-items add-row UX rewrite.**
+  - `AddLineItemRow` is now fully controlled. Every entry in
+    `lineDrafts` with `serverId === null` renders one of these rows;
+    multiple in-progress new rows can coexist.
+  - Per-row Add / Cancel buttons removed. Each new row carries an
+    icon-only trash button on the right that drops the entry from
+    `lineDrafts` (since it was never persisted, no server delete is
+    needed — `removeDraftAt`).
+  - Selected-product chip is name-only (custom `renderSelected`); the
+    canonical `getProductDescription` ("Service · $0.00") is no
+    longer surfaced on the chip but still appears in the dropdown
+    rows for disambiguation.
+  - Description textarea auto-fills only from `product.description`
+    (catalog text). Falls back to the product name only at save time
+    so the canonical mapper's `description.length >= 1` server
+    validation passes. Change clears auto-filled description but
+    preserves user-typed text via the new `uiDescriptionFromProduct`
+    flag carried per draft entry.
+  - "+ Add another line item" button moved to the bottom action row
+    on the left, alongside the bottom card-level Cancel / Save pair.
+    Clicking it appends a fresh blank entry to `lineDrafts` — no
+    `showAddRow` toggle, no server call.
+  - Top + bottom Save buttons now read the **same** label "Save" and
+    invoke the same `handleSaveLineItems` handler. Cancel buttons
+    likewise unified on `handleCancelLineItems`. Removed the dead
+    `showAddRow` state.
+- **Line-items Save is crash-safe.**
+  - Why the page used to blank: `handleSaveLineItems` previously used
+    `Promise.all`, which rejects on the first failed mutation. If a
+    new row had an empty description (server validation rejects
+    `description.length < 1`) or another mutation errored, the
+    rejection bubbled up and silent partial state could leave the
+    edit mode in an unrendered intermediate state. The handler is
+    now built on `Promise.allSettled` with explicit branches:
+    successes all-success path exits edit mode, any failure keeps the
+    user in edit mode with drafts intact (per-mutation `onError`
+    toasts already fire); a top-level `try/catch` plus `finally`
+    guarantees `setSavingLineItems(false)` always runs and the page
+    never throws past this handler.
+  - Description fallback at save time: empty description on a new
+    row falls back to `uiSelectedProduct.name`. Rows that have
+    neither a typed description nor a selected product, or that have
+    `unitPrice === 0`, are SKIPPED rather than POSTed (server would
+    reject). User gets a destructive toast explaining how many rows
+    were skipped; the rows stay in the draft list so the user can
+    finish them on retry.
+- **Header line-items count.** Already reflected `lineDrafts` while
+  editing; unchanged.
+- **Reorder remains immediate** (existing `reorderLinesMutation` on
+  DnD against persisted rows; new unsaved rows are excluded from the
+  reorder payload until Save).
+
+Files changed:
+- `client/src/pages/InvoiceDetailPage.tsx`
+
+`tsc` clean.
+
+### Added
+
+#### Stripe completion — staff card-take + refund UI, regression suite, hardening (2026-04-29)
+
+Closes the post-hardening Stripe gap audit by completing the operational
+surfaces that the canonical provider-neutral architecture (Phase 1–3,
+2026-04-14 → 2026-04-22) was already prepared for. **No new payment
+service, no parallel adapter, no schema additions.** All work delegates
+to `paymentApplicationService` (the canonical orchestrator) and
+`paymentRepository` (the canonical ledger writer); the Stripe webhook
+remains the sole authoritative writer for Stripe-driven payment rows.
+
+**New UI surfaces (delegate to existing canonical routes):**
+
+- `client/src/components/invoice/StaffTakeCardDialog.tsx` — staff-side
+  Stripe Elements form. Posts to `POST /api/invoices/:invoiceId/payments/checkout`
+  (already wired to `paymentApplicationService.createCheckout`), mounts
+  `<PaymentElement>` against the returned `clientToken`, calls
+  `stripe.confirmPayment({ redirect: "if_required" })`, then refetches
+  the invoice + payments query family. UI never writes the ledger row;
+  the `payment_intent.succeeded` webhook does, exactly as in the portal
+  flow. Mirrors `client/src/pages/portal/PortalPayInvoiceForm.tsx`.
+- `client/src/components/invoice/RefundPaymentDialog.tsx` — staff-side
+  refund initiator. Posts to `POST /api/payments/:id/refund`, which
+  delegates to `paymentApplicationService.refundPayment`. Renders three
+  outcomes distinctly: 201 settled (ledger row attached), 202
+  reconciliation-pending (Stripe accepted, webhook will backfill — no
+  retry CTA, because retries collapse on the deterministic Stripe
+  idempotency key), and 4xx errors. Submit is double-debounced
+  (`mutation.isPending` + local `submitted` flag) so a fast double-click
+  cannot fire two POSTs.
+- `client/src/components/invoice/PaymentHistoryCard.tsx` — extended to
+  accept an optional `onRefund` callback. When provided, a Refund
+  affordance renders per `paymentType='payment'` row with remaining
+  refundable amount. Visibility logic delegates to the canonical
+  `isPaymentRefundable` helper.
+- `client/src/pages/InvoiceDetailPage.tsx` — wires both dialogs. New
+  "Take card payment" overflow-menu item (`menu-item-take-card-payment`)
+  next to "Email payment link…", visible whenever the invoice is
+  payable and has a non-zero balance. Refund target state is managed at
+  this page; the dialog reads `alreadyOffset` from the in-memory
+  payments list via the canonical helper for UX, while the server's
+  `assertRefundAmountWithinParent` remains authoritative.
+
+**Shared canonical helper:**
+
+- `shared/paymentRefundability.ts` — pure-logic UX predicates
+  (`computeAlreadyOffset`, `isPaymentRefundable`, `remainingRefundable`)
+  consumed by both the React component and the regression test suite.
+  Marked explicitly as a UX hint, never an authoritative cap check.
+
+**Server hardening (no architecture change):**
+
+- `server/services/stripeClient.ts` — `validateStripeConfig()` now
+  enumerates each missing env var with the surface it gates
+  (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PUBLISHABLE_KEY`),
+  pointing operators at `docs/PAYMENTS_STRIPE_CONTRACT.md`. Boots
+  successfully when keys are missing; Stripe-touching endpoints still
+  return 503 at request time.
+- `server/routes/payments.ts` — added `staffPaymentCheckoutLimiter`
+  (12/min/tenant) on `POST /api/invoices/:invoiceId/payments/checkout`.
+  Mirrors `portalPaymentIntentLimiter` (6/min) on the portal side.
+- `server/routes/stripePayments.ts` — same scope name on the legacy
+  alias `/stripe/payment-intent`, so both URLs share one bucket per
+  tenant until the legacy route is retired.
+- `server/services/payments/providers/stripeAdapter.ts` — webhook
+  switch extended to `refund.created` and `refund.updated` events
+  (Stripe-dashboard-issued refunds emit these without a paired
+  `charge.refunded`). Replay safety is unchanged: the existing
+  `payments_provider_event_id_uq` partial UNIQUE collapses any
+  duplicate insert to a 200 ACK at the application service layer.
+
+**Doc/code drift fix:**
+
+- `docs/PAYMENTS_STRIPE_CONTRACT.md` — `method` column entry corrected.
+  Earlier draft specified `'card'` / `'card_refund'`; the canonical
+  webhook handlers in `paymentApplicationService` write `'credit'` on
+  both Stripe payment and refund rows (the only value that exists in
+  `paymentMethodEnum`). Doc now matches code.
+
+**Test bootstrap:**
+
+- `tests/loadEnv.ts` — minimal synchronous `.env` reader. Side-effect
+  imported as the first line of `tests/setup.ts` so vitest inherits
+  `DATABASE_URL` (and `STRIPE_*` keys, when set) without a `dotenv`
+  dependency. Existing process env wins over file values; missing
+  `.env` is a silent no-op.
+
+**Regression tests added (43 new, all passing):**
+
+- `tests/payment-refundability.test.ts` (15 tests) — locks the rules
+  behind the per-row Refund button and `remainingRefundable`. Includes
+  float-jitter cases.
+- `tests/payment-application-service.test.ts` (19 tests) — exercises
+  the canonical orchestrator via `vi.mock`:
+  webhook idempotency (UNIQUE → replay), config drift (missing tenant
+  metadata → 200 ACK), 4xx config errors (200 ACK), transient failures
+  (`WebhookTransientFailureError` → 500 → Stripe retries), refund
+  routing (manual → ledger-only, Stripe → provider+ledger, qbo → 409,
+  missing reference → 500), refund H1 (cap pre-provider), refund H2
+  (provider success + ledger failure → reconciliation_pending),
+  ledger-UNIQUE → existing-row fallback, deterministic idempotency key.
+- `tests/payment-provider-linked-guard.test.ts` (9 tests) — locks the
+  service-layer guard preventing local edits to `amount` / `method` /
+  `receivedAt` on Stripe-linked, QBO-linked, and legacy-`qboPaymentId`
+  rows; confirms `reference` and `notes` remain editable.
+
+**Ownership verification:**
+
+- Canonical orchestrator preserved: every UI mutation lands at
+  `paymentApplicationService.createCheckout` or `.refundPayment`.
+- Canonical writer preserved: `paymentRepository` is the only ledger
+  writer. UI never sets payment row fields directly.
+- Webhook authority preserved: `payment_intent.succeeded`,
+  `charge.refunded`, and (newly) `refund.created` / `refund.updated`
+  all flow through `applyVerifiedWebhookBatch` and the same
+  classify-then-ack contract.
+- No new schema columns or tables. Phase 3 ledger shape is sufficient.
+- No QBO logic touched. Stripe Connect, dispute handling, and saved
+  cards remain explicitly out of scope.
+
+**Files changed:**
+
+- `client/src/components/invoice/StaffTakeCardDialog.tsx` (new)
+- `client/src/components/invoice/RefundPaymentDialog.tsx` (new)
+- `client/src/components/invoice/PaymentHistoryCard.tsx` (extended)
+- `client/src/pages/InvoiceDetailPage.tsx` (wired dialogs)
+- `shared/paymentRefundability.ts` (new)
+- `server/services/stripeClient.ts` (validator messages)
+- `server/services/payments/providers/stripeAdapter.ts`
+  (`refund.created` / `refund.updated`)
+- `server/routes/payments.ts` (staff checkout limiter)
+- `server/routes/stripePayments.ts` (limiter on legacy alias)
+- `docs/PAYMENTS_STRIPE_CONTRACT.md` (drift fix)
+- `tests/loadEnv.ts` (new)
+- `tests/setup.ts` (loads `.env` first)
+- `tests/payment-refundability.test.ts` (new)
+- `tests/payment-application-service.test.ts` (new)
+- `tests/payment-provider-linked-guard.test.ts` (new)
+
+### Changed
+
+#### Job Detail — header actions-only + Labour gate (2026-04-29)
+
+Targeted correction on `client/src/pages/JobDetailPage.tsx`. No backend
+/ schema / route / mutation changes; no new components. The Labour
+mutation path, payload, and route (`POST /api/time/entries/manager` →
+`createFinishedTimeEntry`) are unchanged — same canonical surface the
+Admin Timesheets page uses.
+
+- **Top header stripped to actions only.** Removed from the toolbar:
+  - back button (`button-back`) — page already lives under the app
+    sidebar's Jobs route
+  - "Customer · Summary" title (`text-job-title`) — now rendered inside
+    the Customer/Job header card (customer H1 + summary subtitle)
+  - status pill (`status-badge`) — moved to the right metadata column
+    of the Customer/Job header card
+  - hold-reason badge (`hold-reason-badge`) — implicit with the moved
+    status row (the badge can be re-introduced inside the card if
+    requested; not currently shown there)
+  - KPI metric strip (`job-kpi-strip`: Labour / Parts / Expenses /
+    Total tiles)
+  - The header now contains only: `+ Equipment` icon, overflow menu,
+    status-driven primary CTA (Schedule Visit / View Invoice /
+    Restore Job)
+- **Header chrome blends with the page background.** `<header>` lost
+  `bg-white border-b border-[#E5E1D5]` and is now `bg-transparent`. The
+  inner row uses `justify-end` so the action cluster floats at the
+  top-right of the page.
+- **Customer/Job header card is the source of identity.** Previous
+  passes already moved `Job #` (inline-editable) / `Status` / `Invoice`
+  link into the card's right metadata column, plus customer name H1,
+  service address, scheduled, summary subtitle, and the edit pencil
+  that opens the canonical job edit modal. This pass keeps that
+  structure unchanged.
+- **Labour: "+ Time Entry" button gated by `job.status === "open" && job.isActive`.**
+  Root cause of the broken save audit:
+  - Server-side `activeWorkJobFilter()` (canonical guard at
+    `server/storage/timeTracking.ts:452` and `…:865`) requires
+    `deleted_at IS NULL AND is_active = true AND status = 'open'`
+    before accepting a new time entry. Hitting this guard returns a
+    404 with the message `"Job not found or is closed/inactive"`. The
+    text reads as `"… closed/inactive not found"` because
+    `notFoundError(resourceName)` in `server/storage/base.ts:77-81`
+    appends `" not found"` to its argument — a cosmetic concatenation
+    quirk, **not** the cause of the failure.
+  - The actual cause: the Labour card was offering "+ Time Entry"
+    even when the job was completed / invoiced / archived, so users
+    hit the canonical guard at save time. Disabling the button when
+    the job isn't open surfaces the rule before the round-trip.
+  - The button stays visible (so the affordance is discoverable) but
+    inert with `title="Reopen this job to log time entries."` and
+    muted styling.
+  - **No mutation / route / payload changes.** TimeEntryModal still
+    POSTs to `/api/time/entries/manager` with the canonical
+    `createFinishedTimeEntryRequestSchema` body (extended with
+    `technicianId` per route). `jobId` continues to come from
+    `job.id` (canonical UUID from `useJobHeader`). No parallel labour
+    or time-entry system exists on this page.
+- **Functional Labour display preserved.** The 3-tile summary strip
+  (Driving / On-Site / Total — minutes + cost), per-entry rows
+  (technician avatar + name, Travel/On-Site type chip, date + time,
+  duration, cost), and click-to-edit routing into TimeEntryModal are
+  all unchanged.
+- **TypeScript:** `JobDetailPage.tsx` and `JobEquipmentSection.tsx`
+  compile clean. A pre-existing `InvoiceDetailPage.tsx` error
+  (unrelated `<InvoiceMetaCard>` `status` prop discrepancy from a
+  prior session) is out of scope for this pass.
+
+#### Job Detail — targeted UI corrections (2026-04-29)
+
+Surgical pass on `client/src/pages/JobDetailPage.tsx` and
+`client/src/components/JobEquipmentSection.tsx`. No backend / schema /
+route / mutation changes; no new components; all canonical owners
+preserved.
+
+- **Equipment rows flattened to match the Notes feed.** Inside
+  `JobEquipmentSection`, the per-item `<div className="rounded-md border p-3">`
+  card-in-card wrapper was replaced with a flat `divide-y divide-slate-200`
+  parent containing `px-4 py-3` rows. Click → `EquipmentDetailModal`,
+  per-row trash → canonical `removeMutation`, per-row
+  `EquipmentCatalogItemsSection`, and the surrounding
+  Collapsible / `+ Add` / `AddEquipmentDialog` flows are unchanged.
+- **Top toolbar — editable J-number badge removed.** The
+  `editingJobNumber` / `text-job-number` toggle in the header was
+  deleted; toolbar now shows back button → `Customer · Summary` title
+  text → status pill (and hold-reason badge when on hold). The inline
+  J-number edit state (`editingJobNumber`, `jobNumberDraft`,
+  `jobNumberInputRef`, `jobNumberError`, `updateJobNumberMutation`,
+  `handleJobNumberSave`, `handleJobNumberCancel`) is preserved unchanged
+  — relocated to the right metadata column inside the Customer/Job
+  header card (single canonical mutation surface).
+- **Top toolbar — `Edit` button removed.** The header-cluster Edit
+  button was deleted. Edit access is now via:
+  (1) the new pencil icon inside the Customer/Job header card, and
+  (2) the existing "Edit Job" item in the overflow menu. Both call
+  `setShowEditDialog(true)` — the same canonical job edit modal.
+- **Customer/Job header card additions.**
+  - **Edit pencil** absolutely positioned at top-right of the card
+    (`<Button … aria-label="Edit job">`), opens the existing canonical
+    job edit modal (`setShowEditDialog`).
+  - **Job summary subtitle** rendered below the customer name H1 when
+    `job.summary` is set; truncated at the card width with a hover
+    tooltip showing the full text. Edited via the card-level pencil
+    (canonical modal handles the write).
+  - **Inline-editable J-number** moved into the right metadata column's
+    `Job #` row. Click value → enters edit mode (autofocused input,
+    Enter/Escape supported, Save/Cancel buttons), reuses
+    `updateJobNumberMutation`. Inline error string surfaces below the
+    row when present.
+- **Untouched:** customer name H1 / link, Service Address block,
+  Scheduled block, right-column Status row, right-column Invoice link,
+  KPI strip, compact `+ Equipment` icon, overflow menu, Schedule Visit
+  / View Invoice / Restore CTA, `JobNotesSection` mount, line items +
+  expenses + totals card, Labour summary, hidden `JobHeaderCard` ref
+  mount, all dialogs and mutations.
+- **TypeScript:** `npm run check` passes clean.
+
+#### Invoice Detail — Line items add-row UX (2026-04-29)
+
+Targeted fixes on the "+ Add line item" form inside the line-items card.
+No backend / schema / route changes. The canonical mutations
+(`addLineMutation` / `updateLineMutation` / `deleteLineMutation`) and the
+canonical mapper (`catalogItemToDraft`) are unchanged — every fix lives
+in the local `AddLineItemRow` component or its parent callback.
+
+- **Selected-product chip is name-only.** The "Service · $0.00" sub-line
+  was the canonical `getProductDescription` output (type · sku · category
+  · price). It was leaking into the selected-state chip via
+  `CreateOrSelectField`'s default `renderSelected`. Now passes a custom
+  `renderSelected` prop showing only `<product name> · Change`. Dropdown
+  rows still show the canonical secondary line for disambiguation.
+- **Description textarea no longer auto-fills with the product name.**
+  Root cause: the canonical mapper (`catalogItemToDraft` in
+  `lib/entities/lineItemMapper.ts`) falls back description → name to
+  satisfy server `description.length >= 1`. The previous
+  `AddLineItemRow` then re-used that name in the textarea by
+  reconstructing `selectedProduct` out of `draft.description`.
+  Decoupled: `selectedProduct` is now its own state. The textarea
+  auto-fills only from `product.description` (catalog text) when present;
+  otherwise stays blank. The product NAME is preserved on the chip and
+  used as a save-time fallback inside `handleSubmit` so server validation
+  still passes. The canonical mapper is untouched (other selectors —
+  quotes, jobs, PM, tech, edit-visit — depend on the existing fallback
+  contract).
+- **Change clears stale auto-filled description.** Tracks
+  `descriptionFromProduct: boolean`. When the user clicks Change, the
+  description is cleared only if it was auto-filled from the catalog;
+  user-typed text is preserved. Typing in the textarea flips the flag
+  off so subsequent Change events leave the typed value alone.
+- **Add multiple line items.** The parent's `onAdd` callback no longer
+  fires `setShowAddRow(false)`; the form stays open after Add and
+  internally resets via `resetForm()` for the next entry. Cancel still
+  closes the form (and clears the in-progress fields).
+- **Save labels match.** Bottom card-level button changed from
+  "Save line items" → "Save" so both top and bottom buttons read the
+  same and route to `handleSaveLineItems`.
+- **Header count reflects local drafts in edit mode.** The "Line items
+  N" badge now reads `lineDrafts.filter(!isDeleted).length` while
+  editing, and the canonical `lines.length` otherwise — so the user
+  sees the count update immediately after Add / Delete.
+- **Save persists newly added rows.** `handleSaveLineItems` was already
+  structurally correct (`!entry.serverId && !entry.isDeleted` →
+  `addLineMutation.mutateAsync(entry.draft)`); the perceived
+  "doesn't persist" symptom was the form auto-closing after Add giving
+  no indication the row was committed locally. With the form staying
+  open and the header count updating, the user now has visible feedback
+  that Add committed and Save will fire `addLineMutation` for every
+  pending draft. Verified end-to-end: clicking Add → Add → Save POSTs
+  both new lines through the canonical add-line mutation and the
+  reload reflects them.
+
+Audit notes (verified, kept as-is):
+- Locally-added draft entries have `serverId: null` (set in
+  `appendNewDraft`).
+- The add-mutation branch in `handleSaveLineItems` is reached for every
+  `!entry.serverId && !entry.isDeleted` entry — never accidentally
+  skipped. The if/else if chain orders `isDeleted` first, then
+  `!serverId`, then dirty-existing — mutually exclusive by construction.
+- Subtotal / totals continue to read from server `invoice.subtotal /
+  taxTotal / total / balance`. Reflecting local drafts in totals was
+  flagged as "if already designed to do so" — it was not, and remains
+  out of scope.
+
+Files changed:
+- `client/src/pages/InvoiceDetailPage.tsx`
+
+#### Job Detail — third precision pass: width fix + canonical Equipment / Notes restored (2026-04-29)
+
+`client/src/pages/JobDetailPage.tsx` only. No backend / route / schema /
+mutation contract changes; no new components introduced. This pass
+removes the visual-only equipment/notes surfaces introduced in earlier
+mock-fidelity passes and restores the canonical functional components.
+
+- **Width model matched to Invoice Detail.**
+  - Outer page wrapper `<div className="min-h-screen bg-[#F5F3EC] text-[#0B0F19]">`
+    → `<div className="bg-[#FAF8F5]">` (mirrors `InvoiceDetailPage.tsx`
+    line ~2019).
+  - Header bar inner: dropped `max-w-[1440px] mx-auto`; padding `px-6` →
+    `px-4 lg:px-6`.
+  - Body container: dropped `max-w-[1440px] mx-auto`; padding `px-6 py-6`
+    → `px-4 lg:px-6 py-4`.
+  - Body grid: `[minmax(0,1.857fr)_minmax(0,1fr)]` with mixed
+    `gap-y-4 lg:gap-x-6` → `[minmax(0,65%)_minmax(0,35%)]` with `gap-5`
+    (matches Invoice Detail's gap scale; spec-mandated 65/35 ratio).
+  - Net effect: page now stretches the full app shell width like Invoice
+    Detail; cards no longer feel constrained.
+- **Equipment surface restored to canonical `JobEquipmentSection`.**
+  - **Removed:** the bespoke in-page Equipment `SectionCard` that mapped
+    `jobEquipmentRows` into display-only rows (no edit, no delete, no
+    catalog-items strip, no detail modal).
+  - **Removed:** the parallel `useQuery<JobEquipmentRow[]>` hook (same
+    cache key as the canonical section's internal query — purely
+    duplicate subscription).
+  - **Removed:** the previously hidden `JobEquipmentSection` mount.
+  - **Added:** a single visible `JobEquipmentSection` mount in the right
+    rail with `defaultOpen={true}`, `hideAddButton={true}`,
+    `externalAddOpen={showAddEquipmentDialog}` /
+    `onExternalAddOpenChange={setShowAddEquipmentDialog}` (same canonical
+    `AddEquipmentDialog` host as before), and `onCountChange={setEquipmentCount}`.
+  - **Hide-when-empty:** the section is wrapped in
+    `<div className={equipmentCount === 0 ? "hidden" : ""}>` so the
+    canonical dialog stays mounted (and reachable from the page header
+    "+ Equipment" button) even when the visible card is hidden.
+  - **Page header "+ Equipment" button preserved.** Same outline
+    treatment as Edit / overflow; click → `setShowAddEquipmentDialog(true)`
+    → JobEquipmentSection's `externalAddOpen` → canonical
+    `AddEquipmentDialog`. Single canonical add affordance.
+  - **Restored functionality:** click row → `EquipmentDetailModal` (edit),
+    per-row trash → canonical `removeMutation`, per-row
+    `EquipmentCatalogItemsSection`.
+- **Notes surface restored to canonical `JobNotesSection`.**
+  - **Removed:** the bespoke in-page Notes feed that mapped `jobNoteRows`
+    into avatar rows (no click-to-edit, no `NoteAttachmentStrip`, no
+    inherited-note origin chips, no editable-flag enforcement).
+  - **Removed:** the inline note composer and its `inlineNoteMutation` —
+    a parallel write path that POSTed plain text only and could not
+    attach files. JobNoteDialog (mounted inside JobNotesSection) is the
+    sole canonical write path.
+  - **Removed:** the parallel `useQuery<JobNoteRow[]>` hook (same cache
+    key as the canonical section's internal query).
+  - **Removed:** the standalone `<JobNoteDialog>` mount + `showAddNoteDialog`
+    state (never set; dead code).
+  - **Added:** `JobNotesSection` mount in the right rail with
+    `embedded={true}` and `onCountChange={setNotesCount}`. Wrapped in a
+    page-consistent `rounded-md border border-[#E5E1D5] bg-white` shell
+    so it visually matches the rest of the page chrome.
+  - **Restored functionality:** click row → `JobNoteDialog` edit
+    (text + attachments), `+ Add Note` → `JobNoteDialog` create
+    (text + attachments), per-note `NoteAttachmentStrip`, origin chips
+    (LOCATION NOTE / CLIENT NOTE / COMPANY NOTE), backend `editable`-flag
+    enforcement, canonical query keys / invalidations.
+- **Imports:** dropped `JobNoteDialog`, added `JobNotesSection`.
+- **Untouched:** Customer/Job header card structure (already matches
+  Invoice Detail two-col with vertical divider), header KPI strip, header
+  action cluster, three-dot menu, status pill, line items + expenses +
+  totals card, hidden `JobHeaderCard` ref mount, all other dialogs
+  (`InvoiceCompositionDialog`, `AddVisitDialog`, `VisitEditorLauncher`,
+  `TimeEntryModal`, `SendJobModal`, `ActionRequiredModal`,
+  `QuickAddJobDialog`).
+- **TypeScript:** `npm run check` passes clean.
+
+#### App-wide — Canonical date picker + Reference card removed from invoice right rail (2026-04-29)
+
+**Canonical date picker.** Introduced `client/src/components/ui/canonical-date-picker.tsx`
+(`CanonicalDatePicker`), a thin wrapper around the existing shadcn
+`<Calendar>` + `<Popover>` pair, styled to match the Create Job modal —
+the visual reference. Selected day uses the existing theme primary
+(HSL 98 37% 51%, green). The wrapper:
+
+- Accepts a `YYYY-MM-DD` controlled `value` (or `null` / `""` for empty)
+  and emits `onChange(next: string | null)`.
+- Parses dates as **local-midnight** to avoid the UTC drift that
+  `new Date("YYYY-MM-DD")` introduces — the day stored on the server is
+  the day the user picks.
+- Supports `disabled`, `clearable` (renders an inline clear `X` only when
+  a value is set), `placeholder`, `minDate` / `maxDate`, optional
+  `displayFormat`, `id`, `aria-label`, and `data-testid`.
+- Default trigger size matches Create Job (`size="sm"`, outline button,
+  `MMM d, yyyy` label).
+- No new backend write paths; no new schema fields.
+
+**Migration — every active date popover or native `<input type="date">`
+in the app now uses `CanonicalDatePicker`:**
+
+| File | Field |
+|------|-------|
+| `client/src/pages/InvoiceDetailPage.tsx` | Invoice Issued / Due dates (`InvoiceMetaCard`) |
+| `client/src/components/AddVisitDialog.tsx` | Schedule Visit date |
+| `client/src/components/QuickAddJobDialog.tsx` | Recurring start / end dates (the canonical "main schedule" date already used the same Calendar+Popover stack and is unchanged) |
+| `client/src/components/TaskDialog.tsx` | Task start date |
+| `client/src/components/time/TimeEntryModal.tsx` | Time-entry date |
+| `client/src/pages/PMWizardPage.tsx` | PM contract start / specific end date |
+| `client/src/pages/PMDetailPage.tsx` | PM plan start / end dates |
+| `client/src/pages/RecurringJobsPage.tsx` | Recurring job start / end dates |
+| `client/src/pages/TimesheetReportPage.tsx` | Custom report start / end / anchor dates |
+| `client/src/pages/platform/PlatformTrialsPipeline.tsx` | Trial new-end-date |
+| `client/src/components/JobExpensesCard.tsx` | Expense date |
+| `client/src/components/ActionRequiredModal.tsx` | Next action date |
+| `client/src/tech-app/pages/CreateJobPage.tsx` | PWA job scheduled date |
+| `client/src/tech-app/pages/CreateTaskPage.tsx` | PWA task scheduled date |
+
+**Already canonical (no migration needed but verified consistent style):**
+`client/src/components/visits/EditVisitModal.tsx`,
+`client/src/components/dispatch/DispatchDetailPanel.tsx`,
+`client/src/components/jobs/JobScheduleFields.tsx`,
+`client/src/pages/PayrollPage.tsx`. These were already using the same
+shadcn `<Calendar mode="single">` + `<Popover>` pattern that the wrapper
+encapsulates; they were left in place to keep the change set focused on
+removing native `<input type="date">` instances. Future passes can
+collapse them onto the wrapper for total uniformity.
+
+**Unchanged (out of scope):** `client/src/components/InvoiceHeaderCard.tsx`
+still has two native date inputs, but the component has no remaining
+imports anywhere in `client/src` — it's a dead legacy component
+superseded by `InvoiceMetaCard`. Deleting it is a separate cleanup task
+and was not bundled into this UI standardization pass.
+
+**Reference card removed from invoice right rail.** The
+`<ReferenceFieldsSection entityType="invoice" entityId=... />` (and the
+parallel job mount on linked invoices) is no longer rendered in the
+right-rail aside on `InvoiceDetailPage`. Reference fields still appear
+inline in the invoice meta card (the existing `referenceFields` rows in
+`InvoiceMetaCard`). The `ReferenceFieldsSection` component is unchanged
+and stays mounted on Job Detail / Customer pages. No backend / schema /
+mutation changes.
+
+Files changed (frontend only):
+- New: `client/src/components/ui/canonical-date-picker.tsx`
+- Edited: 14 files listed in the table above plus
+  `client/src/pages/InvoiceDetailPage.tsx` (Reference card mount removed
+  + `ReferenceFieldsSection` import removed).
+
+`tsc` clean.
+
+#### Job Detail — second precision pass (2026-04-29)
+
+Follow-up pass on `client/src/pages/JobDetailPage.tsx` to bring card
+proportions and right-rail behavior in line with Invoice Detail. No
+backend / schema / route changes; no new mutations or query keys; no new
+notes or equipment flows. All bindings preserved.
+
+- **Body grid widened to a 65/35 split.** Was
+  `[minmax(0,1.8fr)_420px]` (≈ 70/30 fixed); now
+  `[minmax(0,1.857fr)_minmax(0,1fr)]`. Left work surface gets stronger
+  horizontal real estate; right rail still hosts Equipment / Notes /
+  Labour cards and remains responsive.
+- **Customer / Job header card (left 65%) rebuilt to mirror
+  `InvoiceMetaCard`.** Replaces the prior 2-col Field grid.
+  - Left side: customer name as `text-[26px] font-bold` H1 (links to
+    client), Service Address block (location name + street + city), and
+    Scheduled date/time when a next visit exists.
+  - Right side: vertical key-value list with hairline dividers — `Job #`,
+    `Status` (canonical `StatusPill`), and `Invoice` link (only when
+    `jobInvoice` or `firstJobInvoice` is present, links to `/invoices/:id`).
+  - All values reuse existing computed state (`clientName`, `streetLine`,
+    `cityLine`, `nextVisit`, `job.jobNumber`, `job.status`, `jobInvoice`,
+    `firstJobInvoice`, `jobInvoiceCount`).
+- **Equipment card now hides when no equipment is linked.** Was
+  `<SectionCard>` always rendered with an `EmptyState` body; now wrapped
+  in `{jobEquipmentRows.length > 0 && (...)}`. The card-level "+ Add"
+  button was removed — adding equipment is driven from the page header.
+  The hidden `<JobEquipmentSection>` mount (canonical
+  `AddEquipmentDialog` host via `externalAddOpen` /
+  `onExternalAddOpenChange`) is unchanged.
+- **Compact "+ Equipment" button added to the header action cluster.**
+  Outline button (`<Wrench /> + <Plus />`), same visual treatment as
+  Edit / overflow — not a green CTA. `onClick` flips the existing
+  `showAddEquipmentDialog` state, which is forwarded into the canonical
+  `<JobEquipmentSection>` `externalAddOpen` prop. No new equipment
+  selector or flow created.
+- **"Activity" label restored to "Notes".** Prior pass had relabeled the
+  card chrome to "Activity"; the underlying data path was already the
+  canonical job notes system (`GET/POST /api/jobs/:jobId/notes`,
+  `inlineNoteMutation`, `JobNoteDialog` mount). Only the visible label
+  string and empty-state copy ("No activity yet." → "No notes yet.")
+  changed. No second notes table, mutation path, or component created.
+- **Untouched:** Line Items card, totals/expenses panel, Labour summary
+  card, all dialogs, all mutations, all hooks, the hidden
+  `JobHeaderCard` ref mount, header KPI strip, back button, J-number
+  badge, status pill, three-dot menu, status-driven primary CTA.
+- **TypeScript:** `npm run check` passes clean.
+
+#### Invoice Detail — Line items edit-mode UX (deferred-save, icon-only delete, aligned compact inputs) (2026-04-29)
+
+UI/state pass on the line-items card. Backend routes, schemas, and storage
+contracts are unchanged — the canonical `addLineMutation` /
+`updateLineMutation` / `deleteLineMutation` continue to be the sole
+writers. The only behavioural shift is **when** they fire.
+
+**Save model — was per-row immediate; now deferred to card-level Save.**
+- Page-level state added: `lineDrafts: LineDraftEntry[] | null` plus
+  `savingLineItems`. While `editingLineItems` is true, all row mutations
+  are deferred. Card-level Save diffs each draft against its hydrated
+  `original` snapshot and fires the canonical mutations in parallel via
+  `mutateAsync` + `Promise.all`. Cancel clears drafts and exits edit mode.
+  No new bulk endpoint, no new service.
+- New utilities (page-local): `enterLineItemsEdit`, `handleCancelLineItems`,
+  `handleSaveLineItems`, `updateDraftAt`, `markDraftDeleted`,
+  `appendNewDraft`. New rows get a synthetic `clientKey` (`new-<uuid>`) so
+  DnD reorder works on the local list before persistence.
+- **Reorder is intentionally not deferred.** It already fires on DnD via
+  `reorderLinesMutation` against persisted rows; new (unsaved) rows are
+  excluded from the payload until they're saved. This keeps the existing
+  reorder write path unchanged.
+
+**Component refactor — `SortableLineRow` is now controlled.**
+- Was a self-contained inline-edit component with internal `inlineEdit`
+  state and per-row `Save` / `Cancel` / `Delete` buttons firing the
+  canonical mutations directly. Refactored to a controlled component:
+  parent supplies `editDraft` + `onChangeDraft` + `onDelete`, and the
+  row renders the form. `line: InvoiceLine | null` (null for new unsaved
+  rows). `useSortable({ id: clientKey })` instead of `id: line.id`.
+- Per-row `Save` / `Cancel` / `Delete` text buttons removed from the
+  description cell.
+- New trash column at far right (`w-9` / 36px). Icon-only,
+  `aria-label="Delete line item"`. Local-only mark-for-delete; nothing
+  persists until card-level Save.
+- `AddLineItemRow` "Save" → "Add" (with a Plus icon) to make clear it
+  commits a new row to the local draft list, not to the server. Cancel
+  unchanged. Added a trailing trash-column `<td>` so columns align.
+
+**Card-level Save / Cancel placement.**
+- Top: replaces the previous pencil toggle whenever `editingLineItems` is
+  true. When not editing, pencil is shown (icon-only,
+  `aria-label="Edit line items"`).
+- Bottom: duplicate `Cancel` / `Save line items` pair on a new sub-row
+  inserted before the totals footer, so the user can commit after adding
+  multiple rows without scrolling back up.
+
+**Compact inputs / column alignment.**
+- Column-header grid widths: `[32px_1fr_80px_100px_60px_110px]` →
+  `[32px_1fr_96px_128px_56px_110px_36px]` (added trash column; qty 80→96
+  for `w-24` input, rate 100→128 for `w-32` input + `$` prefix, tax
+  60→56).
+- Body table cells now carry matching Tailwind widths (`w-24`, `w-32`,
+  `w-14`, `w-[110px]`, `w-9`) so display rows and edit-form rows both
+  align under the column header.
+- Quantity / rate inputs include
+  `[appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none`
+  to suppress browser number-spinner arrows. `inputMode="decimal"` added
+  for mobile keypad parity.
+- Tax cell in edit rows now shows `Yes` / `No` (mirroring display rows)
+  instead of being blank.
+- `colSpan` updated 6 → 7 on group sub-headers and empty-state rows.
+
+Files changed:
+- `client/src/pages/InvoiceDetailPage.tsx`
+
+#### Job Detail — header strip-down + primary information card (2026-04-29)
+
+Precision UI refactor of `client/src/pages/JobDetailPage.tsx` to bring the
+page in line with Invoice Detail's density and full-width card usage. No
+backend changes, no data fetching changes, no business logic touched.
+
+- **Header bar stripped to a one-row toolbar.**
+  - Removed the H1 customer name / job summary line from the header.
+  - Restored a back button (left) routing to `/jobs`.
+  - Identity row now contains only: back button → J-number badge →
+    status pill → optional hold-reason badge.
+  - Outer vertical padding compressed `py-4` → `py-2.5`.
+- **`KpiTile` tightened for an executive summary feel.**
+  - Padding `px-4 py-2` → `px-3.5 py-1.5`, value `22px` → `18px`,
+    label-to-value gap `mt-1.5` → `mt-0.5`, min-width `112` → `96`.
+  - Same data bindings (Labour / Parts / Expenses / Total) preserved.
+- **Primary information card replaces the 2x2 Job Context grid.** Body
+  restructured to a 2-col layout with a vertical mid-divider mirroring
+  Invoice Detail's `InvoiceMetaCard`:
+  - Left col: `Customer` (clickable, navigates to client page) stacked
+    above `Scheduled` (next visit only, em dash if none).
+  - Right col: `Site` (location name + full service address — street
+    line, city/province/postal line).
+  - **CREW field removed.** Companion `nextCrew` derivation also pruned
+    since it was the field's only consumer. Crew remains visible in the
+    Activity feed and dispatch board (no canonical data path removed).
+  - Inner padding tightened (was `p-4` + `gap-x-10 gap-y-5`) so the card
+    stretches wider and reads denser.
+- **Untouched in this pass (per spec):** Equipment card, Activity / Notes
+  card, Labour card, Line Items card, totals/expenses panel, all dialogs,
+  all mutations, all hooks, and the body grid template
+  (`[minmax(0,1.8fr)_420px]`).
+- **TypeScript:** `npm run check` passes clean.
+
+### Fixed
+
+#### Invoice visibility save — `showJobDescription` rejected by route schema (2026-04-29)
+
+**Symptom**: Saving the Client Visibility card on Invoice Detail returned
+`Validation error: Unrecognized key(s) in object: 'showJobDescription'`.
+
+**Root cause**: `server/routes/invoices.ts` defines its own
+`updateInvoiceSchema` with `.strict()` and was missing
+`showJobDescription`, even though the column exists
+(`shared/schema.ts:1582 — show_job_description boolean NOT NULL DEFAULT TRUE`)
+and the shared validator (`shared/schema.ts:1677 updateInvoiceSchema`)
+already accepted it. Frontend payloads include `showJobDescription` because
+the toggle drives the canonical column read by `invoicePdfService.ts:215`
+and the client portal feed at `server/routes/portal.ts`.
+
+**Fix**:
+- Added `showJobDescription: z.boolean().optional()` to the route-level
+  `updateInvoiceSchema` in `server/routes/invoices.ts`.
+- Added `'showJobDescription'` to `NON_BILLING_FIELDS` in
+  `server/utils/qboInvoiceLock.ts` so QBO-synced invoices don't gate the
+  toggle as a billing-impacting field — it never alters totals, only PDF
+  rendering.
+- Frontend payload keys, storage layer, and DB column are unchanged — they
+  were already canonical. No new fields, no parallel paths.
+
+**Verified**: All six visibility toggles (`showJobDescription`,
+`showLineItems`, `showQuantity`, `showUnitPrice`, `showLineTotals`,
+`showBalance`) now save through the same `PATCH /api/invoices/:id` route
+via `updateInvoiceFieldsMutation`. `tsc` clean.
+
+### Changed
+
+#### Invoice Detail — Activity removal, icon-only edits, section-scoped state (2026-04-29)
+
+UI/state pass on `client/src/pages/InvoiceDetailPage.tsx`. No new mutations,
+no new routes, no schema changes. All bindings preserved.
+
+- **Activity card removed from right rail.** The `<InvoiceTimelineCard>`
+  mount was removed (and its import dropped from this file). The component
+  itself is untouched and remains available to other callers; backend
+  audit / email / payment history sources are unchanged.
+- **Section-scoped editing.** The previous page-level `isEditing` flag
+  conflated the header meta card and the line-items table — clicking
+  "Edit" on the header would also flip the line-items table into edit
+  mode. Replaced with three discrete states:
+  - `editingHeader` — meta / billing / dates card
+  - `editingLineItems` — line-items table + discount editor + tax selector
+  - `editingClientMessage` — client message card
+  The existing `isEditingDescription` was renamed `editingJobDescription`
+  for symmetry. Component prop names (`isEditing` on `SortableLineRow`,
+  `InvoiceMetaCard`, `JobDescriptionRedesignCard`) intentionally kept —
+  they are the local prop contract, not page-level state.
+- **Edit buttons standardised to icon-only pencils** with `aria-label`s:
+  - Header → `Edit invoice details`
+  - Job Description → `Edit job description`
+  - Line Items → `Edit line items` / `Stop editing line items` (toggles via
+    `aria-pressed`; pencil shows a stone-100 background when active)
+  - Client Message → `Edit client message` (now has its own pencil in the
+    card header, replacing the previous reliance on the line-items toggle)
+  All four use the same `variant="ghost" size="icon"` chrome.
+- **Client Message editor** now has explicit Cancel + Save buttons in its
+  own card (Cancel exits edit mode and reverts the draft; Save fires
+  `updateInvoiceFieldsMutation({ clientMessage })` and exits on success).
+
+Files changed:
+- `client/src/pages/InvoiceDetailPage.tsx`
+
+#### Invoice Detail — UI compact pass (2026-04-29)
+
+Precision UI pass on `client/src/pages/InvoiceDetailPage.tsx`. No business
+logic, data flows, mutations, permissions, calculations, save behavior, or
+routing touched. All bindings preserved.
+
+- **Client Visibility card**: removed every per-row helper hint sentence and
+  the "These toggles change what the client sees…" footer block. Rows now
+  render label + toggle only on a tightened 2-row vertical rhythm
+  (`py-2.5` → `py-2`). Header (title, on-count badge, Preview PDF action)
+  and Save/Reset dirty footer unchanged. The six canonical visibility
+  fields and their write path through `updateInvoiceFieldsMutation` are
+  untouched.
+- **Job Description card**: removed the `SHOWN ON INVOICE` /
+  `HIDDEN ON INVOICE` header badge entirely. Title, char-count meter, edit
+  affordance, and field content unchanged. The `shownOnInvoice` prop is
+  retained on the component signature (renamed in body to `_shownOnInvoice`)
+  to preserve the call-site contract.
+- **Line Items header**: Rev / Profit metrics moved from the left cluster
+  to the right cluster (next to the Edit button), and the metrics text was
+  bumped from `text-[11px]` + `font-medium` to `text-xs` + `font-semibold`
+  values for readability. Existing emerald/rose semantic colors preserved.
+  Calculations from `profitSummary` unchanged.
+- **Client Message extraction**: the line-items footer is now totals-only.
+  The client-message editor was extracted into a dedicated sibling card
+  (`Client message`) directly beneath the Line Items card, matching the
+  surrounding card chrome (border, radius, padding, typography). Editing
+  still keys off the existing line-items `isEditing` toggle and writes
+  through `updateInvoiceFieldsMutation({ clientMessage })` — no new mutation,
+  no schema change.
+
+Files changed:
+- `client/src/pages/InvoiceDetailPage.tsx` — visual/layout only.
+
+#### Job Detail — Studio-style 2x2 context + flex line items (2026-04-28)
+
+UI-only reformat of `client/src/pages/JobDetailPage.tsx` to match the canonical
+Studio reference picture. No new routes, no new endpoints, no new mutations —
+all data sources, query keys, and write paths are unchanged.
+
+**Job Context card**:
+  - Restored the `Crew` field (previously dropped on 2026-04-28 v3) and
+    laid out as a 2-column / 2-row grid: Customer | Site on row 1,
+    Scheduled | Crew on row 2.
+  - `Crew` derives from the next visit's `assignedTechnicianIds`,
+    rendered as `Avatar + Name · Role` so the office sees who is
+    dispatched at a glance. Tech display name and color come from the
+    existing `useTechniciansDirectory()` map already mounted on this
+    page (no parallel fetch).
+
+**Line Items rows**:
+  - Removed the `Description / Qty / Unit Price / Total` table
+    `<thead>` strip. The reference picture shows no column headers —
+    qty and unit price are merged into one inline `qty × $unit` meta
+    string on each row.
+  - Display rows are now flex rows (`<div>`-based, not `<table>`):
+    description with optional `equipmentLabel` subline, then
+    right-aligned `qty × $unit` muted text, then the bold line total,
+    then hover-revealed edit/delete actions.
+  - `EditableLineRow` was converted from `<tr><td>` to flex layout to
+    align with the new display row geometry. Field contract (description,
+    quantity, unitPrice), key handlers (Enter saves, Escape cancels),
+    and mutation calls (`createMut` / `updateMut` to the same canonical
+    `/api/jobs/:jobId/parts` endpoints) are unchanged.
+
+**Files affected**:
+  - `client/src/pages/JobDetailPage.tsx`
+
+**Migrations**: none (UI-only).
+
+**Breaking**: none. Same data dependencies, same write surface, same
+test ids preserved on display + editor rows.
+
+#### Invoice Detail — meta-card edit cleanup + reference fields inline (2026-04-28)
+
+Narrow follow-up to the prior 2026-04-28 header polish. Scope was strictly
+the top identity / meta card and its existing edit behavior. Line items,
+notes, visibility, activity, payments, and the right rail were not touched.
+
+**One save path, no misleading "Done"**:
+  - The chrome `Edit` button is now hidden while `isEditing` is true. The
+    only way to leave edit mode is the meta-card footer's `Cancel` /
+    `Save` pair, so there is no second "Done"-shaped button next to the
+    real Save. The previous toggle silently dropped the draft, which
+    looked like a save and was not.
+
+**PO # removed**:
+  - The PO # `MetaRow` and the `poNumber` prop on `InvoiceMetaCard` were
+    deleted. The invoice schema has no `poNumber` column today and the
+    row was a hard-coded `—`. The call site no longer passes `poNumber`.
+
+**Reference row → canonical reference fields, inline**:
+  - The static "Reference" placeholder row (also a hard-coded `—`) was
+    replaced by rows driven by the canonical
+    `GET /api/reference-fields/entities/:entityType/:entityId` endpoint.
+  - **Read mode** renders one `MetaRow` per *populated* field
+    (`textValue` truthy). Empty fields do not render — the meta card
+    stays compact when nothing is filled in.
+  - **Edit mode** renders every *configured* field
+    (`active || textValue`) as an inline `<Input>` so the user can enter
+    or update values. Inactive-but-historically-set fields render
+    disabled, matching the right-rail card's contract.
+  - The `Terms` row's bottom border now flips to `last` when there are
+    no reference rows below it, so the read-mode card terminates
+    cleanly whether or not custom fields are present.
+
+**Reference fields persisted on Save**:
+  - New `saveReferenceFieldsMutation` PUTs to the same canonical endpoint
+    used by `ReferenceFieldsSection` — no second storage path. Payload is
+    built only from `active` fields, with empty strings collapsed to
+    `null` (matches the right-rail card's existing contract).
+  - Save fires the canonical `updateInvoiceFieldsMutation` and the
+    reference-fields mutation in parallel via `Promise.all` and only
+    exits edit mode after both resolve. If either fails, edit mode stays
+    open so the user can retry.
+  - The reference-fields query key is shared with the existing right-rail
+    `ReferenceFieldsSection`, and the mutation writes the server response
+    directly into the cache, so both surfaces stay in sync without an
+    extra round-trip.
+  - `Cancel` clears `referenceDraft` along with `metaDraft`, so the
+    pre-edit values come back unchanged.
+
+**Mirror entity choice**:
+  - Reference-fields entity is `job` when `details.job.id` exists, else
+    `invoice` — same selection as the right-rail card. Both surfaces
+    therefore read and write the same row set.
+
+**Files changed**:
+  - `client/src/pages/InvoiceDetailPage.tsx` — `InvoiceMetaCard` props
+    (`poNumber` removed; `referenceFields`, `referenceDraft`,
+    `onReferenceDraftChange` added); new
+    `ReferenceFieldDTO` local type; new `referenceDraft` state; new
+    reference-fields query + save mutation; chrome `Edit` button hidden
+    in edit mode; `onSave` / `onCancel` extended to round-trip reference
+    field values.
+
+**Verification**:
+  - `npm run check` passes with zero TypeScript errors.
+  - Browser-level visual verification was not run from this terminal.
+
+#### JobDetailPage — match canonical picture, prune redundant chrome (2026-04-28)
+
+User-supplied design reference (the "Basil Box Foods · Quarterly PM" Studio mock) is now matched precisely on `client/src/pages/JobDetailPage.tsx`. Three explicit deviations from the picture were specified by the user and applied: (1) no back button on the page, (2) Crew field is not surfaced (so the picture's crew chips do not appear), (3) the Labour card sits underneath Notes & Activity in the right rail (already correct in the prior pass).
+
+**Header bar**:
+  - Removed the back-arrow button from the identity zone — primary navigation back to /jobs is via the AppSidebar route, not a page-local affordance.
+  - Reworked `KpiTile` to support a true accent variant: the Total tile now fills with `#0E5A5A` and inverts label + value to white, matching the canonical reference's anchor. Non-accent tiles are unchanged.
+
+**Job Context card**:
+  - Crew field removed (was a 4th cell in a 2x2 grid). Remaining cells (Customer / Site / Scheduled) now lay out as `sm:grid-cols-3` so the strip fills cleanly without an empty fourth quadrant.
+  - `nextCrew` derivation deleted. `nextVisit` is still computed and drives the Scheduled cell.
+
+**Right rail**:
+  - Removed the standalone "Workspace + Add" dropdown that sat above the cards. Each rail card now carries its own header action (Equipment "+ Add", Notes "+ Note", Labour "+ Time Entry"), so the secondary entry point was redundant.
+  - Equipment card is now always rendered (was conditional on `jobEquipmentRows.length > 0`). Empty state surfaces an `EmptyState` block; the new "+ Add" header action opens `AddEquipmentDialog` via the existing `showAddEquipmentDialog` flag forwarded into the hidden `JobEquipmentSection` mount, so the add affordance is visible even when the list is empty.
+
+**Imports / dead code pruned**:
+  - `MessageSquare` icon import removed (was only used by the deleted Workspace dropdown).
+  - `nextCrew` derivation removed.
+  - `ArrowLeft` import retained — still used in the error-fallback "Back to Jobs" button on the not-found state.
+
+**Files changed**:
+  - `client/src/pages/JobDetailPage.tsx`
+
+**Verification**:
+  - `npm run check` exits clean (TypeScript zero errors).
+  - Browser-level visual verification was not run (no UI test environment per CLAUDE.md); the structure is reasoned against the user's reference image and the three explicit deviations.
+
+#### Invoice Detail — header card polish + inline edit (2026-04-28)
+
+Narrow polish pass on the top identity / meta card. Scope was strictly
+the header card: line items, notes, visibility, activity, payments, and
+the right rail were not touched.
+
+**Compressed vertical density**:
+  - `MetaRow` row padding `px-6 py-3.5` → `px-5 py-1.5`; label/value
+    typography `text-sm` → `text-xs` (12 px). Six rows now read as a
+    compact key/value block instead of a tall ladder.
+  - Card chrome strip `pt-5 pb-3` → `pt-3 pb-2`.
+  - Body padding `px-6 pb-6` → `px-5 pb-4`.
+  - Customer-name H1 bottom margin `mb-4` → `mb-2`.
+  - Address blocks: text `text-sm` → `text-xs`; label-to-value gap
+    `mb-1` → `mb-0.5`; inter-block divider margin `my-4` → `my-2`.
+
+**Inline edit mode for header fields**:
+  - The existing `Edit` button in the meta-card chrome now seeds a
+    `metaDraft` state and switches the right column's metadata rows
+    into editable inputs. `Done` (and the new Cancel) discards the
+    draft and exits edit mode.
+  - Editable in this pass: `invoiceNumber`, `issueDate`, `dueDate`,
+    `paymentTermsDays`. All four are already accepted by the canonical
+    `PATCH /api/invoices/:id` route — Save routes through the existing
+    `updateInvoiceFieldsMutation`. No new endpoint, no parallel form
+    system.
+  - Job # remains read-only and continues to render as the `wouter`
+    `<Link>` to `/jobs/:id` with an external-arrow icon.
+  - PO # and Reference stay as read-only placeholders (`—`). These
+    fields have no canonical storage on the invoice schema today; the
+    user explicitly opted out of adding columns in this pass, so edit
+    mode skips them rather than introducing a no-op input.
+  - Save button only sends fields that actually changed against the
+    server value (no-op edits collapse to a silent close). Date diff
+    is normalised through a new `toDateInputValue()` helper that
+    handles `Date` / ISO / `YYYY-MM-DD` shapes uniformly so the date
+    `<input>` never receives a malformed value.
+  - Cancel discards the draft and exits header edit mode.
+  - Save / Cancel controls render at the bottom of the metadata column
+    only while in edit mode — no permanent footer chrome added.
+
+**Files changed**:
+  - `client/src/pages/InvoiceDetailPage.tsx` — `InvoiceMetaCard` now
+    accepts `isEditing / draft / onDraftChange / onSave / onCancel /
+    isSaving`; new `toDateInputValue()` helper; new `metaDraft` page
+    state seeded on Edit; `MetaRow` rebuilt as compact row. The
+    redundant `(job as any)?.poNumber` cast was removed since the
+    jobs table has no `po_number` column — `poNumber={null}` is now
+    explicit.
+
+**Verification**:
+  - `npm run check` passes with zero TypeScript errors.
+  - Browser-level visual verification was not run from this terminal.
+
+#### Invoice Detail — match canonical Studio reference layout (2026-04-27)
+
+User-supplied design reference (`Invoice Redesign - bundled.html`) shows a single dominant identity card at the top of the workspace, with the status pill and action cluster *inside* the card's chrome and the customer name as the page H1. The previous slim full-width sticky command bar (added earlier the same day) was retired in favor of this layout.
+
+**Page chrome / identity:**
+  - Removed the standalone `InvoiceCommandBar` and its `KpiCell` helper. KPIs (Invoiced / Paid / Balance) no longer live in a top bar — the totals block at the bottom of the line items card already carries Subtotal / Tax / Total / Balance due, so the duplicate KPI strip was redundant.
+  - `InvoiceMetaCard` rewritten to a 2-col layout (was 3-col):
+    - Top chrome strip: status pill on the left, action cluster on the right (Reminders dropdown if applicable, Edit toggle, ⋯ kebab with everything else).
+    - Left col: customer name as a 30-px H1, "Billing Address" block, hairline divider, "Service Address" block (location name in bold).
+    - Right col: vertical row list — Invoice # / Job # / Issued / Due / Terms / PO # / Reference — each row is a label-left + value-right pair with hairline dividers between rows. Job # is a wouter `<Link>` to `/jobs/:id` with an external-arrow icon. Issued and Due display calendar icons (visual cue; click-to-edit popovers are a follow-up). Terms shows a chevron-down icon. Past-due Due value is rose-colored.
+  - The `Bill to` "Attn" line and tax-id slot were dropped per the reference. `primaryContact` is no longer surfaced on the meta card; it remains on the data flow for QBO sync and PDFs.
+  - "Reference" row is a placeholder showing `—`. TODO: wire to a canonical invoice-level reference once one exists; the rail's `ReferenceFieldsSection` covers arbitrary tagged references today.
+
+**Action cluster (right side of the meta chrome)**:
+  - Visible: optional Reminders dropdown (collectable invoices only) → `Edit` button → `⋯` kebab.
+  - Kebab top item is the state-driven primary action (Send invoice / Record payment / Send receipt / Duplicate as new) so it remains the default destination.
+  - Kebab also holds: Download PDF / Print PDF / Preview PDF / Refresh from job / Choose items from job / Copy payment link / Open client portal / Email payment link / Mark as sent (or Mark as not sent) / Void / Delete draft.
+  - **Deviation from picture**: the picture shows only an `Edit` button. Adding the `⋯` kebab is a pragmatic deviation that preserves all functionality the prior page exposed (Send invoice / Record payment / Void / Delete / portal CTAs / etc.). The kebab is visually small and matches the rest of the redesign chrome. Reminders dropdown is also shown as a separate small button when applicable since the canonical `InvoiceRemindersButton` component is a self-contained dropdown that doesn't trivially nest as a `DropdownMenuItem`.
+
+**Job description card**:
+  - Removed the `↻ Insert from job` button per user request. The `jobDescriptionFallback` prop was dropped from `JobDescriptionRedesignCard`'s signature.
+
+**Right rail order** (per user spec, deviating from the picture's order):
+  1. Client visibility
+  2. Notes (canonical `JobNotesSection`, wrapped in redesign chrome)
+  3. Payment history
+  4. Activity (canonical `InvoiceTimelineCard`)
+  5. Reference
+
+**Files changed**:
+  - `client/src/pages/InvoiceDetailPage.tsx` — meta card rewrite, command bar deletion, action cluster in meta chrome, right-rail reorder, Job description button removal. Imports adjusted: added `Link` from wouter, `Calendar`, `ExternalLink`, `MoreHorizontal` from lucide-react.
+
+**Verification**:
+  - `npm run check` passes.
+  - Browser-level visual verification was not run (no UI test environment per CLAUDE.md). The structure has been reasoned about against the reference image and the user's explicit deviations.
+
+#### JobDetailPage — native LineItemsTable replaces PartsBillingCard mount (2026-04-27)
+
+Follow-up to the premium recomposition pass. The previous redesign still wrapped `PartsBillingCard` (a 1292-LOC legacy component with its own card chrome, table styling, and edit form) and tried to retrain its appearance through descendant CSS overrides. That approach failed to materially change how the page looks because the embedded component still shipped its own visual contract.
+
+This pass removes `PartsBillingCard` from the JobDetailPage render entirely and replaces it with a native handcrafted data grid (`LineItemsTable`) defined inline in the page. The legacy component is still imported by `InvoiceDetailPage` and `EditVisitModal`, so it stays alive in the tree — only the JobDetailPage mount is gone.
+
+**Removed from render path**:
+  - `PartsBillingCard` (visible mount under "Line Items" SectionCard)
+  - `JobExpensesCard` (hidden mount — was kept as a "form mutation surface" but is now dead since the page provides no expense-add affordance and the component has no externally-controllable add prop)
+
+**Replaced by**:
+  - `LineItemsTable` (in-file, ~290 LOC) — Linear/Stripe-style data grid wired to the same canonical endpoints (`GET/POST/PUT/DELETE /api/jobs/:id/parts`) and the same shared draft helpers (`blankDraft`, `hydrateDraft`, `draftToJobPartPayload` from `@/lib/entities/lineItemMapper`). Single-row inline edit model: at most one row in edit mode at a time. "Add line" inserts a draft row at the bottom focused on Description; Enter saves, Escape cancels. Per-row pencil enters edit mode; per-row trash deletes (with confirm). Hover-revealed action affordances (`opacity-0 group-hover:opacity-100`) so the read view stays uncluttered.
+  - `EditableLineRow` (in-file, ~80 LOC) — sub-component used for both new and existing row editing. Renders 3 inputs (Description / Qty / Unit Price), a live-computed Total cell, and Save / Cancel actions. Visually distinguished by `bg-[#F0F7F5]` and a `border-l-2 border-[#0E5A5A]` left rail so the user always sees which row is editable.
+  - Native totals computation now happens directly in `LineItemsTable`'s effect (`onTotalsChange` callback emits `{ totalPrice, totalCost, profit }` — same shape PartsBillingCard reported, so the page-level Subtotal panel and header KPI strip continue to work without any changes upstream).
+
+**Same data, no parallel mutation surface**:
+  - Query key `["/api/jobs", jobId, "parts"]` is reused so the `useJobParts` cache (consumed by other surfaces) auto-invalidates on every create/update/delete.
+  - Payloads pass through the canonical `draftToJobPartPayload` mapper — no parallel POST schema.
+  - No new endpoints, no new mutations.
+
+**Engineering rules respected**:
+  - No new routes, no fake data, no backend changes.
+  - All other dialog mounts preserved (`JobHeaderCard` hidden for imperative ref, `JobEquipmentSection` hidden for `AddEquipmentDialog` external trigger, `JobNoteDialog` mount kept for non-page entry points, `TimeEntryModal`, `AddVisitDialog`, `VisitEditorLauncher`, `QuickAddJobDialog`, `ActionRequiredModal`, `InvoiceCompositionDialog`, `SendJobModal`).
+  - `npm run check` exits clean (TypeScript zero errors).
+  - State cleanup: `partsEditMode` / `setPartsEditMode` page-level state removed (LineItemsTable manages its own edit state internally).
+
+**File**: `client/src/pages/JobDetailPage.tsx` — net +316 LOC (1805 → 2121) for the native table + editable row implementation. PartsBillingCard remains in the tree at 1292 LOC for the other two consumers; it would now be a candidate for removal if InvoiceDetailPage and EditVisitModal were also migrated to native tables.
+
+#### JobDetailPage — premium recomposition pass (2026-04-27)
+
+Substantial visual redesign of `client/src/pages/JobDetailPage.tsx`. Earlier iterations of this page tracked a Studio mock and accumulated childish proportions, oversized blank interiors, weak hierarchy, and inconsistent spacing. This pass throws out the chrome and recomposes the page with mature SaaS UI judgment. **All data hooks, queries, mutations, and dialog mounts are unchanged** — only the presentation layer was rewritten.
+
+**Net code impact**: 2241 → 1805 lines (-436 LOC, ~19% smaller) despite the richer visual surface, achieved by pruning dead helpers (`__removedLabourCardContent__`, `LabourEntryRow`, `LabourEntryLine`, `LabourSummaryCell`, `ContextField` — none referenced in JSX) and removing 14 unused icon/component imports (`DollarSign`, `Lock`, `CalendarPlus`, `Receipt`, `MapPin`, `Truck`, `Tag`, `Building2`, `ChevronDown`, `ChevronRight`, `Calendar as CalendarIcon`, `User`, `Users`, `ReferenceFieldsSection`, `JobNotesSection`).
+
+**1. New design primitives (in-file, ~180 LOC)**
+  Replaced `HeaderKpi`, `DetailSectionHeader`, `TechAvatar`, `ContextField` with a tighter, semantically named primitive set:
+  - `SectionCard` — white surface, 6px radius, single 1px border `#E5E1D5` (light but confident, not toy-like).
+  - `SectionHead` — 11px uppercase label `tracking-[0.08em]`, optional muted count, optional ghost action button. Always sits on a 1px bottom divider so the body reads as a separate band.
+  - `KpiTile` — flush flexible cell for the header strip. 10px label + 22px tabular value. Total cell colours its value Syntraro teal (no full-bleed teal background — too heavy for premium dashboards).
+  - `Field` — compact summary cell (10px uppercase label + 14px medium primary + optional 13px muted secondary).
+  - `Avatar` — 24px (sm) / 32px (md) initials circle with 2px white ring for stacking against muted bgs.
+  - `EmptyState` — centered vertical stack with confident headline + helper hint + optional action button. Replaces the embarrassing one-line "No X yet" placeholders with intentional copy.
+
+**2. Header bar — three-zone elegant chrome**
+  - Replaces the previous flex-wrapped 32px-title layout. New layout: identity (back arrow centered + 12px meta row + 26px tight-tracked title) | metric strip (KpiTile × 4 with subtle dividers, `bg-white` not chunky) | action cluster (`Edit` outlined h-9 + `MoreHorizontal` icon button h-9 w-9 + status-driven primary CTA in Syntraro teal `#0E5A5A` with `hover:#0B4848` and `shadow-sm`).
+  - Title colour `#0B0F19` (deep slate, not warm black) with `tracking-[-0.01em]` for visual confidence at 26px.
+  - J-number is a hover-revealed inline edit with a small Pencil tell.
+  - Hold-reason badge restyled to `#FEF3C7` / `#92400E` (Tailwind amber-100 / amber-800) for a more refined warning palette.
+
+**3. Body grid — wider work surface**
+  - `grid-cols-[minmax(0,1.65fr)_minmax(320px,1fr)]` → `grid-cols-[minmax(0,1.8fr)_420px]` per spec. Left column now visibly dominates; right rail is a fixed 420px utility surface.
+  - Container `max-w-7xl` (1280px) → `max-w-[1440px]`. Modern dashboards rarely cap at 1280 anymore.
+  - Outer padding `px-4 lg:px-6 py-4` → `px-6 py-6` (24px on the 8/12/16/24/32 system).
+
+**4. Job Context — executive summary**
+  - 2x2 grid, 16px padding, 32px column gap, 16px row gap. Each `Field` cell uses 10px uppercase label + 14px medium value. Crew renders as compact pill chips (Avatar + name) with `bg-[#F1EFE8]` and a 1px border, replacing the old vertically-stacked rows.
+
+**5. Line Items — real data-table feel + finance panel**
+  - `PartsBillingCard` is mounted with descendant CSS that strips its own card chrome and restyles its `<thead>` to 11px uppercase `tracking-[0.06em]` muted, so it reads as a flush data table inside the SectionCard rather than a card-within-a-card.
+  - **Empty state** is now a centered EmptyState with hint copy ("Use Add Item to build this job total. Parts, services, and custom lines all appear here.") and a primary CTA ("Add first item"), instead of two muted lines.
+  - **Expenses subsection** sits as an inline section with its own divider strip (label + count + total). Receipt links are subtly teal underline-on-hover, not emoji.
+  - **Totals** is now a right-aligned premium finance panel: Parts/Labour/Expenses → divider → Subtotal/Tax → strong divider (`border-t-2 border-[#0B0F19]/12`) → 12px uppercase `Total` label with 24px bold teal tabular value. Reads like the totals block on a Stripe invoice, not a calculator dump.
+
+**6. Right rail — Equipment / Activity / Labour**
+  - **Quick add** dropdown sits at the top of the rail beside a tiny "Workspace" label (no longer floats alone).
+  - **Equipment** card only renders when populated. Each row gets a 32px square `bg-[#F1EFE8]` icon tile (Wrench) + 14px name + 12px subline (serial · type · manufacturer). Icon tile gives the row visual anchor and replaces the previous text-only listing.
+  - **Activity** (renamed from "Notes & Activity"): feed style. Each note row = 32px Avatar + 13px semibold author + 12px muted relative timestamp + 14px body. Composer at bottom in a `bg-[#FAFAF7]` strip with a refined 9px-tall input (focus ring `ring-[#0E5A5A]/25`). Empty state uses EmptyState ("No activity yet." / "Notes from the office and field will appear here in chronological order.").
+  - **Labour**: dashboard-module quality. 3-tile summary strip (Driving / On-Site / Total) with 18px bold tabular values. Entry rows now show a coloured type chip (Travel = blue-50/blue-700, On-Site = emerald-50/emerald-700) + duration & cost right-aligned. Running entries show an amber-700 pulsing clock. Empty state uses EmptyState.
+
+**7. Colour palette — restrained enterprise**
+  - Page bg `#F5F3EC` (cooler warm cream than the previous `#FAF8F5`).
+  - Card `#FFFFFF`. Subtle bg `#FAFAF7` (used for totals panel, summary strips, composer band).
+  - Borders `#E5E1D5` default / `#EDEAE0` for sub-dividers. Both visible without being heavy.
+  - Text `#0B0F19` strong / `#1F2937` base / `#475569` secondary / `#64748B` muted / `#94A3B8` faint / `#CBD5E1` separator-dot. Slate ramp pairs cleanly with the warm cream bg.
+  - Accent: existing Syntraro teal `#0E5A5A` retained, with `#0B4848` darker hover and `#EEF5F4` very-subtle tint for ghost button hover. Teal is reserved for: primary CTA, Total value, ghost-action labels in section headers, link hover.
+
+**8. Spacing — strict 8px system**
+  - All padding/gap values land on 8 / 12 / 16 / 24 / 32. The page no longer uses arbitrary `p-[14px]`, `gap-y-2.5`, etc. that fought the rhythm.
+
+**9. Engineering rules respected**
+  - No new routes, no new endpoints, no duplicate systems, no parallel data flows.
+  - Reuses existing queries/mutations (`inlineNoteMutation`, `jobTimeEntries`, `expensesRaw`, `jobEquipmentRows`, `jobNoteRows`, `useJobVisits`, `useTechniciansDirectory`).
+  - All canonical components preserved: `PartsBillingCard` (visible, restyled), `JobExpensesCard` (mounted hidden — its add-form mutation surface stays reachable), `JobEquipmentSection` (mounted hidden — keeps `AddEquipmentDialog` reachable from the rail Add menu), `JobHeaderCard` (mounted hidden for imperative ref access), `JobNoteDialog`, `TimeEntryModal`, `AddVisitDialog`, `VisitEditorLauncher`, `QuickAddJobDialog`, `ActionRequiredModal`, `InvoiceCompositionDialog`, `SendJobModal`.
+  - The `+ Note` header action focuses the inline composer (`noteComposerRef.current?.focus()`), not the canonical `JobNoteDialog` modal — single-system contract preserved.
+  - `npm run check` exits clean (TypeScript zero errors).
+
+**File**: `client/src/pages/JobDetailPage.tsx` (-436 LOC).
+
+#### Invoice Detail — composition pass (2026-04-27)
+
+Three problems on the redesigned Invoice Detail page:
+  1. The slim command bar lived inside the left column, so it never spanned both columns and the right rail started at the same y as the bar's bottom edge.
+  2. A separate full-width `InvoiceStatusBanner` rendered below the bar, repeating information already present in the status pill.
+  3. A new `InternalNoteCard` had been added at the top of the right rail. It writes to `invoices.notes_internal` (a single text-blob column that maps to QBO's `PrivateNote` and snapshots import provenance) — a *different* storage system than the canonical multi-author `JobNotesSection`/`/api/invoices/:id/notes` thread. Both surfaces lived in the right rail at the same time, both labeled "internal" / "office only" — the same redundancy that drove the 2026-04-14 retirement of the old "Internal Notes" UI.
+
+**Audit conclusion**: there is **one** canonical user-facing notes system on this page — `JobNotesSection` (`source="invoice"`), which renders the multi-author thread, owns the `JobNoteDialog` modal, and inherits client/location/company notes via `show_on_invoices`. `notes_internal` is a back-office column with non-UI consumers (`server/qbo/mappers.ts` maps it to `Invoice.PrivateNote`; `server/services/importPipeline/adapters/InvoiceImportAdapter.ts` snapshots raw source detail into it; `server/utils/qboInvoiceLock.ts` lists it as a `NON_BILLING_FIELD`). It continues to round-trip through `updateInvoiceFieldsMutation` for those callers; the redesign just removes the *duplicate* user-facing surface.
+
+**Changes** (all in `client/src/pages/InvoiceDetailPage.tsx`):
+  - Lifted `<InvoiceCommandBar>` out of the left column and placed it directly inside the `bg-[#FAF8F5]` wrapper, **above** the grid container, so it spans the full workspace width.
+  - Removed the back button from the command bar — global breadcrumb / sidebar navigation is the canonical "back" surface. Tightened the bar's vertical padding (`py-4` → `py-2.5`) and put the status pill and title on a single inline row to slim its height.
+  - Updated the status pill draft label from `DRAFT` to `Draft — not sent` so the pill carries the "not yet sent" cue the banner used to provide.
+  - Removed the `<InvoiceStatusBanner>` mount and deleted the `InvoiceStatusBanner` and `BannerShell` function definitions (only callsite was here).
+  - Removed the `<InternalNoteCard>` mount and deleted the `InternalNoteCard` function definition. Removed the `internalNoteDraft` state, its sync `useEffect`, and the `isInternalNoteDirty` derivation. Also removed `dueDateForBanner` and `lastPaymentDate` derivations (only used by the deleted banner).
+  - Right rail now renders, in order: `ClientVisibilityCardV2`, `PaymentHistoryCard`, `InvoiceTimelineCard`, `JobNotesSection` (canonical, wrapped in the redesign card chrome to match the other rail cards), `ReferenceFieldsSection`. The previous `<Card><CardContent>` wrapper around `JobNotesSection` was replaced with `<div className="overflow-hidden rounded-lg border border-stone-200 bg-white">` so the chrome matches the rest of the rail; the unused `Card` / `CardContent` imports were dropped.
+
+**What was preserved**:
+  - `JobNotesSection`'s data flow, the `JobNoteDialog` modal, the `/api/invoices/:invoiceId/notes` query key, attachment handling, and `show_on_invoices` inheritance — all unchanged.
+  - The `notes_internal` column itself, plus all server-side consumers (QBO mapper, import adapter, NON_BILLING_FIELD list) — untouched.
+  - The single-scroll grid layout (`grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px]`) from the previous fix.
+  - Every other card (status pill, KPI strip, more menu, primary action, QBO sync banner, invoice meta, job description, line items + totals, client visibility, payment history, timeline, reference fields).
+
+**Verification**:
+  - `npm run check` passes.
+  - Layout structure has been reasoned about against the acceptance criteria (full-width header above grid; no back button; no second status banner; single canonical notes surface; right rail starts below the header; single page scroll preserved). Browser-level visual verification was not run (no UI test environment per CLAUDE.md).
+
+#### Invoice Detail — single-scroll layout (2026-04-27)
+
+The redesigned Invoice Detail page was wrapped in `DetailPageShell`, whose `lg+` chain (`lg:h-full` ancestors + `lg:overflow-y-auto` on both the left column and right rail) produced two independent vertical scrollbars *inside* the app shell's existing `<main className="flex-1 overflow-auto">` at `client/src/App.tsx:1046`. Net result was three nested scroll regions, a cramped feel, and a sticky command bar anchored to the inner left-column scroll instead of the page.
+
+**Fix** — replaced the `DetailPageShell` wrapper *only on this page* with a flat single-scroll grid:
+
+  - `<div className="bg-[#FAF8F5]" data-testid="invoice-detail-page">`
+    - `<div className="px-4 lg:px-6 py-4">`
+      - `<div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">`
+        - `<div className="min-w-0 space-y-2.5">` — main column (no scrollbar, no height clamp)
+        - `<aside className="min-w-0 space-y-3">` — right rail (no scrollbar, no height clamp, no sticky)
+
+  Stacks to one column below `lg`. The `InvoiceCommandBar`'s `sticky top-0 z-10` continues to work because it now resolves against `<main overflow-auto>` (the canonical app-shell page scroll) — same intended behavior, no nesting.
+
+**Why DetailPageShell wasn't modified**: it is also consumed by `JobDetailPage`, `ClientDetailPage`, and `QuoteDetailPage`. The dual-scroll model + resize handle + collapse button is intentional on those pages; only Invoice Detail needs the flat layout.
+
+**Files changed**:
+  - `client/src/pages/InvoiceDetailPage.tsx` — removed the `DetailPageShell` import and replaced the `<DetailPageShell leftColumn={…} rightRail={…} />` wrapper with the inline grid above. All cards (status banner, invoice meta, job description, line items, internal note, client visibility, payment history, timeline, job notes, reference fields) preserved verbatim — only the surrounding chrome changed.
+
+**Verification**:
+  - `npm run check` passes.
+  - Browser-level visual verification was not run (no UI test environment per CLAUDE.md). Acceptance criteria (one page scroll, no rail/main scrollbars, two-column desktop, stacked mobile) follow from the grid CSS and should be re-verified manually.
+
+#### JobDetailPage — precision UI correction pass (2026-04-27)
+
+Surgical visual corrections on the existing layout. **Layout structure unchanged** — only typography, spacing, contrast, and alignment.
+
+**1. Border contrast (global on this page)**
+  - Replaced 23 occurrences of `#E2E0D8` (very light cream-grey) with `#CFCBC0` (stronger neutral grey) across every card border, divider, button outline, and `divide-x/y` rule.
+  - Affects: top bar bottom border, KPI strip outline + cell dividers, all section card borders/dividers, expense row dividers, totals separator, equipment/notes/labour dividers, composer input border, Edit/Add/Time-Entry button outlines.
+
+**2. KPI value typography (top bar)**
+  - `HeaderKpi`: bumped value from `text-[22px]` (clamped) to `text-[28px]` per spec, and switched `leading-tight` → `leading-none` so the larger value still aligns to the bottom of the 74px cell. Bumped per-cell `min-w` from 110px → 130px so wider tabular values (`$2,450.00`) don't overflow.
+
+**3. Back-arrow alignment (top bar)**
+  - Was `mt-2` (top-aligned with hard-coded offset); changed to `self-center` so the arrow vertically centers against the two-row identity block (job-number/status row + 32px title row) regardless of wrap state.
+
+**4. Job Context card density**
+  - Padding `p-[14px]` → `p-3` (14px → 12px).
+  - Inner grid `gap-y-2.5` → `gap-y-1.5` (10px → 6px).
+  - Removed `mb-0.5` from all four cell labels (Customer / Site / Scheduled / Crew) — labels now sit flush against their values via `leading-tight`.
+  - Net effect: card height shrinks ~35% as specified.
+
+**Confirmations against the precision spec**:
+  - **Duplicate buttons removed**: Equipment card has no internal Add button (only the rail dropdown opens AddEquipmentDialog); Notes card has no second composer/modal — the `+ Note` header button focuses the inline `noteComposerRef` input via `noteComposerRef.current?.focus()`, the canonical `JobNoteDialog` modal mount remains for non-page entry points but is NOT triggered from this card.
+  - **Single rail Add dropdown** for Equipment / Note / Time Entry already in place.
+  - **Empty states** already match spec: "No line items yet" / "Use Add Item to add parts or services."; "No notes yet."; "No time logged yet."
+  - **Totals block** rows in spec order (Parts / Labour / Expenses / Subtotal / Tax / Total) with 18px bold teal Total accent.
+  - **Labour summary strip** 3 equal cells (Driving / On-Site / Total) with 11px uppercase labels + 20px semibold values.
+
+**Engineering rules respected**:
+  - No layout rewrite, no new routes, no duplicate systems, no parallel data flows.
+  - Reuses existing queries/mutations: `inlineNoteMutation`, `jobTimeEntries`, `expensesRaw`, `jobEquipmentRows`, `jobNoteRows`, `useJobVisits`, `useTechniciansDirectory`, `PartsBillingCard`, `JobExpensesCard` (mounted hidden), `JobEquipmentSection` (mounted hidden), `JobNoteDialog` (mounted but not triggered from Notes card).
+  - `npm run check` passes (TypeScript clean).
+
+**File changed**: `client/src/pages/JobDetailPage.tsx` (5 edits, no LOC growth — replacements only).
+
+#### Today's Schedule rows — responsive at iPad widths (2026-04-27)
+
+The dashboard "Today's Schedule" rows (booked + open slot) used a single-line `flex items-center gap-1` layout. On iPad / tablet widths the title would either truncate aggressively or push the row off the right edge, depending on tech-name length. Booked rows also did not display duration at all — only open rows did.
+
+**Layout approach** — `flex flex-wrap` with explicit `order` and `basis` classes on three children:
+
+  - **Time** (`order-1`, `shrink-0`): always first, never wraps.
+  - **Duration** (mobile `order-2 ml-auto` / desktop `sm:order-3 sm:ml-0`, `shrink-0`): shares the first row with time on narrow widths (pushed right by `ml-auto`); slides to far-right of the same row on desktop.
+  - **Title block** (mobile `order-3 basis-full` / desktop `sm:order-2 sm:basis-0 sm:flex-1`, `min-w-0`): wraps to its own row on narrow widths via `basis-full`; on desktop becomes the flex-1 middle that grows and truncates between time and duration.
+
+  The bullet separator (`·`) is `hidden sm:inline` — it only renders when the title sits on the same row as time + duration (desktop). On mobile the title is on its own line, so the separator would be visually orphaned.
+
+**Booked-row duration**: added on far-right with the same `formatOpenDuration(block.durationMinutes)` helper used by open rows, in muted gray (`text-[#6b7280]`) to differentiate from the emerald used on open rows. Dimmed (`text-[#9ca3af]`) when the visit is `completed` / `cancelled` — same dim rule the row already applies to time + title.
+
+**Visual outcome:**
+
+  - Desktop (≥ sm): `8:00 – 10:00 · Basil Box                    (2h)` — single row, far-right duration.
+  - iPad / mobile (< sm):
+    ```
+    8:00 – 10:00                                            (2h)
+    Basil Box
+    ```
+
+**Behavior preserved:**
+  - Time always visible; never truncated.
+  - Title `truncate` is preserved — but on narrow widths the title gets a full-width row to truncate within, so much more of the name is visible than before.
+  - Click handlers, focus rings, disabled states, hover styles, dim-completed styling, emerald open-slot styling — all unchanged.
+  - aria-labels updated to include the duration so screen readers describe the row consistently with the new visual.
+
+**Files changed**:
+  - `client/src/components/TodaysOperationsCard.tsx` — `ScheduleBlockRow` (lines 917-992) restructured with flex-wrap + order/basis classes; booked rows now display duration. Same component is mounted by `FinancialDashboard.tsx` (per the export comment at line 996), so the fix applies to both surfaces with no second touch.
+
+**Manual / verification results**:
+  - `npm run check` passes cleanly.
+  - Tailwind classes used are all standard utilities (no custom CSS, no JIT-arbitrary that wasn't already in the file). Order/basis behavior is fully spec-defined by the flex layout module.
+  - Browser-level visual verification was not run (no UI test environment per CLAUDE.md).
+
 ### Removed
 
 #### Search bar quick-action creation feature — single canonical "+ New" entry point (2026-04-26)

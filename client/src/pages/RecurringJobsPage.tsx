@@ -11,6 +11,7 @@ import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
@@ -429,7 +430,7 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
             </Button>
           </Link>
           <div>
-            <h1 className="text-2xl font-bold">Recurring Jobs</h1>
+            <h1 className="text-page-title font-bold">Recurring Jobs</h1>
             <p className="text-muted-foreground">
               Manage recurring job templates and generate backlog jobs automatically.
             </p>
@@ -437,7 +438,7 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
         </div>
         <div className="flex items-center gap-4">
           {canEdit && previewData && previewData.jobsWouldCreate > 0 && (
-            <span className="text-sm text-muted-foreground">
+            <span className="text-row text-muted-foreground">
               {previewData.jobsWouldCreate} job{previewData.jobsWouldCreate !== 1 ? "s" : ""} ready to generate
             </span>
           )}
@@ -466,7 +467,7 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
       {lastGenerationResult && (
         <Card>
           <CardContent className="py-4">
-            <div className="flex items-center gap-4 text-sm">
+            <div className="flex items-center gap-4 text-row">
               <span className="font-medium">Last Generation:</span>
               <Badge variant="secondary">{lastGenerationResult.templatesProcessed} templates</Badge>
               <Badge variant="secondary">{lastGenerationResult.instancesCreated} instances</Badge>
@@ -515,27 +516,27 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
                     <TableCell className="font-medium max-w-[180px]">{template.clientName || "—"}</TableCell>
                     <TableCell>
                       <div className="max-w-[180px]">
-                        {template.locationName && <div className="text-sm font-medium">{template.locationName}</div>}
-                        {template.locationAddress && <div className="text-xs text-muted-foreground">{template.locationAddress}</div>}
+                        {template.locationName && <div className="text-row font-medium">{template.locationName}</div>}
+                        {template.locationAddress && <div className="text-caption text-muted-foreground">{template.locationAddress}</div>}
                         {!template.locationName && !template.locationAddress && "—"}
                       </div>
                     </TableCell>
                     <TableCell>{formatRecurrence(template)}</TableCell>
                     <TableCell>
                       {!template.isActive ? (
-                        <span className="text-xs text-muted-foreground">Paused</span>
+                        <span className="text-caption text-muted-foreground">Paused</span>
                       ) : template.nextOccurrence ? (
                         <span className={
                           isPast(parseISO(template.nextOccurrence)) && !isToday(parseISO(template.nextOccurrence))
-                            ? "text-xs text-destructive font-medium"
+                            ? "text-caption text-destructive font-medium"
                             : isToday(parseISO(template.nextOccurrence))
-                              ? "text-xs text-primary font-medium"
-                              : "text-xs"
+                              ? "text-caption text-primary font-medium"
+                              : "text-caption"
                         }>
                           {format(parseISO(template.nextOccurrence), "MMM d, yyyy")}
                         </span>
                       ) : (
-                        <span className="text-xs text-muted-foreground">None scheduled</span>
+                        <span className="text-caption text-muted-foreground">None scheduled</span>
                       )}
                     </TableCell>
                     <TableCell>
@@ -583,19 +584,19 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
                     <TableCell>{template.startDate}</TableCell>
                     <TableCell>
                       {!template.isActive ? (
-                        <span className="text-xs text-muted-foreground">Paused</span>
+                        <span className="text-caption text-muted-foreground">Paused</span>
                       ) : template.nextOccurrence ? (
                         <span className={
                           isPast(parseISO(template.nextOccurrence)) && !isToday(parseISO(template.nextOccurrence))
-                            ? "text-xs text-destructive font-medium"
+                            ? "text-caption text-destructive font-medium"
                             : isToday(parseISO(template.nextOccurrence))
-                              ? "text-xs text-primary font-medium"
-                              : "text-xs"
+                              ? "text-caption text-primary font-medium"
+                              : "text-caption"
                         }>
                           {format(parseISO(template.nextOccurrence), "MMM d, yyyy")}
                         </span>
                       ) : (
-                        <span className="text-xs text-muted-foreground">None scheduled</span>
+                        <span className="text-caption text-muted-foreground">None scheduled</span>
                       )}
                     </TableCell>
                     <TableCell>
@@ -753,7 +754,7 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
                         checked={formData.daysOfWeek.includes(day.value)}
                         onCheckedChange={() => toggleDayOfWeek(day.value)}
                       />
-                      <Label htmlFor={`day-${day.value}`} className="text-sm">
+                      <Label htmlFor={`day-${day.value}`} className="text-row">
                         {day.label}
                       </Label>
                     </div>
@@ -782,22 +783,24 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
             {/* Start Date */}
             <div className="space-y-2">
               <Label htmlFor="startDate">Start Date *</Label>
-              <Input
+              <CanonicalDatePicker
                 id="startDate"
-                type="date"
                 value={formData.startDate}
-                onChange={(e) => setFormData({ ...formData, startDate: e.target.value })}
+                onChange={(next) => setFormData({ ...formData, startDate: next ?? "" })}
+                className="w-full h-9 text-row"
               />
             </div>
 
             {/* End Date */}
             <div className="space-y-2">
               <Label htmlFor="endDate">End Date (optional)</Label>
-              <Input
+              <CanonicalDatePicker
                 id="endDate"
-                type="date"
                 value={formData.endDate}
-                onChange={(e) => setFormData({ ...formData, endDate: e.target.value })}
+                onChange={(next) => setFormData({ ...formData, endDate: next ?? "" })}
+                placeholder="Optional"
+                clearable
+                className="w-full h-9 text-row"
               />
             </div>
 
@@ -816,7 +819,7 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
                   <SelectItem value="on_hold">On Hold (requires reason)</SelectItem>
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-caption text-muted-foreground">
                 All generated jobs have status "Open". This controls the optional sub-status.
               </p>
             </div>
@@ -923,7 +926,7 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
                             </Button>
                           </div>
                         ) : instance.status === "generated" ? (
-                          <span className="text-xs text-muted-foreground">Open job to modify</span>
+                          <span className="text-caption text-muted-foreground">Open job to modify</span>
                         ) : null}
                       </TableCell>
                     </TableRow>

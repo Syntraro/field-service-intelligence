@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Calendar } from "@/components/ui/calendar";
+import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -1776,22 +1777,21 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                 </div>
                 <div className="flex-1">
                   <Label className="text-xs font-medium mb-1 block">Start date *</Label>
-                  <Input
-                    type="date"
+                  <CanonicalDatePicker
                     value={recurringStartDate}
-                    onChange={(e) => setRecurringStartDate(e.target.value)}
-                    className="h-9 text-xs"
+                    onChange={(next) => setRecurringStartDate(next ?? "")}
+                    className="w-full h-9 text-xs"
                     data-testid="input-recurring-start"
                   />
                 </div>
                 <div className="flex-1">
                   <Label className="text-xs font-medium mb-1 block">End date</Label>
-                  <Input
-                    type="date"
+                  <CanonicalDatePicker
                     value={recurringEndDate}
-                    onChange={(e) => setRecurringEndDate(e.target.value)}
-                    className="h-9 text-xs"
+                    onChange={(next) => setRecurringEndDate(next ?? "")}
                     placeholder="Optional"
+                    clearable
+                    className="w-full h-9 text-xs"
                     data-testid="input-recurring-end"
                   />
                 </div>

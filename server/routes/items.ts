@@ -69,40 +69,60 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
 // POST /api/items - Create new item
 //
 // 2026-04-19: routes through the canonical `createOrGetItem` so concurrent
-// tabs / repeat submits can't produce twin rows. Case-insensitive dedupe
-// scope: (companyId, type, lower(name)). Soft-deleted matches are
-// reactivated rather than re-inserted. The matching unique index in
-// `2026_04_19_items_unique_name_per_type.sql` is the safety net.
+// tabs / repeat submits can't produce twin rows.
+// 2026-04-29: Dedupe is now TYPE-AGNOSTIC — natural key is
+// (companyId, lower(trim(name))). A Product "Thermostat" and a Service
+// "Thermostat" can no longer coexist; the storage layer returns the
+// existing row with `_matched: true` flagged on the response body so the
+// client can show "Reusing existing item" instead of "Created". HTTP
+// status is also differentiated: 200 OK when matched, 201 Created when
+// genuinely inserted. Soft-deleted matches are reactivated rather than
+// re-inserted. The matching unique index lives in
+// `2026_04_29_items_unique_name_company_active.sql` (replaces the
+// type-scoped index from 2026_04_19).
 router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const userId = req.user?.id;
   if (!companyId || !userId) throw createError(401, "Unauthorized");
 
   const validated = validateSchema(createItemSchema, req.body);
-  const created = await storage.createOrGetItem(companyId, userId, {
+  const result = await storage.createOrGetItem(companyId, userId, {
     ...validated,
     cost: toDbNumericString(validated.cost),
     markupPercent: toDbNumericString(validated.markupPercent),
     unitPrice: toDbNumericString(validated.unitPrice),
   });
 
-  res.json(created);
+  const matched = (result as any)._matched === true;
+  res.status(matched ? 200 : 201).json(result);
 }));
 
 // PUT /api/items/:id - Update item
+//
+// 2026-04-29: Renames are validated against the type-agnostic uniqueness
+// rule. If the new name collides with another active item in the tenant
+// (regardless of type), the storage layer throws `ITEM_NAME_CONFLICT`
+// which we translate to a clean 409. The DB unique index is the final
+// safety net but won't be reached.
 router.put("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   if (!companyId) throw createError(401, "Unauthorized");
 
   const validated = validateSchema(updateItemSchema, req.body);
-  const updated = await storage.updateItem(companyId, req.params.id, {
-    ...validated,
-    cost: toDbNumericString(validated.cost),
-    markupPercent: toDbNumericString(validated.markupPercent),
-    unitPrice: toDbNumericString(validated.unitPrice),
-  });
-
-  res.json(updated);
+  try {
+    const updated = await storage.updateItem(companyId, req.params.id, {
+      ...validated,
+      cost: toDbNumericString(validated.cost),
+      markupPercent: toDbNumericString(validated.markupPercent),
+      unitPrice: toDbNumericString(validated.unitPrice),
+    });
+    res.json(updated);
+  } catch (err: any) {
+    if (err?.code === "ITEM_NAME_CONFLICT") {
+      throw createError(409, err.message);
+    }
+    throw err;
+  }
 }));
 
 // DELETE /api/items/:id - Delete item

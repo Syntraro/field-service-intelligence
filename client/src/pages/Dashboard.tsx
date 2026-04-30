@@ -222,7 +222,7 @@ export default function Dashboard() {
   // is unchanged; any future consumer can reintroduce the hook.
 
   return (
-    <div className="min-h-screen bg-[#F4F8F4]">
+    <div className="min-h-screen bg-app-bg">
       <main className="mx-auto px-4 sm:px-5 lg:px-6 py-4">
         {/* 2026-04-08: CSS Grid 2-col × 2-row.
             - Row 1: "Today's Operations" heading

@@ -4,16 +4,93 @@
 
 /* LIGHT MODE */
 :root {
-  /* ── Design tokens ── */
-  --app-bg: #F4F8F4;
+  /* ──────────────────────────────────────────────────────────────────
+   * 2026-04-29 Color Phase 1 — canonical semantic token set.
+   *
+   * These tokens are the single source of truth for app color. They
+   * are exposed as Tailwind utilities through `tailwind.config.ts`
+   * (e.g. `bg-app-bg`, `text-text-primary`, `bg-brand hover:bg-brand-hover`).
+   *
+   * Pre-existing tokens below (`--card-bg`, `--card-border`, the HSL
+   * `--background`/`--card`/`--primary` set, the dark-mode block) are
+   * retained for backward compat with consumers that already use them.
+   * Phase 6 cleanup will deduplicate; Phase 2 only adds and renames.
+   * ────────────────────────────────────────────────────────────────── */
+
+  /* ──────────────────────────────────────────────────────────────────
+   * 2026-04-29 Color Phase 2.7 — token format upgrade.
+   *
+   * Each canonical token below is now a SPACE-SEPARATED HSL CHANNEL
+   * triple (hue saturation% lightness%). Tailwind wraps each as
+   * `hsl(var(--name) / <alpha-value>)` in `tailwind.config.ts`, which
+   * lets opacity modifiers like `bg-app-bg/95`, `text-text-muted/60`,
+   * `ring-brand/30`, `border-border-default/40` compile to real CSS.
+   *
+   * The previous hex form (`--app-bg: #F3F5F7`) compiled fine for
+   * `bg-app-bg` (opaque) but produced NO CSS for `bg-app-bg/95`
+   * because Tailwind 3 cannot alpha-decompose a `var(...)` color
+   * returning an opaque hex. The HSL channel form fixes that without
+   * changing any consumer's class names or any visible color.
+   *
+   * The hex value above each token is the source-of-truth for designers
+   * and for visual diff against the previous Phase 1 declarations.
+   * They MUST stay in sync with the HSL channel value below them.
+   * ────────────────────────────────────────────────────────────────── */
+
+  /* Surface */
+  --app-bg: 210 20% 96%;        /* #F3F5F7 — global page background */
+  --surface: 0 0% 100%;         /* #FFFFFF — cards, popovers, modals */
+  --surface-subtle: 210 31% 95%;/* #EEF2F6 — zebra rows, list hover, subtle surface */
+
+  /* Border */
+  --border-default: 214 32% 91%;/* #E2E8F0 — standard borders / dividers */
+  --border-strong: 213 27% 84%; /* #CBD5E1 — emphasized dividers, drag handles */
+
+  /* Text */
+  --text-primary: 222 47% 11%;  /* #0F172A — body / heading text */
+  --text-secondary: 215 19% 35%;/* #475569 — sub-headings, muted-but-readable */
+  --text-muted: 215 16% 47%;    /* #64748B — helper text, timestamps, labels */
+  --text-disabled: 215 20% 65%; /* #94A3B8 — disabled state */
+
+  /* App chrome — header is intentionally aliased to sidebar so the
+     two surfaces stay in lockstep (a single visual change updates
+     both). Keep `--sidebar-bg` as the authoritative value. */
+  --sidebar-bg: 213 23% 17%;    /* #222B36 — app sidebar */
+  --header-bg: 213 23% 17%;     /* #222B36 — top header (alias of --sidebar-bg) */
+
+  /* Status */
+  --success: 142 76% 36%;       /* #16A34A — success states */
+  --warning: 38 92% 50%;        /* #F59E0B — warning states */
+  --danger: 0 72% 51%;          /* #DC2626 — destructive / error states */
+  --info: 221 83% 53%;          /* #2563EB — informational states */
+
+  /* Elevation — canonical card shadow.
+     2026-04-29 Color Phase 3: mirrors `boxShadow.card` in
+     `tailwind.config.ts` (`0 8px 18px rgba(15, 23, 42, 0.04)`) so the
+     same elevation is reachable outside Tailwind utilities (inline
+     styles, raw CSS, future tokens). Soft 8px y-offset / 18px blur /
+     4% opacity — lifts cards from the #F3F5F7 page bg without a heavy
+     drop shadow. Update both this var and `boxShadow.card` together. */
+  --card-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+
+  /* ──────────────────────────────────────────────────────────────────
+   * Pre-existing tokens (retained — see Phase 6 for cleanup).
+   * ────────────────────────────────────────────────────────────────── */
   --card-bg: #FFFFFF;
   --card-border: #E2E8F0;
-  --sidebar-bg: #222b36;
   --sidebar-text: rgba(255,255,255,0.9);
   --sidebar-muted: rgba(255,255,255,0.5);
   --sidebar-hover: rgba(255,255,255,0.08);
-  --brand: #76B054;
-  --brand-hover: #5F9442;
+  /* 2026-04-29 Color Phase 2.7: brand tokens converted to HSL channel
+     form so `bg-brand/20`, `ring-brand/30`, `hover:bg-brand-hover/90`
+     etc. compile correctly. `--brand` value is identical to the
+     existing `--primary` (`98 37% 51%`) — that's a known duplicate
+     flagged for Phase 6 cleanup, retained here as an alias.
+     `--brand-ring` (rgba) and `--primary-green` (legacy hex) are kept
+     unchanged: rgba is consumed as-is, primary-green is a deprecated
+     alias slated for Phase 6 removal. */
+  --brand: 98 37% 51%;          /* #76B054 — Syntraro brand green */
+  --brand-hover: 99 38% 42%;    /* #5F9442 — brand hover state */
   --brand-ring: rgba(118,176,84,0.18);
   --primary-green: #76B054;
   --radius-sm: 6px;
@@ -34,11 +111,17 @@
 
   /*
    * Custom color palette
-   * Background: #F4F8F4 | Card: #FFFFFF | Border: #E2E8F0
-   * Foreground: #1F2933 | Muted: #6B7280
-   * Primary (Green): #76B054 | Warning: #F9A825 | Danger: #E53935
+   * 2026-04-29 Color Phase 1 — `--background` updated from
+   * `120 22% 96%` (≈ #F4F8F4, warm green tint) to `210 20% 96%`
+   * (≈ #F3F5F7, cool gray) so legacy consumers of `bg-background`
+   * inherit the new canonical app-bg without each having to migrate
+   * to `bg-app-bg` in this phase.
+   *
+   * Background: #F3F5F7 | Card: #FFFFFF | Border: #E2E8F0
+   * Foreground: #0F172A | Muted: #64748B
+   * Primary (Green): #76B054 | Warning: #F59E0B | Danger: #DC2626
    */
-  --background: 120 22% 96%;
+  --background: 210 20% 96%;
   --foreground: 220 14% 10%;
   --border: 220 13% 91%;
   --card: 0 0% 100%;
@@ -275,6 +358,26 @@
   [data-slot="sidebar-container"] {
     top: var(--header-height) !important;
     height: calc(100svh - var(--header-height)) !important;
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * 2026-04-29 Typography Phase A — semantic-token component layer.
+ *
+ * Tailwind's `fontSize` tuple syntax in `tailwind.config.ts` carries
+ * size + line-height + font-weight + letter-spacing, but NOT
+ * text-transform. The `text-label` role token is uppercase by design
+ * (form labels, table column headers, "BILL TO" / "ISSUED" metadata
+ * keys). The rule below is the only place that uppercase is auto-
+ * applied — explicit `not-uppercase` would still need to be authored
+ * separately if a consumer wants to opt out, which is intentional
+ * (uppercase is part of the role's identity).
+ *
+ * No other semantic token currently needs a component-layer rule.
+ * ────────────────────────────────────────────────────────────────────── */
+@layer components {
+  .text-label {
+    @apply uppercase;
   }
 }
 

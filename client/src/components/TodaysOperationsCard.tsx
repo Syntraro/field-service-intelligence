@@ -683,7 +683,7 @@ export function TodaysOperationsCard({
                 Alerts
               </span>
               <span
-                className={`inline-flex items-center justify-center h-5 min-w-[20px] px-1.5 rounded-full text-[10px] font-bold tabular-nums ${
+                className={`inline-flex items-center justify-center h-5 min-w-[20px] px-1.5 rounded-full text-label font-bold tabular-nums ${
                   isUrgent
                     ? "bg-red-600 text-white"
                     : totalAlertCount > 0
@@ -848,7 +848,7 @@ function TechnicianWorkloadTile({
     >
       <div className="flex items-center gap-2.5 mb-2">
         <span
-          className="h-8 w-8 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0"
+          className="h-8 w-8 rounded-full flex items-center justify-center text-helper font-bold text-white shrink-0"
           style={{ backgroundColor: card.color || "#64748b" }}
           aria-hidden="true"
         >
@@ -858,7 +858,7 @@ function TechnicianWorkloadTile({
           <p className="text-sm font-semibold text-[#111827] truncate">
             {card.name}
             {isOffShift && (
-              <span className="ml-1.5 text-[10px] font-medium text-amber-700 align-middle">
+              <span className="ml-1.5 text-helper font-medium text-amber-700 align-middle">
                 (off shift)
               </span>
             )}
@@ -867,13 +867,13 @@ function TechnicianWorkloadTile({
               surfaces an availability-first label instead. No new feed —
               openMinutesTotal sums existing scheduleBlocks of kind "open". */}
           {view === "open" ? (
-            <p className="text-[11px] text-emerald-700 tabular-nums">
+            <p className="text-helper text-emerald-700 tabular-nums">
               {openMinutesTotal > 0
                 ? `${formatOpenDuration(openMinutesTotal)} open today`
                 : "No open time"}
             </p>
           ) : (
-            <p className="text-[11px] text-[#4b5563] tabular-nums">
+            <p className="text-helper text-[#4b5563] tabular-nums">
               {card.visitCount} {card.visitCount === 1 ? "job" : "jobs"} · ~{formatHours(card.bookedMinutes)}
             </p>
           )}
@@ -887,13 +887,13 @@ function TechnicianWorkloadTile({
           // below and the `(off shift)` label next to the name conveys
           // the shift status.)
           <div data-testid="tile-off-shift">
-            <p className="text-[11px] text-[#94a3b8] italic">Off shift</p>
-            <p className="text-[10px] text-[#cbd5e1]">Not scheduled to work today</p>
+            <p className="text-helper text-[#94a3b8] italic">Off shift</p>
+            <p className="text-helper text-[#cbd5e1]">Not scheduled to work today</p>
           </div>
         ) : showDayEnded ? (
-          <p className="text-[11px] text-[#94a3b8] italic">Day ended</p>
+          <p className="text-helper text-[#94a3b8] italic">Day ended</p>
         ) : showEmptyFallback ? (
-          <p className="text-[11px] text-[#94a3b8] italic" data-testid="tile-empty-fallback">
+          <p className="text-helper text-[#94a3b8] italic" data-testid="tile-empty-fallback">
             {view === "open" ? "No open time today" : "No jobs scheduled"}
           </p>
         ) : (
@@ -932,6 +932,23 @@ function ScheduleBlockRow({
   const tz = timezone || undefined;
   const timeRange = `${formatClockTime(block.startISO, tz)} – ${formatClockTime(block.endISO, tz)}`;
 
+  // 2026-04-27 responsive layout: the row is a flex-wrap container with
+  // explicit order classes so the title block can drop to its own line
+  // at tablet widths while time stays left and duration stays right.
+  //
+  //   Mobile / iPad (< sm):
+  //     ┌─ time ──────────────── (Xh) ─┐
+  //     │ Client / Open slot           │ ← wraps below, basis-full
+  //     └──────────────────────────────┘
+  //
+  //   Desktop (≥ sm):
+  //     time · Client / Open slot               (Xh)
+  //
+  // The title block (separator + title text) is a single nested flex so
+  // the bullet sits next to the title and disappears together when the
+  // title wraps below.
+  const durationLabel = `(${formatOpenDuration(block.durationMinutes)})`;
+
   if (block.kind === "open") {
     const disabled = !onCreateInSlot;
     return (
@@ -949,14 +966,18 @@ function ScheduleBlockRow({
             durationMinutes: block.durationMinutes,
           });
         }}
-        className="w-full text-left flex items-center gap-1 text-[11px] rounded-sm px-1 -mx-1 bg-emerald-50/40 hover:bg-emerald-50 transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:cursor-default disabled:hover:bg-emerald-50/40"
+        className="w-full text-left flex flex-wrap items-center gap-x-1 text-helper rounded-sm px-1 -mx-1 hover:bg-[#F0F5F0] transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:cursor-default disabled:hover:bg-transparent"
         data-testid="capacity-open-row"
-        aria-label={`Create in open slot ${timeRange} (${formatOpenDuration(block.durationMinutes)}) for ${technicianName}`}
+        aria-label={`Create in open slot ${timeRange} ${durationLabel} for ${technicianName}`}
       >
-        <span className="text-[#4b5563] tabular-nums shrink-0">{timeRange}</span>
-        <span className="text-[#94a3b8]">·</span>
-        <span className="text-emerald-700 font-medium">Open</span>
-        <span className="text-emerald-700/80 tabular-nums">({formatOpenDuration(block.durationMinutes)})</span>
+        <span className="text-[#4b5563] tabular-nums shrink-0 order-1">{timeRange}</span>
+        <span className="text-emerald-700/80 tabular-nums shrink-0 ml-auto order-2 sm:ml-0 sm:order-3">
+          {durationLabel}
+        </span>
+        <span className="flex items-center gap-1 min-w-0 basis-full order-3 sm:basis-0 sm:flex-1 sm:order-2">
+          <span className="text-[#94a3b8] hidden sm:inline">·</span>
+          <span className="text-emerald-700 font-medium truncate">Open</span>
+        </span>
       </button>
     );
   }
@@ -976,16 +997,21 @@ function ScheduleBlockRow({
           title: block.title,
         });
       }}
-      className="w-full text-left flex items-center gap-1 text-[11px] rounded-sm px-1 -mx-1 hover:bg-[#F0F5F0] transition-colors focus:outline-none focus:ring-2 focus:ring-[#76B054]/30 disabled:cursor-default disabled:hover:bg-transparent"
+      className="w-full text-left flex flex-wrap items-center gap-x-1 text-helper rounded-sm px-1 -mx-1 hover:bg-[#F0F5F0] transition-colors focus:outline-none focus:ring-2 focus:ring-[#76B054]/30 disabled:cursor-default disabled:hover:bg-transparent"
       data-testid="capacity-booked-row"
-      aria-label={`Open visit ${block.title ?? ""} ${timeRange}`}
+      aria-label={`Open visit ${block.title ?? ""} ${timeRange} ${durationLabel}`}
     >
-      <span className={`tabular-nums shrink-0 ${dimmed ? "text-[#9ca3af]" : "text-[#4b5563]"}`}>
+      <span className={`tabular-nums shrink-0 order-1 ${dimmed ? "text-[#9ca3af]" : "text-[#4b5563]"}`}>
         {timeRange}
       </span>
-      <span className="text-[#94a3b8]">·</span>
-      <span className={`truncate ${dimmed ? "text-[#9ca3af] line-through" : "text-[#111827]"}`}>
-        {block.title ?? "Scheduled"}
+      <span className={`tabular-nums shrink-0 ml-auto order-2 sm:ml-0 sm:order-3 ${dimmed ? "text-[#9ca3af]" : "text-[#6b7280]"}`}>
+        {durationLabel}
+      </span>
+      <span className="flex items-center gap-1 min-w-0 basis-full order-3 sm:basis-0 sm:flex-1 sm:order-2">
+        <span className="text-[#94a3b8] hidden sm:inline">·</span>
+        <span className={`truncate ${dimmed ? "text-[#9ca3af] line-through" : "text-[#111827]"}`}>
+          {block.title ?? "Scheduled"}
+        </span>
       </span>
     </button>
   );

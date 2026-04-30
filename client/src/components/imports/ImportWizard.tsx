@@ -615,7 +615,7 @@ export function ImportWizard({
   }
 
   return (
-    <div className="min-h-screen bg-[#F4F8F4]">
+    <div className="min-h-screen bg-app-bg">
       <main className="mx-auto max-w-6xl px-4 sm:px-5 lg:px-6 py-6 space-y-5" data-testid={`import-wizard-${config.entity}`}>
         <header className="flex items-start justify-between gap-4 pb-3 border-b border-[#e5e7eb]">
           <div className="flex items-center gap-3">

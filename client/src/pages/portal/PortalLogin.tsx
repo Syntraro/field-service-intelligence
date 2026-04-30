@@ -56,7 +56,7 @@ export default function PortalLogin() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#F4F8F4] px-4 py-10">
+    <div className="min-h-screen flex items-center justify-center bg-app-bg px-4 py-10">
       <div className="w-full max-w-md space-y-4">
         <Card className="shadow-sm border-slate-200">
           <CardHeader className="text-center space-y-2">

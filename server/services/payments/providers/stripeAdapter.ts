@@ -189,6 +189,53 @@ export const stripeAdapter: PaymentProvider = {
         }));
       }
 
+      // 2026-04-29 Stripe completion: refunds initiated from the Stripe
+      // dashboard sometimes deliver `refund.created` ahead of (or
+      // entirely without) `charge.refunded`. Handle the standalone form
+      // so dashboard-issued refunds backfill the canonical ledger via
+      // the same `handleRefundCreated` path API-issued refunds use.
+      // Replay safety is preserved by `payments_provider_event_id_uq`
+      // on `(company_id, provider_source, provider_event_id)`: if both
+      // events arrive, the second insert collides on the refund id and
+      // the application service maps that to a 200 ACK.
+      case "refund.created":
+      case "refund.updated": {
+        const refund = event.data.object as Stripe.Refund;
+        const chargeId = extractRefundChargeId(refund);
+        if (!chargeId) {
+          // No charge association — nothing to attach the ledger row to.
+          return [
+            {
+              kind: "unsupported",
+              eventId: event.id,
+              eventType: `${event.type} (missing charge id)`,
+            },
+          ];
+        }
+        // Only act on terminal succeeded state; pending/failed refunds
+        // do not carry money movement to mirror locally.
+        if (refund.status !== "succeeded") {
+          return [
+            {
+              kind: "unsupported",
+              eventId: event.id,
+              eventType: `${event.type} (status=${refund.status ?? "null"})`,
+            },
+          ];
+        }
+        return [
+          {
+            kind: "refund_created",
+            eventId: event.id,
+            eventType: event.type,
+            providerRefundId: refund.id,
+            providerChargeId: chargeId,
+            amountCents: refund.amount ?? 0,
+            reason: refund.reason ?? null,
+          },
+        ];
+      }
+
       default:
         return [
           {
@@ -200,6 +247,14 @@ export const stripeAdapter: PaymentProvider = {
     }
   },
 };
+
+/** Extract charge id from a Refund's `charge` (string | Charge | null). */
+function extractRefundChargeId(refund: Stripe.Refund): string | null {
+  const charge = refund.charge;
+  if (typeof charge === "string") return charge;
+  if (charge && typeof charge === "object") return (charge as Stripe.Charge).id;
+  return null;
+}
 
 /**
  * Stripe accepts a constrained enum for refund reasons; passing an

@@ -16,6 +16,7 @@ import { format, parseISO } from "date-fns";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -478,18 +479,18 @@ export default function TimesheetReportPage() {
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <Label className="text-xs">Start</Label>
-                <Input
-                  type="date"
+                <CanonicalDatePicker
                   value={customStart}
-                  onChange={(e) => setCustomStart(e.target.value)}
+                  onChange={(next) => setCustomStart(next ?? "")}
+                  className="w-full h-9 text-sm"
                 />
               </div>
               <div>
                 <Label className="text-xs">End</Label>
-                <Input
-                  type="date"
+                <CanonicalDatePicker
                   value={customEnd}
-                  onChange={(e) => setCustomEnd(e.target.value)}
+                  onChange={(next) => setCustomEnd(next ?? "")}
+                  className="w-full h-9 text-sm"
                 />
               </div>
             </div>
@@ -732,10 +733,10 @@ function PayrollSettingsDialog({
           </div>
           <div>
             <Label className="text-xs">Anchor / Start Date</Label>
-            <Input
-              type="date"
+            <CanonicalDatePicker
               value={anchor}
-              onChange={(e) => setAnchor(e.target.value)}
+              onChange={(next) => setAnchor(next ?? "")}
+              className="w-full h-9 text-sm"
             />
             <p className="text-xs text-muted-foreground mt-1">
               Any date that was the first day of one concrete pay period. All other periods are

@@ -154,7 +154,7 @@ export function QuotePipelineCard({
           <FileText className="h-3.5 w-3.5 text-teal-600 shrink-0" />
           <h3 className="text-sm font-semibold text-[#111827] truncate">Quote Pipeline</h3>
           {hasAny && (
-            <span className="text-[11px] text-[#4b5563] tabular-nums shrink-0">
+            <span className="text-helper text-[#4b5563] tabular-nums shrink-0">
               {totalCount} open
             </span>
           )}
@@ -162,7 +162,7 @@ export function QuotePipelineCard({
         <button
           type="button"
           onClick={() => setLocation("/quotes")}
-          className="text-[11px] font-semibold text-[#76B054] hover:underline shrink-0"
+          className="text-helper font-semibold text-[#76B054] hover:underline shrink-0"
           data-testid="quote-pipeline-view-all"
         >
           View all quotes
@@ -190,10 +190,10 @@ export function QuotePipelineCard({
                   >
                     <div className="flex items-center gap-2 min-w-0">
                       <Icon className={`h-3.5 w-3.5 shrink-0 ${b.iconColor}`} />
-                      <span className="text-[11px] font-semibold uppercase tracking-wide text-[#4b5563] truncate">
+                      <span className="text-helper font-semibold uppercase tracking-wide text-[#4b5563] truncate">
                         {b.label}
                       </span>
-                      <span className="text-[11px] text-[#111827] font-bold tabular-nums shrink-0">
+                      <span className="text-helper text-[#111827] font-bold tabular-nums shrink-0">
                         {b.count}
                       </span>
                     </div>
@@ -214,7 +214,7 @@ export function QuotePipelineCard({
                         <button
                           type="button"
                           onClick={() => setLocation(b.destination)}
-                          className="w-full text-left px-4 py-1 text-[11px] text-[#76B054] hover:underline"
+                          className="w-full text-left px-4 py-1 text-helper text-[#76B054] hover:underline"
                         >
                           +{remaining} more →
                         </button>
@@ -259,12 +259,12 @@ function QuotePreviewRow({
               {quote.customerName ?? "Unknown customer"}
             </span>
             {quote.total > 0 && (
-              <span className="text-[11px] text-[#4b5563] tabular-nums shrink-0">
+              <span className="text-helper text-[#4b5563] tabular-nums shrink-0">
                 · {money(quote.total)}
               </span>
             )}
           </div>
-          <div className="flex items-center gap-1.5 text-[11px] text-[#6b7280] min-w-0">
+          <div className="flex items-center gap-1.5 text-helper text-[#6b7280] min-w-0">
             <span className="truncate">{displayLabel}</span>
             {timingCopy && (
               <>
@@ -274,7 +274,7 @@ function QuotePreviewRow({
             )}
           </div>
         </div>
-        <span className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-[#76B054] shrink-0 group-hover:underline">
+        <span className="inline-flex items-center gap-0.5 text-helper font-semibold text-[#76B054] shrink-0 group-hover:underline">
           {ctaLabel}
           <ChevronRight className="h-3 w-3" />
         </span>

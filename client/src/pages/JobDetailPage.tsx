@@ -15,32 +15,35 @@ import {
   Loader2,
   Clock,
   AlertTriangle,
-  DollarSign,
   Plus,
-  Lock,
-  CalendarPlus,
-  Receipt,
   Pause,
   Copy,
   Printer,
   MoreHorizontal,
-  MapPin,
-  MessageSquare,
-  Truck,
   RotateCcw,
   Send,
-  Tag,
-  Building2,
-  ChevronDown,
-  ChevronRight,
   Wrench,
-  Calendar as CalendarIcon,
 } from "lucide-react";
 import { formatCurrency } from "@/lib/formatters";
 import { useJobVisits } from "@/hooks/useJobVisits";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
-import { ReferenceFieldsSection } from "@/components/shared/ReferenceFieldsSection";
 import JobEquipmentSection from "@/components/JobEquipmentSection";
+import {
+  hydrateDraft,
+  draftToJobPartPayload,
+} from "@/lib/entities/lineItemMapper";
+import { parseMoney, formatMoney } from "@shared/lineItem";
+import type { JobPart } from "@shared/schema";
+import {
+  LineItemsCard,
+  useLineItemsDrafts,
+  type LineItemsAdapter,
+} from "@/components/line-items";
+import {
+  normalizeProductRow,
+  type ProductOption,
+} from "@/lib/entities/productEntity";
+import { AddProductModal } from "@/components/PartsBillingCard";
 import { AddVisitDialog } from "@/components/AddVisitDialog";
 import { VisitEditorLauncher, type VisitEditorState } from "@/components/dispatch/VisitEditorLauncher";
 // 2026-04-24: mandatory single path for every Edit Visit modal opening.
@@ -48,13 +51,10 @@ import { VisitEditorLauncher, type VisitEditorState } from "@/components/dispatc
 // the adapter fast-paths and returns the partial unchanged. Routing through
 // it keeps the single-adapter contract uniform across every surface.
 import { enrichVisitEditorState } from "@/lib/visitEditorPayloadBuilder";
-import JobNotesSection from "@/components/JobNotesSection";
-import { PartsBillingCard } from "@/components/PartsBillingCard";
-import { JobExpensesCard } from "@/components/JobExpensesCard";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import { JobHeaderCard, type JobHeaderCardHandle } from "@/components/JobHeaderCard";
 import { InvoiceCompositionDialog } from "@/components/InvoiceCompositionDialog";
-import { JobNoteDialog } from "@/components/JobNoteDialog";
+import JobNotesSection from "@/components/JobNotesSection";
 import { ActionRequiredModal, getHoldReasonLabel } from "@/components/ActionRequiredModal";
 import { getJobStatusDisplay } from "@/components/job";
 import { TimeEntryModal } from "@/components/time";
@@ -151,340 +151,496 @@ interface TimeEntryDisplay {
 }
 
 
-// 2026-04-26: Removed `LabourCardContent` helper (~225 lines). The
-// Labour Summary card is now built inline in the page body — driving
-// vs on-site totals, expandable to a per-entry breakdown grouped by
-// category. The new layout reads directly from the page-level
-// `jobTimeEntries` query, so no new endpoint or query was added.
-// `TimeEntryModal` still owns create/edit; per-row click still routes
-// through `setTimeEntryModal({ open: true, mode: "edit", entry })`.
+// 2026-04-27 (redesign v3): all five legacy helpers
+// (__removedLabourCardContent__, LabourEntryRow, LabourEntryLine,
+// LabourSummaryCell, ContextField) were unused by the page render and
+// have been pruned (~360 LOC). The Labour entry rows are now rendered
+// inline by the redesigned Labour card. New design primitives below
+// (SectionCard, SectionHead, KpiTile, Field, Avatar, EmptyState) replace
+// the chunkier earlier helpers (HeaderKpi, DetailSectionHeader,
+// ContextField, TechAvatar). All hooks, queries, mutations, and dialog
+// mounts are unchanged — this is a presentation-layer rebuild only.
 
-function __removedLabourCardContent__({
-  jobId,
-  onEditEntry,
-}: {
-  jobId: string;
-  onEditEntry: (entry: TimeEntryDisplay) => void;
-}) {
-  const timeSummaryQuery = useQuery<JobTimeSummary>({
-    queryKey: ["/api/jobs", jobId, "time-summary"],
-    queryFn: async () => {
-      const res = await fetch(`/api/jobs/${jobId}/time-summary`, { credentials: "include" });
-      if (!res.ok) {
-        if (res.status === 404) return null;
-        throw new Error("Failed to fetch time summary");
-      }
-      return res.json();
-    },
-    enabled: !!jobId,
-    // Semi-live summary; realtime SSE invalidates ["/api/jobs"] family on visit/time events.
-    // Short cache prevents redundant fetches on mount/focus when timer is idle.
-    staleTime: 30_000,
-    // Poll every 60s while a timer is actively running (foreground only)
-    refetchInterval: (query) => (query.state.data as any)?.isRunning ? 60_000 : false,
-    refetchIntervalInBackground: false,
-  });
-  const timeSummary = timeSummaryQuery.data;
-  const isLoading = timeSummaryQuery.isLoading;
-  const error = timeSummaryQuery.error;
+// ============================================================================
+// DESIGN PRIMITIVES — confined to this file. Tokens chosen to read like
+// premium B2B SaaS chrome: warm cream page bg, white cards, slate ink,
+// 1px borders at #E5E1D5 (visible without being heavy), Syntraro teal
+// reserved for accent, 8px spacing system throughout.
+// ============================================================================
 
-  const { data: timeEntries = [] } = useQuery<TimeEntryDisplay[]>({
-    queryKey: ["/api/jobs", jobId, "time-entries"],
-    queryFn: async () => {
-      const res = await fetch(`/api/jobs/${jobId}/time-entries`, { credentials: "include" });
-      if (!res.ok) return [];
-      return res.json();
-    },
-    enabled: !!jobId,
-    staleTime: 2 * 60_000,
-  });
-
-  // 2026-04-16: the card lives inside DetailPageShell's user-resizable
-  // rail. Status labels ("En Route" / "On Site" / "Task" / "Manual")
-  // collide with the duration+cost column once the rail narrows, so
-  // swap text for lucide icons once the card falls below a tested
-  // width. No viewport breakpoint — this must react to the rail's
-  // own width, independent of the viewport.
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [isCompact, setIsCompact] = useState(false);
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const apply = (width: number) => setIsCompact(width < 320);
-    apply(el.getBoundingClientRect().width);
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) apply(entry.contentRect.width);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <Loader2 className="h-3 w-3 animate-spin" />
-        Loading time...
-      </div>
-    );
-  }
-
-  if (error || !timeSummary) {
-    return (
-      <p className="text-xs text-muted-foreground">
-        No labour entries yet. Track time against this job here.
-      </p>
-    );
-  }
-
-  if (timeSummary.totalMinutes === 0) {
-    return (
-      <p className="text-xs text-muted-foreground">
-        No labour entries yet. Track time against this job here.
-      </p>
-    );
-  }
-
-  // Labour Summary: entries render immediately when card is expanded (no nested toggle)
+/** Section card chrome — canonical card surface, 6px radius, soft lift.
+ *  Children are responsible for their own internal padding so the card can
+ *  host either a flush data table or a padded form panel.
+ *  2026-04-29 Color Phase 3: migrated `bg-white` → `bg-card`, added
+ *  `shadow-card` so SectionCards lift consistently with the canonical
+ *  `<Card>` primitive. Border switched to `border-card-border` so card
+ *  surfaces share one border token. */
+function SectionCard({
+  className,
+  children,
+  ...rest
+}: React.HTMLAttributes<HTMLElement>) {
   return (
-    <div ref={containerRef} className="space-y-1">
-      {/* Running indicator */}
-      {timeSummary.isRunning && (
-        <div className="flex items-center gap-2 text-xs text-green-600 bg-green-50 dark:bg-green-950 rounded px-2 py-1 mb-1">
-          <Clock className="h-3 w-3 animate-pulse" />
-          <span className="font-medium">{getRunningStatusText(timeSummary.runningType)}</span>
-        </div>
+    <section
+      className={cn(
+        "bg-card border border-card-border rounded-md overflow-hidden shadow-card",
+        className,
       )}
+      {...rest}
+    >
+      {children}
+    </section>
+  );
+}
 
-      {/* Entry list — rendered immediately, no nested show/hide step */}
-      <div className="space-y-1" data-testid="time-entries-list">
-        {timeEntries.length === 0 ? (
-          <p className="text-xs text-muted-foreground italic">Loading...</p>
-        ) : (
-          (() => {
-            // Group visit entries by technician+visitId. Non-visit entries stay ungrouped.
-            const TRAVEL_SET = new Set(["travel_to_job", "travel_between_jobs", "travel_to_supplier"]);
-            type Group = { techName: string; visitLabel: string | null; entries: typeof timeEntries };
-            const groups: Group[] = [];
-            const ungrouped: typeof timeEntries = [];
-            const visitMap = new Map<string, Group>();
-
-            timeEntries.forEach((e) => {
-              if (e.sourceType === "visit" && e.visitId && e.technicianId) {
-                const key = `${e.technicianId}:${e.visitId}`;
-                let g = visitMap.get(key);
-                if (!g) {
-                  g = { techName: e.technicianName || "Unknown", visitLabel: e.visitLabel, entries: [] };
-                  visitMap.set(key, g);
-                  groups.push(g);
-                }
-                g.entries.push(e);
-              } else {
-                ungrouped.push(e);
-              }
-            });
-
-            // Sort within each group: travel first, then by startAt
-            groups.forEach((g) => g.entries.sort((a, b) => {
-              const aT = TRAVEL_SET.has(a.type) ? 0 : 1;
-              const bT = TRAVEL_SET.has(b.type) ? 0 : 1;
-              if (aT !== bT) return aT - bT;
-              return new Date(a.startAt).getTime() - new Date(b.startAt).getTime();
-            }));
-
-            const renderRow = (entry: typeof timeEntries[0], showTech: boolean) => {
-              const isLocked = !!(entry.lockedAt || entry.invoicedAt);
-              const cost = entry.durationMinutes != null && entry.costRateSnapshot
-                ? ((entry.durationMinutes / 60) * parseFloat(entry.costRateSnapshot)).toFixed(2)
-                : null;
-              const isTravel = TRAVEL_SET.has(entry.type);
-              // 2026-04-16: status badge — icon-only under ~320px so it
-              // stops colliding with duration/cost when the rail is narrow.
-              const statusLabel = isTravel
-                ? "En Route"
-                : entry.sourceType === "task"
-                  ? "Task"
-                  : entry.sourceType === "manual"
-                    ? "Manual"
-                    : "On Site";
-              const statusTone = isTravel
-                ? "bg-blue-50 text-blue-600"
-                : entry.sourceType === "task"
-                  ? "bg-indigo-50 text-indigo-600"
-                  : "bg-emerald-50 text-emerald-600";
-              const StatusIcon = isTravel
-                ? Truck
-                : entry.sourceType === "task"
-                  ? Tag
-                  : entry.sourceType === "manual"
-                    ? Pencil
-                    : MapPin;
-              return (
-                <div
-                  key={entry.id}
-                  className={cn(
-                    "flex items-center justify-between text-xs py-1.5 px-2 rounded group cursor-pointer hover:bg-muted/60",
-                    entry.invoicedAt ? "bg-muted/50" : "bg-background"
-                  )}
-                  onClick={() => onEditEntry(entry)}
-                  data-testid={`time-entry-${entry.id}`}
-                >
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    {showTech && <span className="font-medium text-slate-700 dark:text-slate-200 truncate shrink-0">{entry.technicianName || "Unknown"}</span>}
-                    <span className="text-xs text-muted-foreground shrink-0">
-                      {format(new Date(entry.startAt), "MMM d")}
-                      {entry.startAt && entry.endAt && (
-                        <span className="ml-0.5 text-slate-400">{format(new Date(entry.startAt), "h:mma")}–{format(new Date(entry.endAt), "h:mma")}</span>
-                      )}
-                    </span>
-                    <span
-                      className={cn(
-                        "text-xs font-medium rounded-full shrink-0 inline-flex items-center",
-                        statusTone,
-                        isCompact ? "h-5 w-5 justify-center" : "px-1.5 py-0.5",
-                      )}
-                      title={statusLabel}
-                      aria-label={statusLabel}
-                    >
-                      {isCompact ? <StatusIcon className="h-3 w-3" /> : statusLabel}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0 ml-2">
-                    <div className="flex flex-col items-end">
-                      <span className="font-medium tabular-nums">
-                        {entry.durationMinutes != null ? formatMinutes(entry.durationMinutes) : (
-                          <span className="text-green-600 flex items-center gap-1"><Clock className="h-3 w-3 animate-pulse" />Running</span>
-                        )}
-                      </span>
-                      {cost && <span className="text-xs text-muted-foreground tabular-nums">${cost}</span>}
-                    </div>
-                    {isLocked && <span title="Locked (invoiced)"><Lock className="h-3 w-3 text-amber-500 shrink-0" /></span>}
-                  </div>
-                </div>
-              );
-            };
-
-            return (
-              <>
-                {groups.map((g, gi) => (
-                  <div key={`group-${gi}`} className="rounded border border-slate-200/60 overflow-hidden">
-                    <div className="px-2 py-1 bg-slate-50/80">
-                      <span className="text-xs font-medium text-slate-700">{g.techName}</span>
-                    </div>
-                    <div className="divide-y divide-slate-100">
-                      {g.entries.map((e) => renderRow(e, false))}
-                    </div>
-                  </div>
-                ))}
-                {ungrouped.map((e) => renderRow(e, true))}
-              </>
-            );
-          })()
+/** Section header strip — 11px uppercase label with letter-spacing,
+ *  optional muted count, optional right-aligned action slot. Always sits
+ *  on a 1px bottom divider so the body below reads as a separate band. */
+function SectionHead({
+  label,
+  count,
+  action,
+}: {
+  label: string;
+  count?: number | null;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 px-4 h-11 border-b border-border-default">
+      <div className="flex items-baseline gap-2 min-w-0">
+        <h3 className="m-0 text-helper font-semibold uppercase tracking-[0.08em] text-text-secondary">
+          {label}
+        </h3>
+        {count !== undefined && count !== null && (
+          <span className="text-helper font-medium text-text-disabled tabular-nums">
+            {count}
+          </span>
         )}
+      </div>
+      {action}
+    </div>
+  );
+}
+
+/** Header KPI tile — flush flexible cell inside a horizontally-divided
+ *  strip. Label top, value bottom. The accent variant fills the cell with
+ *  Syntraro teal and inverts text to white — matches the canonical Studio
+ *  reference where the Total tile is the strip's anchor (2026-04-28).
+ *  2026-04-29 (header compact pass): tightened vertical padding (py-2 → py-1.5),
+ *  value type (22px → 18px), and label-to-value gap (mt-1.5 → mt-0.5) so the
+ *  strip reads as a one-row executive toolbar matching the Invoice Detail
+ *  density. Min-width also tightened (112 → 96) for denser horizontal flow. */
+function KpiTile({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: string;
+  accent?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex flex-col items-start justify-center px-3.5 py-1.5 min-w-[96px]",
+        accent && "bg-brand",
+      )}
+    >
+      <div
+        className={cn(
+          "text-label uppercase tracking-[0.08em] font-semibold",
+          accent ? "text-white/70" : "text-text-muted",
+        )}
+      >
+        {label}
+      </div>
+      <div
+        className={cn(
+          "text-section-title font-bold tabular-nums leading-none mt-0.5",
+          accent ? "text-white" : "text-text-primary",
+        )}
+      >
+        {value}
       </div>
     </div>
   );
 }
 
-// ============================================================================
-// Labour Summary — per-entry row (used in expanded breakdown).
-// ============================================================================
-function LabourEntryRow({
-  entry,
-  cost,
-  onClick,
-  hideTechName = false,
+/** Inline field for compact summary grids (Job Context). Label 10px
+ *  uppercase muted; primary value 14px medium dark; optional secondary
+ *  line 13px muted. */
+function Field({
+  label,
+  children,
 }: {
-  entry: TimeEntryDisplay;
-  cost: number;
-  onClick: () => void;
-  /** When true, don't render the technician name on the row — the
-   *  caller is already rendering a per-tech grouping header above. */
-  hideTechName?: boolean;
+  label: string;
+  children: React.ReactNode;
 }) {
-  const start = entry.startAt ? new Date(entry.startAt) : null;
-  const end = entry.endAt ? new Date(entry.endAt) : null;
-  const dateStr = start ? format(start, "MMM d") : "—";
-  const timeRange =
-    start && end ? `${format(start, "h:mm a")}–${format(end, "h:mm a")}` : start ? format(start, "h:mm a") : "";
-  const isLocked = !!(entry.lockedAt || entry.invoicedAt);
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      data-testid={`labour-entry-${entry.id}`}
-      className="w-full flex items-center justify-between gap-2 rounded px-2 py-1 text-left hover:bg-slate-50 transition-colors"
+    <div className="min-w-0">
+      <div className="text-label font-semibold uppercase tracking-[0.08em] text-text-muted mb-1.5">
+        {label}
+      </div>
+      <div className="min-w-0 text-body text-text-primary">{children}</div>
+    </div>
+  );
+}
+
+/** Initials avatar. Two sizes: sm (24px, used in dense lists / crew
+ *  chips) and md (32px, used in note feed + labour rows for stronger
+ *  presence). Uses the technician's profile colour where known. */
+function Avatar({
+  name,
+  color,
+  size = "sm",
+}: {
+  name: string | null | undefined;
+  color?: string | null;
+  size?: "sm" | "md";
+}) {
+  const initials =
+    (name ?? "")
+      .trim()
+      .split(/\s+/)
+      .map((p) => p[0])
+      .filter(Boolean)
+      .slice(0, 2)
+      .join("")
+      .toUpperCase() || "?";
+  const dim = size === "md" ? "h-8 w-8 text-caption" : "h-6 w-6 text-label";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center justify-center rounded-full font-semibold text-white shrink-0 ring-2 ring-white",
+        dim,
+      )}
+      style={{ backgroundColor: color || "hsl(var(--text-muted))" }}
+      aria-label={name ?? undefined}
+      title={name ?? undefined}
     >
-      <div className="min-w-0 flex-1 flex items-center gap-2">
-        {!hideTechName && (
-          <span className="text-xs font-medium text-slate-700 truncate">{entry.technicianName || "Unknown"}</span>
-        )}
-        <span className="text-xs text-slate-400 truncate">
-          {dateStr}
-          {timeRange && <span className="ml-1 text-slate-300">{timeRange}</span>}
-        </span>
-        {isLocked && <Lock className="h-3 w-3 text-amber-500 shrink-0" />}
-      </div>
-      <div className="flex items-center gap-3 text-xs tabular-nums shrink-0">
-        <span className="text-slate-700">
-          {entry.durationMinutes != null ? formatMinutes(entry.durationMinutes) : "running"}
-        </span>
-        <span className="text-slate-500 w-16 text-right">{formatCurrency(cost)}</span>
-      </div>
-    </button>
+      {initials}
+    </span>
+  );
+}
+
+/** Composed empty-state inside a card body. Centered vertical stack with
+ *  a confident headline and helper sub-line — replaces the embarrassing
+ *  one-line "No X yet" placeholders with intentional copy + spacing. */
+function EmptyState({
+  title,
+  hint,
+  action,
+}: {
+  title: string;
+  hint?: string;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="px-6 py-10 text-center">
+      <div className="text-subhead text-text-primary">{title}</div>
+      {hint && (
+        <div className="text-row text-text-muted mt-1.5 max-w-[320px] mx-auto leading-relaxed">
+          {hint}
+        </div>
+      )}
+      {action && <div className="mt-4 inline-flex">{action}</div>}
+    </div>
   );
 }
 
 // ============================================================================
-// Labour Summary — expanded-view row with aligned columns:
-// [Category] [Time Range] [Duration] [Cost]. Tech name / date are
-// rendered by the per-block header above, so this row never shows them.
+// LINE ITEMS TABLE — wraps the canonical <LineItemsCard> for the job_parts
+// surface. 2026-04-29 (Phase 3) — replaces the prior Linear/Stripe-style
+// per-row immediate-save grid with the section-edit + batched-save model
+// shared with Invoice and Quote.
+//
+// Backend routes (unchanged):
+//   GET    /api/jobs/:jobId/parts
+//   POST   /api/jobs/:jobId/parts
+//   PUT    /api/jobs/:jobId/parts/:id
+//   DELETE /api/jobs/:jobId/parts/:id
+//   PATCH  /api/jobs/:jobId/parts/reorder
+//
+// Adapter highlights vs Invoice/Quote:
+//   • showCost: true (job_parts is the only surface with a per-line cost
+//     column; the canonical row + form render the Cost cell).
+//   • showTax: false (job_parts has no per-line tax columns; tax is
+//     applied downstream when the job converts to an invoice).
+//   • allowReorder: true with NO `onReorder` callback — drag updates are
+//     local-only, the PATCH /reorder fires once inside `saveAll` after the
+//     create + update + delete passes (matches the legacy section-save
+//     semantics from PartsBillingCard).
+//   • saveAll: sequential halt-on-fail. POST → PUT → DELETE → PATCH /reorder.
+//     Maps each newly-created draft's local id to its server id so the
+//     reorder payload can include rows added during this same Save.
 // ============================================================================
-function LabourEntryLine({
-  entry,
-  isTravel,
-  cost,
-  onClick,
+
+interface JobPartDisplayLine {
+  id: string;
+  description: string;
+  quantity: string;
+  unitPrice: string;
+  unitCost: string | null;
+  lineSubtotal: string;
+  lineTotal: string;
+  lineNumber: number;
+  productId: string | null;
+  productType?: string;
+  sortOrder: number;
+}
+
+function LineItemsTable({
+  jobId,
+  onTotalsChange,
 }: {
-  entry: TimeEntryDisplay;
-  isTravel: boolean;
-  cost: number;
-  onClick: () => void;
+  jobId: string;
+  onTotalsChange: (totals: {
+    totalPrice: number;
+    totalCost: number;
+    profit: number;
+    margin: number;
+  }) => void;
 }) {
-  const start = entry.startAt ? new Date(entry.startAt) : null;
-  const end = entry.endAt ? new Date(entry.endAt) : null;
-  const timeRange =
-    start && end
-      ? `${format(start, "h:mm a")}–${format(end, "h:mm a")}`
-      : start
-        ? format(start, "h:mm a")
-        : "—";
-  const isLocked = !!(entry.lockedAt || entry.invoicedAt);
+  const { toast } = useToast();
+
+  const { data: rowsRaw = [], isLoading } = useQuery<
+    (JobPart & { itemType?: string | null; itemDescription?: string | null })[]
+  >({
+    queryKey: ["/api/jobs", jobId, "parts"],
+    queryFn: async () => {
+      const res = await fetch(`/api/jobs/${jobId}/parts`, { credentials: "include" });
+      if (!res.ok) return [];
+      return res.json();
+    },
+    enabled: !!jobId,
+    staleTime: 60_000,
+  });
+
+  // Project JobPart rows into the canonical DisplayLine shape. The card
+  // requires `lineSubtotal` / `lineTotal` (computed) plus `lineNumber`
+  // (synthesized from sortOrder so the canonical hook's sort is stable).
+  const displayItems = useMemo<JobPartDisplayLine[]>(() => {
+    const sorted = [...rowsRaw].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+    return sorted.map((r, idx) => {
+      const qty = parseMoney(r.quantity ?? "0");
+      const price = parseMoney(r.unitPrice ?? "0");
+      const subtotal = formatMoney(qty * price);
+      return {
+        id: r.id,
+        description: r.description,
+        quantity: r.quantity ?? "0",
+        unitPrice: r.unitPrice ?? "0",
+        unitCost: r.unitCost ?? null,
+        lineSubtotal: subtotal,
+        lineTotal: subtotal,
+        lineNumber: idx,
+        productId: r.productId ?? null,
+        productType: r.itemType ?? undefined,
+        sortOrder: r.sortOrder ?? idx,
+      };
+    });
+  }, [rowsRaw]);
+
+  // ── Canonical Product/Service create flow (resolver pattern) ──────
+  // One AddProductModal instance lives at this component level; the
+  // canonical row's "Create '<X>'" affordance opens it via
+  // `requestCreateProduct(name)`.
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createInitialName, setCreateInitialName] = useState("");
+  const [createSaving, setCreateSaving] = useState(false);
+  const createResolverRef = useRef<((value: ProductOption | null) => void) | null>(null);
+
+  const requestCreateProduct = useCallback(
+    (name: string): Promise<ProductOption | null> =>
+      new Promise((resolve) => {
+        createResolverRef.current = resolve;
+        setCreateInitialName(name);
+        setCreateOpen(true);
+      }),
+    [],
+  );
+
+  const handleCreateCancel = () => {
+    setCreateOpen(false);
+    createResolverRef.current?.(null);
+    createResolverRef.current = null;
+  };
+
+  const handleCreateSave = async (data: {
+    name: string;
+    description?: string;
+    cost: string;
+    unitPrice: string;
+    type: string;
+  }) => {
+    setCreateSaving(true);
+    try {
+      const response = await apiRequest<any>("/api/items", {
+        method: "POST",
+        body: JSON.stringify({
+          name: data.name,
+          type: data.type,
+          ...(data.description ? { description: data.description } : {}),
+          ...(data.cost ? { cost: data.cost } : {}),
+          ...(data.unitPrice ? { unitPrice: data.unitPrice } : {}),
+        }),
+      });
+      const matched = response?._matched === true;
+      const productOption = normalizeProductRow(response);
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
+      toast({
+        title: matched ? "Reusing existing item" : "Product created",
+        description: matched
+          ? `"${data.name}" already exists. Selecting the existing item.`
+          : `"${data.name}" added to the catalog.`,
+      });
+      setCreateOpen(false);
+      createResolverRef.current?.(productOption);
+      createResolverRef.current = null;
+    } catch (err) {
+      toast({
+        title: "Failed to create product",
+        description: (err as Error)?.message ?? "Unexpected error",
+        variant: "destructive",
+      });
+    } finally {
+      setCreateSaving(false);
+    }
+  };
+
+  // ── jobPartsAdapter — sequential halt-on-fail save + reorder-on-save
+  const jobPartsAdapter = useMemo<LineItemsAdapter<JobPartDisplayLine>>(
+    () => ({
+      surface: "job-parts",
+      showCost: true,
+      showTax: false,
+      allowReorder: true,
+      allowEditExisting: true,
+      emptyStateLabel: "No billable items added yet.",
+      emptyStateCtaLabel: "Add first item",
+      hydrateDraft: (line) => hydrateDraft(line as unknown as Record<string, unknown>),
+      resolveProduct: (line) =>
+        line.productId
+          ? {
+              id: line.productId,
+              name: line.description || "(unnamed item)",
+              type: line.productType === "service" ? "service" : "product",
+              unitPrice: line.unitPrice,
+              cost: line.unitCost ?? null,
+            }
+          : null,
+      validateEntry: (entry) => {
+        if (entry.serverId) return null;
+        const typed = entry.draft.description.trim();
+        const fallback = entry.uiSelectedProduct?.name?.trim() ?? "";
+        const finalDesc = typed || fallback;
+        const qty = parseMoney(entry.draft.quantity);
+        if (!finalDesc || qty <= 0) {
+          return "Select or create an item before saving this row.";
+        }
+        return null;
+      },
+      requestCreateProduct,
+      saveAll: async (plan) => {
+        // Sequential halt-on-fail. localToServerId carries newly-created
+        // ids forward into the reorder payload so rows added during this
+        // same Save land in the right slot.
+        const localToServerId = new Map<string, string>();
+        try {
+          for (const draft of plan.creates) {
+            const created = await apiRequest<JobPart>(`/api/jobs/${jobId}/parts`, {
+              method: "POST",
+              body: JSON.stringify(draftToJobPartPayload(draft)),
+            });
+            localToServerId.set(draft.id, created.id);
+          }
+          for (const u of plan.updates) {
+            await apiRequest(`/api/jobs/${jobId}/parts/${u.serverId}`, {
+              method: "PUT",
+              body: JSON.stringify(draftToJobPartPayload(u.draft)),
+            });
+          }
+          for (const serverId of plan.deletes) {
+            await apiRequest(`/api/jobs/${jobId}/parts/${serverId}`, { method: "DELETE" });
+          }
+          // Reorder fires when persisted order changed OR new rows exist
+          // (new rows always need their final position confirmed). The
+          // payload walks `entriesInFinalOrder` and translates local ids
+          // via `localToServerId`.
+          const needsReorder = plan.reorder !== undefined || plan.creates.length > 0;
+          if (needsReorder) {
+            const reorderPayload = plan.entriesInFinalOrder
+              .map((entry, idx) => ({
+                id: entry.serverId ?? localToServerId.get(entry.draft.id) ?? "",
+                sortOrder: idx,
+              }))
+              .filter((p) => p.id !== "");
+            if (reorderPayload.length > 0) {
+              await apiRequest(`/api/jobs/${jobId}/parts/reorder`, {
+                method: "PATCH",
+                body: JSON.stringify({ parts: reorderPayload }),
+              });
+            }
+          }
+          await queryClient.refetchQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
+          queryClient.invalidateQueries({ queryKey: ["jobs"] });
+          return { ok: true, failures: 0, skipped: plan.skipped };
+        } catch (err) {
+          toast({
+            title: "Save failed",
+            description: (err as any)?.message ?? "Some changes could not be saved.",
+            variant: "destructive",
+          });
+          return { ok: false, failures: 1, skipped: plan.skipped };
+        }
+      },
+      onInformationalToast: (title, description) => toast({ title, description }),
+    }),
+    [jobId, requestCreateProduct, toast],
+  );
+
+  const drafts = useLineItemsDrafts<JobPartDisplayLine>({
+    adapter: jobPartsAdapter,
+    serverItems: displayItems,
+  });
+
+  // Emit totals to parent on every metrics change. headerMetrics is computed
+  // from the LIVE drafts when editing, otherwise from persisted rows — so
+  // the parent's KPI strip + totals panel stay in sync with in-flight edits.
+  const m = drafts.headerMetrics;
+  useEffect(() => {
+    onTotalsChange({
+      totalPrice: m.revenue,
+      totalCost: m.cost ?? 0,
+      profit: m.profit ?? m.revenue,
+      margin: m.margin ?? 0,
+    });
+  }, [m.revenue, m.cost, m.profit, m.margin, onTotalsChange]);
+
+  if (isLoading) {
+    return (
+      <div className="px-4 py-8 flex items-center justify-center text-row text-text-muted">
+        <Loader2 className="h-4 w-4 animate-spin mr-2" /> Loading line items…
+      </div>
+    );
+  }
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      data-testid={`labour-entry-${entry.id}`}
-      // 2026-04-26: time range uses `text-[11px] whitespace-nowrap` so
-      // the full "10:49 AM–11:10 AM" form fits on one line at the
-      // narrowest right-column width (≈360px). Label / duration / cost
-      // stay at `text-xs` for readability. The grid was rebalanced to
-      // give the time-range column more room (1fr) while keeping the
-      // category, duration, and cost columns at fixed widths so the
-      // four columns line up across rows.
-      className="w-full grid grid-cols-[5.25rem_minmax(0,1fr)_3.25rem_4.25rem] items-center gap-x-2 rounded px-2 py-1 text-left text-xs hover:bg-slate-50 transition-colors"
-    >
-      <span className={isTravel ? "text-blue-600 font-medium" : "text-emerald-700 font-medium"}>
-        {isTravel ? "Driving" : "On-Site"}
-      </span>
-      <span className="text-slate-500 text-[11px] whitespace-nowrap tabular-nums flex items-center gap-1 min-w-0">
-        <span className="truncate">{timeRange}</span>
-        {isLocked && <Lock className="h-3 w-3 text-amber-500 shrink-0" />}
-      </span>
-      <span className="text-slate-700 tabular-nums text-right">
-        {entry.durationMinutes != null ? formatMinutes(entry.durationMinutes) : "running"}
-      </span>
-      <span className="text-slate-700 tabular-nums text-right">{formatCurrency(cost)}</span>
-    </button>
+    <>
+      <LineItemsCard<JobPartDisplayLine>
+        adapter={jobPartsAdapter}
+        drafts={drafts}
+        serverItems={displayItems}
+        title="Line Items"
+      />
+      <AddProductModal
+        open={createOpen}
+        initialName={createInitialName}
+        onClose={handleCreateCancel}
+        onSave={handleCreateSave}
+        isSaving={createSaving}
+      />
+    </>
   );
 }
 
@@ -530,14 +686,21 @@ export default function JobDetailPage() {
   const jobNumberInputRef = useRef<HTMLInputElement>(null);
   // 2026-03-24: Ref to JobHeaderCard for imperative lifecycle triggers (close/reopen/archive)
   const headerCardRef = useRef<JobHeaderCardHandle>(null);
-  // Billing totals reported by PartsBillingCard — used for the Line Items subtotal footer
-  const [billingTotals, setBillingTotals] = useState<{ totalPrice: number; totalCost: number; profit: number } | null>(null);
-  // Parts section-edit state — lifted so the card-header "Add Item" button can drive it.
-  // PartsBillingCard reads `isEditing` and calls `onExitEdit` on Cancel / Save success.
-  const [partsEditMode, setPartsEditMode] = useState(false);
-  // Header-level "Add Note" dialog (mounts canonical JobNoteDialog)
-  const [showAddNoteDialog, setShowAddNoteDialog] = useState(false);
+  // Billing totals reported by the canonical LineItemsCard — used for the
+  // Line Items subtotal footer + the header-bar Total KPI. 2026-04-29: shape
+  // extended to include `margin` alongside revenue/cost/profit so consumers
+  // can render full job profitability without recomputing.
+  const [billingTotals, setBillingTotals] = useState<{
+    totalPrice: number;
+    totalCost: number;
+    profit: number;
+    margin: number;
+  } | null>(null);
   // Header-level "Add Equipment" dialog trigger forwarded into JobEquipmentSection
+  // 2026-04-29 (precision UI v3): the parallel `showAddNoteDialog` flag
+  // and standalone JobNoteDialog mount were removed — JobNotesSection
+  // owns its own dialog lifecycle (create + edit) and is the canonical
+  // entry point for note creation on this page.
   const [showAddEquipmentDialog, setShowAddEquipmentDialog] = useState(false);
   // 2026-04-18 Phase 2 (multi-visit): removed `conflictMode`,
   // `conflictVisitId`, and the `rescheduleConflict` dialog state. Under
@@ -549,7 +712,18 @@ export default function JobDetailPage() {
 
   // Expense totals — query directly so header always reflects latest data
   // Shares query key with JobExpensesCard so mutations auto-invalidate both
-  const { data: expensesRaw = [] } = useQuery<{ amount: string }[]>({
+  // 2026-04-27 mock-fidelity rebuild: bumped to a richer row shape so we
+  // can render Expenses inline INSIDE the Line Items card instead of a
+  // standalone JobExpensesCard. Same query key — JobExpensesCard's
+  // mutations still invalidate this same cache entry.
+  interface JobExpenseRow {
+    id: string;
+    amount: string;
+    description?: string | null;
+    category?: string | null;
+    receiptUrl?: string | null;
+  }
+  const { data: expensesRaw = [] } = useQuery<JobExpenseRow[]>({
     queryKey: ["/api/jobs", jobId, "expenses"],
     queryFn: async () => {
       const res = await fetch(`/api/jobs/${jobId}/expenses`, { credentials: "include" });
@@ -563,6 +737,18 @@ export default function JobDetailPage() {
     () => expensesRaw.reduce((sum, e) => sum + parseFloat(e.amount || "0"), 0),
     [expensesRaw],
   );
+
+  // 2026-04-29 (precision UI v3): the parallel `jobEquipmentRows` and
+  // `jobNoteRows` queries (and the `inlineNoteMutation` write path that
+  // bypassed JobNoteDialog's attachments flow) were removed. The
+  // canonical surfaces are now mounted directly:
+  //   - JobEquipmentSection — owns `["/api/jobs", jobId, "equipment"]`
+  //     and fires `onCountChange` into `equipmentCount` (drives the
+  //     hide-when-empty wrapper here).
+  //   - JobNotesSection — owns `["/api/jobs", jobId, "notes"]` and fires
+  //     `onCountChange` into `notesCount`. All note creation/edit/delete
+  //     and attachment mutations route through JobNoteDialog inside that
+  //     component (canonical write path preserved).
 
   // 2026-04-26: Visits card data sources. Uses the canonical
   // `useJobVisits` hook (key family `["visits", jobId, "all"]`) — same
@@ -628,6 +814,40 @@ export default function JobDetailPage() {
       totalCost: sumCost(driving) + sumCost(onSite),
     };
   }, [jobTimeEntries, TRAVEL_TYPES]);
+
+  // 2026-04-27 mock-fidelity rebuild: per-technician aggregation across
+  // ALL days. Mock shows two horizontal "tech tiles" at the top of the
+  // Labour Tracking card — one per tech who has logged time, with their
+  // total time + total cost. This collapses labourByTechDay across days
+  // for each tech so the tile reads "Daniel · 3h 25m · $439.58".
+  type TechLabourTotal = {
+    technicianId: string;
+    name: string;
+    color: string | null;
+    minutes: number;
+    cost: number;
+  };
+  const labourByTech: TechLabourTotal[] = useMemo(() => {
+    const map = new Map<string, TechLabourTotal>();
+    for (const e of jobTimeEntries) {
+      const techId = e.technicianId || "__unknown__";
+      let row = map.get(techId);
+      if (!row) {
+        const dirEntry = techByIdMap.get(techId);
+        row = {
+          technicianId: techId,
+          name: e.technicianName || dirEntry?.name || "Unknown",
+          color: dirEntry?.color ?? null,
+          minutes: 0,
+          cost: 0,
+        };
+        map.set(techId, row);
+      }
+      row.minutes += e.durationMinutes ?? 0;
+      row.cost += entryCostDollars(e);
+    }
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [jobTimeEntries, techByIdMap]);
 
   // 2026-04-26: expanded-view grouping. Blocks are keyed by
   // (technicianId, local-date) so the spec's "Name · Date" header is
@@ -962,12 +1182,33 @@ export default function JobDetailPage() {
     ? [cityProvince, job.location.postalCode].filter(Boolean).join(" ").trim()
     : "";
 
+  // Derived values for the header KPI strip + totals panel.
+  const partsTotal = billingTotals?.totalPrice ?? 0;
+  const labourCost = labourBuckets.totalCost;
+  const subtotal = partsTotal + labourCost + expenseTotalAmount;
+  // TODO(schema): no per-job/per-company tax rate surfaced here yet —
+  // hardcoded HST 13% (Ontario default) until canonical tax rate is wired.
+  const taxRate = 0.13;
+  const taxAmount = subtotal * taxRate;
+  const grandTotal = subtotal + taxAmount;
+
+  // 2026-04-29 (precision UI refactor): `nextVisit` drives the Scheduled
+  // row in the primary information card. The companion `nextCrew`
+  // derivation was removed alongside the Crew Field per spec — Crew is no
+  // longer rendered in this card.
+  const nextVisit = jobVisitsAll
+    .filter((v) => v.scheduledStart)
+    .sort(
+      (a, b) =>
+        new Date(a.scheduledStart!).getTime() - new Date(b.scheduledStart!).getTime(),
+    )[0];
+
   return (
     <>
-      {/* Hidden JobHeaderCard — kept mounted outside the shell for
-          imperative ref access (`headerCardRef.current?.openCloseJobDialog`,
-          `triggerReopenJob`). Staying outside the shell avoids a phantom
-          top gap from the left column's `space-y` rhythm. */}
+      {/* Hidden JobHeaderCard mount — preserved for imperative ref access
+          (`headerCardRef.current?.openCloseJobDialog` / `triggerReopenJob`).
+          Kept outside the visible chrome so its own card frame doesn't
+          render, only its dialog surfaces. */}
       <div className="hidden">
         <JobHeaderCard
           ref={headerCardRef}
@@ -980,710 +1221,755 @@ export default function JobDetailPage() {
         />
       </div>
 
-      {/* 2026-04-26 redesign: replaced DetailPageShell rail with a normal
-          responsive content grid. Header is full-width; body splits into
-          a left column (Line Items, Expenses) and a right column (Notes,
-          Labour Summary, Equipment, Reference). All cards reuse existing
-          canonical components and modal flows — no new data paths. */}
-      <div className="min-h-screen bg-[#f1f5f9]" data-testid="job-detail-page">
-        <div className="max-w-7xl mx-auto px-3 lg:px-4 py-3 space-y-2">
-          {/* ─────────────── HEADER (full width) ───────────────
-              Single full-width header card matching the canonical
-              invoice card chrome (`rounded-md border border-slate-200
-              shadow-sm`). Layout per approved mockup:
-              - Left column: title + status pill, then client (Building2
-                icon) and address (MapPin icon) stacked underneath.
-              - Middle: inline-horizontal metadata (Job #, Created,
-                Completed) on the same row as the title (lg+); on
-                smaller screens it wraps under the identity block.
-              - Right: primary action button + overflow menu, on the
-                same row as title and metadata. */}
-          <div className="bg-white rounded-md border border-slate-200 shadow-sm" data-testid="job-header-command">
-            <div className="px-4 py-2.5">
-              <div className="flex flex-col lg:flex-row lg:items-start lg:gap-6">
-                {/* Left: title row + identity rows */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h1 className="text-2xl font-bold text-slate-900 leading-snug" data-testid="text-job-title">
-                      {job.summary || "Untitled Job"}
+      {/* ──────────── PAGE SHELL ────────────
+          2026-04-29 (precision UI v3): width model matched to Invoice
+          Detail — page bg `#FAF8F5`, no `min-h-screen` or fixed
+          `max-w-[1440px]`, no centered `mx-auto` on the inner containers.
+          Content now fills the app shell's `<main>` width, mirroring the
+          Invoice Detail page outer wrapper (see InvoiceDetailPage.tsx
+          ~line 2019). */}
+      <div className="bg-app-bg" data-testid="job-detail-page">
+
+        {/* ──────────── HEADER BAR ────────────
+            2026-04-29 (precision UI v4): stripped to actions-only per
+            spec. Removed: back button, "Customer · Summary" title, status
+            pill, hold-reason badge, KPI metric strip. All identity / meta
+            (Customer, Site, Job #, Status, Invoice link, Scheduled,
+            Summary) lives in the Customer/Job header card below this
+            bar — the canonical source of identity. Header chrome now
+            blends with the page background (`bg-transparent`, no bottom
+            border) so it reads as a floating action row, not a separate
+            white card. */}
+        <header className="bg-transparent" data-testid="job-top-bar">
+          {/* 2026-04-29 (precision UI v5): outer vertical padding tightened
+              from py-2.5 → py-2 to reduce the gap above the first card,
+              matching Invoice Detail's tight top spacing. */}
+          <div className="px-4 lg:px-6 py-2 flex items-center justify-end gap-2 flex-wrap">
+
+            {/* ACTION CLUSTER — only surface in the top header now. */}
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Compact equipment add button. 2026-04-29 (precision UI v2):
+                  routes to the existing canonical AddEquipmentDialog via
+                  the hidden JobEquipmentSection mount's `externalAddOpen`
+                  prop — no new equipment flow created. Same visual
+                  treatment as Edit / overflow buttons (outline, not a
+                  green CTA) per spec. */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowAddEquipmentDialog(true)}
+                className="h-9 px-3 gap-1.5 text-row font-medium border-border-default text-text-primary hover:bg-surface-subtle hover:text-text-primary"
+                aria-label="Add equipment"
+                data-testid="button-add-equipment-header"
+              >
+                <Wrench className="h-3.5 w-3.5" />
+                <Plus className="h-3.5 w-3.5" />
+              </Button>
+              {/* 2026-04-29 (precision UI correction): top toolbar Edit
+                  button removed per spec. Edit access now lives at:
+                  (1) the pencil icon inside the Customer/Job header card,
+                  and (2) the "Edit Job" item in the overflow menu below.
+                  The canonical edit modal (`setShowEditDialog`) is
+                  unchanged. */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-9 w-9 p-0 border-border-default text-text-secondary hover:bg-surface-subtle hover:text-text-primary" data-testid="button-more-actions">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-52">
+                  <DropdownMenuItem onClick={() => setShowEditDialog(true)} data-testid="menu-edit-job">
+                    <Pencil className="h-4 w-4 mr-2" />Edit Job
+                  </DropdownMenuItem>
+                  {job.status === "open" && job.openSubStatus !== "on_hold" && isOfficeUser && (
+                    <DropdownMenuItem onClick={() => setShowActionRequiredModal(true)} data-testid="menu-hold-job">
+                      <Pause className="h-4 w-4 mr-2" />Hold Job
+                    </DropdownMenuItem>
+                  )}
+                  {job.status === "open" && isOfficeUser && (
+                    <DropdownMenuItem onClick={() => setShowCompleteJobConfirm(true)} className="text-emerald-700 font-medium" data-testid="menu-complete-job">
+                      <CheckCircle2 className="h-4 w-4 mr-2" />Complete Job
+                    </DropdownMenuItem>
+                  )}
+                  {job.status === "completed" && isOfficeUser && (
+                    <DropdownMenuItem onClick={() => headerCardRef.current?.openCloseJobDialog()} data-testid="menu-archive-job">
+                      <Archive className="h-4 w-4 mr-2" />Archive Job
+                    </DropdownMenuItem>
+                  )}
+                  {/* 2026-04-29 (precision UI v5): Reopen menu item also
+                      surfaced for `invoiced` jobs. The canonical
+                      `triggerReopenJob` (JobHeaderCard) already routes
+                      invoiced jobs through the existing
+                      `setShowInvoicedWarning` confirmation before calling
+                      `POST /api/jobs/:id/reopen` — no new mutation,
+                      route, or warning UI created here. */}
+                  {(job.status === "completed" || job.status === "archived" || job.status === "invoiced") && isOfficeUser && (
+                    <DropdownMenuItem onClick={() => headerCardRef.current?.triggerReopenJob()} data-testid="menu-reopen-job">
+                      <RotateCcw className="h-4 w-4 mr-2" />Reopen Job
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuSeparator />
+                  {isOfficeUser && (
+                    <DropdownMenuItem onClick={() => setShowSendJobEmail(true)} data-testid="menu-send-job-email">
+                      <Send className="h-4 w-4 mr-2" />Send Email
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuItem onClick={() => setLocation(`/jobs/new?cloneFrom=${job.id}`)} data-testid="menu-create-similar">
+                    <Copy className="h-4 w-4 mr-2" />Create Similar Job
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => window.print()} data-testid="menu-print">
+                    <Printer className="h-4 w-4 mr-2" />Print
+                  </DropdownMenuItem>
+                  {isOfficeUser && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={() => setShowDeleteConfirm(true)} className="text-destructive" data-testid="menu-delete-job">
+                        <Trash2 className="h-4 w-4 mr-2" />Delete Job
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+
+              {/* Status-driven primary CTA.
+               *
+               * 2026-04-29 Polish 1: dropped the manual primary-button
+               * styling (`h-9 px-4 bg-brand hover:bg-brand-hover text-white
+               * text-row font-medium shadow-sm`) — the canonical
+               * `<Button>` default variant already paints `bg-primary`
+               * (which resolves to brand green via the color token chain)
+               * with the correct text-foreground, focus ring, and
+               * hover-elevate behavior. `size="sm"` provides `min-h-8 …
+               * px-3 text-xs`. Result: Schedule Visit / Close & Invoice /
+               * Restore Job buttons now render identical chrome to the
+               * Invoice page's Send Invoice button — same primitive
+               * defaults, no re-paint. */}
+              {job.status === "open" && (
+                <Button size="sm" onClick={handleScheduleVisit} data-testid="button-schedule-visit-action">
+                  Schedule Visit
+                </Button>
+              )}
+              {job.status === "completed" && isOfficeUser && (
+                <Button size="sm" onClick={() => {
+                  if (jobInvoice) setLocation(`/invoices/${jobInvoice.id}`);
+                  else if (jobInvoiceCount > 0 && firstJobInvoice) setLocation(`/invoices/${firstJobInvoice.id}`);
+                  else setShowCreateInvoiceDialog(true);
+                }} data-testid="button-invoice-action">
+                  {jobInvoice ? "View Invoice" : jobInvoiceCount > 0 ? (jobInvoiceCount === 1 ? "View Invoice" : "View Invoices") : "Close & Invoice"}
+                </Button>
+              )}
+              {job.status === "archived" && isOfficeUser && (
+                <Button size="sm" onClick={() => headerCardRef.current?.triggerReopenJob()} data-testid="button-restore-job">
+                  Restore Job
+                </Button>
+              )}
+            </div>
+          </div>
+        </header>
+
+        {/* ──────────── BODY GRID ────────────
+            2026-04-29 (precision UI v5): top padding dropped (`py-4` →
+            `pt-0 pb-4`) so the first card sits flush below the floating
+            action header — eliminates the previous large blank band.
+            Horizontal padding and grid template unchanged. */}
+        <div className="px-4 lg:px-6 pt-0 pb-4">
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,65%)_minmax(0,35%)] lg:items-start" data-testid="job-detail-grid">
+
+            {/* ═════════ LEFT COLUMN ═════════ */}
+            <div className="flex flex-col gap-4 min-w-0" data-testid="job-detail-left-column">
+
+              {/* CUSTOMER / JOB HEADER CARD — primary identity card.
+                  2026-04-29 (precision UI v2): rebuilt to mirror Invoice
+                  Detail's InvoiceMetaCard. Two-column body with a vertical
+                  divider — left column is the identity stack (customer
+                  name H1, service address, scheduled), right column is a
+                  vertical key-value list of job-specific metadata
+                  (Job #, Status, Invoice). No backend bindings changed:
+                  `clientName`, `job.location`, `nextVisit`, `job.jobNumber`,
+                  `job.status`, and `jobInvoice` / `firstJobInvoice` /
+                  `jobInvoiceCount` are all reused as-is. */}
+              <SectionCard data-testid="card-job-context">
+                {/* 2026-04-29 (precision UI v5): edit pencil promoted to a
+                    thin top strip (Invoice-Detail chrome pattern). The
+                    previous absolute-positioned icon was replaced so it
+                    can't overlap content. The pencil opens the existing
+                    canonical job edit modal (`setShowEditDialog`) — same
+                    modal the overflow menu triggers, so summary /
+                    job-number / identity edits flow through one canonical
+                    path. */}
+                <div className="flex items-center justify-end px-3 pt-2 pb-1">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setShowEditDialog(true)}
+                    className="h-7 w-7 text-text-disabled hover:text-text-primary hover:bg-surface-subtle"
+                    aria-label="Edit job"
+                    data-testid="button-edit-job-card"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-[1.2fr_1fr]">
+                  {/* LEFT — identity stack. 2026-04-29 (precision UI v5):
+                      title hierarchy flipped — job summary is now the H1
+                      primary title, customer name renders as a smaller
+                      link below it. When no summary is set, customer name
+                      becomes the H1 (no empty title state). */}
+                  <div className="px-5 pt-2 pb-4 md:border-r border-border-default">
+                    {/* 2026-04-29 Polish 3: header hierarchy adjusted to
+                        match Invoice page prominence.
+                          - Summary h1: text-display (28/32) → text-page-title
+                            (22/28). Slightly less shouty headline so the
+                            customer line below has room to read as a peer.
+                          - Customer/location name (when below summary):
+                            text-body (14) → text-section-title (16) +
+                            font-semibold. Promotes the client name from
+                            "tiny caption" to "secondary heading peer."
+                        Service-address + scheduled blocks below already
+                        use text-row / text-label which remain correct. */}
+                    <h1
+                      className="m-0 text-page-title font-bold tracking-tight text-text-primary truncate"
+                      title={job.summary || undefined}
+                      data-testid={job.summary ? "text-job-summary" : "text-customer-name"}
+                    >
+                      {job.summary
+                        ? job.summary
+                        : clientName
+                          ? (
+                              <button
+                                type="button"
+                                onClick={() => setLocation(`/clients/${job.locationId}`)}
+                                className="hover:text-brand transition-colors text-left"
+                                data-testid="link-client-context"
+                              >
+                                {clientName}
+                              </button>
+                            )
+                          : <span className="text-text-disabled">—</span>}
                     </h1>
-                    <StatusPill
-                      variant={statusToVariant(job.openSubStatus === "on_hold" ? "on_hold" : job.status)}
-                      data-testid="status-badge"
-                    >
-                      {getJobStatusDisplay(job).label}
-                    </StatusPill>
-                    {job.openSubStatus === "on_hold" && job.holdReason && (
-                      <Badge variant="outline" className="text-xs px-1.5 py-0 border-orange-300 text-orange-700 bg-orange-50" data-testid="hold-reason-badge">
-                        {getHoldReasonLabel(job.holdReason)}
-                      </Badge>
+
+                    {/* Customer name as secondary line — only when a summary
+                        H1 is showing, so the customer info isn't lost.
+                        2026-04-29 final polish (revert): brought back to
+                        text-section-title (16/600). The text-page-title bump
+                        competed visually with the H1; canonical hierarchy is
+                        Job summary (page-title 22) → Client (section-title 16)
+                        → Service Address (row 14). */}
+                    {job.summary && clientName && (
+                      <div className="mt-1 mb-3 truncate">
+                        <button
+                          type="button"
+                          onClick={() => setLocation(`/clients/${job.locationId}`)}
+                          className="text-section-title font-semibold text-text-secondary hover:text-brand transition-colors text-left"
+                          data-testid="link-client-context"
+                        >
+                          {clientName}
+                        </button>
+                      </div>
                     )}
-                  </div>
-                  <div className="mt-1.5 space-y-0.5">
-                    {/* Row 2: company / client (slightly stronger weight) */}
-                    <button
-                      type="button"
-                      onClick={() => setLocation(`/clients/${job.locationId}`)}
-                      className="flex items-center gap-1 text-sm font-semibold text-slate-800 hover:text-[#76B054] transition-colors max-w-full"
-                      data-testid="link-client-header"
-                    >
-                      <Building2 className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                      <span className="truncate">{clientName}</span>
-                    </button>
-                    {/* Rows 3 + 4: street on its own line, then city,
-                        province, postal on a second line. Either line
-                        is omitted if empty so single-line addresses
-                        still render cleanly. The MapPin icon attaches
-                        to the first non-empty line only — the second
-                        line indents by `pl-4.5` so it visually aligns
-                        underneath the street, not under the icon. */}
-                    {(streetLine || cityLine) && (
-                      <div className="text-xs text-slate-500 leading-snug" data-testid="text-job-address">
-                        {streetLine && (
-                          <div className="flex items-start gap-1">
-                            <MapPin className="h-3 w-3 shrink-0 text-slate-400 mt-0.5" />
-                            <span className="truncate" data-testid="text-job-address-street">{streetLine}</span>
+                    {(!job.summary || !clientName) && <div className="mb-3" />}
+
+                    {(streetLine || cityLine || job.location?.companyName) && (
+                      <div className="mb-3" data-testid="block-service-address">
+                        <div className="text-label font-semibold uppercase tracking-[0.08em] text-text-muted mb-0.5">
+                          Service Address
+                        </div>
+                        {job.location?.companyName && (
+                          <div className="text-row font-semibold text-text-primary truncate">
+                            {job.location.companyName}
                           </div>
                         )}
+                        {streetLine && (
+                          <div className="text-row text-text-secondary truncate">{streetLine}</div>
+                        )}
                         {cityLine && (
-                          <div className={streetLine ? "pl-4 truncate" : "flex items-start gap-1"} data-testid="text-job-address-city">
-                            {!streetLine && <MapPin className="h-3 w-3 shrink-0 text-slate-400 mt-0.5" />}
-                            <span className="truncate">{cityLine}</span>
-                          </div>
+                          <div className="text-row text-text-secondary truncate">{cityLine}</div>
                         )}
                       </div>
                     )}
-                  </div>
-                </div>
 
-                {/* Middle: inline-horizontal metadata (lg+) */}
-                <div className="hidden lg:flex items-center gap-5 shrink-0 text-xs pt-1" data-testid="job-header-meta">
-                  <div className="flex flex-col leading-tight">
-                    <span className="text-slate-500">Job #</span>
-                    <div className="font-semibold text-slate-800 mt-0.5">
+                    {/* 2026-04-29 final polish: Scheduled block moved to
+                        the right-side metadata stack so the left column
+                        stays focused on Identity → Address. The same
+                        nextVisit data drives the new Scheduled row in the
+                        meta column. */}
+                  </div>
+
+                  {/* RIGHT — job-specific metadata vertical list. Mirrors the
+                      MetaRow pattern in InvoiceDetailPage: label left, value
+                      right, hairline divider between rows.
+                      2026-04-29 (precision UI v5): row order set per spec —
+                      Status → Job # → Invoice. The "J-" prefix was dropped
+                      from the displayed job number; the inline-edit input
+                      remains a plain numeric field, so the canonical
+                      `updateJobNumberMutation` payload is unchanged. */}
+                  <div className="border-t md:border-t-0 border-border-default" data-testid="job-meta-list">
+                    {/* Status */}
+                    <div className="flex items-center justify-between gap-3 px-5 py-2 border-b border-border-default">
+                      <span className="text-caption text-text-muted">Status</span>
+                      <StatusPill
+                        variant={statusToVariant(job.openSubStatus === "on_hold" ? "on_hold" : job.status)}
+                        data-testid="meta-status-pill"
+                      >
+                        {getJobStatusDisplay(job).label}
+                      </StatusPill>
+                    </div>
+                    {/* Job # — inline-editable. State / mutation
+                        (`editingJobNumber`, `jobNumberDraft`,
+                        `updateJobNumberMutation`, `handleJobNumberSave`,
+                        `handleJobNumberCancel`) is the canonical surface
+                        defined at the page level — no parallel mutation. */}
+                    <div className="flex items-center justify-between gap-3 px-5 py-2 border-b border-border-default">
+                      <span className="text-caption text-text-muted">Job #</span>
                       {editingJobNumber ? (
                         <div className="flex items-center gap-1">
-                          <input ref={jobNumberInputRef} type="number" min={1} step={1}
+                          <input
+                            ref={jobNumberInputRef}
+                            type="number" min={1} step={1}
                             value={jobNumberDraft}
                             onChange={(e) => { setJobNumberDraft(e.target.value); setJobNumberError(null); }}
                             onKeyDown={(e) => { if (e.key === "Enter") handleJobNumberSave(); if (e.key === "Escape") handleJobNumberCancel(); }}
-                            className="w-16 h-5 px-1 text-xs border rounded bg-background focus:outline-none focus:ring-1 focus:ring-primary"
-                            autoFocus data-testid="input-job-number" />
-                          <button type="button" onClick={handleJobNumberSave} className="text-primary text-xs font-medium" disabled={updateJobNumberMutation.isPending}>{updateJobNumberMutation.isPending ? "…" : "✓"}</button>
-                          <button type="button" onClick={handleJobNumberCancel} className="text-muted-foreground text-xs">✕</button>
+                            className="w-20 h-6 px-1.5 text-caption border border-border-default rounded bg-white font-mono focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
+                            autoFocus
+                            data-testid="input-job-number"
+                          />
+                          <button type="button" onClick={handleJobNumberSave} className="text-brand text-caption font-medium px-1" disabled={updateJobNumberMutation.isPending}>
+                            {updateJobNumberMutation.isPending ? "…" : "Save"}
+                          </button>
+                          <button type="button" onClick={handleJobNumberCancel} className="text-text-disabled text-caption px-1">Cancel</button>
                         </div>
                       ) : (
-                        <button type="button" onClick={() => { setJobNumberDraft(String(job.jobNumber)); setJobNumberError(null); setEditingJobNumber(true); }}
-                          className="group cursor-text" data-testid="text-job-number">
+                        <button
+                          type="button"
+                          onClick={() => { setJobNumberDraft(String(job.jobNumber)); setJobNumberError(null); setEditingJobNumber(true); }}
+                          className="group inline-flex items-center gap-1 text-caption font-mono tabular-nums text-text-primary hover:text-brand transition"
+                          data-testid="meta-job-number"
+                        >
                           {job.jobNumber}
-                          <Pencil className="inline ml-0.5 h-2 w-2 opacity-0 group-hover:opacity-40 transition-opacity" />
+                          <Pencil className="h-2.5 w-2.5 opacity-0 group-hover:opacity-60 transition-opacity" />
                         </button>
                       )}
                     </div>
-                    {jobNumberError && <div className="text-xs text-destructive">{jobNumberError}</div>}
+                    {jobNumberError && (
+                      <div className="px-5 py-1 text-helper text-destructive">{jobNumberError}</div>
+                    )}
+                    {/* 2026-04-29 final polish: Scheduled row moved here
+                        from the left side so the meta stack reads
+                        Status → Job # → Scheduled → Invoice. Same
+                        `nextVisit` data source as the prior left-side
+                        block — no new query, no backend change. When no
+                        next visit is scheduled, surfaces "Not scheduled"
+                        in muted text so the row stays present (consistent
+                        meta stack height across job states). */}
+                    <div className="flex items-center justify-between gap-3 px-5 py-2 border-b border-border-default">
+                      <span className="text-caption text-text-muted">Scheduled</span>
+                      {nextVisit?.scheduledStart ? (
+                        <span className="text-caption font-medium text-text-primary" data-testid="meta-scheduled">
+                          {format(new Date(nextVisit.scheduledStart), "MMM d")}
+                          <span className="text-text-disabled mx-1">·</span>
+                          {format(new Date(nextVisit.scheduledStart), "h:mm a")}
+                        </span>
+                      ) : (
+                        <span className="text-caption text-text-disabled" data-testid="meta-scheduled-empty">
+                          Not scheduled
+                        </span>
+                      )}
+                    </div>
+                    {/* Invoice — always shown. Existing canonical data
+                        sources (`jobInvoice` primary pointer, with
+                        fallback to `firstJobInvoice` from the plural feed
+                        when primary is null but siblings exist) are reused
+                        unchanged. "Not invoiced" muted fallback when the
+                        job has no linked invoice.
+                        2026-04-29 final polish: link value styled to mirror
+                        Job # value (text-primary + brand-on-hover) so the
+                        right-meta column reads as a uniform list of
+                        `font-mono tabular-nums` identifiers. */}
+                    {(() => {
+                      const inv = jobInvoice ?? (jobInvoiceCount > 0 ? firstJobInvoice : null);
+                      return (
+                        <div className="flex items-center justify-between gap-3 px-5 py-2">
+                          <span className="text-caption text-text-muted">Invoice</span>
+                          {inv ? (
+                            <button
+                              type="button"
+                              onClick={() => setLocation(`/invoices/${inv.id}`)}
+                              className="text-caption font-mono tabular-nums text-text-primary hover:text-brand transition"
+                              data-testid="meta-invoice-link"
+                            >
+                              {inv.invoiceNumber ? `#${inv.invoiceNumber}` : "View invoice"}
+                            </button>
+                          ) : (
+                            <span className="text-caption text-text-disabled" data-testid="meta-invoice-empty">
+                              Not invoiced
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
-                  <div className="flex flex-col leading-tight">
-                    <span className="text-slate-500">Created</span>
-                    <span className="text-slate-700 mt-0.5" data-testid="text-job-created">
-                      {job.createdAt ? format(new Date(job.createdAt), "MMM d, yyyy") : "—"}
-                    </span>
-                  </div>
-                  <div className="flex flex-col leading-tight">
-                    <span className="text-slate-500">Completed</span>
-                    <span className="text-slate-700 mt-0.5" data-testid="text-job-completed">
-                      {job.closedAt ? format(new Date(job.closedAt), "MMM d, yyyy") : "—"}
-                    </span>
-                  </div>
                 </div>
+              </SectionCard>
 
-                {/* Right: primary action + overflow menu (same row as title on lg+) */}
-                <div className="flex items-center gap-1.5 shrink-0 mt-3 lg:mt-0">
-                  {job.status === "open" && (
-                    <Button
-                      size="sm"
-                      className="bg-green-600 hover:bg-green-700 text-white gap-1.5"
-                      onClick={handleScheduleVisit}
-                      data-testid="button-schedule-visit-action"
-                    >
-                      <CalendarPlus className="h-4 w-4" />
-                      Schedule Visit
-                    </Button>
-                  )}
-                  {job.status === "completed" && isOfficeUser && (
-                    <Button
-                      size="sm"
-                      className="bg-green-600 hover:bg-green-700 text-white gap-1.5"
-                      onClick={() => {
-                        if (jobInvoice) {
-                          setLocation(`/invoices/${jobInvoice.id}`);
-                        } else if (jobInvoiceCount > 0 && firstJobInvoice) {
-                          setLocation(`/invoices/${firstJobInvoice.id}`);
-                        } else {
-                          setShowCreateInvoiceDialog(true);
-                        }
-                      }}
-                      data-testid="button-invoice-action"
-                    >
-                      <Receipt className="h-4 w-4" />
-                      {jobInvoice
-                        ? "View Invoice"
-                        : jobInvoiceCount > 0
-                          ? jobInvoiceCount === 1 ? "View Invoice" : "View Invoices"
-                          : "Create Invoice"}
-                    </Button>
-                  )}
-                  {job.status === "archived" && isOfficeUser && (
-                    <Button
-                      size="sm"
-                      className="bg-green-600 hover:bg-green-700 text-white gap-1.5"
-                      onClick={() => headerCardRef.current?.triggerReopenJob()}
-                      data-testid="button-restore-job"
-                    >
-                      Restore Job
-                    </Button>
-                  )}
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="sm" className="h-8 w-8 p-0 shrink-0" data-testid="button-more-actions">
-                        <MoreHorizontal className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => setShowEditDialog(true)} data-testid="menu-edit-job">
-                        <Pencil className="h-4 w-4 mr-2" />
-                        Edit Job
-                      </DropdownMenuItem>
-                      {job.status === "open" && job.openSubStatus !== "on_hold" && isOfficeUser && (
-                        <DropdownMenuItem onClick={() => setShowActionRequiredModal(true)} data-testid="menu-hold-job">
-                          <Pause className="h-4 w-4 mr-2" />
-                          Hold Job
-                        </DropdownMenuItem>
-                      )}
-                      {job.status === "open" && isOfficeUser && (
-                        <DropdownMenuItem onClick={() => setShowCompleteJobConfirm(true)} className="text-emerald-600 font-medium" data-testid="menu-complete-job">
-                          <CheckCircle2 className="h-4 w-4 mr-2" />
-                          Complete Job
-                        </DropdownMenuItem>
-                      )}
-                      {job.status === "completed" && isOfficeUser && (
-                        <DropdownMenuItem onClick={() => headerCardRef.current?.openCloseJobDialog()} data-testid="menu-archive-job">
-                          <Archive className="h-4 w-4 mr-2" />
-                          Archive Job
-                        </DropdownMenuItem>
-                      )}
-                      {(job.status === "completed" || job.status === "archived") && isOfficeUser && (
-                        <DropdownMenuItem onClick={() => headerCardRef.current?.triggerReopenJob()} data-testid="menu-reopen-job">
-                          <RotateCcw className="h-4 w-4 mr-2" />
-                          Reopen Job
-                        </DropdownMenuItem>
-                      )}
-                      <DropdownMenuSeparator />
-                      {isOfficeUser && (
-                        <DropdownMenuItem onClick={() => setShowSendJobEmail(true)} data-testid="menu-send-job-email">
-                          <Send className="h-4 w-4 mr-2" />
-                          Send Email
-                        </DropdownMenuItem>
-                      )}
-                      <DropdownMenuItem onClick={() => setLocation(`/jobs/new?cloneFrom=${job.id}`)} data-testid="menu-create-similar">
-                        <Copy className="h-4 w-4 mr-2" />
-                        Create Similar Job
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => window.print()} data-testid="menu-print">
-                        <Printer className="h-4 w-4 mr-2" />
-                        Print
-                      </DropdownMenuItem>
-                      {isOfficeUser && (
-                        <>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem onClick={() => setShowDeleteConfirm(true)} className="text-destructive" data-testid="menu-delete-job">
-                            <Trash2 className="h-4 w-4 mr-2" />
-                            Delete Job
-                          </DropdownMenuItem>
-                        </>
-                      )}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              </div>
+              {/* LINE ITEMS — canonical LineItemsCard mount. 2026-04-29
+                  (Phase 3): replaces the prior inline LineItemsTable grid
+                  with the shared shell used by Invoice + Quote. The card
+                  owns its own chrome / header / column header / row bodies /
+                  empty state / Save+Cancel lifecycle. The Expenses sub-section
+                  + the Parts/Labour/Expenses → Subtotal/Tax → Total finance
+                  panel render through the `renderTotalsFooter` slot so they
+                  stay grouped inside the same card outline as the line
+                  items they summarize. */}
+              <LineItemsTable
+                jobId={jobId!}
+                onTotalsChange={setBillingTotals}
+              />
 
-              {/* Mobile (<lg): horizontal metadata strip below the
-                  identity block. Same fields, single row that wraps
-                  if needed. */}
-              <div className="lg:hidden mt-3 pt-3 border-t border-slate-100 flex flex-wrap gap-x-5 gap-y-1 text-xs" data-testid="job-header-meta-mobile">
-                <div>
-                  <span className="text-slate-500">Job # </span>
-                  <span className="font-semibold text-slate-800">{job.jobNumber}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500">Created </span>
-                  <span className="text-slate-700">{job.createdAt ? format(new Date(job.createdAt), "MMM d, yyyy") : "—"}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500">Completed </span>
-                  <span className="text-slate-700">{job.closedAt ? format(new Date(job.closedAt), "MMM d, yyyy") : "—"}</span>
-                </div>
-              </div>
-            </div>
-          </div>
+              {/* BILLING SUMMARY — Expenses sub-section + Totals panel.
+                  Kept as a separate Studio-styled card (warm cream chrome)
+                  so it preserves the existing JobDetailPage finance panel
+                  styling while the line-items surface above adopts the
+                  canonical stone/slate card chrome. */}
+              <SectionCard data-testid="card-billing-summary">
+                <SectionHead label="Billing Summary" count={null} />
 
-          {/* ─────────────── BODY GRID ───────────────
-              Mobile: single flex column. Each card carries an explicit
-              `order-*` so the page reads Header → Line Items → Notes →
-              Labour → Equipment → Reference → Expenses (per spec).
-              Desktop (lg+): switches to a 2-column grid. The two column
-              wrappers use `display: contents` on mobile so cards become
-              direct flex children of the outer column (and `order` works
-              across columns), then become normal flex columns on lg+. */}
-          <div className="flex flex-col gap-2 lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(360px,420px)] lg:gap-2">
-            {/* Left column wrapper */}
-            <div className="contents lg:flex lg:flex-col lg:gap-2 lg:min-w-0">
-              {/* Line Items card */}
-              <div className="order-1 bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="card-line-items">
-                <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-200">
-                  <div className="flex items-center gap-2">
-                    <DollarSign className="h-4 w-4 text-slate-500" />
-                    <h2 className="text-sm font-semibold text-slate-900">Line Items</h2>
-                  </div>
-                  {!partsEditMode && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setPartsEditMode(true)}
-                      className="h-7 text-xs"
-                      data-testid="button-add-line-item-header"
-                    >
-                      <Plus className="h-3.5 w-3.5 mr-1" />
-                      Add Item
-                    </Button>
-                  )}
-                </div>
-                {/* PartsBillingCard ships its own Card chrome and its
-                    `CardContent` uses `p-6 pt-4 space-y-4`. We strip the
-                    chrome and tighten the inner padding plus the empty-
-                    state cell so the card is not oversized when no rows
-                    exist. The selectors are scoped to this wrapper
-                    only — `PartsBillingCard` itself is unchanged. */}
-                <div className="[&>*]:border-0 [&>*]:rounded-none [&>*]:shadow-none [&>*]:bg-transparent [&_.shadcn-card>div]:!p-3 [&_tbody_tr>td.py-6]:!py-3" data-testid="parts-billing-wrapper">
-                  <PartsBillingCard
-                    jobId={jobId!}
-                    isEditing={partsEditMode}
-                    onExitEdit={() => setPartsEditMode(false)}
-                    onTotalsChange={setBillingTotals}
-                  />
-                </div>
-                {/* Subtotal footer */}
-                <div className="border-t border-slate-200 px-4 py-2 bg-slate-50/60 flex items-center justify-end" data-testid="line-items-subtotal">
-                  <span className="text-xs text-slate-500">
-                    Subtotal{" "}
-                    <strong className="text-slate-900 ml-1 text-sm tabular-nums">
-                      ${billingTotals ? billingTotals.totalPrice.toFixed(2) : "0.00"}
-                    </strong>
-                  </span>
-                </div>
-              </div>
-
-              {/* Expenses card — Add Expense lives inside JobExpensesCard.
-                  Scoped wrapper overrides the component's default
-                  `px-5 py-4` body and `mb-3` toolbar gap so the card
-                  doesn't waste height when empty. `JobExpensesCard`
-                  itself is unchanged so other surfaces keep their
-                  density. */}
-              <div
-                className="order-6 bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden [&>div.px-5]:!px-4 [&>div.py-4]:!py-3 [&_div.mb-3]:!mb-2"
-                data-testid="card-expenses"
-              >
-                <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-200">
-                  <div className="flex items-center gap-2">
-                    <Receipt className="h-4 w-4 text-slate-500" />
-                    <h2 className="text-sm font-semibold text-slate-900">Expenses</h2>
-                  </div>
-                  <span className="text-xs text-slate-500 tabular-nums" data-testid="text-expense-total">
-                    Total{" "}
-                    <strong className="text-slate-900 ml-1 text-sm">
-                      ${expenseTotalAmount.toFixed(2)}
-                    </strong>
-                  </span>
-                </div>
-                <JobExpensesCard jobId={jobId!} />
-              </div>
-
-              {/* Visits card — left column, below Expenses. Reuses the
-                  canonical `useJobVisits` hook (key family `["visits",
-                  jobId, "all"]`) which the dispatch mutation invalidates
-                  on success, so a freshly-scheduled visit shows up here
-                  without a manual refresh. Each row click hands off to
-                  `setSelectedVisitId(visit.id)`, which the existing
-                  `enrichVisitEditorState` effect (declared above) routes
-                  through `VisitEditorLauncher` — same canonical edit
-                  modal the dispatch board / Dashboard use. The "Schedule
-                  Visit" header action reuses `handleScheduleVisit`
-                  (opens `AddVisitDialog`). No new endpoint, no new
-                  modal, no parallel scheduling path. */}
-              <div
-                className="order-7 bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden"
-                data-testid="card-visits"
-              >
-                <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-200">
-                  <div className="flex items-center gap-2">
-                    <CalendarIcon className="h-4 w-4 text-slate-500" />
-                    <h2 className="text-sm font-semibold text-slate-900">Visits</h2>
-                    {jobVisitsAll.length > 0 && (
-                      <span className="text-xs text-slate-400 tabular-nums">({jobVisitsAll.length})</span>
+                {/* EXPENSES sub-section. */}
+                <div className="flex items-center justify-between gap-3 px-4 h-10 bg-surface-subtle">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-helper font-semibold uppercase tracking-[0.08em] text-text-secondary">Expenses</span>
+                    {expensesRaw.length > 0 && (
+                      <span className="text-helper font-medium text-text-disabled tabular-nums">{expensesRaw.length}</span>
                     )}
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs text-[#76B054] hover:text-[#5F9442] hover:bg-green-50"
-                    onClick={handleScheduleVisit}
-                    data-testid="button-add-visit"
-                  >
-                    <Plus className="h-3.5 w-3.5 mr-1" />
-                    Schedule Visit
-                  </Button>
+                  <span className="text-helper font-mono tabular-nums text-text-muted">
+                    {formatCurrency(expenseTotalAmount)}
+                  </span>
                 </div>
-                {jobVisitsLoading ? (
-                  <div className="px-4 py-3 text-xs text-slate-500 italic">Loading visits…</div>
-                ) : jobVisitsAll.length === 0 ? (
-                  <div className="px-4 py-3 text-xs text-slate-500 text-center italic">
-                    No visits scheduled.
+
+                {expensesRaw.length === 0 ? (
+                  <div className="px-4 py-3 text-row text-text-disabled" data-testid="expenses-empty">
+                    No expenses recorded for this job.
                   </div>
                 ) : (
-                  <div className="divide-y divide-slate-100" data-testid="visits-list">
-                    {jobVisitsAll.map((v) => {
-                      const techIds = Array.isArray(v.assignedTechnicianIds) ? v.assignedTechnicianIds : [];
-                      const techChips = techIds.map((id) => techByIdMap.get(id)).filter(Boolean) as Array<{ name: string; color: string | null }>;
-                      const start = v.scheduledStart ? new Date(v.scheduledStart) : null;
-                      const end = v.scheduledEnd ? new Date(v.scheduledEnd) : null;
-                      const dateLabel = start ? format(start, "MMM d, yyyy") : "Unscheduled";
-                      const timeLabel =
-                        start && end
-                          ? `${format(start, "h:mm a")}–${format(end, "h:mm a")}`
-                          : start
-                            ? format(start, "h:mm a")
-                            : "";
-                      const statusTone =
-                        v.status === "completed"
-                          ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                          : v.status === "cancelled"
-                            ? "bg-slate-50 text-slate-500 border border-slate-200"
-                            : v.status === "in_progress"
-                              ? "bg-blue-50 text-blue-700 border border-blue-200"
-                              : v.status === "en_route"
-                                ? "bg-amber-50 text-amber-700 border border-amber-200"
-                                : "bg-slate-50 text-slate-700 border border-slate-200";
-                      return (
-                        <button
-                          key={v.id}
-                          type="button"
-                          onClick={() => setSelectedVisitId(v.id)}
-                          className="w-full flex items-start gap-3 px-4 py-2.5 text-left hover:bg-[#F0F5F0] transition-colors"
-                          data-testid={`visit-row-${v.id}`}
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-sm font-medium text-slate-800">
-                                {dateLabel}
-                              </span>
-                              {timeLabel && (
-                                <span className="text-xs text-slate-500 tabular-nums">{timeLabel}</span>
-                              )}
-                              {v.visitNumber != null && (
-                                <span className="text-[10px] text-slate-400">· Visit #{v.visitNumber}</span>
+                  <div className="px-4 divide-y divide-border-default" data-testid="expenses-rows">
+                    {expensesRaw.map((e) => (
+                      <div key={e.id} className="flex items-start justify-between gap-4 py-2.5 text-body">
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium text-text-primary truncate">{e.description || "Expense"}</div>
+                          {(e.category || e.receiptUrl) && (
+                            <div className="text-caption text-text-muted mt-0.5 flex items-center gap-1.5">
+                              {e.category && <span>{e.category}</span>}
+                              {e.category && e.receiptUrl && <span className="text-text-disabled">·</span>}
+                              {e.receiptUrl && (
+                                <a href={e.receiptUrl} target="_blank" rel="noreferrer" className="text-brand hover:underline">
+                                  View receipt
+                                </a>
                               )}
                             </div>
-                            <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-                              {techChips.length === 0 ? (
-                                <span className="text-xs text-slate-400 italic">Unassigned</span>
-                              ) : (
-                                techChips.map((t, i) => (
-                                  <span
-                                    key={`${v.id}-tech-${i}`}
-                                    className="inline-flex items-center gap-1 text-xs text-slate-700"
-                                  >
-                                    <span
-                                      className="h-2 w-2 rounded-full"
-                                      style={{ backgroundColor: t.color || "#64748b" }}
-                                    />
-                                    {t.name}
-                                  </span>
-                                ))
-                              )}
-                            </div>
-                            {v.visitNotes && (
-                              <div className="text-xs text-slate-500 italic mt-1 line-clamp-2">
-                                {v.visitNotes}
-                              </div>
-                            )}
-                          </div>
-                          <span
-                            className={`shrink-0 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider rounded ${statusTone}`}
-                          >
-                            {v.status.replace(/_/g, " ")}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Right column wrapper */}
-            <div className="contents lg:flex lg:flex-col lg:gap-2 lg:min-w-0">
-              {/* Notes — first card on right. Auto-collapses when no
-                  notes exist; the user can manually toggle. The body
-                  is conditionally mounted (rather than visually hidden)
-                  so a closed empty state doesn't render the section's
-                  internal "No notes yet" copy at all — the card header
-                  alone communicates "no notes." Scoped wrapper override
-                  still tightens `JobNotesSection`'s embedded `py-3`
-                  empty cell on the rare case the user opens an empty
-                  card manually.
-                  2026-04-26: header now uses the same `bg-[#f8fafc]
-                  hover:bg-slate-100` shading + `py-2.5` padding as
-                  Equipment / Reference for visual consistency across
-                  the right column. */}
-              <div
-                className="order-2 bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden [&_.text-center.py-3]:!py-2"
-                data-testid="card-notes"
-                data-open={notesOpen ? "true" : "false"}
-              >
-                <div className="flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] hover:bg-slate-100 transition-colors border-b border-slate-200">
-                  <button
-                    type="button"
-                    onClick={() => { setNotesUserToggled(true); setNotesOpen((o) => !o); }}
-                    className="flex items-center gap-2 min-w-0 flex-1 text-left"
-                    aria-expanded={notesOpen}
-                    data-testid="toggle-notes"
-                  >
-                    {notesOpen
-                      ? <ChevronDown className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                      : <ChevronRight className="h-3.5 w-3.5 text-slate-400 shrink-0" />}
-                    <MessageSquare className="h-4 w-4 text-[#64748b] shrink-0" />
-                    {/* 2026-04-26: header reads `Notes` when empty
-                        and `Notes {count}` when populated — dropped
-                        the explicit "No notes" pill and the
-                        parenthesised count form. */}
-                    <h2 className="text-sm font-semibold text-[#0f172a] truncate">Notes</h2>
-                    {notesCount !== null && notesCount > 0 && (
-                      <span className="text-xs text-slate-400 ml-1 tabular-nums">{notesCount}</span>
-                    )}
-                  </button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs text-[#76B054] hover:text-[#5F9442] hover:bg-green-50"
-                    onClick={(e) => { e.stopPropagation(); setShowAddNoteDialog(true); }}
-                    data-testid="button-add-note"
-                  >
-                    <Plus className="h-3.5 w-3.5 mr-1" />
-                    Add Note
-                  </Button>
-                </div>
-                {notesOpen && (
-                  <JobNotesSection
-                    jobId={job.id}
-                    embedded
-                    hideAddButton
-                    hideHeader
-                    showCount={false}
-                    onCountChange={setNotesCount}
-                  />
-                )}
-                {/* Mount a hidden instance solely for count signalling
-                    when the card is closed — keeps the Add Note empty
-                    state consistent without rendering the body. */}
-                {!notesOpen && (
-                  <div className="hidden">
-                    <JobNotesSection
-                      jobId={job.id}
-                      embedded
-                      hideAddButton
-                      hideHeader
-                      showCount={false}
-                      onCountChange={setNotesCount}
-                    />
-                  </div>
-                )}
-              </div>
-
-              {/* Labour Summary — three-state card.
-                  • Empty (no entries): header only, chevron present
-                    but the body stays hidden until the user manually
-                    expands.
-                  • Default (entries exist, not expanded): header + a
-                    compact totals body — Driving / On-site / Total
-                    rows. No team-member names, dates, time ranges, or
-                    per-entry rows in this state.
-                  • Expanded (entries exist, chevron clicked): header +
-                    a per-team-member breakdown — each tech is a block
-                    listing their Driving rows, then On-site rows, with
-                    a per-tech subtotal at the end of the block.
-
-                  Header chevron click semantics:
-                  • If empty: toggles `labourOpen` (body visibility).
-                  • If non-empty: toggles `labourExpanded` (collapsed
-                    totals → expanded breakdown). `labourOpen` stays
-                    true so the totals always read at a glance.
-
-                  Costs are derived from each entry's `costRateSnapshot`
-                  (the value captured when the entry was created — not
-                  the team member's *current* rate). Updating a team
-                  member's labour cost rate therefore only changes the
-                  cost of NEW entries; historical entries keep their
-                  snapshot. Entries without a snapshot contribute $0.00
-                  rather than crashing the page.
-
-                  Header now uses the same `bg-[#f8fafc] hover:bg-slate-100`
-                  shading as Equipment / Reference for visual parity. */}
-              <div
-                className="order-3 bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden"
-                data-testid="card-labour-summary"
-                data-open={labourOpen ? "true" : "false"}
-                data-expanded={labourExpanded ? "true" : "false"}
-              >
-                <div className="flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] hover:bg-slate-100 transition-colors border-b border-slate-200">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (jobTimeEntries.length === 0) {
-                        setLabourUserToggled(true);
-                        setLabourOpen((o) => !o);
-                      } else {
-                        setLabourExpanded((e) => !e);
-                      }
-                    }}
-                    className="flex items-center gap-2 min-w-0 flex-1 text-left"
-                    aria-expanded={jobTimeEntries.length === 0 ? labourOpen : labourExpanded}
-                    data-testid="toggle-labour"
-                  >
-                    {(jobTimeEntries.length === 0 ? labourOpen : labourExpanded)
-                      ? <ChevronDown className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                      : <ChevronRight className="h-3.5 w-3.5 text-slate-400 shrink-0" />}
-                    <Clock className="h-4 w-4 text-[#64748b] shrink-0" />
-                    {/* 2026-04-26: header renamed `Labour Summary` →
-                        `Labour`. Empty state drops the "No labour"
-                        pill entirely; populated state shows a bare
-                        count next to the title. */}
-                    <h2 className="text-sm font-semibold text-[#0f172a] truncate">Labour</h2>
-                    {jobTimeEntries.length > 0 && (
-                      <span className="text-xs text-slate-400 ml-1 tabular-nums">{jobTimeEntries.length}</span>
-                    )}
-                  </button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs text-[#76B054] hover:text-[#5F9442] hover:bg-green-50"
-                    onClick={(e) => { e.stopPropagation(); setTimeEntryModal({ open: true, mode: "create", entry: null }); }}
-                    data-testid="button-add-labour"
-                  >
-                    <Plus className="h-3.5 w-3.5 mr-1" />
-                    Add Labour
-                  </Button>
-                </div>
-
-                {/* Empty state body — only rendered when the user has
-                    manually expanded an empty card. Default empty
-                    state shows just the header. */}
-                {jobTimeEntries.length === 0 && labourOpen && (
-                  <div className="px-3 py-2 text-xs" data-testid="labour-summary-empty-body">
-                    <p className="text-xs text-slate-500 text-center py-2 italic">
-                      No labour entries yet.
-                    </p>
-                  </div>
-                )}
-
-                {/* Default body (totals only) — always shown when
-                    entries exist, regardless of `labourExpanded`. */}
-                {jobTimeEntries.length > 0 && (
-                  <div className="px-3 py-2 text-xs" data-testid="labour-summary-totals-body">
-                    <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 gap-y-1 items-baseline" data-testid="labour-summary-totals">
-                      <span className="text-slate-600">Driving Time</span>
-                      <span className="tabular-nums text-slate-700">{formatMinutes(labourBuckets.driving.minutes)}</span>
-                      <span className="tabular-nums text-slate-700 text-right">{formatCurrency(labourBuckets.driving.cost)}</span>
-                      <span className="text-slate-600">On-Site Time</span>
-                      <span className="tabular-nums text-slate-700">{formatMinutes(labourBuckets.onSite.minutes)}</span>
-                      <span className="tabular-nums text-slate-700 text-right">{formatCurrency(labourBuckets.onSite.cost)}</span>
-                      <span className="text-slate-900 font-semibold pt-1.5 border-t border-slate-100 mt-1">Total Labour</span>
-                      <span className="text-slate-900 font-semibold tabular-nums pt-1.5 border-t border-slate-100 mt-1">
-                        {formatMinutes(labourBuckets.totalMinutes)}
-                      </span>
-                      <span className="text-slate-900 font-semibold tabular-nums pt-1.5 border-t border-slate-100 mt-1 text-right">
-                        {formatCurrency(labourBuckets.totalCost)}
-                      </span>
-                    </div>
-                  </div>
-                )}
-
-                {/* Expanded body — one block per (tech, date). Each
-                    entry is a single row in the spec's preferred form:
-                    [Driving|On-Site] · time range · duration · cost.
-                    The tech name + date is shown once per block (header
-                    row) so per-row name/date repetition is avoided.
-                    Rows are clickable → canonical TimeEntryModal in
-                    edit mode. Aligned 4-column grid keeps labels,
-                    times, durations, and costs visually lined up. */}
-                {jobTimeEntries.length > 0 && labourExpanded && (
-                  <div className="px-3 py-2 border-t border-slate-100 space-y-3" data-testid="labour-summary-detail">
-                    {labourByTechDay.map((block) => (
-                      <div key={block.key} data-testid={`labour-tech-block-${block.key}`}>
-                        <div className="flex items-baseline justify-between gap-2 mb-1">
-                          <span className="text-xs font-semibold text-slate-800 truncate">
-                            {block.name}
-                            <span className="text-slate-400 font-normal"> · {block.dateLabel}</span>
-                          </span>
-                          <span className="text-[11px] text-slate-500 tabular-nums shrink-0">
-                            {formatMinutes(block.totalMinutes)} · {formatCurrency(block.totalCost)}
-                          </span>
+                          )}
                         </div>
-                        <div className="space-y-0.5">
-                          {block.entries.map((e) => (
-                            <LabourEntryLine
-                              key={e.id}
-                              entry={e}
-                              isTravel={TRAVEL_TYPES.has(e.type)}
-                              cost={entryCostDollars(e)}
-                              onClick={() => setTimeEntryModal({ open: true, mode: "edit", entry: e })}
-                            />
-                          ))}
+                        <div className="font-mono tabular-nums font-medium text-text-primary shrink-0">
+                          {formatCurrency(parseFloat(e.amount || "0"))}
                         </div>
                       </div>
                     ))}
                   </div>
                 )}
-              </div>
 
-              {/* Equipment — reuses existing canonical component
-                  (renders its own card). Auto-collapses when no
-                  equipment is linked. `defaultOpen` is keyed off the
-                  initial count so we don't fight with the user once
-                  they manually toggle: when the count flips between 0
-                  and >0 we re-key the section to reset its internal
-                  `useState(defaultOpen)`. The scoped wrapper still
-                  tightens the empty-state `text-center py-4` cell on
-                  the rare case the user opens an empty card. */}
+                {/* TOTALS — premium finance panel, right-aligned. */}
+                <div className="border-t border-border-default bg-surface-subtle px-4 py-4" data-testid="line-items-subtotal-block">
+                  <div className="ml-auto max-w-[320px]">
+                    <dl className="grid grid-cols-[1fr_auto] gap-x-8 gap-y-1.5 text-row">
+                      <dt className="text-text-secondary">Parts</dt>
+                      <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(partsTotal)}</dd>
+                      <dt className="text-text-secondary">Labour</dt>
+                      <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(labourCost)}</dd>
+                      <dt className="text-text-secondary">Expenses</dt>
+                      <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(expenseTotalAmount)}</dd>
+                    </dl>
+                    <dl className="grid grid-cols-[1fr_auto] gap-x-8 gap-y-1.5 text-row mt-3 pt-3 border-t border-border-default">
+                      <dt className="text-text-secondary">Subtotal</dt>
+                      <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(subtotal)}</dd>
+                      <dt className="text-text-secondary">Tax ({Math.round(taxRate * 100)}%)</dt>
+                      <dd className="font-mono tabular-nums text-text-primary">{formatCurrency(taxAmount)}</dd>
+                    </dl>
+                    <div className="grid grid-cols-[1fr_auto] gap-x-8 mt-3 pt-3 border-t-2 border-text-primary/12 items-baseline">
+                      <span className="text-caption font-semibold uppercase tracking-[0.08em] text-text-primary">Total</span>
+                      <span className="text-display font-bold tabular-nums font-mono text-brand leading-none" data-testid="text-total">
+                        {formatCurrency(grandTotal)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </SectionCard>
+            </div>
+
+            {/* ═════════ RIGHT RAIL ═════════ */}
+            <div className="flex flex-col gap-4 min-w-0" data-testid="job-detail-right-column">
+
+              {/* EQUIPMENT — canonical JobEquipmentSection mount.
+                  2026-04-29 (precision UI v3): the bespoke in-page
+                  Equipment card (display-only rows fed by a parallel
+                  `jobEquipmentRows` query) was removed. JobEquipmentSection
+                  is the canonical owner of the equipment surface and
+                  carries every action the page needs: click row →
+                  EquipmentDetailModal (edit), per-row trash →
+                  removeMutation, "+" → AddEquipmentDialog (existing flow,
+                  same `externalAddOpen` wiring used by the page header
+                  button). Per spec "If no equipment is linked to the job,
+                  hide the equipment card entirely" — the section is
+                  visually hidden via `hidden` class when count is zero,
+                  but stays mounted so the dialog remains reachable from
+                  the page header "+" button. `hideAddButton` suppresses
+                  the section's internal "+" so there's a single canonical
+                  add affordance at the page-header level. */}
               <div
-                className="order-4 [&_.text-center.py-4]:!py-2"
-                data-testid="card-equipment"
-                data-open={equipmentOpen ? "true" : "false"}
+                className={equipmentCount === 0 ? "hidden" : ""}
+                data-testid="equipment-card-wrapper"
               >
                 <JobEquipmentSection
-                  key={`equipment-${equipmentOpen ? "open" : "closed"}`}
                   jobId={job.id}
                   locationId={job.locationId}
-                  defaultOpen={equipmentOpen}
+                  defaultOpen={true}
+                  hideAddButton={true}
                   externalAddOpen={showAddEquipmentDialog}
                   onExternalAddOpenChange={setShowAddEquipmentDialog}
                   onCountChange={setEquipmentCount}
                 />
               </div>
 
-              {/* Reference — reuses existing canonical component (renders its own card) */}
-              <div className="order-5" data-testid="card-reference">
-                <ReferenceFieldsSection entityType="job" entityId={job.id} />
+              {/* NOTES — canonical JobNotesSection mount.
+                  2026-04-29 (precision UI v3): the bespoke avatar feed +
+                  inline composer (which only POSTed plain text and could
+                  not attach files) was removed. JobNotesSection is the
+                  canonical owner of the job notes surface and carries:
+                  click row → JobNoteDialog (edit + add/remove
+                  attachments), origin chips for inherited
+                  client/location/company notes, NoteAttachmentStrip
+                  rendering, and the canonical "+ Add Note" entry point
+                  (which routes through JobNoteDialog with the canonical
+                  mutation). Section's own header already shows the
+                  "Notes" label and count, so no extra wrapper chrome is
+                  needed beyond the Invoice-Detail-style border. */}
+              <div
+                className="overflow-hidden rounded-md border border-border-default bg-white"
+                data-testid="card-notes"
+              >
+                <JobNotesSection jobId={job.id} embedded={true} onCountChange={setNotesCount} />
               </div>
+
+              {/* LABOUR — dashboard module: 3-tile summary + entry rows.
+                  2026-04-29 (precision UI v4): the "+ Time Entry" button
+                  is now disabled when the job is not open. Server-side
+                  `activeWorkJobFilter()` (canonical guard at
+                  `server/storage/timeTracking.ts:452`) requires
+                  `status='open' AND is_active AND deleted_at IS NULL`
+                  before accepting a new time entry; without this gate,
+                  clicking Save in TimeEntryModal would surface the raw
+                  "Job not found or is closed/inactive" 404. The button
+                  remains visible (so the affordance is discoverable) but
+                  inert with a tooltip explaining the rule. The mutation
+                  path, payload, and route (`POST /api/time/entries/manager`)
+                  are unchanged — same canonical surface used everywhere. */}
+              <SectionCard data-testid="card-labour-summary">
+                {/* 2026-04-29 final polish: Labour header re-styled to
+                    match the existing Notes + Equipment header pattern
+                    (`px-4 py-2.5 bg-[#f8fafc] border-b border-[#e2e8f0]`,
+                    `text-sm font-semibold` mixed-case title with leading
+                    icon). This is intentionally NOT using the canonical
+                    typography tokens — both reference cards predate the
+                    typography migration and still render at `text-sm`,
+                    so matching their literal classes is what produces
+                    visual consistency across Notes / Equipment / Labour.
+                    A future combined sweep can migrate all three to the
+                    canonical tokens together.
+
+                    Aggregate summary stays inline in the header
+                    ("Labour · 10h 43m · $589.42") so the body can begin
+                    directly with the per-(tech, day) entry groups. The
+                    "+ Time Entry" button keeps its existing canonical
+                    behavior: same mutation, same modal payload. */}
+                {(() => {
+                  const canAddTime = job.status === "open" && job.isActive !== false;
+                  const disabledHint =
+                    job.status === "invoiced"
+                      ? "This job is invoiced. Use Reopen Job in the actions menu to log additional time."
+                      : "Reopen this job to log time entries.";
+                  return (
+                    <div
+                      className="flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] border-b border-[#e2e8f0]"
+                      data-testid="trigger-labour"
+                    >
+                      <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2 min-w-0 truncate">
+                        <Clock className="h-4 w-4 text-[#64748b] shrink-0" />
+                        <span>Labour</span>
+                        {jobTimeEntries.length > 0 && (
+                          <>
+                            <span className="text-[#cbd5e1] font-normal">·</span>
+                            <span className="font-mono tabular-nums font-medium text-[#475569]">
+                              {formatMinutes(labourBuckets.totalMinutes)}
+                            </span>
+                            <span className="text-[#cbd5e1] font-normal">·</span>
+                            <span className="font-mono tabular-nums text-[#0f172a]">
+                              {formatCurrency(labourBuckets.totalCost)}
+                            </span>
+                          </>
+                        )}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setTimeEntryModal({ open: true, mode: "create", entry: null })}
+                        disabled={!canAddTime}
+                        title={canAddTime ? undefined : disabledHint}
+                        className="text-xs text-[#76B054] hover:text-[#5F9442] font-medium disabled:text-text-disabled disabled:hover:text-text-disabled disabled:cursor-not-allowed"
+                        data-testid="button-add-labour"
+                      >
+                        + Time Entry
+                      </button>
+                    </div>
+                  );
+                })()}
+
+                {/* 2026-04-29 Phase L-1 — Labour card density redesign.
+                 *
+                 * Replaces (a) the 3-tile Driving/On-Site/Total summary strip
+                 * with one compact summary line, and (b) the flat-per-entry
+                 * list with a per-(technician, day) grouped render that
+                 * consumes the previously-unused `labourByTechDay` memo.
+                 *
+                 * Density math: a typical "one tech, four entries on a day"
+                 * (drive + on-site AM + drive + on-site PM) used to render at
+                 * ~320px (4 rows × ~80px). Now renders as ~85px (1 group
+                 * header + 2 bucket lines + optional total). 4× density gain
+                 * with the same data.
+                 *
+                 * Click-to-edit preserved: each bucket line opens the FIRST
+                 * entry of that bucket (sorted earliest-first) in the
+                 * existing TimeEntryModal. For multi-entry buckets the count
+                 * suffix surfaces the additional entries; users navigate to
+                 * specific entries via the dispatch / calendar surfaces if
+                 * needed.
+                 *
+                 * Running indicator: any entry in the group with
+                 * durationMinutes == null OR endAt == null surfaces a
+                 * pulse-Clock chip in the group header.
+                 *
+                 * No backend, mutation, route, or token changes. Empty state
+                 * preserved verbatim. */}
+                {/* 2026-04-29 final polish: body summary strip removed —
+                    the aggregate now lives in the card's header. Body
+                    starts directly with the empty state OR the per-
+                    (technician, day) grouped entries. */}
+                {jobTimeEntries.length === 0 ? (
+                  <EmptyState
+                    title="No time logged yet."
+                    hint="Track time against this job to roll travel and on-site hours into the labour total."
+                  />
+                ) : (
+                  <div className="divide-y divide-border-default" data-testid="labour-entries-list">
+                    {[...labourByTechDay]
+                      .sort((a, b) => {
+                        if (a.dateSortKey !== b.dateSortKey) return b.dateSortKey.localeCompare(a.dateSortKey);
+                        return a.name.localeCompare(b.name);
+                      })
+                      .map((block) => {
+                        const travel = block.entries.filter((e) => TRAVEL_TYPES.has(e.type));
+                        const onSite = block.entries.filter((e) => !TRAVEL_TYPES.has(e.type));
+                        const travelMinutes = travel.reduce((s, e) => s + (e.durationMinutes ?? 0), 0);
+                        const travelCost = travel.reduce((s, e) => s + entryCostDollars(e), 0);
+                        const onSiteMinutes = onSite.reduce((s, e) => s + (e.durationMinutes ?? 0), 0);
+                        const onSiteCost = onSite.reduce((s, e) => s + entryCostDollars(e), 0);
+                        const firstEntry = block.entries[0];
+                        const lastEntry = block.entries[block.entries.length - 1];
+                        const startTime = firstEntry?.startAt ? format(new Date(firstEntry.startAt), "h:mma") : "";
+                        const lastEnd = lastEntry?.endAt ? format(new Date(lastEntry.endAt), "h:mma") : null;
+                        const timeRange = lastEnd ? `${startTime}–${lastEnd}` : startTime;
+                        const hasRunning = block.entries.some((e) => e.durationMinutes == null || !e.endAt);
+                        const openBucket = (entries: TimeEntryDisplay[]) => {
+                          if (entries.length === 0) return;
+                          setTimeEntryModal({ open: true, mode: "edit", entry: entries[0] });
+                        };
+                        return (
+                          <div
+                            key={block.key}
+                            className="px-4 py-2"
+                            data-testid={`labour-group-${block.key}`}
+                          >
+                            {/* 2026-04-29 Polish 2: avatar removed from
+                                group header — initials/colour chip was
+                                visual noise that didn't add information
+                                the technician name doesn't already convey.
+                                Group rows now flush-align with the bucket
+                                lines below. */}
+                            <div className="flex items-center gap-2 mb-0.5">
+                              <span className="text-row-emphasis text-text-primary truncate flex-1 min-w-0">
+                                {block.name}
+                              </span>
+                              {hasRunning && (
+                                <span className="inline-flex items-center gap-1 text-caption text-warning shrink-0">
+                                  <Clock className="h-3 w-3 animate-pulse" />Running
+                                </span>
+                              )}
+                              <span className="text-caption text-text-muted font-mono tabular-nums shrink-0">
+                                {block.dateLabel}
+                                {timeRange && <span className="text-text-disabled mx-1">·</span>}
+                                {timeRange}
+                              </span>
+                            </div>
+
+                            {/* Travel + On-site bucket lines. Each opens
+                                the first entry of its bucket in the
+                                existing TimeEntryModal. Multi-entry
+                                buckets surface a "· N entries" hint.
+                                2026-04-29 Polish 2: per-group total row
+                                dropped — the page-level Labour summary at
+                                the top of the card carries the
+                                aggregate; per-group total was duplicate
+                                information. */}
+                            <div className="space-y-0.5">
+                              {travel.length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => openBucket(travel)}
+                                  className="w-full flex items-center justify-between text-caption text-text-secondary hover:text-text-primary transition-colors"
+                                  data-testid={`labour-bucket-travel-${block.key}`}
+                                >
+                                  <span>
+                                    Travel
+                                    <span className="font-mono tabular-nums text-text-muted ml-1.5">{formatMinutes(travelMinutes)}</span>
+                                    {travel.length > 1 && (
+                                      <span className="text-text-disabled ml-1.5">· {travel.length} entries</span>
+                                    )}
+                                  </span>
+                                  <span className="font-mono tabular-nums">{formatCurrency(travelCost)}</span>
+                                </button>
+                              )}
+                              {onSite.length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => openBucket(onSite)}
+                                  className="w-full flex items-center justify-between text-caption text-text-secondary hover:text-text-primary transition-colors"
+                                  data-testid={`labour-bucket-onsite-${block.key}`}
+                                >
+                                  <span>
+                                    On-site
+                                    <span className="font-mono tabular-nums text-text-muted ml-1.5">{formatMinutes(onSiteMinutes)}</span>
+                                    {onSite.length > 1 && (
+                                      <span className="text-text-disabled ml-1.5">· {onSite.length} entries</span>
+                                    )}
+                                  </span>
+                                  <span className="font-mono tabular-nums">{formatCurrency(onSiteCost)}</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </SectionCard>
             </div>
+
           </div>
         </div>
       </div>
@@ -1802,13 +2088,9 @@ export default function JobDetailPage() {
         }}
       />
 
-      {/* Header-level canonical note dialog (create mode from this entry point) */}
-      <JobNoteDialog
-        jobId={job.id}
-        note={null}
-        open={showAddNoteDialog}
-        onOpenChange={setShowAddNoteDialog}
-      />
+      {/* 2026-04-29 (precision UI v3): standalone JobNoteDialog mount
+          removed — JobNotesSection (mounted in the right rail) owns its
+          own dialog lifecycle for both create and edit modes. */}
 
       {/* Canonical Time Entry Modal (create + edit) */}
       <TimeEntryModal

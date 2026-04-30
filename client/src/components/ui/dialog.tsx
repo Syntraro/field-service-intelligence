@@ -7,12 +7,14 @@ import { X } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 /**
- * UI typography standard (see docs/UI_TYPOGRAPHY.md):
- *   Modal/dialog body content should default to 12px (`text-xs`). The
- *   DialogTitle stays at its current size (intentional emphasis); the
- *   DialogDescription should be `text-xs` going forward. New dialogs:
- *   wrap body content with `text-xs` at the root, override only when
- *   you genuinely need larger emphasis.
+ * UI typography standard (see docs/UI_TYPOGRAPHY.md).
+ *
+ * 2026-04-29 Typography Phase C: DialogDescription default migrated
+ * from `text-sm text-muted-foreground` (17.1px, legacy shadcn color)
+ * to canonical `text-caption text-text-muted` (12 / 16, canonical
+ * text-muted token — same migration the Card primitive's
+ * CardDescription received in Phase B). DialogTitle unchanged
+ * (intentional emphasis at `text-lg`).
  */
 
 const Dialog = DialogPrimitive.Root
@@ -47,7 +49,12 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border border-[#E2E8F0] bg-[#F8FAFC] p-6 shadow-[0_10px_25px_rgba(0,0,0,0.08)] duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-md dark:bg-background dark:border-border",
+        // 2026-04-29 Color Phase 3: hardcoded `bg-[#F8FAFC]` and
+        // `border-[#E2E8F0]` migrated to canonical `bg-card` /
+        // `border-card-border`. Modal elevation shadow stays hardcoded
+        // intentionally — modals warrant heavier elevation than the
+        // canonical `shadow-card` (used for in-flow cards).
+        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border border-card-border bg-card p-6 shadow-[0_10px_25px_rgba(0,0,0,0.08)] duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-md dark:bg-background dark:border-border",
         className
       )}
       {...props}
@@ -111,7 +118,7 @@ const DialogDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Description
     ref={ref}
-    className={cn("text-sm text-muted-foreground", className)}
+    className={cn("text-caption text-text-muted", className)}
     {...props}
   />
 ))

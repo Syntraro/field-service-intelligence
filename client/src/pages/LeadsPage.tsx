@@ -44,10 +44,10 @@ function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg }: {
         <div className={`p-1.5 rounded-md ${iconBg}`}>
           <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
         </div>
-        <div className="text-xs font-medium text-slate-500">{label}</div>
+        <div className="text-caption font-medium text-slate-500">{label}</div>
       </div>
-      <div className="text-2xl font-bold text-slate-900 tabular-nums mt-2">{value}</div>
-      <div className="text-xs text-slate-500 mt-1">{note}</div>
+      <div className="text-page-title font-bold text-slate-900 tabular-nums mt-2">{value}</div>
+      <div className="text-caption text-slate-500 mt-1">{note}</div>
     </div>
   );
 }
@@ -110,14 +110,14 @@ export default function LeadsPage() {
 
   // List stability: single return path — loading state renders inside content area only
   return (
-    <div className="min-h-screen bg-[#F4F8F4]" data-testid="leads-page">
+    <div className="min-h-screen bg-app-bg" data-testid="leads-page">
       <div className="p-6 space-y-5">
 
         {/* Header */}
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-slate-900">Leads</h1>
-            <p className="text-sm text-slate-500 mt-0.5">Sales pipeline overview with full lead list.</p>
+            <h1 className="text-page-title font-semibold text-slate-900">Leads</h1>
+            <p className="text-row text-slate-500 mt-0.5">Sales pipeline overview with full lead list.</p>
           </div>
           <Button size="sm" className="gap-1.5 h-9 rounded-md" onClick={() => setCreateModalOpen(true)} data-testid="button-new-lead">
             <Plus className="h-4 w-4" />
@@ -153,7 +153,7 @@ export default function LeadsPage() {
                     key={f}
                     variant={activeFilter === f ? "default" : "outline"}
                     size="sm"
-                    className="h-7 text-xs rounded-full"
+                    className="h-7 text-caption rounded-full"
                     onClick={() => setActiveFilter(f)}
                     data-testid={`button-filter-${f}`}
                   >
@@ -180,12 +180,12 @@ export default function LeadsPage() {
             <Table>
               <TableHeader>
                 <TableRow className="bg-slate-50">
-                  <TableHead className="text-xs font-medium text-slate-600">Title</TableHead>
-                  <TableHead className="text-xs font-medium text-slate-600">Source</TableHead>
-                  <TableHead className="text-xs font-medium text-slate-600">Priority</TableHead>
-                  <TableHead className="text-xs font-medium text-slate-600">Status</TableHead>
-                  <TableHead className="text-xs font-medium text-slate-600 text-right">Est. Value</TableHead>
-                  <TableHead className="text-xs font-medium text-slate-600">Created</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600">Title</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600">Source</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600">Priority</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600">Status</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600 text-right">Est. Value</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600">Created</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -199,25 +199,25 @@ export default function LeadsPage() {
                       data-testid={`row-lead-${lead.id}`}
                     >
                       <TableCell>
-                        <div className="text-sm font-medium text-slate-800">{lead.title}</div>
-                        {lead.description && <div className="text-xs text-slate-500 truncate max-w-[300px]">{lead.description}</div>}
+                        <div className="text-row font-medium text-slate-800">{lead.title}</div>
+                        {lead.description && <div className="text-caption text-slate-500 truncate max-w-[300px]">{lead.description}</div>}
                       </TableCell>
                       <TableCell>
-                        <span className="text-xs text-slate-600 capitalize">{lead.sourceType}</span>
+                        <span className="text-caption text-slate-600 capitalize">{lead.sourceType}</span>
                       </TableCell>
                       <TableCell>
-                        <span className="text-xs text-slate-600 capitalize">{lead.priority || "-"}</span>
+                        <span className="text-caption text-slate-600 capitalize">{lead.priority || "-"}</span>
                       </TableCell>
                       <TableCell>
                         <Badge variant={badge.variant}>{badge.label}</Badge>
                       </TableCell>
                       <TableCell className="text-right">
-                        <span className="text-sm text-slate-700 tabular-nums">
+                        <span className="text-row text-slate-700 tabular-nums">
                           {lead.estimatedValue ? `$${parseFloat(lead.estimatedValue).toLocaleString()}` : "-"}
                         </span>
                       </TableCell>
                       <TableCell>
-                        <span className="text-sm text-slate-500">{safeFormatDate(lead.createdAt)}</span>
+                        <span className="text-row text-slate-500">{safeFormatDate(lead.createdAt)}</span>
                       </TableCell>
                     </TableRow>
                   );
@@ -228,7 +228,7 @@ export default function LeadsPage() {
         </div>
 
         {filteredLeads.length > 0 && (
-          <div className="text-xs text-slate-500 mt-2">
+          <div className="text-caption text-slate-500 mt-2">
             Showing {filteredLeads.length} lead{filteredLeads.length !== 1 ? "s" : ""}
           </div>
         )}

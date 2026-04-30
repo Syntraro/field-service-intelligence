@@ -125,7 +125,7 @@ import { ActivityProvider } from "@/lib/activityStore";
 // SettingsShell no longer wraps routes — kept in codebase but unused (2026-04-04)
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
-import { SubscriptionBanner } from "@/components/SubscriptionBanner";
+import { GlobalNotice } from "@/components/GlobalNotice";
 import { ImpersonationBanner } from "@/components/ImpersonationBanner";
 // 2026-03-21: QuickAddClientModal removed — replaced by canonical CreateClientModal
 import { CreateClientModal } from "@/components/CreateClientModal";
@@ -835,8 +835,13 @@ function AppContent() {
   return (
     <SidebarProvider defaultOpen={true} style={style as React.CSSProperties}>
       <div className="flex flex-col h-screen w-full bg-background">
-        {/* Global header — dark app shell, color matched to sidebar via --sidebar-bg */}
-        <header className="flex items-center gap-3 px-3 h-16 shrink-0 z-20" style={{ background: '#222b36', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+        {/* Global header — dark app shell, color matched to sidebar via --sidebar-bg.
+            2026-04-29 Color Phase 2: hardcoded `#222b36` migrated to the
+            canonical `--header-bg` token via `bg-header-bg`. The 1px
+            translucent border-bottom stays as a Tailwind alpha utility
+            (`border-white/[0.06]`) — it's an alpha overlay, not a color
+            that belongs in the token set. */}
+        <header className="flex items-center gap-3 px-3 h-16 shrink-0 z-20 bg-header-bg border-b border-white/[0.06]">
           {/* Left: Logo + company greeting */}
           <Link href="/" className="flex items-center gap-4 shrink-0 cursor-pointer no-underline" data-testid="header-logo">
             <img src={syntaroLogo} alt="Syntraro" className="h-12 w-auto object-contain shrink-0" />
@@ -850,6 +855,18 @@ function AppContent() {
 
           {/* Spacer pushes search + actions to the right */}
           <div className="flex-1" />
+
+          {/* Canonical app-shell notice slot. 2026-04-29: single
+              `<GlobalNotice />` renders the highest-priority active,
+              non-dismissed notice from `useGlobalNotices()`. Replaces
+              the legacy page-content `<SubscriptionBanner />` so trial
+              messaging no longer pushes content down. Future notice
+              types (subscription-expired, payment-failed, maintenance,
+              admin/system) plug in via a provider hook in
+              `lib/globalNotices/providers/`. Hidden under md so the
+              search field keeps its full width on narrow viewports —
+              the notice is non-essential at that breakpoint. */}
+          <GlobalNotice />
 
           {/* Search — right-aligned, before action controls.
               2026-04-26: search is search-only. Creation flows live
@@ -887,7 +904,7 @@ function AppContent() {
                     {activeTaskCount > 0 && (
                       <Badge
                         variant="secondary"
-                        className="h-5 min-w-5 px-1.5 text-xs rounded-full bg-[#76B054] text-white border-transparent"
+                        className="h-5 min-w-5 px-1.5 text-xs rounded-full bg-brand text-white border-transparent"
                         data-testid="badge-tasks-count"
                       >
                         {/* Presentation cap only — underlying count is
@@ -913,13 +930,13 @@ function AppContent() {
               {/* Quick Create dropdown — replaces slide-over drawer for top-level menu */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
+                  {/* 2026-04-29 Color Phase 2: replaced inline `#76B054` /
+                      onMouseEnter/Leave JS swap with the canonical brand
+                      tokens via `bg-brand hover:bg-brand-hover`. */}
                   <Button
                     size="sm"
                     data-testid="button-create-new"
-                    className="gap-1.5 h-8 px-3 text-sm text-white font-medium"
-                    style={{ background: '#76B054' }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = '#5F9442')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = '#76B054')}
+                    className="gap-1.5 h-8 px-3 text-sm text-white font-medium bg-brand hover:bg-brand-hover"
                   >
                     <Plus className="h-4 w-4" />
                     <span>New</span>
@@ -1037,13 +1054,24 @@ function AppContent() {
           )}
         </header>
         {/* Sidebar + page content row */}
-        <div className="flex flex-1 overflow-hidden" style={{ background: '#222b36' }}>
+        {/* 2026-04-29 Color Phase 2: shell wrapper bg moved from inline
+            `#222b36` to the canonical `bg-sidebar-bg` token. */}
+        <div className="flex flex-1 overflow-hidden bg-sidebar-bg">
           <AppSidebar onDashboardClick={handleDashboardClick} />
           <div className="flex flex-col flex-1 overflow-hidden">
             <ImpersonationBanner />
-            <SubscriptionBanner />
+            {/* 2026-04-29: `<SubscriptionBanner />` removed — its trial
+                messaging now flows through the canonical `<GlobalNotice />`
+                mounted in the dark header above (no page-layout shift).
+                ImpersonationBanner stays separate (security-critical,
+                non-dismissible by design); TimezoneSetupBanner stays
+                separate for now (server-gated visibility). */}
             <TimezoneSetupBanner />
-            <main className="flex-1 overflow-auto rounded-tl-xl" style={{ background: '#F4F8F4' }}>
+            {/* 2026-04-29 Color Phase 2: global app background moved from
+                inline `#F4F8F4` (warm green-gray) to the canonical
+                `--app-bg` (#F3F5F7, cool neutral gray) via `bg-app-bg`.
+                This is the visible product change for this phase. */}
+            <main className="flex-1 overflow-auto rounded-tl-xl bg-app-bg">
               <Router />
             </main>
           </div>

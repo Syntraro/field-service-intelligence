@@ -90,7 +90,7 @@ function KpiTile({
         <div className={`p-1 rounded-md ${iconBg}`}>
           <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
         </div>
-        <div className="text-[11px] font-medium text-slate-500 uppercase tracking-wide truncate">
+        <div className="text-helper font-medium text-slate-500 uppercase tracking-wide truncate">
           {label}
         </div>
       </div>
@@ -108,7 +108,7 @@ function KpiTile({
             {value}
           </div>
           {sub && (
-            <div className="text-[11px] text-slate-500 mt-1 truncate">{sub}</div>
+            <div className="text-helper text-slate-500 mt-1 truncate">{sub}</div>
           )}
         </>
       )}

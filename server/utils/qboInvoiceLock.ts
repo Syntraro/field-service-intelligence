@@ -94,6 +94,9 @@ export const NON_BILLING_FIELDS = [
   'showLineTotals',
   'showLineItems',
   'showBalance',
+  // 2026-04-29: Visibility column kept aligned with the other show* toggles —
+  // changes the client PDF only, never the billed totals.
+  'showJobDescription',
   'viewedAt',
   // QBO sync fields (managed by sync process)
   'qboSyncToken',

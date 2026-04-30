@@ -9,7 +9,13 @@ const Card = React.forwardRef<
   <div
     ref={ref}
     className={cn(
-      "shadcn-card rounded-md border bg-card border-card-border text-card-foreground shadow-[0_1px_2px_rgba(0,0,0,0.05)]",
+      // 2026-04-29 Color Phase 3: hardcoded `shadow-[0_1px_2px_rgba(0,0,0,0.05)]`
+      // migrated to the canonical `shadow-card` token (defined in
+      // `tailwind.config.ts` and mirrored by `--card-shadow` in
+      // `index.css`). Soft 8px-elevation lift consistent across every
+      // `<Card>` consumer; spec target = "lift from background without
+      // heavy shadows".
+      "shadcn-card rounded-md border bg-card border-card-border text-card-foreground shadow-card",
       className
     )}
     {...props}
@@ -29,16 +35,28 @@ const CardHeader = React.forwardRef<
 ));
 CardHeader.displayName = "CardHeader"
 
+// 2026-04-29 Typography Phase B — Card primitive defaults migrated to
+// canonical semantic tokens. Previously CardTitle defaulted to `text-2xl`
+// (28.5px on this app's 19px html root, per the typography audit), which
+// every consumer overrode. CardDescription defaulted to `text-sm` and
+// the legacy shadcn `text-muted-foreground` color token. Both now resolve
+// through the canonical tokens registered in `tailwind.config.ts` and
+// `client/src/index.css`. The previous `leading-none` / `tracking-tight`
+// CardTitle modifiers are dropped — they were compensations for the
+// oversized 28.5px default and add no value at the new 16px size.
+//
+// Behavior contract: pages that override the default (e.g.
+// `<CardTitle className="text-base font-medium">`) are unchanged because
+// the override className still wins via cn(). Pages that did NOT
+// override now render at the new canonical size — see Phase B follow-up
+// for the (small) list of impacted consumers.
 const CardTitle = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn(
-      "text-2xl font-semibold leading-none tracking-tight",
-      className
-    )}
+    className={cn("text-section-title", className)}
     {...props}
   />
 ))
@@ -50,7 +68,7 @@ const CardDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn("text-sm text-muted-foreground", className)}
+    className={cn("text-caption text-text-muted", className)}
     {...props}
   />
 ));

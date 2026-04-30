@@ -10,6 +10,7 @@ import {
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -448,11 +449,10 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
 
                 <div className="space-y-1">
                   <Label className="text-xs">Start Date</Label>
-                  <Input
-                    type="date"
+                  <CanonicalDatePicker
                     value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                    className="h-9 text-sm"
+                    onChange={(next) => setStartDate(next ?? "")}
+                    className="w-full h-9 text-sm"
                   />
                 </div>
 

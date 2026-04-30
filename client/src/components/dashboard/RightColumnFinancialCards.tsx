@@ -111,7 +111,7 @@ export function TopOutstandingInvoicesCard({
       ) : top.length === 0 ? (
         // 2026-04-25 polish: tighter empty state.
         <div className="px-4 py-3">
-          <p className="text-[11px] text-slate-500 italic">No outstanding invoices.</p>
+          <p className="text-helper text-slate-500 italic">No outstanding invoices.</p>
         </div>
       ) : (
         <ul>
@@ -201,7 +201,7 @@ export function TopCustomersOwingCard({
         </div>
       ) : top.length === 0 ? (
         <div className="px-4 py-3">
-          <p className="text-[11px] text-slate-500 italic">No customer balances open.</p>
+          <p className="text-helper text-slate-500 italic">No customer balances open.</p>
         </div>
       ) : (
         <ul>

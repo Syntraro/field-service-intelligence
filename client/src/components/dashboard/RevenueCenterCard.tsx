@@ -120,7 +120,7 @@ export function RevenueCenterCard({
           <DollarSign className="h-3.5 w-3.5 text-[#76B054] shrink-0" />
           <h3 className="text-sm font-semibold text-[#111827] truncate">Revenue Center</h3>
           {totalCount > 0 && (
-            <span className="text-[11px] text-[#4b5563] tabular-nums shrink-0">
+            <span className="text-helper text-[#4b5563] tabular-nums shrink-0">
               {totalCount} action{totalCount === 1 ? "" : "s"}
             </span>
           )}
@@ -128,7 +128,7 @@ export function RevenueCenterCard({
         <button
           type="button"
           onClick={() => setLocation("/financials")}
-          className="text-[11px] font-semibold text-[#76B054] hover:underline shrink-0"
+          className="text-helper font-semibold text-[#76B054] hover:underline shrink-0"
           data-testid="revenue-center-view-financial"
         >
           Open financials
@@ -167,7 +167,7 @@ export function RevenueCenterCard({
                         <div className={`text-xs font-semibold truncate ${row.urgent && row.count > 0 ? "text-red-600" : "text-[#111827]"}`}>
                           {row.label}
                         </div>
-                        <div className="text-[11px] text-[#6b7280] truncate">
+                        <div className="text-helper text-[#6b7280] truncate">
                           {row.description}
                         </div>
                       </div>

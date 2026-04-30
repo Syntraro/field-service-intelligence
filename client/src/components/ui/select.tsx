@@ -7,11 +7,13 @@ import { Check, ChevronDown, ChevronUp } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 /**
- * UI typography standard (see docs/UI_TYPOGRAPHY.md):
- *   Default body font size for select triggers + items = 12px (`text-xs`).
- *   SelectTrigger currently renders `text-sm`; SelectItem inherits the
- *   content's text size. Do not flip the default here without sweeping
- *   every form that depends on the current `text-sm` baseline.
+ * UI typography standard (see docs/UI_TYPOGRAPHY.md).
+ *
+ * 2026-04-29 Typography Phase C: SelectTrigger default migrated from
+ * `text-sm` (17.1px) to canonical `text-row` (13px / 18px). SelectLabel
+ * (`text-sm font-semibold`) and SelectItem (`text-sm`) are explicitly
+ * NOT migrated in this phase per scope; SelectItem aligns with
+ * dropdown-menu items in a future sweep.
  */
 
 const Select = SelectPrimitive.Root
@@ -27,7 +29,7 @@ const SelectTrigger = React.forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      "flex h-9 w-full items-center justify-between rounded-md border border-[#CBD5E1] bg-white px-3 py-2 text-sm text-[#0F172A] ring-offset-background data-[placeholder]:text-[#94A3B8] focus:outline-none focus:border-[#76B054] focus:shadow-[0_0_0_2px_rgba(118,176,84,0.25)] disabled:cursor-not-allowed disabled:bg-[#F1F5F9] disabled:text-[#94A3B8] disabled:border-[#E2E8F0] disabled:opacity-100 [&>span]:line-clamp-1",
+      "flex h-9 w-full items-center justify-between rounded-md border border-[#CBD5E1] bg-white px-3 py-2 text-row text-[#0F172A] ring-offset-background data-[placeholder]:text-[#94A3B8] focus:outline-none focus:border-[#76B054] focus:shadow-[0_0_0_2px_rgba(118,176,84,0.25)] disabled:cursor-not-allowed disabled:bg-[#F1F5F9] disabled:text-[#94A3B8] disabled:border-[#E2E8F0] disabled:opacity-100 [&>span]:line-clamp-1",
       className
     )}
     {...props}

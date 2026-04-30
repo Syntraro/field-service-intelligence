@@ -13,13 +13,26 @@ export const listRowClass = "border-b border-[#e5e7eb] dark:border-gray-800 last
 // Standardized hover matches shared Table component
 export const tableRowClass = "cursor-pointer hover:bg-[#f8fafc] dark:hover:bg-gray-800/60 transition-colors border-b border-[#e5e7eb] dark:border-gray-800 last:border-b-0"
 
-// Standardized list-page typography tokens (Jobber-style dense layout)
+// Standardized list-page typography tokens (Jobber-style dense layout).
+//
+// 2026-04-29 Typography Phase D: migrated to canonical semantic
+// tokens. Visual size targets are unchanged or tighter:
+//   - listPrimaryClass:    text-sm font-medium (17.1px)        → text-row-emphasis (13/18 + weight 500)
+//   - listSecondaryClass:  text-xs text-muted-foreground (15.2px, legacy color) → text-caption text-text-muted (12/16 + canonical text-muted)
+//   - listHeaderRowClass:  text-xs font-medium (15.2px)        → text-label (11/14 + weight 500 + 0.04em tracking + uppercase via @layer components)
+//
+// `font-medium` is dropped from the migrated tokens because the new
+// fontSize tuples bundle weight 500 already. `listBadgeClass` and
+// `listResultsClass` keep their `text-xs` for now — Phase D explicitly
+// scoped to header / primary / secondary rows; badge + results-count
+// migrations are a separate Phase pass.
+
 /** Table header row: background, border, padding, text */
-export const listHeaderRowClass = "grid items-center border-b border-[#e5e7eb] dark:border-gray-800 py-2 text-xs font-medium text-muted-foreground bg-[#f8fafc] dark:bg-gray-900/50"
+export const listHeaderRowClass = "grid items-center border-b border-[#e5e7eb] dark:border-gray-800 py-2 text-label text-muted-foreground bg-[#f8fafc] dark:bg-gray-900/50"
 /** Primary cell text (company name, job location, invoice client) */
-export const listPrimaryClass = "text-sm font-medium truncate"
+export const listPrimaryClass = "text-row-emphasis truncate"
 /** Secondary cell text (contact, sublocation, description) */
-export const listSecondaryClass = "text-xs text-muted-foreground truncate"
+export const listSecondaryClass = "text-caption text-text-muted truncate"
 /** Status/tag badge sizing */
 export const listBadgeClass = "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
 /** Results count footer text */

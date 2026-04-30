@@ -104,9 +104,9 @@ const ITEMS_PER_PAGE = 50;
 function SummaryCard({ label, value, note }: { label: string; value: string; note: string }) {
   return (
     <div className="bg-white rounded-md border border-slate-200 shadow-sm px-5 py-4">
-      <div className="text-xs font-medium text-slate-500 mb-1">{label}</div>
-      <div className="text-2xl font-bold text-slate-900 tabular-nums">{value}</div>
-      <div className="text-xs text-slate-500 mt-1">{note}</div>
+      <div className="text-caption font-medium text-slate-500 mb-1">{label}</div>
+      <div className="text-page-title font-bold text-slate-900 tabular-nums">{value}</div>
+      <div className="text-caption text-slate-500 mt-1">{note}</div>
     </div>
   );
 }
@@ -122,7 +122,7 @@ function SortableHeader({ field, sortField, sortDirection, onSort, children, tes
 }) {
   return (
     <TableHead
-      className="cursor-pointer hover:bg-slate-100 select-none text-xs font-medium text-slate-600"
+      className="cursor-pointer hover:bg-slate-100 select-none text-caption font-medium text-slate-600"
       onClick={() => onSort(field)}
       data-testid={testId}
     >
@@ -406,14 +406,14 @@ export default function Jobs() {
 
   // List stability: single return path — loading state renders inside content area only
   return (
-    <div className="min-h-screen bg-[#F4F8F4]" data-testid="jobs-page">
+    <div className="min-h-screen bg-app-bg" data-testid="jobs-page">
       <div className="p-6 space-y-5">
 
         {/* ── 1. Header Row ── */}
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-slate-900">Jobs</h1>
-            <p className="text-sm text-slate-500 mt-0.5">Job activity and performance overview with full job list.</p>
+            <h1 className="text-page-title font-semibold text-slate-900">Jobs</h1>
+            <p className="text-row text-slate-500 mt-0.5">Job activity and performance overview with full job list.</p>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -474,7 +474,7 @@ export default function Jobs() {
                         key={val}
                         variant={lifecycleFilter === val ? "default" : "outline"}
                         size="sm"
-                        className="h-7 text-xs rounded-full"
+                        className="h-7 text-caption rounded-full"
                         onClick={() => setLifecycleFilter(val)}
                         data-testid={`button-filter-status-${val}`}
                       >
@@ -500,7 +500,7 @@ export default function Jobs() {
                           key={val}
                           variant={openSubStatusFilter === val ? "default" : "outline"}
                           size="sm"
-                          className="h-7 text-xs rounded-full"
+                          className="h-7 text-caption rounded-full"
                           onClick={() => setOpenSubStatusFilter(val)}
                           data-testid={val === "any" ? "filter-substatus-any" : `filter-substatus-${val}`}
                         >
@@ -513,7 +513,7 @@ export default function Jobs() {
               )}
             </>
           ) : (
-            <Button variant="ghost" size="sm" className="h-7 text-xs gap-1" onClick={() => setIsHistoryMode(false)}>
+            <Button variant="ghost" size="sm" className="h-7 text-caption gap-1" onClick={() => setIsHistoryMode(false)}>
               <ArrowLeft className="h-3.5 w-3.5" />
               Back to recent jobs
             </Button>
@@ -522,7 +522,7 @@ export default function Jobs() {
 
         {/* History mode header */}
         {isHistoryMode && (
-          <div className="flex items-center gap-2 px-4 py-2 bg-slate-50 border border-slate-200 rounded-md text-sm text-slate-600">
+          <div className="flex items-center gap-2 px-4 py-2 bg-slate-50 border border-slate-200 rounded-md text-row text-slate-600">
             <Search className="h-4 w-4" />
             <span className="font-medium">Searching all job history</span>
           </div>
@@ -532,7 +532,7 @@ export default function Jobs() {
         {!isHistoryMode && searchQuery.trim().length > 0 && (
           <button
             onClick={() => setIsHistoryMode(true)}
-            className="w-full py-1.5 text-center text-xs text-slate-500 hover:text-slate-800 hover:bg-slate-50 border border-slate-200 rounded-md transition-colors"
+            className="w-full py-1.5 text-center text-caption text-slate-500 hover:text-slate-800 hover:bg-slate-50 border border-slate-200 rounded-md transition-colors"
           >
             Not finding a job? <span className="font-medium underline underline-offset-2">Search all job history</span>
           </button>
@@ -551,11 +551,11 @@ export default function Jobs() {
             <Table>
               <TableHeader>
                 <TableRow className="bg-slate-50">
-                  <TableHead className="text-xs font-medium text-slate-600">Client / Location</TableHead>
-                  <TableHead className="text-xs font-medium text-slate-600">Job</TableHead>
-                  <TableHead className="text-xs font-medium text-slate-600">Summary</TableHead>
-                  <TableHead className="text-xs font-medium text-slate-600">Schedule</TableHead>
-                  <TableHead className="text-xs font-medium text-slate-600">Status</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600">Client / Location</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600">Job</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600">Summary</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600">Schedule</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600">Status</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -584,24 +584,24 @@ export default function Jobs() {
                   historyJobs.map((job) => (
                     <TableRow key={job.id} className={tableRowClass} onClick={() => handleRowClick(job)}>
                       <TableCell>
-                        <div className="text-sm font-medium text-slate-800 truncate">{job.locationDisplayName || "Unknown Company"}</div>
-                        {job.locationName && <div className="text-xs text-slate-500 truncate">{job.locationName}</div>}
+                        <div className="text-row font-medium text-slate-800 truncate">{job.locationDisplayName || "Unknown Company"}</div>
+                        {job.locationName && <div className="text-caption text-slate-500 truncate">{job.locationName}</div>}
                       </TableCell>
                       <TableCell>
-                        <div className="font-mono text-sm text-slate-800">{formatJobNumber(job.jobNumber)}</div>
-                        <div className="text-xs text-slate-500 capitalize">{job.jobType}</div>
+                        <div className="font-mono text-row text-slate-800">{formatJobNumber(job.jobNumber)}</div>
+                        <div className="text-caption text-slate-500 capitalize">{job.jobType}</div>
                       </TableCell>
                       <TableCell>
-                        <div className="max-w-[300px] truncate text-sm text-slate-700">{job.summary}</div>
+                        <div className="max-w-[300px] truncate text-row text-slate-700">{job.summary}</div>
                       </TableCell>
                       <TableCell>
                         {job.scheduledStart ? (
-                          <div className="flex items-center gap-1 text-sm text-slate-700">
+                          <div className="flex items-center gap-1 text-row text-slate-700">
                             <CalendarIcon className="h-3 w-3 text-slate-400" />
                             {format(new Date(job.scheduledStart), "MMM d, yyyy")}
                           </div>
                         ) : (
-                          <span className="text-xs text-slate-400">Not scheduled</span>
+                          <span className="text-caption text-slate-400">Not scheduled</span>
                         )}
                       </TableCell>
                       <TableCell>
@@ -624,7 +624,7 @@ export default function Jobs() {
                 <TableRow className="bg-slate-50">
                   <SortableHeader field="location" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} testId="header-location">Client / Location</SortableHeader>
                   <SortableHeader field="jobNumber" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} testId="header-jobnumber">Job</SortableHeader>
-                  <TableHead className="text-xs font-medium text-slate-600" data-testid="header-summary">Summary</TableHead>
+                  <TableHead className="text-caption font-medium text-slate-600" data-testid="header-summary">Summary</TableHead>
                   <SortableHeader field="schedule" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} testId="header-schedule">Schedule</SortableHeader>
                   <SortableHeader field="status" sortField={sortField} sortDirection={sortDirection} onSort={handleSort} testId="header-status">Status</SortableHeader>
                   {isOfficeUser && <TableHead className="w-10"></TableHead>}
@@ -661,29 +661,29 @@ export default function Jobs() {
                     >
                       {/* Client / Location — company + address only, no age text */}
                       <TableCell data-testid={`text-location-${job.id}`}>
-                        <div className="text-sm font-medium text-slate-800 truncate">{job.locationDisplayName || "Unknown Company"}</div>
+                        <div className="text-row font-medium text-slate-800 truncate">{job.locationDisplayName || "Unknown Company"}</div>
                         {job.locationName && (
-                          <div className="text-xs text-slate-500 truncate">{job.locationName}</div>
+                          <div className="text-caption text-slate-500 truncate">{job.locationName}</div>
                         )}
                       </TableCell>
                       {/* Job number + type */}
                       <TableCell data-testid={`text-jobnumber-${job.id}`}>
-                        <div className="font-mono text-sm text-slate-800">{formatJobNumber(job.jobNumber)}</div>
-                        <div className="text-xs text-slate-500 capitalize">{job.jobType}</div>
+                        <div className="font-mono text-row text-slate-800">{formatJobNumber(job.jobNumber)}</div>
+                        <div className="text-caption text-slate-500 capitalize">{job.jobType}</div>
                       </TableCell>
                       {/* Summary */}
                       <TableCell data-testid={`text-summary-${job.id}`}>
-                        <div className="max-w-[300px] truncate text-sm text-slate-700">{job.summary}</div>
+                        <div className="max-w-[300px] truncate text-row text-slate-700">{job.summary}</div>
                       </TableCell>
                       {/* Schedule */}
                       <TableCell data-testid={`text-schedule-${job.id}`}>
                         {job.scheduledStart ? (
-                          <div className="flex items-center gap-1 text-sm text-slate-700">
+                          <div className="flex items-center gap-1 text-row text-slate-700">
                             <CalendarIcon className="h-3 w-3 text-slate-400" />
                             {format(new Date(job.scheduledStart), "MMM d, yyyy")}
                           </div>
                         ) : (
-                          <span className="text-xs text-slate-400">Not scheduled</span>
+                          <span className="text-caption text-slate-400">Not scheduled</span>
                         )}
                       </TableCell>
                       {/* Status — canonical status only, no SLA aging indicator */}
@@ -727,7 +727,7 @@ export default function Jobs() {
             </div>
           )}
 
-          <div className="text-xs text-slate-500 mt-2" data-testid="text-job-count">
+          <div className="text-caption text-slate-500 mt-2" data-testid="text-job-count">
             Showing {visibleJobs.length} of {filteredAndSortedJobs.length} job{filteredAndSortedJobs.length !== 1 ? 's' : ''}
           </div>
         </>

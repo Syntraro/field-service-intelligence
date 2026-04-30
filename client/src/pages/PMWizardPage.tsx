@@ -27,6 +27,7 @@ import { getClientDisplayName } from "@shared/clientDisplayName";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -686,11 +687,10 @@ function StepSchedule({
 
       <div className="space-y-1.5">
         <Label className="text-sm font-medium">When does this plan start?</Label>
-        <Input
-          type="date"
-          className="h-9 w-48"
+        <CanonicalDatePicker
           value={state.startDate}
-          onChange={(e) => setStartDate(e.target.value)}
+          onChange={(next) => setStartDate(next ?? "")}
+          className="h-9 w-48 text-sm"
           data-testid="pm-wizard-start-date"
         />
         <p className="text-xs text-muted-foreground leading-snug">
@@ -1023,11 +1023,10 @@ function StepPricing({
         )}
         {state.durationMode === "specific" && (
           <div className="pt-1">
-            <Input
-              type="date"
-              className="w-48 h-8"
+            <CanonicalDatePicker
               value={state.endDate}
-              onChange={(e) => onChange({ endDate: e.target.value })}
+              onChange={(next) => onChange({ endDate: next ?? "" })}
+              className="w-48 h-8 text-sm"
               data-testid="pm-wizard-end-date"
             />
             {errors.endDate && (

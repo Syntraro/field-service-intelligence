@@ -12,6 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useFileUpload, resolveFileAccessUrl } from "@/hooks/useFileUpload";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
@@ -439,10 +440,10 @@ export function JobExpensesCard({ jobId, onTotalsChange }: JobExpensesCardProps)
             </div>
             <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1">Date</label>
-              <Input
-                type="date"
+              <CanonicalDatePicker
                 value={formDate}
-                onChange={(e) => setFormDate(e.target.value)}
+                onChange={(next) => setFormDate(next ?? "")}
+                className="w-full h-9 text-sm"
                 data-testid="input-expense-date"
               />
             </div>

@@ -21,6 +21,7 @@ import { Clock, Loader2, AlertTriangle, Lock, Trash2, LockKeyhole } from "lucide
 import { useActivityStore } from "@/lib/activityStore";
 import { getMemberDisplayName } from "@/lib/displayName";
 import { Button } from "@/components/ui/button";
+import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -491,11 +492,10 @@ export function TimeEntryModal({
               <div className="grid grid-cols-3 gap-3">
                 <div className="space-y-1">
                   <Label className="text-xs">Date</Label>
-                  <Input
-                    type="date"
+                  <CanonicalDatePicker
                     value={startDate}
-                    onChange={e => setStartDate(e.target.value)}
-                    className="h-8 text-sm"
+                    onChange={(next) => setStartDate(next ?? "")}
+                    className="w-full h-8 text-sm"
                     data-testid="input-start-date"
                   />
                 </div>

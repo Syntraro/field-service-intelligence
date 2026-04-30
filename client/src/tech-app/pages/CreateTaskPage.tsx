@@ -23,6 +23,7 @@ import { MobileShell } from "../components/MobileShell";
 import { apiRequest } from "@/lib/queryClient";
 import type { TaskType, Supplier, SupplierLocation } from "@shared/schema";
 import { TECH_ALLOWED_TASK_TYPES } from "@shared/taskConstants";
+import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { TECH_TASKS_QUERY_KEY } from "../hooks/useTechTasks";
 
 // ── Display config for the type chooser ──
@@ -399,8 +400,13 @@ export function CreateTaskPage() {
               </button>
               {scheduled && (
                 <div className="flex gap-2 mt-2">
-                  <input type="date" value={schedDate} onChange={(e) => setSchedDate(e.target.value)}
-                    className="flex-1 h-10 px-3 text-sm border border-slate-200 rounded-md" />
+                  <div className="flex-1">
+                    <CanonicalDatePicker
+                      value={schedDate}
+                      onChange={(next) => setSchedDate(next ?? "")}
+                      className="w-full h-10 text-sm"
+                    />
+                  </div>
                   <input type="time" value={schedTime} onChange={(e) => setSchedTime(e.target.value)}
                     className="w-28 h-10 px-3 text-sm border border-slate-200 rounded-md" />
                 </div>

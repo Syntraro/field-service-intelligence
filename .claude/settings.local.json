@@ -196,7 +196,23 @@
       "Bash(DATABASE_URL=$\\(node --env-file=.env -e \"console.log\\(process.env.DATABASE_URL\\)\"\\) npx vitest run tests/visit-editor-payload-builder.test.ts)",
       "Bash(DATABASE_URL=$\\(node --env-file=.env -e \"console.log\\(process.env.DATABASE_URL\\)\"\\) npx vitest run tests/find-next-available-slot.test.ts tests/canonical-policy-architecture.test.ts)",
       "Bash(DATABASE_URL=$\\(node --env-file=.env -e \"console.log\\(process.env.DATABASE_URL\\)\"\\) npx vitest run tests/canonical-policy-architecture.test.ts)",
-      "Bash(DATABASE_URL=\"postgres://stub:stub@localhost:5432/stub\" npx vitest run tests/find-next-available-slot.test.ts --no-coverage)"
+      "Bash(DATABASE_URL=\"postgres://stub:stub@localhost:5432/stub\" npx vitest run tests/find-next-available-slot.test.ts --no-coverage)",
+      "Bash(awk 'length<400 && NR<2000 {print NR\": \"$0}' \"C:\\\\Users\\\\nadsa\\\\OneDrive\\\\Desktop\\\\Invoice Redesign - bundled.html\")",
+      "Bash(awk NR==174 {print \"manifest line: \"length\" chars\"} NR==182 {print \"template line: \"length\" chars\"} NR>185 {exit} *)",
+      "Bash(cygpath -w /tmp/invoice_template.json)",
+      "Bash(tasklist //FI \"IMAGENAME eq node.exe\")",
+      "Bash(awk NR>=2448 && NR<=2548 *)",
+      "Bash(grep -c \"^DATABASE_URL=\" .env)",
+      "Bash(node -e \"require\\('dotenv'\\).config\\({path:'.env'}\\); console.log\\('DATABASE_URL set:', !!process.env.DATABASE_URL\\)\")",
+      "Bash(npx esbuild *)",
+      "Bash(cross-env NODE_ENV=development *)",
+      "Bash(awk NR==168,NR==170{print NR\": \"$0} *)",
+      "Bash(awk NR>=170 && NR<=192{print NR\": \"$0} *)",
+      "Bash(awk NR>=720 && NR<=730{print NR\": \"$0} *)",
+      "Bash(awk NR>=2540 && NR<=2570{print NR\": \"$0} *)",
+      "Bash(sed -n '2378,2402p' client/src/pages/InvoiceDetailPage.tsx)",
+      "Bash(sed -n '2468,2473p' client/src/pages/InvoiceDetailPage.tsx)",
+      "Bash(awk NR>=2240 && NR<=2250{print NR\": \"$0} *)"
     ]
   }
 }
