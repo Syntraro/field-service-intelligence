@@ -833,7 +833,27 @@ function AppContent() {
   }
 
   return (
-    <SidebarProvider defaultOpen={true} style={style as React.CSSProperties}>
+    // 2026-04-30 scrollbar root-cause fix: shadcn's `<SidebarProvider>`
+    // applies `flex min-h-svh w-full` to its outer wrapper by default.
+    // `min-h-svh` is a *floor* — descendants that push height past
+    // `100svh` cause the wrapper to grow, which in turn pushes <body>
+    // taller than the viewport and triggers a body-level scrollbar
+    // ON TOP OF the shell's `<main>` overflow-auto scrollbar. Result on
+    // long pages: two visible vertical scrollbars on the right.
+    //
+    // Override with `h-screen overflow-hidden` — the wrapper is now
+    // exactly viewport-height and clips any overflow from descendants
+    // (including the App shell's own `h-screen` flex column). The shell's
+    // `<main className="flex-1 overflow-auto">` remains the SOLE
+    // canonical vertical scroll surface. Body never scrolls.
+    //
+    // tw-merge resolves the override correctly: the explicit `h-screen`
+    // we pass via `className` wins over the primitive's `min-h-svh`.
+    <SidebarProvider
+      defaultOpen={true}
+      className="h-screen overflow-hidden"
+      style={style as React.CSSProperties}
+    >
       <div className="flex flex-col h-screen w-full bg-background">
         {/* Global header — dark app shell, color matched to sidebar via --sidebar-bg.
             2026-04-29 Color Phase 2: hardcoded `#222b36` migrated to the

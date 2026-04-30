@@ -212,7 +212,8 @@
       "Bash(awk NR>=2540 && NR<=2570{print NR\": \"$0} *)",
       "Bash(sed -n '2378,2402p' client/src/pages/InvoiceDetailPage.tsx)",
       "Bash(sed -n '2468,2473p' client/src/pages/InvoiceDetailPage.tsx)",
-      "Bash(awk NR>=2240 && NR<=2250{print NR\": \"$0} *)"
+      "Bash(awk NR>=2240 && NR<=2250{print NR\": \"$0} *)",
+      "Read(//c/dev/Syntraro/**)"
     ]
   }
 }

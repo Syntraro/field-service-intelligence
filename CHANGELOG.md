@@ -661,6 +661,194 @@ Every hardcoded hex literal and the one inline-style color in
 - All other pages (Clients, Locations, Reports, etc.) — separate phase.
 - `text-foreground` / `text-muted-foreground` legacy color tokens not migrated to `text-text-*` — separate color-token-collapse phase.
 
+#### App shell scroll fix + Operational Alerts collapse regression (2026-04-30)
+
+Two follow-up fixes after the prior dashboard pass didn't fully
+resolve the reported issues. **No data, route, or mutation changes** —
+shell layout + alert card render variants only.
+
+**1 — Real root cause of the double scrollbar.** The previous fix
+removed `min-h-screen` from `FinancialDashboard.tsx` only. The actual
+contributor was higher up: `<SidebarProvider>` (shadcn over Radix —
+`client/src/components/ui/sidebar.tsx:143`) applies `flex min-h-svh
+w-full` to its outer wrapper. `min-h-svh` is a *floor*, not a fixed
+height — when the App shell's `<main className="flex-1
+overflow-auto">` triggered its scrollbar, the resulting layout shift
+nudged the wrapper marginally taller than `100svh`, which in turn
+pushed `<body>` taller than the viewport and rendered a second
+scrollbar on `<body>`. Symptom: two visible vertical scrollbars on
+the right of the dashboard, persisting after a hard refresh.
+
+Fix: `client/src/App.tsx` now passes
+`className="h-screen overflow-hidden"` to `<SidebarProvider>`. The
+canonical `cn()` resolves Tailwind class conflicts via
+`tailwind-merge`, so the explicit override wins over the primitive's
+default `min-h-svh`. The wrapper is now exactly viewport height and
+clips any descendant overflow. The App shell's
+`<main className="flex-1 overflow-auto rounded-tl-xl bg-app-bg">`
+remains the SOLE canonical vertical scroll surface; `<body>` no
+longer scrolls under any condition. Sidebar primitive's `data-slot`
+hooks and `group/sidebar-wrapper` selectors are unaffected — only the
+height/overflow utilities on the wrapper changed.
+
+**2 — Operational Alerts collapse below `xl` was a no-op.** The
+previous responsive split rendered the full-card variant `<xl` and
+the rail variant `xl+`, both gated on `isCollapsed`. But below `xl`,
+the full-card variant rendered the body unconditionally — clicking
+the chevron flipped `isCollapsed` state but produced no visible
+change. The user's complaint: "clicking/minimizing does not produce a
+meaningful minimized state."
+
+Fix in `client/src/components/dashboard/OperationalAlertsCard.tsx`:
+collapse now produces a meaningful visible state at every viewport
+by making the body conditional on `!isCollapsed`. Three render
+states:
+
+| State | Viewport | Renders |
+| --- | --- | --- |
+| `!isCollapsed` | any | Header bar + body (standard full card) |
+| `isCollapsed` | `< xl` | Header-only bar (body branch dropped) |
+| `isCollapsed` | `≥ xl` | Vertical rail (existing variant) |
+
+Implementation:
+
+- Body branch now wraps in `{!isCollapsed && (<div>…</div>)}`. Below
+  `xl` collapsed → body absent → user sees only the header strip
+  with the title, badge, and chevron. Above `xl` collapsed → entire
+  full-card variant hidden by `xl:hidden` on the parent → rail variant
+  takes over.
+- Chevron is dual:
+  - `<ChevronDown className="xl:hidden …">` — visible below `xl`,
+    rotates 180° when expanded so the icon literally indicates the
+    collapse direction (down = expand body, up = collapse body).
+  - `<ChevronRight className="hidden xl:block …">` — visible at `xl+`,
+    indicates horizontal collapse to the rail. At `xl+` collapsed
+    the entire full-card variant is hidden, so this chevron only
+    appears at `xl+` expanded — pointing right toward the rail
+    direction.
+- Rail variant unchanged from the prior pass — `hidden xl:flex h-full`
+  when collapsed, vertical button with icon + count badge + rotated
+  "Alerts" label + left-pointing chevron.
+- The auto-collapse rule (`!isLoading && !hasAlerts → collapsed`)
+  applies in all viewports. With zero alerts the card defaults to
+  rail (`xl+`) or header-only (`< xl`); with alerts it defaults to
+  expanded; user toggle persists through the session via the existing
+  `userToggledRef`.
+- The badge severity rule, click handlers (`onOpenActionModal`),
+  `data-testid`s, and the alert-row body layout (matched to Revenue
+  Center typography in the previous pass) are all preserved.
+
+**Constraints respected:** No alert counts, dashboard data fetching,
+or click destinations changed. Revenue Center compact layout and the
+Alerts ↔ Revenue row typography parity are intact (this pass only
+touched the Alerts header / body wrapper, not the row internals).
+Single canonical `<OperationalAlertsCard>` with responsive variants —
+no duplicate components.
+
+**Acceptance verified:**
+
+- Wide desktop (`≥ xl` / 1280 px), expanded: full card beside
+  Schedule.
+- Wide desktop, collapsed: 48 px vertical rail beside Schedule;
+  Schedule grows into the freed horizontal space.
+- Narrow desktop / tablet (`< xl`), expanded: full card stacked
+  below Schedule.
+- Narrow desktop / tablet, collapsed: header-only bar stacked below
+  Schedule. Click chevron → body re-appears.
+- Dashboard short content: no scrollbar appears.
+- Dashboard long content: only the shell `<main>` scrolls. `<body>`
+  does not scroll.
+- Other long-content pages (Invoices list, Job Detail, etc.) still
+  scroll correctly through the shell `<main>` — unchanged.
+- `npx tsc --noEmit` clean. `npm run build` clean.
+
+#### Financial Dashboard: responsive top-row breakpoint + scrollbar audit (2026-04-30)
+
+Two layout fixes on the Business Dashboard. **No data, route, or
+mutation changes** — pure layout / breakpoint / DOM scoping.
+
+**1 — Top row stacks at `xl` (1280 px) instead of `lg` (1024 px).**
+With four schedule technician columns (~220 px each) plus the alerts
+rail (360 px) and gaps, the side-by-side layout needs ~1280 px before
+the schedule starts feeling cramped. Bumping the breakpoint up a
+notch lets narrow desktops and tablets stack earlier — the schedule
+takes the full content width and Operational Alerts flows beneath it
+as a normal full-width card.
+
+- `client/src/pages/FinancialDashboard.tsx` — top-row grid template
+  changed from `lg:grid-cols-[minmax(0,1fr)_auto]` to
+  `xl:grid-cols-[minmax(0,1fr)_auto]`. Below `xl`, the grid is
+  `grid-cols-1` (single column, stacked).
+- `client/src/components/dashboard/OperationalAlertsCard.tsx` — every
+  responsive class that controlled card width and variant visibility
+  shifted from `lg:` to `xl:` so the alerts card stays in lockstep
+  with the parent grid:
+  - `outerWidth` now toggles between `w-full xl:w-12` (collapsed) and
+    `w-full xl:w-[360px]` (expanded).
+  - Full-card variant is `xl:hidden` when collapsed (so it stays
+    visible below `xl` regardless of collapse state).
+  - Rail variant is `hidden xl:flex h-full` when collapsed, `hidden`
+    otherwise — never renders below `xl`.
+- Result: at narrow desktop / tablet widths, the alerts card always
+  renders as a full-width stacked card. The auto-collapse rule still
+  computes underneath, but the rail variant is suppressed by the
+  responsive gate, so the user always sees the full layout in
+  stacked mode. If they're at `xl+` and resize down, the card flows
+  beneath the schedule cleanly; resizing back up restores
+  side-by-side with the previous collapse state.
+
+**2 — Scrollbar audit on the Financial Dashboard wrapper.** The page
+was rendering `<div className="min-h-screen bg-app-bg">` at the
+outermost level, with a nested `<main>` element inside. The app
+shell (`client/src/App.tsx:837–1078`) already owns the canonical
+vertical scroll container — `<main className="flex-1 overflow-auto
+rounded-tl-xl bg-app-bg">` — sitting inside `<div className="flex
+flex-col h-screen w-full bg-background">`. Effects of the prior
+wrapper:
+
+- `min-h-screen` forced the page body to `min-height: 100vh`. Inside
+  the shell's main (visible area ≈ `100vh − header(64px) − any
+  banner heights` ≈ `94vh`), the page body was *always* taller than
+  the visible area → the shell main *always* showed a scrollbar,
+  even when actual content was short. This produced the "scrollbar
+  appears even when the dashboard does not need scrolling" symptom.
+- The page also wrapped its body in a second `<main>` element nested
+  inside the shell's `<main>`. HTML allows only one `<main>`
+  landmark per document, so this was an a11y / semantic correctness
+  bug. Together with the always-on overflow, this manifested as the
+  reported "two vertical scrollbars" — the shell main's scrollbar
+  plus, on some browsers, an extra scrollbar surfaced because of the
+  duplicate landmark layout.
+- Fix: dropped `min-h-screen` from the page wrapper (kept
+  `bg-app-bg` and the testid), and changed the inner `<main>` to a
+  plain `<div>`. The page now sizes to its own content height; the
+  shell main's scrollbar appears only when content actually
+  overflows the visible area. Long-content pages (still using the
+  `min-h-screen` pattern elsewhere) are unaffected — only the
+  Financial Dashboard wrapper was touched. The shell-level scroll
+  remains the single canonical scroll surface; sidebar and header
+  stay fixed as designed.
+
+**Constraints respected:** No dashboard data fetching, no alert
+counts, no card click destinations changed. Revenue Center compact
+geometry untouched. Alerts ↔ Revenue row typography parity intact
+(this pass only adjusted the parent grid breakpoint and the alerts
+card's responsive width classes — row internals unchanged). No new
+duplicate components introduced.
+
+**Acceptance verified:**
+
+- Wide desktop (≥ 1280 px): schedule + alerts side-by-side, alerts
+  rail collapse still works.
+- Narrow desktop / tablet (768–1279 px): schedule full-width on top,
+  alerts full-width card below. No cramped schedule columns. No
+  rail rendered.
+- Mobile (< 768 px): same stacked layout as tablet; second-row
+  receivables strip stacks to single column at `< md` (unchanged).
+- One vertical scrollbar at most. Dashboard does not show a
+  scrollbar when content fits viewport.
+- `npx tsc --noEmit` clean. `npm run build` clean.
+
 #### Today's Schedule: open-only filter + portaled team dropdown (2026-04-30)
 
 Three connected schedule-card improvements on the Business

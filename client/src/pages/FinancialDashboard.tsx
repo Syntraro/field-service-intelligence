@@ -35,10 +35,15 @@ import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  DollarSign, AlertCircle, ChevronRight,
+  DollarSign, AlertCircle, ChevronDown, ChevronRight,
   TrendingUp, Users, Receipt, Calendar as CalendarIcon, Plus,
   FileEdit,
 } from "lucide-react";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 // 2026-04-26: Operations / Financial mode toggle removed — there is now
 // a single Business Dashboard. `DashboardViewToggle` is no longer
 // imported by any surface.
@@ -58,9 +63,13 @@ import {
   DashboardActionModal,
   type DashboardActionMode,
 } from "@/components/DashboardActionModal";
-// 2026-04-23: canonical trigger+popover shell shared with DispatchFiltersBar
-// and TodaysOperationsCard. Generic children — we own what's inside.
-import { MultiSelectDropdown } from "@/components/MultiSelectDropdown";
+// 2026-04-30: <MultiSelectDropdown> dropped from this file — its
+// absolute-positioned popover gets clipped by DashCard's overflow-hidden.
+// Today's Schedule now uses the canonical <Popover> primitive
+// (`@/components/ui/popover`) which renders via <PopoverPrimitive.Portal>
+// and escapes the card's overflow boundary. DispatchFiltersBar and
+// TodaysOperationsCard still consume <MultiSelectDropdown> — they live
+// inside surfaces without overflow-hidden parents and aren't affected.
 // 2026-04-24: shared adapter that fills in the prop fields the canonical
 // Edit Visit modal reads (customerName, jobNumber, locationId, ...) when
 // the caller only holds visitId + jobId. Dispatch already passes the full
@@ -301,8 +310,8 @@ export default function FinancialDashboard() {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-app-bg">
-        <main className="mx-auto px-4 sm:px-5 lg:px-6 py-4">
+      <div className="bg-app-bg">
+        <div className="mx-auto px-4 sm:px-5 lg:px-6 py-4">
           <div className="p-6 bg-white rounded-md border border-red-200">
             <div className="flex items-center gap-2 text-red-600 mb-2">
               <AlertCircle className="h-4 w-4" />
@@ -310,14 +319,25 @@ export default function FinancialDashboard() {
             </div>
             <p className="text-sm text-slate-600">{(error as Error).message}</p>
           </div>
-        </main>
+        </div>
       </div>
     );
   }
 
+  // 2026-04-30 scrollbar audit: the page wrapper used `min-h-screen` and
+  // nested `<main>` inside the app shell's own `<main>`. The shell already
+  // owns the canonical vertical scroll (`<main className="flex-1
+  // overflow-auto">` in `client/src/App.tsx`), so a child `min-h-screen`
+  // forced page height ≥ 100vh — taller than the shell main's available
+  // area (`100vh − header − banners`) — guaranteeing an always-on
+  // scrollbar even when content is short. The nested `<main>` was also
+  // HTML-invalid (two `<main>` landmarks per document). Fixes: drop
+  // `min-h-screen` so content sizes to its own height, and replace the
+  // inner `<main>` with a plain `<div>` to leave a single landmark on
+  // the page.
   return (
-    <div className="min-h-screen bg-app-bg" data-testid="financial-dashboard-page">
-      <main className="mx-auto px-4 sm:px-5 lg:px-6 py-4">
+    <div className="bg-app-bg" data-testid="financial-dashboard-page">
+      <div className="mx-auto px-4 sm:px-5 lg:px-6 py-4">
         {/* Header */}
         <div
           className="mb-4"
@@ -331,21 +351,32 @@ export default function FinancialDashboard() {
           </p>
         </div>
 
-        {/* Top row — Today's Schedule (1fr) + Revenue Center (360px on desktop). */}
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-3 mb-3">
+        {/* 2026-04-30 layout swap — Top row now: Today's Schedule (1fr)
+            + Operational Alerts (auto). Operational Alerts surfaces
+            urgent triage above the cash-flow rows so the user's first
+            scan-line carries actionable items. The right column uses
+            `auto` (was `360px`) so when the alerts card collapses to a
+            48 px desktop rail, the schedule card grows into the freed
+            horizontal space. The alerts card itself sets its outer
+            width (`xl:w-[360px]` expanded, `xl:w-12` collapsed) — the
+            grid cell tracks that width.
+
+            2026-04-30 (responsive pass) — breakpoint moved from `lg`
+            (1024 px) to `xl` (1280 px). With four schedule columns
+            (~220 px each + gaps) plus the 360 px alerts rail, the
+            side-by-side layout requires ~1280 px of usable content
+            width before the schedule starts feeling cramped. Below
+            `xl` the grid collapses to a single column: schedule
+            renders full-width, alerts stacks below it as a
+            full-width card (rail variant suppressed inside the
+            alerts component). The alerts component's `xl:w-...`
+            classes mirror this same breakpoint so the card width
+            never drifts out of sync with the parent grid. */}
+        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_auto] gap-3 mb-3">
           <TodaysScheduleCard
             onOpenVisit={(visitState) => setEditorState(visitState)}
             onOpenSlot={(s) => setSlot(s)}
           />
-          <RevenueCenterFinancialCard
-            data={data}
-            isLoading={isLoading}
-            onNavigate={(dest) => setLocation(dest)}
-          />
-        </div>
-
-        {/* Second row — three equal-width cards. Stacks vertically on mobile. */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <OperationalAlertsCard
             requiresAttentionCount={requiresAttentionCount}
             pastDueCount={pastDueCount}
@@ -355,6 +386,25 @@ export default function FinancialDashboard() {
             onOpenActionModal={openActionModal}
             order={["requires_attention", "past_due", "unscheduled", "ready_to_invoice"]}
           />
+        </div>
+
+        {/* 2026-04-30 layout swap — Second row: Revenue Center moves
+            here from the top-right slot it previously held, joining
+            Top Outstanding Invoices + Top Customers Owing in the
+            three-column receivables strip. The Revenue cell uses
+            `self-start` so it does NOT stretch to match the heavier
+            invoice/customer cards — Revenue is a compact summary
+            (4 short rows) and looks visually wrong when stretched.
+            The other two cells keep default `stretch` so they remain
+            equal-height. Stacks vertically on mobile. */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="self-start">
+            <RevenueCenterFinancialCard
+              data={data}
+              isLoading={isLoading}
+              onNavigate={(dest) => setLocation(dest)}
+            />
+          </div>
 
           <TopOutstandingInvoicesCard
             data={data}
@@ -370,7 +420,7 @@ export default function FinancialDashboard() {
             onViewAll={() => setLocation("/invoices?filter=awaiting_payment")}
           />
         </div>
-      </main>
+      </div>
 
       {/* Canonical launchers — identical mounts to Dashboard.tsx. */}
       <VisitEditorLauncher
@@ -429,6 +479,10 @@ function RevenueCenterFinancialCard({
   const draftTotal = data?.draft.total ?? 0;
   const cashThisMonth = data?.revenue.month ?? 0;
 
+  // 2026-04-30 compact pass — labels shortened per spec, sub merged
+  // into the right-aligned summary string with a `·` separator. Each
+  // row is now a single horizontal line: icon + label left, summary
+  // right. No more two-line stack of label-above-value.
   const rows: Array<{
     key: string;
     label: string;
@@ -442,7 +496,7 @@ function RevenueCenterFinancialCard({
   }> = [
     {
       key: "cash-this-month",
-      label: "Cash received this month",
+      label: "This month",
       value: formatCurrency(cashThisMonth),
       icon: TrendingUp,
       iconColor: "text-emerald-600",
@@ -450,7 +504,7 @@ function RevenueCenterFinancialCard({
     },
     {
       key: "outstanding-ar",
-      label: "Outstanding A/R",
+      label: "Outstanding",
       value: formatCurrency(ar?.outstandingTotal ?? 0),
       sub:
         (ar?.outstandingCount ?? 0) > 0
@@ -463,7 +517,7 @@ function RevenueCenterFinancialCard({
     },
     {
       key: "overdue-ar",
-      label: "Overdue A/R",
+      label: "Overdue",
       value: formatCurrency(ar?.pastDueTotal ?? 0),
       sub:
         (ar?.pastDueCount ?? 0) > 0
@@ -477,7 +531,7 @@ function RevenueCenterFinancialCard({
     },
     {
       key: "draft-invoices",
-      label: "Draft invoices",
+      label: "Drafts",
       value: draftCount > 0 ? formatCurrency(draftTotal) : "$0",
       sub: draftCount > 0 ? `${draftCount} draft${draftCount === 1 ? "" : "s"}` : undefined,
       icon: FileEdit,
@@ -506,8 +560,8 @@ function RevenueCenterFinancialCard({
       />
       <div data-testid="revenue-center-financial">
         {isLoading ? (
-          <div className="p-4 space-y-2">
-            {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-10 w-full" />)}
+          <div className="p-3 space-y-1.5">
+            {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-7 w-full" />)}
           </div>
         ) : (
           <ul>
@@ -515,7 +569,12 @@ function RevenueCenterFinancialCard({
               const Icon = row.icon;
               const isLast = idx === rows.length - 1;
               const interactive = !!row.onClick;
-              const className = `w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${
+              // Right-aligned summary: when both `sub` and `value` are
+              // present, render them on one line joined by a thin-space
+              // bullet — e.g. "1 draft · $0", "3 past due · $300".
+              // When only `value` exists, render just `$0`.
+              const summary = row.sub ? `${row.sub} · ${row.value}` : row.value;
+              const className = `w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors ${
                 !isLast ? "border-b border-[#e2e8f0]" : ""
               } ${
                 row.urgent
@@ -524,33 +583,33 @@ function RevenueCenterFinancialCard({
                     ? "hover:bg-[#F0F5F0]"
                     : ""
               }`;
+              // 2026-04-30 micro-polish: trailing chevron dropped from
+              // every Revenue row. Each row's right edge now ends with
+              // the value/summary string so the four rows right-align
+              // consistently with each other. Click affordance on
+              // interactive rows is signaled solely by the existing
+              // hover background — `hover:bg-[#F0F5F0]` (or
+              // `hover:bg-red-50` for the urgent row) — and by the
+              // `<button>` cursor.
               const inner = (
                 <>
-                  <div className={`p-1.5 rounded-md shrink-0 ${row.iconBg}`}>
-                    <Icon className={`h-3.5 w-3.5 ${row.iconColor}`} />
+                  <div className={`p-1 rounded shrink-0 ${row.iconBg}`}>
+                    <Icon className={`h-3 w-3 ${row.iconColor}`} />
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs font-medium text-slate-500 truncate">{row.label}</div>
-                    <div
-                      className={`text-base font-semibold tabular-nums truncate ${
-                        row.urgent ? "text-red-700" : "text-[#111827] dark:text-gray-100"
-                      }`}
-                    >
-                      {row.value}
-                    </div>
-                  </div>
-                  {row.sub && (
-                    <div
-                      className={`text-xs tabular-nums shrink-0 ${
-                        row.urgent ? "text-red-600 font-medium" : "text-slate-500"
-                      }`}
-                    >
-                      {row.sub}
-                    </div>
-                  )}
-                  {interactive && (
-                    <ChevronRight className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                  )}
+                  <span
+                    className={`flex-1 text-xs font-medium truncate ${
+                      row.urgent ? "text-red-700" : "text-slate-700 dark:text-gray-200"
+                    }`}
+                  >
+                    {row.label}
+                  </span>
+                  <span
+                    className={`text-sm font-semibold tabular-nums shrink-0 ${
+                      row.urgent ? "text-red-700" : "text-[#111827] dark:text-gray-100"
+                    }`}
+                  >
+                    {summary}
+                  </span>
                 </>
               );
               return (
@@ -794,6 +853,13 @@ function TodaysScheduleCard({
 }) {
   const [, setLocation] = useLocation();
   const [scopeIds, setScopeIds] = useState<string[]>([]);
+  // 2026-04-30 — open-only filter for the schedule card. State is local to
+  // this card so it doesn't bleed into Operational Alerts / Revenue /
+  // anywhere else on the dashboard. Composes with `scopeIds` (team filter)
+  // by filtering the per-tech `scheduleBlocks` AFTER the team filter has
+  // already produced `activeTechs` — both filters layer cleanly in a
+  // single derivation step downstream.
+  const [openOnly, setOpenOnly] = useState(false);
 
   const capacityQuery = useQuery<CapacityResponseDto>({
     queryKey: ["/api/dashboard/capacity"],
@@ -816,7 +882,22 @@ function TodaysScheduleCard({
     return techs.filter((t) => scopeIds.includes(t.technicianId));
   }, [techs, scopeIds, isMultiTech, isAllTeam]);
 
-  const isSingleTechView = activeTechs.length === 1;
+  // Per-column row filter. When `openOnly` is on, every visible tech keeps
+  // its column slot but the booked rows are dropped. A column with zero
+  // open slots renders the per-state empty copy below ("No open slots")
+  // instead of disappearing — this preserves layout stability when the
+  // user toggles the filter on/off, and gives selected technicians
+  // explicit "nothing for you to take" feedback rather than silently
+  // hiding them.
+  const visibleTechs = useMemo(() => {
+    if (!openOnly) return activeTechs;
+    return activeTechs.map((t) => ({
+      ...t,
+      scheduleBlocks: t.scheduleBlocks.filter((b) => b.kind === "open"),
+    }));
+  }, [activeTechs, openOnly]);
+
+  const isSingleTechView = visibleTechs.length === 1;
 
   const scopeLabel = useMemo(() => {
     if (isAllTeam) return "All team";
@@ -906,57 +987,103 @@ function TodaysScheduleCard({
             )}
           </h3>
         </div>
-        <div className="flex items-center gap-2">
+        {/*
+          2026-04-30 — header controls cluster:
+            • Open-only toggle (left of team dropdown per spec)
+            • Team scope dropdown (multi-tech only, canonical Popover)
+            • Create button (right edge)
+
+          `flex-wrap` lets the cluster wrap onto a second row at narrow
+          tablet widths instead of horizontally overflowing the card or
+          crushing the title beside it.
+        */}
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          <button
+            type="button"
+            onClick={() => setOpenOnly((v) => !v)}
+            aria-pressed={openOnly}
+            className={`inline-flex items-center h-8 px-3 text-xs font-medium rounded-md border transition-colors ${
+              openOnly
+                ? "border-[#76B054] bg-[#76B054]/10 text-[#76B054]"
+                : "border-[#e2e8f0] bg-white text-slate-700 hover:bg-slate-50"
+            }`}
+            data-testid="schedule-open-only-toggle"
+          >
+            {openOnly ? "Showing open" : "Open only"}
+          </button>
           {isMultiTech && (
-            <MultiSelectDropdown
-              label={scopeLabel}
-              count={isAllTeam ? techs.length : scopeIds.length}
-              total={techs.length}
-              align="right"
-              width="w-60"
-              testId="schedule-scope-filter"
-            >
-              <div className="py-1 max-h-80 overflow-y-auto">
+            // 2026-04-30 — switched from <MultiSelectDropdown> (absolute-
+            // positioned popover that gets clipped by DashCard's
+            // overflow-hidden) to the canonical <Popover> primitive,
+            // which renders inside <PopoverPrimitive.Portal> and escapes
+            // every parent overflow boundary. The popover content is now
+            // a flex column with a scrollable team list (`max-h-72
+            // overflow-y-auto`) and a pinned, non-scrolling
+            // "Manage team →" footer below it.
+            <Popover>
+              <PopoverTrigger asChild>
                 <button
                   type="button"
-                  onClick={selectAll}
-                  className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-slate-50 ${
-                    isAllTeam ? "font-semibold text-[#111827]" : "text-[#4b5563]"
-                  }`}
-                  data-testid="schedule-scope-all"
+                  className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium rounded-md border border-[#e2e8f0] bg-white text-slate-700 hover:bg-slate-50"
+                  data-testid="schedule-scope-filter"
                 >
-                  <input type="checkbox" readOnly checked={isAllTeam} className="pointer-events-none" />
-                  All team
+                  {scopeLabel}
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-semibold text-slate-600">
+                    {isAllTeam ? "All" : scopeIds.length}
+                  </span>
+                  <ChevronDown className="h-3 w-3" />
                 </button>
-                <div className="border-t border-[#e2e8f0] my-1" />
-                {techs.map((t) => {
-                  const checked = !isAllTeam && scopeIds.includes(t.technicianId);
-                  return (
+              </PopoverTrigger>
+              <PopoverContent
+                align="end"
+                sideOffset={4}
+                className="w-60 p-0"
+              >
+                <div className="flex flex-col">
+                  <div className="py-1 max-h-72 overflow-y-auto">
                     <button
-                      key={t.technicianId}
                       type="button"
-                      onClick={() => toggleTechId(t.technicianId)}
+                      onClick={selectAll}
                       className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-slate-50 ${
-                        checked ? "font-medium text-[#111827]" : "text-[#4b5563]"
+                        isAllTeam ? "font-semibold text-[#111827]" : "text-[#4b5563]"
                       }`}
-                      data-testid={`schedule-scope-${t.technicianId}`}
+                      data-testid="schedule-scope-all"
                     >
-                      <input type="checkbox" readOnly checked={checked} className="pointer-events-none" />
-                      <span className="truncate">{t.name}</span>
+                      <input type="checkbox" readOnly checked={isAllTeam} className="pointer-events-none" />
+                      All team
                     </button>
-                  );
-                })}
-                <div className="border-t border-[#e2e8f0] my-1" />
-                <button
-                  type="button"
-                  onClick={() => setLocation("/settings/team")}
-                  className="w-full text-left px-3 py-1.5 text-xs text-[#76B054] hover:underline font-medium"
-                  data-testid="schedule-manage-team"
-                >
-                  Manage team →
-                </button>
-              </div>
-            </MultiSelectDropdown>
+                    <div className="border-t border-[#e2e8f0] my-1" />
+                    {techs.map((t) => {
+                      const checked = !isAllTeam && scopeIds.includes(t.technicianId);
+                      return (
+                        <button
+                          key={t.technicianId}
+                          type="button"
+                          onClick={() => toggleTechId(t.technicianId)}
+                          className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-slate-50 ${
+                            checked ? "font-medium text-[#111827]" : "text-[#4b5563]"
+                          }`}
+                          data-testid={`schedule-scope-${t.technicianId}`}
+                        >
+                          <input type="checkbox" readOnly checked={checked} className="pointer-events-none" />
+                          <span className="truncate">{t.name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="border-t border-[#e2e8f0]">
+                    <button
+                      type="button"
+                      onClick={() => setLocation("/settings/team")}
+                      className="w-full text-left px-3 py-2 text-xs text-[#76B054] font-medium hover:bg-slate-50 hover:underline"
+                      data-testid="schedule-manage-team"
+                    >
+                      Manage team →
+                    </button>
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
           )}
           <button
             type="button"
@@ -980,19 +1107,25 @@ function TodaysScheduleCard({
           <div className="p-4 space-y-2">
             {[1, 2, 3, 4, 5, 6].map((i) => <Skeleton key={i} className="h-8" />)}
           </div>
-        ) : activeTechs.length === 0 ? (
+        ) : visibleTechs.length === 0 ? (
           <div className="p-4">
             <EmptyState message="No technicians in the selected scope." />
           </div>
         ) : isSingleTechView ? (
           <div data-testid="schedule-single-tech-view">
-            {activeTechs[0].scheduleBlocks.length === 0 ? (
+            {visibleTechs[0].scheduleBlocks.length === 0 ? (
               <div className="p-4">
-                <EmptyState message="No scheduled work for this tech today." />
+                <EmptyState
+                  message={
+                    openOnly
+                      ? "No open slots."
+                      : "No scheduled work for this tech today."
+                  }
+                />
               </div>
             ) : (
-              activeTechs[0].scheduleBlocks.map((block, idx, arr) => {
-                const tech = activeTechs[0];
+              visibleTechs[0].scheduleBlocks.map((block, idx, arr) => {
+                const tech = visibleTechs[0];
                 const timeRange = formatTimeRange(block.startISO, block.endISO);
                 const isOpen = block.kind === "open";
                 const isLast = idx === arr.length - 1;
@@ -1046,7 +1179,7 @@ function TodaysScheduleCard({
           // The column body is identical in both modes; only the container
           // and per-column width class differ.
           (() => {
-            const useGrid = activeTechs.length <= 4;
+            const useGrid = visibleTechs.length <= 4;
             const renderColumn = (tech: CapacityTechDto, isLastCol: boolean, widthClass: string) => {
               // 2026-04-26 polish v6: off-shift technicians can still have
               // assigned visits (e.g. accidental booking on a day-off). The
@@ -1054,8 +1187,17 @@ function TodaysScheduleCard({
               // column labels the name `(off shift)` and renders the
               // blocks below. The "No work" copy fires only when the tech
               // truly has nothing assigned today.
+              // 2026-04-30: when the open-only filter is on, the per-column
+              // empty copy switches to "No open slots" so a tech the user
+              // has explicitly selected doesn't read as "off shift" or
+              // "no work" when they actually do have booked visits — just
+              // none of them are open slots to claim.
               const isOffShift = tech.state === "off_today";
-              const emptyLabel = isOffShift ? "Off shift" : "No work";
+              const emptyLabel = openOnly
+                ? "No open slots"
+                : isOffShift
+                  ? "Off shift"
+                  : "No work";
               return (
               <div
                 key={tech.technicianId}
@@ -1133,11 +1275,11 @@ function TodaysScheduleCard({
             return useGrid ? (
               <div
                 className="grid flex-1"
-                style={{ gridTemplateColumns: `repeat(${activeTechs.length}, minmax(0, 1fr))` }}
+                style={{ gridTemplateColumns: `repeat(${visibleTechs.length}, minmax(0, 1fr))` }}
                 data-testid="schedule-multi-column-view"
               >
-                {activeTechs.map((tech, i) =>
-                  renderColumn(tech, i === activeTechs.length - 1, "min-w-0"),
+                {visibleTechs.map((tech, i) =>
+                  renderColumn(tech, i === visibleTechs.length - 1, "min-w-0"),
                 )}
               </div>
             ) : (
@@ -1146,8 +1288,8 @@ function TodaysScheduleCard({
                 data-testid="schedule-multi-column-view"
               >
                 <div className="flex h-full" style={{ minWidth: "min-content" }}>
-                  {activeTechs.map((tech, i) =>
-                    renderColumn(tech, i === activeTechs.length - 1, "flex-none w-[220px]"),
+                  {visibleTechs.map((tech, i) =>
+                    renderColumn(tech, i === visibleTechs.length - 1, "flex-none w-[220px]"),
                   )}
                 </div>
               </div>
