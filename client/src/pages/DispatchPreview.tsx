@@ -116,13 +116,46 @@ function FocusCard({ visit, onRemove, onOpen }: {
   );
 }
 
+/**
+ * 2026-04-30: localStorage key for the last-selected Dispatch view.
+ * Naming follows the in-repo `syntraro:*` convention established by
+ * `DASHBOARD_VIEW_KEY` (DashboardViewToggle.tsx). Stored value is a
+ * raw `DispatchView` string ("day" | "week" | "month"); any other
+ * value is treated as missing and the default ("day") is used.
+ */
+const DISPATCH_VIEW_KEY = "syntraro:dispatch-view-mode";
+
 export default function DispatchPreview() {
   const { toast } = useToast();
 
   // 2026-04-08: useDispatchStream() now mounted once at App.tsx root for all office surfaces.
 
   // ── View mode ──
-  const [activeView, setActiveView] = useState<DispatchView>("day");
+  // 2026-04-30: Persist last-selected Dispatch view across navigations.
+  // Mirrors the precedent set by `DASHBOARD_VIEW_KEY` in
+  // `DashboardViewToggle.tsx` — single localStorage key, validated read,
+  // silent fallback on disabled-storage. The user-suggested
+  // `dispatch:lastViewMode` was renamed to `syntraro:dispatch-view-mode`
+  // to keep the in-repo namespace consistent (`syntraro:*` kebab-case).
+  const [activeView, setActiveView] = useState<DispatchView>(() => {
+    if (typeof window === "undefined") return "day";
+    try {
+      const saved = window.localStorage.getItem(DISPATCH_VIEW_KEY);
+      if (saved === "day" || saved === "week" || saved === "month") return saved;
+    } catch {
+      // ignore — fall through to default
+    }
+    return "day";
+  });
+  const handleViewChange = useCallback((next: DispatchView) => {
+    setActiveView(next);
+    try {
+      window.localStorage.setItem(DISPATCH_VIEW_KEY, next);
+    } catch {
+      // localStorage may be unavailable (private mode, quota). Persistence
+      // best-effort; default fallback path still works.
+    }
+  }, []);
 
   // ── Item 7: 24-hour timeline toggle ──
   const [show24Hour, setShow24Hour] = useState(false);
@@ -1417,7 +1450,7 @@ export default function DispatchPreview() {
           onNextDay={onNextDay}
           onToday={onToday}
           activeView={activeView}
-          onViewChange={setActiveView}
+          onViewChange={handleViewChange}
           show24Hour={show24Hour}
           onToggle24Hour={onToggle24Hour}
         />

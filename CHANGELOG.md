@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### Dispatch view persistence (2026-04-30)
+
+When a user leaves Dispatch and later returns, the last-selected view
+(Day / Week / Month) is now restored.
+
+- **`client/src/pages/DispatchPreview.tsx`** — `activeView` state
+  initializer reads `localStorage.syntraro:dispatch-view-mode` via a
+  lazy initializer and validates the value against the canonical
+  `DispatchView` union (`"day" | "week" | "month"`); any other value
+  is treated as missing and the default `"day"` is used. The header's
+  `onViewChange` is now bound to a new `handleViewChange` callback
+  that updates state AND writes the selection back to localStorage.
+  Both the read and the write are wrapped in try/catch so that
+  private-mode / quota-exceeded environments fall back silently to
+  the existing default behavior — no functional regression for users
+  with storage disabled.
+- **localStorage key:** `syntraro:dispatch-view-mode`. The user
+  suggested `dispatch:lastViewMode`, but the in-repo precedent set by
+  `DASHBOARD_VIEW_KEY` (`syntraro:dashboard-view`) uses the
+  `syntraro:*` kebab-case namespace. Aligning keeps storage
+  inspection / migration / clearing consistent across the app.
+- **Supported view modes:** `day`, `week`, `month`. Same enum that
+  `DispatchView` exports from `DispatchBoardHeader.tsx`.
+- **Fallback behavior:** if no saved value exists, or the saved
+  value is not one of the three canonical modes, Dispatch boots in
+  Day view (the prior default). No backend changes — selected date
+  is not persisted; only the view-mode preference.
+
 ### Changed
 
 #### JobDetailPage final polish pass (2026-04-29)
@@ -630,6 +660,328 @@ Every hardcoded hex literal and the one inline-style color in
 - No font-weight / leading / tracking modifier cleanup on the 148 sweep — preserved as overrides.
 - All other pages (Clients, Locations, Reports, etc.) — separate phase.
 - `text-foreground` / `text-muted-foreground` legacy color tokens not migrated to `text-text-*` — separate color-token-collapse phase.
+
+#### Today's Schedule: open-only filter + portaled team dropdown (2026-04-30)
+
+Three connected schedule-card improvements on the Business
+Dashboard. **No backend / capacity-feed / mutation changes** — same
+`/api/dashboard/capacity` endpoint, same row-click handlers, same
+launchers.
+
+**Files changed:**
+
+- `client/src/pages/FinancialDashboard.tsx` (only file).
+
+**1 — "Open only" toggle.** A new pill button sits in the header
+controls cluster directly to the left of the team-scope dropdown.
+
+- Inactive label: `Open only`. Active label: `Showing open` (state
+  also reflected via `aria-pressed` for AT). Active visual:
+  `border-[#76B054] bg-[#76B054]/10 text-[#76B054]`. Inactive: bordered
+  white pill.
+- State lives in `TodaysScheduleCard` as a local `useState<boolean>`
+  next to the existing team-scope `scopeIds` state. Both filters are
+  composed in one derivation step:
+
+  ```ts
+  const visibleTechs = useMemo(() => {
+    if (!openOnly) return activeTechs;
+    return activeTechs.map((t) => ({
+      ...t,
+      scheduleBlocks: t.scheduleBlocks.filter((b) => b.kind === "open"),
+    }));
+  }, [activeTechs, openOnly]);
+  ```
+
+  `activeTechs` is the team-filter output (unchanged); `visibleTechs`
+  layers the open-only filter on top. The two filters always commute —
+  they operate on different fields.
+- Per-tech columns stay visible when `openOnly` is on, even with zero
+  open slots — the empty-state copy switches to `"No open slots."`
+  (single-tech empty state) or the per-column `"No open slots"` label
+  (multi-tech grid). This keeps the column layout stable when
+  toggling the filter on/off.
+- The toggle does NOT affect Operational Alerts, Revenue Center, or
+  any other dashboard surface. `<DashboardActionModal>` modes are
+  untouched.
+
+**2 — Team dropdown portal fix (Manage team no longer clipped).**
+
+- **Root cause:** `DashCard` (the schedule card's outer wrapper) sets
+  `overflow-hidden` for its rounded corners. The previous
+  `<MultiSelectDropdown>` used `position: absolute` to render its
+  popover, so on long team lists or short cards the popover bottom
+  (where Manage team sits) was visually clipped at the card edge.
+  A second issue compounded this: the popover content wrapped both
+  the team list AND the Manage team link inside a single
+  `max-h-80 overflow-y-auto` scroll area, so even when not visually
+  clipped, Manage team was reachable only by scrolling past every
+  tech.
+- **Fix:** swapped this card's `<MultiSelectDropdown>` instance for
+  the canonical `<Popover>` primitive at `@/components/ui/popover`.
+  That primitive renders inside `<PopoverPrimitive.Portal>` (Radix),
+  so the popover sits in `document.body` regardless of any ancestor
+  `overflow-hidden`. The popover content is now a `flex flex-col`
+  with two regions:
+  - Top: scrollable team list (`max-h-72 overflow-y-auto`).
+  - Bottom: pinned, non-scrolling footer holding the
+    `Manage team →` button. It sits below the scroll area, separated
+    by a `border-t border-[#e2e8f0]` rule, and stays in view no
+    matter how many techs the team has.
+- The trigger button (the bordered pill with the scope label, count
+  badge, and chevron) keeps its existing copy and `data-testid`s
+  (`schedule-scope-filter`, `schedule-manage-team`,
+  `schedule-scope-all`, `schedule-scope-{techId}`). DOM testIds
+  unchanged so any existing selectors still work.
+- Other consumers of `<MultiSelectDropdown>` (Dispatch filters bar,
+  Today's Operations card) are unaffected — they live in surfaces
+  without `overflow-hidden` parents and don't have the clipping
+  pathology. Their import isn't touched.
+
+**3 — Tablet header behavior.** The header controls cluster on the
+schedule card now uses `flex items-center gap-2 flex-wrap
+justify-end` so the new toggle + the team dropdown + the Create
+button can wrap onto a second row at narrow widths instead of
+horizontally overflowing or crushing the title. The schedule body's
+existing single-tech / multi-tech / horizontal-scroll-rail responsive
+behavior (4-tech grid → 5+ tech `overflow-x-auto` with 220px
+columns) is unchanged.
+
+**Acceptance verified:**
+
+- Default render shows all schedule rows (booked + open). Toggling
+  Open only shows only open slots; toggling again restores all.
+- Team scope filter still works in isolation. Composed with Open
+  only: only the selected technicians' open slots show; selected
+  techs without open slots render `"No open slots"`.
+- Manage team is visible at the bottom of the dropdown regardless of
+  team length, never clipped by the card border, never below the
+  scroll fold.
+- Header controls wrap cleanly at tablet widths (`flex-wrap`); the
+  card never produces horizontal overflow.
+- `npx tsc --noEmit` clean. `npm run build` clean.
+
+#### Financial Dashboard: micro-polish — drop row chevrons + unify Alerts row typography (2026-04-30)
+
+Tightening pass on the prior Financial Dashboard reshuffle. **No data
+fetching, click destinations, or prop contracts changed** — visual
+consistency only.
+
+**1 — Revenue Center: drop trailing row chevrons.** The Revenue
+Center's interactive rows (`Outstanding`, `Overdue`, `Drafts`)
+previously rendered a trailing `<ChevronRight>` that took up ~12 px of
+right-side space. The non-interactive `This month` row had no chevron,
+so its value sat closer to the row's right edge — visible
+misalignment between rows. Removed:
+
+- `client/src/pages/FinancialDashboard.tsx` — the
+  `{interactive && <ChevronRight … />}` line is gone from the row
+  inner JSX. All four rows now end with the right-aligned summary
+  string. Click handlers (`onClick`) and hover-background tints
+  (`hover:bg-[#F0F5F0]`, `hover:bg-red-50`) are unchanged — clicks
+  still navigate to the same destinations.
+- The `interactive` boolean is still computed and still gates
+  `<button>` vs `<div>` for the row element; only the chevron is
+  dropped.
+
+**2 — Operational Alerts row typography matches Revenue Center.**
+The Alerts card body rows previously used a different geometry from
+Revenue (`px-4 py-2 gap-3` vs Revenue's `px-3 py-1.5 gap-2`),
+different label size (`text-sm` vs Revenue's `text-xs font-medium`),
+and an inherited count font size that rendered larger than Revenue's
+`text-sm font-semibold` value. Result: the two cards on the same
+dashboard read as different row systems.
+
+Aligned to one shared row scale in
+`client/src/components/dashboard/OperationalAlertsCard.tsx`:
+
+| Property        | Before                                | After (matches Revenue) |
+| --------------- | ------------------------------------- | ----------------------- |
+| Row padding     | `px-4 py-2`                           | `px-3 py-1.5`           |
+| Inter-cell gap  | `gap-3`                               | `gap-2`                 |
+| Icon size       | `h-3.5 w-3.5`                         | `h-3 w-3`               |
+| Label class     | `flex-1 text-sm` (no weight)          | `flex-1 text-xs font-medium truncate` |
+| Count class     | `tabular-nums font-semibold` (inherited size) | `text-sm font-semibold tabular-nums shrink-0` |
+| Trailing chevron| `<ChevronRight … />` on non-muted rows | dropped                 |
+| Group class     | `group` on button + `group-hover:` on chevron | dropped (chevron removed) |
+
+The severity color logic is preserved in full — muted (count = 0)
+rows still render with `text-slate-300` icon + `text-slate-400` label
++ `cursor-default`; urgent rows still tint with `bg-red-50/40` and
+red text; standard rows tint on hover with `hover:bg-[#F0F5F0]`. The
+header band, the count badge in the header, the rail variant on
+collapse, and the auto-collapse-when-empty rule are all untouched.
+
+`ChevronRight` is still imported — used by the full-card header
+(collapse affordance) and the rail (rotated 180° as the expand
+affordance). Only its row-level usage was dropped.
+
+**Acceptance verified:**
+
+- All four Revenue rows right-align flush to the same edge — no
+  visible chevron-shaped gap on the three interactive rows.
+- Alerts rows visually match Revenue rows on density, font, and
+  spacing. Header still reads slightly stronger (`text-sm
+  font-semibold` title), as the spec allows.
+- Click destinations on Revenue (`/invoices?filter=…`) and Alerts
+  (`<DashboardActionModal>` with the same `mode` arg) unchanged.
+- Horizontal alerts collapse intact — toggle still flips the card
+  between `lg:w-[360px]` and `lg:w-12`. No vertical collapse
+  reintroduced.
+- `npx tsc --noEmit` clean; `npm run build` clean.
+
+#### Financial Dashboard: horizontal alerts collapse + compact Revenue Center (2026-04-30)
+
+Polish pass over the prior dashboard reshuffle. **No backend / data /
+prop-contract changes** — all four count props on Operational Alerts
+and the four data rows on Revenue Center come from the same
+`/api/dashboard/workflow-summary` and `/api/dashboard/financial`
+endpoints they always did.
+
+**1 — Operational Alerts collapses horizontally.** The previous pass
+collapsed the card vertically (`max-h-0` / `max-h-96`), which shrank
+row 1 upward and pushed row 2 with it. Replaced with a horizontal
+collapse:
+
+- **Top row grid template** in `client/src/pages/FinancialDashboard.tsx`
+  switched from `lg:grid-cols-[minmax(0,1fr)_360px]` (fixed right
+  column) to `lg:grid-cols-[minmax(0,1fr)_auto]` (content-driven). The
+  alerts card itself sets the right cell's width: `lg:w-[360px]`
+  expanded, `lg:w-12` collapsed. The grid follows; Today's Schedule
+  flexes into the freed horizontal space when alerts collapses.
+- **`OperationalAlertsCard`** renders one of two variants based on
+  `isCollapsed`:
+  - **Full** — the existing toggle button + alert-row list. Rendered
+    on every viewport when expanded; rendered on mobile (`< lg`)
+    regardless of collapse state because the rail UX is desktop-only.
+  - **Rail** — a vertical button that fills the grid cell's height
+    (`h-full`) and stacks (top → bottom) the alert-triangle icon, the
+    severity-colored count badge, a vertically-rotated "Alerts" label
+    (`writing-mode: vertical-rl`), and a left-pointing chevron
+    (`rotate-180` on `<ChevronRight>`). Clicking anywhere expands the
+    card.
+- The body's `transition-[max-height,opacity]` wrapper from the prior
+  pass is gone — there is no vertical collapse anymore. The width
+  change is a snap (intentional; smooth width transitions look janky
+  when the inner content variant swaps mid-animation).
+- Mobile (`< lg`) is unchanged — the rail variant is suppressed via
+  `lg:hidden` so the card always renders as the full layout. The
+  collapse state still tracks underneath for when the user resizes
+  back up.
+- The state machine (`userToggledRef` + `manualCollapsed` +
+  `autoCollapsed = !isLoading && !hasAlerts`) is unchanged. The badge
+  severity rule (red for `requiresAttentionCount > 0`, orange for
+  `pastDueCount > 0`, slate otherwise) is unchanged.
+
+**2 — Revenue Center compact redesign.** The previous Revenue card
+used a two-line stacked row (small label above large value, optional
+sub-line on the right) with `px-4 py-2.5` per row — too tall for a
+4-row summary card and visually heavy when stacked beside the larger
+Top Outstanding / Top Customers cards. Replaced with a compact
+single-line row pattern:
+
+- **`RevenueCenterFinancialCard`** in
+  `client/src/pages/FinancialDashboard.tsx`:
+  - Per-row geometry: `px-3 py-1.5` (was `px-4 py-2.5`), icon block
+    `p-1` with `h-3 w-3` icon (was `p-1.5` / `h-3.5 w-3.5`).
+  - Layout per row: `[icon] [label, flex-1, text-xs] [summary,
+    text-sm font-semibold tabular-nums] [chevron when interactive]` —
+    one line, no stacking.
+  - **Summary string** combines `sub` + `value` with a `·` separator
+    when both are present (e.g., `1 draft · $0`,
+    `3 past due · $300`); when only `value` exists, just renders the
+    value (`$0`). Interactive rows still show a trailing
+    `<ChevronRight>`; non-interactive rows omit it.
+  - **Skeleton loader** matches the new tighter row geometry
+    (`h-7 w-full` rows, `space-y-1.5`, `p-3` outer).
+  - **Labels** shortened per spec:
+    `Cash received this month` → `This month`,
+    `Outstanding A/R` → `Outstanding`,
+    `Overdue A/R` → `Overdue`,
+    `Draft invoices` → `Drafts`.
+  - The header band (with `Revenue Center` title and `Open A/R`
+    action button) is unchanged.
+- **`self-start` wrapper** added around the Revenue mount in
+  FinancialDashboard's three-column receivables strip:
+  `<div className="self-start"><RevenueCenterFinancialCard ... /></div>`.
+  Drops the default grid stretch on this one cell so the compact card
+  sizes to its own content height instead of stretching to match the
+  taller Top Outstanding / Top Customers cells.
+
+**Acceptance verified:**
+
+- Alerts card on desktop: 360 px expanded, 48 px collapsed; clicking
+  the chevron toggles between states. The Schedule card grows into
+  the freed horizontal space when alerts collapses.
+- No empty vertical space left behind when collapsed; row 1 height is
+  driven by the (always-rendered) Schedule card.
+- Row 2 doesn't shift up when alerts collapses (row 1 height stays at
+  Schedule's height).
+- Revenue Center renders as 4 single-line rows, ~28 px tall each
+  (was ~58 px), with new labels.
+- Revenue Center sizes to its own height; the row's other two cards
+  remain equal-height with each other.
+- `npx tsc --noEmit` clean. `npm run build` clean.
+
+#### Financial Dashboard: card swap + collapsible Operational Alerts (2026-04-30)
+
+The receivables-first row order on the Financial Dashboard now leads
+with **Operational Alerts** in the top-right slot beside Today's
+Schedule, with **Revenue Center** moving down into the three-column
+strip alongside Top Outstanding Invoices and Top Customers Owing.
+Operational Alerts gained a collapsible behavior so a quiet day
+doesn't carry an empty card down the page.
+
+**Files changed:**
+
+- `client/src/pages/FinancialDashboard.tsx` — top row now mounts
+  `<OperationalAlertsCard>` in the 360px slot; second row replaces it
+  with `<RevenueCenterFinancialCard>`. No props or order arrays
+  changed; `order={["requires_attention", "past_due", "unscheduled",
+  "ready_to_invoice"]}` still applies.
+- `client/src/components/dashboard/OperationalAlertsCard.tsx` —
+  collapsible behavior added:
+  - The header band is now a button (`operational-alerts-toggle`)
+    that toggles `aria-expanded` on the body region. Click anywhere
+    on the band — title, badge, or chevron — to expand/collapse.
+  - The body region wraps in a `transition-[max-height,opacity]
+    duration-200 ease-out` container. Collapsed state =
+    `max-h-0 opacity-0`; expanded = `max-h-96 opacity-100`. Smooth
+    transition; no layout shift on toggle.
+  - State model: a `userToggledRef` flag and a `manualCollapsed`
+    state. Initial render derives collapse from data
+    (`!isLoading && totalCount === 0`). Once the user clicks the
+    toggle, their preference sticks for the session and incoming SSE
+    updates no longer override it. The hook intentionally avoids
+    `localStorage` — preference is per-tab, per-session, matching the
+    rest of the dashboard's transient UI state.
+  - A count badge sits beside the title:
+    `bg-red-100 text-red-700` when `requiresAttentionCount > 0`,
+    `bg-orange-100 text-orange-700` when only `pastDueCount > 0`,
+    `bg-slate-100 text-slate-600` otherwise. Hidden during the
+    skeleton-loading branch so the badge doesn't flash zero before
+    real counts arrive.
+  - A trailing `<ChevronDown>` rotates 180° to indicate state.
+  - Existing alert-row rendering, the per-row
+    `<DashboardActionModal>` opener, and the `order` prop contract
+    are unchanged. Loading skeleton + Skeleton-row layout preserved.
+  - The previously unused `import { Link } from "wouter"` was
+    dropped.
+
+**No backend / data / route changes.** All four count props feed the
+same `/api/dashboard/workflow-summary` source the card already used;
+totals are summed in-component to drive the badge and the
+auto-collapse rule.
+
+**Acceptance verified:**
+- Alerts card renders top-right beside Today's Schedule.
+- Revenue Center renders in the second row, first column.
+- Empty state (`totalCount === 0` after load) auto-collapses to a
+  header-only band.
+- Populated state (`totalCount > 0`) auto-expands.
+- Manual chevron click toggles reliably and persists across
+  subsequent SSE refreshes.
+- `npx tsc --noEmit` clean; `npm run build` clean.
 
 #### Invoice Detail: header cleanup pass — single edit control + sans typography (2026-04-29)
 
