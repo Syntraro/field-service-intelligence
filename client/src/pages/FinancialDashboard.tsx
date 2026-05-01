@@ -998,18 +998,27 @@ function TodaysScheduleCard({
           crushing the title beside it.
         */}
         <div className="flex items-center gap-2 flex-wrap justify-end">
+          {/*
+            2026-04-30 — pill toggle. Single fixed label "Open"; state
+            is communicated visually only (filled-green when active vs
+            outlined when inactive). The previous text-switching
+            ("Open only" ↔ "Showing open") was replaced because it
+            shifted the button's width on toggle and forced the user
+            to read state instead of seeing it. `aria-pressed` is
+            wired so screen readers announce the toggle correctly.
+          */}
           <button
             type="button"
             onClick={() => setOpenOnly((v) => !v)}
             aria-pressed={openOnly}
             className={`inline-flex items-center h-8 px-3 text-xs font-medium rounded-md border transition-colors ${
               openOnly
-                ? "border-[#76B054] bg-[#76B054]/10 text-[#76B054]"
+                ? "border-[#76B054] bg-[#76B054] text-white hover:bg-[#68a14a]"
                 : "border-[#e2e8f0] bg-white text-slate-700 hover:bg-slate-50"
             }`}
             data-testid="schedule-open-only-toggle"
           >
-            {openOnly ? "Showing open" : "Open only"}
+            Open
           </button>
           {isMultiTech && (
             // 2026-04-30 — switched from <MultiSelectDropdown> (absolute-
@@ -1201,7 +1210,11 @@ function TodaysScheduleCard({
               return (
               <div
                 key={tech.technicianId}
-                className={`${widthClass} ${!isLastCol ? "border-r border-[#e2e8f0]" : ""}`}
+                className={`${widthClass} ${
+                  !isLastCol
+                    ? "border-b xl:border-b-0 xl:border-r border-[#e2e8f0]"
+                    : ""
+                }`}
               >
                 <div className="px-3 py-2 text-[13px] font-semibold text-[#111827] border-b border-[#e2e8f0] bg-slate-50/50 truncate">
                   {tech.name}
@@ -1272,14 +1285,26 @@ function TodaysScheduleCard({
             // paint to the bottom of the card body. Empty columns
             // (or columns with fewer rows than their neighbour) still
             // render their full-height boundary.
+            //
+            // 2026-04-30 (responsive pass) — the ≤ 4-tech grid now
+            // collapses to a vertical stack below `xl` (1280 px). The
+            // previous unconditional `repeat(N, minmax(0, 1fr))` with
+            // `min-w-0` on each column let columns crush below their
+            // intrinsic minimum at narrow desktop / tablet widths,
+            // truncating tech names and visit labels. At `< xl` the
+            // wrapper is now `flex flex-col` (each tech becomes a
+            // full-width section); at `xl+` it stays `grid` with the
+            // unchanged inline `gridTemplateColumns`. The
+            // `gridTemplateColumns` inline style is harmless on a
+            // `display: flex` parent — the browser ignores it.
             return useGrid ? (
               <div
-                className="grid flex-1"
+                className="flex flex-col xl:grid flex-1"
                 style={{ gridTemplateColumns: `repeat(${visibleTechs.length}, minmax(0, 1fr))` }}
                 data-testid="schedule-multi-column-view"
               >
                 {visibleTechs.map((tech, i) =>
-                  renderColumn(tech, i === visibleTechs.length - 1, "min-w-0"),
+                  renderColumn(tech, i === visibleTechs.length - 1, "w-full xl:min-w-0"),
                 )}
               </div>
             ) : (

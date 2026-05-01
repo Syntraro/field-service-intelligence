@@ -1,13 +1,59 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
+import { execSync } from "node:child_process";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 import { VitePWA } from "vite-plugin-pwa";
+
+/**
+ * 2026-04-30 stale-deploy fix (Balanced): emit a build identifier so
+ * deploy propagation can be verified by visual inspection (DevTools →
+ * Elements → <head>) and so the runtime reload guard in
+ * `PwaUpdatePrompt.tsx` can compare "the build I'm running" against
+ * "the build I last reloaded for". Prefers a short git SHA, falls back
+ * to a timestamp-based stamp on machines without git in PATH.
+ */
+function resolveBuildId(): string {
+  try {
+    const sha = execSync("git rev-parse --short HEAD", {
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+    if (sha) return sha;
+  } catch {
+    // git not available or not a repo — fall through
+  }
+  return `build-${Date.now()}`;
+}
+
+/**
+ * Vite HTML plugin — injects a `<meta name="build-id">` tag and a
+ * `window.__SYNTRARO_BUILD__` global into every emitted index.html.
+ * The global is set BEFORE the React entry script so the value is
+ * readable by the very first line of app code (matters for the SW
+ * reload guard, which can fire on initial controllerchange before
+ * React mounts). The meta tag is for human/DevTools verification.
+ */
+function syntraroBuildIdPlugin(): Plugin {
+  const buildId = resolveBuildId();
+  return {
+    name: "syntraro-build-id",
+    transformIndexHtml(html) {
+      const injection =
+        `    <meta name="build-id" content="${buildId}" />\n` +
+        `    <script>window.__SYNTRARO_BUILD__=${JSON.stringify(buildId)};</script>\n` +
+        `  </head>`;
+      return html.replace("</head>", injection);
+    },
+  };
+}
 
 export default defineConfig({
   plugins: [
     react(),
     runtimeErrorOverlay(),
+    syntraroBuildIdPlugin(),
     ...(process.env.NODE_ENV !== "production" &&
     process.env.REPL_ID !== undefined
       ? [

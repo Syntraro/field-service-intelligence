@@ -23,9 +23,9 @@
  *     deep-link target.
  */
 
-import { precacheAndRoute, cleanupOutdatedCaches, createHandlerBoundToURL } from "workbox-precaching";
+import { precacheAndRoute, cleanupOutdatedCaches, matchPrecache } from "workbox-precaching";
 import { NavigationRoute, registerRoute } from "workbox-routing";
-import { CacheFirst, NetworkOnly } from "workbox-strategies";
+import { CacheFirst, NetworkFirst, NetworkOnly } from "workbox-strategies";
 import { ExpirationPlugin } from "workbox-expiration";
 import { CacheableResponsePlugin } from "workbox-cacheable-response";
 
@@ -46,8 +46,52 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(self.clients.claim());
 });
 
-// SPA navigation fallback to /index.html, except for /api/*.
-const navigationHandler = createHandlerBoundToURL("/index.html");
+// 2026-04-30 stale-deploy fix (Balanced): SPA navigations are now
+// served NetworkFirst — online users always get the latest /index.html
+// from the server, which means a deploy is reflected on the very next
+// navigation/launch instead of being deferred to "after the new SW
+// installs and reloads the tab". The previous strategy used
+// `createHandlerBoundToURL("/index.html")`, a CacheOnly precache
+// handler that NEVER hit the network for navigations and was the load-
+// bearing cause of "users see stale UI after deploy" reports.
+//
+// Fallback chain on navigation requests:
+//   1. Network with a 3-second timeout (NetworkFirst).
+//   2. NetworkFirst's runtime cache (last-known-good HTML if the
+//      network is slow / offline / 5xx — CacheableResponsePlugin
+//      restricts caching to 200s).
+//   3. The precached /index.html shipped with this build (true offline
+//      fallback). Guarantees the PWA still boots without network.
+//
+// /api/* navigations (rare, but possible) stay denylisted and fall
+// through to the API NetworkOnly route below.
+const navigationStrategy = new NetworkFirst({
+  cacheName: "syntraro-html-shell",
+  networkTimeoutSeconds: 3,
+  plugins: [new CacheableResponsePlugin({ statuses: [200] })],
+});
+
+// Handler type matches Workbox's `RouteHandlerCallback`. We type the
+// `options` argument as a structural subset (request + event) instead
+// of importing the internal type — keeps the surface area small and
+// avoids depending on workbox-core's types package layout.
+const navigationHandler = async (options: {
+  request: Request;
+  event: ExtendableEvent;
+  url: URL;
+  params?: unknown;
+}): Promise<Response> => {
+  try {
+    const response = await navigationStrategy.handle(options);
+    if (response) return response;
+  } catch {
+    // Network failed AND runtime cache miss — fall through to precache.
+  }
+  const precached = await matchPrecache("/index.html");
+  if (precached) return precached;
+  return Response.error();
+};
+
 registerRoute(
   new NavigationRoute(navigationHandler, {
     denylist: [/^\/api\//],

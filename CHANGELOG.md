@@ -6,7 +6,256 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-### Added
+### Changed
+
+#### EquipmentDetailModal — compact, iPad-friendly redesign (2026-04-30)
+
+`client/src/components/EquipmentDetailModal.tsx` only. **No backend /
+schema / route / mutation changes.** Same canonical history endpoint
+(`GET /api/equipment/:equipmentId/history`), same canonical edit dialog
+(`AddEquipmentDialog` in `mode="edit"`), same call sites
+(`ClientDetailPage.tsx:2695`, `JobEquipmentSection.tsx:388`) — both
+still pass the same props.
+
+- **Modal frame.** Width bumped from `sm:max-w-[650px]` to
+  `sm:max-w-[820px]` (fits iPad Pro portrait comfortably; on standard
+  iPad portrait the modal narrows gracefully via `w-full`). Surface =
+  canonical `bg-card`, container border via `border-card-border`,
+  modal elevation shadow inherited from the shadcn DialogContent
+  primitive. No footer action bar.
+- **Header.** Equipment name as `text-xl font-semibold` H1, equipment
+  type rendered as a `<Badge variant="secondary">` pill underneath
+  (replaces the previous muted-text type line). Right side now hosts
+  the Edit pencil at `right-12 top-4`, slotted next to the
+  shadcn-built-in `<X>` close button at `right-4 top-4` — single button
+  cluster, no duplicate close. `pr-20` on the title area reserves
+  horizontal room for both. Edit button retains the existing
+  `MANAGER_ROLES` visibility gate.
+- **Section 1 — Equipment Details card.** New section with `<Info />`
+  icon + "Equipment Details" label header. Body is a 3-column grid
+  (Manufacturer / Model Number / Serial Number) with subtle
+  `divide-x` vertical dividers; absent values show a muted em dash so
+  the grid stays balanced. Notes row appears below the grid (separated
+  by a horizontal divider) **only when `equipment.notes` is set and
+  non-empty** — completely omitted otherwise. Type and name are NOT
+  duplicated inside the details card (they live in the header).
+- **Section 2 — Service History card.** New section with `<Wrench />`
+  icon + "Service History" label header, total count to the right of
+  the label, and an inline "View all (N)" / "Show less" toggle on the
+  right side of the header (shown only when more than 5 rows). Rows are
+  flattened from the existing `HistoryJobGroup[]` shape into one row
+  per note via a `useMemo`-derived `ServiceRow[]`, sorted most-recent
+  first by `note.createdAt` (falls back to `jobDate` for legacy rows).
+  Each row uses a 3-column grid:
+  - Col 1 (`120px`): date in `Mon DD, YYYY` (semibold) stacked with
+    time in `h:mm AM/PM` (muted).
+  - Col 2 (`160px`): clickable `J-{jobNumber}` button (uses canonical
+    `setLocation('/jobs/${jobId}')` — same route the prior modal
+    used) stacked with technician name (muted, falls back to
+    `"Unknown"`). The button closes the modal and navigates.
+  - Col 3 (`1fr`): note text, wraps freely.
+  Rows are separated by `divide-y divide-card-border`. Below `sm`
+  breakpoint the grid collapses to a single column so date/time, job/tech,
+  and note stack vertically — no horizontal overflow on narrow viewports.
+- **Empty state.** Only renders when `serviceRows.length === 0` (never
+  alongside populated rows): "No service history yet" + muted subtext
+  "This equipment doesn't have any service history."
+- **Job status badges (e.g. "Completed") are NOT rendered** per spec.
+- **Per-note edit / delete affordances removed** from this modal. The
+  redesigned row layout has no edit column, so the previous inline edit
+  textarea / delete confirmation UI was removed along with their
+  `editMutation` / `deleteMutation` / `editingNoteId` / `editText` /
+  `confirmDeleteNoteId` / `deleteJobId` state. The canonical PATCH /
+  DELETE endpoints (`PATCH /api/jobs/:jobId/notes/:noteId` and the
+  matching `DELETE`) are unchanged on the server and remain reachable
+  from `JobNotesSection` / `JobNoteDialog` on the Job Detail surface,
+  which is the canonical entry point for note CRUD.
+- **Equipment edit flow preserved verbatim.** The pencil button still
+  opens `AddEquipmentDialog` in `mode="edit"` with
+  `existingEquipment={eq}`, `locationId={eq.locationId}`,
+  `jobId={jobId}`. The dialog's `onSaved` callback updates a local
+  `useState<LocationEquipment>` so the detail modal refreshes in
+  place — same in-place refresh behavior shipped 2026-04-30.
+- **Imports cleaned up.** Removed `useMutation`, `Textarea`,
+  `ChevronDown`, `ChevronRight`, `Trash2`, `queryClient`. Added
+  `Badge`, `Wrench`, `Info`, `useMemo`, `cn`.
+- **Tokens used:** `bg-card`, `border-card-border`, `bg-app-bg`,
+  `text-text-primary`, `text-text-secondary`, `text-text-muted`,
+  `text-text-disabled`, `text-primary` — all canonical Phase 2.7
+  tokens, no one-off colors introduced.
+- **Files changed:** `client/src/components/EquipmentDetailModal.tsx`
+  only.
+- **TypeScript:** `npx tsc --noEmit -p tsconfig.json` passes clean.
+
+#### Stale-deploy fix — Balanced (2026-04-30)
+
+Fixes "users keep seeing the old app after Render deploys until they
+manually unregister the SW or hard-refresh." Implements the Balanced
+option from the audit: NetworkFirst SPA navigations, build-aware
+reload guard, build-id visibility, and tighter cache-header coverage.
+**No backend, schema, route, or API changes.**
+
+- **`client/src/sw.ts`** — replaced the precache CacheOnly navigation
+  handler (`createHandlerBoundToURL("/index.html")`) with a
+  `NetworkFirst` strategy (`networkTimeoutSeconds: 3`,
+  `cacheName: "syntraro-html-shell"`,
+  `CacheableResponsePlugin({ statuses: [200] })`). The handler tries
+  network first, then NetworkFirst's own runtime cache, then falls
+  back to `matchPrecache("/index.html")` so the PWA still boots
+  offline. **Online users now see fresh app shell on every navigation
+  / cold-launch instead of the precached HTML from the prior build.**
+  This was the load-bearing change — the prior strategy never went
+  to the network for navigations and was the primary reason the
+  no-cache HTTP headers added 2026-04-26 had no visible impact for
+  controlled clients.
+- **`client/src/components/PwaUpdatePrompt.tsx`** — replaced the
+  one-shot boolean `__syntraro_sw_reloaded__` reload guard with a
+  build-aware guard:
+  - `__syntraro_sw_last_reload_build__` (sessionStorage) records the
+    build ID we last reloaded for. `controllerchange` triggers a
+    reload iff the page's current `window.__SYNTRARO_BUILD__`
+    differs from that value.
+  - `__syntraro_sw_last_reload_at__` (sessionStorage) records the
+    timestamp of the last reload. A 10-second floor on reload
+    cadence is a defense-in-depth loop trap if build IDs ever
+    disagree but content doesn't.
+  - **Outcome:** a SECOND deploy in the same long-lived tab (common
+    on iPad PWAs that stay open across the work week) now reloads
+    instead of silently wedging the tab on the new SW + old
+    in-memory React bundle.
+  - Added `online` event listener that triggers
+    `registration.update()` so a "left a tunnel / re-joined Wi-Fi"
+    transition immediately checks for a new build (the existing
+    `visibilitychange` handler covered "user returned to the tab",
+    but not "tab was already foreground when the network came back").
+  - Manual-refresh fallback now clears both new keys before
+    reloading, so the post-reload `controllerchange` is not
+    accidentally suppressed.
+- **`vite.config.ts`** — new `syntraroBuildIdPlugin` Vite plugin
+  resolves a build ID at build time (preferring `git rev-parse
+  --short HEAD`, falling back to `build-${Date.now()}` on machines
+  without git in PATH) and injects it into every emitted
+  `index.html` as both `<meta name="build-id" content="...">` and
+  an inline `<script>window.__SYNTRARO_BUILD__=...;</script>`. The
+  inline script runs before any module code so the value is
+  available to the SW reload guard from the very first
+  `controllerchange`.
+- **`client/src/pwa.d.ts`** — declares
+  `interface Window { __SYNTRARO_BUILD__?: string }` so the global
+  is typed at consumer sites without `any` casts.
+- **`server/vite.ts`** — tightened `isUpdateSensitive`. Pre-existing
+  cases (`index.html`, `sw.js`, `service-worker.js`,
+  `manifest.webmanifest`, `workbox-*`) are unchanged. Added
+  explicit `registerSW.js`, `register-sw.js`, and `manifest.json`
+  cases. Previously `registerSW.js` only got the no-cache header
+  by coincidence (lowercase suffix matched `endsWith("sw.js")`); a
+  future filename change would have silently lost the header.
+- **Hashed bundle caching unchanged** — `/assets/*` still serves
+  with `public, max-age=31536000, immutable`. The fix only affects
+  entrypoints (HTML / SW / manifest / register script).
+
+**Verification (build-time):**
+- `npm run check` → clean.
+- `npx vite build` → clean. Build ID injected as `dc94862` in
+  `dist/public/index.html`. Bundled `dist/public/sw.js` contains
+  `networkTimeoutSeconds`, `syntraro-html-shell`, and
+  `matchPrecache` — confirms NetworkFirst + precache fallback are
+  both wired.
+
+**Manual verification still required (per audit checklist):**
+- Desktop Chrome: deploy A → confirm build-id A in DevTools →
+  deploy B → reload → confirm build-id B without manual unregister.
+- Long-lived Chrome tab: deploy two builds back-to-back without
+  closing the tab → confirm both reloads fire (the prior boolean
+  guard would have suppressed the second).
+- iPad Safari: background tab → deploy → foreground →
+  visibilitychange triggers update check.
+- iPad PWA: cold launch after deploy → with NetworkFirst, the new
+  shell paints first instead of the stale precached shell.
+- Network drop / regain: confirm `online` listener triggers
+  `registration.update()`.
+
+**iPad / Safari considerations carried forward:**
+- iOS suspends background JS in PWAs. The hourly `setInterval`
+  doesn't fire while suspended, but `visibilitychange` (existing)
+  + `online` (new) cover the resume paths.
+- iOS keeps CacheStorage durable across launches; the precached
+  shell is still available offline as the last fallback.
+- iOS PWA "kill from app switcher" → next launch re-registers the
+  SW from scratch; NetworkFirst means that launch fetches the
+  latest HTML before painting (online), not the cached shell.
+
+#### Equipment edit surface (2026-04-30)
+
+Wires the canonical `PATCH /api/clients/:locationId/equipment/:equipmentId`
+endpoint (which has shipped unused) to the UI. **Audit-driven, no
+duplicate flow created, no backend changes, no schema changes.** Same
+canonical dialog (`AddEquipmentDialog`) and same canonical detail modal
+(`EquipmentDetailModal`) — extended in place.
+
+- **`client/src/components/AddEquipmentDialog.tsx`** — extended with
+  edit mode. New optional props:
+  - `mode?: "create" | "edit"` (default `"create"`)
+  - `existingEquipment?: LocationEquipment | null` (required when
+    `mode === "edit"`; prefills the form on open)
+  - `jobId?: string` (when opened from a job-scoped surface; drives
+    extra invalidation of `["/api/jobs", jobId, "equipment"]`)
+  - `onSaved?: (saved: LocationEquipment) => void` (fires on both
+    create and edit success with the canonical record returned by
+    the server; lets the detail modal refresh its displayed copy
+    without remounting)
+
+  Mutation logic:
+  - **Create:** `POST /api/clients/${locationId}/equipment` (existing
+    behavior, body unchanged).
+  - **Edit:** `PATCH /api/clients/${locationId}/equipment/${existingEquipment.id}`
+    with the same form payload (server already accepts a partial body
+    via `updateLocationEquipmentSchema`).
+  - Both mutations invalidate
+    `["/api/clients", locationId, "equipment"]`; when `jobId` is
+    present, also invalidate `["/api/jobs", jobId, "equipment"]`.
+  - Title / description / submit-button label switch by mode
+    ("Edit Equipment" / "Save Changes" vs "Add Equipment").
+  - Field set is unchanged (name, type, manufacturer, model, serial,
+    notes) — create / edit parity preserved per spec. Schema fields
+    not exposed today (`tagNumber`, `installDate`, `warrantyExpiry`,
+    `nameplatePhotoId`) are not added in this pass.
+
+- **`client/src/components/EquipmentDetailModal.tsx`** — Edit pencil
+  affordance added.
+  - New header row layout: existing title / type stacked at left, new
+    `<Button variant="ghost" size="icon" data-testid="button-edit-equipment">`
+    at right. Hidden for non-manager roles (mirrors the server
+    `requireRole(MANAGER_ROLES)` gate on the PATCH route).
+  - Mounts `AddEquipmentDialog` in `mode="edit"` with
+    `existingEquipment={eq}`, `locationId={eq.locationId}` (read
+    directly from the equipment record — no new prop needed on either
+    call site), and `jobId={jobId}` (forwarded from the existing
+    optional prop).
+  - Added local `useState<LocationEquipment>` mirroring the prop. The
+    edit dialog's `onSaved` callback updates this local copy so the
+    detail modal stays open showing fresh values after save (no remount
+    or close required). Re-syncs on `equipment.id` change.
+  - Service-history block (note edit / delete via
+    `PATCH/DELETE /api/jobs/:jobId/notes/:noteId`) **untouched**.
+
+- **`jobId` parameter** is now actually read in the modal
+  destructuring (it was declared in the props type but unused in the
+  function signature pre-this-pass).
+
+- **Untouched:** `ClientDetailPage.tsx`, `JobEquipmentSection.tsx`,
+  the create-side QuickAddJob caller of `AddEquipmentDialog`, the PATCH
+  route, `updateLocationEquipmentSchema`, `storage.updateLocationEquipment`,
+  service history, delete flow, soft-delete behavior.
+
+**Files changed:**
+- `client/src/components/AddEquipmentDialog.tsx`
+- `client/src/components/EquipmentDetailModal.tsx`
+
+**Query invalidation keys:** `["/api/clients", locationId, "equipment"]`
++ (when `jobId` present) `["/api/jobs", jobId, "equipment"]`.
+
+**TypeScript:** `npx tsc --noEmit -p tsconfig.json` passes clean.
 
 #### Dispatch view persistence (2026-04-30)
 
@@ -660,6 +909,123 @@ Every hardcoded hex literal and the one inline-style color in
 - No font-weight / leading / tracking modifier cleanup on the 148 sweep — preserved as overrides.
 - All other pages (Clients, Locations, Reports, etc.) — separate phase.
 - `text-foreground` / `text-muted-foreground` legacy color tokens not migrated to `text-text-*` — separate color-token-collapse phase.
+
+#### Today's Schedule: "Open only" filter → fixed-label pill toggle (2026-04-30)
+
+UI-only refactor of the open-slot filter on the schedule card. The
+button previously switched its label between `Open only` (off) and
+`Showing open` (on), which (a) shifted the button's width on toggle
+and (b) forced the user to read state instead of seeing it. **No
+filter logic, data fetching, or click destination changes** — the
+underlying `openOnly` boolean and the per-tech `scheduleBlocks`
+filter are untouched.
+
+**File changed:**
+
+- `client/src/pages/FinancialDashboard.tsx`.
+
+**Diff:**
+
+| Property | Before | After |
+| --- | --- | --- |
+| Label | `openOnly ? "Showing open" : "Open only"` | `Open` (fixed) |
+| Active visual | `border-[#76B054] bg-[#76B054]/10 text-[#76B054]` (10% tint) | `border-[#76B054] bg-[#76B054] text-white hover:bg-[#68a14a]` (filled, primary green, white text) |
+| Inactive visual | `border-[#e2e8f0] bg-white text-slate-700 hover:bg-slate-50` | unchanged |
+| `aria-pressed` | `{openOnly}` | unchanged — still announces toggle state to AT |
+| `data-testid` | `schedule-open-only-toggle` | unchanged |
+| Geometry | `h-8 px-3 text-xs font-medium rounded-md` | unchanged — matches the adjacent team-filter pill and the Create button height |
+| Click handler | `setOpenOnly((v) => !v)` | unchanged |
+
+**Acceptance verified:**
+
+- Label always reads `Open` regardless of state. No text switching.
+- Active state is visually obvious — filled primary green vs
+  outlined neutral pill. White text against the green fill matches
+  the Create button's primary-action treatment.
+- Width is stable across state — `Open` does not change character
+  count between OFF and ON, so the button does not jump.
+- Keyboard accessibility preserved — `<button type="button">` with
+  `onClick` handles Enter / Space natively; `aria-pressed` announces
+  state.
+- Filtering behavior unchanged — `openOnly` still gates
+  `visibleTechs.scheduleBlocks` to `kind === "open"` only when
+  active.
+- `npx tsc --noEmit` clean. `npm run build` clean.
+
+#### Today's Schedule: technician columns stack vertically below `xl` (2026-04-30)
+
+Fixes the schedule-card crushing seen at narrow desktop / tablet
+widths after the prior dashboard responsive pass. The dashboard
+top-row stacking already worked correctly; the bug was one level down
+— inside the schedule card, the multi-tech grid had no responsive
+breakpoint, so 4 technician columns stayed side-by-side at every
+viewport width with `repeat(N, minmax(0, 1fr))` + `min-w-0` allowing
+columns to compress below their intrinsic minimum. **No data
+fetching, click destinations, or mutation contracts changed** — pure
+presentation.
+
+**File changed:**
+
+- `client/src/pages/FinancialDashboard.tsx` (the schedule card is
+  inline in this file).
+
+**Behavior matrix:**
+
+| Tech count | `≥ xl` (1280 px) | `< xl` (narrow desktop / tablet / mobile) |
+| --- | --- | --- |
+| ≤ 4 | `grid` with `repeat(N, minmax(0, 1fr))` (unchanged) | **NEW**: `flex flex-col` stack — each tech is a full-width section |
+| ≥ 5 | `overflow-x-auto` rail with 220 px columns (unchanged) | same — already worked |
+
+**Implementation:**
+
+- The ≤ 4-tech wrapper className changed from `grid flex-1` to
+  `flex flex-col xl:grid flex-1`. Below `xl` the wrapper is a
+  vertical flex container; at `xl+` it switches back to the existing
+  CSS grid. The inline `style={{ gridTemplateColumns: repeat(N,
+  minmax(0,1fr)) }}` stays on the wrapper — `display: flex` ignores
+  `grid-template-columns`, so the inline style only applies at
+  `xl+`.
+- Per-column width class changed from `"min-w-0"` to
+  `"w-full xl:min-w-0"`. Below `xl`, each tech section is a
+  full-width row in the flex stack; at `xl+`, `min-w-0` permits the
+  grid track to shrink as before. The flex flow direction makes the
+  full-width sections paint top-to-bottom instead of left-to-right.
+- Per-column divider class changed from
+  `"border-r border-[#e2e8f0]"` to
+  `"border-b xl:border-b-0 xl:border-r border-[#e2e8f0]"`. Below
+  `xl` the dividers paint as horizontal hairlines between stacked
+  tech sections; at `xl+` they revert to vertical column dividers.
+  The `!isLastCol` skip-the-final-divider logic is unchanged.
+- The 5+-tech `overflow-x-auto` scroll-rail branch is untouched —
+  it already handles narrow viewports correctly via horizontal
+  scroll. The threshold `useGrid = visibleTechs.length <= 4` is
+  unchanged.
+- The per-row inner grid (`gridTemplateColumns: "96px minmax(0,1fr)
+  auto"` for each schedule block) is also unchanged — once a tech
+  column has the full content width, the time gutter + flexible
+  name + duration cluster fit comfortably without truncation.
+
+**Constraints respected:** Data fetching (`/api/dashboard/capacity`),
+team-scope filter, open-only filter, Create button, visit /
+open-slot click handlers, 5+-tech scroll behavior, top-row dashboard
+breakpoint, Operational Alerts behavior, and Revenue Center
+compact rows are all untouched. Single canonical inline schedule —
+no duplicate components.
+
+**Acceptance verified:**
+
+- Wide desktop (`≥ xl`): ≤ 4 techs render side-by-side as before.
+  Schedule + Alerts share the row.
+- Narrow desktop / tablet (`< xl`): schedule card is full content
+  width; ≤ 4 techs stack vertically; each tech section is full-width;
+  alert card sits below the schedule (parent grid stacking, prior
+  pass).
+- Mobile: same vertical stack as tablet; rows readable at every
+  width.
+- 5+ techs: horizontal scroll rail at every viewport (unchanged).
+- Hover, click, drag-to-launcher behavior on schedule rows unchanged
+  (per-row buttons + handlers untouched).
+- `npx tsc --noEmit` clean. `npm run build` clean.
 
 #### App shell scroll fix + Operational Alerts collapse regression (2026-04-30)
 

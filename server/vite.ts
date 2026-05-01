@@ -107,12 +107,20 @@ export function serveStatic(app: Express) {
   // Predicate for "this file's URL is a stable identity but its content can
   // change between deploys" — i.e. NOT a hashed bundle. Matches the file
   // path (not the request URL) so it works inside `setHeaders` callbacks.
+  // 2026-04-30: explicitly enumerate registerSW.js / register-sw.js /
+  // manifest.json. The pre-existing `endsWith("sw.js")` test happened to
+  // match `registerSW.js` after lowercasing, but that was a coincidence —
+  // a future filename change (e.g. `register.sw.js`, or the dropped
+  // capital-S) would have silently lost the no-cache header.
   const isUpdateSensitive = (filePath: string): boolean => {
     const lower = filePath.toLowerCase();
     if (lower.endsWith("index.html")) return true;
     if (lower.endsWith("sw.js")) return true;
     if (lower.endsWith("service-worker.js")) return true;
+    if (lower.endsWith("registersw.js")) return true;
+    if (lower.endsWith("register-sw.js")) return true;
     if (lower.endsWith("manifest.webmanifest")) return true;
+    if (lower.endsWith("manifest.json")) return true;
     if (lower.includes("workbox-")) return true;
     return false;
   };
