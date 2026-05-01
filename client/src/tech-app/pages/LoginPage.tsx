@@ -9,6 +9,8 @@
 import { useState } from "react";
 import { Mail, Lock, Loader2 } from "lucide-react";
 import syntaroLogo from "@/assets/Syntraro Logo Transparent.png";
+// 2026-05-01 brand pivot — canonical brand strings.
+import { BRAND } from "@shared/branding";
 
 interface LoginPageProps {
   onLogin: (email: string, password: string) => Promise<void>;
@@ -36,7 +38,7 @@ export function LoginPage({ onLogin, error, isLoading }: LoginPageProps) {
       {/* Brand lockup */}
       <div className="flex-1 flex flex-col items-center justify-center px-8 pt-16 pb-8">
         <div className="mb-6">
-          <img src={syntaroLogo} alt="Syntraro" className="h-12 w-auto object-contain" />
+          <img src={syntaroLogo} alt={BRAND.full} className="h-12 w-auto object-contain" />
         </div>
         <p className="text-sm text-slate-400 tracking-wide">Field Service Intelligence</p>
       </div>
@@ -102,7 +104,7 @@ export function LoginPage({ onLogin, error, isLoading }: LoginPageProps) {
           </button>
         </div>
 
-        <p className="text-sm text-center text-slate-400 mt-8">Syntraro Field Service Platform</p>
+        <p className="text-sm text-center text-slate-400 mt-8">{BRAND.full}</p>
       </div>
     </div>
   );

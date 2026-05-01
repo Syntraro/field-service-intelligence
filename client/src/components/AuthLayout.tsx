@@ -4,6 +4,8 @@ import syntaroLogo from "@/assets/Syntraro Logo Transparent.png";
 // provided by the user via Downloads and copied into client assets.
 // Vite bundles this as a hashed static import.
 import brandPanelImage from "@/assets/Syntraro Auth Panel.png";
+// 2026-05-01 brand pivot — canonical brand strings.
+import { BRAND } from "@shared/branding";
 
 /**
  * 2026-04-19 auth layout — shared chrome for Login, Signup (staged +
@@ -32,7 +34,7 @@ export function AuthLayout({ children }: { children: ReactNode }) {
         <div className="mb-6 md:mb-8 flex items-center">
           <img
             src={syntaroLogo}
-            alt="Syntraro"
+            alt={BRAND.full}
             className="h-7 w-auto object-contain"
           />
         </div>

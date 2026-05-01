@@ -28,6 +28,8 @@ import { NavigationRoute, registerRoute } from "workbox-routing";
 import { CacheFirst, NetworkFirst, NetworkOnly } from "workbox-strategies";
 import { ExpirationPlugin } from "workbox-expiration";
 import { CacheableResponsePlugin } from "workbox-cacheable-response";
+// 2026-05-01 brand pivot — canonical product / company strings.
+import { BRAND } from "@shared/branding";
 
 // Narrow the global so TS picks up ServiceWorkerGlobalScope members.
 declare const self: ServiceWorkerGlobalScope & {
@@ -155,10 +157,10 @@ self.addEventListener("push", (event) => {
   } catch {
     // If the payload isn't JSON, show a minimal notification rather than
     // dropping the push silently — makes misconfig obvious in the tray.
-    payload = { title: "Syntraro", body: event.data.text?.() ?? "" };
+    payload = { title: BRAND.pushFallback, body: event.data.text?.() ?? "" };
   }
 
-  const title = payload.title || "Syntraro";
+  const title = payload.title || BRAND.pushFallback;
   const body = payload.body || "";
   const tag = payload.tag;
 

@@ -100,6 +100,10 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
   // Form state
   const [title, setTitle] = useState("");
   const [notes, setNotes] = useState("");
+  // 2026-04-30 (embedded compact pass): collapse the Notes textarea behind
+  // a "+ Add instructions" row in embedded mode. STRICTLY scoped — non-
+  // embedded edit flows always render the textarea as before.
+  const [embNotesOpen, setEmbNotesOpen] = useState(false);
   // forcedType (e.g. from the +New tabbed modal) seeds the initial value AND
   // disables the in-form type toggle. Falls back to GENERAL for the legacy
   // standalone-modal entry points.
@@ -241,9 +245,17 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
 
   // ─── Validation ────────────────────────────────────────────────────────────
 
-  // Allow task creation without a supplier — techs may fill it in later.
-  // Title is the only hard requirement.
-  const canSubmit = useMemo(() => title.trim().length > 0, [title]);
+  // 2026-05-01 — when the user has explicitly enabled the supplier-visit
+  // section in the merged Task tab (or arrived via legacy
+  // `forcedType="SUPPLIER_VISIT"`), require a supplier selection. Title
+  // is always required. Location is intentionally NOT required to honor
+  // the prior "techs may fill in later" rule for cases where the
+  // dispatcher knows the supplier but the location is decided on-site.
+  const canSubmit = useMemo(() => {
+    if (title.trim().length === 0) return false;
+    if (type === "SUPPLIER_VISIT" && !supplierId) return false;
+    return true;
+  }, [title, type, supplierId]);
 
   // ─── Mutations ─────────────────────────────────────────────────────────────
 
@@ -385,55 +397,91 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
             </div>
           ) : (
             <div className="space-y-2.5">
-              {/* Row 1: Title + Type. The Type toggle is hidden when the
-                  parent shell forces a type (e.g. each tab in the +New
-                  modal is single-purpose). */}
-              <div className={forcedType ? "space-y-1" : "grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 items-end"}>
-                <div className="space-y-1">
-                  <Label className="text-xs">Title</Label>
-                  <Input
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    placeholder="Task title"
-                    className="h-9"
-                  />
-                </div>
-                {!forcedType && (
-                <div className="space-y-1">
-                  <Label className="text-xs">Type</Label>
-                  <div className="flex gap-1">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={type === "GENERAL" ? "default" : "outline"}
-                      onClick={() => setType("GENERAL")}
-                    >
-                      General
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={type === "SUPPLIER_VISIT" ? "default" : "outline"}
-                      onClick={() => setType("SUPPLIER_VISIT")}
-                    >
-                      Supplier Visit
-                    </Button>
-                  </div>
-                </div>
-                )}
-              </div>
-
-              {/* Row 2: Notes (full width) */}
+              {/* Row 1: Title.
+                  2026-05-01: the legacy "Type" toggle row (General /
+                  Supplier Visit buttons) was removed. Embedded callers
+                  always pass `forcedType="GENERAL"` and use the inline
+                  "+ Add supplier visit" expandable below to opt into
+                  supplier-visit mode. Non-embedded edit flows on
+                  TasksPanel also pass an effective type via taskData
+                  (see useEffect line 195) so the toggle is no longer
+                  needed there either — the type is inferred from the
+                  edited task. */}
               <div className="space-y-1">
-                <Label className="text-xs">Notes</Label>
-                <Textarea
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Additional details"
-                  rows={2}
-                  className="text-sm"
+                {/* 2026-04-30 (embedded compact pass): drop visible label
+                    and use a type-aware placeholder. Edit flows keep the
+                    explicit "Title" label. */}
+                {embedded ? (
+                  <Label htmlFor="task-title-embedded" className="sr-only">Title</Label>
+                ) : (
+                  <Label className="text-xs">Title</Label>
+                )}
+                <Input
+                  id={embedded ? "task-title-embedded" : undefined}
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder={
+                    embedded
+                      ? type === "SUPPLIER_VISIT"
+                        ? "Brief description of the supplier visit"
+                        : "Brief description of the task"
+                      : "Task title"
+                  }
+                  className="h-9"
                 />
               </div>
+
+              {/* Row 2: Notes (full width).
+                  2026-04-30 (embedded compact pass): collapsed behind a
+                  "+ Add instructions" row in embedded mode; auto-expands
+                  when there's already content. Non-embedded keeps the
+                  always-visible Notes textarea. */}
+              {embedded ? (
+                (embNotesOpen || notes.length > 0) ? (
+                  <div className="rounded-md bg-muted/30 p-2">
+                    <div className="flex items-center justify-between mb-1">
+                      <Label className="text-xs">Instructions</Label>
+                      {notes.length === 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setEmbNotesOpen(false)}
+                          className="text-xs text-muted-foreground hover:text-foreground"
+                          data-testid="emb-task-notes-collapse"
+                        >
+                          −
+                        </button>
+                      )}
+                    </div>
+                    <Textarea
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      placeholder="Add notes or instructions for the team..."
+                      rows={2}
+                      className="text-sm"
+                    />
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setEmbNotesOpen(true)}
+                    className="text-xs font-medium text-muted-foreground hover:text-foreground inline-flex items-center gap-1 py-1"
+                    data-testid="emb-task-notes-expand"
+                  >
+                    + Add instructions
+                  </button>
+                )
+              ) : (
+                <div className="space-y-1">
+                  <Label className="text-xs">Notes</Label>
+                  <Textarea
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    placeholder="Additional details"
+                    rows={2}
+                    className="text-sm"
+                  />
+                </div>
+              )}
 
               {/* Row 3: Assigned To | Start Date | Start Time */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -499,11 +547,54 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                 </div>
               </div>
 
-              {/* Row 5: Supplier Visit Details */}
+              {/* Row 5: Supplier Visit Details.
+                  2026-05-01 — embedded callers (the merged Task tab in
+                  CreateNewDialog) gate this entire section behind a
+                  "+ Add supplier visit" expandable. Non-embedded edit
+                  flows on TasksPanel keep the always-visible behavior
+                  driven by `type === "SUPPLIER_VISIT"`. */}
+              {embedded && type !== "SUPPLIER_VISIT" && (
+                <button
+                  type="button"
+                  onClick={() => setType("SUPPLIER_VISIT")}
+                  className="text-xs font-medium text-muted-foreground hover:text-foreground flex w-full justify-start items-center gap-1 py-1.5 px-2 rounded"
+                  data-testid="emb-task-supplier-expand"
+                >
+                  + Add supplier visit
+                </button>
+              )}
               {type === "SUPPLIER_VISIT" && (
-                <div className="space-y-3 rounded-md border p-3 bg-muted/30">
-                  <div className="text-xs font-semibold tracking-wide uppercase text-muted-foreground">
-                    Supplier Visit Details
+                <div
+                  className={
+                    embedded
+                      ? "space-y-3 rounded-md border-l-2 border-[#76B054] bg-[#76B054]/5 pl-3 pr-2 py-2"
+                      : "space-y-3 rounded-md border p-3 bg-muted/30"
+                  }
+                  data-testid="task-supplier-visit-section"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs font-semibold tracking-wide uppercase text-muted-foreground">
+                      Supplier Visit Details
+                    </div>
+                    {embedded && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // 2026-05-01 — Remove supplier visit: revert
+                          // task type AND clear all supplier-visit state
+                          // so a subsequent submit doesn't carry stale
+                          // supplier/location/PO into the next task.
+                          setType("GENERAL");
+                          setSupplierId(undefined);
+                          setSupplierLocationId(undefined);
+                          setPoNumber("");
+                        }}
+                        className="text-xs font-medium text-muted-foreground hover:text-foreground"
+                        data-testid="emb-task-supplier-collapse"
+                      >
+                        Remove supplier visit
+                      </button>
+                    )}
                   </div>
 
                   {/* Supplier + Location side-by-side */}
@@ -650,12 +741,15 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData,
                 onClick={() => saveMutation.mutate()}
                 disabled={!canSubmit || saveMutation.isPending}
                 size="sm"
+                data-testid="task-submit"
               >
                 {saveMutation.isPending
                   ? "Saving..."
                   : isEditMode
                     ? "Update"
-                    : "Create"}
+                    : embedded
+                      ? "Create Task"
+                      : "Create"}
               </Button>
             </div>
           </DialogFooter>

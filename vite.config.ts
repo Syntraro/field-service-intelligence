@@ -4,6 +4,7 @@ import path from "path";
 import { execSync } from "node:child_process";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 import { VitePWA } from "vite-plugin-pwa";
+import { BRAND } from "./shared/branding";
 
 /**
  * 2026-04-30 stale-deploy fix (Balanced): emit a build identifier so
@@ -86,9 +87,10 @@ export default defineConfig({
       filename: "sw.ts",
       includeAssets: ["favicon.png", "apple-touch-icon.png"],
       manifest: {
-        name: "Syntraro Field Service",
-        short_name: "Syntraro",
-        description: "Field service management for HVAC/R technicians",
+        // 2026-05-01 brand pivot — sourced from shared/branding.ts.
+        name: BRAND.pwa.name,
+        short_name: BRAND.pwa.shortName,
+        description: BRAND.pwa.description,
         theme_color: "#0f1a2e",
         background_color: "#0f1a2e",
         display: "standalone",

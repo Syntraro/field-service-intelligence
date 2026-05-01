@@ -67,6 +67,13 @@ import type { Job, InsertJob } from "@shared/schema";
 // for inline create stays canonical — `AddEquipmentDialog` (now accepts
 // a `defaultName` prefill so the typed text flows through).
 import { AddEquipmentDialog } from "@/components/AddEquipmentDialog";
+// 2026-04-30 (embedded compact pass): the technician directory hook is
+// shared with TechnicianSelector and many other surfaces; pulling it
+// here lets the embedded layout render selected-technician chips
+// (with full names) below the schedule row without round-tripping IDs
+// through a child render. The cache is shared with the selector, so
+// no extra network request fires.
+import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 
 // 2026-04-26 polish v5: CreateOrSelectField import removed — Location now
 // uses the inline LocationCombobox below (Popover overlay). Other surfaces
@@ -140,6 +147,11 @@ interface LocationComboboxProps {
   onChange: (loc: LocationOption | null) => void;
   onCreateNew: (typed: string) => void;
   disabled?: boolean;
+  /** 2026-04-30 (compact pass): when true, the trigger renders at
+   *  `h-8` (matching tabs, summary, schedule grid) and uses the
+   *  spec-aligned placeholder copy. Defaults to false so non-compact
+   *  callers (none today, but defensive) keep the legacy `h-9`. */
+  compact?: boolean;
 }
 
 function LocationCombobox({
@@ -151,9 +163,14 @@ function LocationCombobox({
   onChange,
   onCreateNew,
   disabled,
+  compact = false,
 }: LocationComboboxProps) {
   const [open, setOpen] = useState(false);
-  const triggerLabel = value ? getLocationLabel(value) : "Search locations...";
+  const triggerLabel = value
+    ? getLocationLabel(value)
+    : compact
+      ? "Search client or address..."
+      : "Search locations...";
   const triggerDescription = value ? getLocationDescription(value) : null;
 
   return (
@@ -164,7 +181,10 @@ function LocationCombobox({
           variant="outline"
           role="combobox"
           aria-expanded={open}
-          className="h-9 w-full justify-between text-xs font-normal bg-white"
+          className={cn(
+            "w-full justify-between text-xs font-normal bg-white",
+            compact ? "h-8" : "h-9",
+          )}
           disabled={disabled}
           data-testid="select-location"
         >
@@ -751,9 +771,13 @@ interface DurationHoursInputProps {
   durationMinutes: number;
   onChange: (minutes: number) => void;
   disabled?: boolean;
+  /** 2026-04-30 (compact pass): when true, render at `h-8` to match
+   *  the surrounding compact schedule grid. Default false keeps the
+   *  legacy `h-9` for non-embedded edit flows. */
+  compact?: boolean;
 }
 
-function DurationHoursInput({ durationMinutes, onChange, disabled }: DurationHoursInputProps) {
+function DurationHoursInput({ durationMinutes, onChange, disabled, compact = false }: DurationHoursInputProps) {
   const [draft, setDraft] = useState(() => formatDurationAsHours(durationMinutes));
 
   // Re-sync the visible draft whenever the canonical state changes from
@@ -790,7 +814,10 @@ function DurationHoursInput({ durationMinutes, onChange, disabled }: DurationHou
         onBlur={handleBlur}
         disabled={disabled}
         placeholder="1"
-        className="h-9 w-full text-xs pr-6 bg-white"
+        className={cn(
+          "w-full text-xs pr-6 bg-white",
+          compact ? "h-8" : "h-9",
+        )}
         data-testid="input-duration-hours"
       />
       <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground">
@@ -847,7 +874,17 @@ interface QuickAddJobDialogProps {
   compact?: boolean;
 }
 
-export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, editJob, onSuccess, initialSchedule, mode = "standard", embedded = false, compact: _compact = false }: QuickAddJobDialogProps) {
+export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, editJob, onSuccess, initialSchedule, mode = "standard", embedded = false, compact = false }: QuickAddJobDialogProps) {
+  // 2026-04-30 (compact pass): the `compact` prop was previously
+  // destructured as `_compact` and ignored. It is now honored: when
+  // either `embedded` (always true from CreateNewDialog) OR an explicit
+  // `compact` prop is set, primary form controls render at `h-8 text-xs`
+  // instead of the legacy `h-9` / `text-body` heights. This unifies the
+  // size ladder (tabs, location, summary, schedule grid, availability,
+  // action triggers) at one height + one font. Edit flows on detail
+  // pages keep `embedded={false}` and `compact={false}` so they render
+  // the existing legacy heights — no regression.
+  const isCompact = embedded || compact;
   const { toast } = useToast();
   const { logActivity } = useActivityStore();
   // Tenant default scheduling buffer (minutes) — applied at scheduledEnd
@@ -857,6 +894,21 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
   const [locationSearch, setLocationSearchText] = useState("");
   const [selectedLocationOption, setSelectedLocationOption] = useState<LocationOption | null>(null);
   const isEditMode = !!editJob;
+
+  // 2026-04-30 (embedded compact pass): per-section collapse flags.
+  // Each starts collapsed; user clicks a "+ Add X" row to expand.
+  // STRICTLY scoped to `embedded` mode — non-embedded edit flows do not
+  // read these flags and continue rendering the always-visible UI.
+  const [embServiceOpen, setEmbServiceOpen] = useState(false);
+  const [embEquipmentOpen, setEmbEquipmentOpen] = useState(false);
+  const [embRecurringOpen, setEmbRecurringOpen] = useState(false);
+  const [embInstructionsOpen, setEmbInstructionsOpen] = useState(false);
+
+  // 2026-04-30 (embedded compact pass): technician directory for the
+  // chip-strip below the schedule row. Read-only — only consumed by the
+  // chip rendering below. Shared cache with TechnicianSelector; no extra
+  // network call.
+  const { teamMembers: techDirectory } = useTechniciansDirectory();
 
   const getDefaultFormData = () => ({
     locationId: preselectedLocationId || "",
@@ -1653,7 +1705,16 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               Popover+Command combobox. Results overlay; modal shell stays
               stable. */}
           <div>
-            <Label className="text-xs font-medium mb-0.5 block">Location *</Label>
+            {/* 2026-04-30 (embedded compact pass): drop the visible "Location *"
+                label when rendered inside CreateNewDialog — placeholder
+                copy is sufficient. Edit flows (non-embedded) keep the
+                explicit label. The `sr-only` Label preserves the field's
+                accessible name. */}
+            {embedded ? (
+              <Label htmlFor="qa-location" className="sr-only">Location</Label>
+            ) : (
+              <Label className="text-xs font-medium mb-0.5 block">Location *</Label>
+            )}
             <LocationCombobox
               value={selectedLocation}
               searchText={locationSearch}
@@ -1667,60 +1728,72 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               }}
               onCreateNew={(text) => quickCreateClientMutation.mutate(text)}
               disabled={isPending}
+              compact={isCompact}
             />
           </div>
 
           {/* ── Service + Equipment row ──
               2026-04-26 polish v3: paired side-by-side on desktop/tablet,
               stack on mobile. Service comes first per spec (left of Equipment).
-              Both are optional inputs that hang off the selected Location. */}
-          {!isEditMode && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            {/* Service (multi-select) ── 2026-04-26 polish v6
-                 Mirrors EditVisitModal's ServiceMultiSelect: search-only
-                 trigger on top, selected services rendered as white pill-
-                 cards underneath. Add multiple, sum duration, " + "-join
-                 summary auto-fill. Keeps the dialog state local; persists
-                 to /api/jobs/:id/parts after the job is created. */}
-            <div>
-              <Label className="text-xs font-medium mb-0.5 block flex items-center gap-1.5">
-                <Wrench className="h-3 w-3 text-muted-foreground" />
-                Service (optional)
-              </Label>
-              <ServicesMultiSelect
-                services={services}
-                selected={selectedServices}
-                searchOpen={serviceComboOpen}
-                onSearchOpenChange={setServiceComboOpen}
-                searchText={serviceSearchText}
-                onSearchTextChange={setServiceSearchText}
-                filteredServices={filteredServices}
-                exactMatchExists={exactMatchExists}
-                onAdd={addService}
-                onRemove={removeService}
-                onCreateNew={(name) => createServiceQuickMutation.mutate(name)}
-                createPending={createServiceQuickMutation.isPending}
-                disabled={isPending}
-              />
+              Both are optional inputs that hang off the selected Location.
+              2026-04-30 (embedded reorder pass): in embedded mode the
+              spec puts these AFTER the schedule + availability — they
+              now render in the bottom-of-form embedded block instead
+              of here. Non-embedded edit flows keep the existing
+              side-by-side grid unchanged. */}
+          {!isEditMode && !embedded && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {/* Service (multi-select) ── 2026-04-26 polish v6
+                   Mirrors EditVisitModal's ServiceMultiSelect: search-only
+                   trigger on top, selected services rendered as white pill-
+                   cards underneath. Add multiple, sum duration, " + "-join
+                   summary auto-fill. Keeps the dialog state local; persists
+                   to /api/jobs/:id/parts after the job is created. */}
+              <div>
+                <Label className="text-xs font-medium mb-0.5 block flex items-center gap-1.5">
+                  <Wrench className="h-3 w-3 text-muted-foreground" />
+                  Service (optional)
+                </Label>
+                <ServicesMultiSelect
+                  services={services}
+                  selected={selectedServices}
+                  searchOpen={serviceComboOpen}
+                  onSearchOpenChange={setServiceComboOpen}
+                  searchText={serviceSearchText}
+                  onSearchTextChange={setServiceSearchText}
+                  filteredServices={filteredServices}
+                  exactMatchExists={exactMatchExists}
+                  onAdd={addService}
+                  onRemove={removeService}
+                  onCreateNew={(name) => createServiceQuickMutation.mutate(name)}
+                  createPending={createServiceQuickMutation.isPending}
+                  disabled={isPending}
+                />
+              </div>
+              <div>
+                <Label className="text-xs font-medium mb-0.5 block flex items-center gap-1.5">
+                  <Wrench className="h-3 w-3 text-muted-foreground" />
+                  Equipment (optional)
+                </Label>
+                <EquipmentCombobox
+                  locationId={formData.locationId || null}
+                  selectedIds={selectedEquipmentIds}
+                  onChange={setSelectedEquipmentIds}
+                  disabled={isPending}
+                />
+              </div>
             </div>
-            <div>
-              <Label className="text-xs font-medium mb-0.5 block flex items-center gap-1.5">
-                <Wrench className="h-3 w-3 text-muted-foreground" />
-                Equipment (optional)
-              </Label>
-              <EquipmentCombobox
-                locationId={formData.locationId || null}
-                selectedIds={selectedEquipmentIds}
-                onChange={setSelectedEquipmentIds}
-                disabled={isPending}
-              />
-            </div>
-          </div>
           )}
 
           {/* ── Summary ── */}
           <div>
-            <Label htmlFor="summary" className="text-xs font-medium mb-0.5 block">Summary *</Label>
+            {/* 2026-04-30 (embedded compact pass): drop visible label in
+                embedded; placeholder is descriptive enough. */}
+            {embedded ? (
+              <Label htmlFor="summary" className="sr-only">Summary</Label>
+            ) : (
+              <Label htmlFor="summary" className="text-xs font-medium mb-0.5 block">Summary *</Label>
+            )}
             <Input
               id="summary"
               value={formData.summary}
@@ -1736,13 +1809,62 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                 setSummaryDirty(val.trim().length > 0);
               }}
               placeholder="Brief description of the job"
-              className="h-9 bg-white"
+              className={cn(
+                "bg-white",
+                isCompact ? "h-8 text-xs" : "h-9",
+              )}
               data-testid="input-summary"
             />
           </div>
 
-          {/* ── Make Recurring toggle ── */}
-          {!isEditMode && !isRecurringMode && (
+          {/* ── + Add instructions (embedded only) ──
+              2026-05-01: relocated from the bottom embedded action
+              stack to here, directly under Summary. Description and
+              team instructions are related — internal notes belong
+              adjacent to the job summary. Trigger uses the same
+              ghost-outline pill styling as the other secondary
+              actions (Service / Equipment / Make recurring) at the
+              bottom of the form, so the four actions read as one
+              consistent system across two locations. */}
+          {embedded && !isEditMode && (() => {
+            const instructionsShowing =
+              embInstructionsOpen || formData.description.length > 0;
+            return (
+              <div className="flex flex-col">
+                <button
+                  type="button"
+                  onClick={() => setEmbInstructionsOpen((v) => !v)}
+                  className="h-8 px-2 text-xs rounded-md border bg-white hover:bg-muted inline-flex items-center gap-1 self-start"
+                  data-testid={instructionsShowing ? "emb-instructions-collapse" : "emb-instructions-expand"}
+                >
+                  {instructionsShowing ? "− Instructions" : "+ Add instructions"}
+                </button>
+                {instructionsShowing && (
+                  <div className="pl-2 mt-1">
+                    <Label htmlFor="description-emb" className="sr-only">
+                      Team instructions
+                    </Label>
+                    <Textarea
+                      id="description-emb"
+                      value={formData.description}
+                      onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
+                      placeholder="Add notes or instructions for the team..."
+                      rows={2}
+                      className="text-xs resize-none h-[40px] bg-white"
+                      data-testid="input-description"
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* ── Make Recurring toggle ──
+              2026-04-30 (embedded reorder pass): in embedded mode this
+              collapsible moves to the bottom-of-form block (per spec
+              order: service → equipment → instructions → recurring).
+              Non-embedded edit / standalone flows keep the toggle here. */}
+          {!isEditMode && !isRecurringMode && !embedded && (
             <div className="flex items-center gap-2">
               <Switch
                 id="make-recurring"
@@ -1757,8 +1879,11 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
             </div>
           )}
 
-          {/* ── Recurring schedule fields — shown when Make Recurring is ON ── */}
-          {isRecurring && !isEditMode && (
+          {/* ── Recurring schedule fields — shown when Make Recurring is ON ──
+              2026-04-30 (embedded reorder pass): non-embedded only at this
+              position. Embedded mode renders the same recurring fields
+              inside the bottom-of-form "+ Make recurring" expansion. */}
+          {isRecurring && !isEditMode && !embedded && (
             <div className="space-y-2 rounded-md border p-2.5 bg-muted/30">
               {/* Row: Preset + Start date + End date */}
               <div className="flex items-start gap-3">
@@ -1965,7 +2090,8 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                       variant="outline"
                       size="sm"
                       className={cn(
-                        "h-9 w-full text-xs justify-start gap-1.5 bg-white",
+                        "w-full text-xs justify-start gap-1.5 bg-white",
+                        isCompact ? "h-8" : "h-9",
                         !scheduleValue.date && "text-muted-foreground",
                       )}
                       disabled={isScheduleDisabled}
@@ -2003,7 +2129,10 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                     updateSchedule({ time: e.target.value, isAllDay: false });
                   }}
                   disabled={isScheduleDisabled}
-                  className="h-9 w-full text-xs bg-white"
+                  className={cn(
+                    "w-full text-xs bg-white",
+                    isCompact ? "h-8" : "h-9",
+                  )}
                   data-testid="input-time"
                 />
               </div>
@@ -2026,6 +2155,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                     updateSchedule({ durationMinutes: minutes });
                   }}
                   disabled={isScheduleDisabled}
+                  compact={isCompact}
                 />
               </div>
 
@@ -2034,16 +2164,61 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                   the grid column on narrow widths and never forces the
                   modal to sideways-scroll. */}
               <div className="space-y-0.5 min-w-0">
-                <Label className="text-[11px] font-medium text-muted-foreground">Assigned To</Label>
+                <Label className="text-[11px] font-medium text-muted-foreground">Assigned</Label>
                 <TechnicianSelector
                   mode="multi"
                   value={scheduleValue.assignedTechnicianIds}
                   onChange={(ids) => updateSchedule({ assignedTechnicianIds: ids })}
                   disabled={isScheduleDisabled}
-                  className="!min-w-0 !max-w-full w-full"
+                  className={cn(
+                    "!min-w-0 !max-w-full w-full",
+                    isCompact && "h-8",
+                  )}
                 />
               </div>
             </div>
+
+            {/* 2026-04-30 (embedded compact pass): selected-technician
+                chip strip. Renders BELOW the schedule grid in embedded
+                mode so the assigned-to selector trigger stays compact
+                ("Mikel +N") while full names remain visible as removable
+                chips. The X removes that tech via the same `updateSchedule`
+                path the selector itself uses — no parallel mutation. The
+                chip strip never renders in non-embedded edit mode. */}
+            {embedded && scheduleValue.assignedTechnicianIds.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 mt-1" data-testid="emb-assigned-chips">
+                <span className="text-[11px] font-medium text-muted-foreground">Assigned:</span>
+                {scheduleValue.assignedTechnicianIds.map((id) => {
+                  const tech = techDirectory.find((t) => t.id === id);
+                  const name = tech?.fullName ?? "Unknown";
+                  return (
+                    <span
+                      key={id}
+                      className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-700"
+                      data-testid={`emb-assigned-chip-${id}`}
+                    >
+                      {name}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateSchedule({
+                            assignedTechnicianIds: scheduleValue.assignedTechnicianIds.filter(
+                              (x) => x !== id,
+                            ),
+                          })
+                        }
+                        disabled={isScheduleDisabled}
+                        className="text-slate-400 hover:text-slate-700 disabled:opacity-50"
+                        aria-label={`Remove ${name}`}
+                        data-testid={`emb-assigned-chip-remove-${id}`}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
 
             {/* 2026-04-26: tenant default scheduling buffer hint. Shown only
                 when buffer > 0 AND a duration is set — the helper returns
@@ -2082,7 +2257,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                 title="Show open windows grouped by technician for the selected date and duration"
               >
                 <Wand2 className="h-3.5 w-3.5" />
-                Find Availability
+                Availability
               </Button>
 
               {/* Per-tech availability suggestions (2026-04-26 v7).
@@ -2090,8 +2265,13 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                   date is today — the canonical capacity feed is today-only.
                   Each chip applies date + start; never blocks manual entry.
                   When the selected tech has zero fitting gaps, surfaces the
-                  compact "No open slot for this duration." per spec.  */}
-              {!isScheduleDisabled && singleSelectedTechId && !!scheduleValue.date && (
+                  compact "No open slot for this duration." per spec.
+                  2026-04-30 (embedded reorder pass): hidden in embedded
+                  mode — spec says nothing availability-related is visible
+                  until the user explicitly clicks the Availability button.
+                  The inline panel below remains the single source of
+                  availability messaging in embedded. */}
+              {!embedded && !isScheduleDisabled && singleSelectedTechId && !!scheduleValue.date && (
                 <div
                   className="flex flex-wrap items-center gap-1.5 text-xs"
                   data-testid="availability-suggestions-row"
@@ -2172,16 +2352,103 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                   <p className="text-xs text-muted-foreground italic">
                     Loading availability…
                   </p>
+                ) : embedded ? (
+                  // 2026-05-01 (availability fix): convert each open
+                  // window into stepped start-time pills sized to the
+                  // 2026-05-01 (refinement): availability now displays
+                  // each tech's real OPEN WINDOWS as compact range
+                  // buttons (e.g. "8:00 AM – 5:00 PM"), one per
+                  // window. Replaces the prior stepped-pills
+                  // enumeration which produced dozens of buttons with
+                  // odd offsets like "8:23 AM" and bloated the modal.
+                  // Each window comes from `availabilityGroups` —
+                  // already filtered by the helper to windows ≥
+                  // requested duration, so every visible button is
+                  // actionable. Click sets the start time to the
+                  // window's start AND assigns the tech AND flips
+                  // unscheduled off (existing `applyAvailabilityGap`
+                  // path). Techs with zero fitting windows render
+                  // "No availability".
+                  (() => {
+                    const preferred = scheduleValue.assignedTechnicianIds.filter(
+                      (id): id is string => typeof id === "string" && id.length > 0,
+                    );
+                    const techList = capacityData.technicians.filter(
+                      (t) =>
+                        preferred.length === 0 || preferred.includes(t.technicianId),
+                    );
+                    const groupMap = new Map(
+                      availabilityGroups.map((g) => [g.technicianId, g.gaps]),
+                    );
+                    if (techList.length === 0) {
+                      return (
+                        <p
+                          className="text-xs text-muted-foreground italic"
+                          data-testid="find-availability-empty"
+                        >
+                          No technicians in scope.
+                        </p>
+                      );
+                    }
+                    return (
+                      <div className="space-y-1.5">
+                        {techList.map((tech) => {
+                          const gaps = groupMap.get(tech.technicianId) ?? [];
+                          return (
+                            <div
+                              key={tech.technicianId}
+                              data-testid={`find-availability-group-${tech.technicianId}`}
+                            >
+                              <div className="text-xs font-semibold text-slate-800 mb-0.5">
+                                {tech.name}
+                              </div>
+                              {gaps.length === 0 ? (
+                                <div
+                                  className="text-xs text-muted-foreground italic"
+                                  data-testid={`find-availability-no-slots-${tech.technicianId}`}
+                                >
+                                  No availability
+                                </div>
+                              ) : (
+                                <div className="flex flex-wrap gap-1.5">
+                                  {gaps.map((gap, idx) => {
+                                    const startLabel = formatSlotTimeLabel(gap.date, gap.time);
+                                    const endTime = gap.endISO.slice(11, 16);
+                                    const endLabel = formatSlotTimeLabel(gap.date, endTime);
+                                    return (
+                                      <Button
+                                        key={`${tech.technicianId}-${gap.startISO}`}
+                                        type="button"
+                                        variant="secondary"
+                                        size="sm"
+                                        className="h-7 px-2 text-xs"
+                                        onClick={() =>
+                                          applyAvailabilityGap(tech.technicianId, gap)
+                                        }
+                                        data-testid={`find-availability-slot-${tech.technicianId}-${idx}`}
+                                      >
+                                        {startLabel} – {endLabel}
+                                      </Button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()
                 ) : availabilityGroups.length === 0 ? (
                   <p
                     className="text-xs text-muted-foreground italic"
                     data-testid="find-availability-empty"
                   >
-                    No matching availability for{" "}
-                    {scheduleValue.date
-                      ? format(parseISO(scheduleValue.date), "MMM d")
-                      : "today"}
-                    .
+                    {`No matching availability for ${
+                      scheduleValue.date
+                        ? format(parseISO(scheduleValue.date), "MMM d")
+                        : "today"
+                    }.`}
                   </p>
                 ) : (
                   <div className="space-y-1.5">
@@ -2247,19 +2514,269 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               2026-04-26 v9 compactness pass: textarea trimmed to h-[40px]
               (≈ 2 lines of 14px text + minimal vertical padding). Label
               spacing also tightened. Resize disabled so users cannot
-              re-grow it. */}
-          <div>
-            <Label htmlFor="description" className="text-xs font-medium mb-0.5 block">Team Instructions</Label>
-            <Textarea
-              id="description"
-              value={formData.description}
-              onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
-              placeholder="Add any notes or instructions for the team..."
-              rows={2}
-              className="text-sm resize-none h-[40px] bg-white"
-              data-testid="input-description"
-            />
-          </div>
+              re-grow it.
+              2026-04-30 (embedded reorder pass): in embedded mode the
+              textarea moves to the bottom-of-form block (per spec
+              order: service → equipment → instructions → recurring).
+              Non-embedded edit / standalone flows keep the textarea
+              here unchanged. */}
+          {!embedded && (
+            <div>
+              <Label htmlFor="description" className="text-xs font-medium mb-0.5 block">Team Instructions</Label>
+              <Textarea
+                id="description"
+                value={formData.description}
+                onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
+                placeholder="Add any notes or instructions for the team..."
+                rows={2}
+                className="text-sm resize-none h-[40px] bg-white"
+                data-testid="input-description"
+              />
+            </div>
+          )}
+
+          {/* ── Embedded-only bottom block (2026-04-30 reorder pass) ──
+              Per spec, in embedded mode the four optional sections render
+              AFTER the schedule + availability, in this exact order:
+                + Add service
+                + Add equipment
+                + Add instructions
+                + Make recurring
+              Each on its own row, expand inline, no inline grouping.
+              When "+ Make recurring" is expanded AND `isRecurring` is
+              true, the recurring schedule fields (preset / start / end
+              / day-of-week / day-of-month) render inside the same
+              expansion. The non-embedded edit/standalone flows continue
+              to render these sections at their legacy positions above
+              and never enter this block. */}
+          {embedded && !isEditMode && (() => {
+            // 2026-04-30 — secondary actions stacked vertically. Each
+            // section is a `<div>` containing its trigger followed
+            // (when expanded) by its panel — so an expanded section's
+            // panel sits directly under the trigger that opened it,
+            // rather than buffered behind unrelated triggers in a row.
+            // A panel auto-shows when its section already has content
+            // (e.g. selectedServices.length > 0), regardless of the
+            // open flag — content presence is a stronger signal than UI
+            // preference.
+            const serviceShowing = embServiceOpen || selectedServices.length > 0;
+            const equipmentShowing = embEquipmentOpen || selectedEquipmentIds.length > 0;
+            const recurringShowing = !isRecurringMode && (embRecurringOpen || isRecurring);
+            // 2026-05-01 — restyled triggers from full-width text-links
+            // to compact ghost-outline pill buttons. Auto-width per
+            // content; left-aligned in their column. Apply consistently
+            // to every secondary action (Service / Equipment / Make
+            // Recurring here; Instructions also uses this class but is
+            // rendered higher up the form, directly under Summary).
+            const triggerClass =
+              "h-8 px-2 text-xs rounded-md border bg-white hover:bg-muted inline-flex items-center gap-1 self-start";
+            return (
+              <div className="flex flex-col items-start gap-1.5" data-testid="emb-secondary-action-stack">
+                {/* + Add service — trigger then panel */}
+                <div className="w-full flex flex-col">
+                  <button
+                    type="button"
+                    onClick={() => setEmbServiceOpen((v) => !v)}
+                    className={triggerClass}
+                    data-testid={serviceShowing ? "emb-service-collapse" : "emb-service-expand"}
+                  >
+                    {serviceShowing ? "− Service" : "+ Add service"}
+                  </button>
+                  {serviceShowing && (
+                    <div className="pl-2 mt-1">
+                      <ServicesMultiSelect
+                        services={services}
+                        selected={selectedServices}
+                        searchOpen={serviceComboOpen}
+                        onSearchOpenChange={setServiceComboOpen}
+                        searchText={serviceSearchText}
+                        onSearchTextChange={setServiceSearchText}
+                        filteredServices={filteredServices}
+                        exactMatchExists={exactMatchExists}
+                        onAdd={addService}
+                        onRemove={removeService}
+                        onCreateNew={(name) => createServiceQuickMutation.mutate(name)}
+                        createPending={createServiceQuickMutation.isPending}
+                        disabled={isPending}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* + Add equipment — trigger then panel */}
+                <div className="w-full flex flex-col">
+                  <button
+                    type="button"
+                    onClick={() => setEmbEquipmentOpen((v) => !v)}
+                    className={triggerClass}
+                    data-testid={equipmentShowing ? "emb-equipment-collapse" : "emb-equipment-expand"}
+                  >
+                    {equipmentShowing ? "− Equipment" : "+ Add equipment"}
+                  </button>
+                  {equipmentShowing && (
+                    <div className="pl-2 mt-1">
+                      <EquipmentCombobox
+                        locationId={formData.locationId || null}
+                        selectedIds={selectedEquipmentIds}
+                        onChange={setSelectedEquipmentIds}
+                        disabled={isPending}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* 2026-05-01 — "+ Add instructions" was MOVED from this
+                    bottom block to a new position directly under the
+                    Summary input (description + instructions are
+                    related — internal notes belong adjacent to the job
+                    summary). The state flag (`embInstructionsOpen`)
+                    and the panel JSX live there now. */}
+
+                {/* + Make recurring — trigger then panel (suppressed in
+                    isRecurringMode where recurrence is forced upstream) */}
+                {!isRecurringMode && (
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // 2026-05-01: trigger toggles BOTH the panel
+                        // visibility AND the actual `isRecurring` state
+                        // so the user only needs one click to opt in
+                        // (was two — open panel + flip switch). The
+                        // in-panel Switch+Label was removed because
+                        // its label duplicated the trigger.
+                        const next = !recurringShowing;
+                        setEmbRecurringOpen(next);
+                        setIsRecurring(next);
+                      }}
+                      className={triggerClass}
+                      data-testid={recurringShowing ? "emb-recurring-collapse" : "emb-recurring-expand"}
+                    >
+                      {recurringShowing ? "− Make recurring" : "+ Make recurring"}
+                    </button>
+                    {recurringShowing && (
+                      <div className="pl-2 mt-1 space-y-2">
+                        {isRecurring && (
+                          <div className="space-y-2">
+                            <div className="flex items-start gap-3">
+                              <div className="flex-1">
+                                <Label className="text-xs font-medium mb-1 block">Recurrence</Label>
+                                <Select value={recurrencePreset} onValueChange={(v) => handlePresetChange(v as RecurrencePreset)}>
+                                  <SelectTrigger className="h-9 text-xs" data-testid="select-recurrence-preset">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {RECURRENCE_PRESETS.map((p) => (
+                                      <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <div className="flex-1">
+                                <Label className="text-xs font-medium mb-1 block">Start date *</Label>
+                                <CanonicalDatePicker
+                                  value={recurringStartDate}
+                                  onChange={(next) => setRecurringStartDate(next ?? "")}
+                                  className="w-full h-9 text-xs"
+                                  data-testid="input-recurring-start"
+                                />
+                              </div>
+                              <div className="flex-1">
+                                <Label className="text-xs font-medium mb-1 block">End date</Label>
+                                <CanonicalDatePicker
+                                  value={recurringEndDate}
+                                  onChange={(next) => setRecurringEndDate(next ?? "")}
+                                  placeholder="Optional"
+                                  clearable
+                                  className="w-full h-9 text-xs"
+                                  data-testid="input-recurring-end"
+                                />
+                              </div>
+                            </div>
+                            {recurrencePreset === "custom" && (
+                              <>
+                                <div className="flex items-center gap-3">
+                                  <div className="flex-1">
+                                    <Label className="text-xs font-medium mb-1 block">Frequency</Label>
+                                    <Select value={recurringKind} onValueChange={(v) => setRecurringKind(v as "weekly" | "monthly")}>
+                                      <SelectTrigger className="h-9 text-xs">
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="weekly">Weekly</SelectItem>
+                                        <SelectItem value="monthly">Monthly</SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  <div className="w-20">
+                                    <Label className="text-xs font-medium mb-1 block">Every</Label>
+                                    <Input
+                                      type="number"
+                                      min={1}
+                                      max={52}
+                                      value={recurringInterval}
+                                      onChange={(e) => setRecurringInterval(Math.max(1, Math.min(52, Number(e.target.value) || 1)))}
+                                      className="h-9 text-xs"
+                                      data-testid="input-recurring-interval"
+                                    />
+                                  </div>
+                                  <span className="text-xs text-muted-foreground mt-5">{recurringKind === "weekly" ? "week(s)" : "month(s)"}</span>
+                                </div>
+                                {recurringKind === "weekly" && (
+                                  <div>
+                                    <Label className="text-xs font-medium mb-1.5 block">Days</Label>
+                                    <div className="flex gap-1">
+                                      {DAYS_OF_WEEK.map((day) => {
+                                        const selected = recurringDaysOfWeek.includes(day.value);
+                                        return (
+                                          <button
+                                            key={day.value}
+                                            type="button"
+                                            className={cn(
+                                              "h-8 w-9 rounded text-xs font-medium border transition-colors",
+                                              selected ? "bg-primary text-primary-foreground border-primary" : "bg-background hover:bg-muted",
+                                            )}
+                                            onClick={() =>
+                                              setRecurringDaysOfWeek(
+                                                selected
+                                                  ? recurringDaysOfWeek.filter((d) => d !== day.value)
+                                                  : [...recurringDaysOfWeek, day.value].sort(),
+                                              )
+                                            }
+                                            data-testid={`btn-day-${day.label.toLowerCase()}`}
+                                          >
+                                            {day.label}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                )}
+                                {recurringKind === "monthly" && (
+                                  <div>
+                                    <Label className="text-xs font-medium mb-1 block">Day of month</Label>
+                                    <Input
+                                      type="number"
+                                      min={1}
+                                      max={31}
+                                      value={recurringDayOfMonth}
+                                      onChange={(e) => setRecurringDayOfMonth(Math.max(1, Math.min(31, Number(e.target.value) || 1)))}
+                                      className="h-9 w-20 text-xs"
+                                      data-testid="input-recurring-day-of-month"
+                                    />
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* ── Footer ──
               2026-04-26 polish v4: footer is a natural-flow element at the

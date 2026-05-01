@@ -145,6 +145,8 @@ import { HelpPanel } from "@/components/help/HelpPanel";
 // tabs both render embedded TaskDialog instances). TaskDialog is still
 // imported standalone by callers that own EDIT mode (e.g. TasksPanel).
 import syntaroLogo from "@/assets/Syntraro Logo Transparent.png";
+// 2026-05-01 brand pivot — canonical product / company strings.
+import { BRAND } from "@shared/branding";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -864,7 +866,7 @@ function AppContent() {
         <header className="flex items-center gap-3 px-3 h-16 shrink-0 z-20 bg-header-bg border-b border-white/[0.06]">
           {/* Left: Logo + company greeting */}
           <Link href="/" className="flex items-center gap-4 shrink-0 cursor-pointer no-underline" data-testid="header-logo">
-            <img src={syntaroLogo} alt="Syntraro" className="h-12 w-auto object-contain shrink-0" />
+            <img src={syntaroLogo} alt={BRAND.full} className="h-12 w-auto object-contain shrink-0" />
             {!isTechnicianPage && companyDisplayName && (
               <div className="flex flex-col justify-center min-w-0">
                 <span className="text-[13px] text-slate-400 leading-tight">Hello,</span>

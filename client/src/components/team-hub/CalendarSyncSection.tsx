@@ -22,6 +22,8 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { Calendar, Copy, RefreshCcw, CheckCircle2, AlertTriangle } from "lucide-react";
+// 2026-05-01 brand pivot — canonical brand strings.
+import { BRAND } from "@shared/branding";
 
 interface CalendarTokenResponse {
   token: string | null;
@@ -140,7 +142,7 @@ export function CalendarSyncSection({ userId, memberFirstName }: CalendarSyncSec
             </div>
             <p className="text-xs text-[#4b5563] mt-0.5">
               Give {firstName} a read-only subscription URL so their assigned visits show up in
-              Google Calendar, Apple Calendar, or Outlook. Changes always happen in Syntraro —
+              Google Calendar, Apple Calendar, or Outlook. Changes always happen in {BRAND.product} —
               external calendars can't write back.
             </p>
           </div>
@@ -265,7 +267,7 @@ export function CalendarSyncSection({ userId, memberFirstName }: CalendarSyncSec
               </p>
               <p className="italic">
                 This is a read-only subscription. Visit changes still need to be made in
-                Syntraro — external calendars won't sync edits back.
+                {" "}{BRAND.product} — external calendars won't sync edits back.
               </p>
             </div>
           </details>

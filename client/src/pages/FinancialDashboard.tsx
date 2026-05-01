@@ -55,6 +55,14 @@ import {
   SlotQuickCreateLauncher,
   type QuickCreateSlot,
 } from "@/components/dispatch/SlotQuickCreateLauncher";
+// 2026-04-30 — the schedule card's "+ Create" button now opens the
+// canonical CreateNewDialog directly with NO prefill (no tech, no
+// date). The previous path went through <SlotQuickCreateLauncher>
+// which always seeds `initialSchedule.assignedTechnicianIds: [firstTech]`,
+// auto-selecting the first technician — wrong per the embedded spec.
+// The slot-click path still uses SlotQuickCreateLauncher for genuine
+// slot prefill.
+import { CreateNewDialog } from "@/components/CreateNewDialog";
 // 2026-04-26: canonical Operational Alerts card with configurable row order.
 // Replaces the previous inline AlertRow stack so the Financial dashboard
 // shares the same alerts component the Operations dashboard already uses.
@@ -276,6 +284,10 @@ export default function FinancialDashboard() {
   // the rest of the app uses. No forked create/edit flow.
   const [editorState, setEditorState] = useState<VisitEditorState | null>(null);
   const [slot, setSlot] = useState<QuickCreateSlot | null>(null);
+  // 2026-04-30 — no-prefill CreateNewDialog for the schedule card's
+  // "+ Create" button. Distinct from `slot` above which carries
+  // prefill data when the user clicks a specific schedule slot.
+  const [createOpen, setCreateOpen] = useState(false);
 
   // Canonical alert modal — same state pattern Dashboard.tsx uses. Clicking
   // an alert row opens the SAME DashboardActionModal the Operations
@@ -376,6 +388,7 @@ export default function FinancialDashboard() {
           <TodaysScheduleCard
             onOpenVisit={(visitState) => setEditorState(visitState)}
             onOpenSlot={(s) => setSlot(s)}
+            onCreate={() => setCreateOpen(true)}
           />
           <OperationalAlertsCard
             requiresAttentionCount={requiresAttentionCount}
@@ -430,6 +443,17 @@ export default function FinancialDashboard() {
       <SlotQuickCreateLauncher
         slot={slot}
         onClose={() => setSlot(null)}
+      />
+      {/* 2026-04-30 — no-prefill create launcher for the schedule
+          card's "+ Create" button. Mounts the canonical CreateNewDialog
+          with no `jobInitialSchedule`, so the embedded form opens at
+          its useState defaults: `unscheduled: true`, no tech selected.
+          Distinct from <SlotQuickCreateLauncher> above, which always
+          carries slot-prefill (tech + date + time) for slot clicks. */}
+      <CreateNewDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        defaultTab="job"
       />
       {/* Canonical alert modal — same one Operations opens. Single modal
           instance per page; mode switches in place when a different alert
@@ -847,9 +871,14 @@ interface CapacityResponseDto {
 function TodaysScheduleCard({
   onOpenVisit,
   onOpenSlot,
+  onCreate,
 }: {
   onOpenVisit: (state: VisitEditorState) => void;
   onOpenSlot: (slot: QuickCreateSlot) => void;
+  /** 2026-04-30 — invoked by the header "+ Create" button. Opens the
+   *  canonical CreateNewDialog with NO prefill (unscheduled, no tech).
+   *  Slot clicks still go through `onOpenSlot` and carry full prefill. */
+  onCreate: () => void;
 }) {
   const [, setLocation] = useLocation();
   const [scopeIds, setScopeIds] = useState<string[]>([]);
@@ -899,6 +928,16 @@ function TodaysScheduleCard({
 
   const isSingleTechView = visibleTechs.length === 1;
 
+  // 2026-04-30: schedule-row state markers (computed once per render).
+  //   - Past open slot: `kind === "open"` AND `endISO` < now
+  //   - Completed job:   `kind === "booked"` AND `visitStatus === "completed"`
+  // Both are rendered as muted + line-through (with subtly different
+  // opacity per spec). The comparison uses absolute ISO milliseconds so
+  // it is timezone-independent — `block.endISO` and `Date.now()` are both
+  // absolute moments. Same parser the existing `formatClock12Short`
+  // already relies on; no new timezone utility needed.
+  const nowMs = Date.now();
+
   const scopeLabel = useMemo(() => {
     if (isAllTeam) return "All team";
     if (scopeIds.length === 1) {
@@ -925,29 +964,19 @@ function TodaysScheduleCard({
   };
   const selectAll = () => setScopeIds([]);
 
-  const firstOpen = useMemo(() => {
-    const pool = activeTechs.length > 0 ? activeTechs : techs;
-    for (const t of pool) {
-      for (const b of t.scheduleBlocks) {
-        if (b.kind === "open") return { tech: t, block: b };
-      }
-    }
-    return null;
-  }, [activeTechs, techs]);
+  // 2026-04-30 — `firstOpen` derivation removed alongside the openAdd
+  // refactor below. It was only consumed by the previous `openAdd` to
+  // seed prefill into SlotQuickCreateLauncher; with the no-prefill
+  // path it is dead code.
 
+  // 2026-04-30 — "+ Create" launches a clean unscheduled+unassigned
+  // create modal. The previous `onOpenSlot` path always seeded
+  // `assignedTechnicianIds: [firstTech]` via SlotQuickCreateLauncher,
+  // which violated the embedded spec's "Unassigned by default" rule.
+  // Slot clicks (handleBlockClick) still use `onOpenSlot` for genuine
+  // slot prefill — that path is correct and preserved.
   const openAdd = () => {
-    const baseTech = firstOpen?.tech ?? activeTechs[0] ?? techs[0];
-    if (!baseTech) return;
-    const start = firstOpen?.block ? new Date(firstOpen.block.startISO) : new Date();
-    const hh = String(start.getHours()).padStart(2, "0");
-    const mm = String(start.getMinutes()).padStart(2, "0");
-    onOpenSlot({
-      technicianId: baseTech.technicianId,
-      technicianName: baseTech.name,
-      date: start,
-      startTime: `${hh}:${mm}`,
-      durationMinutes: firstOpen?.block?.durationMinutes,
-    });
+    onCreate();
   };
 
   const handleBlockClick = async (tech: CapacityTechDto, block: CapacityBlockDto) => {
@@ -1140,12 +1169,19 @@ function TodaysScheduleCard({
                 const isLast = idx === arr.length - 1;
                 const duration = formatDurationLabel(block.durationMinutes);
                 const nameLabel = isOpen ? "Open Slot" : (block.title ?? "Visit");
+                // 2026-04-30: muted-state markers — see top-of-component
+                // comment on `nowMs`. `isPastOpen` strikes past
+                // availability; `isCompleted` strikes finished work
+                // (status-driven, time-independent per spec).
+                const isPastOpen = isOpen && Date.parse(block.endISO) < nowMs;
+                const isCompleted = !isOpen && block.visitStatus === "completed";
+                const isMuted = isPastOpen || isCompleted;
                 return (
                   <button
                     key={`${tech.technicianId}-${block.startISO}-${block.visitId ?? "open"}-${idx}`}
                     type="button"
                     onClick={() => handleBlockClick(tech, block)}
-                    className={`w-full text-left px-4 py-1.5 transition-colors flex items-center gap-3 group hover:bg-[#F0F5F0] ${!isLast ? "border-b border-[#e2e8f0]" : ""}`}
+                    className={`w-full text-left px-4 py-1.5 transition-colors flex items-center gap-3 group hover:bg-[#F0F5F0] ${!isLast ? "border-b border-[#e2e8f0]" : ""} ${isPastOpen ? "opacity-60" : isCompleted ? "opacity-70" : ""}`}
                     data-testid={`schedule-block-${block.visitId ?? `${tech.technicianId}-${block.startISO}`}`}
                   >
                     {/* 2026-04-26 v2: rigid 3-column grid for row
@@ -1158,21 +1194,27 @@ function TodaysScheduleCard({
                         flex column — ellipsizes first) | auto duration
                         (right-aligned). The bullet sits at the start
                         of the name column so it lands at the same x
-                        position on every row regardless of name length. */}
+                        position on every row regardless of name length.
+                        2026-04-30: when muted (past open / completed),
+                        the inline emerald color ternaries fall back to
+                        `text-text-muted` and `line-through` is applied
+                        on the grid container so it cascades to time /
+                        name / duration via inherited
+                        `text-decoration-line`. */}
                     <div
-                      className={`flex-1 min-w-0 grid items-baseline gap-2 text-sm ${isOpen ? "text-emerald-700" : "text-[#111827]"}`}
+                      className={`flex-1 min-w-0 grid items-baseline gap-2 text-sm ${isMuted ? "text-text-muted line-through" : isOpen ? "text-emerald-700" : "text-[#111827]"}`}
                       style={{ gridTemplateColumns: "110px minmax(0, 1fr) auto" }}
                     >
-                      <span className={`tabular-nums font-medium ${isOpen ? "text-emerald-700" : "text-slate-600"}`}>
+                      <span className={`tabular-nums font-medium ${isMuted ? "text-text-muted" : isOpen ? "text-emerald-700" : "text-slate-600"}`}>
                         {timeRange}
                       </span>
                       <span className="flex items-baseline gap-1.5 min-w-0">
-                        <span className={`shrink-0 ${isOpen ? "text-emerald-400" : "text-slate-300"}`} aria-hidden>•</span>
+                        <span className={`shrink-0 ${isMuted ? "text-text-muted" : isOpen ? "text-emerald-400" : "text-slate-300"}`} aria-hidden>•</span>
                         <span className="font-semibold truncate">{nameLabel}</span>
                       </span>
-                      <span className={`tabular-nums font-normal text-right ${isOpen ? "text-emerald-600" : "text-slate-500"}`}>({duration})</span>
+                      <span className={`tabular-nums font-normal text-right ${isMuted ? "text-text-muted" : isOpen ? "text-emerald-600" : "text-slate-500"}`}>({duration})</span>
                     </div>
-                    <ChevronRight className={`h-3.5 w-3.5 shrink-0 transition-colors ${isOpen ? "text-emerald-600 group-hover:text-emerald-800" : "text-slate-400 group-hover:text-[#111827]"}`} />
+                    <ChevronRight className={`h-3.5 w-3.5 shrink-0 transition-colors ${isMuted ? "text-text-muted" : isOpen ? "text-emerald-600 group-hover:text-emerald-800" : "text-slate-400 group-hover:text-[#111827]"}`} />
                   </button>
                 );
               })
@@ -1236,6 +1278,12 @@ function TodaysScheduleCard({
                       const isLastBlock = bIdx === bArr.length - 1;
                       const duration = formatDurationLabel(block.durationMinutes);
                       const nameLabel = isOpen ? "Open Slot" : (block.title ?? "Visit");
+                      // 2026-04-30: same muted-state markers as the
+                      // single-tech view — kept identical so both layouts
+                      // strike past-open / completed rows the same way.
+                      const isPastOpen = isOpen && Date.parse(block.endISO) < nowMs;
+                      const isCompleted = !isOpen && block.visitStatus === "completed";
+                      const isMuted = isPastOpen || isCompleted;
                       return (
                         <button
                           key={`${tech.technicianId}-${block.startISO}-${block.visitId ?? "open"}`}
@@ -1243,7 +1291,7 @@ function TodaysScheduleCard({
                           onClick={() => handleBlockClick(tech, block)}
                           className={`w-full text-left px-3 py-1.5 transition-colors hover:bg-[#F0F5F0] ${
                             !isLastBlock ? "border-b border-slate-100" : ""
-                          }`}
+                          } ${isPastOpen ? "opacity-60" : isCompleted ? "opacity-70" : ""}`}
                           data-testid={`schedule-block-${block.visitId ?? `${tech.technicianId}-${block.startISO}`}`}
                         >
                           {/* 2026-04-26 v2: rigid 3-column grid mirroring
@@ -1256,19 +1304,21 @@ function TodaysScheduleCard({
                               gap + name (ellipsized) + ~50px duration.
                               The name column is the only flex element
                               so it absorbs the remaining width and
-                              truncates first per spec. */}
+                              truncates first per spec.
+                              2026-04-30: muted state mirrors the
+                              single-tech view above. */}
                           <div
-                            className={`grid items-baseline gap-1.5 text-xs ${isOpen ? "text-emerald-700" : "text-[#111827]"}`}
+                            className={`grid items-baseline gap-1.5 text-xs ${isMuted ? "text-text-muted line-through" : isOpen ? "text-emerald-700" : "text-[#111827]"}`}
                             style={{ gridTemplateColumns: "96px minmax(0, 1fr) auto" }}
                           >
-                            <span className={`tabular-nums font-medium ${isOpen ? "text-emerald-700" : "text-slate-600"}`}>
+                            <span className={`tabular-nums font-medium ${isMuted ? "text-text-muted" : isOpen ? "text-emerald-700" : "text-slate-600"}`}>
                               {timeRange}
                             </span>
                             <span className="flex items-baseline gap-1 min-w-0">
-                              <span className={`shrink-0 ${isOpen ? "text-emerald-400" : "text-slate-300"}`} aria-hidden>•</span>
+                              <span className={`shrink-0 ${isMuted ? "text-text-muted" : isOpen ? "text-emerald-400" : "text-slate-300"}`} aria-hidden>•</span>
                               <span className="font-semibold truncate">{nameLabel}</span>
                             </span>
-                            <span className={`tabular-nums font-normal text-right ${isOpen ? "text-emerald-600" : "text-slate-500"}`}>({duration})</span>
+                            <span className={`tabular-nums font-normal text-right ${isMuted ? "text-text-muted" : isOpen ? "text-emerald-600" : "text-slate-500"}`}>({duration})</span>
                           </div>
                         </button>
                       );

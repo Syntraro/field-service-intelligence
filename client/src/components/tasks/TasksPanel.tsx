@@ -18,7 +18,7 @@
  * that becomes meaningless once the panel lives in the header.
  */
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
@@ -81,6 +81,31 @@ const invalidateAllTaskQueries = () =>
     predicate: (q) => String(q.queryKey[0]).startsWith("/api/tasks"),
   });
 
+/**
+ * 2026-04-30: localStorage key for the persisted Team filter selection.
+ * Stored value is one of:
+ *   - "me"           → resolves to currentUserId at filter time
+ *   - "all"          → no filter (show every team member's tasks)
+ *   - "<userId>"     → a specific team member; coerced back to "me" if
+ *                      that user is no longer in the team directory
+ * On first open with no stored value, defaults to "me" so a logged-in
+ * user lands on their own tasks rather than the whole team's queue.
+ */
+const TASKS_TEAM_FILTER_KEY = "tasks:selectedTeamFilter";
+
+function readStoredTeamFilter(): string {
+  if (typeof window === "undefined") return "me";
+  try {
+    const v = window.localStorage.getItem(TASKS_TEAM_FILTER_KEY);
+    if (v === "all" || v === "me" || (typeof v === "string" && v.length > 0)) {
+      return v;
+    }
+  } catch {
+    // localStorage unavailable (private mode / quota) — silent fallback.
+  }
+  return "me";
+}
+
 export interface TasksPanelProps {
   /**
    * When true, the panel only fetches after it becomes visible. The
@@ -108,7 +133,19 @@ export function TasksPanel({ deferFetch = false, onRequestClose }: TasksPanelPro
   const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>(undefined);
   const [createNewOpen, setCreateNewOpen] = useState(false);
   const [tab, setTab] = useState<"active" | "completed">("active");
-  const [techFilter, setTechFilter] = useState<string>("all");
+  // 2026-04-30: Team filter defaults to the current user ("me") and
+  // persists to localStorage under TASKS_TEAM_FILTER_KEY. Stored value
+  // is opaque — see the helper above for the validity contract.
+  const [techFilter, setTechFilterState] = useState<string>(() => readStoredTeamFilter());
+  const setTechFilter = useCallback((next: string) => {
+    setTechFilterState(next);
+    try {
+      window.localStorage.setItem(TASKS_TEAM_FILTER_KEY, next);
+    } catch {
+      // localStorage unavailable — selection still applies in-memory for
+      // this tab session, just won't persist across reloads.
+    }
+  }, []);
   const [typeFilter, setTypeFilter] = useState<string>("all");
 
   const tasksUrl = `/api/tasks?offset=0&limit=50`;
@@ -126,15 +163,35 @@ export function TasksPanel({ deferFetch = false, onRequestClose }: TasksPanelPro
     return items as TaskRow[];
   }, [data]);
 
+  // 2026-04-30: validate the stored team filter against the loaded
+  // technician directory. If the stored value is a userId that no
+  // longer exists in the team (e.g. user removed, role changed), fall
+  // back to "me" so the panel doesn't render an empty list. Runs only
+  // after teamMembers has actually loaded — an empty array during the
+  // initial fetch is not a signal that the userId is invalid.
+  useEffect(() => {
+    if (teamMembers.length === 0) return;
+    if (techFilter === "me" || techFilter === "all") return;
+    if (currentUserId && techFilter === currentUserId) return;
+    const exists = teamMembers.some((tm) => String(tm.id) === techFilter);
+    if (!exists) setTechFilter("me");
+  }, [teamMembers, techFilter, currentUserId, setTechFilter]);
+
+  // Resolution: "me" maps to the logged-in user's id. While auth is
+  // still loading and currentUserId is undefined, "me" leaves the
+  // filter unset so the list isn't artificially emptied during the
+  // brief auth-bootstrap window.
+  const effectiveTechFilter = techFilter === "me" ? currentUserId : techFilter;
+
   const filteredTasks: TaskRow[] = useMemo(() => {
     return allTasks.filter((t) => {
       if (tab === "active" && (t.status === "completed" || t.status === "cancelled")) return false;
       if (tab === "completed" && t.status !== "completed") return false;
-      if (techFilter !== "all" && t.assignedToUserId !== techFilter) return false;
+      if (effectiveTechFilter && effectiveTechFilter !== "all" && t.assignedToUserId !== effectiveTechFilter) return false;
       if (typeFilter !== "all" && t.type !== typeFilter) return false;
       return true;
     });
-  }, [allTasks, tab, techFilter, typeFilter]);
+  }, [allTasks, tab, effectiveTechFilter, typeFilter]);
 
   const closeTask = useMutation({
     mutationFn: async (id: string) => {
@@ -240,12 +297,18 @@ export function TasksPanel({ deferFetch = false, onRequestClose }: TasksPanelPro
                 <SelectValue placeholder="All team" />
               </SelectTrigger>
               <SelectContent>
+                {/* 2026-04-30: "You" leads the list; "All team" follows.
+                    The current user is filtered out of the team-member
+                    rows below so there's exactly one way to select self. */}
+                <SelectItem value="me">{user?.firstName ? `${user.firstName} (you)` : "You"}</SelectItem>
                 <SelectItem value="all">All team</SelectItem>
-                {teamMembers.map((tech) => (
-                  <SelectItem key={tech.id} value={String(tech.id)}>
-                    {tech.fullName}
-                  </SelectItem>
-                ))}
+                {teamMembers
+                  .filter((tech) => !currentUserId || String(tech.id) !== String(currentUserId))
+                  .map((tech) => (
+                    <SelectItem key={tech.id} value={String(tech.id)}>
+                      {tech.fullName}
+                    </SelectItem>
+                  ))}
               </SelectContent>
             </Select>
             <Select value={typeFilter} onValueChange={setTypeFilter}>

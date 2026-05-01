@@ -22,6 +22,8 @@ import {
   jobs,
   jobVisits,
 } from "@shared/schema";
+// 2026-05-01 brand pivot — canonical brand strings.
+import { BRAND } from "@shared/branding";
 
 interface TechnicianVisitRow {
   visitId: string;
@@ -179,7 +181,7 @@ function eventDescriptionFor(row: TechnicianVisitRow, deepLink: string | null): 
   if (row.summary?.trim()) lines.push(row.summary.trim());
   if (row.locationName?.trim()) lines.push(`Location: ${row.locationName.trim()}`);
   if (row.visitStatus) lines.push(`Status: ${row.visitStatus}`);
-  if (deepLink) lines.push(`Open in Syntraro: ${deepLink}`);
+  if (deepLink) lines.push(`${BRAND.icsOpenInAppLabel}: ${deepLink}`);
   return lines.join("\n");
 }
 
@@ -221,14 +223,12 @@ export async function buildTechnicianIcsFeed(
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
     // PRODID per RFC 5545 §3.7.3 — identifies the generator.
-    "PRODID:-//Syntraro//Technician Calendar v1//EN",
+    `PRODID:${BRAND.icsProdId}`,
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
-    `NAME:${icsEscape("Syntraro — My Schedule")}`,
-    `X-WR-CALNAME:${icsEscape("Syntraro — My Schedule")}`,
-    `DESCRIPTION:${icsEscape(
-      "Your assigned visits. Read-only — changes must be made in Syntraro.",
-    )}`,
+    `NAME:${icsEscape(BRAND.icsCalendarName)}`,
+    `X-WR-CALNAME:${icsEscape(BRAND.icsCalendarName)}`,
+    `DESCRIPTION:${icsEscape(BRAND.icsCalendarDescription)}`,
   ];
 
   for (const row of rows) {

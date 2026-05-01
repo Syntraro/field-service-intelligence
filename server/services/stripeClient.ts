@@ -1,4 +1,6 @@
 import Stripe from "stripe";
+// 2026-05-01 brand pivot — canonical brand strings.
+import { BRAND } from "@shared/branding";
 
 /**
  * Canonical Stripe client. Mirrors the `resendClient.ts` shape — single
@@ -100,7 +102,7 @@ export function getStripeClient(): Stripe {
     apiVersion: "2026-03-25.dahlia",
     typescript: true,
     appInfo: {
-      name: "Syntraro",
+      name: BRAND.stripeAppName,
     },
   });
   return cachedClient;

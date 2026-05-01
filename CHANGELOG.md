@@ -910,6 +910,911 @@ Every hardcoded hex literal and the one inline-style color in
 - All other pages (Clients, Locations, Reports, etc.) — separate phase.
 - `text-foreground` / `text-muted-foreground` legacy color tokens not migrated to `text-text-*` — separate color-token-collapse phase.
 
+#### Brand pivot to FSI by Syntraro — centralized config (2026-05-01)
+
+App branding now centralized in `shared/branding.ts`. Product = `FSI`,
+company = `Syntraro`, full lockup = `FSI by Syntraro`. Every
+user-facing reference to the prior `Syntraro` product name and the
+legacy `HVAC/R Maintenance Scheduler` browser title was updated.
+Industry-context "HVAC" / "HVAC/R" references (equipment types,
+sample copy, audit comments, ICS calendar description targeting
+HVAC contractors) are intentionally preserved.
+
+**No business logic changes.** Static asset filenames (e.g.
+`Syntraro Logo Transparent.png`) and DB tenant names (e.g. the
+internal `Syntraro Platform` company) are unchanged — those are
+artifact identifiers, not display strings.
+
+**New canonical source:**
+
+- `shared/branding.ts` — single export `BRAND` with `product`,
+  `company`, `full`, `windowTitle`, `offlineTitle`, `pushFallback`,
+  `pwa.{name,shortName,description}`, `stripeAppName`,
+  `emailFooter`, `icsProdId`, `icsCalendarName`,
+  `icsOpenInAppLabel`, `icsCalendarDescription`, `metaDescription`.
+
+**Files updated** (every user-facing brand string consumer):
+
+| File | What changed |
+| --- | --- |
+| `client/index.html` | `<title>HVAC/R Maintenance Scheduler</title>` → `<title>FSI by Syntraro</title>`. `<meta name="description">` updated. Static HTML — values hand-aligned to `BRAND.windowTitle` / `BRAND.metaDescription` with a comment pointing at the canonical source. |
+| `client/public/offline.html` | `<title>Syntraro — Offline</title>` → `<title>FSI — Offline</title>` (matches `BRAND.offlineTitle`). |
+| `vite.config.ts` | `import { BRAND } from "./shared/branding"`. PWA manifest `name` / `short_name` / `description` now consume `BRAND.pwa.*`. |
+| `client/src/App.tsx` | App-shell logo `alt="Syntraro"` → `alt={BRAND.full}`. |
+| `client/src/components/AuthLayout.tsx` | Auth-page logo `alt` updated to `{BRAND.full}`. |
+| `client/src/sw.ts` | Push-notification fallback titles `"Syntraro"` → `BRAND.pushFallback` ("FSI"). Both the JSON-parse-failure path and the `payload.title || …` fallback now route through the canonical constant. |
+| `client/src/tech-app/pages/LoginPage.tsx` | Tech-app login logo `alt` → `{BRAND.full}`. Footer text `"Syntraro Field Service Platform"` → `{BRAND.full}` ("FSI by Syntraro"). |
+| `server/services/passwordResetService.ts` | Email subject `"Reset your Syntraro password"` → `` `Reset your ${BRAND.product} password` ``. Both the text-body sign-off (`— Syntraro`) and the HTML-body footer `<p>` use `BRAND.emailFooter` ("— FSI by Syntraro"). |
+| `server/services/stripeClient.ts` | Stripe `appInfo.name: "Syntraro"` → `appInfo.name: BRAND.stripeAppName` ("FSI by Syntraro"). Visible in customer Stripe dashboards. |
+| `server/services/technicianCalendarIcsService.ts` | ICS PRODID, NAME, X-WR-CALNAME, DESCRIPTION, and the per-event "Open in Syntraro: …" deep-link line now consume `BRAND.icsProdId` / `BRAND.icsCalendarName` / `BRAND.icsCalendarDescription` / `BRAND.icsOpenInAppLabel`. PRODID company segment stays `Syntraro` (technical identifier — stable per RFC 5545); display strings flip to `FSI`. |
+| `client/src/pages/ImportCenterPage.tsx` | `"Bring your existing data into Syntraro in a few clicks."` → `"Bring your existing data into ${BRAND.product} in a few clicks."`. |
+| `client/src/components/team-hub/CalendarSyncSection.tsx` | Two body-copy mentions of `Syntraro` (calendar-sync rationale + read-only subscription footer) replaced with `{BRAND.product}`. |
+
+**Untouched on purpose** (industry-context HVAC references):
+
+- `client/src/components/EquipmentTypeCombobox.tsx` — comment notes
+  the file is "vertical-agnostic: no hardcoded HVAC assumptions".
+- `client/src/pages/PMWizardPage.tsx` — placeholder example
+  `"Quarterly HVAC Maintenance — Warehouse"`.
+- Various import config / sample copy / equipment categorization
+  references in client + server code that describe the industry
+  (HVAC contractors, HVAC/R technicians) rather than the product.
+- `BRAND.pwa.description`, `BRAND.metaDescription`, and
+  `BRAND.icsCalendarDescription` retain the phrase "HVAC/R contractors"
+  because the spec carve-out explicitly preserves industry-support
+  copy.
+
+**Untouched on purpose** (non-display references):
+
+- Static asset filenames (`Syntraro Logo Transparent.png`,
+  `Syntraro Auth Panel.png`) — file paths, not display.
+- `vite.config.ts` `window.__SYNTRARO_BUILD__` global +
+  `syntraroBuildIdPlugin` — DevTools-only build identifier.
+- Internal comments / audit-trail markers mentioning `Syntraro` (e.g.
+  "Syntraro teal" in `JobDetailPage.tsx`, internal tenant labels in
+  `invoiceReminderWorker.ts`).
+- DB tenant-row name "Syntraro Platform" — a record stored in the
+  `companies` table, not a display string.
+- Tests, docs (`replit.md`, `design_guidelines.md`,
+  `CODEBASE_AUDIT_REPORT.md`, etc.) — not user-facing.
+- `package-lock.json`, `.claude/settings.local.json` — generated /
+  local.
+
+**Risk verification:**
+
+- TypeScript clean: `npx tsc --noEmit` exits 0. `shared/branding.ts`
+  is consumable from both `vite.config.ts` (Node side) and runtime
+  client + server modules via the existing `@shared` alias.
+- Production build clean: `npm run build` exits 0. PWA manifest
+  emitted with the new strings (verifiable in `dist/public/manifest.webmanifest`
+  after build).
+- No backend route, schema, mutation, or business-logic changes.
+
+#### Create modal: availability range buttons + secondary action restyle (2026-05-01)
+
+Three coordinated UI refinements on the embedded create flow. **No
+backend / API / mutation / data-contract changes** — class swaps and
+JSX relocation only, all gated on `embedded`. Edit flows on
+JobDetailPage / PMWorkspacePage / RecurringJobsPage / TasksPanel
+unchanged.
+
+**File changed:**
+
+- `client/src/components/QuickAddJobDialog.tsx`
+
+**1 — Availability: stepped pills → open-window range buttons.**
+
+The prior pass enumerated start times stepped at `max(30, duration)`
+which produced dozens of pills with odd offsets like `8:23 AM` for
+windows that didn't align to 30-min boundaries. Per refined spec,
+revert to one button per actual open WINDOW:
+
+- For each tech in scope, render one row.
+- Each row's right side: one `Button` per `OpenGap` returned by
+  `groupOpenGapsByTech` — labeled `"8:00 AM – 5:00 PM"` (drop the
+  prior `· 9h open` suffix). The helper already filters to windows
+  ≥ requested duration, so every visible button is actionable.
+- Click → existing `applyAvailabilityGap(technicianId, gap)` path.
+  That handler sets `unscheduled: false`, `date: gap.date`,
+  `time: gap.time` (the window's start), `assignedTechnicianIds:
+  [technicianId]`, and preserves the requested duration. No write
+  path change.
+- Techs in scope with zero fitting windows still render the
+  "No availability" row from the prior pass — unchanged.
+
+The stepped-pills enumeration loop (with `getWallClockInTimezone` per
+synthetic step) is gone; the panel re-uses each `OpenGap` as the
+button payload directly. The non-embedded availability rendering on
+the legacy `else` branch is also unchanged (still shows
+`"start – end · Nh open"`).
+
+**2 — "+ Add instructions" relocated from bottom action stack to
+directly under Summary** (embedded only).
+
+- Description and team instructions are related; internal notes
+  belong adjacent to the job summary. Moved the instructions
+  trigger + textarea panel into a new IIFE block right after the
+  Summary `<Input>`, before the (non-embedded only) Make Recurring
+  toggle.
+- The instructions section in the bottom action stack was removed
+  (only Service / Equipment / Make Recurring remain there). The
+  comment marker at the original position documents the move.
+- The state flag `embInstructionsOpen` is unchanged. The
+  `formData.description` auto-show rule is preserved.
+
+**3 — Secondary action triggers restyled as compact ghost-outline
+pill buttons** (embedded only).
+
+- Previous `triggerClass`:
+  `text-xs font-medium text-muted-foreground hover:text-foreground
+  flex w-full justify-start items-center gap-1 py-1.5 px-2 rounded`
+  (full-width text-link).
+- New `triggerClass`:
+  `h-8 px-2 text-xs rounded-md border bg-white hover:bg-muted
+  inline-flex items-center gap-1 self-start` (auto-width pill with
+  border).
+- Applied to all four embedded triggers — Service, Equipment,
+  Make Recurring (in the bottom stack) AND Instructions (now under
+  Summary). Consistent geometry across both locations so the four
+  actions still read as a unified system.
+- Bottom stack outer wrapper changed from `flex flex-col gap-1` →
+  `flex flex-col items-start gap-1.5` so each pill sits naturally
+  left-aligned without spanning the form width. Each section
+  wrapper also changed from `<div>` → `<div className="w-full flex
+  flex-col">` so the expanded panel can still take the full row
+  width even though the trigger is auto-width.
+
+**Resulting embedded form order** (matches refined spec):
+
+1. Location (search client / address)
+2. Summary (brief description of the job)
+3. + Add instructions   ← moved up
+4. Schedule grid (Date / Start / Duration / Assigned)
+5. Selected-tech chip strip (when techs selected)
+6. Availability button + inline panel (open-window range buttons)
+7. + Add service        ← bottom stack
+8. + Add equipment      ← bottom stack
+9. + Make recurring     ← bottom stack
+10. Footer
+
+**Constraints respected:**
+
+- All changes gated on `embedded`. Edit flows render legacy classes
+  + legacy non-embedded availability layout unchanged.
+- No backend, no `findNextAvailableSlot.ts`, no `applyAvailabilityGap`
+  changes.
+- No new components. No fork of `QuickAddJobDialog`. The IIFE block
+  is inline in the same `formBody` `<form>`.
+- Modal width unchanged (`sm:max-w-[600px]`).
+
+**Risk verification:**
+
+- TypeScript clean: `npx tsc --noEmit` exits 0.
+- Production build clean: `npm run build` exits 0.
+- The `getWallClockInTimezone` import is still consumed elsewhere in
+  the file (line 1225 + 1330) — no stale imports left after the
+  stepped-pill removal.
+
+#### Create modal: Supplier Visit merged into Task tab (2026-05-01)
+
+The "+ New" modal drops from three tabs to two (Job, Task). Supplier
+Visit becomes an inline expandable section inside Task. **No backend,
+API, mutation, validation-rule, or supplier-visit data-contract
+changes** — the existing `POST /api/tasks` (with `type:
+"SUPPLIER_VISIT"`) plus follow-up `PATCH /api/tasks/{id}/supplier-visit`
+mutation in `TaskDialog.saveMutation` already handle both general and
+supplier-visit creates with one branch on `type`. The merge is purely
+a UI restructure that toggles the same internal `type` state via an
+inline expandable instead of a top-level tab.
+
+**Files changed:**
+
+- `client/src/components/CreateNewDialog.tsx`
+- `client/src/components/TaskDialog.tsx`
+
+**1 — `<CreateNewDialog>`: third tab dropped.**
+
+- `<TabsList>` is now `grid grid-cols-2` (was `grid-cols-3`). Two
+  triggers: Job, Task.
+- Truck icon import dropped (no remaining consumer in this file).
+- The legacy `<TabsContent value="supplier-visit">` block that mounted
+  `<TaskDialog forcedType="SUPPLIER_VISIT" />` was removed.
+- `CreateNewTab` type is preserved with the `"supplier-visit"` literal
+  for backward compatibility — callers that still pass it as
+  `defaultTab` are silently mapped to `"task"` via a new
+  `normalizedDefaultTab` helper at the top of the component. No
+  consumer-facing API breakage.
+
+**2 — `<TaskDialog>`: in-form Type toggle removed; "+ Add supplier
+visit" expandable added (embedded only).**
+
+- Row 1 was previously `[Title input | Type toggle (General /
+  Supplier Visit buttons)]`. The Type toggle was hidden whenever
+  `forcedType` was set (every CreateNewDialog mount passes one). It is
+  now removed entirely; Row 1 is just the Title input. Edit flows on
+  TasksPanel infer `type` from the loaded `taskData` (existing
+  `useEffect` at line 195) so they don't need the toggle either.
+- Row 5 (Supplier Visit Details) gating:
+  - Embedded + `type === "GENERAL"` → renders an inline "+ Add
+    supplier visit" trigger (full-width left-aligned text-link
+    button, matching the Job tab's secondary action stack
+    typography).
+  - Embedded + `type === "SUPPLIER_VISIT"` → renders the supplier
+    section in a green-accented inline panel (`border-l-2
+    border-[#76B054] bg-[#76B054]/5 pl-3 pr-2 py-2`) with a
+    "Remove supplier visit" affordance in its header.
+  - Non-embedded (TasksPanel edit flow) → unchanged. The legacy
+    `border + p-3 + bg-muted/30` chrome still renders when `type
+    === "SUPPLIER_VISIT"`. No other behavior change.
+- "Remove supplier visit" click flips `setType("GENERAL")` AND clears
+  the existing `supplierId` / `supplierLocationId` / `poNumber` state
+  — no stale supplier-visit payload can leak into a subsequent
+  general-task submit.
+- "Add supplier visit" click flips `setType("SUPPLIER_VISIT")` only.
+  The existing `useQuery` for `/api/suppliers` and per-supplier
+  locations is already gated on `type === "SUPPLIER_VISIT"`, so the
+  click triggers the supplier list fetch automatically.
+
+**3 — Validation tightened (only when supplier-visit is enabled).**
+
+- `canSubmit` previously: `title.trim().length > 0`.
+- Now: `title.trim().length > 0 && (type !== "SUPPLIER_VISIT" || !!supplierId)`.
+- The existing rule allowing supplier visits without a `supplierLocationId`
+  is preserved (techs may select a location later).
+
+**4 — Submit button label updated for embedded create.**
+
+- Embedded + create: `"Create Task"` (was `"Create"`).
+- Embedded + edit: unchanged (`"Update"`).
+- Non-embedded: unchanged (`"Create"` / `"Update"`).
+- The label is the same regardless of supplier-visit state — the
+  underlying mutation creates a Task in both cases (with or without
+  the supplier-visit attachment), so the action verb is consistent.
+
+**State isolation verified:**
+
+- Switching tabs (Job ↔ Task) keeps each tab's local form state
+  intact, including the supplier-visit toggle in Task.
+- Closing the modal triggers the existing `useEffect` that calls
+  `resetForm()` — already clears `supplierId`, `supplierLocationId`,
+  `poNumber`, and resets `type` to `forcedType ?? "GENERAL"`. Reopen
+  → clean default (Title empty, supplier-visit collapsed).
+- The `resetForm` function was already correctly written for this
+  use case (line 230); no changes were required there.
+
+**Submit branching (unchanged):**
+
+```ts
+const svPayload = type === "SUPPLIER_VISIT"
+  ? { supplierId: supplierId || null,
+      supplierLocationId: supplierLocationId || null,
+      poNumber: poNumber.trim() || null }
+  : null;
+const created = await apiRequest<any>("/api/tasks", { method: "POST", body: ... });
+if (svPayload && created?.id) {
+  await apiRequest(`/api/tasks/${created.id}/supplier-visit`, { method: "PATCH", body: ... });
+}
+```
+
+The branch on `type === "SUPPLIER_VISIT"` already does exactly what
+the spec requires:
+- `tab === "task" && !isSupplierVisitEnabled` → `type === "GENERAL"`
+  → `svPayload === null` → no supplier-visit PATCH.
+- `tab === "task" && isSupplierVisitEnabled` → `type ===
+  "SUPPLIER_VISIT"` → `svPayload` populated → supplier-visit PATCH
+  fires.
+
+**Constraints respected:**
+
+- No new components, no new mutations, no duplicate modal systems.
+- No backend changes — `/api/tasks` and `/api/tasks/{id}/supplier-visit`
+  contracts are unchanged.
+- `TaskDialog.tsx` non-embedded path (TasksPanel edit) is bit-for-bit
+  identical to today: it never enters the new "+ Add supplier visit"
+  branch (gated on `embedded`), and the Type toggle removal was
+  already a no-op for non-embedded edit (the toggle was hidden
+  whenever the loaded task had a known type, which is always for
+  edit flows).
+- `<CreateNewDialog>`'s public prop surface unchanged. Existing
+  callers passing `defaultTab="supplier-visit"` (e.g. from dispatch
+  quick-create routes that may exist) silently land on the Task tab
+  with the inline supplier section ready to expand.
+- Existing supplier visit records on detail pages render unchanged.
+- `forcedType="SUPPLIER_VISIT"` still works on TaskDialog for any
+  legacy non-embedded callers.
+
+**Risk verification:**
+
+- TypeScript clean: `npx tsc --noEmit` exits 0.
+- Production build clean: `npm run build` exits 0.
+
+#### Create modal: availability stepped pills + section chrome cleanup (2026-05-01)
+
+Three coordinated fixes after a deeper audit of the embedded create
+flow. **No backend / API / data-contract changes** — the audit
+confirmed the capacity feed + `groupOpenGapsByTech` helper return
+correct data; the defect was purely a frontend display mapping.
+
+**Files changed:**
+
+- `client/src/components/CreateNewDialog.tsx`
+- `client/src/components/QuickAddJobDialog.tsx`
+
+**1 — Availability root cause (frontend mapping).**
+
+`/api/dashboard/capacity?date=YYYY-MM-DD` already applies
+technician working hours, company timezone, the selected date, and
+existing booked visits — its `scheduleBlocks` array is the correct
+truth source. `groupOpenGapsByTech` (in
+`client/src/lib/findNextAvailableSlot.ts`) returns each tech's open
+WINDOWS that fit the requested duration; per the helper's own header
+comment, *"Each gap's `durationMinutes` is the window's full length,
+NOT the requested-slot length."* The panel was rendering each window
+verbatim (`"12:00 PM – 9:00 PM · 9h open"`) — correct data, wrong
+UX surface. Dispatchers want stepped selectable start times, not
+range labels.
+
+Fix in `<QuickAddJobDialog>` (embedded branch only):
+
+- Each gap window is now enumerated into stepped start times. Step =
+  `Math.max(30, scheduleValue.durationMinutes)` minutes — keeps the
+  pill count sensible for short jobs and aligns to the duration for
+  longer jobs (no overlapping suggestions).
+- Each pill is a compact `Button` (`h-7 px-2 text-xs`) labeled with
+  the wall-clock start time only.
+- Wall-clock conversion uses the company timezone returned by the
+  capacity feed via the existing `getWallClockInTimezone` helper.
+- Click → existing `applyAvailabilityGap(technicianId, gap)` path
+  (no new write surface). The synthetic per-pill gap satisfies the
+  `OpenGap` shape the handler expects (`startISO`, `endISO`, `date`,
+  `time`, `durationMinutes`). Sets start, sets technician, flips
+  `unscheduled: false`, preserves duration, closes the panel.
+- Per-tech rows now also show **"No availability"** for techs in
+  scope but with no fitting windows — previously these techs were
+  dropped silently. Respects the existing preferred-tech filter
+  (`scheduleValue.assignedTechnicianIds`); when no tech is preferred,
+  every tech in the capacity feed renders.
+- Non-embedded edit / standalone callers retain the legacy range-
+  button rendering — single-line `else` branch preserved.
+
+**2 — Modal width 640 → 600 px** (`<CreateNewDialog>`):
+
+- `sm:max-w-[640px]` → `sm:max-w-[600px]`. Stays in the 600–720 px
+  spec range; further reduces perceived bulk on iPad landscape.
+
+**3 — Expanded section chrome cleanup (embedded only):**
+
+The four secondary-section panels previously rendered inside
+`rounded-md bg-muted/30 p-2 mt-1` with a redundant in-panel header
+(e.g. `<Label>Service</Label>` underneath the `+ Add service`
+trigger). Cleanup:
+
+- Service panel: dropped the heavy bg + the duplicate "Service"
+  label. Inner content now renders inside `pl-2 mt-1` (thin left
+  indent).
+- Equipment panel: same — dropped bg + duplicate "Equipment" label.
+- Instructions panel: dropped bg + duplicate "Team instructions"
+  label (kept as `sr-only` for AT, since the trigger text "−
+  Instructions" doesn't precisely name what the textarea is for).
+  Textarea typography aligned to `text-xs` to match the rest of
+  the embedded body.
+- Make Recurring panel: dropped the in-panel `Switch + Label`
+  header (its label duplicated the `+ Make recurring` trigger). The
+  trigger itself now toggles BOTH `embRecurringOpen` AND
+  `isRecurring` in one click — was two-step (open panel, then flip
+  switch). Recurring fields (preset / start / end / custom controls)
+  render inside the lighter `pl-2 mt-1 space-y-2` wrapper instead
+  of the prior `rounded-md border p-2.5 bg-white` chrome.
+
+**Constraints respected:**
+
+- All availability + chrome cleanup gated on `embedded`. Non-embedded
+  edit / standalone flows retain the legacy panel chrome and
+  range-button availability rendering.
+- `<TaskDialog>`, `<TechnicianSelector>`, `<CanonicalDatePicker>`,
+  `findNextAvailableSlot.ts`, server-side capacity computation,
+  `applyAvailabilityGap` write semantics — all untouched.
+- No new components. No new abstractions beyond the inline IIFE
+  inside the panel render.
+- No backend, route, mutation, validation, or scheduling-logic
+  changes.
+
+**Risk verification:**
+
+- TypeScript clean: `npx tsc --noEmit` exits 0.
+- Production build clean: `npm run build` exits 0.
+- Synthetic per-pill `OpenGap` objects satisfy the shape required by
+  `applyAvailabilityGap` (verified via type-check). Non-embedded
+  callers traverse the original `availabilityGroups.map((group) =>
+  group.gaps.map(...))` rendering verbatim.
+
+#### Create modal: secondary actions stack vertically (embedded only) (2026-04-30)
+
+JSX restructure of the embedded bottom block. **No logic, API,
+behavior, or modal width changes.** All edits gated on `embedded`;
+edit flows on JobDetailPage / PMWorkspacePage / RecurringJobsPage /
+TasksPanel render unchanged.
+
+**File changed:**
+
+- `client/src/components/QuickAddJobDialog.tsx`
+
+**Before:** Trigger row (`flex flex-wrap items-center gap-3`) at the
+top, four expanded panels stacked below in spec order. Expanding one
+section pushed its panel below all four triggers — the panel was
+visually detached from the trigger that opened it.
+
+**After:** A single `<div className="flex flex-col gap-1">` wraps
+four section blocks. Each section block is a `<div>` containing its
+trigger followed (when expanded) by its panel directly underneath. So
+expanding "Service" puts the Service panel *under the Service
+trigger*, before "Equipment" — the panel and its trigger are visually
+bound.
+
+```
++ Add service
+[Service panel when expanded]
++ Add equipment
+[Equipment panel when expanded]
++ Add instructions
+[Instructions panel when expanded]
++ Make recurring
+[Recurring panel when expanded]
+```
+
+**Trigger styling change:**
+
+- `inline-flex items-center gap-1 py-1.5 px-2 rounded` →
+  `flex w-full justify-start items-center gap-1 py-1.5 px-2 rounded`.
+- Each trigger is now full-width and left-aligned (read as a
+  tappable strip). Typography (`text-xs font-medium
+  text-muted-foreground hover:text-foreground`) unchanged.
+
+**Logic preserved:**
+
+- `serviceShowing` / `equipmentShowing` / `instructionsShowing` /
+  `recurringShowing` derivation unchanged: a panel auto-shows when its
+  section already has content (e.g. `selectedServices.length > 0`),
+  regardless of the open flag.
+- Trigger click handlers still toggle `embServiceOpen` / etc. flags.
+- All `data-testid`s preserved (`emb-service-expand` ↔
+  `emb-service-collapse`, etc.).
+- The `!isRecurringMode` guard around the recurring section is
+  preserved at the outer per-section `<div>` level.
+- Panel JSX (`<ServicesMultiSelect>`, `<EquipmentCombobox>`,
+  `<Textarea>` for instructions, recurring fields incl. preset /
+  start / end / day-of-week / day-of-month) — unchanged byte-for-byte
+  inside the new layout.
+
+**Container metadata:** outer wrapper `data-testid="emb-secondary-action-stack"`
+(was `emb-secondary-action-row`).
+
+**Constraints respected:**
+
+- All changes still gated on `embedded` (the outer
+  `{embedded && !isEditMode && (() => {…})()}` envelope).
+- No JSX restructure outside the bottom block. Modal width unchanged.
+- No new components, no new abstractions.
+- No backend, route, mutation, or validation changes.
+
+**Risk verification:**
+
+- TypeScript clean: `npx tsc --noEmit` exits 0.
+- Production build clean: `npm run build` exits 0.
+- Edit flows untouched: `embedded` is false on every standalone
+  consumer (JobDetailPage / PMWorkspacePage / RecurringJobsPage /
+  TasksPanel), so the entire embedded bottom block is skipped and the
+  legacy non-embedded JSX (Service+Equipment grid, Make Recurring
+  toggle, recurring schedule fields, Team Instructions textarea —
+  each still gated on `!embedded` at its legacy position) renders as
+  before.
+
+#### Create modal: visual compaction pass (size + typography unification) (2026-04-30)
+
+Visual-only pass to fix the perceived bulk of the embedded create
+modal. **No logic, structure, JSX reorder, API, or behavior
+changes** — class swaps only, all gated on `embedded` (or the now-
+honored `compact` prop). Edit flows on JobDetailPage,
+PMWorkspacePage, RecurringJobsPage, TasksPanel keep `embedded={false}`
+and continue rendering the legacy `h-9` / `text-body` heights
+verbatim.
+
+**Files changed:**
+
+- `client/src/components/CreateNewDialog.tsx`
+- `client/src/components/QuickAddJobDialog.tsx`
+
+**Root cause uncovered in the prior audit:**
+
+The project sets `html { font-size: 19px }` in `client/src/index.css`,
+which scales every Tailwind `rem`-based utility ~19% larger than its
+default. `h-9` rendered at 42.75 px (vs 36 px standard); `text-sm`
+rendered at 16.6 px (vs 14 px). Combined with a stack of disparate
+control heights in this surface (`h-10` tabs, `h-9` Location +
+Summary + schedule, `h-8` Availability, `~28 px` action triggers),
+the modal read as oversized and inconsistent even though the JSX
+field order was already correct.
+
+**1 — `<CreateNewDialog>` shell:**
+
+- Modal width: `sm:max-w-[700px]` → `sm:max-w-[640px]`. Stays in
+  the 640–720 px spec range; visibly tighter on iPad landscape.
+- TabsList: added `h-8 p-0.5` to override the shadcn primitive's
+  default `h-10` outer.
+- TabsTrigger (`TAB_TRIGGER_CLASS`): now appends
+  `text-xs py-1 px-2 gap-1`, which tw-merges over the primitive's
+  `px-3 py-1.5 text-sm font-medium`. Tab text drops from ~16.6 px
+  to ~14.25 px and matches the body's row scale.
+- Tab icons (`<ClipboardList>`, `<CheckSquare>`, `<Truck>`):
+  `h-3.5 w-3.5` → `h-3 w-3`. Now matches the icons inside form rows.
+
+**2 — `<QuickAddJobDialog>` body:**
+
+- The previously-ignored `compact` prop is now honored:
+  `const isCompact = embedded || compact;`. The `_compact` underscore
+  destructure was removed. `<CreateNewDialog>` was already passing
+  `embedded compact` to the Job tab, so the flag becomes effective at
+  every "+ Create" / "+ New" entry point with no caller changes.
+- `LocationCombobox` typing extended with `compact?: boolean`. When
+  true:
+  - Trigger button height: `h-9` → `h-8`.
+  - Empty-state placeholder: `"Search locations..."` →
+    `"Search client or address..."` (spec copy). When `compact` is
+    omitted (defaults false), the legacy placeholder is preserved.
+- Summary `<Input>`: was `h-9 bg-white`; now `h-8 text-xs bg-white`
+  when `isCompact`, else legacy `h-9 bg-white`.
+- Schedule grid Date button: was `h-9 w-full text-xs justify-start
+  gap-1.5 bg-white`; height now branches on `isCompact` (`h-8` vs
+  `h-9`). Other classes preserved.
+- Schedule grid Start `<Input type="time">`: same height branch
+  applied.
+- `DurationHoursInput` typing extended with `compact?: boolean`;
+  call site passes `compact={isCompact}`. Internal `<Input>` height
+  branches on the prop.
+- Schedule grid Assigned (`<TechnicianSelector>`): className
+  override now appends `h-8` when `isCompact`, tw-merging over the
+  selector's internal `h-9` default.
+- Bottom embedded action-row trigger `triggerClass`: `py-1` → `py-1.5
+  px-2 rounded`. Touch target slightly larger; still reads as
+  lightweight text-link buttons (not full pill buttons).
+
+**Resulting size ladder (embedded create flow):**
+
+| Element                       | Height | Font     |
+| ----------------------------- | ------ | -------- |
+| Tabs (outer + trigger)        | h-8    | text-xs  |
+| Location combobox trigger     | h-8    | text-xs  |
+| Summary input                 | h-8    | text-xs  |
+| Schedule Date / Start / Duration | h-8 | text-xs  |
+| Schedule Assigned (selector)  | h-8    | text-xs  |
+| Availability button           | h-8    | text-xs  |
+| Secondary action triggers     | ~h-7 (py-1.5) | text-xs |
+
+Single height ladder, single typography scale.
+
+**Constraints respected:**
+
+- All swaps gated on `isCompact` (which is `embedded || compact`).
+  Edit flows pass neither flag and render the legacy heights /
+  fonts unchanged.
+- `<TechnicianSelector>`, `<CanonicalDatePicker>`, shadcn `<Input>`,
+  `<Button>`, `<Tabs*>` primitives: unchanged. Only consumer
+  classNames adjusted.
+- No new components, no new abstractions beyond the `isCompact`
+  local + two component prop additions (`LocationCombobox.compact`
+  and `DurationHoursInput.compact` — both local helpers in the
+  same file).
+- No backend, route, mutation, or validation changes.
+
+**Risk verification:**
+
+- TypeScript clean: `npx tsc --noEmit` exits 0.
+- Production build clean: `npm run build` exits 0.
+- Edit-mode rendering verified by inspection: every height/font
+  branch falls back to the legacy class string when `isCompact`
+  is false; the `LocationCombobox.compact` and
+  `DurationHoursInput.compact` defaults are `false`; consumers in
+  the standalone JobDetail / PMWorkspace / RecurringJobs / TasksPanel
+  paths don't pass `embedded` or `compact`, so `isCompact` is false
+  and the legacy classes apply.
+
+#### Create modal: dashboard "+ Create" defaults + secondary action row (2026-04-30)
+
+Two scoped fixes after the prior reorder pass. **No backend, API,
+validation, or scheduling-logic changes**; canonical ownership of
+`<QuickAddJobDialog>` and `<TaskDialog>` preserved.
+
+**Files changed:**
+
+- `client/src/pages/FinancialDashboard.tsx`
+- `client/src/components/QuickAddJobDialog.tsx`
+
+**1 — Real fix for "Mikel Elias" auto-selected on + Create.**
+
+Root cause was upstream of `<QuickAddJobDialog>`: the schedule card's
+"+ Create" button on the Financial Dashboard previously seeded
+`assignedTechnicianIds: [firstTech]` via
+`<SlotQuickCreateLauncher>`. The launcher's `QuickCreateSlot`
+interface requires `technicianId: string`, so any path through it
+forces a tech selection. The dialog's own `useState` defaults
+(`createDefaultScheduleValue({ unscheduled: true })`) were always
+correct — but they got overwritten by the prefill effect when the
+slot launcher provided a technician. Fix routes the "+ Create" click
+to a separate launcher path that does not pass `initialSchedule`.
+
+`FinancialDashboard.tsx`:
+
+- New state: `const [createOpen, setCreateOpen] = useState(false);`.
+- New mount: `<CreateNewDialog open={createOpen} onOpenChange={setCreateOpen} defaultTab="job" />`.
+  No `jobInitialSchedule` prop — the dialog opens at its useState
+  defaults.
+- New `<TodaysScheduleCard onCreate={() => setCreateOpen(true)} />`
+  prop. The schedule card's "+ Create" button now calls `onCreate`
+  instead of `onOpenSlot`.
+- `openAdd` simplified — was: `onOpenSlot({ technicianId: firstTech, … })`.
+  Now: `onCreate()`.
+- `firstOpen` derivation removed — was only consumed by the previous
+  `openAdd` to compute the seed for prefill. Dead code after the
+  rewrite.
+- Slot-click path (`handleBlockClick` for `block.kind === "open"`)
+  unchanged — still routes through `onOpenSlot` →
+  `<SlotQuickCreateLauncher>` → seeds `assignedTechnicianIds:
+  [tech.technicianId]`. Genuine slot prefill is preserved, including
+  the open-slot UX.
+
+Default verification chain (now correct end-to-end):
+
+| Entry point | initialSchedule | Default state |
+| --- | --- | --- |
+| Header `+ New` → Job tab | undefined | unscheduled: true, assignedTechnicianIds: [] |
+| Schedule card `+ Create` (NEW) | undefined | unscheduled: true, assignedTechnicianIds: [] |
+| Schedule open-slot click | { date, time, dur, [techId] } | unscheduled: false, assignedTechnicianIds: [techId] |
+
+**2 — Secondary action row layout (embedded only).**
+
+The bottom-of-form embedded block previously rendered each action as a
+vertically-stacked button or expanded panel. Now the four triggers
+(`+ Add service`, `+ Add equipment`, `+ Add instructions`,
+`+ Make recurring`) sit inline in one row using
+`<div className="flex flex-wrap items-center gap-3">`, and any
+expanded panels render BELOW the row in spec order.
+
+- Each trigger toggles its corresponding `embXOpen` flag.
+- Trigger label flips between `+ Add X` (collapsed) and `− X`
+  (expanded). The expanded label is computed from
+  `(embXOpen || hasContent)` so panels with existing content always
+  show as expanded.
+- Panels render in spec order: service → equipment → instructions →
+  recurring. Each renders only when its `xShowing` flag is true.
+- Recurring panel still hosts the full recurring-fields JSX (preset,
+  start date, end date, custom controls, weekly day-picker, monthly
+  day-of-month). No JSX duplication of the legacy non-embedded
+  position — that block is still gated on `!embedded`.
+- `data-testid`s on the triggers flip between `emb-X-expand` and
+  `emb-X-collapse` to match the visible state.
+
+**Constraints respected:**
+
+- All embedded changes still gated on `embedded === true`. Edit flows
+  on JobDetailPage, PMWorkspacePage, RecurringJobsPage, TasksPanel:
+  unchanged.
+- No new components — the `<CreateNewDialog>` mount in
+  FinancialDashboard is a second mount of the same canonical shell,
+  not a fork. The schedule-card secondary action row is inline JSX
+  inside `formBody`.
+- `<SlotQuickCreateLauncher>`, `<CreateNewDialog>`, `<QuickAddJobDialog>`,
+  `<TaskDialog>` all remain canonical owners. No parallel launcher
+  surfaces, no duplicate state.
+- No backend, route, mutation, or validation changes.
+
+**Risk verification:**
+
+- TypeScript clean: `npx tsc --noEmit` exits 0.
+- Production build clean: `npm run build` exits 0.
+- The non-embedded edit/standalone JSX in `<QuickAddJobDialog>`
+  (always-visible service+equipment grid, always-visible Make
+  Recurring toggle, always-visible recurring fields, always-visible
+  Team Instructions textarea) is unchanged at its legacy positions —
+  every block stays gated on `!embedded`.
+
+#### Create modal: field reorder + availability silence (embedded only) (2026-04-30)
+
+Follow-up pass on the prior compact `embedded` redesign. Spec corrections:
+field order now matches the design (Location → Summary → Schedule →
+Availability → +Service → +Equipment → +Instructions → +Make recurring),
+and all availability messaging stays silent until the user clicks the
+Availability button. **All changes gated on `embedded === true`**;
+edit flows (JobDetailPage, PMWorkspacePage, RecurringJobsPage) render
+exactly as before.
+
+**Files changed:**
+
+- `client/src/components/QuickAddJobDialog.tsx`
+
+**Reorder — `<QuickAddJobDialog embedded …>` only:**
+
+The four optional sections (Service, Equipment, Instructions,
+Make Recurring) moved to a single new bottom-of-form block that
+renders BEFORE the footer. At their original positions in the JSX,
+each block is now gated on `!embedded` so non-embedded edit flows
+render them exactly where they always did. Specifically:
+
+- **Service + Equipment side-by-side grid** (after Location): now
+  `{!isEditMode && !embedded && …}`. The embedded ternary that wrapped
+  this position was removed.
+- **Make Recurring toggle** (after Summary): now
+  `{!isEditMode && !isRecurringMode && !embedded && …}`.
+- **Recurring schedule fields** (after the toggle): now
+  `{isRecurring && !isEditMode && !embedded && …}`. In embedded mode,
+  the same recurring-fields JSX renders inside the bottom-of-form
+  "+ Make recurring" expansion when `isRecurring` is true.
+- **Team Instructions textarea** (above the footer): now
+  `{!embedded && …}`.
+
+The new bottom-of-form embedded block (`{embedded && !isEditMode && …}`)
+renders the four collapsibles in spec order, each on its own row, no
+inline grouping:
+
+```
++ Add service
++ Add equipment
++ Add instructions
++ Make recurring
+```
+
+Each expands inline backed by a per-section `useState<boolean>` flag
+(`embServiceOpen`, `embEquipmentOpen`, `embInstructionsOpen`,
+`embRecurringOpen`). The "+ Make recurring" expansion holds the toggle
+Switch and, when `isRecurring` is true, the full recurring controls
+(preset, start date, end date, custom frequency, weekly day-picker,
+monthly day-of-month).
+
+**Default-state acceptance — already met by existing code (no change):**
+
+- Default `scheduleValue` is created via
+  `createDefaultScheduleValue({ unscheduled: true })` (line 922-923) →
+  the "+ Create" entry point opens with **Unscheduled (backlog) ON**
+  and zero technician IDs by default.
+- Open-slot launchers pass `initialSchedule` →
+  `createDefaultScheduleValue({ unscheduled: false, date, time,
+  durationMinutes, assignedTechnicianIds })` (line 945-950) →
+  technician chip + scheduled state correctly prefilled.
+- The chip strip below the schedule grid only renders when
+  `scheduleValue.assignedTechnicianIds.length > 0` (added in the prior
+  embedded pass) — empty default → no chip.
+
+**Availability silence — `<QuickAddJobDialog embedded …>` only:**
+
+- The inline `availabilitySuggestions` row beside the Availability
+  button (the "Available: [time chips]" + "No open slot for this
+  duration." fallback) now hides entirely in embedded mode. Gate
+  changed from
+  `!isScheduleDisabled && singleSelectedTechId && !!scheduleValue.date`
+  to
+  `!embedded && !isScheduleDisabled && singleSelectedTechId && !!scheduleValue.date`.
+  Spec rule: nothing availability-related is visible until the user
+  clicks the button.
+- The expandable inline panel's empty-state copy in embedded mode is
+  now `"No available slots for this date and duration."` (was
+  `"No matching availability for {Apr 30}."`). Non-embedded copy
+  unchanged.
+
+**Constraints respected:**
+
+- Only `<QuickAddJobDialog>` touched this pass; `<TaskDialog>` from
+  the previous pass is unchanged.
+- No data fetching, mutation, validation, scheduling-logic, or
+  technician-assignment-data-model changes.
+- No new components. The bottom-of-form block is inline JSX inside
+  the same `formBody` `<form>`. The collapse state flags
+  (`embServiceOpen`, etc.) are pre-existing from the prior pass.
+- All gating is on the existing `embedded` prop. Default
+  (`embedded={false}`) renders the existing UI verbatim everywhere.
+
+**Risk verification:**
+
+- TypeScript clean: `npx tsc --noEmit` exits 0.
+- Production build clean: `npm run build` exits 0.
+- Recurring-fields JSX state references in the bottom block
+  (`recurrencePreset`, `handlePresetChange`, `recurringStartDate`,
+  `recurringKind`, `recurringInterval`, `recurringDaysOfWeek`,
+  `recurringDayOfMonth`, `DAYS_OF_WEEK`, `RECURRENCE_PRESETS`) all
+  resolve to the same component-scope state used by the legacy
+  position — verified via type-check.
+
+#### Create modal: compact `embedded` redesign (Job + Task + Supplier Visit) (2026-04-30)
+
+UI refactor of the canonical create flow inside `<CreateNewDialog>`,
+**strictly gated on the existing `embedded` prop**. The same
+components — `<QuickAddJobDialog>` and `<TaskDialog>` — also serve
+EDIT flows on JobDetailPage, PMWorkspacePage, RecurringJobsPage, and
+TasksPanel; those mounts pass `embedded={false}` (the default) and
+render the existing UI unchanged. Every redesign change is conditional
+on `embedded === true`. **No data fetching, mutation, validation, or
+scheduling-logic changes.**
+
+**Files changed:**
+
+- `client/src/components/QuickAddJobDialog.tsx`
+- `client/src/components/TaskDialog.tsx`
+
+**Architectural decision — Option 2 (gated refactor):**
+- One canonical component per body, two presentation modes via the
+  existing `embedded` prop.
+- No new components, no fork.
+- Edit flows on the four standalone surfaces are bit-for-bit identical
+  to today.
+
+**`<QuickAddJobDialog embedded …>` changes:**
+
+1. **Labels dropped where placeholders are descriptive.** "Location *"
+   and "Summary *" `<Label>` elements become `sr-only` (preserves the
+   accessible name for AT). Placeholder copy unchanged.
+2. **Service + Equipment collapsed.** Wrapped in matching "+ Add
+   service" / "+ Add equipment" expand rows backed by per-section
+   `useState` flags (`embServiceOpen`, `embEquipmentOpen`). Auto-
+   expands when there's already a selection.
+3. **Make Recurring collapsed.** The always-visible Switch + label
+   moves behind a "+ Make recurring" expand row (`embRecurringOpen`).
+   Auto-expands when `isRecurring` is already true.
+4. **Team Instructions collapsed.** Textarea moves behind "+ Add
+   instructions" (`embInstructionsOpen`). Auto-expands when
+   `formData.description` already has content.
+5. **Selected-technician chip strip.** Renders below the schedule grid
+   in embedded mode only. Each selected tech is a pill with full name
+   + an X that removes via the existing
+   `updateSchedule({ assignedTechnicianIds: … })` path — no parallel
+   mutation. The compact `<TechnicianSelector>` trigger ("Mikel +N")
+   stays unchanged. Names resolved via `useTechniciansDirectory()`
+   (shared cache with the selector — no extra network call).
+6. **"Find Availability" button → "Availability".** Label-only rename;
+   button only appears in `!isEditMode && !isRecurring` flows so the
+   change is naturally embedded-scoped. Behavior, panel, and
+   `data-testid` unchanged.
+7. **"Assigned To" → "Assigned"** column label inside the schedule
+   grid. Also a label-only tweak in the `!isEditMode && !isRecurring`
+   block.
+
+**`<TaskDialog embedded …>` changes:**
+
+1. **"Title" label dropped.** Becomes `sr-only` in embedded mode. The
+   placeholder is now type-aware: `"Brief description of the task"`
+   for `GENERAL`, `"Brief description of the supplier visit"` for
+   `SUPPLIER_VISIT`. Edit flows keep the explicit "Title" label and
+   the prior `"Task title"` placeholder.
+2. **Notes textarea collapsed.** Moves behind "+ Add instructions"
+   (`embNotesOpen`). Auto-expands when there's already content.
+   Non-embedded edit flows keep the always-visible Notes textarea.
+
+**Already met by current code (no change needed):**
+
+- Modal width: 700 px on the `<CreateNewDialog>` shell — within the
+  spec target of 640–720 px; fits iPad landscape.
+- Inline availability panel: already inline; "no modal-in-modal" rule
+  already met. Only the button label was renamed.
+- Compact "First +N" trigger label on `<TechnicianSelector>`: already
+  present in the existing component.
+
+**Constraints respected:**
+
+- No backend routes, data fetching, validation, scheduling
+  calculations, assignment data model, or availability API contracts
+  changed.
+- `<QuickAddJobDialog>` and `<TaskDialog>` remain canonical owners. No
+  duplicate components introduced. No new abstractions beyond a small
+  set of `useState<boolean>` flags inside each component.
+- All new presentation gated on the existing `embedded` prop. Default
+  (`embedded={false}`) renders the existing UI unchanged on
+  JobDetailPage, PMWorkspacePage, RecurringJobsPage, TasksPanel.
+
+**Risk verification:**
+
+- TypeScript clean: `npx tsc --noEmit` exits 0.
+- Production build clean: `npm run build` exits 0.
+- No shared CSS leaked into edit mode — every change is wrapped in
+  `embedded ? <new/> : <existing/>` ternaries; the existing JSX is
+  preserved verbatim in the `else` branch.
+
 #### Today's Schedule: "Open only" filter → fixed-label pill toggle (2026-04-30)
 
 UI-only refactor of the open-slot filter on the schedule card. The

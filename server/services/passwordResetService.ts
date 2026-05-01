@@ -27,6 +27,8 @@ import {
   RESET_TOKEN_TTL_MS,
 } from "../auth/passwordUtils";
 import { getResendClient } from "../resendClient";
+// 2026-05-01 brand pivot — canonical brand strings.
+import { BRAND } from "@shared/branding";
 
 /**
  * Build the reset URL the user will click in email. Prefers an explicit
@@ -95,14 +97,14 @@ export async function requestPasswordReset(args: {
   const firstName = (user.firstName || "").trim();
   const greeting = firstName ? `Hi ${firstName},` : "Hi,";
 
-  const subject = "Reset your Syntraro password";
+  const subject = `Reset your ${BRAND.product} password`;
   const textBody =
     `${greeting}\n\n` +
     `We received a request to reset the password for this account. Click the link below to choose a new password:\n\n` +
     `${resetUrl}\n\n` +
     `This link expires in ${expiryWindowLabel()} and can only be used once. ` +
     `If you didn't request a password reset, you can safely ignore this email — your password will stay the same.\n\n` +
-    `— Syntraro`;
+    `${BRAND.emailFooter}`;
 
   const htmlBody = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; color: #111827; line-height: 1.5;">
@@ -113,7 +115,7 @@ export async function requestPasswordReset(args: {
       </p>
       <p style="color:#4b5563; font-size:13px;">Or paste this link into your browser:<br/><span style="word-break:break-all;">${resetUrl}</span></p>
       <p style="color:#4b5563; font-size:13px;">This link expires in <strong>${expiryWindowLabel()}</strong> and can only be used once. If you didn't request a password reset, you can safely ignore this email — your password will stay the same.</p>
-      <p style="color:#9ca3af; font-size:12px; margin-top:24px;">— Syntraro</p>
+      <p style="color:#9ca3af; font-size:12px; margin-top:24px;">${BRAND.emailFooter}</p>
     </div>
   `.trim();
 

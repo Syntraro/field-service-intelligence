@@ -26,6 +26,8 @@ import { useMemo, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Upload, Users, Briefcase, Package, Receipt } from "lucide-react";
+// 2026-05-01 brand pivot — canonical brand strings.
+import { BRAND } from "@shared/branding";
 import {
   ImportWizard,
   StepIndicator,
@@ -138,7 +140,7 @@ export default function ImportCenterPage() {
             <div>
               <h1 className="text-lg font-semibold text-[#111827] tracking-tight">Import Center</h1>
               <p className="text-xs text-[#4b5563] mt-0.5">
-                Bring your existing data into Syntraro in a few clicks.
+                Bring your existing data into {BRAND.product} in a few clicks.
               </p>
             </div>
           </div>
