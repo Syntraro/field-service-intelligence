@@ -32,7 +32,19 @@
  * the slot's start as a 12-hour clock string. It does pure string math on
  * the same `HH:mm` slice that lands in the form's `<input type="time">`,
  * so the toast and the form can never disagree on what was selected.
+ *
+ * 2026-05-02: emitted `date` / `time` are now in the COMPANY-LOCAL wall
+ * clock when the caller passes `options.timezone`. Previously these were
+ * sliced from the UTC ISO, which lined up only when the company tz
+ * happened to be UTC and produced wrong labels everywhere else (e.g.
+ * "5:53 PM" for a 1:53 PM EDT instant). The same release also rounds the
+ * `now` anchor up to the next `intervalMinutes` (default 15) before any
+ * window math, so `windowStart` always lands on a quarter-hour and never
+ * carries the user's exact click instant. The 0 anchor is a sentinel for
+ * "future date — evaluate full workday" and is never rounded.
  */
+
+import { getWallClockInTimezone } from "./schedulingConstants";
 
 export interface CapacityBlock {
   kind: "booked" | "open";
@@ -95,10 +107,17 @@ interface BusyInterval {
 export interface OpenGap {
   startISO: string;
   endISO: string;
-  /** YYYY-MM-DD slice of `startISO`. */
+  /** YYYY-MM-DD of the slot's START in the company's local wall clock when
+   *  `options.timezone` was passed; otherwise the UTC date slice. */
   date: string;
-  /** HH:mm slice of `startISO`. */
+  /** HH:mm of the slot's START in the company's local wall clock when
+   *  `options.timezone` was passed; otherwise the UTC time slice. */
   time: string;
+  /** HH:mm of the slot's END in the company's local wall clock (mirrors
+   *  `time`'s wall-clock convention). The panel label reads this directly
+   *  so the End time never re-slices `endISO` (which would be UTC and
+   *  diverge from `time` whenever the company tz isn't UTC). */
+  endTime: string;
   /** Length of the slot, in minutes. Equals the requested duration when the
    *  gap is large enough to fit it; never larger. */
   durationMinutes: number;
@@ -159,6 +178,14 @@ export interface FindNextAvailableOptions {
    *  picking a random other tech.
    *  When empty/undefined, all technicians are considered (legacy behavior). */
   preferredTechnicianIds?: string[];
+  /** IANA timezone of the company. When provided, emitted `date` / `time` on
+   *  every gap / slot reflect the company-local wall clock; without it, the
+   *  helpers fall back to UTC slicing (back-compat for existing fixtures). */
+  timezone?: string | null;
+  /** Quarter-hour granularity to round `now` up to before window math runs.
+   *  Defaults to 15. Pass 0 to disable rounding. The 0 anchor sentinel
+   *  ("future date — evaluate full workday") is never rounded regardless. */
+  intervalMinutes?: number;
 }
 
 /** Resolve `options.now` to milliseconds. Centralized so all helpers share
@@ -167,6 +194,37 @@ function resolveNowMs(now?: Date | number): number {
   if (typeof now === "number") return now;
   if (now instanceof Date) return now.getTime();
   return Date.now();
+}
+
+/** Resolve the anchored `now` for window math: rounds the raw `now` up to
+ *  the next `intervalMinutes` boundary so `windowStart = max(workStart, now)`
+ *  always lands on a quarter-hour. The 0 sentinel passes through unchanged
+ *  (callers use it to mean "future date — full workday"). */
+function resolveAnchoredNowMs(opts?: FindNextAvailableOptions): number {
+  const raw = resolveNowMs(opts?.now);
+  if (raw === 0) return 0;
+  const interval = opts?.intervalMinutes ?? 15;
+  if (!(interval > 0)) return raw;
+  return roundUpToNextInterval(raw, interval);
+}
+
+/** Derive `{ date, time }` slices in the company-local wall clock when a
+ *  timezone is provided; otherwise slice the UTC ISO (existing fixtures
+ *  use UTC-anchored workdays so this preserves their assertions). The
+ *  emitted strings drop straight into `<input type="date">` /
+ *  `<input type="time">` and into `formatSlotTimeLabel`. */
+function wallClockSlices(
+  ms: number,
+  timezone?: string | null,
+): { date: string; time: string } {
+  if (timezone) {
+    const wc = getWallClockInTimezone(new Date(ms), timezone);
+    const hh = String(wc.hours).padStart(2, "0");
+    const mm = String(wc.minutes).padStart(2, "0");
+    return { date: wc.ymd, time: `${hh}:${mm}` };
+  }
+  const iso = new Date(ms).toISOString();
+  return { date: iso.slice(0, 10), time: iso.slice(11, 16) };
 }
 
 /**
@@ -227,7 +285,8 @@ export function computeOpenGapsForTech(
 ): OpenGap[] {
   const wantedMin = Math.max(0, Math.floor(requestedDurationMinutes || 0));
   const wantedMs = Math.max(wantedMin * 60_000, 1);
-  const nowMs = resolveNowMs(options?.now);
+  const nowMs = resolveAnchoredNowMs(options);
+  const tz = options?.timezone ?? null;
   const built = buildBusyForTech(tech, nowMs);
   if (!built) return [];
   const { windowStart, windowEnd, busy } = built;
@@ -240,12 +299,14 @@ export function computeOpenGapsForTech(
     if (b.start > cursor && b.start - cursor >= wantedMs) {
       const startMs = cursor;
       const endMs = startMs + (wantedMin > 0 ? wantedMin * 60_000 : b.start - cursor);
-      const startISO = new Date(startMs).toISOString();
+      const wc = wallClockSlices(startMs, tz);
+      const wcEnd = wallClockSlices(endMs, tz);
       out.push({
-        startISO,
+        startISO: new Date(startMs).toISOString(),
         endISO: new Date(endMs).toISOString(),
-        date: startISO.slice(0, 10),
-        time: startISO.slice(11, 16),
+        date: wc.date,
+        time: wc.time,
+        endTime: wcEnd.time,
         durationMinutes: wantedMin > 0 ? wantedMin : Math.round((b.start - cursor) / 60_000),
       });
     }
@@ -255,12 +316,14 @@ export function computeOpenGapsForTech(
   if (windowEnd - cursor >= wantedMs) {
     const startMs = cursor;
     const endMs = startMs + (wantedMin > 0 ? wantedMin * 60_000 : windowEnd - cursor);
-    const startISO = new Date(startMs).toISOString();
+    const wc = wallClockSlices(startMs, tz);
+    const wcEnd = wallClockSlices(endMs, tz);
     out.push({
-      startISO,
+      startISO: new Date(startMs).toISOString(),
       endISO: new Date(endMs).toISOString(),
-      date: startISO.slice(0, 10),
-      time: startISO.slice(11, 16),
+      date: wc.date,
+      time: wc.time,
+      endTime: wcEnd.time,
       durationMinutes: wantedMin > 0 ? wantedMin : Math.round((windowEnd - cursor) / 60_000),
     });
   }
@@ -380,7 +443,8 @@ export function findNextAvailableSlot(
   const techs = capacity?.technicians ?? [];
   const wantedMin = Math.max(0, Math.floor(requestedDurationMinutes || 0));
   const wantedMs = wantedMin * 60_000;
-  const nowMs = resolveNowMs(opts.now);
+  const nowMs = resolveAnchoredNowMs(opts);
+  const tz = opts.timezone ?? null;
 
   const preferred = (opts.preferredTechnicianIds ?? []).filter(
     (id): id is string => typeof id === "string" && id.length > 0,
@@ -412,14 +476,15 @@ export function findNextAvailableSlot(
     const candidateEndMs = wantedMs > 0 ? gapStart + wantedMs : gapEnd;
     const startISO = new Date(gapStart).toISOString();
     const endISO = new Date(candidateEndMs).toISOString();
+    const wc = wallClockSlices(gapStart, tz);
 
     const candidate: OpenSlotMatch = {
       technicianId: t.technicianId,
       technicianName: t.name,
       startISO,
       endISO,
-      date: startISO.slice(0, 10),
-      time: startISO.slice(11, 16),
+      date: wc.date,
+      time: wc.time,
       durationMinutes: wantedMin > 0 ? wantedMin : Math.round((gapEnd - gapStart) / 60_000),
     };
 
@@ -438,6 +503,85 @@ export function findNextAvailableSlot(
   }
 
   return best;
+}
+
+/**
+ * Round `timestampMs` UP to the next boundary that is a multiple of
+ * `intervalMinutes`. If the input is already exactly on a boundary, it
+ * is returned unchanged.
+ *
+ * Operates on absolute UTC milliseconds. The Unix epoch (1970-01-01
+ * 00:00 UTC) sits on every quarter-hour, so for any timezone whose
+ * UTC offset is itself a multiple of 15 minutes (every real-world IANA
+ * zone, including the half-and-quarter offsets like UTC+5:30, +5:45,
+ * +9:30, +8:45) this also lands on a quarter-hour of the local wall
+ * clock. We can therefore compute the boundary in absolute milliseconds
+ * without any timezone arithmetic.
+ *
+ * Examples (UTC for clarity):
+ *   13:00 → 13:00, 13:01 → 13:15, 13:14 → 13:15,
+ *   13:15 → 13:15, 13:16 → 13:30, 13:48 → 14:00, 13:59 → 14:00.
+ */
+export function roundUpToNextInterval(
+  timestampMs: number,
+  intervalMinutes: number,
+): number {
+  if (!Number.isFinite(timestampMs) || !Number.isFinite(intervalMinutes)) {
+    return timestampMs;
+  }
+  if (intervalMinutes <= 0) return timestampMs;
+  const intervalMs = intervalMinutes * 60_000;
+  const remainder = timestampMs % intervalMs;
+  if (remainder === 0) return timestampMs;
+  return timestampMs + (intervalMs - remainder);
+}
+
+/**
+ * Clamp an open `CapacityBlock` so its `startISO` is no earlier than the
+ * next 15-minute boundary after `nowMs`. Returns:
+ *   - the original block when `kind !== "open"` (no clamp needed),
+ *   - the original block when `block.startISO` is already at or after
+ *     the rounded-up `nowMs` (e.g. future blocks, or "today" blocks
+ *     whose start is in the future),
+ *   - a NEW block with adjusted `startISO` + `durationMinutes` when the
+ *     original start is before the rounded-up `nowMs` but the block
+ *     still has remaining time after the clamp,
+ *   - `null` when the entire block is in the past (the rounded-up
+ *     `nowMs` is at or after `endISO`); callers should drop the block.
+ *
+ * Used by the dashboard "Today's Schedule" surface so the row label
+ * AND the click-prefilled start time stay in sync (both consume the
+ * clamped block). Past dates / future dates pass `applyClamp: false`
+ * (or omit `nowMs`) to skip clamping entirely.
+ *
+ * `intervalMinutes` defaults to 15; expose the knob for parity with
+ * any future surface that wants a different rounding granularity.
+ */
+export function clampOpenBlockToNow<B extends CapacityBlock>(
+  block: B,
+  nowMs: number,
+  intervalMinutes: number = 15,
+): B | null {
+  if (!block || block.kind !== "open") return block;
+  if (typeof block.startISO !== "string" || typeof block.endISO !== "string") {
+    return block;
+  }
+  const startMs = Date.parse(block.startISO);
+  const endMs = Date.parse(block.endISO);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return block;
+  if (endMs <= startMs) return block;
+
+  const clampedStartMs = Math.max(startMs, roundUpToNextInterval(nowMs, intervalMinutes));
+  if (clampedStartMs >= endMs) return null; // entire block is in the past
+  if (clampedStartMs === startMs) return block; // no clamp needed
+
+  const clampedStartISO = new Date(clampedStartMs).toISOString();
+  const clampedDurationMinutes = Math.round((endMs - clampedStartMs) / 60_000);
+  return {
+    ...block,
+    startISO: clampedStartISO,
+    durationMinutes: clampedDurationMinutes,
+  };
 }
 
 /**

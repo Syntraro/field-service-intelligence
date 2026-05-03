@@ -23,7 +23,7 @@
  * unchanged from the previous pass; canonical PATCH endpoint, canonical
  * query invalidation. Per-note edit/delete affordances were removed in
  * this redesign — the same mutations remain reachable on the Job Detail
- * surface via `JobNotesSection` / `JobNoteDialog`.
+ * surface via the canonical `EntityNotesSection` / `EntityNoteDialog`.
  *
  * Shared by Job Detail and Location Detail equipment surfaces.
  */
@@ -38,17 +38,17 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Loader2, Pencil, Wrench, Info } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
-import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import type { LocationEquipment } from "@shared/schema";
 // 2026-04-30: edit affordance reuses the canonical AddEquipmentDialog
 // in `mode="edit"`. No parallel edit form is created on this surface.
 import { AddEquipmentDialog } from "@/components/AddEquipmentDialog";
-
-import { MANAGER_ROLES } from "@/lib/roles";
+// 2026-05-01: capability-based gate. Reads the user's effective
+// permission set from the canonical `/api/me/permissions` feed. Returns
+// `boolean | undefined` — undefined while loading.
+import { useHasPermission } from "@/hooks/useEffectivePermissions";
 
 // ── Types — match the server contract in
 //    server/services/equipmentHistory.ts (groupHistoryByJob output) ──
@@ -108,10 +108,26 @@ export function EquipmentDetailModal({ open, onOpenChange, equipment, jobId }: E
   if (!equipment) return null;
 
   const [, setLocation] = useLocation();
-  const { user } = useAuth();
-  // 2026-04-30: same MANAGER_ROLES gate that guards the server
-  // PATCH route gates the in-modal edit affordance.
-  const canEdit = !!(user?.role && (MANAGER_ROLES as readonly string[]).includes(user.role));
+  // 2026-05-01: gate the Edit affordance on the canonical fine
+  // permission `clients.edit` instead of the role string. Reasons:
+  //   - Role-string checks miss platform_admin / impersonating users
+  //     and any custom role that isn't one of the four canonical
+  //     strings (owner/admin/manager/dispatcher), causing the button
+  //     to silently disappear for valid editors in the tech app.
+  //   - The canonical permission catalog at
+  //     `migrations/2026_04_21_seed_rbac_catalog.sql` does NOT define
+  //     an `equipment.*` group; `equipment.update` would always be
+  //     false. `clients.edit` is the canonical "modify a client/
+  //     location resource" permission and is the closest semantic
+  //     match (equipment is a sub-resource of `client_locations`,
+  //     reached via PATCH /api/clients/:locationId/equipment/:id).
+  //     Owner/admin/manager all hold it (per the role seed); tech
+  //     does not — matching the intended behavior matrix.
+  //   - `useHasPermission` returns `boolean | undefined`. The strict
+  //     `=== true` check defaults to "no permission" while the
+  //     permissions feed is still loading — safer than briefly
+  //     showing the button to a user who turns out to lack it.
+  const canEdit = useHasPermission("clients.edit") === true;
 
   // 2026-04-30: hold a local copy of the equipment record so the
   // displayed details refresh in place after an in-modal edit. The edit
@@ -184,38 +200,46 @@ export function EquipmentDetailModal({ open, onOpenChange, equipment, jobId }: E
         className="sm:max-w-[720px] max-h-[88vh] flex flex-col p-0 gap-0 bg-card"
         data-testid="equipment-detail-modal"
       >
-        {/* ── Header — name + type pill on the left, edit pencil
-             slotted to the left of shadcn's built-in close `<X>` (which
-             sits absolute at top-4 right-4). pr-20 reserves space for
-             the absolute button cluster so the title can't collide.
-             2026-04-30 spacing pass: pt-5 → pt-4, pb-4 → pb-3, name-to-pill
-             gap mt-2 → mt-1 for a tighter header. */}
-        <DialogHeader className="px-6 pt-4 pb-3 border-b border-card-border shrink-0">
-          <div className="min-w-0 pr-20">
-            <DialogTitle className="text-xl font-semibold leading-tight truncate" data-testid="equipment-name">
+        {/* ── Header — single-row layout: title (with type inline in
+             muted parens) on the left, Edit button on the right, and
+             shadcn's built-in close `<X>` floating absolute at
+             right-4/top-4 from DialogContent. `pr-12` on the flex row
+             reserves clearance so Edit can't crash into `<X>`.
+             2026-05-01 layout refinement:
+               - separate type pill (mt-1) merged inline with the title
+                 ("Furnace (Refrigeration)") to flatten the header from
+                 two rows to one
+               - Edit moved out of absolute positioning into the flex
+                 row so it shares vertical centering with the title
+               - py-3 used in place of pt-4 pb-3 for symmetrical, tighter
+                 header padding now that the second row is gone */}
+        <DialogHeader className="px-6 py-3 border-b border-card-border shrink-0">
+          <div className="flex items-center justify-between gap-2 pr-12">
+            <DialogTitle className="m-0 text-xl font-semibold leading-tight truncate min-w-0" data-testid="equipment-name">
               {eq.name || "Equipment"}
+              {eq.equipmentType && (
+                <span
+                  className="ml-2 text-base font-normal text-muted-foreground"
+                  data-testid="equipment-type-inline"
+                >
+                  ({eq.equipmentType})
+                </span>
+              )}
             </DialogTitle>
-            {eq.equipmentType && (
-              <div className="mt-1">
-                <Badge variant="secondary" className="font-medium" data-testid="equipment-type-pill">
-                  {eq.equipmentType}
-                </Badge>
-              </div>
+            {canEdit && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 px-2.5 shrink-0 text-muted-foreground hover:text-foreground"
+                data-testid="button-edit-equipment"
+                onClick={() => setEditEquipmentOpen(true)}
+              >
+                <Pencil className="h-4 w-4 mr-1.5" />
+                Edit
+              </Button>
             )}
           </div>
           <DialogDescription className="sr-only">Equipment details and service history</DialogDescription>
-          {canEdit && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="absolute right-12 top-4 h-7 w-7 text-muted-foreground hover:text-foreground"
-              aria-label="Edit equipment"
-              data-testid="button-edit-equipment"
-              onClick={() => setEditEquipmentOpen(true)}
-            >
-              <Pencil className="h-4 w-4" />
-            </Button>
-          )}
         </DialogHeader>
 
         {/* ── Body — scrollable, two stacked section cards.

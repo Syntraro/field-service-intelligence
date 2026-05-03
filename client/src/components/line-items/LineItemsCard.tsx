@@ -47,6 +47,60 @@ import type { LineItemsDraftsAPI } from "./useLineItemsDrafts";
 
 const META_LABEL_CLASS = "text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500";
 
+/**
+ * 2026-05-03 alignment fix — single source of truth for line-item
+ * column widths. Used by BOTH the header (CSS Grid `gridTemplateColumns`)
+ * AND the body (HTML `<table>` `<colgroup>`). Previously the header
+ * declared widths via `grid-cols-[...]` while the body relied on per-`<td>`
+ * `w-*` classes inside a `min-w-full` table without `table-layout: fixed`,
+ * which let the browser's auto-table algorithm reflow body columns based
+ * on content width while the header stayed rigid — causing visible
+ * header↔body drift, especially when the description column's content
+ * shrank or grew.
+ *
+ * The two surface variants:
+ *   - `WITH_COST` — Job Parts (Job Detail) shows a Cost column.
+ *   - `NO_COST`   — Invoice / Quote / NewInvoice surfaces.
+ *
+ * Width syntax `1fr` is the CSS Grid token used in
+ * `grid-template-columns`. For `<col>` it is translated to `auto` by
+ * `colWidth(...)` because grid units don't apply inside an HTML table;
+ * with `table-layout: fixed`, the lone auto column receives the
+ * leftover space — semantically equivalent to grid's `1fr`.
+ */
+type LineItemColumnSpec = { key: string; width: string };
+
+const LINE_ITEM_COLUMNS_WITH_COST: readonly LineItemColumnSpec[] = [
+  { key: "drag",        width: "32px"  },
+  { key: "description", width: "1fr"   },
+  { key: "qty",         width: "96px"  },
+  { key: "cost",        width: "110px" },
+  { key: "rate",        width: "128px" },
+  { key: "amount",      width: "110px" },
+  { key: "trash",       width: "36px"  },
+];
+
+const LINE_ITEM_COLUMNS_NO_COST: readonly LineItemColumnSpec[] = [
+  { key: "drag",        width: "32px"  },
+  { key: "description", width: "1fr"   },
+  { key: "qty",         width: "96px"  },
+  { key: "rate",        width: "128px" },
+  { key: "amount",      width: "110px" },
+  { key: "trash",       width: "36px"  },
+];
+
+/** Build the `gridTemplateColumns` string for the header CSS-grid row. */
+function gridTemplate(cols: readonly LineItemColumnSpec[]): string {
+  return cols.map((c) => c.width).join(" ");
+}
+
+/** Translate a column spec width into a value valid inside `<col>`.
+ *  `1fr` is a grid-only unit; `auto` is its table equivalent under
+ *  `table-layout: fixed`. */
+function colWidth(width: string): string {
+  return width === "1fr" ? "auto" : width;
+}
+
 interface DisplayLine {
   id: string;
   description: string;
@@ -236,27 +290,49 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
       */}
       <div className="overflow-x-auto">
         <div className={showCost ? "min-w-[720px]" : "min-w-[640px]"}>
-          {/* Column header row */}
-          <div
-            className={`grid ${
-              showCost
-                ? "grid-cols-[32px_1fr_96px_128px_110px_110px_36px]"
-                : "grid-cols-[32px_1fr_96px_128px_110px_36px]"
-            } border-b border-card-border bg-surface-subtle px-5 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500`}
-          >
-            <span className="pr-2" />
-            <span className="pr-3">Description</span>
-            <span className="px-3 text-right">Qty</span>
-            <span className="px-3 text-right">Rate</span>
-            {showCost && <span className="px-3 text-right">Cost</span>}
-            <span className="pl-3 pr-1 text-right">Amount</span>
-            <span className="pl-1 pr-2" />
-          </div>
+          {(() => {
+            // 2026-05-03 alignment fix: header grid-template-columns
+            // and body <colgroup> derive from the SAME column spec so
+            // the column edges line up at every viewport width. See
+            // LINE_ITEM_COLUMNS_WITH_COST / _NO_COST near the top of
+            // this file for the canonical width values.
+            const columns = showCost ? LINE_ITEM_COLUMNS_WITH_COST : LINE_ITEM_COLUMNS_NO_COST;
+            return (
+              <>
+                {/* Column header row */}
+                <div
+                  className="grid border-b border-card-border bg-surface-subtle px-5 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500"
+                  style={{ gridTemplateColumns: gridTemplate(columns) }}
+                >
+                  <span className="pr-2" />
+                  <span className="pr-3">Description</span>
+                  <span className="px-3 text-right">Qty</span>
+                  {showCost && <span className="px-3 text-right">Cost</span>}
+                  <span className="px-3 text-right">Rate</span>
+                  <span className="pl-3 pr-1 text-right">Amount</span>
+                  <span className="pl-1 pr-2" />
+                </div>
 
-          {/* Body */}
-          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-            <div className="px-5">
-              <table className="min-w-full text-xs">
+                {/* Body */}
+                <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                  <div className="px-5">
+                    <table className="w-full table-fixed text-xs">
+                      {/* 2026-05-03 alignment fix: explicit <colgroup>
+                          + `table-fixed` on the table forces column
+                          widths to honor the spec exactly, instead of
+                          letting the browser's auto-table algorithm
+                          flex them based on content. The widths come
+                          from the same `columns` array the header
+                          uses, so header and body line up at any
+                          viewport width. Per-`<td>` `w-*` classes in
+                          LineItemRow / AddLineItemForm are now
+                          redundant but harmless (kept for now to
+                          minimise diff scope). */}
+                      <colgroup>
+                        {columns.map((c) => (
+                          <col key={c.key} style={{ width: colWidth(c.width) }} />
+                        ))}
+                      </colgroup>
                 {editing && drafts.drafts ? (
               <SortableContext
                 items={visibleEntries.map((e) => e.clientKey)}
@@ -366,6 +442,9 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
               </table>
             </div>
           </DndContext>
+              </>
+            );
+          })()}
         </div>
       </div>
 

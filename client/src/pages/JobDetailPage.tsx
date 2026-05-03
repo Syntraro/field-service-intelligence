@@ -51,18 +51,39 @@ import { VisitEditorLauncher, type VisitEditorState } from "@/components/dispatc
 // the adapter fast-paths and returns the partial unchanged. Routing through
 // it keeps the single-adapter contract uniform across every surface.
 import { enrichVisitEditorState } from "@/lib/visitEditorPayloadBuilder";
-import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
+// 2026-05-01: QuickAddJobDialog import removed — the Job Detail page no
+// longer mounts the modal (see comment near the bottom of the JSX). The
+// component itself is still imported by CreateNewDialog / PMWorkspacePage
+// / RecurringJobsPage; do not delete it.
+// 2026-05-02: CreateNewDialog mounted locally for "Create Similar Job"
+// (replaces the broken `/jobs/new?cloneFrom=…` navigation). The dialog
+// is the canonical create surface; we just open it pre-seeded with the
+// source job's id so QuickAddJobDialog can fetch + prefill.
+import { CreateNewDialog } from "@/components/CreateNewDialog";
 import { JobHeaderCard, type JobHeaderCardHandle } from "@/components/JobHeaderCard";
-import { InvoiceCompositionDialog } from "@/components/InvoiceCompositionDialog";
-import JobNotesSection from "@/components/JobNotesSection";
+// 2026-05-01: InvoiceCompositionDialog mount removed from this page.
+// The "Close & Invoice" CTA now fires `createInvoiceFromJobMutation`
+// directly. The component is still consumed by InvoiceDetailPage for
+// the manual "refresh from job" flow.
+// Canonical notes section — one component for job / invoice / quote
+// detail surfaces. Same query keys, same backend write paths.
+import EntityNotesSection from "@/components/notes/EntityNotesSection";
 import { ActionRequiredModal, getHoldReasonLabel } from "@/components/ActionRequiredModal";
 import { getJobStatusDisplay } from "@/components/job";
 import { TimeEntryModal } from "@/components/time";
 // Phase 12 (2026-04-12): customer-facing job email modal.
-import { SendJobModal } from "@/components/communication/SendJobModal";
+// 2026-05-02 (Audit #2 PR 2): SendJobModal wrapper deleted — it was a
+// pure forwarding shim around SendCommunicationModal. Callers now use
+// the canonical modal directly with `entityType="job"`.
+import { SendCommunicationModal } from "@/components/communication/SendCommunicationModal";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { StatusPill, statusToVariant } from "@/components/ui/status-pill";
+// 2026-05-01 canonical compact header — single owner for Job/Invoice/Quote detail headers.
+import { CanonicalDetailHeader } from "@/components/detail/CanonicalDetailHeader";
+// 2026-05-02 entity-number visual language: blue pill for current
+// entity, green link for cross-entity, muted dash for missing.
+import { EntityNumber } from "@/components/common/EntityNumber";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -85,6 +106,11 @@ import { useAuth } from "@/lib/auth";
 import type { User as UserType, RecurringJobSeries, Invoice, JobTimeSummary, TimeEntryType } from "@shared/schema";
 import { useJobHeader } from "@/hooks/useJobsFeed";
 import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
+// 2026-05-02 (Audit #2 follow-up): shared "Service Address" primitive.
+// Same JSX previously inlined here at line ~1763; the "job" variant
+// preserves the page's heavier typography + truncate + hide-when-empty
+// behavior byte-for-byte.
+import { AddressBlock } from "@/components/common/AddressBlock";
 
 // ============================================================================
 // PERMISSION HELPERS - Role-based action availability
@@ -659,10 +685,28 @@ export default function JobDetailPage() {
   // visit's edit modal via VisitEditorLauncher.
   const { user } = useAuth();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [showCreateInvoiceDialog, setShowCreateInvoiceDialog] = useState(false);
+  // 2026-05-01: `showCreateInvoiceDialog` removed. The "Close & Invoice"
+  // CTA on a completed-but-not-yet-invoiced job no longer opens the
+  // InvoiceCompositionDialog selection modal. Instead, it fires a direct
+  // canonical create-from-job mutation (selection omitted = include all
+  // eligible items server-side). Tax + line totals are applied
+  // canonically inside `createInvoiceFromJob` (server). The dialog is
+  // still mounted on InvoiceDetailPage for the rare manual "refresh
+  // from job" flow — unchanged.
   // 2026-03-05: Rule C — confirmation dialog when completing a job
   const [showCompleteJobConfirm, setShowCompleteJobConfirm] = useState(false);
-  const [showEditDialog, setShowEditDialog] = useState(false);
+  // 2026-05-01: `showEditDialog` removed alongside the QuickAddJobDialog
+  // edit-mode mount. Summary + Description edit now happens via the
+  // whole-card edit shell on the header (see `editingHeader` below);
+  // no other field on this page needs a job-level modal.
+  // 2026-05-02: "Create Similar Job" state. When the user clicks the
+  // overflow-menu item (or the (currently dormant) JobHeaderCard menu
+  // item via the `onCreateSimilar` callback), we set `createSimilarFromId`
+  // to the source job id and open `CreateNewDialog` on the Job tab.
+  // Both states reset when the dialog closes so the next "+ New" click
+  // starts clean.
+  const [createSimilarOpen, setCreateSimilarOpen] = useState(false);
+  const [createSimilarFromId, setCreateSimilarFromId] = useState<string | null>(null);
   const [showActionRequiredModal, setShowActionRequiredModal] = useState(false);
   // Phase 12 (2026-04-12): customer-facing job email modal.
   const [showSendJobEmail, setShowSendJobEmail] = useState(false);
@@ -679,11 +723,36 @@ export default function JobDetailPage() {
   // header primary action which opens AddVisitDialog.
   const [selectedVisitId, setSelectedVisitId] = useState<string | null>(null);
   const [visitEditorState, setVisitEditorState] = useState<VisitEditorState | null>(null);
-  // Inline job number editing
-  const [editingJobNumber, setEditingJobNumber] = useState(false);
-  const [jobNumberDraft, setJobNumberDraft] = useState("");
-  const [jobNumberError, setJobNumberError] = useState<string | null>(null);
-  const jobNumberInputRef = useRef<HTMLInputElement>(null);
+  // 2026-05-01: Header-card edit (Invoice-Detail style). The pencil
+  // flips the WHOLE header card into edit mode — Summary becomes a
+  // textarea in place of the H1, Job # becomes an inline numeric
+  // input in the metadata column, Job Description (optional) appears
+  // at the bottom, and Save / Cancel render in a footer row at the
+  // bottom-right of the card.
+  //
+  // 2026-05-01 (follow-up): Job # was previously its own standalone
+  // inline-edit (separate `editingJobNumber` state + separate
+  // `updateJobNumberMutation`). It's now merged into this unified
+  // edit shell — the header pencil is the single entry point for
+  // editing summary, description, AND job number. The PATCH route
+  // already accepts all three together (see `updateJobSchema` in
+  // shared/schema.ts and `server/routes/jobs.ts`); merging just
+  // collapses the client UI.
+  //
+  // Location, Status, Scheduled, and Invoice metadata stay read-only
+  // on this surface — only Summary, Description, and Job # edit here.
+  const [editingHeader, setEditingHeader] = useState(false);
+  const [headerDraft, setHeaderDraft] = useState<{
+    summary: string;
+    description: string;
+    jobNumber: string; // string for input control; parsed on save
+  }>({
+    summary: "",
+    description: "",
+    jobNumber: "",
+  });
+  const [headerError, setHeaderError] = useState<string | null>(null);
+  const summaryInputRef = useRef<HTMLTextAreaElement>(null);
   // 2026-03-24: Ref to JobHeaderCard for imperative lifecycle triggers (close/reopen/archive)
   const headerCardRef = useRef<JobHeaderCardHandle>(null);
   // Billing totals reported by the canonical LineItemsCard — used for the
@@ -698,9 +767,9 @@ export default function JobDetailPage() {
   } | null>(null);
   // Header-level "Add Equipment" dialog trigger forwarded into JobEquipmentSection
   // 2026-04-29 (precision UI v3): the parallel `showAddNoteDialog` flag
-  // and standalone JobNoteDialog mount were removed — JobNotesSection
-  // owns its own dialog lifecycle (create + edit) and is the canonical
-  // entry point for note creation on this page.
+  // and standalone note-dialog mount were removed — the canonical
+  // EntityNotesSection owns its own dialog lifecycle (create + edit)
+  // and is the single entry point for note creation on this page.
   const [showAddEquipmentDialog, setShowAddEquipmentDialog] = useState(false);
   // 2026-04-18 Phase 2 (multi-visit): removed `conflictMode`,
   // `conflictVisitId`, and the `rescheduleConflict` dialog state. Under
@@ -710,12 +779,9 @@ export default function JobDetailPage() {
   // on that specific visit id).
   const jobId = params?.id;
 
-  // Expense totals — query directly so header always reflects latest data
-  // Shares query key with JobExpensesCard so mutations auto-invalidate both
-  // 2026-04-27 mock-fidelity rebuild: bumped to a richer row shape so we
-  // can render Expenses inline INSIDE the Line Items card instead of a
-  // standalone JobExpensesCard. Same query key — JobExpensesCard's
-  // mutations still invalidate this same cache entry.
+  // Expense totals — query directly so header always reflects latest data.
+  // 2026-04-27 mock-fidelity rebuild: row shape carries the fields needed
+  // to render Expenses inline INSIDE the Line Items card.
   interface JobExpenseRow {
     id: string;
     amount: string;
@@ -740,15 +806,15 @@ export default function JobDetailPage() {
 
   // 2026-04-29 (precision UI v3): the parallel `jobEquipmentRows` and
   // `jobNoteRows` queries (and the `inlineNoteMutation` write path that
-  // bypassed JobNoteDialog's attachments flow) were removed. The
+  // bypassed the canonical attachments flow) were removed. The
   // canonical surfaces are now mounted directly:
   //   - JobEquipmentSection — owns `["/api/jobs", jobId, "equipment"]`
   //     and fires `onCountChange` into `equipmentCount` (drives the
   //     hide-when-empty wrapper here).
-  //   - JobNotesSection — owns `["/api/jobs", jobId, "notes"]` and fires
-  //     `onCountChange` into `notesCount`. All note creation/edit/delete
-  //     and attachment mutations route through JobNoteDialog inside that
-  //     component (canonical write path preserved).
+  //   - EntityNotesSection (entityType="job") — owns
+  //     `["/api/jobs", jobId, "notes"]` and fires `onCountChange` into
+  //     `notesCount`. Create / edit / delete / attachment mutations
+  //     all route through EntityNoteDialog inside that component.
 
   // 2026-04-26: Visits card data sources. Uses the canonical
   // `useJobVisits` hook (key family `["visits", jobId, "all"]`) — same
@@ -914,7 +980,7 @@ export default function JobDetailPage() {
   // to data changes — avoids flicker if a note/labour entry is added
   // while the card is in a chosen state. Default is collapsed when the
   // card is empty, expanded when it has data. Notes count is reported by
-  // `JobNotesSection` via its `onCountChange` callback. Equipment count
+  // `EntityNotesSection` via its `onCountChange` callback. Equipment count
   // is reported via the new `onCountChange` prop added below. Labour is
   // derived from `jobTimeEntries.length` already in scope here.
   const [labourOpen, setLabourOpen] = useState<boolean>(true);
@@ -1011,11 +1077,12 @@ export default function JobDetailPage() {
   });
 
   // 2026-04-19 audit fix: plural invoice existence for header-button
-  // logic. Reuses `JobInvoicesCard`'s canonical query key so the fetch
-  // dedups via React Query cache — no extra network call. Needed because
-  // `jobInvoice` (primary pointer) can be null even when siblings exist
-  // (e.g. primary deleted without reassignment), in which case the old
-  // "Create Invoice" button was offered alongside the plural list.
+  // logic. Uses the canonical `["invoices", "list", { jobId }]` query
+  // key so the fetch dedups via React Query cache — no extra network
+  // call. Needed because `jobInvoice` (primary pointer) can be null
+  // even when siblings exist (e.g. primary deleted without
+  // reassignment), in which case the old "Create Invoice" button was
+  // offered alongside the plural list.
   const { data: jobInvoicesFeed } = useQuery<{ data: Invoice[] } | undefined>({
     queryKey: ["invoices", "list", { jobId }],
     queryFn: async () => {
@@ -1050,45 +1117,108 @@ export default function JobDetailPage() {
   // been removed. Every visit write from this page routes through the
   // canonical hook via the modal.
 
-  // Inline job number update — uses PATCH /api/jobs/:id with uniqueness validation
-  const updateJobNumberMutation = useMutation({
-    mutationFn: async (newJobNumber: number) => {
+  // 2026-05-01 (follow-up): standalone `updateJobNumberMutation` /
+  // `handleJobNumberSave` / `handleJobNumberCancel` removed — Job # now
+  // saves as part of the unified `updateHeaderMutation` below. The
+  // server-side uniqueness check (`JOB_NUMBER_DUPLICATE` 409) and the
+  // positive-integer validation are preserved; both surface through
+  // `headerError` instead of a Job-#-specific error span.
+
+  // 2026-05-01: Header-card update — single PATCH for summary +
+  // description + jobNumber in one round-trip (matches the
+  // InvoiceMetaCard pattern, which also bundles all editable header
+  // fields into one save). Body is intentionally scoped to those
+  // three fields plus the optimistic `version`; Location / Status /
+  // Scheduled / Invoice metadata is read-only on this surface.
+  // The PATCH route accepts all three fields together — see
+  // `updateJobSchema` in shared/schema.ts (jobNumber, summary,
+  // description, version are all `.optional()`) and
+  // server/routes/jobs.ts which dispatches the jobNumber leg through
+  // a uniqueness-aware writer that surfaces `JOB_NUMBER_DUPLICATE`
+  // (409) — that error message lands in `headerError` here.
+  const updateHeaderMutation = useMutation({
+    mutationFn: async (payload: { summary: string; description: string; jobNumber: number }) => {
       return apiRequest(`/api/jobs/${jobId}`, {
         method: "PATCH",
-        body: JSON.stringify({ jobNumber: newJobNumber, version: job?.version }),
+        body: JSON.stringify({
+          summary: payload.summary,
+          // PATCH `null` rather than `""` for an emptied description so
+          // the column reflects "no description set" instead of an
+          // empty string (read-side guards check `description?.trim()`,
+          // but storing nullable null is the canonical empty value —
+          // see schema column definition `description: text("description")`
+          // which is nullable by default).
+          description: payload.description.trim() === "" ? null : payload.description.trim(),
+          jobNumber: payload.jobNumber,
+          version: job?.version,
+        }),
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      setJobNumberError(null);
-      setEditingJobNumber(false);
+      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
+      setHeaderError(null);
+      setEditingHeader(false);
     },
     onError: (error: Error) => {
-      // Show inline error for duplicate job number
-      setJobNumberError(error.message || "Failed to update job number");
+      setHeaderError(error.message || "Failed to save changes");
     },
   });
 
-  const handleJobNumberSave = useCallback(() => {
+  const enterHeaderEdit = useCallback(() => {
     if (!job) return;
-    setJobNumberError(null);
-    const parsed = parseInt(jobNumberDraft, 10);
-    if (isNaN(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
-      setJobNumberError("Must be a positive whole number");
-      return;
-    }
-    if (parsed === job.jobNumber) {
-      setEditingJobNumber(false);
-      return;
-    }
-    updateJobNumberMutation.mutate(parsed);
-  }, [jobNumberDraft, job, updateJobNumberMutation]);
+    setHeaderDraft({
+      summary: job.summary ?? "",
+      description: job.description ?? "",
+      jobNumber: String(job.jobNumber ?? ""),
+    });
+    setHeaderError(null);
+    setEditingHeader(true);
+    // Defer focus to the next paint; the textarea isn't mounted yet.
+    window.setTimeout(() => summaryInputRef.current?.focus(), 0);
+  }, [job]);
 
-  const handleJobNumberCancel = useCallback(() => {
-    setEditingJobNumber(false);
-    setJobNumberDraft(String(job?.jobNumber || ""));
-    setJobNumberError(null);
-  }, [job?.jobNumber]);
+  const handleHeaderSave = useCallback(() => {
+    if (!job) return;
+    setHeaderError(null);
+    const summaryTrim = headerDraft.summary.trim();
+    const descriptionTrim = headerDraft.description.trim();
+    // Job # validation mirrors the prior standalone handler so the
+    // error copy stays identical for users who relied on it.
+    const jobNumberRaw = headerDraft.jobNumber.trim();
+    const jobNumberParsed = parseInt(jobNumberRaw, 10);
+    if (
+      jobNumberRaw === "" ||
+      Number.isNaN(jobNumberParsed) ||
+      jobNumberParsed <= 0 ||
+      !Number.isInteger(jobNumberParsed)
+    ) {
+      setHeaderError("Job # must be a positive whole number");
+      return;
+    }
+    const summaryUnchanged = summaryTrim === (job.summary ?? "").trim();
+    const descriptionUnchanged = descriptionTrim === (job.description ?? "").trim();
+    const jobNumberUnchanged = jobNumberParsed === job.jobNumber;
+    if (summaryUnchanged && descriptionUnchanged && jobNumberUnchanged) {
+      setEditingHeader(false);
+      return;
+    }
+    updateHeaderMutation.mutate({
+      summary: summaryTrim,
+      description: descriptionTrim,
+      jobNumber: jobNumberParsed,
+    });
+  }, [headerDraft, job, updateHeaderMutation]);
+
+  const handleHeaderCancel = useCallback(() => {
+    setEditingHeader(false);
+    setHeaderDraft({
+      summary: job?.summary ?? "",
+      description: job?.description ?? "",
+      jobNumber: String(job?.jobNumber ?? ""),
+    });
+    setHeaderError(null);
+  }, [job?.summary, job?.description, job?.jobNumber]);
 
   const deleteJobMutation = useMutation({
     mutationFn: async () => {
@@ -1122,7 +1252,85 @@ export default function JobDetailPage() {
     },
   });
 
-  // createInvoiceMutation extracted to CreateInvoiceFromJobDialog (2026-03-22)
+  // 2026-05-01 (canonical lifecycle fix): the "Close & Invoice" CTA now
+  // routes through the canonical job-close orchestrator instead of
+  // calling `POST /api/invoices/from-job/:jobId` directly. The previous
+  // direct-create path skipped the lifecycle layer; routing through
+  // `POST /api/jobs/:id/close` with `mode: "invoice_now"` keeps job
+  // state transitions on the canonical orchestrator and lets the server
+  // create the invoice as part of the close transaction. The endpoint
+  // is the same one `JobHeaderCard.closeJobMutation` uses (see
+  // JobHeaderCard.tsx:171). `autoCompleteOpenVisits: false` is safe
+  // because this CTA only renders when `job.status === "completed"` —
+  // there cannot be open visits at this point. Response shape:
+  // `{ job, invoice }`. Variable name retained from the prior pass to
+  // keep the diff minimal.
+  const createInvoiceFromJobMutation = useMutation({
+    mutationFn: async () => {
+      // 2026-05-01: explicit guard. `job` is `JobDetailResponse |
+      // undefined` from `useJobHeader`. The mutation closure is created
+      // during render, so TS can't narrow `job` to defined here even
+      // though the CTA call site is gated on `job.status === "completed"`.
+      // Using `job?.version ?? 0` would silently send a 0 version on
+      // optimistic-locking writes — throwing surfaces the impossible
+      // case loudly and lets TS narrow `job` for the body below.
+      if (!job) {
+        throw new Error("Job is not loaded");
+      }
+      return apiRequest<{ job: { id: string }; invoice: { id: string; invoiceNumber?: string } | null }>(
+        `/api/jobs/${jobId}/close`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            mode: "invoice_now",
+            version: job.version ?? 0,
+            autoCompleteOpenVisits: false,
+          }),
+        },
+      );
+    },
+    onSuccess: (data) => {
+      // Server contract: `mode: "invoice_now"` always returns a non-null
+      // `invoice`. The `if (data.invoice)` guard is defensive — if the
+      // server ever returns null for this mode, we fall back to a generic
+      // success toast and stay on the job page rather than navigate to
+      // an undefined route.
+      if (data.invoice) {
+        logActivity({
+          type: "created",
+          entityType: "invoice",
+          entityId: data.invoice.id,
+          label: `Created Invoice${data.invoice.invoiceNumber ? ` #${data.invoice.invoiceNumber}` : ""}`,
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs", jobId, "billable-preview"] });
+      if (data.invoice) {
+        toast({
+          title: "Job Closed",
+          description: data.invoice.invoiceNumber
+            ? `Invoice #${data.invoice.invoiceNumber} created.`
+            : "Job closed and invoice created.",
+        });
+        setLocation(`/invoices/${data.invoice.id}`);
+      } else {
+        toast({
+          title: "Job Closed",
+          description: "Job closed.",
+        });
+      }
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Failed to close & invoice",
+        description: err.message || "Try again from the job detail page.",
+        variant: "destructive",
+      });
+    },
+  });
 
   // handleStatusChange removed (2026-03-24) — no longer used, generic status mutation eliminated
 
@@ -1215,9 +1423,18 @@ export default function JobDetailPage() {
           job={job}
           jobInvoice={jobInvoice ?? null}
           jobInvoices={jobInvoicesFeed?.data ?? []}
-          onEdit={() => setShowEditDialog(true)}
+          onEdit={() => { /* 2026-05-01: Edit Job modal removed; pencil now lives on the visible header card and triggers inline summary edit. The hidden JobHeaderCard mount is preserved for imperative ref access only (close/reopen/archive triggers). */ }}
           onDelete={() => deleteJobMutation.mutate()}
           showActions={false}
+          // 2026-05-02: even though `showActions=false` makes the
+          // overflow menu unreachable here, wire the callback so the
+          // contract is consistent — if a future surface re-enables
+          // actions on this hidden mount, "Create Similar Job" works
+          // through the same canonical path as the visible menu.
+          onCreateSimilar={(id) => {
+            setCreateSimilarFromId(id);
+            setCreateSimilarOpen(true);
+          }}
         />
       </div>
 
@@ -1230,30 +1447,140 @@ export default function JobDetailPage() {
           ~line 2019). */}
       <div className="bg-app-bg" data-testid="job-detail-page">
 
-        {/* ──────────── HEADER BAR ────────────
-            2026-04-29 (precision UI v4): stripped to actions-only per
-            spec. Removed: back button, "Customer · Summary" title, status
-            pill, hold-reason badge, KPI metric strip. All identity / meta
-            (Customer, Site, Job #, Status, Invoice link, Scheduled,
-            Summary) lives in the Customer/Job header card below this
-            bar — the canonical source of identity. Header chrome now
-            blends with the page background (`bg-transparent`, no bottom
-            border) so it reads as a floating action row, not a separate
-            white card. */}
-        <header className="bg-transparent" data-testid="job-top-bar">
-          {/* 2026-04-29 (precision UI v5): outer vertical padding tightened
-              from py-2.5 → py-2 to reduce the gap above the first card,
-              matching Invoice Detail's tight top spacing. */}
-          <div className="px-4 lg:px-6 py-2 flex items-center justify-end gap-2 flex-wrap">
-
-            {/* ACTION CLUSTER — only surface in the top header now. */}
-            <div className="flex items-center gap-2 shrink-0">
-              {/* Compact equipment add button. 2026-04-29 (precision UI v2):
-                  routes to the existing canonical AddEquipmentDialog via
-                  the hidden JobEquipmentSection mount's `externalAddOpen`
-                  prop — no new equipment flow created. Same visual
-                  treatment as Edit / overflow buttons (outline, not a
-                  green CTA) per spec. */}
+        {/* ──────────── CANONICAL DETAIL HEADER ────────────
+            2026-05-01: title + status + meta (Job # / Scheduled /
+            Invoice #) + edit pencil + actions consolidated into a
+            single full-width strip via the canonical primitive. The
+            actions slot below carries the existing Add Equipment / More
+            menu / status-driven CTA buttons unchanged — no new mutations,
+            no new endpoints. Edit pencil dispatches the existing
+            `enterHeaderEdit` flow that drives the inline edit form in
+            the lower SectionCard. */}
+        <CanonicalDetailHeader
+          testId="job-detail-header"
+          // 2026-05-01 (header refinement): title becomes the editable
+          // summary surface in edit mode. The lower-card summary H1
+          // was removed in this same refinement so summary appears
+          // exactly once.
+          title={editingHeader ? (
+            <textarea
+              ref={summaryInputRef}
+              value={headerDraft.summary}
+              onChange={(e) => {
+                setHeaderDraft((d) => ({ ...d, summary: e.target.value }));
+                setHeaderError(null);
+              }}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                  e.preventDefault();
+                  handleHeaderSave();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  handleHeaderCancel();
+                }
+              }}
+              rows={1}
+              maxLength={500}
+              placeholder="Job summary"
+              className="w-full max-w-[520px] text-xl font-bold tracking-tight text-text-primary bg-white border border-border-default rounded px-2 py-1 resize-none leading-tight focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
+              data-testid="input-job-summary-header"
+            />
+          ) : (
+            job.summary || (clientName ?? "Job")
+          )}
+          isEditing={editingHeader}
+          statusBadge={(
+            <StatusPill
+              variant={statusToVariant(job.openSubStatus === "on_hold" ? "on_hold" : job.status)}
+              data-testid="header-status-pill"
+            >
+              {getJobStatusDisplay(job).label}
+            </StatusPill>
+          )}
+          items={[
+            {
+              key: "job-number",
+              label: "Job #",
+              // 2026-05-02 entity-number system: see
+              // `client/src/components/common/EntityNumber.tsx` for the
+              // canonical primitive. Job # on the Job page is the
+              // current/primary entity → "primary" variant (blue pill).
+              value: <EntityNumber variant="primary" data-testid="header-job-number-pill">{job.jobNumber}</EntityNumber>,
+              // 2026-05-01: input type changed from "number" to "text"
+              // + inputMode="numeric" so the browser does not render
+              // up/down spinner arrows. Clients can still type only
+              // digits via the inputMode hint (mobile shows a numeric
+              // keypad).
+              editNode: (
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={headerDraft.jobNumber}
+                  onChange={(e) => {
+                    // Restrict to digits — same behavior the prior
+                    // type=number step=1 enforced.
+                    const next = e.target.value.replace(/[^0-9]/g, "");
+                    setHeaderDraft((d) => ({ ...d, jobNumber: next }));
+                    setHeaderError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleHeaderSave();
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      handleHeaderCancel();
+                    }
+                  }}
+                  className="w-20 h-7 px-1.5 text-sm font-medium tabular-nums border border-border-default rounded bg-white focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
+                  data-testid="input-job-number"
+                />
+              ),
+            },
+            {
+              key: "scheduled",
+              label: "Scheduled",
+              value: nextVisit?.scheduledStart
+                ? (
+                  <span className="tabular-nums">
+                    {format(new Date(nextVisit.scheduledStart), "MMM d")}
+                    <span className="text-text-disabled mx-1">·</span>
+                    {format(new Date(nextVisit.scheduledStart), "h:mm a")}
+                  </span>
+                )
+                : <span className="text-text-disabled">—</span>,
+            },
+            {
+              key: "invoice-number",
+              label: "Invoice #",
+              // 2026-05-02 entity-number system: cross-entity (Invoice #
+              // shown on the Job page) → "linked" variant via the
+              // canonical primitive. The "View invoice" fallback when
+              // an invoice exists but has no number is preserved.
+              value: (() => {
+                const inv = jobInvoice ?? (jobInvoiceCount > 0 ? firstJobInvoice : null);
+                return inv ? (
+                  <EntityNumber
+                    variant="linked"
+                    onClick={() => setLocation(`/invoices/${inv.id}`)}
+                    data-testid="header-invoice-link"
+                  >
+                    {inv.invoiceNumber || "View invoice"}
+                  </EntityNumber>
+                ) : <EntityNumber variant="missing" />;
+              })(),
+            },
+          ]}
+          // 2026-05-01: edit pencil REMOVED from the canonical header.
+          // The lower-card pencil (rendered by the JobHeaderCard
+          // SectionCard's existing edit affordance) is the single
+          // edit-mode entry point per the refined spec. It dispatches
+          // the same `enterHeaderEdit` flow that drives both the
+          // header's editable title + Job # input AND the lower
+          // card's description textarea.
+          actions={(
+            <>
               <Button
                 variant="outline"
                 size="sm"
@@ -1265,12 +1592,6 @@ export default function JobDetailPage() {
                 <Wrench className="h-3.5 w-3.5" />
                 <Plus className="h-3.5 w-3.5" />
               </Button>
-              {/* 2026-04-29 (precision UI correction): top toolbar Edit
-                  button removed per spec. Edit access now lives at:
-                  (1) the pencil icon inside the Customer/Job header card,
-                  and (2) the "Edit Job" item in the overflow menu below.
-                  The canonical edit modal (`setShowEditDialog`) is
-                  unchanged. */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="outline" size="sm" className="h-9 w-9 p-0 border-border-default text-text-secondary hover:bg-surface-subtle hover:text-text-primary" data-testid="button-more-actions">
@@ -1278,9 +1599,6 @@ export default function JobDetailPage() {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-52">
-                  <DropdownMenuItem onClick={() => setShowEditDialog(true)} data-testid="menu-edit-job">
-                    <Pencil className="h-4 w-4 mr-2" />Edit Job
-                  </DropdownMenuItem>
                   {job.status === "open" && job.openSubStatus !== "on_hold" && isOfficeUser && (
                     <DropdownMenuItem onClick={() => setShowActionRequiredModal(true)} data-testid="menu-hold-job">
                       <Pause className="h-4 w-4 mr-2" />Hold Job
@@ -1296,13 +1614,6 @@ export default function JobDetailPage() {
                       <Archive className="h-4 w-4 mr-2" />Archive Job
                     </DropdownMenuItem>
                   )}
-                  {/* 2026-04-29 (precision UI v5): Reopen menu item also
-                      surfaced for `invoiced` jobs. The canonical
-                      `triggerReopenJob` (JobHeaderCard) already routes
-                      invoiced jobs through the existing
-                      `setShowInvoicedWarning` confirmation before calling
-                      `POST /api/jobs/:id/reopen` — no new mutation,
-                      route, or warning UI created here. */}
                   {(job.status === "completed" || job.status === "archived" || job.status === "invoiced") && isOfficeUser && (
                     <DropdownMenuItem onClick={() => headerCardRef.current?.triggerReopenJob()} data-testid="menu-reopen-job">
                       <RotateCcw className="h-4 w-4 mr-2" />Reopen Job
@@ -1314,7 +1625,20 @@ export default function JobDetailPage() {
                       <Send className="h-4 w-4 mr-2" />Send Email
                     </DropdownMenuItem>
                   )}
-                  <DropdownMenuItem onClick={() => setLocation(`/jobs/new?cloneFrom=${job.id}`)} data-testid="menu-create-similar">
+                  {/* 2026-05-02: Create Similar Job — was navigating to
+                      `/jobs/new?cloneFrom=…` which is not a registered
+                      route (see Audit #2 / PR 1). Now opens the canonical
+                      CreateNewDialog with `jobInitialCloneFromJobId` set;
+                      QuickAddJobDialog fetches the source job and
+                      prefills location / summary / description.
+                      Schedule + team are intentionally NOT cloned. */}
+                  <DropdownMenuItem
+                    onClick={() => {
+                      setCreateSimilarFromId(job.id);
+                      setCreateSimilarOpen(true);
+                    }}
+                    data-testid="menu-create-similar"
+                  >
                     <Copy className="h-4 w-4 mr-2" />Create Similar Job
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => window.print()} data-testid="menu-print">
@@ -1330,32 +1654,35 @@ export default function JobDetailPage() {
                   )}
                 </DropdownMenuContent>
               </DropdownMenu>
-
-              {/* Status-driven primary CTA.
-               *
-               * 2026-04-29 Polish 1: dropped the manual primary-button
-               * styling (`h-9 px-4 bg-brand hover:bg-brand-hover text-white
-               * text-row font-medium shadow-sm`) — the canonical
-               * `<Button>` default variant already paints `bg-primary`
-               * (which resolves to brand green via the color token chain)
-               * with the correct text-foreground, focus ring, and
-               * hover-elevate behavior. `size="sm"` provides `min-h-8 …
-               * px-3 text-xs`. Result: Schedule Visit / Close & Invoice /
-               * Restore Job buttons now render identical chrome to the
-               * Invoice page's Send Invoice button — same primitive
-               * defaults, no re-paint. */}
               {job.status === "open" && (
                 <Button size="sm" onClick={handleScheduleVisit} data-testid="button-schedule-visit-action">
                   Schedule Visit
                 </Button>
               )}
               {job.status === "completed" && isOfficeUser && (
-                <Button size="sm" onClick={() => {
-                  if (jobInvoice) setLocation(`/invoices/${jobInvoice.id}`);
-                  else if (jobInvoiceCount > 0 && firstJobInvoice) setLocation(`/invoices/${firstJobInvoice.id}`);
-                  else setShowCreateInvoiceDialog(true);
-                }} data-testid="button-invoice-action">
-                  {jobInvoice ? "View Invoice" : jobInvoiceCount > 0 ? (jobInvoiceCount === 1 ? "View Invoice" : "View Invoices") : "Close & Invoice"}
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    if (jobInvoice) {
+                      setLocation(`/invoices/${jobInvoice.id}`);
+                    } else if (jobInvoiceCount > 0 && firstJobInvoice) {
+                      setLocation(`/invoices/${firstJobInvoice.id}`);
+                    } else {
+                      createInvoiceFromJobMutation.mutate();
+                    }
+                  }}
+                  disabled={createInvoiceFromJobMutation.isPending}
+                  data-testid="button-invoice-action"
+                >
+                  {jobInvoice
+                    ? "View Invoice"
+                    : jobInvoiceCount > 0
+                      ? jobInvoiceCount === 1
+                        ? "View Invoice"
+                        : "View Invoices"
+                      : createInvoiceFromJobMutation.isPending
+                        ? "Creating…"
+                        : "Create Invoice"}
                 </Button>
               )}
               {job.status === "archived" && isOfficeUser && (
@@ -1363,9 +1690,12 @@ export default function JobDetailPage() {
                   Restore Job
                 </Button>
               )}
-            </div>
-          </div>
-        </header>
+            </>
+          )}
+        />
+        {/* Legacy action-only `<header>` block REMOVED 2026-05-01.
+            All actions now live in the canonical header's `actions`
+            slot above. */}
 
         {/* ──────────── BODY GRID ────────────
             2026-04-29 (precision UI v5): top padding dropped (`py-4` →
@@ -1389,104 +1719,68 @@ export default function JobDetailPage() {
                   `job.status`, and `jobInvoice` / `firstJobInvoice` /
                   `jobInvoiceCount` are all reused as-is. */}
               <SectionCard data-testid="card-job-context">
-                {/* 2026-04-29 (precision UI v5): edit pencil promoted to a
-                    thin top strip (Invoice-Detail chrome pattern). The
-                    previous absolute-positioned icon was replaced so it
-                    can't overlap content. The pencil opens the existing
-                    canonical job edit modal (`setShowEditDialog`) — same
-                    modal the overflow menu triggers, so summary /
-                    job-number / identity edits flow through one canonical
-                    path. */}
-                <div className="flex items-center justify-end px-3 pt-2 pb-1">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setShowEditDialog(true)}
-                    className="h-7 w-7 text-text-disabled hover:text-text-primary hover:bg-surface-subtle"
-                    aria-label="Edit job"
-                    data-testid="button-edit-job-card"
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-[1.2fr_1fr]">
-                  {/* LEFT — identity stack. 2026-04-29 (precision UI v5):
-                      title hierarchy flipped — job summary is now the H1
-                      primary title, customer name renders as a smaller
-                      link below it. When no summary is set, customer name
-                      becomes the H1 (no empty title state). */}
-                  <div className="px-5 pt-2 pb-4 md:border-r border-border-default">
-                    {/* 2026-04-29 Polish 3: header hierarchy adjusted to
-                        match Invoice page prominence.
-                          - Summary h1: text-display (28/32) → text-page-title
-                            (22/28). Slightly less shouty headline so the
-                            customer line below has room to read as a peer.
-                          - Customer/location name (when below summary):
-                            text-body (14) → text-section-title (16) +
-                            font-semibold. Promotes the client name from
-                            "tiny caption" to "secondary heading peer."
-                        Service-address + scheduled blocks below already
-                        use text-row / text-label which remain correct. */}
-                    <h1
-                      className="m-0 text-page-title font-bold tracking-tight text-text-primary truncate"
-                      title={job.summary || undefined}
-                      data-testid={job.summary ? "text-job-summary" : "text-customer-name"}
-                    >
-                      {job.summary
-                        ? job.summary
-                        : clientName
-                          ? (
-                              <button
-                                type="button"
-                                onClick={() => setLocation(`/clients/${job.locationId}`)}
-                                className="hover:text-brand transition-colors text-left"
-                                data-testid="link-client-context"
-                              >
-                                {clientName}
-                              </button>
-                            )
-                          : <span className="text-text-disabled">—</span>}
-                    </h1>
-
-                    {/* Customer name as secondary line — only when a summary
-                        H1 is showing, so the customer info isn't lost.
-                        2026-04-29 final polish (revert): brought back to
-                        text-section-title (16/600). The text-page-title bump
-                        competed visually with the H1; canonical hierarchy is
-                        Job summary (page-title 22) → Client (section-title 16)
-                        → Service Address (row 14). */}
-                    {job.summary && clientName && (
-                      <div className="mt-1 mb-3 truncate">
+                {/* 2026-05-03 spacing fix: client name + edit pencil
+                    now share a single top row. Previously the pencil
+                    rendered in its own `pt-2 pb-1` row before the
+                    body's title row, leaving ~28 px of empty space
+                    above the client name. The two are now siblings
+                    in one `flex items-center justify-between` row,
+                    so the title aligns vertically with the pencil
+                    and the empty band is gone.
+                    The pencil's effective right offset is preserved
+                    (`-mr-2` on the row's right edge cancels 8 px of
+                    the parent's `px-5`, landing the pencil at the
+                    same ~12 px from the card edge it had before).
+                    Pencil click target, behaviour, and aria-label
+                    are unchanged.
+                    Pencil triggers INLINE summary edit (the only
+                    job-level field still editable from this surface).
+                    Location is identity / immutable here; Team
+                    Instructions are visit-scoped and live on
+                    `job_visits.visitNotes`, not `jobs`. Click loads
+                    `job.summary` into the draft, focuses the
+                    textarea next render via `summaryInputRef`, then
+                    `Save` fires the canonical `PATCH /api/jobs/:id`
+                    (summary only) and `Cancel` restores the prior
+                    value. */}
+                <div className="grid grid-cols-1">
+                  <div className="px-5 pt-2 pb-4">
+                    <div className="flex items-center justify-between gap-2 mb-3 -mr-2">
+                      {clientName ? (
                         <button
                           type="button"
                           onClick={() => setLocation(`/clients/${job.locationId}`)}
-                          className="text-section-title font-semibold text-text-secondary hover:text-brand transition-colors text-left"
+                          className="text-section-title font-semibold text-text-secondary hover:text-brand transition-colors text-left truncate min-w-0"
                           data-testid="link-client-context"
                         >
                           {clientName}
                         </button>
-                      </div>
-                    )}
-                    {(!job.summary || !clientName) && <div className="mb-3" />}
+                      ) : (
+                        // Empty placeholder so the pencil stays right-aligned
+                        // on cards where the client name hasn't loaded yet.
+                        <div className="min-w-0" />
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={enterHeaderEdit}
+                        className="h-7 w-7 shrink-0 text-text-disabled hover:text-text-primary hover:bg-surface-subtle"
+                        aria-label="Edit job header"
+                        data-testid="button-edit-job-card"
+                        disabled={editingHeader}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
 
-                    {(streetLine || cityLine || job.location?.companyName) && (
-                      <div className="mb-3" data-testid="block-service-address">
-                        <div className="text-label font-semibold uppercase tracking-[0.08em] text-text-muted mb-0.5">
-                          Service Address
-                        </div>
-                        {job.location?.companyName && (
-                          <div className="text-row font-semibold text-text-primary truncate">
-                            {job.location.companyName}
-                          </div>
-                        )}
-                        {streetLine && (
-                          <div className="text-row text-text-secondary truncate">{streetLine}</div>
-                        )}
-                        {cityLine && (
-                          <div className="text-row text-text-secondary truncate">{cityLine}</div>
-                        )}
-                      </div>
-                    )}
+                    <AddressBlock
+                      variant="job"
+                      label="Service Address"
+                      locationName={job.location?.companyName}
+                      street={streetLine}
+                      cityLine={cityLine}
+                      testId="block-service-address"
+                    />
 
                     {/* 2026-04-29 final polish: Scheduled block moved to
                         the right-side metadata stack so the left column
@@ -1495,120 +1789,107 @@ export default function JobDetailPage() {
                         meta column. */}
                   </div>
 
-                  {/* RIGHT — job-specific metadata vertical list. Mirrors the
-                      MetaRow pattern in InvoiceDetailPage: label left, value
-                      right, hairline divider between rows.
-                      2026-04-29 (precision UI v5): row order set per spec —
-                      Status → Job # → Invoice. The "J-" prefix was dropped
-                      from the displayed job number; the inline-edit input
-                      remains a plain numeric field, so the canonical
-                      `updateJobNumberMutation` payload is unchanged. */}
-                  <div className="border-t md:border-t-0 border-border-default" data-testid="job-meta-list">
-                    {/* Status */}
-                    <div className="flex items-center justify-between gap-3 px-5 py-2 border-b border-border-default">
-                      <span className="text-caption text-text-muted">Status</span>
-                      <StatusPill
-                        variant={statusToVariant(job.openSubStatus === "on_hold" ? "on_hold" : job.status)}
-                        data-testid="meta-status-pill"
-                      >
-                        {getJobStatusDisplay(job).label}
-                      </StatusPill>
-                    </div>
-                    {/* Job # — inline-editable. State / mutation
-                        (`editingJobNumber`, `jobNumberDraft`,
-                        `updateJobNumberMutation`, `handleJobNumberSave`,
-                        `handleJobNumberCancel`) is the canonical surface
-                        defined at the page level — no parallel mutation. */}
-                    <div className="flex items-center justify-between gap-3 px-5 py-2 border-b border-border-default">
-                      <span className="text-caption text-text-muted">Job #</span>
-                      {editingJobNumber ? (
-                        <div className="flex items-center gap-1">
-                          <input
-                            ref={jobNumberInputRef}
-                            type="number" min={1} step={1}
-                            value={jobNumberDraft}
-                            onChange={(e) => { setJobNumberDraft(e.target.value); setJobNumberError(null); }}
-                            onKeyDown={(e) => { if (e.key === "Enter") handleJobNumberSave(); if (e.key === "Escape") handleJobNumberCancel(); }}
-                            className="w-20 h-6 px-1.5 text-caption border border-border-default rounded bg-white font-mono focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
-                            autoFocus
-                            data-testid="input-job-number"
-                          />
-                          <button type="button" onClick={handleJobNumberSave} className="text-brand text-caption font-medium px-1" disabled={updateJobNumberMutation.isPending}>
-                            {updateJobNumberMutation.isPending ? "…" : "Save"}
-                          </button>
-                          <button type="button" onClick={handleJobNumberCancel} className="text-text-disabled text-caption px-1">Cancel</button>
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => { setJobNumberDraft(String(job.jobNumber)); setJobNumberError(null); setEditingJobNumber(true); }}
-                          className="group inline-flex items-center gap-1 text-caption font-mono tabular-nums text-text-primary hover:text-brand transition"
-                          data-testid="meta-job-number"
-                        >
-                          {job.jobNumber}
-                          <Pencil className="h-2.5 w-2.5 opacity-0 group-hover:opacity-60 transition-opacity" />
-                        </button>
-                      )}
-                    </div>
-                    {jobNumberError && (
-                      <div className="px-5 py-1 text-helper text-destructive">{jobNumberError}</div>
-                    )}
-                    {/* 2026-04-29 final polish: Scheduled row moved here
-                        from the left side so the meta stack reads
-                        Status → Job # → Scheduled → Invoice. Same
-                        `nextVisit` data source as the prior left-side
-                        block — no new query, no backend change. When no
-                        next visit is scheduled, surfaces "Not scheduled"
-                        in muted text so the row stays present (consistent
-                        meta stack height across job states). */}
-                    <div className="flex items-center justify-between gap-3 px-5 py-2 border-b border-border-default">
-                      <span className="text-caption text-text-muted">Scheduled</span>
-                      {nextVisit?.scheduledStart ? (
-                        <span className="text-caption font-medium text-text-primary" data-testid="meta-scheduled">
-                          {format(new Date(nextVisit.scheduledStart), "MMM d")}
-                          <span className="text-text-disabled mx-1">·</span>
-                          {format(new Date(nextVisit.scheduledStart), "h:mm a")}
-                        </span>
-                      ) : (
-                        <span className="text-caption text-text-disabled" data-testid="meta-scheduled-empty">
-                          Not scheduled
-                        </span>
-                      )}
-                    </div>
-                    {/* Invoice — always shown. Existing canonical data
-                        sources (`jobInvoice` primary pointer, with
-                        fallback to `firstJobInvoice` from the plural feed
-                        when primary is null but siblings exist) are reused
-                        unchanged. "Not invoiced" muted fallback when the
-                        job has no linked invoice.
-                        2026-04-29 final polish: link value styled to mirror
-                        Job # value (text-primary + brand-on-hover) so the
-                        right-meta column reads as a uniform list of
-                        `font-mono tabular-nums` identifiers. */}
-                    {(() => {
-                      const inv = jobInvoice ?? (jobInvoiceCount > 0 ? firstJobInvoice : null);
-                      return (
-                        <div className="flex items-center justify-between gap-3 px-5 py-2">
-                          <span className="text-caption text-text-muted">Invoice</span>
-                          {inv ? (
-                            <button
-                              type="button"
-                              onClick={() => setLocation(`/invoices/${inv.id}`)}
-                              className="text-caption font-mono tabular-nums text-text-primary hover:text-brand transition"
-                              data-testid="meta-invoice-link"
-                            >
-                              {inv.invoiceNumber ? `#${inv.invoiceNumber}` : "View invoice"}
-                            </button>
-                          ) : (
-                            <span className="text-caption text-text-disabled" data-testid="meta-invoice-empty">
-                              Not invoiced
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })()}
-                  </div>
+                  {/* 2026-05-01 (canonical detail header dedup): right
+                      meta column removed entirely. Status / Job # /
+                      Scheduled / Invoice # are owned by the canonical
+                      top header in BOTH read AND edit mode. Job #'s
+                      editable input now lives in the top header's
+                      `editNode` slot, dispatching the same
+                      `headerDraft` state and `updateHeaderMutation`
+                      save path. */}
                 </div>
+
+                {/* JOB DESCRIPTION (OPTIONAL) — appended at the bottom of
+                    the header card, mirroring InvoiceMetaCard's bottom
+                    description section. Hidden in read-only mode when
+                    the job has no description set, so an empty job
+                    doesn't reserve dead vertical space. Always visible
+                    when editing so the user has a place to type.
+                    Field source: `job.description` (text column on the
+                    `jobs` table — see schema). PATCH path: same
+                    canonical /api/jobs/:id endpoint as Job # / Summary;
+                    payload bundled with Summary in
+                    `updateHeaderMutation` so a single round-trip
+                    persists both. */}
+                {(editingHeader || (job.description ?? "").trim().length > 0) && (
+                  <div
+                    className="border-t border-card-border px-5 py-3"
+                    data-testid="job-description-section"
+                  >
+                    <h3 className="m-0 text-xs uppercase tracking-wide text-slate-500">
+                      Job description (optional)
+                    </h3>
+                    {editingHeader ? (
+                      <textarea
+                        value={headerDraft.description}
+                        maxLength={600}
+                        onChange={(e) => {
+                          setHeaderDraft((d) => ({ ...d, description: e.target.value }));
+                          setHeaderError(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                            e.preventDefault();
+                            handleHeaderSave();
+                          } else if (e.key === "Escape") {
+                            e.preventDefault();
+                            handleHeaderCancel();
+                          }
+                        }}
+                        placeholder="Describe the work for this job. Visible only to your team."
+                        className="mt-2 min-h-[88px] w-full text-sm text-slate-900 bg-white border border-border-default rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
+                        data-testid="textarea-job-description"
+                      />
+                    ) : (
+                      <p
+                        className="mt-2 text-sm text-text-primary whitespace-pre-line"
+                        data-testid="text-job-description"
+                      >
+                        {job.description}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* SAVE / CANCEL FOOTER — only when editing. Mirrors the
+                    InvoiceMetaCard footer (border-t, px-5 py-3,
+                    justify-end gap-2). Save uses the default Button
+                    variant (canonical primary / brand green); Cancel
+                    uses `variant="outline"`. The header pencil is
+                    disabled while editing so the user can't double-
+                    enter the flow. */}
+                {editingHeader && (
+                  <div
+                    className="flex items-center justify-end gap-2 border-t border-card-border px-5 py-3"
+                    data-testid="job-header-edit-footer"
+                  >
+                    {headerError && (
+                      <span
+                        className="mr-auto text-xs text-destructive truncate"
+                        data-testid="text-header-edit-error"
+                      >
+                        {headerError}
+                      </span>
+                    )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleHeaderCancel}
+                      disabled={updateHeaderMutation.isPending}
+                      data-testid="button-header-cancel"
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={handleHeaderSave}
+                      disabled={updateHeaderMutation.isPending}
+                      data-testid="button-header-save"
+                    >
+                      {updateHeaderMutation.isPending ? "Saving…" : "Save"}
+                    </Button>
+                  </div>
+                )}
               </SectionCard>
 
               {/* LINE ITEMS — canonical LineItemsCard mount. 2026-04-29
@@ -1738,24 +2019,25 @@ export default function JobDetailPage() {
                 />
               </div>
 
-              {/* NOTES — canonical JobNotesSection mount.
+              {/* NOTES — canonical EntityNotesSection mount.
                   2026-04-29 (precision UI v3): the bespoke avatar feed +
                   inline composer (which only POSTed plain text and could
-                  not attach files) was removed. JobNotesSection is the
-                  canonical owner of the job notes surface and carries:
-                  click row → JobNoteDialog (edit + add/remove
-                  attachments), origin chips for inherited
-                  client/location/company notes, NoteAttachmentStrip
+                  not attach files) was removed. EntityNotesSection is
+                  the canonical owner of the job notes surface and
+                  carries: click row → EntityNoteDialog (edit + add/
+                  remove attachments), origin chips for inherited
+                  client / location / company notes, NoteAttachmentStrip
                   rendering, and the canonical "+ Add Note" entry point
-                  (which routes through JobNoteDialog with the canonical
-                  mutation). Section's own header already shows the
-                  "Notes" label and count, so no extra wrapper chrome is
-                  needed beyond the Invoice-Detail-style border. */}
+                  (which routes through EntityNoteDialog with the
+                  canonical mutation). Section's own header already
+                  shows the "Notes" label and count, so no extra wrapper
+                  chrome is needed beyond the Invoice-Detail-style
+                  border. */}
               <div
                 className="overflow-hidden rounded-md border border-border-default bg-white"
                 data-testid="card-notes"
               >
-                <JobNotesSection jobId={job.id} embedded={true} onCountChange={setNotesCount} />
+                <EntityNotesSection entityType="job" entityId={job.id} embedded={true} onCountChange={setNotesCount} />
               </div>
 
               {/* LABOUR — dashboard module: 3-tile summary + entry rows.
@@ -1995,20 +2277,45 @@ export default function JobDetailPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <QuickAddJobDialog
-        open={showEditDialog}
-        onOpenChange={setShowEditDialog}
-        editJob={job as any}
-        onSuccess={() => {
-          queryClient.invalidateQueries({ queryKey: ["jobs"] });
-        }}
-      />
+      {/* 2026-05-01: <QuickAddJobDialog editJob=...> mount removed.
+          The "Edit Job" modal exposed Location, Summary, and Team
+          Instructions, none of which should be edited from the Job
+          Detail surface — Location is identity (immutable here),
+          Team Instructions are visit-scoped (live on `job_visits`,
+          not `jobs`), and Summary is now edited inline directly in
+          the header card via the existing "Job # inline-edit"
+          pattern (see `editingHeader` / `headerDraft` /
+          `updateHeaderMutation` near the page-level state block).
+          QuickAddJobDialog itself is preserved and still used by
+          CreateNewDialog, PMWorkspacePage, and RecurringJobsPage. */}
 
       <ActionRequiredModal
         jobId={job.id}
         jobVersion={job.version ?? 0}
         open={showActionRequiredModal}
         onOpenChange={setShowActionRequiredModal}
+      />
+
+      {/* 2026-05-02: Create Similar Job — canonical CreateNewDialog
+          opened with `jobInitialCloneFromJobId` set. QuickAddJobDialog
+          fetches the source and prefills the safe identity fields
+          (location, summary, description); schedule + team are blank.
+          Save flows through the existing `POST /api/jobs` mutation. */}
+      <CreateNewDialog
+        open={createSimilarOpen}
+        onOpenChange={(next) => {
+          setCreateSimilarOpen(next);
+          if (!next) setCreateSimilarFromId(null);
+        }}
+        defaultTab="job"
+        jobInitialCloneFromJobId={createSimilarFromId ?? undefined}
+        onJobCreated={() => {
+          // Refresh the jobs feed; the user lands back on this detail
+          // page with the new job created. Navigation to the new job
+          // is intentionally NOT done here — matches the rest of the
+          // CreateNewDialog flows (close, refresh, stay).
+          queryClient.invalidateQueries({ queryKey: ["jobs"] });
+        }}
       />
 
       {/* Schedule Visit Dialog - triggered from Office Actions strip +
@@ -2065,32 +2372,15 @@ export default function JobDetailPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* 2026-04-18 Phase 8 (invoice composition control): canonical
-          create-from-job dialog with per-item labor/parts selection. */}
-      <InvoiceCompositionDialog
-        mode="create"
-        open={showCreateInvoiceDialog}
-        onOpenChange={setShowCreateInvoiceDialog}
-        jobId={job.id}
-        jobNumber={job.jobNumber}
-        jobSummary={job.summary}
-        jobStatus={job.status}
-        locationDisplayName={job.locationDisplayName || "Unknown"}
-        onCreated={(invoice) => {
-          logActivity({
-            type: "created",
-            entityType: "invoice",
-            entityId: invoice.id,
-            label: `Created Invoice${invoice.invoiceNumber ? ` #${invoice.invoiceNumber}` : ""}`,
-            meta: job?.locationDisplayName || undefined,
-          });
-          setLocation(`/invoices/${invoice.id}`);
-        }}
-      />
+      {/* 2026-05-01: <InvoiceCompositionDialog mode="create"> mount
+          removed. Direct create-from-job is now handled by
+          `createInvoiceFromJobMutation` above. The dialog component
+          itself is preserved for the rare manual "refresh from job"
+          flow on InvoiceDetailPage (mode="refresh"). */}
 
-      {/* 2026-04-29 (precision UI v3): standalone JobNoteDialog mount
-          removed — JobNotesSection (mounted in the right rail) owns its
-          own dialog lifecycle for both create and edit modes. */}
+      {/* 2026-04-29 (precision UI v3): standalone note-dialog mount
+          removed — EntityNotesSection (mounted in the right rail) owns
+          its own dialog lifecycle for both create and edit modes. */}
 
       {/* Canonical Time Entry Modal (create + edit) */}
       <TimeEntryModal
@@ -2106,11 +2396,15 @@ export default function JobDetailPage() {
         entry={timeEntryModal.entry}
       />
 
-      {/* Phase 12 (2026-04-12): customer-facing job email modal. */}
-      <SendJobModal
-        jobId={job.id}
+      {/* Phase 12 (2026-04-12): customer-facing job email modal.
+          2026-05-02 (Audit #2 PR 2): canonical SendCommunicationModal
+          used directly — wrapper SendJobModal was deleted. */}
+      <SendCommunicationModal
+        entityType="job"
+        entityId={job.id}
         isOpen={showSendJobEmail}
         onClose={() => setShowSendJobEmail(false)}
+        title="Send Email"
         onSuccess={() => {
           toast({ title: "Job email sent" });
         }}

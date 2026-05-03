@@ -20,6 +20,8 @@ import { Input } from "@/components/ui/input";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
 import { getQuoteStatusBadge } from "@/lib/statusBadges";
 import { tableRowClass } from "@/components/ui/list-surface";
+// 2026-05-02 entity-number visual language: blue pill for current entity row.
+import { EntityNumber } from "@/components/common/EntityNumber";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -281,9 +283,13 @@ export default function Quotes() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <span className="font-mono text-row text-slate-800" data-testid={`text-quote-number-${quote.id}`}>
+                      {/* 2026-05-02 entity-number system: row IS a
+                          quote → primary blue pill. Empty fallback
+                          (`Q-{id.slice}`) preserved for quotes that
+                          haven't been assigned a number yet. */}
+                      <EntityNumber variant="primary" data-testid={`text-quote-number-${quote.id}`}>
                         {quote.quoteNumber || `Q-${quote.id.slice(0, 8)}`}
-                      </span>
+                      </EntityNumber>
                     </TableCell>
                     <TableCell>
                       <span className="text-row text-slate-500">{quote.title || "-"}</span>

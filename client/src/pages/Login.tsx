@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -21,9 +21,21 @@ type LoginFormData = z.infer<typeof loginSchema>;
 
 export default function Login() {
   const [, setLocation] = useLocation();
-  const { login } = useAuth();
+  const { login, user } = useAuth();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
+  // 2026-05-03 first-login race fix (client-navigation half): instead of
+  // calling `setLocation(...)` synchronously after `await login(...)`, we
+  // stash the role-aware destination here and let the effect below
+  // navigate ONLY once the AuthProvider's `user` context value reflects
+  // the freshly-logged-in identity. This guarantees ProtectedRoute mounts
+  // on the new route with a non-null `user` already visible — no stale-
+  // null-then-bounce-back-to-/login race. `pendingDestination` is null
+  // by default and only set by a successful submit, so we preserve the
+  // 2026-04-10 Phase-2 Fix D invariant: this Login page never bounces a
+  // mounting user into the protected app on the strength of a stale
+  // truthy `user` alone. Both gates (intent + committed user) must hold.
+  const [pendingDestination, setPendingDestination] = useState<string | null>(null);
 
   const form = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
@@ -33,38 +45,44 @@ export default function Login() {
     },
   });
 
-  // 2026-04-10 Phase-2 Fix D: explicit post-login navigation. The previous
-  // implementation used a `useEffect(() => if (user) setLocation(returnTo))`
-  // which caused the session-expired loop — a stale truthy `user` from the
-  // pre-expiration session would fire that effect on Login mount and
-  // immediately bounce the user back into the protected app, where the
-  // 401 storm would reopen the modal. Now we navigate ONLY after a fresh
-  // `await login()` resolves successfully — explicit beats reactive.
+  useEffect(() => {
+    // Wait for BOTH: (a) the user explicitly submitted login this session
+    // (pendingDestination set by onSubmit on success) AND (b) AuthProvider
+    // has committed the new user identity into context. Only then navigate.
+    // Clearing `pendingDestination` immediately after the call prevents
+    // double-navigation if React fires the effect again (e.g., StrictMode
+    // dev double-mount or a follow-up data refresh re-rendering AuthProvider).
+    if (!pendingDestination || !user) return;
+    const dest = pendingDestination;
+    setPendingDestination(null);
+    setLocation(dest);
+  }, [user, pendingDestination, setLocation]);
+
   const onSubmit = async (data: LoginFormData) => {
     setIsLoading(true);
     try {
       const userData = await login(data.email, data.password);
       const params = new URLSearchParams(window.location.search);
       const returnTo = params.get("returnTo");
-      // Role-aware destination, computed at the moment of success.
+      // Role-aware destination, computed at the moment of success. The
+      // value flows through `pendingDestination` so the effect above can
+      // navigate AFTER AuthProvider commits `user`. Behavior preserved
+      // from the prior synchronous implementation — only the dispatch
+      // mechanism changed.
+      let destination: string;
       if (userData.role === "technician") {
         // Honor returnTo only when it's a /tech/* path — prevents a tech
         // session-expiry from the tech app losing context (e.g., an open
         // visit detail) on re-auth. Office returnTo values are ignored so
         // techs don't land in pages they have no permission to view.
-        if (returnTo && returnTo.startsWith("/tech/")) {
-          setLocation(returnTo);
-          return;
-        }
-        setLocation("/tech/today");
-        return;
+        destination = (returnTo && returnTo.startsWith("/tech/")) ? returnTo : "/tech/today";
+      } else if (isPlatformRole(userData.role)) {
+        // Platform roles land in the Ops Portal — never the tenant shell.
+        destination = "/platform/tenants";
+      } else {
+        destination = (returnTo && returnTo.startsWith("/")) ? returnTo : "/";
       }
-      // Platform roles land in the Ops Portal — never the tenant shell.
-      if (isPlatformRole(userData.role)) {
-        setLocation("/platform/tenants");
-        return;
-      }
-      setLocation(returnTo && returnTo.startsWith("/") ? returnTo : "/");
+      setPendingDestination(destination);
     } catch (error: any) {
       toast({
         variant: "destructive",

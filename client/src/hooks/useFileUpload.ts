@@ -38,6 +38,11 @@ export const FILE_SIZE_LIMITS: Record<SupportedMimeType, number> = {
 
 export type FileEntityType =
   | "job_note"
+  // 2026-05-02 (Audit #2 PR 3C): quote-note attachments via the same
+  // canonical pipeline as job notes. Backend adapter writes through
+  // to `quote_note_attachments` (table added in PR 3A). Mirror of
+  // `server/services/fileUploadService.ts::FileEntityType`.
+  | "quote_note"
   | "client_note"
   | "client_document"
   | "contract_document"

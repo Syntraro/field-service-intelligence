@@ -13,8 +13,8 @@
  *   - Compact / abbreviated chart axis labels (`FinancialDashboard.tsx`) — owns
  *     its own combined whole-dollar + compact helper because both behaviors are
  *     coupled to the chart's axis ticks.
- *   - USD-denominated displays (`JobExpensesCard.tsx`, `PartsBillingCard.tsx`)
- *     — these surfaces are explicitly USD/en-US.
+ *   - USD-denominated displays (`PartsBillingCard.tsx`) — explicitly
+ *     USD/en-US.
  *   - Manual `$N.NN` rendering with a `"-"` null sentinel
  *     (`components/products-services/types.ts`).
  *   - Server-side PDF rendering (`server/services/invoicePdfService.ts`,

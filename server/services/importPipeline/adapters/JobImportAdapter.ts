@@ -597,13 +597,18 @@ export const jobImportAdapter: ImportAdapter<JobImportRow, JobImportDetails, Job
 
     if (row.serviceStreet && row.serviceCity) {
       // Canonical createOrGet ensures we don't double-insert under race.
+      // 2026-05-01 stale-rename hardening (Option A): parented locations
+      // do NOT denormalize the parent's name into `client_locations.company_name`.
+      // The display layer resolves the name via `locationDisplayNameExpr`
+      // (parent-first COALESCE), so leaving this column null keeps the
+      // child in lockstep with `customer_companies.name` for free.
       const { location: loc, created } = await clientRepository.createOrGetLocationTx(
         tx,
         ctx.companyId,
         ctx.userId,
         {
           parentCompanyId: company.id,
-          companyName: row.clientName ?? "",
+          companyName: null,
           location: row.locationName || `${row.serviceStreet}, ${row.serviceCity}`.replace(/^, |, $/g, ""),
           address: row.serviceStreet,
           city: row.serviceCity,

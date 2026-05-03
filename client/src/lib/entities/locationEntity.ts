@@ -42,14 +42,29 @@ export function useLocationSearch(searchText: string, options?: { limit?: number
 
 // ── Normalization (snake_case API → camelCase) ──
 
+/**
+ * 2026-05-01 stale-rename fix: when the API supplies `parent_company_name`
+ * (every location-display endpoint does as of this change — see
+ * `server/storage/search.ts`, `/api/clients/search-locations`, and
+ * `GET /api/clients/:id`), prefer it over the location's own
+ * `company_name` for the displayed `companyName`. The location's
+ * `company_name` column has historically been denormalized at create
+ * time and is not refreshed when the parent customer company is
+ * renamed; treating the parent as authoritative for DISPLAY closes
+ * the rename-propagation symptom without a destructive backfill.
+ * Standalone locations (no parent) fall through to the location's own
+ * column unchanged.
+ */
 export function normalizeLocationRow(r: any): LocationOption {
+  const parentName = r.parent_company_name ?? r.parentCompanyName ?? null;
+  const ownName = r.company_name ?? r.companyName ?? null;
   return {
     id: r.id,
-    companyName: r.company_name ?? r.companyName ?? "Unknown",
+    companyName: parentName || ownName || "Unknown",
     location: r.location ?? null,
     address: r.address ?? null,
     city: r.city ?? null,
-    parentCompanyName: r.parent_company_name ?? r.parentCompanyName ?? null,
+    parentCompanyName: parentName,
     phone: r.phone ?? null,
   };
 }

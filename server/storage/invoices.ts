@@ -32,6 +32,13 @@ export const INVOICE_CREATION_SOURCES = [
   "PM_BILLING_SERVICE", // PM Billing Phase 2: Contract-period billing events
   "STANDALONE_ROUTE",   // Standalone invoice creation without job/PM dependency
   "IMPORT_ROUTE",       // 2026-04-22: Canonical invoice CSV importer (InvoiceImportAdapter)
+  // 2026-05-02 (Audit #2 invoice-flow Phase 1): atomic create-with-lines
+  // route used by the future client-side `/invoices/new` builder. Single
+  // POST `/api/invoices/atomic` carries all header fields + line items +
+  // discount + tax + optional jobIds in one transaction. Lines are
+  // CLIENT-AUTHORITATIVE (server does not pull from jobs); jobIds are
+  // used only for validation, primary-pointer, and lifecycle markInvoiced.
+  "ATOMIC_ROUTE",
 ] as const;
 
 /**
@@ -758,12 +765,21 @@ export class InvoiceRepository extends BaseRepository {
    */
   async batchApplyLineTax(companyId: string, invoiceId: string, combinedRateDecimal: number, txHandle?: any): Promise<number> {
     const runInTx = async (tx: any) => {
-      // Single UPDATE: apply tax rate, compute taxAmount and lineTotal for all lines
+      // Single UPDATE: apply tax rate, compute taxAmount and lineTotal for all lines.
+      // 2026-05-03 numeric/text fix: the prior SQL cast the computed
+      // `tax_amount` and `line_total` expressions to `::text` before the
+      // assignment, which Postgres rejected as
+      //   `column "tax_amount" is of type numeric but expression is of type text`.
+      // numeric → numeric is the correct assignment shape; the
+      // ::text cast was an authoring mistake (Drizzle reads numeric
+      // columns as strings on the JS side, but the wire-format cast is
+      // automatic — the SQL expression itself must remain numeric so
+      // Postgres can match the column type).
       await (tx as any).execute(sql`
         UPDATE invoice_lines
         SET tax_rate = ${String(combinedRateDecimal)},
-            tax_amount = ROUND(CAST(line_subtotal AS numeric) * ${combinedRateDecimal}, 2)::text,
-            line_total = ROUND(CAST(line_subtotal AS numeric) + CAST(line_subtotal AS numeric) * ${combinedRateDecimal}, 2)::text,
+            tax_amount = ROUND(CAST(line_subtotal AS numeric) * ${combinedRateDecimal}, 2),
+            line_total = ROUND(CAST(line_subtotal AS numeric) + CAST(line_subtotal AS numeric) * ${combinedRateDecimal}, 2),
             updated_at = NOW()
         WHERE company_id = ${companyId}
           AND invoice_id = ${invoiceId}
@@ -1965,6 +1981,203 @@ export class InvoiceRepository extends BaseRepository {
   }
 
   /**
+   * 2026-05-02 (Audit #2 invoice-flow Phase 1) — atomic create-with-lines
+   * for the future client-side `/invoices/new` builder.
+   *
+   * Single transaction: counter allocation → base shell INSERT → header
+   * overrides UPDATE → bulk line INSERT → tax group application
+   * (which itself does batch-apply + snapshot + recalc) → fresh fetch.
+   *
+   * Lines are CLIENT-AUTHORITATIVE. The caller passes the final lines
+   * array (manual + any job-derived lines the client hydrated locally
+   * via `GET /api/jobs/:id/billable-preview` in a future Phase 2). The
+   * server does NOT pull from jobs here — that's the responsibility
+   * of `createInvoiceFromJobService` (the existing `/from-job/:jobId`
+   * route, unchanged). This avoids any double-add risk between client
+   * preview lines and server pull.
+   *
+   * `primaryJobId` (if provided) is set on `invoices.jobId` for the
+   * single-job linkage the schema supports. Multi-job lifecycle
+   * (`lifecycle.markInvoiced`) is the service-layer's responsibility.
+   *
+   * Tax group resolution mirrors `applyTaxGroupCore` from
+   * `invoiceCreationService`:
+   *   - `taxGroupId === null`           → no tax (zero rate, no snapshot)
+   *   - `taxGroupId === undefined`      → caller hasn't decided; service
+   *                                       layer should resolve to default
+   *                                       group BEFORE calling this method
+   *                                       so storage stays deterministic.
+   *   - any other string                → apply that tax group.
+   */
+  async createInvoiceAtomic(
+    companyId: string,
+    params: {
+      locationId: string;
+      customerCompanyId: string | null;
+      /** When ≥ 1 job was selected, its FIRST id goes here as the
+       *  schema-supported primary pointer. Multi-job linkage is
+       *  driven by `lifecycle.markInvoiced` at the service layer. */
+      primaryJobId: string | null;
+      workDescription: string | null;
+      issueDate?: string;
+      dueDate?: string | null;
+      paymentTermsDays?: number;
+      invoiceNumber?: string;
+      notesInternal?: string;
+      notesCustomer?: string;
+      clientMessage?: string;
+      showQuantity?: boolean;
+      showUnitPrice?: boolean;
+      showLineTotals?: boolean;
+      showLineItems?: boolean;
+      showBalance?: boolean;
+      showJobDescription?: boolean;
+      discountType?: "PERCENT" | "AMOUNT" | null;
+      discountPercent?: string | null;
+      discountAmount?: string | null;
+      discountNotes?: string | null;
+      /** Resolved by the service layer BEFORE the call:
+       *   - explicit `null` → no tax,
+       *   - explicit string → apply that group. */
+      taxGroupId: string | null;
+    },
+    lines: Array<{
+      description: string;
+      quantity: string;
+      unitPrice: string;
+      unitCost?: string | null;
+      productId?: string | null;
+      lineItemType: "service" | "material" | "fee" | "discount";
+      source: "manual" | "job" | "template" | "tech";
+      /** Reference back to the source job_part row when this line was
+       *  hydrated client-side from a job's billable items. */
+      jobLineItemId?: string | null;
+      date?: string | null;
+      technicianId?: string | null;
+    }>,
+    creationSource: InvoiceCreationSource,
+  ): Promise<{ invoice: any; invoiceNumber: string }> {
+    if (creationSource !== "ATOMIC_ROUTE") {
+      throw new Error(
+        "INVOICE_CREATION_GUARD: createInvoiceAtomic() only allowed from ATOMIC_ROUTE",
+      );
+    }
+    this.assertCompanyId(companyId);
+
+    // Default payment terms from company settings unless caller overrides.
+    const [settings] = await db
+      .select({ defaultPaymentTermsDays: companySettings.defaultPaymentTermsDays })
+      .from(companySettings)
+      .where(eq(companySettings.companyId, companyId))
+      .limit(1);
+    const effectiveTerms =
+      params.paymentTermsDays ?? settings?.defaultPaymentTermsDays ?? 30;
+
+    // Lazy import: applyTaxGroupToInvoice lives in the service layer and
+    // would create a circular import if pulled at module top.
+    const { applyTaxGroupToInvoice } = await import(
+      "../services/invoiceCreationService"
+    );
+
+    return await db.transaction(async (tx) => {
+      // 1) Counter + shell INSERT (canonical, atomic).
+      const { invoice: shell, invoiceNumber } = await this.createInvoiceShell(
+        companyId,
+        {
+          locationId: params.locationId,
+          customerCompanyId: params.customerCompanyId,
+          jobId: params.primaryJobId,
+          workDescription: params.workDescription ?? null,
+        },
+        tx,
+        effectiveTerms,
+      );
+
+      // 2) Header overrides — single UPDATE for everything that's not
+      //    in the shell defaults. Skip fields that the caller didn't
+      //    pass (undefined) so we don't clobber shell defaults.
+      const headerPatch: Record<string, unknown> = { updatedAt: new Date() };
+      if (params.issueDate !== undefined) headerPatch.issueDate = params.issueDate;
+      if (params.dueDate !== undefined) headerPatch.dueDate = params.dueDate;
+      if (params.invoiceNumber !== undefined) headerPatch.invoiceNumber = params.invoiceNumber;
+      if (params.notesInternal !== undefined) headerPatch.notesInternal = params.notesInternal;
+      if (params.notesCustomer !== undefined) headerPatch.notesCustomer = params.notesCustomer;
+      if (params.clientMessage !== undefined) headerPatch.clientMessage = params.clientMessage;
+      if (params.showQuantity !== undefined) headerPatch.showQuantity = params.showQuantity;
+      if (params.showUnitPrice !== undefined) headerPatch.showUnitPrice = params.showUnitPrice;
+      if (params.showLineTotals !== undefined) headerPatch.showLineTotals = params.showLineTotals;
+      if (params.showLineItems !== undefined) headerPatch.showLineItems = params.showLineItems;
+      if (params.showBalance !== undefined) headerPatch.showBalance = params.showBalance;
+      if (params.showJobDescription !== undefined) headerPatch.showJobDescription = params.showJobDescription;
+      if (params.discountType !== undefined) headerPatch.discountType = params.discountType;
+      if (params.discountPercent !== undefined) headerPatch.discountPercent = params.discountPercent;
+      if (params.discountAmount !== undefined) headerPatch.discountAmount = params.discountAmount;
+      if (params.discountNotes !== undefined) headerPatch.discountNotes = params.discountNotes;
+
+      if (Object.keys(headerPatch).length > 1) {
+        await tx
+          .update(invoices)
+          .set(headerPatch)
+          .where(and(eq(invoices.id, shell.id), eq(invoices.companyId, companyId)));
+      }
+
+      // 3) Bulk INSERT lines. Compute `lineSubtotal = qty * unitPrice`
+      //    inline so we don't depend on the caller; tax-derived fields
+      //    (taxRate, taxAmount, lineTotal) are stamped by the tax-group
+      //    application step below — these initial values are
+      //    placeholders that get rewritten in step 4.
+      if (lines.length > 0) {
+        const lineRows = lines.map((line, idx) => {
+          const qtyNum = parseFloat(line.quantity || "0");
+          const priceNum = parseFloat(line.unitPrice || "0");
+          const subtotalNum = Math.round(qtyNum * priceNum * 100) / 100;
+          const subtotalStr = subtotalNum.toFixed(2);
+          return {
+            companyId,
+            invoiceId: shell.id,
+            lineNumber: idx + 1,
+            lineItemType: line.lineItemType,
+            description: line.description,
+            date: line.date ?? null,
+            technicianId: line.technicianId ?? null,
+            quantity: line.quantity,
+            unitCost: line.unitCost ?? null,
+            unitPrice: line.unitPrice,
+            taxRate: "0.0000",
+            lineSubtotal: subtotalStr,
+            taxAmount: "0.00",
+            lineTotal: subtotalStr,
+            jobLineItemId: line.jobLineItemId ?? null,
+            productId: line.productId ?? null,
+            source: line.source,
+          };
+        });
+        await tx.insert(invoiceLines).values(lineRows);
+      }
+
+      // 4) Apply tax group via the canonical service helper. This:
+      //      - sets `invoices.taxGroupId`
+      //      - runs `batchApplyLineTax` (single UPDATE on lines + recalc
+      //        of invoice totals via the embedded recalculate call)
+      //      - writes the per-rate `invoice_tax_lines` snapshot
+      //    For `taxGroupId === null` it sets zero tax + clears the
+      //    snapshot. Either way, totals reflect the discount fields we
+      //    set in step 2 because the recalc reads them inside the tx.
+      await applyTaxGroupToInvoice(companyId, shell.id, params.taxGroupId, tx);
+
+      // 5) Re-fetch the final invoice row inside the same tx so the
+      //    caller sees the post-recalc totals + the patched header.
+      const [finalInvoice] = await tx
+        .select()
+        .from(invoices)
+        .where(and(eq(invoices.id, shell.id), eq(invoices.companyId, companyId)))
+        .limit(1);
+
+      return { invoice: finalInvoice ?? shell, invoiceNumber };
+    });
+  }
+
+  /**
    * Canonical invoice-import creation path (2026-04-22).
    *
    * Called from the InvoiceImportAdapter inside the import pipeline's
@@ -2187,7 +2400,7 @@ export class InvoiceRepository extends BaseRepository {
   /**
    * Permanently delete an invoice (2026-04-09 — permanent-delete model).
    *
-   * Eligibility (matches `InvoiceHeaderCard.tsx` `canDelete` UI gate):
+   * Eligibility (matches the `canDelete` UI gate on InvoiceDetailPage):
    *   - status === 'draft'
    *   - qboInvoiceId is null (never delete a QBO-synced invoice)
    *   - amountPaid is zero (cannot delete an invoice that has any payment activity)

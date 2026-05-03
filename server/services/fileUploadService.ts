@@ -27,6 +27,12 @@ import {
   jobs,
   jobExpenses,
   jobNoteAttachments,
+  // 2026-05-02 (Audit #2 PR 3C): canonical schema imports for the new
+  // `quote_note` adapter. Mirrors the `jobNotes` + `jobNoteAttachments`
+  // pair one-for-one.
+  quoteNotes,
+  quoteNoteAttachments,
+  quotes,
   clientNotes,
   clientLocations,
   noteAttachments,
@@ -77,6 +83,7 @@ const ALLOWED_MIME_TYPES = new Set<string>([
 function resolveCategory(entityType: FileEntityType, mimeType: string): FileCategory {
   switch (entityType) {
     case "job_note":
+    case "quote_note":
     case "client_note":
       if (IMAGE_MIME_TYPES.has(mimeType)) return "note_image";
       if (PDF_MIME_TYPES.has(mimeType)) return "note_pdf";
@@ -165,6 +172,10 @@ function sanitizeFilename(name: string): string {
 
 export type FileEntityType =
   | "job_note"
+  // 2026-05-02 (Audit #2 PR 3C): quote-note attachments via the same
+  // canonical pipeline as job notes. Adapter writes through to
+  // `quote_note_attachments` (table added in PR 3A).
+  | "quote_note"
   | "client_note"
   | "client_document"
   | "contract_document"
@@ -221,6 +232,27 @@ async function resolveJobNote(companyId: string, noteId: string): Promise<Entity
     .limit(1);
   if (!job) throw createError(404, "Job not found");
   return { tenantId: companyId, jobId: note.jobId, noteId: note.id };
+}
+
+// 2026-05-02 (Audit #2 PR 3C): one-for-one mirror of `resolveJobNote`,
+// just walking `quote_notes → quotes` instead of `job_notes → jobs`.
+// Same defensive tenant check on the parent quote so a stale-noteId
+// can't punch through to another tenant's data.
+async function resolveQuoteNote(companyId: string, noteId: string): Promise<EntityContext> {
+  const [note] = await db
+    .select({ id: quoteNotes.id, quoteId: quoteNotes.quoteId })
+    .from(quoteNotes)
+    .where(and(eq(quoteNotes.id, noteId), eq(quoteNotes.companyId, companyId)))
+    .limit(1);
+  if (!note) throw createError(404, "Quote note not found");
+  // Defensive tenant check on the parent quote.
+  const [quote] = await db
+    .select({ id: quotes.id })
+    .from(quotes)
+    .where(and(eq(quotes.id, note.quoteId), eq(quotes.companyId, companyId)))
+    .limit(1);
+  if (!quote) throw createError(404, "Quote not found");
+  return { tenantId: companyId, quoteId: note.quoteId, noteId: note.id };
 }
 
 async function resolveClientNote(companyId: string, noteId: string): Promise<EntityContext> {
@@ -335,6 +367,39 @@ const ENTITY_ADAPTERS: Record<FileEntityType, EntityAdapter> = {
         .delete(jobNoteAttachments)
         .where(
           and(eq(jobNoteAttachments.companyId, companyId), eq(jobNoteAttachments.fileId, fileId)),
+        );
+    },
+  },
+  // 2026-05-02 (Audit #2 PR 3C): mirror of `job_note` — same shape,
+  // same idempotent insert, same detach-by-fileId. Object-key format
+  // mirrors the job version with `quotes/${quoteId}` in place of
+  // `jobs/${jobId}` so R2 layout stays predictable across entity
+  // types. Writes through to `quote_note_attachments` (table added
+  // in PR 3A).
+  quote_note: {
+    resolve: resolveQuoteNote,
+    buildObjectKey: (ctx, fileId, filename) =>
+      `tenants/${ctx.tenantId}/quotes/${ctx.quoteId}/notes/${ctx.noteId}/${fileId}/${sanitizeFilename(filename)}`,
+    ensureAttachment: async (companyId, userId, noteId, fileId) => {
+      const [existing] = await db
+        .select({ id: quoteNoteAttachments.id })
+        .from(quoteNoteAttachments)
+        .where(
+          and(
+            eq(quoteNoteAttachments.companyId, companyId),
+            eq(quoteNoteAttachments.noteId, noteId),
+            eq(quoteNoteAttachments.fileId, fileId),
+          ),
+        )
+        .limit(1);
+      if (existing) return;
+      await db.insert(quoteNoteAttachments).values({ companyId, noteId, fileId, createdBy: userId });
+    },
+    detachByFileId: async (companyId, fileId) => {
+      await db
+        .delete(quoteNoteAttachments)
+        .where(
+          and(eq(quoteNoteAttachments.companyId, companyId), eq(quoteNoteAttachments.fileId, fileId)),
         );
     },
   },

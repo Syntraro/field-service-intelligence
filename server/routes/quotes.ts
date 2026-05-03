@@ -31,6 +31,10 @@ import { db } from "../db";
 import { taskRepository } from "../storage/tasks";
 import { quoteNotes, users, quotes, insertQuoteNoteSchema, clientLocations } from "@shared/schema";
 import { clientNotesRepository } from "../storage/clientNotes";
+// 2026-05-02 (Audit #2 PR 3A): canonical attach/detach for quote notes.
+// Mirrors `jobNoteAttachmentRepository` one-for-one; see
+// `server/storage/quoteNoteAttachments.ts` for the rationale.
+import { quoteNoteAttachmentRepository } from "../storage/quoteNoteAttachments";
 import { isQuoteDraft, isQuoteSent, isQuoteApproved } from "../lib/quotePredicates";
 // Phase 1 Architecture: Event Log
 import { logEventAsync } from "../lib/events";
@@ -379,8 +383,36 @@ function isQuoteExpired(quote: { expiryDate?: string | Date | null; status: stri
 // only the quote's company can read/write. Author-only edit/delete is
 // enforced by matching `userId` on the note.
 
-const createNoteSchema = z.object({ text: z.string().min(1).max(4000) }).strict();
-const updateNoteSchema = z.object({ text: z.string().min(1).max(4000) }).strict();
+// 2026-05-02 (Audit #2 PR 3A): both create and update schemas now accept
+// EITHER `text` OR `noteText` (canonical, mirrors job notes), with
+// `noteText` preferred when both are present. The strict mode is dropped
+// so `attachmentFileIds` (create only) passes the validator. Each
+// schema enforces that AT LEAST ONE of the two fields is present and
+// non-empty after trim — the strict validator's old "exactly one key"
+// behavior is kept conceptually via a refinement.
+const NOTE_BODY = z.string().min(1).max(4000);
+const NOTE_FILE_ID = z.string().min(1);
+
+const createNoteSchema = z
+  .object({
+    text: NOTE_BODY.optional(),
+    noteText: NOTE_BODY.optional(),
+    attachmentFileIds: z.array(NOTE_FILE_ID).optional(),
+  })
+  .refine(
+    (b) => (b.noteText && b.noteText.trim().length > 0) || (b.text && b.text.trim().length > 0),
+    { message: "noteText (or text) is required and must be a non-empty string" },
+  );
+
+const updateNoteSchema = z
+  .object({
+    text: NOTE_BODY.optional(),
+    noteText: NOTE_BODY.optional(),
+  })
+  .refine(
+    (b) => (b.noteText && b.noteText.trim().length > 0) || (b.text && b.text.trim().length > 0),
+    { message: "noteText (or text) is required and must be a non-empty string" },
+  );
 
 async function assertQuoteExists(companyId: string, quoteId: string) {
   const [q] = await db
@@ -421,16 +453,27 @@ router.get("/:id/notes", asyncHandler(async (req: AuthedRequest, res: Response) 
     .where(and(eq(quoteNotes.quoteId, quoteId), eq(quoteNotes.companyId, companyId)))
     .orderBy(quoteNotes.createdAt);
 
-  const owned = ownedRows.map((r) => ({
-    ...r,
-    userName:
-      r.user?.fullName
-        ?? [r.user?.firstName, r.user?.lastName].filter(Boolean).join(" ")
-        ?? r.user?.email
-        ?? "Unknown",
-    origin: "quote" as const,
-    editable: true,
-  }));
+  // 2026-05-02 (Audit #2 PR 3A): hydrate owned-note attachments via the
+  // canonical per-entity repo. Each note gets an `attachments[]` array
+  // matching the `JobNote` shape (id, noteId, fileId, originalName,
+  // mimeType, size). Inherited client notes already carry their own
+  // attachments below — both branches now produce a consistent shape.
+  const owned = await Promise.all(
+    ownedRows.map(async (r) => {
+      const attachments = await quoteNoteAttachmentRepository.listByNote(companyId, r.id);
+      return {
+        ...r,
+        userName:
+          r.user?.fullName
+            ?? [r.user?.firstName, r.user?.lastName].filter(Boolean).join(" ")
+            ?? r.user?.email
+            ?? "Unknown",
+        origin: "quote" as const,
+        editable: true,
+        attachments,
+      };
+    }),
+  );
 
   // 2) Inherited client notes — resolve quote's location + customer company.
   const [quoteScope] = await db
@@ -469,27 +512,56 @@ router.get("/:id/notes", asyncHandler(async (req: AuthedRequest, res: Response) 
   res.json(merged);
 }));
 
-// POST /api/quotes/:id/notes — create a note
+// POST /api/quotes/:id/notes — create a note (with optional attachmentFileIds).
+//
+// 2026-05-02 (Audit #2 PR 3A): accepts BOTH legacy `{ text }` and
+// canonical `{ noteText, attachmentFileIds }` body shapes. `noteText`
+// wins when both are present. The validator (createNoteSchema) refines
+// to "at least one of the two is non-empty after trim." Attachments are
+// linked through the canonical `quoteNoteAttachmentRepository` after
+// the row is inserted; the existing `quoteNotes` row insert is
+// unchanged.
 router.post("/:id/notes", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
   const userId = req.user!.id;
   const quoteId = req.params.id;
-  const { text } = validateSchema(createNoteSchema, req.body);
+  const body = validateSchema(createNoteSchema, req.body);
+  // Prefer canonical noteText; fall back to legacy text. Validator
+  // already guaranteed at least one of them is non-empty.
+  const finalText = (body.noteText ?? body.text ?? "").trim();
   await assertQuoteExists(companyId, quoteId);
 
   const [note] = await db
     .insert(quoteNotes)
-    .values({ companyId, quoteId, userId, noteText: text.trim() })
+    .values({ companyId, quoteId, userId, noteText: finalText })
     .returning();
+
+  // Attach files if provided. Mirrors jobs.ts:1481-1488; same
+  // attach-by-fileId loop, same error semantics. The repo enforces
+  // tenant ownership of both the note + the file before inserting
+  // the join row.
+  const attachmentFileIds = body.attachmentFileIds;
+  if (Array.isArray(attachmentFileIds) && attachmentFileIds.length > 0 && note) {
+    for (const fileId of attachmentFileIds) {
+      if (typeof fileId === "string" && fileId.length > 0) {
+        await quoteNoteAttachmentRepository.attach(companyId, userId, note.id, fileId);
+      }
+    }
+  }
+
   res.status(201).json(note);
 }));
 
-// PUT /api/quotes/:id/notes/:noteId — edit own note
-router.put("/:id/notes/:noteId", asyncHandler(async (req: AuthedRequest, res: Response) => {
+// 2026-05-02 (Audit #2 PR 3A): shared internal handler for PUT + PATCH
+// so both verbs accept identical body shapes and the route never drifts.
+// Both back-compat-friendly: accepts `{ text }` OR `{ noteText }`,
+// `noteText` wins when both are present.
+async function updateQuoteNoteHandler(req: AuthedRequest, res: Response) {
   const companyId = req.companyId!;
   const userId = req.user!.id;
   const { id: quoteId, noteId } = req.params;
-  const { text } = validateSchema(updateNoteSchema, req.body);
+  const body = validateSchema(updateNoteSchema, req.body);
+  const finalText = (body.noteText ?? body.text ?? "").trim();
 
   const [existing] = await db
     .select({ id: quoteNotes.id })
@@ -505,11 +577,56 @@ router.put("/:id/notes/:noteId", asyncHandler(async (req: AuthedRequest, res: Re
 
   const [updated] = await db
     .update(quoteNotes)
-    .set({ noteText: text.trim(), updatedAt: new Date() })
+    .set({ noteText: finalText, updatedAt: new Date() })
     .where(eq(quoteNotes.id, noteId))
     .returning();
   res.json(updated);
-}));
+}
+
+// PUT /api/quotes/:id/notes/:noteId — edit own note (back-compat alias).
+router.put("/:id/notes/:noteId", asyncHandler(updateQuoteNoteHandler));
+
+// PATCH /api/quotes/:id/notes/:noteId — canonical update (mirrors
+// jobs.ts:1497). Same handler as PUT; both verbs are kept alive so
+// existing clients that issue PUT keep working while new callers use
+// PATCH. Drift between the two is structurally impossible — they share
+// `updateQuoteNoteHandler`.
+router.patch("/:id/notes/:noteId", asyncHandler(updateQuoteNoteHandler));
+
+// DELETE /api/quotes/:id/notes/:noteId/attachments/:attachmentId
+// 2026-05-02 (Audit #2 PR 3A): per-attachment removal mirroring
+// jobs.ts:1518-1529. Cascade on note delete still drops all
+// attachments at once (FK ON DELETE CASCADE on `quote_note_attachments
+// .note_id`); this route is for removing a single file from a note
+// without touching the note itself.
+router.delete(
+  "/:id/notes/:noteId/attachments/:attachmentId",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const { id: quoteId, noteId, attachmentId } = req.params;
+
+    // Verify the note belongs to the quote (and tenant) before detaching.
+    // This prevents a caller from passing a noteId that belongs to a
+    // different quote in the same tenant + an attachmentId on that
+    // unrelated note. The repo's `detach` itself already gates by
+    // companyId; this layer adds the quote↔note ownership check the
+    // user's spec called for.
+    const [noteRow] = await db
+      .select({ id: quoteNotes.id })
+      .from(quoteNotes)
+      .where(and(
+        eq(quoteNotes.id, noteId),
+        eq(quoteNotes.quoteId, quoteId),
+        eq(quoteNotes.companyId, companyId),
+      ))
+      .limit(1);
+    if (!noteRow) throw createError(404, "Note not found");
+
+    const removed = await quoteNoteAttachmentRepository.detach(companyId, attachmentId);
+    if (!removed) throw createError(404, "Attachment not found");
+    res.json({ success: true });
+  }),
+);
 
 // DELETE /api/quotes/:id/notes/:noteId — delete own note
 router.delete("/:id/notes/:noteId", asyncHandler(async (req: AuthedRequest, res: Response) => {

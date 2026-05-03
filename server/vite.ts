@@ -141,28 +141,31 @@ export function serveStatic(app: Express) {
   );
 
   // (2) Everything else under dist/public — entrypoints get explicit
-  // no-cache; static images / fonts at the root keep modest defaults.
+  // `no-store`; static images / fonts at the root keep modest defaults.
+  // 2026-05-01 RBAC + caching system fix: tightened from
+  // `no-cache, no-store, must-revalidate` to bare `no-store`. `no-store`
+  // is the strictest possible directive — the browser is forbidden
+  // from storing the response in any cache, full stop. The previous
+  // combo was functionally similar but harder to reason about; the
+  // simpler form makes the intent unambiguous to reviewers and to
+  // intermediate caches (CDN / corporate proxy).
   app.use(
     express.static(distPath, {
       setHeaders: (res, filePath) => {
         if (isUpdateSensitive(filePath)) {
-          res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-          res.setHeader("Pragma", "no-cache");
-          res.setHeader("Expires", "0");
+          res.setHeader("Cache-Control", "no-store");
         }
       },
     }),
   );
 
   // (3) SPA fallback — every navigation that lands here renders index.html.
-  // The HTML response must carry the same no-cache headers as the static
-  // file would, otherwise we leak the stale-cache window the static layer
-  // closed.
+  // The HTML response must carry the same no-store header as the
+  // static file would, otherwise we leak the stale-cache window the
+  // static layer closed.
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api")) return next();
-    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    res.setHeader("Pragma", "no-cache");
-    res.setHeader("Expires", "0");
+    res.setHeader("Cache-Control", "no-store");
     res.sendFile(path.resolve(distPath, "index.html"));
   });
 }

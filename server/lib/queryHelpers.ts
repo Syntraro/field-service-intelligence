@@ -25,16 +25,33 @@ import type { NeonDatabase } from "drizzle-orm/neon-serverless";
 // ---------------------------------------------------------------------------
 
 /**
- * Standard COALESCE expression for location display name.
+ * Standard COALESCE expression for location display name. SINGLE
+ * CANONICAL OWNER for "what name should the UI render for a location?".
+ * All Drizzle-mode consumers MUST use this expression. Pure-SQL
+ * (`pool.query`) call sites that cannot import the Drizzle fragment
+ * MUST mirror the same priority order inline.
  *
- * 2026-04-10: Fixed fallback order. Location name takes priority over company name.
- * 2026-04-16: Location name is now optional. Extended the fallback chain so
- *   unnamed locations still show a useful label:
- *     1. location's own companyName (the "location name" column)
- *     2. parent customerCompany name
- *     3. location's full street address
- *     4. location's city + province/state
- *     5. 'Unnamed Location' (hardcoded ultimate fallback)
+ * 2026-05-01 (Option A — deprecated-override semantics): the parent
+ * customer company's `name` is now FIRST in the chain. The previous
+ * 2026-04-10 ordering treated `client_locations.company_name` as a
+ * per-location override that always won, but in practice every create
+ * flow eagerly denormalized the parent's name into the child column,
+ * so the "override" was synonymous with "stale copy". A rename of
+ * `customer_companies.name` would not propagate to display surfaces
+ * that consulted this expression. Flipping to parent-first lets
+ * renames propagate immediately while still falling through to the
+ * child column for STANDALONE locations (no `parent_company_id`,
+ * hence `cc.name IS NULL`). Intentional per-location display overrides
+ * are not supported under this contract; if that semantic is needed
+ * in future, add an explicit override-flag column rather than
+ * reinterpreting `company_name`.
+ *
+ * Resolution order:
+ *   1. parent customerCompany name             (rename-aware)
+ *   2. location's own companyName              (standalone fallback)
+ *   3. location's full street address          (legacy unnamed)
+ *   4. location's city + province/state        (legacy unnamed)
+ *   5. 'Unnamed Location'                       (ultimate fallback)
  *
  * Usage in a Drizzle .select():
  *   .select({ locationDisplayName: locationDisplayNameExpr })
@@ -42,8 +59,8 @@ import type { NeonDatabase } from "drizzle-orm/neon-serverless";
  * Requires LEFT JOINs on clientLocations and customerCompanies.
  */
 export const locationDisplayNameExpr = sql<string>`COALESCE(
-  NULLIF(${clientLocations.companyName}, ''),
   NULLIF(${customerCompanies.name}, ''),
+  NULLIF(${clientLocations.companyName}, ''),
   NULLIF(${clientLocations.address}, ''),
   NULLIF(CONCAT_WS(', ', NULLIF(${clientLocations.city}, ''), NULLIF(${clientLocations.province}, '')), ''),
   'Unnamed Location'

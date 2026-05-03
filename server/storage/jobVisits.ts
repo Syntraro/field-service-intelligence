@@ -1,7 +1,9 @@
 import { db } from "../db";
 import { and, eq, desc, gte, lte, asc, sql, notInArray, isNull, isNotNull, or, inArray } from "drizzle-orm";
 import { activeJobFilter } from "./jobFilters";
-import { jobVisits, jobs, jobNotes, users, clientLocations, jobEquipment, locationEquipment, jobParts, items, jobNoteAttachments, files } from "@shared/schema";
+import { jobVisits, jobs, jobNotes, users, clientLocations, customerCompanies, jobEquipment, locationEquipment, jobParts, items, jobNoteAttachments, files } from "@shared/schema";
+// 2026-05-01: canonical location-name resolver for visit-detail location lookup.
+import { locationDisplayNameExpr } from "../lib/queryHelpers";
 import { BaseRepository, clampLimit } from "./base";
 import { isTechnicianAssignedToVisit } from "../guards/visitAssignmentGuards";
 import { sanitizeAllDayTimestamps, sanitizeSchedulingTimestamps, parseTimestampAsUTC } from "../utils/allDaySanitizer";
@@ -280,12 +282,15 @@ export class JobVisitsRepository extends BaseRepository {
       .where(and(eq(jobs.id, visit.jobId), eq(jobs.companyId, companyId), activeJobFilter()));
 
     // Fetch location via job.locationId
+    // 2026-05-01 bypass cleanup: companyName resolves through the
+    // canonical helper. LEFT JOIN customer_companies so the helper has
+    // the parent row to consult; uses idx_client_locations_parent_company.
     let location: VisitLocationInfo | null = null;
     if (job) {
       const [loc] = await db
         .select({
           id: clientLocations.id,
-          companyName: clientLocations.companyName,
+          companyName: locationDisplayNameExpr,
           location: clientLocations.location,
           address: clientLocations.address,
           city: clientLocations.city,
@@ -297,6 +302,7 @@ export class JobVisitsRepository extends BaseRepository {
         })
         .from(clientLocations)
         .innerJoin(jobs, eq(jobs.locationId, clientLocations.id))
+        .leftJoin(customerCompanies, eq(clientLocations.parentCompanyId, customerCompanies.id))
         .where(and(eq(jobs.id, visit.jobId), eq(jobs.companyId, companyId)));
       location = loc
         ? {

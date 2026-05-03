@@ -74,6 +74,9 @@ import { AddEquipmentDialog } from "@/components/AddEquipmentDialog";
 // through a child render. The cache is shared with the selector, so
 // no extra network request fires.
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
+// 2026-05-01 brand pivot — canonical brand strings (currently used by
+// the assigned-tech chip color resolver below).
+import { resolveTechnicianColor } from "@shared/colors";
 
 // 2026-04-26 polish v5: CreateOrSelectField import removed — Location now
 // uses the inline LocationCombobox below (Popover overlay). Other surfaces
@@ -859,6 +862,15 @@ interface QuickAddJobDialogProps {
     durationMinutes?: number;
     assignedTechnicianIds?: string[];
   };
+  /** 2026-05-02 — "Create Similar Job" entry point. When set (and the
+   * dialog is in CREATE mode, i.e. no `editJob`), the dialog fetches
+   * the source job and prefills the form's safe identity fields:
+   * `locationId`, `summary`, `description`. Schedule, team, status,
+   * and lifecycle data are intentionally NOT cloned — the user must
+   * schedule the new job themselves. Save still goes through the
+   * canonical `POST /api/jobs` mutation; no new endpoint is involved.
+   * Mutually exclusive with `editJob` (clone is a CREATE flow). */
+  cloneFromJobId?: string;
   /** Mode control: "standard" = normal create with optional recurring toggle,
    *  "recurring" = opens with recurring ON by default, schedule row hidden */
   mode?: "standard" | "recurring";
@@ -874,7 +886,7 @@ interface QuickAddJobDialogProps {
   compact?: boolean;
 }
 
-export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, editJob, onSuccess, initialSchedule, mode = "standard", embedded = false, compact = false }: QuickAddJobDialogProps) {
+export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, editJob, onSuccess, initialSchedule, cloneFromJobId, mode = "standard", embedded = false, compact = false }: QuickAddJobDialogProps) {
   // 2026-04-30 (compact pass): the `compact` prop was previously
   // destructured as `_compact` and ignored. It is now honored: when
   // either `embedded` (always true from CreateNewDialog) OR an explicit
@@ -960,6 +972,30 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
   // back to today and field is still untouched/defaulted."
   const [startTimeDirty, setStartTimeDirty] = useState(false);
 
+  // 2026-05-02 — "Create Similar Job" prefill. Fetches the source job
+  // once on open and seeds the SAFE identity fields. Skipped entirely
+  // when `editJob` is set (edit mode wins) or when `cloneFromJobId` is
+  // empty. Uses TanStack Query so a cache hit (e.g. user already on
+  // JobDetailPage) is instant; otherwise the fetch is a single
+  // `GET /api/jobs/:id` round-trip. Save still flows through the
+  // canonical `POST /api/jobs` mutation below — no new endpoint is
+  // introduced for clone.
+  const cloneSourceQueryKey = ["/api/jobs", "clone-source", cloneFromJobId ?? null] as const;
+  const { data: cloneSourceJob } = useQuery<{
+    id: string;
+    locationId?: string | null;
+    summary?: string | null;
+    description?: string | null;
+  } | null>({
+    queryKey: cloneSourceQueryKey,
+    queryFn: async () => {
+      if (!cloneFromJobId) return null;
+      return apiRequest(`/api/jobs/${cloneFromJobId}`);
+    },
+    enabled: open && !!cloneFromJobId && !editJob,
+    staleTime: 60_000,
+  });
+
   useEffect(() => {
     if (open && editJob) {
       // Edit mode: populate core fields only — no schedule/assignment (2026-04-03)
@@ -967,6 +1003,19 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
         locationId: editJob.locationId || "",
         summary: editJob.summary || "",
         description: editJob.description || "",
+      });
+    } else if (open && cloneFromJobId && cloneSourceJob && !editJob) {
+      // 2026-05-02 — Clone mode: prefill identity fields ONLY.
+      //   Cloned: locationId, summary, description.
+      //   Intentionally NOT cloned: schedule (date/time/duration),
+      //   team (assignedTechnicianIds), recurring config, status,
+      //   invoice/payment links, lifecycle history.
+      //   The user is creating a NEW job similar to the source —
+      //   they must schedule it explicitly.
+      setFormData({
+        locationId: cloneSourceJob.locationId || "",
+        summary: cloneSourceJob.summary || "",
+        description: cloneSourceJob.description || "",
       });
     } else if (open && initialSchedule) {
       // Dispatch board quick-create: prefill schedule with crew + date + time.
@@ -986,7 +1035,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     } else if (open && preselectedLocationId) {
       setFormData(prev => ({ ...prev, locationId: preselectedLocationId }));
     }
-  }, [open, editJob, preselectedLocationId, initialSchedule]);
+  }, [open, editJob, preselectedLocationId, initialSchedule, cloneFromJobId, cloneSourceJob]);
 
   // Surface controller: manages abort, debounce, cache cleanup on close/unmount
   const surface = useSurfaceController(open, {
@@ -1227,16 +1276,23 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     // rather than clipping past times that would only matter for today.
     // Today (or unscheduled, which the server resolves to today): anchor
     // at real `Date.now()` so past slots are excluded.
+    // 2026-05-02: pass the company `timezone` so emitted gap.date / gap.time
+    // reflect the company-local wall clock — the helper otherwise slices the
+    // UTC ISO and renders e.g. "5:53 PM" for a 1:53 PM EDT instant. The
+    // helper also rounds `now` up to the next 15-min boundary internally,
+    // so `windowStart` always lands on a quarter-hour.
     const isFutureDate = !!scheduleValue.date && scheduleValue.date > todayYmd;
     return groupOpenGapsByTech(capacityData, wantedDuration, {
       preferredTechnicianIds: scheduleValue.assignedTechnicianIds,
       now: isFutureDate ? 0 : Date.now(),
+      timezone: capacityData.timezone ?? companyTimezone ?? null,
     });
   }, [
     capacityData,
     scheduleValue.date,
     scheduleValue.durationMinutes,
     scheduleValue.assignedTechnicianIds,
+    companyTimezone,
   ]);
 
   const applyAvailabilityGap = useCallback(
@@ -1358,6 +1414,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     const wanted = work + Math.max(0, defaultBufferMinutes | 0);
     return computeOpenGapsForTech(selectedTechCapacity, wanted, {
       now: isFutureSelectedDate ? 0 : Date.now(),
+      timezone: capacityData?.timezone ?? companyTimezone ?? null,
     }).slice(0, 3);
   }, [
     scheduleValue.unscheduled,
@@ -1366,6 +1423,8 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     scheduleValue.durationMinutes,
     isFutureSelectedDate,
     defaultBufferMinutes,
+    capacityData?.timezone,
+    companyTimezone,
   ]);
 
   /** Whether the user's CURRENT (date+start+duration) overlaps this
@@ -1818,44 +1877,52 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
           </div>
 
           {/* ── + Add instructions (embedded only) ──
-              2026-05-01: relocated from the bottom embedded action
-              stack to here, directly under Summary. Description and
-              team instructions are related — internal notes belong
-              adjacent to the job summary. Trigger uses the same
-              ghost-outline pill styling as the other secondary
-              actions (Service / Equipment / Make recurring) at the
-              bottom of the form, so the four actions read as one
-              consistent system across two locations. */}
+              2026-05-01 (refinement v2): inline add/remove pattern.
+              Collapsed → "+ Add instructions" pill button. Expanded
+              → textarea + ✕ remove button on the same row. No
+              section heading, no accordion chrome, no separate
+              "− Instructions" toggle. ✕ clears the textarea AND
+              hides the field; the user can re-add via the trigger. */}
           {embedded && !isEditMode && (() => {
             const instructionsShowing =
               embInstructionsOpen || formData.description.length > 0;
-            return (
-              <div className="flex flex-col">
+            const removeInstructions = () => {
+              setEmbInstructionsOpen(false);
+              setFormData((prev) => ({ ...prev, description: "" }));
+            };
+            return instructionsShowing ? (
+              <div className="flex items-start gap-2">
+                <Label htmlFor="description-emb" className="sr-only">
+                  Team instructions
+                </Label>
+                <Textarea
+                  id="description-emb"
+                  value={formData.description}
+                  onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
+                  placeholder="Add notes or instructions for the team..."
+                  rows={2}
+                  className="text-xs resize-none h-[40px] bg-white flex-1"
+                  data-testid="input-description"
+                />
                 <button
                   type="button"
-                  onClick={() => setEmbInstructionsOpen((v) => !v)}
-                  className="h-8 px-2 text-xs rounded-md border bg-white hover:bg-muted inline-flex items-center gap-1 self-start"
-                  data-testid={instructionsShowing ? "emb-instructions-collapse" : "emb-instructions-expand"}
+                  onClick={removeInstructions}
+                  className="h-8 w-8 rounded-md border bg-white hover:bg-muted text-slate-500 hover:text-slate-700 inline-flex items-center justify-center shrink-0"
+                  aria-label="Remove instructions"
+                  data-testid="emb-instructions-remove"
                 >
-                  {instructionsShowing ? "− Instructions" : "+ Add instructions"}
+                  <X className="h-3.5 w-3.5" />
                 </button>
-                {instructionsShowing && (
-                  <div className="pl-2 mt-1">
-                    <Label htmlFor="description-emb" className="sr-only">
-                      Team instructions
-                    </Label>
-                    <Textarea
-                      id="description-emb"
-                      value={formData.description}
-                      onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
-                      placeholder="Add notes or instructions for the team..."
-                      rows={2}
-                      className="text-xs resize-none h-[40px] bg-white"
-                      data-testid="input-description"
-                    />
-                  </div>
-                )}
               </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setEmbInstructionsOpen(true)}
+                className="h-8 px-2 text-xs rounded-md border bg-white hover:bg-muted inline-flex items-center gap-1 self-start"
+                data-testid="emb-instructions-expand"
+              >
+                + Add instructions
+              </button>
             );
           })()}
 
@@ -2191,13 +2258,31 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                 {scheduleValue.assignedTechnicianIds.map((id) => {
                   const tech = techDirectory.find((t) => t.id === id);
                   const name = tech?.fullName ?? "Unknown";
+                  // 2026-05-01: chip color = canonical technician color
+                  // (resolveTechnicianColor — same source dispatch + team
+                  // hub use, so the chip in the create modal matches the
+                  // dot/border on the dispatch board for the same tech).
+                  // Soft fill `${color}1A` (~10% alpha) + matching
+                  // border, full-strength text. Hex 8-digit alpha is
+                  // supported by every modern browser.
+                  const color = resolveTechnicianColor(id, tech?.color ?? null);
                   return (
                     <span
                       key={id}
-                      className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-700"
+                      className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs"
+                      style={{
+                        backgroundColor: `${color}1A`,
+                        borderColor: `${color}66`,
+                        color,
+                      }}
                       data-testid={`emb-assigned-chip-${id}`}
                     >
-                      {name}
+                      <span
+                        className="inline-block h-1.5 w-1.5 rounded-full"
+                        style={{ backgroundColor: color }}
+                        aria-hidden="true"
+                      />
+                      <span className="font-medium">{name}</span>
                       <button
                         type="button"
                         onClick={() =>
@@ -2208,7 +2293,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                           })
                         }
                         disabled={isScheduleDisabled}
-                        className="text-slate-400 hover:text-slate-700 disabled:opacity-50"
+                        className="opacity-70 hover:opacity-100 disabled:opacity-40"
                         aria-label={`Remove ${name}`}
                         data-testid={`emb-assigned-chip-remove-${id}`}
                       >
@@ -2316,7 +2401,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
             {availabilityPanelOpen && !isScheduleDisabled && (
               <div
                 id="find-availability-panel"
-                className="rounded-md border border-slate-200 bg-slate-50/70 p-2.5"
+                className="rounded-md border bg-muted/30 p-3"
                 data-testid="find-availability-panel"
               >
                 <div className="flex items-center justify-between gap-3 mb-1.5">
@@ -2413,22 +2498,19 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                                 <div className="flex flex-wrap gap-1.5">
                                   {gaps.map((gap, idx) => {
                                     const startLabel = formatSlotTimeLabel(gap.date, gap.time);
-                                    const endTime = gap.endISO.slice(11, 16);
-                                    const endLabel = formatSlotTimeLabel(gap.date, endTime);
+                                    const endLabel = formatSlotTimeLabel(gap.date, gap.endTime);
                                     return (
-                                      <Button
+                                      <button
                                         key={`${tech.technicianId}-${gap.startISO}`}
                                         type="button"
-                                        variant="secondary"
-                                        size="sm"
-                                        className="h-7 px-2 text-xs"
+                                        className="h-7 px-2 text-xs rounded-md border bg-white hover:bg-muted"
                                         onClick={() =>
                                           applyAvailabilityGap(tech.technicianId, gap)
                                         }
                                         data-testid={`find-availability-slot-${tech.technicianId}-${idx}`}
                                       >
                                         {startLabel} – {endLabel}
-                                      </Button>
+                                      </button>
                                     );
                                   })}
                                 </div>
@@ -2463,24 +2545,21 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                         <div className="flex flex-wrap gap-1.5">
                           {group.gaps.map((gap, idx) => {
                             const startLabel = formatSlotTimeLabel(gap.date, gap.time);
-                            const endTime = gap.endISO.slice(11, 16);
-                            const endLabel = formatSlotTimeLabel(gap.date, endTime);
+                            const endLabel = formatSlotTimeLabel(gap.date, gap.endTime);
                             const hrs = gap.durationMinutes / 60;
                             const durLabel = Number.isInteger(hrs)
                               ? `${hrs}h`
                               : `${hrs.toFixed(1)}h`;
                             return (
-                              <Button
+                              <button
                                 key={`${group.technicianId}-${gap.startISO}`}
                                 type="button"
-                                variant="secondary"
-                                size="sm"
-                                className="h-7 px-2 text-xs"
+                                className="h-7 px-2 text-xs rounded-md border bg-white hover:bg-muted"
                                 onClick={() => applyAvailabilityGap(group.technicianId, gap)}
                                 data-testid={`find-availability-gap-${group.technicianId}-${idx}`}
                               >
                                 {startLabel} – {endLabel} · {durLabel} open
-                              </Button>
+                              </button>
                             );
                           })}
                         </div>
@@ -2550,40 +2629,56 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               to render these sections at their legacy positions above
               and never enter this block. */}
           {embedded && !isEditMode && (() => {
-            // 2026-04-30 — secondary actions stacked vertically. Each
-            // section is a `<div>` containing its trigger followed
-            // (when expanded) by its panel — so an expanded section's
-            // panel sits directly under the trigger that opened it,
-            // rather than buffered behind unrelated triggers in a row.
-            // A panel auto-shows when its section already has content
-            // (e.g. selectedServices.length > 0), regardless of the
-            // open flag — content presence is a stronger signal than UI
-            // preference.
+            // 2026-05-01 (refinement) — secondary actions use the
+            // inline add/remove pattern from "+ Add instructions" (which
+            // lives directly under Summary). Each section renders ONE of:
+            //   collapsed:  [+ Add X] button
+            //   expanded :  [<panel>]  [×] remove
+            // The × button is the inverse of the +: it clears the
+            // section's content AND hides the field. No "− X" text
+            // collapse, no inner heading, no accordion feel.
+            //
+            // A section is "showing" when its open flag is set OR it
+            // already has content (selectedServices.length > 0, etc.) —
+            // content presence is a stronger signal than UI preference.
             const serviceShowing = embServiceOpen || selectedServices.length > 0;
             const equipmentShowing = embEquipmentOpen || selectedEquipmentIds.length > 0;
             const recurringShowing = !isRecurringMode && (embRecurringOpen || isRecurring);
-            // 2026-05-01 — restyled triggers from full-width text-links
-            // to compact ghost-outline pill buttons. Auto-width per
-            // content; left-aligned in their column. Apply consistently
-            // to every secondary action (Service / Equipment / Make
-            // Recurring here; Instructions also uses this class but is
-            // rendered higher up the form, directly under Summary).
-            const triggerClass =
+            // Compact "+ Add …" trigger style — matches the instructions
+            // trigger above for visual continuity across the stack.
+            const addTriggerClass =
               "h-8 px-2 text-xs rounded-md border bg-white hover:bg-muted inline-flex items-center gap-1 self-start";
+            const removeBtnClass =
+              "h-8 w-8 rounded-md border bg-white hover:bg-muted text-slate-500 hover:text-slate-700 inline-flex items-center justify-center shrink-0";
+
+            // Local "clear and hide section" helpers — named with a
+            // section suffix to avoid shadowing the outer
+            // `removeService(id)` (which removes a single service from
+            // the multi-select; still used as `onRemove` below).
+            const clearServiceSection = () => {
+              setEmbServiceOpen(false);
+              setSelectedServices([]);
+            };
+            const clearEquipmentSection = () => {
+              setEmbEquipmentOpen(false);
+              setSelectedEquipmentIds([]);
+            };
+            const clearRecurringSection = () => {
+              // X turns recurring OFF and resets the panel's primary
+              // selections so reopening starts from a clean state.
+              setEmbRecurringOpen(false);
+              setIsRecurring(false);
+              setRecurrencePreset("weekly");
+              setRecurringStartDate(format(new Date(), "yyyy-MM-dd"));
+              setRecurringEndDate("");
+            };
+
             return (
               <div className="flex flex-col items-start gap-1.5" data-testid="emb-secondary-action-stack">
-                {/* + Add service — trigger then panel */}
-                <div className="w-full flex flex-col">
-                  <button
-                    type="button"
-                    onClick={() => setEmbServiceOpen((v) => !v)}
-                    className={triggerClass}
-                    data-testid={serviceShowing ? "emb-service-collapse" : "emb-service-expand"}
-                  >
-                    {serviceShowing ? "− Service" : "+ Add service"}
-                  </button>
-                  {serviceShowing && (
-                    <div className="pl-2 mt-1">
+                {/* Service: + Add service / [picker] [×] */}
+                {serviceShowing ? (
+                  <div className="w-full flex items-start gap-2">
+                    <div className="flex-1 min-w-0">
                       <ServicesMultiSelect
                         services={services}
                         selected={selectedServices}
@@ -2600,21 +2695,31 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                         disabled={isPending}
                       />
                     </div>
-                  )}
-                </div>
-
-                {/* + Add equipment — trigger then panel */}
-                <div className="w-full flex flex-col">
+                    <button
+                      type="button"
+                      onClick={clearServiceSection}
+                      className={removeBtnClass}
+                      aria-label="Remove service"
+                      data-testid="emb-service-remove"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ) : (
                   <button
                     type="button"
-                    onClick={() => setEmbEquipmentOpen((v) => !v)}
-                    className={triggerClass}
-                    data-testid={equipmentShowing ? "emb-equipment-collapse" : "emb-equipment-expand"}
+                    onClick={() => setEmbServiceOpen(true)}
+                    className={addTriggerClass}
+                    data-testid="emb-service-expand"
                   >
-                    {equipmentShowing ? "− Equipment" : "+ Add equipment"}
+                    + Add service
                   </button>
-                  {equipmentShowing && (
-                    <div className="pl-2 mt-1">
+                )}
+
+                {/* Equipment: + Add equipment / [combobox] [×] */}
+                {equipmentShowing ? (
+                  <div className="w-full flex items-start gap-2">
+                    <div className="flex-1 min-w-0">
                       <EquipmentCombobox
                         locationId={formData.locationId || null}
                         selectedIds={selectedEquipmentIds}
@@ -2622,157 +2727,174 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                         disabled={isPending}
                       />
                     </div>
-                  )}
-                </div>
-
-                {/* 2026-05-01 — "+ Add instructions" was MOVED from this
-                    bottom block to a new position directly under the
-                    Summary input (description + instructions are
-                    related — internal notes belong adjacent to the job
-                    summary). The state flag (`embInstructionsOpen`)
-                    and the panel JSX live there now. */}
-
-                {/* + Make recurring — trigger then panel (suppressed in
-                    isRecurringMode where recurrence is forced upstream) */}
-                {!isRecurringMode && (
-                  <div>
                     <button
                       type="button"
-                      onClick={() => {
-                        // 2026-05-01: trigger toggles BOTH the panel
-                        // visibility AND the actual `isRecurring` state
-                        // so the user only needs one click to opt in
-                        // (was two — open panel + flip switch). The
-                        // in-panel Switch+Label was removed because
-                        // its label duplicated the trigger.
-                        const next = !recurringShowing;
-                        setEmbRecurringOpen(next);
-                        setIsRecurring(next);
-                      }}
-                      className={triggerClass}
-                      data-testid={recurringShowing ? "emb-recurring-collapse" : "emb-recurring-expand"}
+                      onClick={clearEquipmentSection}
+                      className={removeBtnClass}
+                      aria-label="Remove equipment"
+                      data-testid="emb-equipment-remove"
                     >
-                      {recurringShowing ? "− Make recurring" : "+ Make recurring"}
+                      <X className="h-3.5 w-3.5" />
                     </button>
-                    {recurringShowing && (
-                      <div className="pl-2 mt-1 space-y-2">
-                        {isRecurring && (
-                          <div className="space-y-2">
-                            <div className="flex items-start gap-3">
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setEmbEquipmentOpen(true)}
+                    className={addTriggerClass}
+                    data-testid="emb-equipment-expand"
+                  >
+                    + Add equipment
+                  </button>
+                )}
+
+                {/* 2026-05-01 — "+ Add instructions" lives directly under
+                    the Summary input (see above) — description and
+                    instructions are related; internal notes belong
+                    adjacent to the job summary. The state flag
+                    (`embInstructionsOpen`) and the panel JSX are there. */}
+
+                {/* Make recurring: + Make recurring / [recurrence controls] [×]
+                    (suppressed in isRecurringMode where recurrence is
+                    forced upstream) */}
+                {!isRecurringMode && (
+                  recurringShowing ? (
+                    <div className="w-full flex items-start gap-2">
+                      <div className="flex-1 min-w-0 space-y-2">
+                        <div className="flex items-start gap-3">
+                          <div className="flex-1">
+                            <Label className="text-xs font-medium mb-1 block">Recurrence</Label>
+                            <Select value={recurrencePreset} onValueChange={(v) => handlePresetChange(v as RecurrencePreset)}>
+                              <SelectTrigger className="h-9 text-xs" data-testid="select-recurrence-preset">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {RECURRENCE_PRESETS.map((p) => (
+                                  <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="flex-1">
+                            <Label className="text-xs font-medium mb-1 block">Start date *</Label>
+                            <CanonicalDatePicker
+                              value={recurringStartDate}
+                              onChange={(next) => setRecurringStartDate(next ?? "")}
+                              className="w-full h-9 text-xs"
+                              data-testid="input-recurring-start"
+                            />
+                          </div>
+                          <div className="flex-1">
+                            <Label className="text-xs font-medium mb-1 block">End date</Label>
+                            <CanonicalDatePicker
+                              value={recurringEndDate}
+                              onChange={(next) => setRecurringEndDate(next ?? "")}
+                              placeholder="Optional"
+                              clearable
+                              className="w-full h-9 text-xs"
+                              data-testid="input-recurring-end"
+                            />
+                          </div>
+                        </div>
+                        {recurrencePreset === "custom" && (
+                          <>
+                            <div className="flex items-center gap-3">
                               <div className="flex-1">
-                                <Label className="text-xs font-medium mb-1 block">Recurrence</Label>
-                                <Select value={recurrencePreset} onValueChange={(v) => handlePresetChange(v as RecurrencePreset)}>
-                                  <SelectTrigger className="h-9 text-xs" data-testid="select-recurrence-preset">
+                                <Label className="text-xs font-medium mb-1 block">Frequency</Label>
+                                <Select value={recurringKind} onValueChange={(v) => setRecurringKind(v as "weekly" | "monthly")}>
+                                  <SelectTrigger className="h-9 text-xs">
                                     <SelectValue />
                                   </SelectTrigger>
                                   <SelectContent>
-                                    {RECURRENCE_PRESETS.map((p) => (
-                                      <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
-                                    ))}
+                                    <SelectItem value="weekly">Weekly</SelectItem>
+                                    <SelectItem value="monthly">Monthly</SelectItem>
                                   </SelectContent>
                                 </Select>
                               </div>
-                              <div className="flex-1">
-                                <Label className="text-xs font-medium mb-1 block">Start date *</Label>
-                                <CanonicalDatePicker
-                                  value={recurringStartDate}
-                                  onChange={(next) => setRecurringStartDate(next ?? "")}
-                                  className="w-full h-9 text-xs"
-                                  data-testid="input-recurring-start"
+                              <div className="w-20">
+                                <Label className="text-xs font-medium mb-1 block">Every</Label>
+                                <Input
+                                  type="number"
+                                  min={1}
+                                  max={52}
+                                  value={recurringInterval}
+                                  onChange={(e) => setRecurringInterval(Math.max(1, Math.min(52, Number(e.target.value) || 1)))}
+                                  className="h-9 text-xs"
+                                  data-testid="input-recurring-interval"
                                 />
                               </div>
-                              <div className="flex-1">
-                                <Label className="text-xs font-medium mb-1 block">End date</Label>
-                                <CanonicalDatePicker
-                                  value={recurringEndDate}
-                                  onChange={(next) => setRecurringEndDate(next ?? "")}
-                                  placeholder="Optional"
-                                  clearable
-                                  className="w-full h-9 text-xs"
-                                  data-testid="input-recurring-end"
-                                />
-                              </div>
+                              <span className="text-xs text-muted-foreground mt-5">{recurringKind === "weekly" ? "week(s)" : "month(s)"}</span>
                             </div>
-                            {recurrencePreset === "custom" && (
-                              <>
-                                <div className="flex items-center gap-3">
-                                  <div className="flex-1">
-                                    <Label className="text-xs font-medium mb-1 block">Frequency</Label>
-                                    <Select value={recurringKind} onValueChange={(v) => setRecurringKind(v as "weekly" | "monthly")}>
-                                      <SelectTrigger className="h-9 text-xs">
-                                        <SelectValue />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        <SelectItem value="weekly">Weekly</SelectItem>
-                                        <SelectItem value="monthly">Monthly</SelectItem>
-                                      </SelectContent>
-                                    </Select>
-                                  </div>
-                                  <div className="w-20">
-                                    <Label className="text-xs font-medium mb-1 block">Every</Label>
-                                    <Input
-                                      type="number"
-                                      min={1}
-                                      max={52}
-                                      value={recurringInterval}
-                                      onChange={(e) => setRecurringInterval(Math.max(1, Math.min(52, Number(e.target.value) || 1)))}
-                                      className="h-9 text-xs"
-                                      data-testid="input-recurring-interval"
-                                    />
-                                  </div>
-                                  <span className="text-xs text-muted-foreground mt-5">{recurringKind === "weekly" ? "week(s)" : "month(s)"}</span>
+                            {recurringKind === "weekly" && (
+                              <div>
+                                <Label className="text-xs font-medium mb-1.5 block">Days</Label>
+                                <div className="flex gap-1">
+                                  {DAYS_OF_WEEK.map((day) => {
+                                    const selected = recurringDaysOfWeek.includes(day.value);
+                                    return (
+                                      <button
+                                        key={day.value}
+                                        type="button"
+                                        className={cn(
+                                          "h-8 w-9 rounded text-xs font-medium border transition-colors",
+                                          selected ? "bg-primary text-primary-foreground border-primary" : "bg-background hover:bg-muted",
+                                        )}
+                                        onClick={() =>
+                                          setRecurringDaysOfWeek(
+                                            selected
+                                              ? recurringDaysOfWeek.filter((d) => d !== day.value)
+                                              : [...recurringDaysOfWeek, day.value].sort(),
+                                          )
+                                        }
+                                        data-testid={`btn-day-${day.label.toLowerCase()}`}
+                                      >
+                                        {day.label}
+                                      </button>
+                                    );
+                                  })}
                                 </div>
-                                {recurringKind === "weekly" && (
-                                  <div>
-                                    <Label className="text-xs font-medium mb-1.5 block">Days</Label>
-                                    <div className="flex gap-1">
-                                      {DAYS_OF_WEEK.map((day) => {
-                                        const selected = recurringDaysOfWeek.includes(day.value);
-                                        return (
-                                          <button
-                                            key={day.value}
-                                            type="button"
-                                            className={cn(
-                                              "h-8 w-9 rounded text-xs font-medium border transition-colors",
-                                              selected ? "bg-primary text-primary-foreground border-primary" : "bg-background hover:bg-muted",
-                                            )}
-                                            onClick={() =>
-                                              setRecurringDaysOfWeek(
-                                                selected
-                                                  ? recurringDaysOfWeek.filter((d) => d !== day.value)
-                                                  : [...recurringDaysOfWeek, day.value].sort(),
-                                              )
-                                            }
-                                            data-testid={`btn-day-${day.label.toLowerCase()}`}
-                                          >
-                                            {day.label}
-                                          </button>
-                                        );
-                                      })}
-                                    </div>
-                                  </div>
-                                )}
-                                {recurringKind === "monthly" && (
-                                  <div>
-                                    <Label className="text-xs font-medium mb-1 block">Day of month</Label>
-                                    <Input
-                                      type="number"
-                                      min={1}
-                                      max={31}
-                                      value={recurringDayOfMonth}
-                                      onChange={(e) => setRecurringDayOfMonth(Math.max(1, Math.min(31, Number(e.target.value) || 1)))}
-                                      className="h-9 w-20 text-xs"
-                                      data-testid="input-recurring-day-of-month"
-                                    />
-                                  </div>
-                                )}
-                              </>
+                              </div>
                             )}
-                          </div>
+                            {recurringKind === "monthly" && (
+                              <div>
+                                <Label className="text-xs font-medium mb-1 block">Day of month</Label>
+                                <Input
+                                  type="number"
+                                  min={1}
+                                  max={31}
+                                  value={recurringDayOfMonth}
+                                  onChange={(e) => setRecurringDayOfMonth(Math.max(1, Math.min(31, Number(e.target.value) || 1)))}
+                                  className="h-9 w-20 text-xs"
+                                  data-testid="input-recurring-day-of-month"
+                                />
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
-                    )}
-                  </div>
+                      <button
+                        type="button"
+                        onClick={clearRecurringSection}
+                        className={removeBtnClass}
+                        aria-label="Turn off recurrence"
+                        data-testid="emb-recurring-remove"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEmbRecurringOpen(true);
+                        setIsRecurring(true);
+                      }}
+                      className={addTriggerClass}
+                      data-testid="emb-recurring-expand"
+                    >
+                      + Make recurring
+                    </button>
+                  )
                 )}
               </div>
             );

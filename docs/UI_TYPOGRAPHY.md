@@ -1,8 +1,8 @@
 # UI Typography Standard
 
-Owner: frontend · Last updated: 2026-04-29 (Typography Phase A + B)
+Owner: frontend · Last updated: 2026-05-01 (Typography Phase C — sizes bumped to detail-page scale)
 
-## Canonical semantic tokens (2026-04-29 Typography Phase A)
+## Canonical semantic tokens (2026-05-01 Typography Phase C)
 
 The app exposes 10 named typography tokens via Tailwind utilities. **Use
 these by role, not the legacy `text-xs`/`-sm`/`-base`/etc. by size.** Each
@@ -11,30 +11,41 @@ token bundles `font-size`, `line-height`, and (where applicable)
 applies `text-transform: uppercase` via a `@layer components` rule in
 `client/src/index.css`.
 
+> **Phase C size bump (2026-05-01).** Phase A sized tokens against an
+> implicit 16px html root, but the project's actual root is 19px. This
+> made canonical-token consumers (Job / Invoice list pages, dashboards)
+> read visibly smaller than legacy-class consumers (`text-xs` /
+> `text-3xl` on `InvoiceDetailPage`'s header). Phase C raises every
+> token by ~15-18% so legacy consumers can migrate to canonical with
+> near-zero visible delta and existing canonical consumers
+> automatically scale up to the correct detail-page scale. Token names
+> and tuple shape are unchanged. See CHANGELOG entry for the full
+> before/after table.
+
 ### Headings
 
 | Utility | Size / line-height / weight | Use for |
 |---|---|---|
-| `text-display` | 28 / 32 / 700 | Single biggest visible value on a page (totals, KPI emphasis). Rare. |
-| `text-page-title` | 22 / 28 / 600 | h1 for a detail page (Job, Invoice, Quote, PM). One per page. |
-| `text-section-title` | 16 / 22 / 600 | h2 for a card / panel / modal. **CardTitle defaults to this.** |
-| `text-subhead` | 14 / 20 / 500 | h3 for groups inside a card; table sub-headers. |
+| `text-display` | 32 / 40 / 700 | Single biggest visible value on a page (totals, KPI emphasis). Rare. |
+| `text-page-title` | 30 / 36 / 700 | h1 for a detail page (Job, Invoice, Quote, PM). One per page. |
+| `text-section-title` | 18 / 24 / 600 | h2 for a card / panel / modal. **CardTitle defaults to this.** |
+| `text-subhead` | 16 / 22 / 500 | h3 for groups inside a card; table sub-headers. |
 
 ### Body / row
 
 | Utility | Size / line-height / weight | Use for |
 |---|---|---|
-| `text-body` | 14 / 20 / 400 | Default reading text — forms, dialogs, prose, descriptions. |
-| `text-row` | 13 / 18 / 400 | Default table / list row content. |
-| `text-row-emphasis` | 13 / 18 / 500 | Primary identifier in a row (entity name, the "first column"). |
+| `text-body` | 15 / 22 / 400 | Default reading text — forms, dialogs, prose, descriptions. |
+| `text-row` | 15 / 22 / 400 | Default table / list row content. |
+| `text-row-emphasis` | 15 / 22 / 500 | Primary identifier in a row (entity name, the "first column"). |
 
 ### Small text
 
 | Utility | Size / line-height / weight | Use for |
 |---|---|---|
-| `text-caption` | 12 / 16 / 400 | Secondary text alongside row content (timestamps, sub-amounts, technician name). **CardDescription defaults to this.** |
-| `text-label` | 11 / 14 / 500 / `tracking-[0.04em]` / `uppercase` | Form field labels, table column headers, metadata keys ("BILL TO", "ISSUED"). |
-| `text-helper` | 11 / 14 / 400 | Tooltip body, hint text, "?" popover content, footnotes. |
+| `text-caption` | 14 / 20 / 400 | Secondary text alongside row content (timestamps, sub-amounts, technician name). **CardDescription defaults to this.** |
+| `text-label` | 13 / 16 / 500 / `tracking-[0.04em]` / `uppercase` | Form field labels, table column headers, metadata keys ("BILL TO", "ISSUED"). |
+| `text-helper` | 13 / 16 / 400 | Tooltip body, hint text, "?" popover content, footnotes. |
 
 ### Compositional utilities
 

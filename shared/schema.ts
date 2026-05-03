@@ -546,9 +546,16 @@ export const contactPersons = pgTable("contact_persons", {
   customerCompanyId: varchar("customer_company_id").notNull().references(() => customerCompanies.id, { onDelete: "cascade" }),
   firstName: text("first_name").notNull().default(""),
   lastName: text("last_name").notNull().default(""),
-  // 2026-04-22: optional prefix/role (e.g. "Mr.", "Ms.", "Operations Manager"),
-  // populated by the Client import from Jobber's `Title` column.
+  // 2026-05-02 honorific split: `title` is now the honorific only
+  // (Mr. / Mrs. / Ms. / Miss / Dr. / null), and the freeform
+  // professional role lives in `jobTitle`. The migration
+  // `migrations/2026_05_02_contact_persons_honorific_split.sql`
+  // moved every pre-existing `title` value into `jobTitle` and
+  // nulled out `title`, so post-migration both columns are
+  // semantically clean. The Jobber `Title` import maps to
+  // `jobTitle` going forward.
   title: text("title"),
+  jobTitle: text("job_title"),
   email: text("email"),
   phone: text("phone"),
   isPrimary: boolean("is_primary").notNull().default(false),
@@ -3972,9 +3979,11 @@ export type QuoteLine = typeof quoteLines.$inferSelect;
 // ============================================================================
 
 // 2026-04-14 Phase 3D — canonical quote notes. Mirror of jobNotes so Quote
-// Detail can surface the same interactive notes UX as Job Detail. No
-// attachments in this phase; attachment parity with jobNoteAttachments is
-// a separate, additive follow-up.
+// Detail can surface the same interactive notes UX as Job Detail.
+// 2026-05-02 (Audit #2 PR 3A) — attachment parity with jobNoteAttachments
+// added below. The follow-up the prior comment promised landed here as
+// the backend prep step before the EntityNotesSection / EntityNoteDialog
+// frontend consolidation.
 export const quoteNotes = pgTable("quote_notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
@@ -3993,6 +4002,22 @@ export const insertQuoteNoteSchema = createInsertSchema(quoteNotes).omit({
 
 export type QuoteNote = typeof quoteNotes.$inferSelect;
 export type InsertQuoteNote = z.infer<typeof insertQuoteNoteSchema>;
+
+// 2026-05-02 (Audit #2 PR 3A): quote note attachments — join table linking
+// quote notes to files. Mirrors `jobNoteAttachments` one-for-one so the
+// canonical EntityNoteDialog (added in a follow-up frontend pass) can
+// route attach / detach through a per-entity repo with the same shape.
+// Migration: `migrations/2026_05_02_quote_note_attachments.sql`.
+export const quoteNoteAttachments = pgTable("quote_note_attachments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  noteId: varchar("note_id").notNull().references(() => quoteNotes.id, { onDelete: "cascade" }),
+  fileId: varchar("file_id").notNull().references(() => files.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdBy: varchar("created_by").references(() => users.id),
+});
+
+export type QuoteNoteAttachment = typeof quoteNoteAttachments.$inferSelect;
 
 export const quoteTemplates = pgTable("quote_templates", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

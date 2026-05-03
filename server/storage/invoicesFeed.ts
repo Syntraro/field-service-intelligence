@@ -317,14 +317,19 @@ export async function getInvoicesFeed(
   if (unpaidOnly) {
     query = query.where(sql`CAST(${invoices.balance} AS numeric) > 0`);
   }
+  // 2026-05-01 strict-search: parented invoices match only against the
+  // parent customer company's current name. Standalone-location
+  // invoices fall back to the location's own `companyName`. The
+  // legacy denormalized child column is NOT searchable for parented
+  // rows. Invoice number + location label continue to match unchanged.
   if (search) {
     const pattern = `%${search}%`;
     query = query.where(
       or(
         ilike(invoices.invoiceNumber, pattern),
-        ilike(clients.companyName, pattern),
-        ilike(clients.location, pattern),
-        ilike(customerCompanies.name, pattern)
+        sql`(${clients.parentCompanyId} IS NOT NULL AND ${customerCompanies.name} ILIKE ${pattern})`,
+        sql`(${clients.parentCompanyId} IS NULL AND ${clients.companyName} ILIKE ${pattern})`,
+        ilike(clients.location, pattern)
       )
     );
   }

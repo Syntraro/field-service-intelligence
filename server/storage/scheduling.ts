@@ -16,7 +16,9 @@ import { TERMINAL_VISIT_STATUSES, VISIT_TERMINAL_STATUS_SQL } from "../lib/visit
 import { jobVisitsRepository } from "./jobVisits";
 import { resolveTechnicianName } from "../lib/resolveTechnicianName";
 // Phase 5 Step C2: shared query helpers for bulk resolution
-import { bulkResolveTechnicians, bulkResolveCustomerCompanies } from "../lib/queryHelpers";
+// 2026-05-01: locationDisplayNameExpr added so unscheduled-jobs view
+// resolves stale denormalized location names via the canonical helper.
+import { bulkResolveTechnicians, bulkResolveCustomerCompanies, locationDisplayNameExpr } from "../lib/queryHelpers";
 import { haversineMeters, estimateTravelMinutes } from "../lib/distance";
 // ============================================================================
 // ARCHITECTURE NOTE: Calendar vs Visit Feed (Phase 3 Step E, updated Phase 5)
@@ -298,7 +300,10 @@ export class SchedulingRepository extends BaseRepository {
         j.hold_reason,
         j.location_id,
         j.version,
-        cl.company_name as location_name,
+        -- 2026-05-01 bypass cleanup: location_name resolves via the
+        -- canonical parent-first COALESCE so a parent rename propagates
+        -- to scheduled-in-range views without a child-column backfill.
+        COALESCE(cc.name, NULLIF(cl.company_name, '')) as location_name,
         cl.parent_company_id as customer_company_id,
         cl.contact_name,
         cl.phone as contact_phone,
@@ -312,6 +317,7 @@ export class SchedulingRepository extends BaseRepository {
       FROM job_visits jv
       JOIN jobs j ON jv.job_id = j.id
       LEFT JOIN client_locations cl ON j.location_id = cl.id
+      LEFT JOIN customer_companies cc ON cl.parent_company_id = cc.id
       WHERE jv.company_id = ${companyId}
         AND jv.is_active = true
         AND jv.archived_at IS NULL
@@ -564,7 +570,10 @@ export class SchedulingRepository extends BaseRepository {
         isAllDay: jobs.isAllDay,
         durationMinutes: jobs.durationMinutes,
         // 2026-04-12 (Option A): tech fields sourced from visits post-query.
-        locationName: clientLocations.companyName,
+        // 2026-05-01 bypass cleanup: locationName resolves through the
+        // canonical helper so renames of the parent customer company
+        // propagate to the unscheduled-jobs view immediately.
+        locationName: locationDisplayNameExpr,
         customerCompanyId: clientLocations.parentCompanyId,
         version: jobs.version,
         locationAddress: clientLocations.address,
@@ -577,6 +586,7 @@ export class SchedulingRepository extends BaseRepository {
       })
       .from(jobs)
       .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
+      .leftJoin(customerCompanies, eq(clientLocations.parentCompanyId, customerCompanies.id))
       .where(
         and(
           eq(jobs.companyId, companyId),
@@ -714,7 +724,9 @@ export class SchedulingRepository extends BaseRepository {
         j.location_id,
         j.version,
         -- 2026-04-12 (Option A): tech fields sourced from visits post-query.
-        cl.company_name AS location_name,
+        -- 2026-05-01 bypass cleanup: location_name resolves via the
+        -- canonical parent-first COALESCE.
+        COALESCE(cc.name, NULLIF(cl.company_name, '')) AS location_name,
         cl.parent_company_id AS customer_company_id,
         -- Last completed visit with follow-up needed
         fv.outcome AS last_outcome,
@@ -723,6 +735,7 @@ export class SchedulingRepository extends BaseRepository {
         fv.visit_number AS last_visit_number
       FROM jobs j
       LEFT JOIN client_locations cl ON j.location_id = cl.id
+      LEFT JOIN customer_companies cc ON cl.parent_company_id = cc.id
       -- Join to the most recent completed visit that needs follow-up
       -- 2026-03-18: Added archived_at IS NULL to prevent archived visits leaking into follow-up list
       INNER JOIN job_visits fv ON fv.job_id = j.id

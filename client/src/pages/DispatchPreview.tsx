@@ -118,10 +118,10 @@ function FocusCard({ visit, onRemove, onOpen }: {
 
 /**
  * 2026-04-30: localStorage key for the last-selected Dispatch view.
- * Naming follows the in-repo `syntraro:*` convention established by
- * `DASHBOARD_VIEW_KEY` (DashboardViewToggle.tsx). Stored value is a
- * raw `DispatchView` string ("day" | "week" | "month"); any other
- * value is treated as missing and the default ("day") is used.
+ * Naming follows the in-repo `syntraro:*` kebab-case convention.
+ * Stored value is a raw `DispatchView` string ("day" | "week" |
+ * "month"); any other value is treated as missing and the default
+ * ("day") is used.
  */
 const DISPATCH_VIEW_KEY = "syntraro:dispatch-view-mode";
 
@@ -131,10 +131,9 @@ export default function DispatchPreview() {
   // 2026-04-08: useDispatchStream() now mounted once at App.tsx root for all office surfaces.
 
   // ── View mode ──
-  // 2026-04-30: Persist last-selected Dispatch view across navigations.
-  // Mirrors the precedent set by `DASHBOARD_VIEW_KEY` in
-  // `DashboardViewToggle.tsx` — single localStorage key, validated read,
-  // silent fallback on disabled-storage. The user-suggested
+  // 2026-04-30: Persist last-selected Dispatch view across navigations
+  // via a single localStorage key with a validated read and silent
+  // fallback on disabled-storage. The user-suggested
   // `dispatch:lastViewMode` was renamed to `syntraro:dispatch-view-mode`
   // to keep the in-repo namespace consistent (`syntraro:*` kebab-case).
   const [activeView, setActiveView] = useState<DispatchView>(() => {

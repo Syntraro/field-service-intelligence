@@ -6,8 +6,8 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { getClientDisplayName } from "@shared/clientDisplayName";
 import { useToast } from "@/hooks/use-toast";
 import {
-  Plus, DollarSign, Trash2, GripVertical, X,
-  ChevronDown, Percent, Tag, Pencil, MoreHorizontal,
+  Plus, Trash2, GripVertical,
+  ChevronDown, Pencil, MoreHorizontal,
 } from "lucide-react";
 import {
   DndContext,
@@ -27,8 +27,17 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
+// 2026-05-01 canonical compact header — single owner for Job/Invoice/Quote detail headers.
+import { CanonicalDetailHeader } from "@/components/detail/CanonicalDetailHeader";
+// 2026-05-02 entity-number visual language: blue pill for current
+// entity, green link for cross-entity, muted dash for missing.
+import { EntityNumber } from "@/components/common/EntityNumber";
 import { Badge } from "@/components/ui/badge";
-import JobNotesSection from "@/components/JobNotesSection";
+// Canonical notes section. Invoice surface reads from
+// /api/invoices/:id/notes (so the invoice-specific show_on_invoices
+// flag is honored) and writes through /api/jobs/:jobId/notes
+// (entityType="invoice" + writeEntityId=jobId).
+import EntityNotesSection from "@/components/notes/EntityNotesSection";
 import { InvoiceCompositionDialog } from "@/components/InvoiceCompositionDialog";
 import { PaymentHistoryCard } from "@/components/invoice/PaymentHistoryCard";
 import { Input } from "@/components/ui/input";
@@ -82,19 +91,17 @@ import {
   hydrateDraft,
   draftToInvoiceLinePayload,
 } from "@/lib/entities/lineItemMapper";
-// 2026-04-27 Invoice Detail redesign: `InvoiceHeaderCard` was replaced by
-// an in-page `InvoiceMetaCard` (identity card with status pill + action
-// cluster in the chrome). A separate sticky `InvoiceCommandBar` was tried
-// briefly but folded into the meta card per the canonical Studio reference
-// — the meta card now carries the chrome at the top of its body. The
-// earlier `InvoiceStatusBanner` was also removed because it duplicated
-// information the status pill already conveys.
+// 2026-04-27 Invoice Detail redesign: identity rendered by an in-page
+// `InvoiceMetaCard` (status pill + action cluster in the chrome).
 // 2026-04-19 Reminders UI refactor — replaced the full-width
 // InvoiceRemindersCard with a compact header dropdown.
 import { InvoiceRemindersButton } from "@/components/invoice/InvoiceRemindersButton";
 // Phase 12 (2026-04-12): Jobber-style send modal with recipients + subject + body.
 // Legacy ConfirmSendModal import removed in Phase 13.
-import { SendInvoiceModal } from "@/components/communication/SendInvoiceModal";
+// 2026-05-02 (Audit #2 PR 2): SendInvoiceModal wrapper deleted — it was
+// a pure forwarding shim around SendCommunicationModal. Callers now use
+// the canonical modal directly with `entityType="invoice"`.
+import { SendCommunicationModal } from "@/components/communication/SendCommunicationModal";
 // 2026-04-19 Portal activation: office-side CTAs for the customer portal.
 import { SendPaymentLinkDialog } from "@/components/portal/SendPaymentLinkDialog";
 import { buildPortalInvoiceUrl } from "@/lib/portalUrls";
@@ -114,8 +121,41 @@ import { ConfirmVoidModal } from "@/components/invoice/ConfirmVoidModal";
 import { QboSyncBanner, isQboSynced, isBillingLocked } from "@/components/invoice/QboSyncBanner";
 import { QboOverrideModal, useQboOverride } from "@/components/invoice/QboOverrideModal";
 import { formatCurrency } from "@/lib/formatters";
+// 2026-05-02 (Audit #2 follow-up): shared "Service Address" primitive.
+// Same JSX previously inlined in InvoiceMetaCard (~line 455). The
+// "invoice" variant preserves the canonical text-label + text-row-emphasis
+// typography + dash fallback exactly. Billing Address block remains
+// inline below — it has a different shape (no emphasized name row) and
+// is not duplicated across surfaces.
+import { AddressBlock } from "@/components/common/AddressBlock";
+// 2026-05-02 (Audit #2 invoice-flow Phase 3): discount editor extracted
+// from this page into a draft-capable controlled primitive. The page
+// passes `value` from the persisted invoice, emits PATCHes through the
+// existing `updateDiscountMutation` on `onChange`, and `disabled` mirrors
+// the in-flight mutation. UX (two-step type → Apply, auto-compute, Clear
+// affordance) is preserved byte-for-byte.
+import { DiscountEditor, type DiscountType } from "@/components/invoice/DiscountEditor";
+// 2026-05-03 right-rail parity: Client message moved to the shared
+// EditableMessageCard primitive so the same UX renders on /invoices/new.
+import { EditableMessageCard } from "@/components/invoice/EditableMessageCard";
+// 2026-05-03 layout-shell extraction: outer container + body wrapper +
+// 2-col grid + min-w-0 left + 360px aside live in the shared shell so
+// /invoices/new can mount the EXACT same layout. Both pages render
+// this component; the shell owns every wrapper class so neither page
+// re-implements the spacing.
+import { InvoiceDetailShell } from "@/components/invoice/InvoiceDetailShell";
+// 2026-05-02: InvoiceMetaCard + its shared helpers/types/constants now
+// live in dedicated modules so the new-invoice draft page can import
+// them without going through this page file.
+import { InvoiceMetaCard } from "@/components/invoice/InvoiceMetaCard";
+import {
+  META_LABEL_CLASS,
+  formatDateOnlyDisplay,
+  toDateInputValue,
+  type StructuredAddress,
+  type ReferenceFieldDTO,
+} from "@/components/invoice/invoiceMetaCommon";
 
-// JobNote interface removed — notes now rendered by canonical JobNotesSection component
 
 // Extended invoice type with derived fields from API
 interface InvoiceWithDerived extends Omit<Invoice, 'paymentTermsDays' | 'issuedAt'> {
@@ -124,15 +164,6 @@ interface InvoiceWithDerived extends Omit<Invoice, 'paymentTermsDays' | 'issuedA
   issuedAt?: string | Date | null;
 }
 
-// Structured address/contact types from details DTO
-interface StructuredAddress {
-  street: string;
-  city: string;
-  province: string;
-  postalCode: string;
-  country?: string;
-  locationName?: string;
-}
 interface PrimaryContact {
   name: string;
   email: string;
@@ -159,18 +190,6 @@ function getBalanceColor(balance: string, isPastDue: boolean): string {
   return "text-amber-600";
 }
 
-// 2026-04-28: HTML <input type="date"> requires YYYY-MM-DD. The API
-// returns issueDate/dueDate as ISO strings (`date` column → "YYYY-MM-DD")
-// or `Date` objects depending on the path. Coerce defensively so the
-// header edit inputs never receive a malformed value.
-function toDateInputValue(value: string | Date | null | undefined): string {
-  if (!value) return "";
-  if (value instanceof Date) return format(value, "yyyy-MM-dd");
-  if (/^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10);
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? "" : format(parsed, "yyyy-MM-dd");
-}
-
 // 2026-04-29 (Phase 1 canonical extraction): The previous local
 // AddLineItemRow + SortableLineRowEditCells + SortableLineRow
 // components were retired and replaced by the canonical
@@ -193,25 +212,15 @@ function isValidUUID(str: string): boolean {
 // with a TODO pointing at the future field. No fake data, no schema additions.
 // =============================================================================
 
-const META_LABEL_CLASS = "text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500";
-const MONO = "font-mono tabular-nums";
-
-// 2026-04-28 — Mirror of FieldDTO returned by GET /api/reference-fields/entities/:type/:id.
-// Defined locally so the meta card can render reference fields inline without
-// importing the right-rail card's internal type. Source of truth: server/services/referenceFieldsService.ts.
-type ReferenceFieldDTO = {
-  definitionId: string;
-  label: string;
-  key: string;
-  type: string;
-  searchable: boolean;
-  active: boolean;
-  displayOrder: number;
-  textValue: string | null;
-};
+// 2026-05-02 strict-replication pass: exported so /invoices/new can use
+// the same canonical mono number class. Live behavior unchanged.
+export const MONO = "font-mono tabular-nums";
 
 /** Status pill — warm-gray-on-tint palette mapped from the existing badge variant. */
-function StatusPill({ status, isPastDue }: { status: string; isPastDue: boolean }) {
+// 2026-05-02 strict-replication pass: exported so /invoices/new can mount
+// the same canonical pill with `status="draft"` instead of a one-off
+// inline span. Live behavior unchanged — purely an additive `export`.
+export function StatusPill({ status, isPastDue }: { status: string; isPastDue: boolean }) {
   // Map canonical invoice status (+ derived isPastDue) to the design's tones.
   // Display label is the user-friendly form. `getInvoiceStatusBadge` is the
   // canonical owner of label/variant; we re-derive here only for the dot+bg
@@ -241,390 +250,11 @@ function MetaLabel({ children }: { children: ReactNode }) {
   return <div className={`${META_LABEL_CLASS} mb-1.5`}>{children}</div>;
 }
 
-/** Identity + meta card — the dominant card at the top of the invoice
- *  workspace. Mirrors the canonical Studio reference: a chrome strip with
- *  the status pill (left) and action cluster (right), then a 2-col body
- *  with the customer / addresses on the left and a vertical key-value list
- *  on the right. The chrome's actions are passed in by the caller so the
- *  page keeps its handler scope. */
-function InvoiceMetaCard({
-  // Body data
-  customerName, customerCompanyId, billLine1, billLine2,
-  serviceAddress, locationName,
-  invoiceNumber, issueDate, dueDate, isPastDue, paymentTermsDays,
-  jobNumber, jobId,
-  // Chrome — `status` removed 2026-04-29: the status pill moved to the new
-  // top action bar above this card; this card's chrome is now just the
-  // edit-pencil affordance.
-  headerActions,
-  // 2026-04-28 — header inline edit
-  isEditing, draft, onDraftChange, onSave, onCancel, isSaving,
-  // 2026-04-28 — reference fields driven by canonical /api/reference-fields
-  referenceFields, referenceDraft, onReferenceDraftChange,
-  // 2026-04-29 (header cleanup pass): Job Description shares the meta
-  // card's edit lifecycle. The card no longer accepts independent
-  // "is editing description" / "save description" / "cancel description"
-  // props — clicking the single header pencil opens edit mode for the
-  // meta rows AND the description; the single Save/Cancel pair below
-  // the description commits or discards both. The parent only has to
-  // pass the description value, the live draft, and a draft setter.
-  jobDescription, jobDescriptionDraft, onChangeJobDescriptionDraft,
-}: {
-  customerName: string;
-  /** Optional canonical client id. When present, the H1 customer name
-   *  becomes a link to `/clients/:id`; otherwise plain text. */
-  customerCompanyId: string | null;
-  billLine1: string | null;
-  billLine2: string | null;
-  serviceAddress: StructuredAddress | null | undefined;
-  locationName: string;
-  invoiceNumber: string | null | undefined;
-  issueDate: string | Date | null | undefined;
-  dueDate: string | Date | null | undefined;
-  isPastDue: boolean;
-  paymentTermsDays: number | null | undefined;
-  jobNumber: string | null | undefined;
-  jobId: string | null;
-  headerActions: ReactNode;
-  isEditing: boolean;
-  draft: { invoiceNumber: string; issueDate: string; dueDate: string; paymentTermsDays: string } | null;
-  onDraftChange: (patch: Partial<{ invoiceNumber: string; issueDate: string; dueDate: string; paymentTermsDays: string }>) => void;
-  onSave: () => void;
-  onCancel: () => void;
-  isSaving: boolean;
-  referenceFields: ReferenceFieldDTO[];
-  referenceDraft: Record<string, string>;
-  onReferenceDraftChange: (definitionId: string, value: string) => void;
-  jobDescription: string;
-  jobDescriptionDraft: string;
-  onChangeJobDescriptionDraft: (value: string) => void;
-}) {
-  const dash = <span className="text-slate-400">—</span>;
-  const fmtDate = (d: string | Date | null | undefined) =>
-    d ? format(new Date(d), "MMM d, yyyy") : dash;
-  const serviceCity = [serviceAddress?.city, serviceAddress?.province, serviceAddress?.postalCode].filter(Boolean).join(", ");
-  const editing = isEditing && draft != null;
-
-  // Compact edit-mode input — matches the read-mode value typography
-  // (text-xs, right-aligned) so swapping in/out of edit mode does not
-  // shift row height. 2026-04-29 (header cleanup pass): dropped the
-  // `font-mono` mixin so values render in the page's standard sans
-  // typography instead of monospace; the trailing decorative icons on
-  // Job # / Issued / Due / Terms were also removed in this pass.
-  const inputClass = "h-7 w-32 px-2 py-0 text-right text-xs";
-
-  return (
-    <div className="overflow-hidden rounded-lg border border-card-border bg-card shadow-card" data-testid="card-invoice-meta">
-      {/* 2026-04-29: Status pill moved to the top action bar above this
-          card. The chrome row remains because the inline meta-card edit
-          pencil (a section-scoped affordance, distinct from the lifecycle
-          actions) lives here. */}
-      <div className="flex items-center justify-end gap-2 px-5 pt-3 pb-2">
-        {headerActions}
-      </div>
-
-      {/* Body — 2-col: identity / addresses on the left, meta list on the right */}
-      <div className="grid grid-cols-1 md:grid-cols-[1.2fr_1fr]">
-        <div className="px-5 pb-4 md:border-r border-card-border">
-          {/* 2026-04-28 — H1 mb tightened (was mb-4) so the address block
-              sits closer to the customer name. Font size kept at 3xl. */}
-          {/* 2026-04-29: Customer name links to its canonical client detail
-              page (`/clients/:id`) when the company id is known. Falls back to
-              plain text when the id is missing (e.g. legacy invoices without
-              a customerCompany row). The visual treatment keeps the existing
-              text style — link affordance is only the cursor + hover
-              underline. */}
-          <h1 className="m-0 mb-2 text-3xl font-bold tracking-tight text-slate-900" data-testid="meta-customer-name">
-            {customerCompanyId ? (
-              <Link
-                href={`/clients/${customerCompanyId}`}
-                className="hover:underline"
-                data-testid="link-customer-name"
-              >
-                {customerName || dash}
-              </Link>
-            ) : (
-              customerName || dash
-            )}
-          </h1>
-
-          {/* 2026-04-28 — Address text reduced to text-xs (12px) per
-              standard app body and label-to-value gap tightened. */}
-          <div>
-            <div className={`${META_LABEL_CLASS} mb-0.5`}>Billing Address</div>
-            <div className="text-xs text-slate-700">{billLine1 || dash}</div>
-            {billLine2 && <div className="text-xs text-slate-700">{billLine2}</div>}
-          </div>
-
-          <div className="my-2 border-t border-card-border" />
-
-          <div>
-            <div className={`${META_LABEL_CLASS} mb-0.5`}>Service Address</div>
-            <div className="text-xs font-semibold text-slate-900" data-testid="meta-service-location-name">{locationName || dash}</div>
-            {serviceAddress?.street && <div className="text-xs text-slate-700">{serviceAddress.street}</div>}
-            {serviceCity && <div className="text-xs text-slate-700">{serviceCity}</div>}
-          </div>
-        </div>
-
-        {/* Vertical field list with hairline row dividers */}
-        <div className="md:pl-0">
-          <MetaRow
-            label="Invoice #"
-            value={
-              editing ? (
-                <Input
-                  value={draft!.invoiceNumber}
-                  onChange={(e) => onDraftChange({ invoiceNumber: e.target.value })}
-                  className={inputClass}
-                  placeholder="INV-…"
-                  data-testid="input-meta-invoice-number"
-                />
-              ) : (
-                invoiceNumber || dash
-              )
-            }
-            testId="meta-invoice-number"
-          />
-          <MetaRow
-            label="Job #"
-            value={
-              jobNumber && jobId ? (
-                <Link
-                  href={`/jobs/${jobId}`}
-                  className="text-teal-600 hover:underline"
-                  data-testid="meta-job-number-link"
-                >
-                  {jobNumber}
-                </Link>
-              ) : (
-                jobNumber || dash
-              )
-            }
-            testId="meta-job-number"
-          />
-          <MetaRow
-            label="Issued"
-            value={
-              editing ? (
-                <CanonicalDatePicker
-                  value={draft!.issueDate}
-                  onChange={(next) => onDraftChange({ issueDate: next ?? "" })}
-                  className="h-8 text-xs"
-                  data-testid="input-meta-issue-date"
-                />
-              ) : (
-                fmtDate(issueDate)
-              )
-            }
-          />
-          <MetaRow
-            label="Due"
-            value={
-              editing ? (
-                <CanonicalDatePicker
-                  value={draft!.dueDate}
-                  onChange={(next) => onDraftChange({ dueDate: next ?? "" })}
-                  clearable
-                  placeholder="No due date"
-                  className="h-8 text-xs"
-                  data-testid="input-meta-due-date"
-                />
-              ) : (
-                fmtDate(dueDate)
-              )
-            }
-            accent={!editing && isPastDue}
-          />
-          {/* 2026-04-28: Terms is now the last fixed row. PO # was removed
-              (no canonical storage and never linked). The "Reference"
-              placeholder was replaced by the canonical reference-fields
-              rows below — read mode shows only populated fields, edit mode
-              shows every configured (active) definition. */}
-          {(() => {
-            const visibleRefs = editing
-              ? referenceFields.filter((f) => f.active || f.textValue)
-              : referenceFields.filter((f) => !!f.textValue);
-            const termsIsLast = !editing && visibleRefs.length === 0;
-            return (
-              <>
-                <MetaRow
-                  label="Terms"
-                  value={
-                    editing ? (
-                      <Input
-                        type="number"
-                        min={0}
-                        max={365}
-                        value={draft!.paymentTermsDays}
-                        onChange={(e) => onDraftChange({ paymentTermsDays: e.target.value })}
-                        className={`${inputClass} w-20`}
-                        placeholder="30"
-                        data-testid="input-meta-payment-terms"
-                      />
-                    ) : (
-                      paymentTermsDays != null ? `Net ${paymentTermsDays}` : dash
-                    )
-                  }
-                  last={termsIsLast}
-                />
-                {visibleRefs.map((f, idx) => {
-                  const isLast = idx === visibleRefs.length - 1;
-                  return (
-                    <MetaRow
-                      key={f.definitionId}
-                      label={f.label}
-                      value={
-                        editing ? (
-                          <Input
-                            value={referenceDraft[f.definitionId] ?? ""}
-                            onChange={(e) => onReferenceDraftChange(f.definitionId, e.target.value)}
-                            disabled={!f.active || isSaving}
-                            className={inputClass}
-                            placeholder={`Enter ${f.label.toLowerCase()}…`}
-                            data-testid={`input-meta-ref-${f.key}`}
-                          />
-                        ) : (
-                          f.textValue
-                        )
-                      }
-                      last={!editing && isLast}
-                      testId={`meta-ref-${f.key}`}
-                    />
-                  );
-                })}
-              </>
-            );
-          })()}
-        </div>
-      </div>
-
-      {/*
-        Job Description — 2026-04-29 (header cleanup pass): now shares
-        the meta card's edit lifecycle. The section's own pencil +
-        Save/Cancel pair were removed; the single header pencil opens
-        edit for both meta rows AND the description, and the unified
-        Save/Cancel pair below this section commits or discards both.
-
-        Three render states:
-          • Empty + not editing: label only ("Job description (optional)").
-            No placeholder text, no pencil — entry point is the header
-            pencil at the top of this card.
-          • Populated + not editing: label + description text below it.
-          • Editing: label + textarea. Save / Cancel sit in the unified
-            footer further down.
-      */}
-      {/*
-        Outer wrapper carries the horizontal inset (px-5) and the
-        compact mt-2 / pb-4 vertical rhythm so the description sits
-        snugly under the body grid above. The inner wrapper carries
-        the border — because its parent has px-5, the divider is
-        inset to the content column instead of running card-edge to
-        card-edge. Mirrors the Billing → Service Address inset
-        divider pattern further up the card (`my-2 border-t
-        border-card-border`). The `data-testid` stays on the outer
-        wrapper so existing test selectors keep working.
-
-        2026-04-29 (refinement): the entire section — wrapper,
-        divider, label, body — collapses to nothing when the
-        description is empty AND the header is not editing. Avoids
-        a label + divider with no payload underneath, which read as
-        visual noise on invoices that simply never used the
-        description field. While editing, the section always renders
-        so the user has a place to type.
-      */}
-      {(editing || jobDescription.trim().length > 0) && (
-        <div
-          className="mt-2 px-5 pb-4"
-          data-testid="card-invoice-description"
-        >
-          <div className="border-t border-card-border pt-2">
-            <h3 className="m-0 text-xs uppercase tracking-wide text-slate-500">
-              Job description (optional)
-            </h3>
-            {editing ? (
-              <Textarea
-                value={jobDescriptionDraft}
-                maxLength={600}
-                onChange={(e) => onChangeJobDescriptionDraft(e.target.value)}
-                placeholder="Describe the work performed for this invoice. This appears above the line items on the client's PDF."
-                className="mt-2 min-h-[88px] text-sm text-slate-900"
-                data-testid="textarea-invoice-description"
-              />
-            ) : (
-              <p
-                className="m-0 mt-2 whitespace-pre-wrap text-[13px] leading-5 text-slate-900"
-                data-testid="text-invoice-description"
-              >
-                {jobDescription}
-              </p>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/*
-        Unified Save / Cancel — saves the entire header card edit state
-        (meta rows + reference fields + job description) in one shot.
-        Outline Cancel + primary (green) Save per the cleanup spec, so
-        the action pair reads as primary affordances rather than blending
-        into the surrounding card chrome.
-      */}
-      {editing && (
-        <div className="flex items-center justify-end gap-2 border-t border-card-border px-5 py-3">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onCancel}
-            disabled={isSaving}
-            data-testid="button-meta-cancel"
-          >
-            Cancel
-          </Button>
-          <Button
-            size="sm"
-            onClick={onSave}
-            disabled={isSaving}
-            data-testid="button-meta-save"
-          >
-            {isSaving ? "Saving…" : "Save"}
-          </Button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** A single label/value row in the meta card's right column.
- *  2026-04-29 (header cleanup pass): dropped the `mono` and `icon`
- *  props. Values now render in the page's standard sans typography
- *  (no `font-mono`); the trailing decorative icon slot was removed
- *  because Job # / Issued / Due / Terms no longer carry icons. The
- *  `accent` flag is preserved for the past-due Due-date variant.
- */
-function MetaRow({
-  label, value, accent, last, testId,
-}: {
-  label: string;
-  value: ReactNode;
-  accent?: boolean;
-  last?: boolean;
-  testId?: string;
-}) {
-  return (
-    <div className={`flex items-center justify-between gap-3 px-5 py-1.5 ${last ? "" : "border-b border-stone-100"}`}>
-      <span className="text-xs text-slate-500">{label}</span>
-      <span
-        className={`text-right text-xs ${accent ? "font-semibold text-rose-600" : "text-slate-900"}`}
-        data-testid={testId}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
 /** Section header used by the rail cards. */
-function CardSectionHeader({ title, count, badge, right }: { title: string; count?: number; badge?: ReactNode; right?: ReactNode }) {
+// 2026-05-02 strict-replication pass: exported so /invoices/new can mount
+// the same Client message + Internal notes card chrome the live page
+// uses. Live behavior unchanged — purely an additive `export`.
+export function CardSectionHeader({ title, count, badge, right }: { title: string; count?: number; badge?: ReactNode; right?: ReactNode }) {
   return (
     <div className="flex items-center justify-between border-b border-card-border px-4 py-3">
       <div className="flex items-center gap-2">
@@ -659,8 +289,11 @@ const LINE_TYPE_GROUPS: Array<{ kind: string; label: string }> = [
  *  control now lives in the new top action header above the meta card.
  *  The `onPreview` prop is dropped from the component contract entirely.
  */
-function ClientVisibilityCardV2({
-  draft, server, onToggle, onSave, onReset, dirty, isSaving,
+// 2026-05-03 right-rail parity: exported so /invoices/new can mount the
+// same canonical visibility card. Live behavior unchanged — purely an
+// additive `export`.
+export function ClientVisibilityCardV2({
+  draft, server, onToggle, onSave, onReset, dirty, isSaving, disabled = false,
 }: {
   draft: { showJobDescription: boolean; showLineItems: boolean; showQuantity: boolean; showUnitPrice: boolean; showLineTotals: boolean; showBalance: boolean };
   server: typeof draft;
@@ -669,6 +302,10 @@ function ClientVisibilityCardV2({
   onReset: () => void;
   dirty: boolean;
   isSaving: boolean;
+  /** 2026-05-03: when true, every Switch is disabled. Used by
+   *  /invoices/new before a client/location is picked so the rail
+   *  renders in the same position as live but isn't interactive. */
+  disabled?: boolean;
 }) {
   // 2026-04-29 UI compact pass: per-row helper hints removed; rows now show
   // label + toggle only.
@@ -691,6 +328,7 @@ function ClientVisibilityCardV2({
             <Switch
               checked={draft[r.key]}
               onCheckedChange={(v) => onToggle(r.key, v)}
+              disabled={disabled || isSaving}
               data-testid={`switch-vis-${r.key}`}
             />
           </label>
@@ -729,7 +367,9 @@ export default function InvoiceDetailPage() {
   // table into edit mode. Each editable card now owns its own toggle so
   // entering / exiting edit on one card never affects another.
   const [editingHeader, setEditingHeader] = useState(false);
-  const [editingClientMessage, setEditingClientMessage] = useState(false);
+  // 2026-05-03: editingClientMessage / clientMessageDraft / setClientMessageDraft
+  // / isClientMessageDirty all retired — the EditableMessageCard primitive
+  // now owns its own draft + editing lifecycle internally.
 
   // 2026-04-29 (Phase 1): line-items state moved to the canonical
   // `useLineItemsDrafts` hook. `editingLineItems` is now `lineDrafts.editing`,
@@ -855,16 +495,15 @@ export default function InvoiceDetailPage() {
     showJobDescription: true,
   });
 
-  // Phase 11: Discount editing state
-  const [discountPercent, setDiscountPercent] = useState<string>("");
-  const [discountAmount, setDiscountAmount] = useState<string>("");
-  const [discountType, setDiscountType] = useState<"PERCENT" | "AMOUNT" | null>(null);
+  // 2026-05-02 (Audit #2 invoice-flow Phase 3): discount draft state
+  // moved into <DiscountEditor>. The page now treats the persisted
+  // invoice as the source of truth and PATCHes via the mutation below.
 
   // Tax selector state
   const [taxSelectorOpen, setTaxSelectorOpen] = useState(false);
 
-  // Notes editing state (synced from invoice data, saved explicitly)
-  const [clientMessageDraft, setClientMessageDraft] = useState("");
+  // 2026-05-03: client-message draft state retired — now lives inside
+  // <EditableMessageCard>.
 
   // Phase 10A: QBO override state
   const qboOverride = useQboOverride();
@@ -900,7 +539,6 @@ export default function InvoiceDetailPage() {
   });
 
   const jobId = details?.job?.id;
-  // Job notes are now rendered by canonical JobNotesSection component (writable, shared with Job Detail)
 
   // 2026-04-18 Phase 8: composition dialog state for "Choose Items to Add…"
   const [showCompositionDialog, setShowCompositionDialog] = useState(false);
@@ -932,8 +570,9 @@ export default function InvoiceDetailPage() {
   };
 
   // Phase 13 (2026-04-12): legacy `sendMutation` removed. The Send flow now
-  // runs entirely through <SendInvoiceModal> which hits the same backend
-  // endpoint with recipients + overrides. QBO-lock override for send-time
+  // runs entirely through <SendCommunicationModal entityType="invoice"> which
+  // hits the same backend endpoint with recipients + overrides. QBO-lock
+  // override for send-time
   // is handled server-side by the same route; error surfaces inline in the
   // modal rather than triggering a secondary override modal here.
 
@@ -1121,15 +760,20 @@ export default function InvoiceDetailPage() {
         toast({ title: "Discount updated" });
       }
     },
-    onError: (error: Error) => {
+    // 2026-05-02 (Phase 3): retry-on-QBO-lock used to read three local
+    // state vars (discountType / discountPercent / discountAmount) that
+    // now live inside <DiscountEditor>. We instead reuse the failed
+    // mutation's `variables` payload — it carries exactly the fields
+    // the user attempted to commit.
+    onError: (error: Error, variables) => {
       setQboOverridePending(false);
       if (error.message?.includes("synced to QuickBooks") || error.message?.includes("billing is locked")) {
         qboOverride.requestOverride("update discount", (reason) => {
           setQboOverridePending(true);
           updateDiscountMutation.mutate({
-            discountType,
-            discountPercent: discountPercent || null,
-            discountAmount: discountAmount || null,
+            discountType: variables.discountType,
+            discountPercent: variables.discountPercent,
+            discountAmount: variables.discountAmount,
             overrideQboLock: true,
             overrideReason: reason,
           });
@@ -1426,22 +1070,11 @@ export default function InvoiceDetailPage() {
     return "No Tax";
   }, [details?.invoice, taxGroups]);
 
-  // Phase 11: Sync discount state from invoice data
-  useEffect(() => {
-    if (details?.invoice) {
-      const inv = details.invoice;
-      setDiscountType(inv.discountType as "PERCENT" | "AMOUNT" | null);
-      setDiscountPercent(inv.discountPercent || "");
-      setDiscountAmount(inv.discountAmount || "");
-    }
-  }, [details?.invoice?.discountType, details?.invoice?.discountPercent, details?.invoice?.discountAmount]);
+  // 2026-05-02 (Phase 3): the discount-state sync useEffect is gone —
+  // <DiscountEditor> owns its draft and resyncs from `value` itself.
 
-  // Sync notes state from invoice data
-  useEffect(() => {
-    if (details?.invoice) {
-      setClientMessageDraft(details.invoice.clientMessage || "");
-    }
-  }, [details?.invoice?.clientMessage]);
+  // 2026-05-03: client-message draft sync useEffect retired —
+  // <EditableMessageCard> resyncs from `value` itself.
 
   // Canonical server-side visibility values
   const serverVisibility = useMemo(() => ({
@@ -1593,55 +1226,10 @@ export default function InvoiceDetailPage() {
     serverItems: details?.lines ?? [],
   });
 
-  // Phase 11: Discount calculation helpers
-  const handleDiscountPercentChange = (value: string) => {
-    setDiscountPercent(value);
-    setDiscountType("PERCENT");
-    // Auto-compute amount from percent
-    if (details?.invoice && value) {
-      const subtotal = parseFloat(details.invoice.subtotal) || 0;
-      const percent = parseFloat(value) || 0;
-      const computedAmount = Math.round(subtotal * (percent / 100) * 100) / 100;
-      setDiscountAmount(computedAmount.toFixed(2));
-    } else if (!value) {
-      setDiscountAmount("");
-      setDiscountType(null);
-    }
-  };
-
-  const handleDiscountAmountChange = (value: string) => {
-    setDiscountAmount(value);
-    setDiscountType("AMOUNT");
-    // Auto-compute percent from amount
-    if (details?.invoice && value) {
-      const subtotal = parseFloat(details.invoice.subtotal) || 0;
-      const amount = parseFloat(value) || 0;
-      const computedPercent = subtotal > 0 ? Math.round((amount / subtotal) * 100 * 100) / 100 : 0;
-      setDiscountPercent(computedPercent.toFixed(2));
-    } else if (!value) {
-      setDiscountPercent("");
-      setDiscountType(null);
-    }
-  };
-
-  const handleSaveDiscount = () => {
-    updateDiscountMutation.mutate({
-      discountType,
-      discountPercent: discountPercent || null,
-      discountAmount: discountAmount || null,
-    });
-  };
-
-  const handleClearDiscount = () => {
-    setDiscountPercent("");
-    setDiscountAmount("");
-    setDiscountType(null);
-    updateDiscountMutation.mutate({
-      discountType: null,
-      discountPercent: null,
-      discountAmount: null,
-    });
-  };
+  // 2026-05-02 (Phase 3): handleDiscountPercentChange /
+  // handleDiscountAmountChange / handleSaveDiscount / handleClearDiscount
+  // moved into <DiscountEditor>. The mutation now receives a single
+  // `onChange(next)` payload — see the JSX below.
 
   if (!invoiceId) {
     return (
@@ -1721,9 +1309,6 @@ export default function InvoiceDetailPage() {
     });
   };
 
-  // 2026-04-27 redesign — view-model bits the new layout needs.
-  const isClientMessageDirty = clientMessageDraft !== (invoice.clientMessage || "");
-
   // Primary action — state-driven. `null` for paid/voided "Send receipt"
   // and "Duplicate as new" because we don't have those flows yet.
   const primaryAction = (() => {
@@ -1737,8 +1322,9 @@ export default function InvoiceDetailPage() {
       return { label: "Record payment", onClick: () => setShowPaymentDialog(true) };
     }
     if (invoice.status === "paid") {
-      // TODO: wire a dedicated "Send receipt" flow. SendInvoiceModal currently
-      // sends as an invoice; receipt-mode email subject/body is not yet
+      // TODO: wire a dedicated "Send receipt" flow. The canonical
+      // SendCommunicationModal currently sends as an invoice; receipt-mode
+      // email subject/body is not yet
       // available. Render disabled so the action slot is preserved without
       // pretending the send works as a receipt.
       return { label: "Send receipt", onClick: () => {}, disabled: true };
@@ -1770,6 +1356,27 @@ export default function InvoiceDetailPage() {
   // Splitting them keeps the meta card focused on identity / billing, and
   // surfaces the most-used lifecycle actions as visible buttons rather
   // than buried inside a kebab.
+  // 2026-05-01: edit-mode entry handler hoisted so the canonical detail
+  // header (above) and the InvoiceMetaCard's own pencil (kept) can both
+  // dispatch the same flow. No duplication of seed/state setters.
+  const enterMetaEdit = () => {
+    setMetaDraft({
+      invoiceNumber: invoice.invoiceNumber ?? "",
+      issueDate: toDateInputValue(invoice.issueDate),
+      dueDate: toDateInputValue(invoice.dueDate),
+      paymentTermsDays: invoice.paymentTermsDays != null ? String(invoice.paymentTermsDays) : "",
+    });
+    const seed: Record<string, string> = {};
+    referenceFields.forEach((f) => { seed[f.definitionId] = f.textValue ?? ""; });
+    setReferenceDraft(seed);
+    // 2026-04-29 (header cleanup): the same pencil now opens the
+    // job-description editor too, so seed its draft from the server
+    // value (workDescription falls back to the job's description when
+    // the invoice copy is unset).
+    setWorkDescDraft(invoice.workDescription || job?.description || "");
+    setEditingHeader(true);
+  };
+
   const headerActions = (
     <>
       {!editingHeader && (
@@ -1777,23 +1384,7 @@ export default function InvoiceDetailPage() {
           variant="ghost"
           size="icon"
           className="h-8 w-8"
-          onClick={() => {
-            setMetaDraft({
-              invoiceNumber: invoice.invoiceNumber ?? "",
-              issueDate: toDateInputValue(invoice.issueDate),
-              dueDate: toDateInputValue(invoice.dueDate),
-              paymentTermsDays: invoice.paymentTermsDays != null ? String(invoice.paymentTermsDays) : "",
-            });
-            const seed: Record<string, string> = {};
-            referenceFields.forEach((f) => { seed[f.definitionId] = f.textValue ?? ""; });
-            setReferenceDraft(seed);
-            // 2026-04-29 (header cleanup): the same pencil now opens the
-            // job-description editor too, so seed its draft from the
-            // server value (workDescription falls back to the job's
-            // description when the invoice copy is unset).
-            setWorkDescDraft(invoice.workDescription || job?.description || "");
-            setEditingHeader(true);
-          }}
+          onClick={enterMetaEdit}
           aria-label="Edit invoice details"
           data-testid="button-meta-edit"
         >
@@ -1888,41 +1479,92 @@ export default function InvoiceDetailPage() {
 
   return (
     <>
-      {/* 2026-04-27 — single-scroll layout. Replaces DetailPageShell on this
-          page only: the shell's lg+ chain gave the left column and right rail
-          their own `overflow-y-auto`, producing nested scrollbars inside the
-          app shell's <main overflow-auto>. The redesigned page content scrolls
-          as one unit with the page. */}
-      {/* 2026-04-29 Color Phase Path A: root wrapper migrated from
-          `bg-[#FAF8F5]` (warm cream — predated the canonical token set)
-          to `bg-app-bg` so the page now adopts the global `#F3F5F7`.
-          Internal cards (`border-card-border bg-white`) were already
-          neutral and need no further migration in this pass. */}
-      <div className="bg-app-bg" data-testid="invoice-detail-page">
-        <div className="px-4 lg:px-6 py-4">
-          {/* 2026-04-29 v2 — Floating top action HEADER (thin bar, full
-              page width). Sits ABOVE the two-column grid so it visually
-              spans both the main column and the right rail. No card
-              chrome (no border, no rounded corners) — just a flat
-              translucent bar with a subtle bottom hairline. Status pill
-              left, lifecycle actions right. */}
-          {/* 2026-04-29 v4: Tightened vertical padding (py-2 → py-1.5)
-              and wrapped both clusters in `items-center` (already present)
-              to keep the status pill and the right-hand action buttons
-              on the same baseline regardless of pill height. */}
-          {/* 2026-04-29 Color Phase 2.7: frosted-edge restored. The
-              `--app-bg` token is now an HSL channel triple wrapped as
-              `hsl(var(--app-bg) / <alpha-value>)` in tailwind.config.ts,
-              so `bg-app-bg/95` compiles to a real alpha-modulated
-              background-color rule. This recovers the original 5%
-              translucent scroll-edge polish that Path A had to drop
-              while the token was in opaque-hex form. */}
-          <div
-            className="mb-3 flex items-center justify-between gap-3 bg-app-bg/95 px-1 py-1.5"
-            data-testid="invoice-action-header"
-          >
-            <StatusPill status={invoice.status} isPastDue={isPastDue} />
-            <div className="flex items-center gap-2">
+      {/* 2026-05-03: outer container, body wrapper, grid, left-column
+          + right-rail wrappers all live in <InvoiceDetailShell>. This
+          page mounts the shell with its three slot props; /invoices/new
+          mounts the same shell so the two pages render byte-equivalent
+          chrome. */}
+      <InvoiceDetailShell
+        testId="invoice-detail-page"
+        header={
+          <CanonicalDetailHeader
+          testId="invoice-detail-header"
+          title={job?.summary || `Invoice ${invoice.invoiceNumber || ""}`.trim() || clientName || "Invoice"}
+          isEditing={editingHeader}
+          statusBadge={<StatusPill status={invoice.status} isPastDue={isPastDue} />}
+          items={[
+            {
+              key: "invoice-number",
+              label: "Invoice #",
+              // 2026-05-02 entity-number system: see
+              // `client/src/components/common/EntityNumber.tsx` for the
+              // canonical primitive. Invoice # on the Invoice page is
+              // the current/primary entity → "primary" variant.
+              value: <EntityNumber variant="primary" data-testid="header-invoice-number-pill">{invoice.invoiceNumber}</EntityNumber>,
+              editNode: metaDraft ? (
+                <input
+                  type="text"
+                  value={metaDraft.invoiceNumber}
+                  onChange={(e) => setMetaDraft((prev) => prev ? { ...prev, invoiceNumber: e.target.value } : prev)}
+                  placeholder="INV-…"
+                  className="w-32 h-7 px-1.5 text-sm font-medium tabular-nums border border-border-default rounded bg-white focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
+                  data-testid="header-input-invoice-number"
+                />
+              ) : undefined,
+            },
+            {
+              key: "due-date",
+              label: "Due",
+              // 2026-05-01 root-cause date fix: route through the shared
+              // canonical extractor (was `format(new Date(invoice.dueDate))`,
+              // which UTC-drifted the same way fmtDate did).
+              value: invoice.dueDate
+                ? <span className="tabular-nums">{formatDateOnlyDisplay(invoice.dueDate, "—")}</span>
+                : <span className="text-text-disabled">—</span>,
+              // 2026-05-01: `clearable` removed from the top-header
+              // due-date picker. Users can change the due date but
+              // cannot clear it from this surface. The lower-card
+              // edit form (when surfaced) still owns the clearable
+              // semantics if needed; in the canonical header, due
+              // is treated as always-set per the refined spec.
+              editNode: metaDraft ? (
+                <CanonicalDatePicker
+                  value={metaDraft.dueDate}
+                  onChange={(next) => setMetaDraft((prev) => prev ? { ...prev, dueDate: next ?? "" } : prev)}
+                  className="h-7 text-sm"
+                  data-testid="header-input-due-date"
+                />
+              ) : undefined,
+            },
+            {
+              key: "job-number",
+              label: "Job #",
+              // 2026-05-02 entity-number system: cross-entity (Job #
+              // shown on the Invoice page) → "linked" variant via the
+              // canonical primitive. Same look as the Job page's
+              // Invoice # link.
+              // Read-only / link-only — the existing invoice flow does
+              // not support changing the linked job from this surface,
+              // so no editNode.
+              value: job?.jobNumber != null
+                ? (
+                  <EntityNumber
+                    variant="linked"
+                    onClick={() => setLocation(`/jobs/${jobId}`)}
+                    data-testid="header-job-link"
+                  >
+                    {job.jobNumber}
+                  </EntityNumber>
+                )
+                : <EntityNumber variant="missing" />,
+            },
+          ]}
+          // 2026-05-01: edit pencil REMOVED from the canonical header.
+          // The InvoiceMetaCard's existing pencil (rendered via
+          // `headerActions`) is the single edit-mode entry point.
+          // Both pencils dispatch the same `enterMetaEdit` flow.
+          actions={(
+            <>
               {remindersSlot}
               {showSendInvoiceButton && primaryAction && (
                 <Button
@@ -1945,18 +1587,22 @@ export default function InvoiceDetailPage() {
                 Preview PDF
               </Button>
               {actionBarDropdown}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
-            <div className="min-w-0 space-y-2.5">
-              <QboSyncBanner invoice={invoice} />
+            </>
+          )}
+        />
+        }
+        leftColumn={
+          <>
+            <QboSyncBanner invoice={invoice} />
 
               {/* 2026-04-27 — Identity card (per Studio reference). 2026-04-29:
                   Status pill + lifecycle dropdown moved to the new top action
                   header above. The card retains only the inline meta-edit
                   pencil. */}
               <InvoiceMetaCard
+                // 2026-05-02 (Phase 5): live PATCH-driven edit lifecycle.
+                // The future /invoices/new page passes mode="draft".
+                mode="live"
                 customerName={clientName || ""}
                 customerCompanyId={customerCompany?.id ?? null}
                 billLine1={billLine1}
@@ -2080,72 +1726,31 @@ export default function InvoiceDetailPage() {
                       <span className={`text-xs ${MONO} text-slate-700`}>{formatCurrency(invoice.subtotal)}</span>
                     </div>
 
-                    {/* Discount editor (preserved). Gated on the canonical
-                        line-items edit mode — opens whenever the user has
-                        the LineItemsCard in edit. */}
+                    {/* 2026-05-02 (Phase 3): inline discount JSX extracted
+                        into <DiscountEditor>. Behavior preserved: same
+                        two-step type → Apply UX, same auto-compute math,
+                        same Clear affordance, same data-testids. The
+                        edit form opens only when the line-items card is
+                        in edit and the user can edit. The persisted
+                        read-only badge below renders unchanged. */}
                     {canEdit && lineItemsDrafts.editing ? (
-                      <div className="rounded-md border border-card-border bg-card px-3 py-2 my-2 space-y-2">
-                        <div className="flex items-center gap-2 text-xs text-slate-600">
-                          <Tag className="h-3.5 w-3.5" />
-                          <span className="font-medium">Discount</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <div className="flex items-center gap-1 flex-1">
-                            <Input
-                              type="number"
-                              inputMode="decimal"
-                              step="0.01"
-                              min="0"
-                              max="100"
-                              placeholder="0"
-                              value={discountPercent}
-                              onChange={(e) => handleDiscountPercentChange(e.target.value)}
-                              className="h-7 w-16 text-right text-xs [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                              data-testid="input-discount-percent"
-                            />
-                            <Percent className="h-3.5 w-3.5 text-slate-400" />
-                          </div>
-                          <span className="text-slate-400 text-xs">or</span>
-                          <div className="flex items-center gap-1 flex-1">
-                            <DollarSign className="h-3.5 w-3.5 text-slate-400" />
-                            <Input
-                              type="number"
-                              inputMode="decimal"
-                              step="0.01"
-                              min="0"
-                              placeholder="0.00"
-                              value={discountAmount}
-                              onChange={(e) => handleDiscountAmountChange(e.target.value)}
-                              className="h-7 w-20 text-right text-xs [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                              data-testid="input-discount-amount"
-                            />
-                          </div>
-                        </div>
-                        <div className="flex justify-end gap-2">
-                          {(discountPercent || discountAmount) && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 text-xs"
-                              onClick={handleClearDiscount}
-                              disabled={updateDiscountMutation.isPending}
-                              data-testid="button-clear-discount"
-                            >
-                              <X className="h-3 w-3 mr-1" />Clear
-                            </Button>
-                          )}
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-7 text-xs"
-                            onClick={handleSaveDiscount}
-                            disabled={updateDiscountMutation.isPending || (!discountPercent && !discountAmount)}
-                            data-testid="button-save-discount"
-                          >
-                            {updateDiscountMutation.isPending ? "Saving..." : "Apply"}
-                          </Button>
-                        </div>
-                      </div>
+                      <DiscountEditor
+                        value={{
+                          discountType: invoice.discountType as DiscountType,
+                          discountPercent: invoice.discountPercent ?? undefined,
+                          discountAmount: invoice.discountAmount ?? undefined,
+                          discountNotes: invoice.discountNotes ?? undefined,
+                        }}
+                        subtotal={invoice.subtotal}
+                        onChange={(next) =>
+                          updateDiscountMutation.mutate({
+                            discountType: next.discountType,
+                            discountPercent: next.discountPercent ?? null,
+                            discountAmount: next.discountAmount ?? null,
+                          })
+                        }
+                        disabled={updateDiscountMutation.isPending}
+                      />
                     ) : invoice.discountAmount && parseFloat(invoice.discountAmount) > 0 ? (
                       <div className="flex items-center justify-between py-1">
                         <span className="text-xs text-emerald-700">Discount{invoice.discountPercent ? ` (${invoice.discountPercent}%)` : ""}</span>
@@ -2241,81 +1846,33 @@ export default function InvoiceDetailPage() {
                   piggybacks on the line-items toggle. Writes through the
                   same canonical `updateInvoiceFieldsMutation` — no new
                   backend logic. */}
-              {/* 2026-04-29 v3: When empty AND not editing, render compact
-                  (header-only) — same pattern as Job Description. The
-                  pencil in the header is the only affordance; the body
-                  with "No client message." placeholder is hidden. */}
-              {(() => {
-                const messageEmpty = !invoice.clientMessage || invoice.clientMessage.length === 0;
-                const compactCollapsed = messageEmpty && !editingClientMessage;
-                return (
-                  <div className="overflow-hidden rounded-lg border border-card-border bg-card shadow-card" data-testid="card-invoice-client-message">
-                    <CardSectionHeader
-                      title="Client message"
-                      right={!editingClientMessage ? (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 flex-shrink-0"
-                          onClick={() => {
-                            setClientMessageDraft(invoice.clientMessage || "");
-                            setEditingClientMessage(true);
-                          }}
-                          aria-label="Edit client message"
-                          data-testid="button-edit-client-message"
-                        >
-                          <Pencil className="h-3.5 w-3.5 text-slate-400" />
-                        </Button>
-                      ) : null}
-                    />
-                    {!compactCollapsed && (
-                      <div className="p-4">
-                        {editingClientMessage ? (
-                          <>
-                            <Textarea
-                              value={clientMessageDraft}
-                              onChange={(e) => setClientMessageDraft(e.target.value)}
-                              placeholder="Optional message that appears under the line items on the client's PDF — payment instructions, follow-up scope, thanks."
-                              className="min-h-[88px] resize-y text-sm leading-relaxed text-slate-700"
-                              data-testid="textarea-client-message"
-                            />
-                            <div className="mt-2 flex justify-end gap-2">
-                              <Button
-                                variant="ghost" size="sm" className="h-7 text-xs"
-                                onClick={() => {
-                                  setClientMessageDraft(invoice.clientMessage || "");
-                                  setEditingClientMessage(false);
-                                }}
-                              >
-                                Cancel
-                              </Button>
-                              <Button
-                                variant="outline" size="sm" className="h-7 text-xs"
-                                disabled={updateInvoiceFieldsMutation.isPending || !isClientMessageDirty}
-                                onClick={() => updateInvoiceFieldsMutation.mutate(
-                                  { clientMessage: clientMessageDraft },
-                                  { onSuccess: () => setEditingClientMessage(false) }
-                                )}
-                                data-testid="button-save-client-message"
-                              >
-                                {updateInvoiceFieldsMutation.isPending ? "Saving..." : "Save"}
-                              </Button>
-                            </div>
-                          </>
-                        ) : (
-                          <p className="m-0 whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
-                            {invoice.clientMessage}
-                          </p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-            </div>
-            <aside className="min-w-0 space-y-3">
-              {/* ─── Client visibility toggles (6 canonical fields). */}
-              <ClientVisibilityCardV2
+              {/* 2026-05-03: inline JSX (formerly L1875–1944) extracted to
+                  the canonical `<EditableMessageCard>` primitive. Behavior
+                  preserved byte-for-byte: same chrome, same compact-
+                  collapsed-when-empty rule, same pencil affordance, same
+                  Cancel/Save footer, same `data-testid` ids. The async
+                  `mutateAsync` keeps the "Saving…" label live until the
+                  PATCH resolves, just like the prior `mutate(..., onSuccess)`
+                  flow. */}
+              <EditableMessageCard
+                title="Client message"
+                value={invoice.clientMessage || ""}
+                onSave={async (next) => {
+                  await updateInvoiceFieldsMutation.mutateAsync({ clientMessage: next });
+                }}
+                isSaving={updateInvoiceFieldsMutation.isPending}
+                placeholder="Optional message that appears under the line items on the client's PDF — payment instructions, follow-up scope, thanks."
+                testId="card-invoice-client-message"
+                editButtonTestId="button-edit-client-message"
+                textareaTestId="textarea-client-message"
+                saveButtonTestId="button-save-client-message"
+              />
+          </>
+        }
+        rightRail={
+          <>
+            {/* ─── Client visibility toggles (6 canonical fields). */}
+            <ClientVisibilityCardV2
                 draft={visibilityDraft}
                 server={serverVisibility}
                 onToggle={(key, value) => setVisibilityDraft((d) => ({ ...d, [key]: value }))}
@@ -2325,17 +1882,17 @@ export default function InvoiceDetailPage() {
                 isSaving={updateInvoiceFieldsMutation.isPending}
               />
 
-              {/* ─── Notes (canonical JobNotesSection). Order per user spec:
+              {/* ─── Notes (canonical EntityNotesSection). Order per user spec:
                   immediately below Client visibility. The `notes_internal`
                   schema column continues to round-trip via
                   `updateInvoiceFieldsMutation` for non-UI consumers (QBO
                   PrivateNote mapper, import pipeline snapshot) but no longer
                   has a competing UI surface here. */}
               <div className="overflow-hidden rounded-lg border border-card-border bg-card shadow-card" data-testid="card-invoice-notes">
-                <JobNotesSection
-                  jobId={jobId ?? ""}
-                  source="invoice"
-                  invoiceId={invoiceId}
+                <EntityNotesSection
+                  entityType="invoice"
+                  entityId={invoiceId}
+                  writeEntityId={jobId ?? ""}
                   embedded
                   hideHeader={false}
                   showCount={false}
@@ -2359,16 +1916,15 @@ export default function InvoiceDetailPage() {
                   InvoiceDetailPage is gone. Backend audit / email / payment
                   history sources are unchanged. */}
 
-              {/* 2026-04-29: Reference card removed from the invoice right
-                  rail. Reference fields already render inline in the meta
-                  card (see InvoiceMetaCard reference rows). The
-                  ReferenceFieldsSection component is unchanged and stays
-                  mounted on Job Detail / Customer pages. Backend reference
-                  field schema, mutations, and storage are not touched. */}
-            </aside>
-          </div>
-        </div>
-      </div>
+            {/* 2026-04-29: Reference card removed from the invoice right
+                rail. Reference fields already render inline in the meta
+                card (see InvoiceMetaCard reference rows). The
+                ReferenceFieldsSection component is unchanged and stays
+                mounted on Job Detail / Customer pages. Backend reference
+                field schema, mutations, and storage are not touched. */}
+          </>
+        }
+      />
 
       {/* 2026-04-29 v3: Canonical Product/Service create modal — one
           instance per page; opened via `requestCreateProduct(name)`
@@ -2392,13 +1948,21 @@ export default function InvoiceDetailPage() {
           <div className="space-y-4">
             <div>
               <Label htmlFor="payment-amount">Amount</Label>
+              {/* 2026-05-01 spinner-suppression: same `[appearance:textfield]`
+                  + webkit-spin-button:none CSS the in-card discount
+                  inputs use, applied here so the payment dialog also
+                  hides the browser up/down steppers. `inputMode="decimal"`
+                  surfaces the numeric keypad on mobile without showing
+                  spinners on desktop. */}
               <Input
                 id="payment-amount"
                 type="number"
+                inputMode="decimal"
                 step="0.01"
                 placeholder="0.00"
                 value={paymentAmount}
                 onChange={(e) => setPaymentAmount(e.target.value)}
+                className="[appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                 data-testid="input-payment-amount"
               />
             </div>
@@ -2458,11 +2022,15 @@ export default function InvoiceDetailPage() {
           rendered preview from backend, lets user edit subject/body/recipients,
           and submits with overrides. The legacy ConfirmSendModal path was
           removed — it fired `sendMutation` directly without recipients, which
-          is no longer compatible with the backend send contract. */}
-      <SendInvoiceModal
-        invoiceId={invoiceId}
+          is no longer compatible with the backend send contract.
+          2026-05-02 (Audit #2 PR 2): canonical SendCommunicationModal used
+          directly — wrapper SendInvoiceModal was deleted. */}
+      <SendCommunicationModal
+        entityType="invoice"
+        entityId={invoiceId}
         isOpen={showSendConfirm}
         onClose={() => setShowSendConfirm(false)}
+        title="Send Invoice"
         onSuccess={() => {
           queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
           queryClient.invalidateQueries({ queryKey: ["invoices"] });

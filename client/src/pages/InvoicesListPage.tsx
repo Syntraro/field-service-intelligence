@@ -32,6 +32,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { EmptyState } from "@/components/ui/empty-state";
 import { tableRowClass, listPrimaryClass, listSecondaryClass } from "@/components/ui/list-surface";
+// 2026-05-02 entity-number visual language: blue pill for current entity row.
+import { EntityNumber } from "@/components/common/EntityNumber";
 import type { Invoice } from "@shared/schema";
 import { UNPAID_INVOICE_STATUSES } from "@shared/invoiceStatus";
 import { getInvoiceStatusBadge } from "@/lib/statusBadges";
@@ -528,9 +530,13 @@ export default function InvoicesListPage() {
                     <p className="text-caption text-slate-500 truncate">{invoice.workDescription || "-"}</p>
                   </div>
                   <div className="px-4 py-2.5">
-                    <span className="font-mono text-row text-slate-800" data-testid={`text-invoice-number-${invoice.id}`}>
+                    {/* 2026-05-02 entity-number system: row IS an
+                        invoice → primary blue pill. Empty fallback
+                        (`INV-{id.slice}`) preserved for invoices that
+                        haven't been assigned a number yet. */}
+                    <EntityNumber variant="primary" data-testid={`text-invoice-number-${invoice.id}`}>
                       {invoice.invoiceNumber || `INV-${invoice.id.slice(0, 8)}`}
-                    </span>
+                    </EntityNumber>
                   </div>
                   <div className="px-4 text-row text-slate-700 py-2.5">{safeFormatDate(invoice.dueDate)}</div>
                   <div className="px-4 py-2.5">

@@ -734,9 +734,14 @@ export const clientImportAdapter: ImportAdapter<
       const servicePostalCode = row.servicePostalCode ?? row.billingPostalCode ?? null;
       const serviceCountry = row.serviceCountry ?? row.billingCountry ?? null;
 
+      // 2026-05-01 stale-rename hardening (Option A): parented locations
+      // do NOT denormalize the parent's name onto `client_locations.company_name`.
+      // The display chain (`locationDisplayNameExpr`) resolves parent-first,
+      // so leaving this column null keeps every location in sync with the
+      // current `customer_companies.name` automatically.
       const locationData: Record<string, unknown> = {
         parentCompanyId: companyId,
-        companyName,
+        companyName: null,
         location: locationName,
         address: serviceStreet,
         address2: serviceStreet2,
@@ -773,10 +778,15 @@ export const clientImportAdapter: ImportAdapter<
         customerCompanyId: companyId,
         firstName: row.contactFirstName?.trim() || "",
         lastName: row.contactLastName?.trim() || "",
-        // 2026-04-22: persist title/prefix when the CSV provided one
-        // (Jobber `Title`). Null-safe so commercial imports without a
-        // title column continue to work unchanged.
-        title: row.contactTitle?.trim() || null,
+        // 2026-05-02 honorific split: Jobber's `Title` column is a
+        // freeform PROFESSIONAL role (Operations Manager / Owner /
+        // …), not an honorific. After the schema split, that maps
+        // to `jobTitle`. The local `contactTitle` mapping key is
+        // preserved (CSVs in flight don't change), only the
+        // destination column moves. Honorific (`title`) is left
+        // null on import — there's nothing in the upstream CSV to
+        // populate it from.
+        jobTitle: row.contactTitle?.trim() || null,
         email: row.contactEmail?.trim() || null,
         phone: row.contactPhone?.trim() || null,
         isPrimary: true,

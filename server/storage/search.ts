@@ -24,6 +24,8 @@ export type SearchResultType = "job" | "invoice" | "quote" | "customerCompany" |
 export interface SearchResult {
   type: SearchResultType;
   id: string;
+  /** Legacy display string. Kept verbatim for back-compat — older clients
+   *  that don't read the structured fields below still render correctly. */
   title: string;
   subtitle: string | null;
   match: string | null; // e.g., "job #", "invoice #", "phone", "email"
@@ -33,6 +35,30 @@ export interface SearchResult {
   firstName?: string | null;
   lastName?: string | null;
   useCompanyAsPrimary?: boolean | null;
+  // ---------------------------------------------------------------------------
+  // 2026-05-02 entity-number visual language (structured fields).
+  //
+  // For job / invoice / quote results the canonical primitive
+  // `EntityNumber` on the client renders the number as a blue pill
+  // separately from the descriptive text. Sending the number embedded
+  // inside `title` (e.g. "#1234 - Summary") prevented that — these
+  // fields let the client render `[1234] Summary` instead.
+  //
+  // Frontend contract:
+  //   - If `entityNumber` is set, use it as the pill content; render
+  //     `titleText` next to it.
+  //   - If not set, fall back to `title` verbatim (existing behavior).
+  //   - `entityNumber` may be empty string for entities without a
+  //     number assigned yet — the client renders the muted dash.
+  // ---------------------------------------------------------------------------
+  /** Bare entity number ("1234", "INV-1234", or "" if unassigned). */
+  entityNumber?: string | null;
+  /** Human label, e.g. "Job #" / "Invoice #" / "Quote #". */
+  entityNumberLabel?: "Job #" | "Invoice #" | "Quote #";
+  /** Stable kind so the client can branch styling without parsing labels. */
+  entityNumberType?: "job" | "invoice" | "quote";
+  /** Descriptive title text without the embedded number. */
+  titleText?: string;
   /** Internal ranking: 0 = exact, 1 = prefix, 2 = contains. Not exposed to client. */
   _rank?: number;
   /** Internal: matched reference value for ranking. Not exposed to client. */
@@ -149,7 +175,10 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
         i.id,
         CONCAT('Invoice #', COALESCE(i.invoice_number, i.id)) as title,
         CONCAT(COALESCE(cl.company_name, cc.name, ''), ' - $', i.total) as subtitle,
-        'invoice #' as match
+        'invoice #' as match,
+        -- 2026-05-02 entity-number structured fields (additive — title kept).
+        COALESCE(i.invoice_number, '') as entity_number,
+        COALESCE(cl.company_name, cc.name, '') as title_text
       FROM invoices i
       LEFT JOIN client_locations cl ON i.location_id = cl.id
       LEFT JOIN customer_companies cc ON i.customer_company_id = cc.id
@@ -191,7 +220,10 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
       jobNumberQuery = `
         SELECT 'job' as type, j.id,
           CONCAT('#', j.job_number, ' - ', j.summary) as title,
-          COALESCE(cl.company_name, '') as subtitle, 'job #' as match
+          COALESCE(cl.company_name, '') as subtitle, 'job #' as match,
+          -- 2026-05-02 entity-number structured fields.
+          j.job_number::text as entity_number,
+          COALESCE(j.summary, '') as title_text
         FROM jobs j
         LEFT JOIN client_locations cl ON j.location_id = cl.id
         WHERE j.company_id = $1 AND j.job_number = $2
@@ -208,7 +240,10 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
       jobNumberQuery = `
         SELECT 'job' as type, j.id,
           CONCAT('#', j.job_number, ' - ', j.summary) as title,
-          COALESCE(cl.company_name, '') as subtitle, 'job #' as match
+          COALESCE(cl.company_name, '') as subtitle, 'job #' as match,
+          -- 2026-05-02 entity-number structured fields.
+          j.job_number::text as entity_number,
+          COALESCE(j.summary, '') as title_text
         FROM jobs j
         LEFT JOIN client_locations cl ON j.location_id = cl.id
         WHERE j.company_id = $1
@@ -263,15 +298,33 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
     LIMIT $5
   `;
 
-  // 2026-03-27: Include parent_company_id so search can navigate to canonical client page
+  // 2026-03-27: Include parent_company_id so search can navigate to canonical client page.
+  // 2026-05-01 stale-rename fix: location title prefers the parent customer
+  // company's current name (`cc.name`) over the location's own
+  // denormalized `cl.company_name` field. The schema documents
+  // `client_locations.company_name` as a per-location override that the UI
+  // should fall back from to `customer_companies.name`, but in practice
+  // create flows have eagerly populated `cl.company_name = cc.name` on
+  // every location, so a rename of the parent left the denormalized
+  // field stale. Treating the parent as authoritative for DISPLAY
+  // (while leaving the raw column untouched for editing flows) closes
+  // the symptom without a destructive data migration. Standalone
+  // locations (no `parent_company_id`, hence no `cc` row) fall through
+  // to the location's own column, preserving original behavior. The
+  // WHERE clause now also matches on `cc.name` so users searching by
+  // the new parent name find sub-locations even before a backfill.
   const locationQuery = `
     SELECT
       'location' as type,
       cl.id,
-      cl.company_name as title,
+      COALESCE(cc.name, NULLIF(cl.company_name, '')) as title,
       CONCAT_WS(', ', cl.address, cl.city, cl.province) as subtitle,
       CASE
-        WHEN cl.company_name ILIKE $2 THEN 'name'
+        -- 2026-05-01 strict-search: parented location's name match comes
+        -- ONLY from the parent customer company. Standalone (no parent)
+        -- can match its own column.
+        WHEN cl.parent_company_id IS NOT NULL AND cc.name ILIKE $2 THEN 'name'
+        WHEN cl.parent_company_id IS NULL AND cl.company_name ILIKE $2 THEN 'name'
         WHEN cl.address ILIKE $2 THEN 'address'
         WHEN cl.city ILIKE $2 THEN 'city'
         WHEN cl.province ILIKE $2 THEN 'province'
@@ -282,11 +335,18 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
       END as match,
       cl.parent_company_id as "customerCompanyId"
     FROM client_locations cl
+    LEFT JOIN customer_companies cc ON cl.parent_company_id = cc.id
     WHERE cl.company_id = $1
       AND cl.deleted_at IS NULL
       AND (cl.inactive = false OR cl.inactive IS NULL)
       AND (
-        cl.company_name ILIKE $2
+        -- 2026-05-01 strict-search: name match is parent-name only for
+        -- parented rows; the location is own column is searchable only
+        -- when the location is standalone. Stale denormalized values on
+        -- cl.company_name are NOT considered. Address/city/postal/etc.
+        -- continue to match — those are location attributes, not names.
+        (cl.parent_company_id IS NOT NULL AND cc.name ILIKE $2)
+        OR (cl.parent_company_id IS NULL AND cl.company_name ILIKE $2)
         OR cl.address ILIKE $2
         OR cl.city ILIKE $2
         OR cl.province ILIKE $2
@@ -294,7 +354,7 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
         OR cl.email ILIKE $2
         OR ($4 AND regexp_replace(cl.phone, '\\D', '', 'g') ILIKE $3)
       )
-    ORDER BY cl.company_name
+    ORDER BY COALESCE(cc.name, NULLIF(cl.company_name, ''))
     LIMIT $5
   `;
 
@@ -376,6 +436,43 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
           FROM quotes q WHERE q.id = rv.entity_id AND q.company_id = $1 LIMIT 1
         )
       END as entity_title,
+      -- 2026-05-02 entity-number structured field. One sub-select per
+      -- entity_type, mirroring the entity_title CASE shape — same
+      -- joined rows, no extra DB hits beyond the existing per-row
+      -- entity lookup.
+      CASE rv.entity_type
+        WHEN 'job' THEN (
+          SELECT j.job_number::text FROM jobs j
+          WHERE j.id = rv.entity_id AND j.company_id = $1
+            AND j.deleted_at IS NULL AND j.is_active = true
+        )
+        WHEN 'invoice' THEN (
+          SELECT COALESCE(i.invoice_number, '') FROM invoices i
+          WHERE i.id = rv.entity_id AND i.company_id = $1 LIMIT 1
+        )
+        WHEN 'quote' THEN (
+          SELECT COALESCE(q.quote_number, '') FROM quotes q
+          WHERE q.id = rv.entity_id AND q.company_id = $1 LIMIT 1
+        )
+      END as entity_number,
+      -- Descriptive title text without the embedded number.
+      CASE rv.entity_type
+        WHEN 'job' THEN (
+          SELECT COALESCE(j.summary, '') FROM jobs j
+          WHERE j.id = rv.entity_id AND j.company_id = $1
+            AND j.deleted_at IS NULL AND j.is_active = true
+        )
+        WHEN 'invoice' THEN (
+          SELECT COALESCE(cl.company_name, '')
+          FROM invoices i LEFT JOIN client_locations cl ON i.location_id = cl.id
+          WHERE i.id = rv.entity_id AND i.company_id = $1 LIMIT 1
+        )
+        WHEN 'quote' THEN (
+          SELECT COALESCE(cl.company_name, '')
+          FROM quotes q LEFT JOIN client_locations cl ON q.location_id = cl.id
+          WHERE q.id = rv.entity_id AND q.company_id = $1 LIMIT 1
+        )
+      END as title_text,
       CASE rv.entity_type
         WHEN 'job' THEN (
           SELECT COALESCE(cl.company_name, '')
@@ -417,13 +514,20 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
     refFieldPromise,
   ]);
 
-  // Push results in canonical order (same as previous sequential order)
+  // Push results in canonical order (same as previous sequential order).
+  // 2026-05-02: invoice + job result mappers carry the structured
+  // entityNumber* fields so the client EntityNumber primitive can
+  // render the number as a blue pill separately from descriptive text.
   results.push(...invoiceRes.rows.map((r: any) => ({
     type: r.type as SearchResultType,
     id: r.id,
     title: r.title,
     subtitle: r.subtitle,
     match: r.match,
+    entityNumber: r.entity_number ?? "",
+    entityNumberLabel: "Invoice #" as const,
+    entityNumberType: "invoice" as const,
+    titleText: r.title_text ?? "",
   })));
   results.push(...jobNumberRes.rows.map((r: any) => ({
     type: r.type as SearchResultType,
@@ -431,6 +535,10 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
     title: r.title,
     subtitle: r.subtitle,
     match: r.match,
+    entityNumber: r.entity_number ?? "",
+    entityNumberLabel: "Job #" as const,
+    entityNumberType: "job" as const,
+    titleText: r.title_text ?? "",
   })));
   // Dev assertion: customerCompany results use customer_companies.id (cc.id in query)
   if (process.env.NODE_ENV === "development" && customerRes.rows.length > 0) {
@@ -485,12 +593,33 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
     const key = `${entityType}:${r.entity_id}`;
     if (seenIds.has(key)) return; // dedupe: record already in results from primary search
     seenIds.add(key);
+    // 2026-05-02 entity-number structured fields. Map the entity_type
+    // string to the canonical label/type pair the client EntityNumber
+    // primitive consumes. customerCompany / supplier / contact /
+    // location result types from ref-fields don't have entity numbers
+    // and are intentionally not assigned a label/type.
+    let entityNumberLabel: SearchResult["entityNumberLabel"] | undefined;
+    let entityNumberType: SearchResult["entityNumberType"] | undefined;
+    if (entityType === "job") {
+      entityNumberLabel = "Job #";
+      entityNumberType = "job";
+    } else if (entityType === "invoice") {
+      entityNumberLabel = "Invoice #";
+      entityNumberType = "invoice";
+    } else if (entityType === "quote") {
+      entityNumberLabel = "Quote #";
+      entityNumberType = "quote";
+    }
     results.push({
       type: entityType,
       id: r.entity_id,
       title: r.entity_title,
       subtitle: r.entity_subtitle || null,
       match: `ref: ${r.field_label}`,
+      entityNumber: r.entity_number ?? "",
+      entityNumberLabel,
+      entityNumberType,
+      titleText: r.title_text ?? "",
       _matchedValue: r.matched_value || undefined,
     });
   });
@@ -507,7 +636,10 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
         j.id,
         CONCAT('#', j.job_number, ' - ', j.summary) as title,
         COALESCE(cl.company_name, '') as subtitle,
-        'summary' as match
+        'summary' as match,
+        -- 2026-05-02 entity-number structured fields.
+        j.job_number::text as entity_number,
+        COALESCE(j.summary, '') as title_text
       FROM jobs j
       LEFT JOIN client_locations cl ON j.location_id = cl.id
       WHERE j.company_id = $1
@@ -527,6 +659,11 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
       title: r.title,
       subtitle: r.subtitle,
       match: r.match,
+      // 2026-05-02 entity-number structured fields.
+      entityNumber: r.entity_number ?? "",
+      entityNumberLabel: "Job #" as const,
+      entityNumberType: "job" as const,
+      titleText: r.title_text ?? "",
     })));
   }
 

@@ -1,9 +1,9 @@
 /**
  * QuoteHeaderCard (Phase 3B, 2026-04-14)
  *
- * Canonical quote detail header — mirrors `InvoiceHeaderCard` structure
- * so Quote Detail belongs to the same visual/system family as Invoice
- * Detail and Job Detail:
+ * Canonical quote detail header — mirrors the Invoice Detail
+ * `InvoiceMetaCard` structure so Quote Detail belongs to the same
+ * visual/system family as Invoice Detail and Job Detail:
  *
  *   Section A — card shell (`bg-white rounded-md border ...`):
  *     Left:   quote title + status badge + total
@@ -155,7 +155,7 @@ export function QuoteHeaderCard({
               <p className="text-sm text-slate-600 mt-1 pl-8 truncate">{quote.title}</p>
             )}
 
-            {/* Separator + company/addresses block — matches InvoiceHeaderCard */}
+            {/* Separator + company/addresses block — matches InvoiceMetaCard */}
             <div className="border-t border-slate-100 mt-3 pt-2 pl-8">
               {customerCompany?.id ? (
                 <Link href={`/clients/${customerCompany.id}`}>
@@ -192,7 +192,7 @@ export function QuoteHeaderCard({
             </div>
           </div>
 
-          {/* Right: metadata table — mirrors InvoiceHeaderCard */}
+          {/* Right: metadata table — mirrors InvoiceMetaCard */}
           <div className="shrink-0 w-48">
             <table className="text-left text-xs w-full">
               <tbody>

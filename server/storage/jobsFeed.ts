@@ -260,9 +260,13 @@ const detailSelectFields = {
   previousStatus: jobs.previousStatus,
   closedBy: jobs.closedBy,
   // Nested location object
+  // 2026-05-01 bypass cleanup: nested location.companyName resolves
+  // through the canonical helper. Both call sites of this select shape
+  // already LEFT JOIN customer_companies (lines 572 + 672), so the
+  // helper has the parent row available.
   location: {
     id: clients.id,
-    companyName: clients.companyName,
+    companyName: locationDisplayNameExpr,
     location: clients.location,
     address: clients.address,
     address2: clients.address2,
@@ -508,16 +512,22 @@ export async function getJobsFeed(
   }
 
   // Search (ILIKE on jobNumber, summary, location names, address, city)
-  // Hybrid search: aligned with client-side Jobs.tsx local search fields
+  // Hybrid search: aligned with client-side Jobs.tsx local search fields.
+  // 2026-05-01 strict-search: parented jobs match by parent customer
+  // company name only; jobs whose location is standalone match the
+  // location's own `companyName`. The legacy denormalized child column
+  // is NOT searchable for parented rows. Address/city/location-label
+  // matchers continue to work — those are location attributes, not
+  // names.
   if (filters.search?.trim()) {
     const term = `%${filters.search.trim()}%`;
     conditions.push(
       or(
         ilike(jobs.summary, term),
         sql`CAST(${jobs.jobNumber} AS TEXT) LIKE ${term}`,
-        ilike(clients.companyName, term),
+        sql`(${clients.parentCompanyId} IS NOT NULL AND ${customerCompanies.name} ILIKE ${term})`,
+        sql`(${clients.parentCompanyId} IS NULL AND ${clients.companyName} ILIKE ${term})`,
         ilike(clients.location, term),
-        ilike(customerCompanies.name, term),
         ilike(clients.address, term),
         ilike(clients.city, term)
       )!

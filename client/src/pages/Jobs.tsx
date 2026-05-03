@@ -36,6 +36,8 @@ import {
 import { CreateNewDialog } from "@/components/CreateNewDialog";
 import { ApplyTemplateModal } from "@/components/ApplyTemplateModal";
 import { tableRowClass, listPrimaryClass, listSecondaryClass, listResultsClass } from "@/components/ui/list-surface";
+// 2026-05-02 entity-number visual language: blue pill for current entity row.
+import { EntityNumber } from "@/components/common/EntityNumber";
 import { isJobScheduled, isJobOverdue } from "@shared/schema";
 import { getJobStatusDisplay } from "@/components/job/jobUtils";
 import type { JobFeedItem } from "@/hooks/useJobsFeed";
@@ -588,8 +590,13 @@ export default function Jobs() {
                         {job.locationName && <div className="text-caption text-slate-500 truncate">{job.locationName}</div>}
                       </TableCell>
                       <TableCell>
-                        <div className="font-mono text-row text-slate-800">{formatJobNumber(job.jobNumber)}</div>
-                        <div className="text-caption text-slate-500 capitalize">{job.jobType}</div>
+                        {/* 2026-05-02 entity-number system: row IS a job
+                            → primary blue pill. The legacy `formatJobNumber`
+                            (which prefixed `#`) is replaced by the
+                            EntityNumber primitive — pill chrome makes
+                            the `#` redundant. */}
+                        <EntityNumber variant="primary">{job.jobNumber}</EntityNumber>
+                        <div className="text-caption text-slate-500 capitalize mt-0.5">{job.jobType}</div>
                       </TableCell>
                       <TableCell>
                         <div className="max-w-[300px] truncate text-row text-slate-700">{job.summary}</div>
@@ -668,8 +675,13 @@ export default function Jobs() {
                       </TableCell>
                       {/* Job number + type */}
                       <TableCell data-testid={`text-jobnumber-${job.id}`}>
-                        <div className="font-mono text-row text-slate-800">{formatJobNumber(job.jobNumber)}</div>
-                        <div className="text-caption text-slate-500 capitalize">{job.jobType}</div>
+                        {/* 2026-05-02 entity-number system: row IS a job
+                            → primary blue pill. The legacy `formatJobNumber`
+                            (which prefixed `#`) is replaced by the
+                            EntityNumber primitive — pill chrome makes
+                            the `#` redundant. */}
+                        <EntityNumber variant="primary">{job.jobNumber}</EntityNumber>
+                        <div className="text-caption text-slate-500 capitalize mt-0.5">{job.jobType}</div>
                       </TableCell>
                       {/* Summary */}
                       <TableCell data-testid={`text-summary-${job.id}`}>

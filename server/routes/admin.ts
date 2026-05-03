@@ -746,6 +746,10 @@ router.get(
     const { invoices, clients, customerCompanies } = await import("@shared/schema");
     const { eq, sql } = await import("drizzle-orm");
     const { storage } = await import("../storage/index");
+    // 2026-05-01: canonical location-name resolver for the admin
+    // diagnostic sample so it shows the same display name as user-
+    // facing surfaces.
+    const { locationDisplayNameExpr } = await import("../lib/queryHelpers");
 
     // =========================================================================
     // INVOICES - DB counts
@@ -820,10 +824,13 @@ router.get(
       .where(sql`${clients.companyId} = ${companyId} AND ${clients.parentCompanyId} IS NULL`);
 
     // Sample locations (up to 10)
+    // 2026-05-01 bypass cleanup: companyName resolves through the
+    // canonical helper. LEFT JOIN customer_companies so the helper has
+    // the parent row to consult; uses idx_client_locations_parent_company.
     const sampleLocations = await db
       .select({
         id: clients.id,
-        companyName: clients.companyName,
+        companyName: locationDisplayNameExpr,
         location: clients.location,
         address: clients.address,
         city: clients.city,
@@ -832,6 +839,7 @@ router.get(
         deletedAt: clients.deletedAt,
       })
       .from(clients)
+      .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
       .where(eq(clients.companyId, companyId))
       .limit(10);
 

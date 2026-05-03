@@ -144,22 +144,7 @@ export function AddLineItemForm({
           data-testid={`input-new-line-qty-${clientKey}`}
         />
       </td>
-      <td className="py-2.5 px-3 align-top w-32">
-        <div className="relative">
-          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">$</span>
-          <Input
-            type="number"
-            inputMode="decimal"
-            min={0}
-            step="0.01"
-            placeholder="0.00"
-            className="text-xs text-right w-full pl-5 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-            value={draft.unitPrice}
-            onChange={(e) => setDraft({ unitPrice: e.target.value })}
-            data-testid={`input-new-line-price-${clientKey}`}
-          />
-        </div>
-      </td>
+      {/* 2026-05-01: Cost cell moved BEFORE Rate cell (job surfaces only). */}
       {showCost && (
         <td className="py-2.5 px-3 align-top w-[110px]">
           <div className="relative">
@@ -178,6 +163,22 @@ export function AddLineItemForm({
           </div>
         </td>
       )}
+      <td className="py-2.5 px-3 align-top w-32">
+        <div className="relative">
+          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">$</span>
+          <Input
+            type="number"
+            inputMode="decimal"
+            min={0}
+            step="0.01"
+            placeholder="0.00"
+            className="text-xs text-right w-full pl-5 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+            value={draft.unitPrice}
+            onChange={(e) => setDraft({ unitPrice: e.target.value })}
+            data-testid={`input-new-line-price-${clientKey}`}
+          />
+        </div>
+      </td>
       <td className="py-2.5 pl-3 pr-1 align-top text-right text-xs font-semibold w-[110px]">
         {lineTotal}
       </td>

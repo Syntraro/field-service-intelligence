@@ -12,7 +12,14 @@ import { requireFeature } from "../auth/requireFeature";
 import { assertInvoiceStatusTransition } from "../domain/jobLifecycle";
 import { invoiceStatusEnum } from "@shared/schema";
 import type { InvoiceStatus } from "@shared/schema";
-import { createInvoiceFromJob as createInvoiceFromJobService, calculateDueDate, applyTaxGroupToInvoice } from "../services/invoiceCreationService";
+import {
+  createInvoiceFromJob as createInvoiceFromJobService,
+  calculateDueDate,
+  applyTaxGroupToInvoice,
+  // 2026-05-02 (Audit #2 invoice-flow Phase 1): atomic create-with-lines.
+  createInvoiceAtomicService,
+  CreateAtomicValidationError,
+} from "../services/invoiceCreationService";
 import { invoiceReminderService, ReminderGateError } from "../services/invoiceReminderService";
 import { invoiceRepository } from "../storage/invoices";
 import { jobNotesRepository } from "../storage/jobNotes";
@@ -261,6 +268,189 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
   });
 
   res.status(201).json(result.invoice);
+}));
+
+// ============================================================================
+// 2026-05-02 (Audit #2 invoice-flow Phase 1) — Atomic Create-With-Lines
+// ============================================================================
+//
+// POST /api/invoices/atomic
+//
+// Single-shot create endpoint for the future client-side `/invoices/new`
+// builder (Phase 6). The client buffers the entire draft locally and
+// posts it here on Save. Inside one DB transaction the server:
+//   1. allocates the official invoice number from the company counter,
+//   2. creates the invoice row,
+//   3. inserts every line item exactly as the client sent it,
+//   4. applies the resolved tax group (or null for no tax),
+//   5. recalculates totals once (canonical perf baseline 2026-03-18),
+//   6. snapshots tax lines.
+//
+// AFTER the transaction commits (separate per-job transactions), if the
+// caller passed `markJobsCompleted: true` the service fires
+// `lifecycle.markInvoiced` for each linked jobId — the canonical lifecycle
+// writer per CLAUDE.md.
+//
+// Lines are CLIENT-AUTHORITATIVE. No second pull from jobs occurs here.
+// `jobIds` are used only for: (a) validation, (b) primary-pointer
+// (`invoices.jobId = jobIds[0]`), (c) optional lifecycle markInvoiced.
+// Pre-existing routes (`POST /api/invoices`, `POST /from-job/:jobId`,
+// `POST /:id/refresh-from-job`) are unchanged and continue to serve
+// every existing caller.
+const atomicLineSchema = canonicalLineItemInput.extend({
+  /** Optional cross-reference back to the source `job_parts.id` row when
+   *  the line was hydrated from a job's billable items on the client. */
+  jobLineItemId: z.string().uuid().nullable().optional(),
+  /** Optional date stamped on the line (e.g. labor entry date). */
+  date: z.string().nullable().optional(),
+  /** Optional technician id stamped on the line. */
+  technicianId: z.string().uuid().nullable().optional(),
+});
+
+const createAtomicSchema = z.object({
+  // Identity
+  locationId: z.string().uuid(),
+  customerCompanyId: z.string().uuid().nullable().optional(),
+
+  // Job linkage
+  jobIds: z.array(z.string().uuid()).max(20).optional(),
+  markJobsCompleted: z.boolean().optional(),
+
+  // Header / metadata
+  workDescription: z.string().max(2000).optional(),
+  issueDate: z.string().min(1).max(50).optional(),
+  dueDate: z.string().nullable().optional(),
+  paymentTermsDays: z.number().int().min(0).max(365).nullable().optional(),
+  invoiceNumber: z.string().min(1).max(100).optional(),
+  notesInternal: z.string().max(2000).optional(),
+  notesCustomer: z.string().max(2000).optional(),
+  clientMessage: z.string().max(2000).optional(),
+
+  // Visibility toggles (mirror updateInvoiceSchema)
+  showQuantity: z.boolean().optional(),
+  showUnitPrice: z.boolean().optional(),
+  showLineTotals: z.boolean().optional(),
+  showLineItems: z.boolean().optional(),
+  showBalance: z.boolean().optional(),
+  showJobDescription: z.boolean().optional(),
+
+  // Discount
+  discountType: z.enum(["PERCENT", "AMOUNT"]).nullable().optional(),
+  discountPercent: z
+    .string()
+    .regex(/^\d{1,3}(\.\d{1,2})?$/)
+    .nullable()
+    .optional(),
+  discountAmount: z
+    .string()
+    .regex(/^\d+(\.\d{1,2})?$/)
+    .nullable()
+    .optional(),
+  discountNotes: z.string().max(500).nullable().optional(),
+
+  // Tax: explicit null disables; omit to inherit company default.
+  taxGroupId: z.string().uuid().nullable().optional(),
+
+  // Lines (default empty — header-only invoices are valid).
+  lines: z.array(atomicLineSchema).max(500).optional(),
+}).strict();
+
+router.post("/atomic", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const validated = validateSchema(createAtomicSchema, req.body);
+  const companyId = req.companyId!;
+  if (!companyId) {
+    throw createError(401, "Company context required.");
+  }
+
+  const actor = {
+    userId: req.user?.id || "unknown",
+    role: req.user?.role || "unknown",
+  };
+
+  try {
+    const result = await createInvoiceAtomicService(
+      companyId,
+      {
+        locationId: validated.locationId,
+        customerCompanyId: validated.customerCompanyId,
+        jobIds: validated.jobIds,
+        markJobsCompleted: validated.markJobsCompleted,
+        workDescription: validated.workDescription,
+        issueDate: validated.issueDate,
+        dueDate: validated.dueDate,
+        paymentTermsDays: validated.paymentTermsDays,
+        invoiceNumber: validated.invoiceNumber,
+        notesInternal: validated.notesInternal,
+        notesCustomer: validated.notesCustomer,
+        clientMessage: validated.clientMessage,
+        showQuantity: validated.showQuantity,
+        showUnitPrice: validated.showUnitPrice,
+        showLineTotals: validated.showLineTotals,
+        showLineItems: validated.showLineItems,
+        showBalance: validated.showBalance,
+        showJobDescription: validated.showJobDescription,
+        discountType: validated.discountType,
+        discountPercent: validated.discountPercent,
+        discountAmount: validated.discountAmount,
+        discountNotes: validated.discountNotes,
+        taxGroupId: validated.taxGroupId,
+        // Zod's `.default(...)` rules on the line schema parse missing
+        // values to their defaults at runtime, but TypeScript doesn't
+        // narrow the inferred type away from `T | undefined`. Coalesce
+        // here so the typed payload matches `CreateAtomicJobLine`.
+        lines: (validated.lines ?? []).map((l) => ({
+          description: l.description,
+          quantity: l.quantity ?? "1",
+          unitPrice: l.unitPrice ?? "0.00",
+          unitCost: l.unitCost ?? null,
+          productId: l.productId ?? null,
+          lineItemType: l.lineItemType ?? "service",
+          source: l.source ?? "manual",
+          jobLineItemId: l.jobLineItemId ?? null,
+          date: l.date ?? null,
+          technicianId: l.technicianId ?? null,
+        })),
+      },
+      actor,
+    );
+
+    logEventAsync(getQueryCtx(req), {
+      eventType: "invoice.created",
+      entityType: "invoice",
+      entityId: result.invoice.id,
+      summary: `Invoice #${result.invoiceNumber} created (atomic)`,
+      meta: {
+        invoiceNumber: result.invoiceNumber,
+        jobIds: validated.jobIds ?? [],
+        markedJobIds: result.markedJobIds,
+        lineCount: (validated.lines ?? []).length,
+      },
+    });
+
+    // 2026-05-03: return the full service result (`{ invoice,
+    // invoiceNumber, markedJobIds }`) so the wire shape matches the
+    // canonical `CreateAtomicResult` contract the service exposes and
+    // the typed shape the frontend mutation already declares. The
+    // earlier `res.json(result.invoice)` unwrapped the bare invoice
+    // row and broke the new-invoice page's redirect (frontend reads
+    // `response.invoice.id`).
+    res.status(201).json(result);
+  } catch (err) {
+    if (err instanceof CreateAtomicValidationError) {
+      // Manual response — `createError` doesn't carry structured
+      // `detail` payloads, and the canonical `handleApiError`
+      // middleware only forwards a `code` string for 4xx responses.
+      // Bypassing the middleware here lets us return
+      // `{ error, detail: { conflictJobIds: [...] } }` so the
+      // future client-side builder can highlight which jobs to
+      // remove from selection on a 409.
+      const body: Record<string, unknown> = { error: err.message };
+      if (err.detail) body.detail = err.detail;
+      res.status(err.status).json(body);
+      return;
+    }
+    throw err;
+  }
 }));
 
 // Phase 5 Step A4: GET /api/invoices/list — canonical invoice feed.
@@ -679,6 +869,26 @@ router.post("/:id/lines", requireRole(MANAGER_ROLES), requireEditableStatus(), a
   // Check lock (throws 409 if locked without override)
   checkQboLineItemLock(invoice, 'add', { overrideQboLock, overrideReason });
 
+  // 2026-05-01: defense-in-depth lineSubtotal recompute. The canonical
+  // client choke point (`useLineItemsDrafts.ts::updateDraft`) keeps
+  // lineSubtotal in sync when qty/unitPrice change, but if a future
+  // client regression or third-party caller posts a body where
+  // lineSubtotal is "0.00" while quantity and unitPrice are non-zero,
+  // recompute from the inputs. Tax application below reads
+  // `parseMoney(lineData.lineSubtotal)` to derive the line tax — a 0
+  // subtotal silently zeroes the tax too. This guard catches the case
+  // before the line is persisted. No behavior change when the client
+  // already sent the correct subtotal.
+  {
+    const subtotalIn = parseMoney(lineData.lineSubtotal);
+    const qtyIn = parseMoney(lineData.quantity);
+    const priceIn = parseMoney(lineData.unitPrice);
+    if (subtotalIn === 0 && qtyIn > 0 && priceIn > 0) {
+      const computed = Math.round(qtyIn * priceIn * 100) / 100;
+      lineData.lineSubtotal = formatMoney(computed, 2);
+    }
+  }
+
   // If the invoice has an active tax group and the incoming line has no
   // explicit tax rate, apply the group's rate.
   //
@@ -813,6 +1023,25 @@ router.patch("/:id/lines/:lineId", requireRole(MANAGER_ROLES), requireEditableSt
     requireQboOverrideReason(overrideQboLock, overrideReason);
   }
   checkQboLineItemLock(invoice, 'update', { overrideQboLock, overrideReason });
+
+  // 2026-05-01: same defense-in-depth recompute as the POST route. The
+  // canonical client save path always sends quantity + unitPrice +
+  // lineSubtotal together (the draft hook keeps them in sync), so the
+  // common case is a no-op. This catches a partial body where all three
+  // are present but lineSubtotal is stale "0.00" while qty/price are
+  // non-zero. Partial-PATCH callers that only send `quantity` (without
+  // unitPrice + lineSubtotal) would still need a separate fetch-and-merge
+  // recompute — out of scope for this guard since no canonical client
+  // path does that today.
+  if (lineData.quantity !== undefined && lineData.unitPrice !== undefined) {
+    const subtotalIn = parseMoney(lineData.lineSubtotal ?? "0");
+    const qtyIn = parseMoney(lineData.quantity);
+    const priceIn = parseMoney(lineData.unitPrice);
+    if (subtotalIn === 0 && qtyIn > 0 && priceIn > 0) {
+      const computed = Math.round(qtyIn * priceIn * 100) / 100;
+      lineData.lineSubtotal = formatMoney(computed, 2);
+    }
+  }
 
   const updated = await storage.updateInvoiceLine(req.companyId!, req.params.id, req.params.lineId, lineData);
   if (!updated) {

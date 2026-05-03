@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { eq, and, inArray, sql, or, ilike, gte, lte, isNull, isNotNull, desc } from "drizzle-orm";
-import { clients, clientParts, jobs, locationEquipment, items } from "@shared/schema";
+import { clients, clientParts, customerCompanies, jobs, locationEquipment, items } from "@shared/schema";
 import type { InsertClient, Client, InsertLocationEquipment, UpdateLocationEquipment } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset, escapeLike } from "./base";
 import { activeJobFilter } from "./jobFilters";
@@ -86,16 +86,32 @@ export class ClientRepository extends BaseRepository {
     }
     // When options.inactive is undefined → no filter → return all (active + inactive)
 
-    // Add search filter
+    // Add search filter.
+    // 2026-05-01 strict-search: parented locations match by parent
+    // customer company name (via correlated subquery so the storage
+    // layer's return shape is unchanged); standalone locations match
+    // their own `companyName`. Stale denormalized values on parented
+    // rows are NOT searchable. Contact/email/phone/location-label
+    // matchers continue to work — those are location attributes, not
+    // names.
     if (options.search && options.search.trim()) {
       const searchTerm = escapeLike(options.search.trim());
+      const pattern = `%${searchTerm}%`;
       whereConditions.push(
         or(
-          ilike(clients.companyName, `%${searchTerm}%`),
-          ilike(clients.contactName, `%${searchTerm}%`),
-          ilike(clients.email, `%${searchTerm}%`),
-          ilike(clients.phone, `%${searchTerm}%`),
-          ilike(clients.location, `%${searchTerm}%`)
+          // Parented: parent customer company name (subquery — no join,
+          // preserves Client[] return type; PK lookup, performance neutral).
+          sql`(${clients.parentCompanyId} IS NOT NULL AND EXISTS (
+            SELECT 1 FROM ${customerCompanies}
+            WHERE ${customerCompanies.id} = ${clients.parentCompanyId}
+              AND ${customerCompanies.name} ILIKE ${pattern}
+          ))`,
+          // Standalone: own column.
+          sql`(${clients.parentCompanyId} IS NULL AND ${clients.companyName} ILIKE ${pattern})`,
+          ilike(clients.contactName, pattern),
+          ilike(clients.email, pattern),
+          ilike(clients.phone, pattern),
+          ilike(clients.location, pattern)
         )!
       );
     }

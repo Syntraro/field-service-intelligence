@@ -127,6 +127,27 @@ export async function createInvoiceFromJob(
     const defaultGroup = await taxRepository.getDefaultTaxGroup(companyId);
     if (defaultGroup && defaultGroup.rates.length > 0) {
       await applyTaxGroupToInvoice(companyId, result.invoice.id, defaultGroup.id, tx);
+    } else {
+      // 2026-05-01: structured warning when a tenant has no default tax
+      // group (or has one with no rates). Pre-this-warning the guard
+      // silently skipped tax application, surfacing as "No Tax" on the
+      // resulting invoice with no operator visibility. The fix is a
+      // one-time backfill migration that seeds a canonical group from
+      // legacy `companies.defaultTaxRate` — see
+      // `migrations/2026_05_01_seed_default_tax_groups.sql`. Logging at
+      // the canonical write point makes any remaining gaps observable.
+      console.warn(
+        JSON.stringify({
+          event: "invoice.created.no_default_tax_group",
+          companyId,
+          invoiceId: result.invoice.id,
+          jobId,
+          source: creationSource,
+          hasGroup: !!defaultGroup,
+          rateCount: defaultGroup?.rates.length ?? 0,
+          timestamp: new Date().toISOString(),
+        }),
+      );
     }
   };
 
@@ -240,4 +261,327 @@ export async function applyTaxGroupToInvoice(
   return db.transaction(async (tx) => {
     return applyTaxGroupCore(companyId, invoiceId, taxGroupId, tx);
   });
+}
+
+// ============================================================================
+// 2026-05-02 (Audit #2 invoice-flow Phase 1) — Atomic Create From Builder
+// ============================================================================
+//
+// Service wrapper for `POST /api/invoices/atomic`. Validates the payload,
+// resolves the default tax group (when payload omits the field), wraps
+// `storage.createInvoiceAtomic(...)` in the canonical create flow, then
+// fires `lifecycle.markInvoiced` for any jobIds the caller asked to mark
+// — the canonical lifecycle writer per `CLAUDE.md`.
+//
+// Lines are CLIENT-AUTHORITATIVE. The caller passes the final lines
+// array; this service does NOT pull from jobs. `jobIds` are used for:
+//   1. Validation (tenant ownership + same customer + ready-to-invoice).
+//   2. Setting `invoices.jobId` to the FIRST jobId (the schema's
+//      single-job primary pointer).
+//   3. Lifecycle: optional `markInvoiced` per jobId (caller opt-in).
+
+export interface CreateAtomicJobLine {
+  description: string;
+  quantity: string;
+  unitPrice: string;
+  unitCost?: string | null;
+  productId?: string | null;
+  lineItemType: "service" | "material" | "fee" | "discount";
+  source: "manual" | "job" | "template" | "tech";
+  jobLineItemId?: string | null;
+  date?: string | null;
+  technicianId?: string | null;
+}
+
+export interface CreateAtomicPayload {
+  locationId: string;
+  customerCompanyId?: string | null;
+  jobIds?: string[];
+  markJobsCompleted?: boolean;
+  workDescription?: string | null;
+  issueDate?: string;
+  dueDate?: string | null;
+  paymentTermsDays?: number | null;
+  /** Caller can pin a tax group, set `null` to disable tax, or omit
+   *  the field entirely to inherit the company default. */
+  taxGroupId?: string | null;
+  invoiceNumber?: string;
+  notesInternal?: string;
+  notesCustomer?: string;
+  clientMessage?: string;
+  showQuantity?: boolean;
+  showUnitPrice?: boolean;
+  showLineTotals?: boolean;
+  showLineItems?: boolean;
+  showBalance?: boolean;
+  showJobDescription?: boolean;
+  discountType?: "PERCENT" | "AMOUNT" | null;
+  discountPercent?: string | null;
+  discountAmount?: string | null;
+  discountNotes?: string | null;
+  lines?: CreateAtomicJobLine[];
+}
+
+export interface CreateAtomicActor {
+  userId: string;
+  role: string;
+}
+
+export interface CreateAtomicResult {
+  invoice: any;
+  invoiceNumber: string;
+  /** Empty when no jobIds were sent or markJobsCompleted was false. */
+  markedJobIds: string[];
+}
+
+/**
+ * Validation error with optional structured detail. The route handler
+ * unpacks this into the response body so the frontend can surface
+ * conflict details (e.g. which job ids were already invoiced).
+ */
+export class CreateAtomicValidationError extends Error {
+  status: number;
+  detail?: Record<string, unknown>;
+  constructor(status: number, message: string, detail?: Record<string, unknown>) {
+    super(message);
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+export async function createInvoiceAtomicService(
+  companyId: string,
+  payload: CreateAtomicPayload,
+  actor: CreateAtomicActor,
+): Promise<CreateAtomicResult> {
+  assertWritableSupportContext("invoice.createAtomic");
+
+  // ── 1) Location validation + customer derivation ───────────────────────
+  const location = await storage.getClient(companyId, payload.locationId);
+  if (!location) {
+    throw new CreateAtomicValidationError(
+      404,
+      `Location not found for this company. Verify the location ID (${payload.locationId}) belongs to your account.`,
+    );
+  }
+
+  const derivedCustomerCompanyId = location.parentCompanyId ?? null;
+  const effectiveCustomerCompanyId =
+    payload.customerCompanyId !== undefined
+      ? payload.customerCompanyId
+      : derivedCustomerCompanyId;
+
+  // If caller asserted a customerCompanyId, it MUST match the location's
+  // parent. Reject mismatches up front so the schema invariant
+  // (`invoices.customerCompanyId === location.parentCompanyId`) holds.
+  if (
+    payload.customerCompanyId !== undefined &&
+    payload.customerCompanyId !== null &&
+    payload.customerCompanyId !== derivedCustomerCompanyId
+  ) {
+    throw new CreateAtomicValidationError(
+      400,
+      "customerCompanyId does not match the selected location's parent company.",
+    );
+  }
+
+  // ── 2) Job validation (when jobIds present) ───────────────────────────
+  const jobIds = (payload.jobIds ?? []).filter((id): id is string => typeof id === "string" && id.length > 0);
+  const jobs: Array<{ id: string; companyId: string; locationId: string | null; status: string; invoiceId: string | null; version: number | null; customerCompanyId: string | null }> = [];
+
+  if (jobIds.length > 0) {
+    // Fetch each job once (canonical `storage.getJob` returns the row
+    // with version + invoiceId + locationId fields we need).
+    for (const jobId of jobIds) {
+      const job = await storage.getJob(companyId, jobId);
+      if (!job) {
+        throw new CreateAtomicValidationError(
+          404,
+          `Job not found: ${jobId}`,
+          { conflictJobIds: [jobId] },
+        );
+      }
+      // Resolve customerCompanyId for the job: job → location.parent.
+      const jobLocation = job.locationId
+        ? await storage.getClient(companyId, job.locationId)
+        : null;
+      jobs.push({
+        id: job.id,
+        companyId: job.companyId,
+        locationId: job.locationId ?? null,
+        status: job.status,
+        invoiceId: (job as any).invoiceId ?? null,
+        version: (job as any).version ?? 0,
+        customerCompanyId: jobLocation?.parentCompanyId ?? null,
+      });
+    }
+
+    // 2a) All jobs share same customer as the picked location.
+    const conflictByCustomer = jobs.filter(
+      (j) => j.customerCompanyId !== effectiveCustomerCompanyId,
+    );
+    if (conflictByCustomer.length > 0) {
+      throw new CreateAtomicValidationError(
+        400,
+        "All selected jobs must belong to the same customer as the picked location.",
+        { conflictJobIds: conflictByCustomer.map((j) => j.id) },
+      );
+    }
+
+    // 2b) Already-invoiced jobs → 409.
+    const alreadyInvoiced = jobs.filter((j) => j.invoiceId !== null);
+    if (alreadyInvoiced.length > 0) {
+      throw new CreateAtomicValidationError(
+        409,
+        "One or more selected jobs are already invoiced.",
+        { conflictJobIds: alreadyInvoiced.map((j) => j.id) },
+      );
+    }
+
+    // 2c) Ready-to-invoice rule: status === 'completed'. Mirrors the
+    //     existing `?readyToInvoiceOnly=true` filter in
+    //     `server/storage/dashboard.ts:811` (status='completed' AND no
+    //     invoice). The "no invoice" half is the prior check; this is
+    //     the "completed" half.
+    const notReady = jobs.filter((j) => j.status !== "completed");
+    if (notReady.length > 0) {
+      throw new CreateAtomicValidationError(
+        400,
+        "Selected jobs must be completed before they can be invoiced.",
+        { conflictJobIds: notReady.map((j) => j.id) },
+      );
+    }
+  }
+
+  // ── 3) Tax group resolution ───────────────────────────────────────────
+  // Caller can pass:
+  //   - `null`     → no tax (zero rate, no snapshot)
+  //   - <string>   → apply that group (validated below)
+  //   - <missing>  → resolve to default (parity with existing standalone
+  //                   create, which auto-applies default)
+  let resolvedTaxGroupId: string | null;
+  if (payload.taxGroupId === null) {
+    resolvedTaxGroupId = null;
+  } else if (typeof payload.taxGroupId === "string" && payload.taxGroupId.length > 0) {
+    const group = await taxRepository.getTaxGroup(companyId, payload.taxGroupId);
+    if (!group) {
+      throw new CreateAtomicValidationError(
+        404,
+        `Tax group not found: ${payload.taxGroupId}`,
+      );
+    }
+    resolvedTaxGroupId = group.id;
+  } else {
+    const defaultGroup = await taxRepository.getDefaultTaxGroup(companyId);
+    resolvedTaxGroupId =
+      defaultGroup && defaultGroup.rates.length > 0 ? defaultGroup.id : null;
+  }
+
+  // ── 4) Discount mutual validity ───────────────────────────────────────
+  if (
+    payload.discountType === "PERCENT" &&
+    typeof payload.discountAmount === "string" &&
+    payload.discountAmount.length > 0
+  ) {
+    throw new CreateAtomicValidationError(
+      400,
+      "discountType=PERCENT cannot include a discountAmount.",
+    );
+  }
+  if (
+    payload.discountType === "AMOUNT" &&
+    typeof payload.discountPercent === "string" &&
+    payload.discountPercent.length > 0
+  ) {
+    throw new CreateAtomicValidationError(
+      400,
+      "discountType=AMOUNT cannot include a discountPercent.",
+    );
+  }
+
+  // ── 5) Storage create ─────────────────────────────────────────────────
+  const primaryJobId = jobIds.length > 0 ? jobIds[0] : null;
+  const linesToInsert = (payload.lines ?? []).map((l) => ({
+    description: l.description,
+    quantity: l.quantity,
+    unitPrice: l.unitPrice,
+    unitCost: l.unitCost ?? null,
+    productId: l.productId ?? null,
+    lineItemType: l.lineItemType,
+    source: l.source,
+    jobLineItemId: l.jobLineItemId ?? null,
+    date: l.date ?? null,
+    technicianId: l.technicianId ?? null,
+  }));
+
+  const { invoice, invoiceNumber } = await storage.createInvoiceAtomic(
+    companyId,
+    {
+      locationId: payload.locationId,
+      customerCompanyId: effectiveCustomerCompanyId,
+      primaryJobId,
+      workDescription: payload.workDescription ?? null,
+      issueDate: payload.issueDate,
+      dueDate: payload.dueDate,
+      paymentTermsDays: payload.paymentTermsDays ?? undefined,
+      invoiceNumber: payload.invoiceNumber,
+      notesInternal: payload.notesInternal,
+      notesCustomer: payload.notesCustomer,
+      clientMessage: payload.clientMessage,
+      showQuantity: payload.showQuantity,
+      showUnitPrice: payload.showUnitPrice,
+      showLineTotals: payload.showLineTotals,
+      showLineItems: payload.showLineItems,
+      showBalance: payload.showBalance,
+      showJobDescription: payload.showJobDescription,
+      discountType: payload.discountType,
+      discountPercent: payload.discountPercent,
+      discountAmount: payload.discountAmount,
+      discountNotes: payload.discountNotes,
+      taxGroupId: resolvedTaxGroupId,
+    },
+    linesToInsert,
+    "ATOMIC_ROUTE",
+  );
+
+  // ── 6) Job lifecycle (markInvoiced per jobId) ─────────────────────────
+  // Run AFTER the create transaction commits so the invoice exists when
+  // the lifecycle writer reads `invoiceId`. Sequential is safe — each
+  // markInvoiced opens its own short transaction and is idempotent on
+  // re-run via the canonical lifecycle engine.
+  const markedJobIds: string[] = [];
+  if (payload.markJobsCompleted === true && jobs.length > 0) {
+    // Lazy import to avoid a static import cycle: jobLifecycleOrchestrator
+    // already imports from storage which transitively reaches here.
+    const { markInvoiced } = await import("./jobLifecycleOrchestrator");
+    for (const j of jobs) {
+      try {
+        await markInvoiced({
+          type: "MARK_INVOICED",
+          companyId,
+          jobId: j.id,
+          version: j.version ?? 0,
+          actor: { userId: actor.userId, role: actor.role },
+          invoiceId: invoice.id,
+        });
+        markedJobIds.push(j.id);
+      } catch (err) {
+        // Best-effort: a markInvoiced failure (e.g. version conflict from
+        // a concurrent edit) does not roll back the invoice. Log + carry
+        // on; operator can re-run the lifecycle transition manually.
+        console.warn(
+          JSON.stringify({
+            event: "invoice.atomic.mark_invoiced_failed",
+            companyId,
+            invoiceId: invoice.id,
+            jobId: j.id,
+            error: err instanceof Error ? err.message : String(err),
+            timestamp: new Date().toISOString(),
+          }),
+        );
+      }
+    }
+  }
+
+  return { invoice, invoiceNumber, markedJobIds };
 }

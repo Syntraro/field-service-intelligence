@@ -125,7 +125,7 @@ export class ClientContactRepository extends BaseRepository {
   }
 
   /** Update person identity fields. */
-  async updatePerson(companyId: string, personId: string, data: Partial<Pick<ContactPerson, "firstName" | "lastName" | "email" | "phone" | "isPrimary">>): Promise<ContactPerson | undefined> {
+  async updatePerson(companyId: string, personId: string, data: Partial<Pick<ContactPerson, "firstName" | "lastName" | "title" | "jobTitle" | "email" | "phone" | "isPrimary">>): Promise<ContactPerson | undefined> {
     this.assertCompanyId(companyId);
     const [row] = await db.update(contactPersons)
       .set({ ...data, updatedAt: new Date() })
@@ -152,6 +152,44 @@ export class ClientContactRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     const [row] = await db.insert(contactAssignments).values({ ...data, companyId }).returning();
     return row;
+  }
+
+  /**
+   * Transaction variant of `assignToLocation` with idempotency.
+   * Inserts a `contact_assignments` row only when no row already exists
+   * for the same `(contactPersonId, locationId)` pair within the tenant
+   * scope. Used by `POST /api/customer-companies/:companyId/locations`
+   * to atomically link the inline-contact person to the newly created
+   * location in the same transaction. Idempotent so re-submits or
+   * dedup'd location creations do not produce twin assignments
+   * (the schema has no unique constraint on the pair, so this is the
+   * canonical guard).
+   *
+   * 2026-05-02: added because the prior route created the
+   * contact_persons row but never created an assignment, leaving the
+   * right-rail Contacts tab (which renders the assignment-flattened
+   * `locationContacts` array) empty after Add Location with inline
+   * contact fields.
+   */
+  async assignToLocationTx(
+    tx: any,
+    companyId: string,
+    data: Omit<InsertContactAssignment, "companyId">,
+  ): Promise<{ assignment: ContactAssignment; created: boolean }> {
+    this.assertCompanyId(companyId);
+    const existing: ContactAssignment[] = await tx
+      .select()
+      .from(contactAssignments)
+      .where(and(
+        eq(contactAssignments.companyId, companyId),
+        eq(contactAssignments.contactPersonId, data.contactPersonId),
+        eq(contactAssignments.locationId, data.locationId),
+      ));
+    if (existing.length > 0) {
+      return { assignment: existing[0], created: false };
+    }
+    const [row] = await tx.insert(contactAssignments).values({ ...data, companyId }).returning();
+    return { assignment: row, created: true };
   }
 
   /** Get all assignments for a location. */
@@ -248,9 +286,14 @@ export class ClientContactRepository extends BaseRepository {
   async getContactsForCustomerCompany(companyId: string, customerCompanyId: string) {
     const directory = await this.getCompanyDirectory(companyId, customerCompanyId);
     // Company contacts = all persons (the directory)
+    // 2026-05-02 honorific split: surface `title` (honorific) and
+    // `jobTitle` so the canonical Add/Edit Contact modal can render
+    // them without a second fetch.
     const companyContacts = directory.map(p => ({
       id: p.id, companyId: p.companyId, customerCompanyId: p.customerCompanyId,
-      firstName: p.firstName, lastName: p.lastName, email: p.email, phone: p.phone,
+      firstName: p.firstName, lastName: p.lastName,
+      title: p.title, jobTitle: p.jobTitle,
+      email: p.email, phone: p.phone,
       isPrimary: p.isPrimary, roles: [] as string[], locationId: null as string | null,
       createdAt: p.createdAt, updatedAt: p.updatedAt,
       assignmentCount: p.assignments.length,
@@ -260,7 +303,9 @@ export class ClientContactRepository extends BaseRepository {
       p.assignments.map(a => ({
         id: a.id, companyId: p.companyId, customerCompanyId: p.customerCompanyId,
         contactPersonId: p.id,
-        firstName: p.firstName, lastName: p.lastName, email: p.email, phone: p.phone,
+        firstName: p.firstName, lastName: p.lastName,
+        title: p.title, jobTitle: p.jobTitle,
+        email: p.email, phone: p.phone,
         isPrimary: p.isPrimary, roles: a.roles, locationId: a.locationId,
         createdAt: a.createdAt, updatedAt: a.updatedAt,
       }))
@@ -277,16 +322,23 @@ export class ClientContactRepository extends BaseRepository {
   async getContactsForLocation(companyId: string, locationId: string, customerCompanyId: string) {
     const allPersons = await this.getCompanyPersons(companyId, customerCompanyId);
     const locationAssigned = await this.getLocationContacts(companyId, locationId);
+    // 2026-05-02 honorific split: same surface contract as the
+    // customer-company DTO above. `title` is honorific; `jobTitle`
+    // is the freeform professional role.
     const companyContacts = allPersons.map(p => ({
       id: p.id, companyId: p.companyId, customerCompanyId: p.customerCompanyId,
-      firstName: p.firstName, lastName: p.lastName, email: p.email, phone: p.phone,
+      firstName: p.firstName, lastName: p.lastName,
+      title: p.title, jobTitle: p.jobTitle,
+      email: p.email, phone: p.phone,
       isPrimary: p.isPrimary, roles: [] as string[], locationId: null as string | null,
       createdAt: p.createdAt, updatedAt: p.updatedAt,
     }));
     const locationContacts = locationAssigned.map(lc => ({
       id: lc.assignment.id, companyId: lc.companyId, customerCompanyId: lc.customerCompanyId,
       contactPersonId: lc.id,
-      firstName: lc.firstName, lastName: lc.lastName, email: lc.email, phone: lc.phone,
+      firstName: lc.firstName, lastName: lc.lastName,
+      title: lc.title, jobTitle: lc.jobTitle,
+      email: lc.email, phone: lc.phone,
       isPrimary: lc.isPrimary, roles: lc.assignment.roles, locationId: lc.assignment.locationId,
       createdAt: lc.assignment.createdAt, updatedAt: lc.assignment.updatedAt,
     }));

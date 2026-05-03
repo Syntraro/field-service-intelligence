@@ -13,6 +13,14 @@ import {
   clientLocations,
 } from "@shared/schema";
 import { clientNotesRepository } from "../storage/clientNotes";
+// 2026-05-02 (Audit #2 invoice-flow Phase 2): read-only billable preview
+// for the future client-side invoice builder. Pure SELECT-only helper —
+// see `server/services/jobBillablePreviewService.ts` for the no-mutation
+// contract documented at the top of that file.
+import {
+  getJobBillablePreview,
+  JobBillablePreviewError,
+} from "../services/jobBillablePreviewService";
 import { assertJobStatusTransition } from "../domain/jobLifecycle";
 import { jobStatusEnum, holdReasonEnum, openSubStatusEnum } from "../schemas";
 import type { JobStatus, OpenSubStatus } from "../schemas";
@@ -1061,6 +1069,124 @@ router.get("/:id/status-events", asyncHandler(async (req: AuthedRequest, res: Re
  * ----------------------------
  */
 
+// GET /api/jobs/:id/billable-preview
+//
+// Read-only preview of the invoice lines that would be created from
+// this job. Powers the future `/invoices/new` client-side builder —
+// the user picks one or more eligible jobs, the builder hydrates the
+// preview lines into local React state, lets the user edit / remove
+// them, and submits the curated set on Save via
+// `POST /api/invoices/atomic` (Phase 1).
+//
+// 2026-05-02 (Audit #2 invoice-flow Phase 2). PURE READ. The handler +
+// the underlying `getJobBillablePreview` service do not mutate any
+// row — see the file header in
+// `server/services/jobBillablePreviewService.ts` for the full
+// no-mutation list (no invoice row, no counter bump, no
+// `invoicedAt` writes, no lifecycle transitions, no SSE emit, no
+// QBO touch, no activity log).
+//
+// Auth + tenant safety: `MANAGER_ROLES` matches the existing
+// `POST /api/invoices/from-job/:jobId` role requirement (the preview
+// surfaces labor rates + cost data, same sensitivity profile). Tenant
+// scoping is enforced inside the service via the `companyId`
+// predicate on every SELECT — a stale jobId from another tenant
+// returns 404, never the row.
+//
+// Example response shapes:
+//
+//   1) Eligible job with billable parts + labor:
+//      200 OK
+//      {
+//        jobId: "…", jobNumber: 1234,
+//        summary: "Spring AC tune-up",
+//        description: null,
+//        customerCompanyId: "cust-uuid",
+//        locationId: "loc-uuid",
+//        workDescriptionCandidate: "Spring AC tune-up",
+//        lines: [
+//          {
+//            clientKey: "part-<uuid>",
+//            sourceType: "part",
+//            source: "job",
+//            lineItemType: "material",
+//            description: "Filter — 16x25",
+//            quantity: "2",
+//            unitPrice: "12.50",
+//            unitCost: "6.00",
+//            productId: "item-uuid",
+//            jobLineItemId: "<jobParts.id>",
+//            technicianId: null,
+//            date: null,
+//            lineSubtotal: "25.00"
+//          },
+//          {
+//            clientKey: "labor-<techUserId>-regular",
+//            sourceType: "labor",
+//            source: "job",
+//            lineItemType: "service",
+//            description: "Labor - Regular (Alex Lee)",
+//            quantity: "1.50",                  // hours, post-rules
+//            unitPrice: "85.00",                // billed rate, post-rules
+//            unitCost: "30.00",                 // cost rate snapshot
+//            productId: null,
+//            jobLineItemId: null,                // labor groups span entries
+//            technicianId: "tech-user-uuid",
+//            date: null,
+//            lineSubtotal: "127.50"
+//          }
+//        ]
+//      }
+//
+//   2) Eligible job with no billable items (empty parts + no
+//      uninvoiced billable time entries):
+//      200 OK
+//      { jobId, jobNumber, summary, …, lines: [] }
+//
+//   3) Job already invoiced:
+//      409 Conflict
+//      { error: "Job is already invoiced (invoice id: …).",
+//        detail: { jobId, invoiceId } }
+//
+//   4) Job not yet completed:
+//      400 Bad Request
+//      { error: "Job must be completed before it can be invoiced (current status: in_progress).",
+//        detail: { jobId, status } }
+//
+//   5) Job from another tenant or missing:
+//      404 Not Found
+//      { error: "Job not found: <id>" }
+router.get(
+  "/:id/billable-preview",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    if (!companyId) {
+      throw createError(401, "Company context required.");
+    }
+    const jobId = req.params.id;
+
+    try {
+      const preview = await getJobBillablePreview(companyId, jobId);
+      res.status(200).json(preview);
+    } catch (err) {
+      if (err instanceof JobBillablePreviewError) {
+        // Manual response — `createError` doesn't carry structured
+        // detail payloads. Mirrors the catch block on
+        // `POST /api/invoices/atomic` so future client builders can
+        // surface `detail.invoiceId` (already-invoiced) or
+        // `detail.status` (not-completed) without string-matching
+        // the error message.
+        const body: Record<string, unknown> = { error: err.message };
+        if (err.detail) body.detail = err.detail;
+        res.status(err.status).json(body);
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
 // GET /api/jobs/:jobId/parts - List job parts
 router.get("/:jobId/parts", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
@@ -1513,8 +1639,9 @@ router.patch("/:jobId/notes/:noteId", requireRole(MANAGER_ROLES), asyncHandler(a
 }));
 
 // DELETE /api/jobs/:jobId/notes/:noteId/attachments/:attachmentId - Detach a single attachment
-// 2026-04-13: canonical per-attachment removal for the unified JobNoteDialog.
-// Cascade on note delete stays the only path to drop all attachments.
+// 2026-04-13: canonical per-attachment removal for the unified
+// EntityNoteDialog. Cascade on note delete stays the only path to drop
+// all attachments at once.
 router.delete(
   "/:jobId/notes/:noteId/attachments/:attachmentId",
   requireRole(MANAGER_ROLES),

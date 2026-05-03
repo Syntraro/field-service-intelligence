@@ -28,6 +28,9 @@ import { timeTrackingRepository } from "../storage/timeTracking";
 import { jobVisitsRepository } from "../storage/jobVisits";
 // Canonical visit reads — single source of truth (server/storage/visits.ts)
 import { getVisitsForUserInRange, getVisitsForTenantInRange } from "../storage/visits";
+// 2026-05-01: canonical location-name resolver so tech-field listings
+// reflect parent-customer renames immediately.
+import { locationDisplayNameExpr } from "../lib/queryHelpers";
 import type { TenantVisitRangeOptions } from "../storage/visits";
 import { userHasPermission } from "../permissions";
 import { isPlatformRole } from "../auth/roles";
@@ -791,7 +794,10 @@ router.get(
           id: jobs.id,
           jobNumber: jobs.jobNumber,
           summary: jobs.summary,
-          locationName: clients.companyName,
+          // 2026-05-01 bypass cleanup: resolve location display name via
+          // the canonical helper so tech Day-View labels reflect parent
+          // customer renames automatically.
+          locationName: locationDisplayNameExpr,
           clientName: customerCompanies.name,
         })
         .from(jobs)
@@ -906,7 +912,8 @@ router.get(
         // Job context (nullable — entry may have no job)
         jobNumber: jobs.jobNumber,
         jobSummary: jobs.summary,
-        locationName: clients.companyName,
+        // 2026-05-01 bypass cleanup: same canonical resolver here.
+        locationName: locationDisplayNameExpr,
         clientName: customerCompanies.name,
       })
       .from(timeEntries)

@@ -9,11 +9,19 @@
  * the same save behavior automatically — there is no "pass callbacks here,
  * don't forget on the other page" failure mode.
  *
+ * 2026-05-01: also mounts the canonical `<PostVisitCompletionDialog>` so
+ * the post-completion 3-option prompt fires across every consumer
+ * (Dashboard, DispatchPreview, FinancialDashboard, JobDetailPage)
+ * without per-page wiring. Triggered by `onAfterComplete` from
+ * EditVisitModal, which fires only on successful visit completion.
+ *
  * Never fork `EditVisitModal`. This launcher only manages WHEN to render
  * it, not how it renders and not where its mutations route.
  */
 
+import { useState } from "react";
 import { EditVisitModal, type EditVisitModalProps } from "@/components/visits/EditVisitModal";
+import { PostVisitCompletionDialog } from "@/components/PostVisitCompletionDialog";
 
 export interface VisitEditorState {
   jobId: string;
@@ -37,26 +45,50 @@ export interface VisitEditorLauncherProps {
   onAfterMutation?: EditVisitModalProps["onAfterMutation"];
 }
 
+interface PostCompletionState {
+  jobId: string;
+  visitId: string;
+}
+
 export function VisitEditorLauncher({
   state,
   onClose,
   onAfterMutation,
 }: VisitEditorLauncherProps) {
-  if (!state) return null;
+  // 2026-05-01: post-completion dialog state. Set when EditVisitModal
+  // fires `onAfterComplete`; cleared when the dialog closes.
+  const [postCompletion, setPostCompletion] = useState<PostCompletionState | null>(null);
+
   return (
-    <EditVisitModal
-      open
-      onOpenChange={(open) => { if (!open) onClose(); }}
-      jobId={state.jobId}
-      visitId={state.visitId}
-      customerName={state.customerName}
-      customerCompanyId={state.customerCompanyId}
-      jobNumber={state.jobNumber}
-      jobSummary={state.jobSummary}
-      locationName={state.locationName}
-      locationAddress={state.locationAddress}
-      locationId={state.locationId}
-      onAfterMutation={onAfterMutation}
-    />
+    <>
+      {state && (
+        <EditVisitModal
+          open
+          onOpenChange={(open) => { if (!open) onClose(); }}
+          jobId={state.jobId}
+          visitId={state.visitId}
+          customerName={state.customerName}
+          customerCompanyId={state.customerCompanyId}
+          jobNumber={state.jobNumber}
+          jobSummary={state.jobSummary}
+          locationName={state.locationName}
+          locationAddress={state.locationAddress}
+          locationId={state.locationId}
+          onAfterMutation={onAfterMutation}
+          onAfterComplete={({ jobId, visitId }) => {
+            setPostCompletion({ jobId, visitId });
+          }}
+        />
+      )}
+
+      {postCompletion && (
+        <PostVisitCompletionDialog
+          open
+          onOpenChange={(next) => { if (!next) setPostCompletion(null); }}
+          jobId={postCompletion.jobId}
+          completedVisitId={postCompletion.visitId}
+        />
+      )}
+    </>
   );
 }

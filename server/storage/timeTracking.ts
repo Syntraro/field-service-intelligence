@@ -21,6 +21,7 @@ import {
   technicianProfiles,
   jobs,
   clientLocations,
+  customerCompanies,
   jobVisits,
   type WorkSession,
   type TimeEntry,
@@ -34,6 +35,8 @@ import {
 } from "@shared/schema";
 import { BaseRepository } from "./base";
 import { resolveTechnicianName } from "../lib/resolveTechnicianName";
+// 2026-05-01: canonical location-name resolver for tech day-view + week-view.
+import { locationDisplayNameExpr } from "../lib/queryHelpers";
 import {
   isEntryLocked,
   checkEntryLock,
@@ -2341,13 +2344,16 @@ export class TimeTrackingRepository extends BaseRepository {
         jobNumber: jobs.jobNumber,
         jobSummary: jobs.summary,
         jobType: jobs.jobType,
-        locationName: clientLocations.companyName,
+        // 2026-05-01 bypass cleanup: tech day-view location label resolves
+        // through the canonical helper.
+        locationName: locationDisplayNameExpr,
         locationAddress: clientLocations.address,
         locationCity: clientLocations.city,
       })
       .from(timeEntries)
       .leftJoin(jobs, eq(timeEntries.jobId, jobs.id))
       .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
+      .leftJoin(customerCompanies, eq(clientLocations.parentCompanyId, customerCompanies.id))
       .where(
         and(
           eq(timeEntries.companyId, companyId),
@@ -2447,11 +2453,13 @@ export class TimeTrackingRepository extends BaseRepository {
         notes: timeEntries.notes,
         jobNumber: jobs.jobNumber,
         jobSummary: jobs.summary,
-        locationName: clientLocations.companyName,
+        // 2026-05-01 bypass cleanup: tech week-view location label.
+        locationName: locationDisplayNameExpr,
       })
       .from(timeEntries)
       .leftJoin(jobs, eq(timeEntries.jobId, jobs.id))
       .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
+      .leftJoin(customerCompanies, eq(clientLocations.parentCompanyId, customerCompanies.id))
       .where(
         and(
           eq(timeEntries.companyId, companyId),
@@ -2610,10 +2618,17 @@ export class TimeTrackingRepository extends BaseRepository {
       activeWorkJobFilter(),
     ];
 
+    // 2026-05-01 strict-search: visit-search by name uses parent
+    // customer company name for parented locations and the location's
+    // own column ONLY for standalone (parentless) rows. Job summary +
+    // job number continue to match unchanged.
     if (options.search?.trim()) {
       const term = `%${options.search.trim()}%`;
       conditions.push(
-        sql`(${jobs.summary} ILIKE ${term} OR CAST(${jobs.jobNumber} AS TEXT) LIKE ${term} OR ${clientLocations.companyName} ILIKE ${term})`
+        sql`(${jobs.summary} ILIKE ${term}
+          OR CAST(${jobs.jobNumber} AS TEXT) LIKE ${term}
+          OR (${clientLocations.parentCompanyId} IS NOT NULL AND ${customerCompanies.name} ILIKE ${term})
+          OR (${clientLocations.parentCompanyId} IS NULL AND ${clientLocations.companyName} ILIKE ${term}))`
       );
     }
 
@@ -2626,11 +2641,12 @@ export class TimeTrackingRepository extends BaseRepository {
         jobId: jobVisits.jobId,
         jobNumber: jobs.jobNumber,
         jobSummary: jobs.summary,
-        locationName: clientLocations.companyName,
+        locationName: locationDisplayNameExpr,
       })
       .from(jobVisits)
       .innerJoin(jobs, eq(jobVisits.jobId, jobs.id))
       .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
+      .leftJoin(customerCompanies, eq(clientLocations.parentCompanyId, customerCompanies.id))
       .where(and(...conditions))
       .orderBy(asc(jobVisits.scheduledStart))
       .limit(50);

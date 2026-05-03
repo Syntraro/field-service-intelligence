@@ -52,6 +52,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     initCSRF().catch(() => {});
   }, []);
 
+  // 2026-05-03 — first-login race protection lives in the wipe-condition
+  // below (the `(isError && !data) || data === null` branch), NOT in an
+  // `enabled` flag on this query. Reasoning: the race is a probe that's
+  // already in-flight when the user clicks Login. `enabled: false` does
+  // not abort an in-flight fetch in TanStack v5, and the disabled
+  // observer still receives the cache update when that fetch settles —
+  // so the stale 401 still reaches the observer's reducer regardless.
+  // `cancelQueries` also can't abort the request: `getQueryFn` doesn't
+  // pass an `AbortSignal` to `fetch`. The wipe-condition is therefore
+  // the only effective defense, and adding `enabled: !loginMutation.isPending`
+  // here would either require reordering hooks (loginMutation is declared
+  // ~50 lines below) or mirroring `isPending` into a redundant state slot,
+  // for zero additional protection. Keep this query unconditional.
   const { data, isLoading, isError } = useQuery<User>({
     queryKey: ["/api/auth/me"],
     retry: false,
@@ -61,7 +74,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (data) {
       setUser(data);
       setUserInitialized(true);
-    } else if (isError || data === null) {
+    } else if ((isError && !data) || data === null) {
+      // 2026-05-03 first-login race fix: previously this branch was
+      // `else if (isError || data === null)`. That wiped `user` whenever
+      // the bootstrap `/api/auth/me` query observer reported `isError=true`
+      // — including when a stale in-flight probe (started before
+      // `/api/csrf-token` minted a session cookie) returned 401 AFTER
+      // `loginMutation.onSuccess` had already seeded the cache via
+      // `queryClient.setQueryData(["/api/auth/me"], userData)`. TanStack v5
+      // preserves `data` on an error transition, so the observer would
+      // emit `{ data: userData, isError: true }`; the old wipe nulled
+      // the freshly seeded user, ProtectedRoute then read `user=null`,
+      // and the user was bounced back to /login on the first click. Now
+      // the wipe only fires when `data` itself is falsy — so a stale 401
+      // can no longer overwrite a valid login.
       setUser(null);
       setUserInitialized(true);
     } else if (!isLoading && data === undefined) {

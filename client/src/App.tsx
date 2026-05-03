@@ -13,10 +13,6 @@ import { useToast } from "@/hooks/use-toast";
 import { useDispatchStream } from "@/hooks/useDispatchStream";
 import { useServiceWorkerNavigator } from "@/hooks/useServiceWorkerNavigator";
 import ProtectedRoute from "@/components/ProtectedRoute";
-// 2026-04-26: Operations Dashboard retired — `/` and `/financials` both
-// now render the canonical Business Dashboard (see `FinancialDashboard`).
-// `Dashboard.tsx`, `TodaysOperationsCard.tsx`, and `DashboardViewToggle.tsx`
-// are no longer mounted by any route; flagged for follow-up deletion.
 import Jobs from "@/pages/Jobs";
 import JobDetailPage from "@/pages/JobDetailPage";
 import InvoicesListPage from "@/pages/InvoicesListPage";
@@ -27,6 +23,13 @@ import LeadsPage from "@/pages/LeadsPage";
 import LeadDetailPage from "@/pages/LeadDetailPage";
 import QuoteDetailPage from "@/pages/QuoteDetailPage";
 import Reports from "@/pages/Reports";
+import ReportsLibrary from "@/pages/ReportsLibrary";
+import ReportsAR from "@/pages/ReportsAR";
+import ReportsRevenue from "@/pages/ReportsRevenue";
+import ReportsJobs from "@/pages/ReportsJobs";
+import ReportsSalesFunnel from "@/pages/ReportsSalesFunnel";
+import ReportsTeam from "@/pages/ReportsTeam";
+import ReportsPartsForecast from "@/pages/ReportsPartsForecast";
 import TimesheetReportPage from "@/pages/TimesheetReportPage";
 import AccountsReceivablePage from "@/pages/AccountsReceivablePage";
 // 2026-04-21: Financial Dashboard reintroduced with full nav + header-button wiring.
@@ -133,7 +136,6 @@ import { CreateNewDialog, type CreateNewTab } from "@/components/CreateNewDialog
 import CreateMaintenancePlanDialog from "@/components/pm/CreateMaintenancePlanDialog";
 import UniversalSearch from "@/components/UniversalSearch";
 import { NewQuoteModal } from "@/components/NewQuoteModal";
-import { NewInvoiceModal } from "@/components/NewInvoiceModal";
 import { TasksPanel, useActiveTaskCount } from "@/components/tasks/TasksPanel";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
@@ -298,18 +300,60 @@ function Router() {
           </ProtectedRoute>
         )}
       </Route>
+      {/* 2026-05-03 RBAC alignment: every `/reports/*` route uses
+          `requireManager` so the client gate matches the server's
+          `requireRole(MANAGER_ROLES)`. This unblocks manager and
+          dispatcher roles whose API access was already permitted but
+          who could not navigate to the UI under the previous
+          `requireAdmin`. Technicians stay blocked via the
+          `/tech/today` redirect inside ProtectedRoute. */}
       <Route path="/reports">
-        <ProtectedRoute requireAdmin>
+        <ProtectedRoute requireManager>
           <Reports />
         </ProtectedRoute>
       </Route>
+      <Route path="/reports/library">
+        <ProtectedRoute requireManager>
+          <ReportsLibrary />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/reports/ar">
+        <ProtectedRoute requireManager>
+          <ReportsAR />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/reports/revenue">
+        <ProtectedRoute requireManager>
+          <ReportsRevenue />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/reports/jobs">
+        <ProtectedRoute requireManager>
+          <ReportsJobs />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/reports/sales-funnel">
+        <ProtectedRoute requireManager>
+          <ReportsSalesFunnel />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/reports/team">
+        <ProtectedRoute requireManager>
+          <ReportsTeam />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/reports/parts-forecast">
+        <ProtectedRoute requireManager>
+          <ReportsPartsForecast />
+        </ProtectedRoute>
+      </Route>
       <Route path="/reports/timesheets">
-        <ProtectedRoute requireAdmin>
+        <ProtectedRoute requireManager>
           <TimesheetReportPage />
         </ProtectedRoute>
       </Route>
       <Route path="/reports/accounts-receivable">
-        <ProtectedRoute requireAdmin>
+        <ProtectedRoute requireManager>
           <AccountsReceivablePage />
         </ProtectedRoute>
       </Route>
@@ -713,11 +757,6 @@ function AppContent() {
   const activeTaskCount = useActiveTaskCount({ enabled: !isPlatformRole(user?.role) });
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [newQuoteModalOpen, setNewQuoteModalOpen] = useState(false);
-  // 2026-04-15: New invoice entry modal. Replaces the initial
-  // client-selection page step for the header "New" entry flow.
-  // The /invoices/new route is preserved for the InvoicesListPage
-  // link and any direct URL entry.
-  const [newInvoiceModalOpen, setNewInvoiceModalOpen] = useState(false);
   // 2026-04-26: Create Maintenance Plan chooser modal. Replaces direct
   // navigation to /pm/new from the top-bar "+ New" dropdown so users
   // can pick From Scratch / Use Template / Duplicate before landing
@@ -973,7 +1012,7 @@ function AppContent() {
                     <Users className="h-4 w-4 mr-2" />
                     New Client
                   </DropdownMenuItem>
-                  <DropdownMenuItem data-testid="quick-new-invoice" onClick={() => setNewInvoiceModalOpen(true)}>
+                  <DropdownMenuItem data-testid="quick-new-invoice" onClick={() => setLocation("/invoices/new")}>
                     <Receipt className="h-4 w-4 mr-2" />
                     New Invoice
                   </DropdownMenuItem>
@@ -1119,10 +1158,6 @@ function AppContent() {
       <NewQuoteModal
         open={newQuoteModalOpen}
         onOpenChange={setNewQuoteModalOpen}
-      />
-      <NewInvoiceModal
-        open={newInvoiceModalOpen}
-        onOpenChange={setNewInvoiceModalOpen}
       />
       <CreateMaintenancePlanDialog
         open={createPmDialogOpen}

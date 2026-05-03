@@ -1,6 +1,11 @@
 import { db } from "../db";
 import { eq } from "drizzle-orm";
 import { roles, permissions, rolePermissions, userPermissionOverrides, users } from "@shared/schema";
+// 2026-05-01 RBAC system fix: platform roles bypass tenant-scoped
+// permission resolution entirely (they don't operate within a tenant's
+// RBAC). Imported here so the resolver can short-circuit for them
+// before requiring a tenant `role_id`.
+import { isPlatformRole } from "../auth/roles";
 
 /**
  * Permission Repository
@@ -78,8 +83,35 @@ export class PermissionRepository {
   }
 
   /**
-   * Get effective permissions for a user
-   * Combines role permissions with user-specific overrides
+   * Get effective permissions for a user.
+   *
+   * 2026-05-01 RBAC system fix: removed the legacy role-id mapping
+   * fallback ({ admin: "role-admin", manager: "role-manager", ... }).
+   * Those hardcoded strings never matched any row in `roles` (which
+   * uses `gen_random_uuid()` ids — see `shared/schema.ts:3117`), so
+   * the fallback silently returned an empty permission set for every
+   * user whose `users.role_id` was NULL. Symptoms in the wild
+   * included owners/admins seeing affordances hidden because their
+   * effective set lacked every fine permission.
+   *
+   * Strict resolution order under the new contract:
+   *   1. Platform roles (e.g., `platform_admin`) bypass tenant RBAC
+   *      entirely — middleware short-circuits at the route layer; here
+   *      we return an empty set for the `/api/me/permissions` feed.
+   *      They do not have a tenant `role_id` by design.
+   *   2. Non-platform users MUST have a non-null `role_id`. Missing
+   *      `role_id` is a misconfigured / un-backfilled user — we throw
+   *      with a stable error code so the caller sees the failure
+   *      instead of a silent empty set.
+   *   3. Resolved permissions = role permissions ∪ grant-overrides
+   *      \ revoke-overrides. An empty result is permitted (a custom
+   *      role with no permissions is a valid configuration); the
+   *      THROWING failure mode is reserved for the `role_id` gap.
+   *
+   * Migration `2026_05_01_backfill_users_role_id.sql` populates
+   * `users.role_id` from `users.role` for every existing tenant user.
+   * After backfill, this resolver should never reach the throw branch
+   * for production traffic.
    */
   async getUserEffectivePermissions(userId: string): Promise<Set<string>> {
     // Check cache first
@@ -93,27 +125,33 @@ export class PermissionRepository {
       return new Set();
     }
 
-    const effectivePermissions = new Set<string>();
-
-    // Get role permissions if user has a roleId
-    if (user.roleId) {
-      const rolePerms = await this.getRolePermissions(user.roleId);
-      rolePerms.forEach((key) => effectivePermissions.add(key));
-    } else {
-      // Fallback: map legacy role field to new role
-      const legacyRoleMapping: Record<string, string> = {
-        admin: "role-admin",
-        owner: "role-admin",
-        manager: "role-manager",
-        technician: "role-technician",
-      };
-
-      const mappedRoleId = legacyRoleMapping[user.role] || "role-technician";
-      const rolePerms = await this.getRolePermissions(mappedRoleId);
-      rolePerms.forEach((key) => effectivePermissions.add(key));
+    // (1) Platform roles bypass tenant RBAC entirely. Caller-side
+    // middleware (`requirePermission` in `server/permissions.ts`)
+    // short-circuits for these via `isPlatformRole`, but the
+    // /api/me/permissions feed still calls this resolver — return an
+    // empty set so it does not falsely advertise tenant capabilities.
+    if (isPlatformRole(user.role)) {
+      const empty = new Set<string>();
+      permissionCache.set(userId, empty);
+      return empty;
     }
 
-    // Apply user-specific overrides
+    // (2) Non-platform users MUST have a tenant `role_id`. Throw
+    // loudly instead of silently degrading — the prior behavior
+    // returned an empty set, which masked the bug for months.
+    if (!user.roleId) {
+      throw new Error(
+        `RBAC ERROR: user.role_id is missing for user ${userId} (role="${user.role}"). ` +
+        `Apply migration 2026_05_01_backfill_users_role_id.sql to backfill, ` +
+        `or assign a role through the admin UI before this user can authenticate.`
+      );
+    }
+
+    // (3) Standard resolution: role permissions merged with overrides.
+    const effectivePermissions = new Set<string>();
+    const rolePerms = await this.getRolePermissions(user.roleId);
+    rolePerms.forEach((key) => effectivePermissions.add(key));
+
     const overrides = await this.getUserPermissionOverrides(userId);
     overrides.forEach(({ key, override }) => {
       if (override === "grant") {

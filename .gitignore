@@ -12,3 +12,5 @@ logs/
 *.log
 dev.log
 ralph-loop.log
+.claude/scheduled_tasks.lock
+.claude/settings.local.json

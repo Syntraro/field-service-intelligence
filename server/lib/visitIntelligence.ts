@@ -117,12 +117,13 @@ async function fetchScheduledVisits(tenantId: string): Promise<ScheduledVisitRow
       jv.assigned_technician_ids AS "technicianIds",
       cl.lat           AS "locationLat",
       cl.lng           AS "locationLng",
-      cl.company_name  AS "locationName",
+      COALESCE(cc.name, NULLIF(cl.company_name, '')) AS "locationName",
       j.job_number     AS "jobNumber"
     FROM job_visits jv
     JOIN jobs j ON j.id = jv.job_id AND j.company_id = ${tenantId}
       AND ${sql.raw(JOB_ACTIVE_SQL_J)}
     LEFT JOIN client_locations cl ON cl.id = j.location_id
+    LEFT JOIN customer_companies cc ON cl.parent_company_id = cc.id
     WHERE jv.company_id = ${tenantId}
       AND jv.is_active = true
       AND jv.archived_at IS NULL
@@ -468,11 +469,12 @@ export async function fetchRemainderVisits(
       jv.status, jv.checked_in_at AS "checkedInAt",
       jv.assigned_technician_ids AS "technicianIds",
       cl.lat AS "locationLat", cl.lng AS "locationLng",
-      cl.company_name AS "locationName", j.job_number AS "jobNumber"
+      COALESCE(cc.name, NULLIF(cl.company_name, '')) AS "locationName", j.job_number AS "jobNumber"
     FROM job_visits jv
     JOIN jobs j ON j.id = jv.job_id
       AND ${sql.raw(JOB_ACTIVE_SQL_J)}
     LEFT JOIN client_locations cl ON cl.id = j.location_id
+    LEFT JOIN customer_companies cc ON cl.parent_company_id = cc.id
     WHERE jv.id = ${visitId} AND jv.company_id = ${tenantId}
   `);
   const sourceVisit = (srcRows as unknown as ScheduledVisitRow[])[0];
@@ -491,11 +493,12 @@ export async function fetchRemainderVisits(
       jv.status, jv.checked_in_at AS "checkedInAt",
       jv.assigned_technician_ids AS "technicianIds",
       cl.lat AS "locationLat", cl.lng AS "locationLng",
-      cl.company_name AS "locationName", j.job_number AS "jobNumber"
+      COALESCE(cc.name, NULLIF(cl.company_name, '')) AS "locationName", j.job_number AS "jobNumber"
     FROM job_visits jv
     JOIN jobs j ON j.id = jv.job_id
       AND ${sql.raw(JOB_ACTIVE_SQL_J)}
     LEFT JOIN client_locations cl ON cl.id = j.location_id
+    LEFT JOIN customer_companies cc ON cl.parent_company_id = cc.id
     WHERE jv.company_id = ${tenantId}
       AND jv.is_active = true
       AND jv.archived_at IS NULL

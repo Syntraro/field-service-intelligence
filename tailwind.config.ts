@@ -43,19 +43,40 @@ export default {
       // See docs/UI_TYPOGRAPHY.md for usage rules and migration plan.
       // ──────────────────────────────────────────────────────────────────
       fontSize: {
+        // ──────────────────────────────────────────────────────────────
+        // 2026-05-01 Typography Phase C — token sizes bumped upward to
+        // match the visual scale that legacy classes (`text-xs`,
+        // `text-3xl`, etc.) produce against the project's
+        // `html { font-size: 19px }` root. The Phase A audit defined
+        // the tokens against an implicit 16px root, which made canonical
+        // consumers (e.g. JobDetailPage) read visibly smaller than
+        // legacy consumers (e.g. InvoiceDetailPage's `text-3xl` H1).
+        //
+        // Phase C raises every token by ~15-18% so:
+        //   • InvoiceDetailPage's existing legacy classes can migrate
+        //     to canonical tokens with near-zero visible delta.
+        //   • Existing canonical consumers (Job / Lead / Quote / Jobs /
+        //     PM list pages, Operations + Financial dashboards, the
+        //     `ui/list-surface` primitives) automatically scale up to
+        //     match the new "correct" detail-page scale.
+        //
+        // No token names changed; tuple shape unchanged. `text-label`
+        // still relies on the `@layer components` rule in
+        // `client/src/index.css` for `text-transform: uppercase`.
+        // ──────────────────────────────────────────────────────────────
         // Headings
-        display:         ["28px", { lineHeight: "32px", fontWeight: "700" }],
-        "page-title":    ["22px", { lineHeight: "28px", fontWeight: "600" }],
-        "section-title": ["16px", { lineHeight: "22px", fontWeight: "600" }],
-        subhead:         ["14px", { lineHeight: "20px", fontWeight: "500" }],
+        display:         ["32px", { lineHeight: "40px", fontWeight: "700" }],
+        "page-title":    ["30px", { lineHeight: "36px", fontWeight: "700" }],
+        "section-title": ["18px", { lineHeight: "24px", fontWeight: "600" }],
+        subhead:         ["16px", { lineHeight: "22px", fontWeight: "500" }],
         // Body
-        body:            ["14px", { lineHeight: "20px" }],
-        row:             ["13px", { lineHeight: "18px" }],
-        "row-emphasis":  ["13px", { lineHeight: "18px", fontWeight: "500" }],
+        body:            ["15px", { lineHeight: "22px" }],
+        row:             ["15px", { lineHeight: "22px" }],
+        "row-emphasis":  ["15px", { lineHeight: "22px", fontWeight: "500" }],
         // Small
-        caption:         ["12px", { lineHeight: "16px" }],
-        label:           ["11px", { lineHeight: "14px", fontWeight: "500", letterSpacing: "0.04em" }],
-        helper:          ["11px", { lineHeight: "14px" }],
+        caption:         ["14px", { lineHeight: "20px" }],
+        label:           ["13px", { lineHeight: "16px", fontWeight: "500", letterSpacing: "0.04em" }],
+        helper:          ["13px", { lineHeight: "16px" }],
 
         // ─── Legacy ramp (deprecated — retained for backward compat) ───
         // Renders against `html { font-size: 19px }` set in

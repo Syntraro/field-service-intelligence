@@ -68,6 +68,14 @@ interface JobHeaderCardProps {
   onDelete: () => void;
   /** When false, hides Edit/More Actions buttons but keeps all dialog/mutation logic active */
   showActions?: boolean;
+  /** 2026-05-02 — "Create Similar Job" callback. The component used to
+   * `setLocation('/jobs/new?cloneFrom=…')` directly, but `/jobs/new` is
+   * not a registered route (see Audit #2 / PR 1). The parent now owns
+   * the dialog state and opens `CreateNewDialog` with
+   * `jobInitialCloneFromJobId` set. When this prop is omitted, the
+   * "Create Similar Job" menu item becomes a no-op rather than
+   * navigating to a 404. */
+  onCreateSimilar?: (sourceJobId: string) => void;
 }
 
 /** 2026-03-24: Imperative handle for parent to trigger lifecycle actions without duplicating mutations */
@@ -86,6 +94,7 @@ export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>
   onEdit,
   onDelete,
   showActions = true,
+  onCreateSimilar,
 }, ref) {
   const [, setLocation] = useLocation();
   const { user } = useAuth();
@@ -316,7 +325,13 @@ export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>
   // handleCreateInvoice removed (2026-03-22) — dead code, showActions always false.
 
   const handleCreateSimilarJob = () => {
-    setLocation(`/jobs/new?cloneFrom=${job.id}`);
+    // 2026-05-02 — was `setLocation('/jobs/new?cloneFrom=…')` which
+    // navigated to a non-existent route. The parent now owns
+    // CreateNewDialog and prefills via `jobInitialCloneFromJobId`.
+    // When the prop is omitted (e.g. JobHeaderCard mounted in a
+    // surface that hasn't wired the callback yet), the menu item is
+    // a no-op — preferable to a 404.
+    onCreateSimilar?.(job.id);
   };
 
   const handleCloseJob = () => {

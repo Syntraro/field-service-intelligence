@@ -6,7 +6,6007 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### First-login race — stale `/api/auth/me` no longer wipes the seeded user (2026-05-03)
+
+Eliminates the long-standing first-click login failure where the
+button appeared to process, then the user was bounced back to `/login`
+and only the second click succeeded. Multiple prior partial fixes
+narrowed the window but did not close it. This change closes the
+remaining race directly at the two places that actually decide
+authentication state, with the minimum necessary edit in each file.
+
+**Root cause (working assumption per audit):** the bootstrap
+`useQuery(["/api/auth/me"])` observer in `AuthProvider` is mounted
+before any session cookie exists. On a cold load it fires a probe
+that the server answers with `401`. When the user then logs in and
+`loginMutation.onSuccess` seeds the cache via
+`queryClient.setQueryData(["/api/auth/me"], userData)`, TanStack v5
+preserves `data` across the error transition — but if the original
+in-flight 401 response lands AFTER the seed (it cannot be aborted by
+`cancelQueries` because the underlying `fetch` has no `AbortSignal`),
+the observer state flips to `{ data: userData, isError: true }`. The
+old wipe condition `else if (isError || data === null)` matched on
+`isError` alone and nulled the freshly seeded user; `ProtectedRoute`
+then read `user=null` and redirected back to `/login`.
+
+`ProtectedRoute`'s `hasCheckedAuth = useRef(false)` one-shot guard
+amplified the failure: once the redirect was decided, no later
+`user` transition could undo it within that mount.
+
+**Files changed:**
+
+1. `client/src/lib/auth.tsx` — wipe-condition tightening at the
+   `AuthProvider` reactive effect.
+   - **Before**:
+     ```ts
+     } else if (isError || data === null) {
+       setUser(null);
+       setUserInitialized(true);
+     }
+     ```
+   - **After**:
+     ```ts
+     } else if ((isError && !data) || data === null) {
+       setUser(null);
+       setUserInitialized(true);
+     }
+     ```
+   - The wipe now requires either (a) an error WITH no data, or (b)
+     an explicit `data === null` (which the loader returns to mean
+     "definitively unauthenticated"). A stale 401 landing on top of
+     a freshly seeded user — the exact race — no longer matches: the
+     observer sees `data: userData, isError: true`, and the new
+     condition's `(isError && !data)` short-circuits.
+   - The first branch (`if (data) → setUser(data)`) is unchanged and
+     still fires on every truthy data observation, including the
+     re-render that follows the error transition.
+   - The third branch (`!isLoading && data === undefined` → null) is
+     unchanged; it only trips for the post-`clearAuth()` path.
+
+2. `client/src/components/ProtectedRoute.tsx` — drop the
+   `hasCheckedAuth` one-shot ref. The redirect effect now
+   re-evaluates on every dep change, but only redirects when
+   `!isLoading && !user`. Removes the `useRef` import.
+   - **Before**:
+     ```ts
+     const hasCheckedAuth = useRef(false);
+     useEffect(() => {
+       if (isLoading) return;
+       if (hasCheckedAuth.current) return;
+       hasCheckedAuth.current = true;
+       if (!user) { setLocation("/login"); return; }
+       …
+     });
+     ```
+   - **After**:
+     ```ts
+     useEffect(() => {
+       if (isLoading) return;
+       if (!user) { setLocation("/login"); return; }
+       …
+     });
+     ```
+   - Removes the lock-in that froze a stale `user=null` snapshot. If
+     `user` transitions to truthy on a later render (e.g., the
+     wipe-condition fix above), the redirect-evaluation re-runs and
+     no longer bounces. If `user` transitions to falsy after a
+     genuine session expiry, the redirect now fires correctly
+     instead of being silently suppressed by the one-shot guard.
+   - All three role-gate redirects (`requirePlatformAdmin`,
+     `requirePlatformRole`, `requireAdmin`) keep their existing
+     conditions; they continue to fire on every settled state.
+
+**Out of scope — explicitly NOT changed:**
+- `server/routes/auth.ts` (`req.logIn` callback / explicit
+  `req.session.save()` await) — left as-is. The audit's static
+  analysis flagged the asymmetry vs. `platformAuth.ts:138-142`, but
+  the working assumption is the client-side race; touching the
+  server path is non-minimal and would require its own runtime
+  proof.
+- `getQueryFn` in `client/src/lib/queryClient.ts` — no change. An
+  `AbortSignal` retrofit would let `cancelQueries` actually abort
+  in-flight fetches, but that is a broader refactor.
+- `useQuery({ enabled: !loginMutation.isPending })` — not added. The
+  wipe-condition fix is sufficient to defuse the race; adding an
+  `enabled` guard would require restructuring the AuthProvider
+  declaration order or introducing a state-flag, neither of which
+  is minimal.
+- `SessionExpiredDialog` and the `notifySessionExpired` one-shot
+  guard — unchanged. They were never on the failing path for this
+  specific race.
+
+**Risks (deliberate, accepted):**
+- A real expiration that surfaces only as `isError` (with
+  TanStack's last-known data still cached) will no longer wipe
+  `user` from `AuthProvider` state until the cache itself is
+  cleared. In practice the `SessionExpiredDialog` flow (triggered
+  by 401s from non-auth endpoints) calls `clearAuth()` which both
+  removes the `["/api/auth/me"]` cache entry AND sets `user=null`
+  — so the expiration UX is unaffected. The change only affects
+  the narrow case where `isError` flips while `data` remains
+  truthy, which is precisely the race we want to defuse.
+- `ProtectedRoute` losing the one-shot guard means a transient
+  `user=null` in the middle of a session (e.g., during a
+  `clearAuth()` round-trip) will now redirect immediately rather
+  than being suppressed. This is the correct behavior — the
+  previous suppression masked real expirations.
+
+**Verification:**
+- `npm run check` — clean (no new TypeScript errors introduced;
+  the project's pre-existing `ContactFormDialog`-related errors in
+  the dirty tree are unrelated and remain unchanged).
+- The two-file diff is `+15 lines` in `auth.tsx` (mostly the
+  explanatory comment) and net change in `ProtectedRoute.tsx` from
+  removing the ref + `useRef` import + one-shot guard branches.
+
+**Audit trail:** Multiple prior fix commits attempted to close this
+race at adjacent points (`2026-04-10 Phase-2`, `2026-04-22
+first-click login fix`). Each preserved the wipe-on-`isError`
+condition and the one-shot ref. The full audit chain establishing
+the hypothesis is in conversation history; this entry intentionally
+does not republish the audit logs — they're an artifact of the
+proof, not part of the code change.
+
+#### Reports — calculation correctness corrections (2026-05-03)
+
+Three calculation fixes from the calculation-correctness audit. Each
+addresses a specific math/semantics issue identified in the audit;
+all are scoped to backend SQL with the minimum necessary contract +
+UI surfacing.
+
+**1. Revenue excludes voided invoices.** Every revenue / payment
+helper now filters `invoices.status != 'voided'` alongside the
+existing `payments.paymentType = 'payment'` rule. When a tenant
+voids an invoice, the original `paymentType='payment'` row stays in
+the table — without this filter, the voided payment continued to
+count toward cash-basis revenue. Refunds and reversals stay
+excluded via the type filter (separate definitional choice — not
+changed in this pass). Affects 7 helpers in
+`server/storage/reportsCommon.ts`:
+- `sharedQueries.revenue`
+- `sharedQueries.paymentsCollected`
+- `sharedQueries.avgPaymentAmount`
+- `getRevenueTrendShared`
+- `getPaymentBreakdownShared`
+- `getRevenueByClientShared`
+- `getRecentPaymentsShared`
+
+UI surfaces revenue/payment data with a compact clarification note
+("Revenue reflects payment records and excludes voided invoices.
+Refunds and reversals are not included.") on three pages:
+- `client/src/pages/ReportsRevenue.tsx` (header)
+- `client/src/pages/Reports.tsx` Snapshot tab (under Revenue & Cash
+  Flow card)
+- `client/src/pages/Reports.tsx` Financial tab (under Financial
+  summary KPI strip)
+
+**2. Avg job invoice value is now per-JOB, not per-invoice.**
+Previously `AVG(invoices.total)` over invoices with `jobId` set,
+which inflated the denominator on multi-invoice jobs (e.g. progress
+billing). New SQL: `SUM(invoices.total) / NULLIF(COUNT(DISTINCT
+jobId), 0)`. A job with 3 invoices now contributes ONE row to the
+denominator — the metric tracks dollars per job, not dollars per
+invoice. The metric label is unchanged ("Avg job invoice value")
+because the job-centric reading was the user mental model already;
+the SQL now matches it. Affects:
+- `sharedQueries.avgJobInvoiceValue` (Snapshot/Operations/Jobs KPI)
+- `getAvgJobValueTrendShared` (daily series — same per-job math
+  applied per-day; `invoiceCount` continues to expose count of
+  invoices that day as informational metadata, NOT the AVG
+  denominator)
+
+**3. Conversion lag exposes coverage percentage.** The lag avgDays
+metric only includes rows with a real `convertedAt` timestamp.
+Tenants who use the canonical `status='won'` / `status IN
+('converted','approved')` signal but DON'T set `convertedAt` had
+their conversions silently excluded from the average — biased
+sample without warning. New `coveragePercent` field tells the user
+what fraction of converted records the average actually represents:
+- `numerator` = timestamped conversions in window (same as
+  existing `count` field).
+- `denominator` = total converted records attributable to window —
+  `convertedAt IN window` OR (`convertedAt IS NULL` AND canonical
+  status signal AND `updatedAt IN window`).
+- `coveragePercent = numerator / denominator * 100` rounded to 1dp.
+- `null` when denominator is 0 (no canonical conversions in
+  window) — UI renders "—" instead of a fabricated 100%.
+
+The single combined query per side uses `COUNT(*) FILTER` for both
+counts so the timestamped subset and the total denominator share
+the same scan. The lag avgDays calculation itself is unchanged.
+
+Sales Funnel page surfaces the new coverage as a small
+"Coverage X%" line under each lag tile in
+`ConversionLagCard`.
+
+**Files affected (5):**
+- `server/storage/reportsCommon.ts` — 7 voided filters, 2 per-job
+  AVG rewrites, conversion-lag query rewrite + coveragePercent
+  computation. New `ne` import from drizzle-orm.
+- `shared/reports/salesFunnel.ts` — `coveragePercent: number | null`
+  added to `ConversionLagPoint`.
+- `client/src/pages/ReportsRevenue.tsx` — clarification note.
+- `client/src/pages/Reports.tsx` — clarification note (Snapshot
+  + Financial tabs).
+- `client/src/pages/ReportsSalesFunnel.tsx` — coverage line in
+  `ConversionLagCard`.
+- `tests/reports-sales-funnel.test.ts` — updated conversion-lag
+  helper guard to match the new `FILTER (WHERE ...)` SQL pattern;
+  locks `coveragePercent` / `totalConvertedCount` /
+  `timestampedCount` are present in the helper, plus the
+  canonical conversion-status predicates and `updatedAt`
+  fallback.
+
+**Verification:** all 11 reports vitest suites pass (276 tests).
+`npm run check` clean for all Reports files (pre-existing WIP
+errors in `client/src/lib/auth.tsx`,
+`client/src/components/ProtectedRoute.tsx`, and
+`NewInvoicePage.tsx` are unrelated and untouched per the
+"do not touch unrelated pages" rule). Live SQL probe ran without
+errors.
+
 ### Changed
+
+#### Reports — RBAC alignment: client + server gate the same role set (2026-05-03)
+
+Fixes the launch-readiness audit's RBAC mismatch. All Reports server
+endpoints use `requireRole(MANAGER_ROLES)` (owner / admin / manager /
+dispatcher), but the client wrapped every Reports route in
+`<ProtectedRoute requireAdmin>` — owner/admin only — so manager and
+dispatcher roles whose API access was already permitted could not
+navigate to the UI. The mismatch was silent: a 200-OK API response
+behind a UI redirect.
+
+**Resolution — align UI to server.**
+- `client/src/components/ProtectedRoute.tsx` gains a `requireManager`
+  flag that admits owner / admin / manager / dispatcher (mirrors the
+  server's `MANAGER_ROLES`). Platform roles also pass for support
+  impersonation, matching the existing `requireAdmin` pattern.
+  Technicians remain hard-redirected to `/tech/today` before the
+  role check ever runs, so the "non-manager" lockout is preserved
+  exactly.
+- `client/src/App.tsx` flips ALL ten `/reports/*` routes from
+  `requireAdmin` to `requireManager`:
+  - `/reports`, `/reports/library`, `/reports/ar`,
+    `/reports/revenue`, `/reports/jobs`, `/reports/sales-funnel`,
+    `/reports/team`, `/reports/parts-forecast` (the eight new
+    Reports surfaces)
+  - `/reports/timesheets`, `/reports/accounts-receivable` (the two
+    legacy `/reports/*` routes — both also hit servers gated on
+    `MANAGER_ROLES`).
+- Server gates unchanged. No business calculations changed. No
+  unrelated routes touched (verified by grep — `requireAdmin`
+  remains in place on every non-Reports route).
+
+Eight existing reports test files asserted the literal
+`<ProtectedRoute requireAdmin>` for their respective route mounts;
+each updated lockstep to assert `<ProtectedRoute requireManager>`
+(test name + assertion + comment).
+
+#### Reports — consistency + polish pass (2026-05-03)
+
+Audit-driven copyedit pass across the entire Reports system. NO
+business logic changed; NO new metrics; NO new reports. Three
+issues identified by the audit and fixed:
+
+1. **Bug — KPI label drift on Team Performance.** The Team report's
+   unbillable-cost KPI was labeled `"Unbillable cost"` while the
+   same metric on Snapshot, Operations, and Job Performance reads
+   `"Unbillable time cost"`. This is one canonical metric (same
+   server scalar `sharedQueries.unbillableCost`); the four
+   surfaces should agree. Fixed at the source in
+   `server/storage/reportsTeam.ts:157`. The label change flows
+   through `MetricCard.label` to the Team page's KPI tile — no
+   client-side change required, no test churn.
+
+2. **Inconsistency — empty-state copy drift on Parts Forecast.**
+   Three sections used custom strings ("No PM visits scheduled in
+   the next 30 days", "No upcoming PM visits with parts
+   configured", "No upcoming PM visits with missing parts
+   configuration") while every other report uses the canonical
+   "Not enough data yet". Replaced all three with the canonical
+   string. The unused `message` prop on the local `SectionEmpty`
+   primitive was removed so the shape matches the peer
+   `SectionEmpty` in ReportsTeam / ReportsJobs / etc. The
+   `PartsByTechnicianCard` still surfaces the contract's
+   `PARTS_BY_TECHNICIAN_DISABLED_REASON` string verbatim — that's
+   a structurally inert section, not a missing-data state, and
+   the audit explicitly preserved it.
+
+3. **Polish — Revenue page subtitle was longer than peers.**
+   Trimmed from "Cash-basis revenue from payments received, with
+   payment-method, client, and month-over-month breakdowns."
+   (139 chars) to "Cash-basis revenue with payment-method,
+   client, and month-over-month breakdowns." (89 chars) to match
+   the factual, terse style of the Team / Parts Forecast / Sales
+   Funnel subtitles.
+
+**Investigated & ruled out (no change):**
+- "Operations summary" (Operations tab KPI strip) vs "Job summary"
+  (Job Performance page KPI strip) — these are correct in their
+  respective contexts (the tab is broader than just jobs).
+- Loading-message variants ("Loading snapshot…" / "Loading parts
+  forecast…" lack the word "report" while peers say "Loading X
+  report…") — both descriptors already imply "report" via the
+  noun phrase; no UX confusion.
+- Library page subtitle — current copy is functional and clear.
+- Sidebar entry, range-selector option labels, error-condition
+  predicates (`isError || !data`), testId prefixes, the
+  `Math.max`-only `.reduce()` rule — all already consistent.
+
+**Files affected:**
+- `server/storage/reportsTeam.ts` (one label string)
+- `client/src/pages/ReportsPartsForecast.tsx` (three empty-state
+  call sites + remove unused `message` prop)
+- `client/src/pages/ReportsRevenue.tsx` (one subtitle string)
+
+**Verification:** all 11 reports vitest suites pass (276 tests).
+`npm run check` clean. No new tests added — the existing test
+layers already cover the consistency invariants this pass was
+auditing (canonical empty-state copy, MetricCard contract
+shape, no-fake-data guards).
+
+### Added
+
+#### Reports — tenant-isolation regression coverage (2026-05-03)
+
+Closes the test gap identified in the launch-readiness audit:
+every report aggregator filters by `companyId` correctly, but no
+test locked that invariant at runtime. A future helper edit could
+have silently dropped a `where` predicate in a join branch and
+shipped undetected.
+
+**New file — `tests/reports-tenant-isolation.test.ts` (17 tests):**
+Two complementary execution-level layers, no fixture seeding (uses
+existing dev-DB rows + a bogus UUID).
+
+**Layer 1 — bogus-tenant negative test (10 aggregators):**
+Every top-level aggregator runs with the well-formed UUID
+`00000000-0000-0000-0000-000000000000` (no real tenant owns it).
+Expected output: every metric flips `hasData=false`, every
+collection (`items` / `points` / `buckets`) is empty or all-zero.
+Catches the "filter completely missing" regression. Covers:
+`getCompanySnapshot`, `getCompanyFinancial`, `getCompanyOperations`,
+`getCompanySales`, `getCompanyAR`, `getCompanyRevenue`,
+`getCompanyJobs`, `getCompanySalesFunnel`, `getCompanyTeam`,
+`getCompanyPartsForecast`.
+
+**Layer 2 — real-tenant ID-ownership test (6 aggregators):**
+For each aggregator that surfaces entity IDs in its response, the
+test runs with the first real tenant in the DB and verifies every
+returned ID's row in the database has the requested `companyId`.
+Catches join-leak regressions that the bogus-tenant tier cannot
+reach.
+
+  - Financial → `topOutstandingClients[*].clientId` → `clientLocations.companyId`.
+  - AR → `overdueInvoices[*].invoiceId` / `clientId` → `invoices` /
+    `clientLocations`.
+  - Revenue → `recentPayments[*].id` (chained payment → invoice →
+    company), `invoiceId`, `clientId` + `revenueByClient[*].clientId`.
+  - Jobs → `completedJobs[*].jobId` → `jobs.companyId`.
+  - Team → `hoursByUser` / `unbillableByUser` / `jobsByUser` →
+    `users.companyId`.
+  - Parts Forecast → `partsByLocation` / `missingPartsData` /
+    `partsNeeded` / `orderingList` IDs → `jobVisits` / `jobs` /
+    `clientLocations` / `items`.
+
+Helpers `expectEntityCompanyId(table, id, expectedCompanyId, label)`
+and `expectPaymentCompanyId(paymentId, expectedCompanyId, label)`
+keep the per-aggregator assertions small. The skip-or-run guard
+gracefully no-ops the ownership tier when the dev DB has zero
+companies.
+
+**Verification:** all 13 reports vitest suites pass (334 tests —
+was 317, +17 for isolation). `npm run check` clean. No business
+calculations changed; no new SQL; no aggregator code touched —
+this entry is pure regression coverage.
+
+#### Reports — Insights layer at top of Snapshot tab (2026-05-03)
+
+Deterministic-rule Insights section that surfaces the most
+actionable signals from the existing report payloads, rendered as
+severity-coloured cards at the top of the Reports → Snapshot tab.
+NO new SQL, NO new API endpoints, NO ML, NO heuristics — pure
+threshold rules applied to data that the Snapshot and Parts
+Forecast endpoints already expose.
+
+**Design rules (locked by tests):**
+- Every rule short-circuits on `hasData === false`. Tenants without
+  underlying data see zero insights — never a fabricated "Revenue
+  is unchanged" placeholder.
+- Every rule reports the source `metricKey` so the user can trace
+  the insight back to the underlying report section.
+- Severity is a pure function of the threshold table — no rule
+  emits hardcoded business values (titles + descriptions are
+  formatted from the input numbers).
+- The whole section hides when no insight triggers. The UI never
+  renders a "you're all caught up" placeholder, because that would
+  be fabricated reassurance the data may not support.
+
+**Threshold table (canonical, sourced from spec):**
+
+| # | Insight | Trigger | Warning | Critical |
+|---|---|---|---|---|
+| 1 | Revenue trend | revenue.monthChangePercent | drop > 10% | drop > 25% |
+| 2 | AR risk | overdue / total outstanding | > 20% | > 35% |
+| 3 | Payment slowdown | avg_payment_days delta (days) | +5 days | +10 days |
+| 4 | Job value drop | avg_job_value.monthChangePercent | drop > 10% | drop > 20% |
+| 5 | Unbillable cost spike | unbillable_cost.monthChangePercent | up > 15% | up > 30% |
+| 6 | Sales conversion drop | lead/quote conversion .monthChangePercent (independent cards) | drop > 10% | drop > 20% |
+| 7 | Parts setup issues | partsForecast.missingPartsData.hasData | any missing | > 50% of upcoming PMs |
+
+Rule #6 emits up to TWO independent insights (one for leads, one
+for quotes) so a tenant whose lead conversion is fine but whose
+quote conversion regressed sees only the relevant card.
+
+**New code:**
+- `client/src/lib/reportsInsights.ts` — pure rule engine.
+  `Insight` / `InsightSeverity` / `InsightInputs` types and
+  `computeInsights({ snapshot, partsForecast }) → Insight[]`. All
+  7 rules, threshold-classified, no async, no I/O.
+- `tests/reports-insights.test.ts` — 41 tests / 5 layers of guards:
+  empty-input zero-output, per-rule threshold table (warning +
+  critical + below-threshold + skip-on-hasData=false), severity
+  classification table, no-fake-data engine source, Reports.tsx
+  integration spot-check (imports + parallel fetch + section
+  placement at top of `snapshot-body`).
+
+**Updated files:**
+- `client/src/pages/Reports.tsx` — Snapshot tab now:
+  - fetches `/api/reports/parts-forecast?range=next_30_days` in
+    parallel with the snapshot (failure of this query does NOT
+    block the snapshot — the rule engine treats `partsForecast`
+    as `null` and rule #7 silently skips);
+  - imports `computeInsights` and runs it via `useMemo` over the
+    fetched payloads;
+  - renders a new `InsightsSection` at the TOP of `snapshot-body`,
+    above the Revenue & Cash Flow KPI strip.
+
+`InsightsSection` is defined inline in `Reports.tsx` (matches
+the existing sibling-section pattern in the file) with
+severity-coloured cards (sky/amber/rose left-borders) and
+per-severity icons (`Info` / `TriangleAlert` / `AlertTriangle`
+from `lucide-react`).
+
+The rule engine currently emits only `warning` and `critical` —
+`info` is reserved on the type for future positive-signal rules.
+
+**Verification:**
+- All 12 reports vitest suites pass — 317 tests green
+  (was 276, +41 for insights).
+- `npm run check` clean.
+
+**No business logic changed.** No new SQL, no new endpoints, no
+new metrics. The Insights layer is purely a derivation pass over
+existing response payloads.
+
+#### Reports — Parts Forecast deep-report at /reports/parts-forecast (2026-05-03)
+
+Standalone forward-looking Parts Forecast page that helps office
+staff pre-order inventory for upcoming PM visits. Forecasts are
+computed by joining scheduled `job_visits` (jobType='maintenance',
+in window) to active `location_pm_part_templates`. Real data only —
+no inferred parts, no fabricated quantities, no equipment-warranty
+or failure reporting.
+
+**Quantity rule (locked by test):** parts are forecast per
+**scheduled PM visit**, not per unique location. If a location has
+2 PM visits in window and the location's PM part template is 1
+filter, the forecast contains 2 filters. The forecast SQL is an
+INNER JOIN of `job_visits → jobs → location_pm_part_templates`
+followed by `SUM(quantityPerVisit)` — visits are NOT deduplicated
+by location.
+
+**Attribution rules (locked in `reportsCommon.ts`):**
+- PM job: `jobs.jobType = 'maintenance'` AND `jobs.deletedAt IS NULL`.
+- PM visit: `job_visits.scheduledStart` IN window AND
+  `job_visits.isActive` AND `archivedAt IS NULL`.
+- Active part template: `location_pm_part_templates.isActive` AND
+  `deletedAt IS NULL`.
+- Two shared expression locals — `pmVisitInWindowWhere` and
+  `activePMPartWhere` — back every forecast helper, so the parts
+  needed / parts-by-location / missing-parts sections cannot
+  disagree on which visits belong in the window.
+
+**KPI strip (4 forward-looking metrics, no comparison windows):**
+- Total parts required — `SUM(quantityPerVisit)` across all
+  (visit × template) rows.
+- Unique part types — distinct `productId` count.
+- Locations requiring parts — distinct `locationId` over the
+  per-visit roll-up rows (locations whose visits had at least
+  one configured part).
+- PM visits requiring parts — count of visits in the per-visit
+  roll-up.
+
+KPIs are derived inline in TS from already-fetched helper outputs;
+no extra COUNT(*) probes round-trip.
+
+**Sections (in spec order):**
+1. **Forecast summary** — KPI strip with section-level empty state
+   when no PM visits exist in window.
+2. **Parts needed** — grouped by product, sorted desc by total
+   quantity, with per-product visit/location counts.
+3. **Parts by location & visit** — per-visit roll-up sorted asc by
+   `scheduledStart`. Each row shows customer + location + scheduled
+   timestamp + the parts list for that visit.
+4. **Parts by technician — DISABLED.** The canonical visit
+   assignment field is `job_visits.assignedTechnicianIds[]`
+   (multi-tech array). Per-tech forecasting requires single-assignee
+   semantics that the schema does not provide; per spec
+   ("If technician assignment is unclear → hasData=false") this
+   section returns `hasData: false` with the canonical reason
+   string `PARTS_BY_TECHNICIAN_DISABLED_REASON` from the contract.
+   The UI surfaces the reason verbatim so users understand why
+   the section is inert.
+5. **Missing parts data** — PM visits scheduled in window whose
+   location has zero active PM part templates. Uses `NOT EXISTS`
+   over the active-template predicate. Flags incomplete setup
+   before the visit happens.
+6. **Export-ready ordering list** — same data as section 2, slimmed
+   for copy/paste workflows.
+
+**No equipment warranty / failure reporting** — out of scope. Tests
+explicitly forbid references to `warranty`, `failure_log`,
+`service_history`, `maintenanceRecord`, `equipmentLifecycle` etc.
+across the page, contract, and aggregator sources.
+
+**Reuse, not duplication.** Three new shared helpers added to
+`reportsCommon.ts`:
+- `getForecastPartsNeededShared(companyId, w)` — grouped-by-product
+  forecast.
+- `getForecastPartsByLocationShared(companyId, w)` — per-visit
+  roll-up with TS-side dedupe (within a visit, duplicate
+  `productId` rows merge — the expected case is one template per
+  product but we don't trust the data shape blindly).
+- `getForecastMissingPartsShared(companyId, w)` — visits whose
+  location has zero active PM part templates.
+
+All three forecast helpers are forbidden from joining
+`client_parts` (the legacy per-client SKU table) or
+`equipment_catalog_items` (the equipment-aware catalog
+associations) — locked by test.
+
+**New endpoint — `GET /api/reports/parts-forecast?range=next_30_days`:**
+- Mounted under `requireRole(MANAGER_ROLES)` in
+  `server/routes/reports.ts`.
+- Range schema only accepts the forward-looking
+  `next_30_days` key — `last_30_days` would be incoherent for a
+  forecast.
+- `server/storage/reportsPartsForecast.ts` is a pure orchestrator:
+  imports from `reportsCommon` only — zero direct `db` / `schema`
+  imports (locked by test).
+
+**New shared contract — `shared/reports/partsForecast.ts`:**
+- `PartsForecastResponse` with KPI strip + 5 sections (parts
+  needed / by location / by technician / missing / ordering list).
+- Exports `PARTS_BY_TECHNICIAN_DISABLED_REASON` so the UI and
+  aggregator surface the same reason text — keeps the inert-
+  section copy in one place.
+- Window contract: `{ fromISO, toISO }` half-open.
+
+**Frontend — `client/src/pages/ReportsPartsForecast.tsx`:**
+- Standalone page with header + range selector + back-to-Reports
+  link. Same SectionCard / SectionEmpty primitives as the other
+  deep-reports.
+- Forward-looking KPI tiles (no MetricCard / ComparisonRow — no
+  comparison windows for a forecast).
+- Five section cards. Data-driven cards iterate backend `items`
+  directly; only the parts-needed card uses a single
+  `Math.max`-only `.reduce()` for the visual relative-bar scaling.
+  No client-side aggregation of business data.
+- Date display via `date-fns` `format()`.
+
+**App + library wiring:**
+- New route `/reports/parts-forecast` registered in
+  `client/src/App.tsx` under `<ProtectedRoute requireAdmin>`.
+- `client/src/lib/reportsLibrary.ts` "Operations Reports" category
+  now includes an active "Parts Forecast" entry (added next to
+  Job Performance) with `tab: "operations"`, `sectionTestId: ""`,
+  `href: "/reports/parts-forecast"`. Added under Operations rather
+  than as a new "PM Reports" category — the existing library
+  catalog test locks the five-category spec order
+  (financial/operations/sales/team/equipment) and the six-tab key
+  whitelist; routing the new entry through Operations preserves
+  both invariants.
+
+**Files affected:**
+- `shared/reports/partsForecast.ts` (new — contract + reason
+  constant)
+- `server/storage/reportsCommon.ts` (3 new helpers, 2 shared
+  expression locals; new schema imports for `jobVisits`, `items`,
+  `locationPMPartTemplates`; added `asc` to drizzle import)
+- `server/storage/reportsPartsForecast.ts` (new — pure
+  orchestrator)
+- `server/routes/reports.ts` (one new route under
+  `requireRole(MANAGER_ROLES)`)
+- `client/src/pages/ReportsPartsForecast.tsx` (new)
+- `client/src/App.tsx` (route mount)
+- `client/src/lib/reportsLibrary.ts` (Operations catalog entry)
+- `tests/reports-parts-forecast.test.ts` (new — 26 tests / 7
+  layers of guards: page source, no-fake-data, server route +
+  aggregator wiring, reuse canonicality, per-visit quantity
+  rule, App + library wiring, equipment-warranty exclusion)
+
+**Verification:** all 11 reports vitest suites pass (276 tests,
++26 for Parts Forecast — was 250). `npm run check` clean. Live
+DB probe confirmed: 11 PM visits exist on the test tenant with
+zero active templates → `partsNeeded.hasData=false`,
+`missingPartsData.hasData=true` with all 11 visits flagged,
+`partsByTechnician` correctly inert.
+
+#### Reports — Team Performance deep-report at /reports/team (2026-05-03)
+
+Standalone Team Performance drill-down page with KPI strip, per-user
+hours/billable/unbillable breakdown, per-user unbillable cost,
+per-user completed jobs (with avg primary-invoice value where
+attribution is FK-clean), and a billable vs unbillable time
+distribution. Real attribution only — no inference, no fabricated
+relationships, no fallback fan-out across multi-tech visit arrays.
+
+**KPI strip (4 metrics):**
+- Total hours worked (`higher_is_better`)
+- Billable hours (`higher_is_better`)
+- Unbillable hours (`lower_is_better`)
+- Unbillable cost (`lower_is_better`) — already existed in shared
+  scalars; reused verbatim.
+
+**Attribution rules (locked by test):**
+- Hours by user → grouped by `time_entries.technicianId` (FK-clean
+  to `users.id`). The two-tech `time_entries.technicianIds[]`
+  array is NOT used for per-user splits — only the FK-clean
+  primary attribution column.
+- Jobs completed by user → grouped by
+  `job_status_events.changedBy` (canonical "who marked it
+  complete" signal, varchar user id). The
+  `job_visits.assignedTechnicianIds[]` array is NEVER used for
+  per-user job credit — that would inflate counts via fan-out
+  across multi-tech visits.
+- Unbillable rows with `costRateSnapshot IS NULL` are excluded
+  from the per-user unbillable cost section. Cost data is
+  required, not inferred from current rates.
+- Avg primary-invoice value attaches per user when the linked
+  job has exactly one invoice with `total IS NOT NULL`.
+  When `null`, the UI shows "—" rather than a fabricated zero.
+- `hasData=false` per section when the corresponding signal is
+  empty (no time entries, no completed events, no costed
+  unbillable rows). Section-level empty states render in place;
+  full-page error path triggers ONLY on API failure.
+
+**Reuse, not duplication.** Three new per-user shared helpers
+added to `reportsCommon.ts`:
+- `getHoursByUserShared(companyId, current)` — per-user
+  total/billable/unbillable hours from `time_entries`.
+- `getUnbillableByUserShared(companyId, current)` — per-user
+  unbillable hours and computed cost from time entries with
+  `billable=false` AND `costRateSnapshot IS NOT NULL`.
+- `getJobsCompletedByUserShared(companyId, current)` — per-user
+  completed-job counts via `job_status_events.changedBy`, joined
+  to `users` for display name and LEFT-JOINed to `invoices` for
+  per-user avg primary-invoice total.
+- `userDisplayNameExpr` SQL fragment shared across all three:
+  `COALESCE(NULLIF(fullName,''), NULLIF(CONCAT_WS(' ',
+  NULLIF(firstName,''), NULLIF(lastName,'')), ''), email,
+  'Unknown user')`.
+
+**New shared scalars (`sharedQueries`):**
+- `totalHoursWorked`
+- `totalBillableHours`
+- `totalUnbillableHours`
+
+(The existing `unbillableCost` scalar is reused for the cost
+KPI; no duplication.)
+
+**New endpoint — `GET /api/reports/team?range=last_30_days`:**
+- Mounted under `requireRole(MANAGER_ROLES)` in
+  `server/routes/reports.ts`.
+- `server/storage/reportsTeam.ts` is a pure orchestrator:
+  imports from `reportsCommon` only — zero direct `db` /
+  `schema` imports (locked by test).
+
+**New shared contract — `shared/reports/team.ts`:**
+- `TeamResponse` with KPI strip, three per-user sections, and
+  one time-distribution section.
+- `TimeDistributionSection` derived inline from the three new
+  hour scalars (no extra query). `hasData` flips to false when
+  total hours is 0.
+
+**Frontend — `client/src/pages/ReportsTeam.tsx`:**
+- Standalone page with header + range selector + back-to-Reports
+  link. Same primitives (SectionCard / SectionEmpty /
+  MetricTile / ComparisonRow) as the other deep-reports.
+- KPI strip + four section cards: Hours by user, Unbillable by
+  user, Jobs completed by user, Time distribution.
+- Hours-by-user card uses a split bar (emerald billable /
+  rose unbillable) sized via `Math.max` only — no aggregation
+  reduce. Cost / job count / avg-invoice values render as
+  formatted currency / counts directly from API output.
+
+**App + library wiring:**
+- New route `/reports/team` registered in `client/src/App.tsx`
+  under `<ProtectedRoute requireAdmin>`.
+- `client/src/lib/reportsLibrary.ts` "Team Reports" category
+  flipped from a single `coming_soon` placeholder to an active
+  "Team Performance" entry pointing to `/reports/team` via
+  `href`. The library card no longer renders the disabled badge
+  for the Team category.
+
+**Files affected:**
+- `shared/reports/team.ts` (new)
+- `server/storage/reportsCommon.ts` (3 helpers + 3 scalars +
+  shared SQL fragment)
+- `server/storage/reportsTeam.ts` (new — pure orchestrator)
+- `server/routes/reports.ts` (one new route under
+  `requireRole(MANAGER_ROLES)`)
+- `client/src/pages/ReportsTeam.tsx` (new)
+- `client/src/App.tsx` (route mount)
+- `client/src/lib/reportsLibrary.ts` (Team category active)
+- `tests/reports-team.test.ts` (new — 20 tests / 5 layers of
+  guards: page source, no-fake-data, server route + aggregator
+  wiring, reuse canonicality, App + library wiring)
+
+**Verification:** all 10 reports vitest suites pass (250 tests,
++20 for Team — was 230). `npm run check` clean. Live probe on
+Samcor returned: 1 hours-by-user row, 1 jobs-by-user row,
+100% billable distribution.
+
+#### Reports — Sales Funnel deep-report at /reports/sales-funnel (2026-05-03)
+
+Standalone Sales Funnel drill-down page with KPI strip, fixed
+4-stage funnel, the four Sales tab trend sections, both status
+breakdowns, and a NEW conversion-lag section. Real data only —
+every section carries `hasData` and renders an empty state when
+false.
+
+**KPI strip (5 metrics):**
+- Leads created (`higher_is_better`)
+- Lead conversion % (`higher_is_better`)
+- Quotes created (`higher_is_better`)
+- Quote conversion % (`higher_is_better`)
+- Lead → quote drop-off % (`lower_is_better` — leakage; less is
+  better). Computed inline from `leadsCreated` and the new
+  `leadsConverted` scalar.
+
+**Reuse, not duplication.** All six Sales section helpers were
+lifted from `reportsSales.ts` into `reportsCommon.ts` in this pass:
+- `getLeadCreationTrendShared`
+- `getLeadConversionTrendShared`
+- `getQuoteCreationTrendShared`
+- `getQuoteConversionTrendShared`
+- `getLeadStatusBreakdownShared` + `LEAD_STATUS_LABELS` /
+  `LEAD_STATUS_KEYS`
+- `getQuoteStatusBreakdownShared` + `QUOTE_STATUS_LABELS` /
+  `QUOTE_STATUS_KEYS`
+
+The Sales tab aggregator now calls the shared helpers — its output
+is byte-for-byte unchanged. The Funnel aggregator is a thin
+orchestrator (zero direct DB / schema imports — locked by test).
+
+**New shared helpers:**
+- `sharedQueries.leadsConverted` — count of leads CREATED in window
+  with the canonical conversion signal (`convertedAt` set OR
+  `status='won'`). Drives the funnel-stage count + drop-off KPI.
+- `sharedQueries.quotesConverted` — count of quotes CREATED in
+  window with the canonical signal (`convertedAt` set OR
+  `status IN ('converted','approved')`).
+- `getConversionLagShared(companyId, current)` — average days from
+  `createdAt` → `convertedAt` for leads and quotes that
+  closed in the current window. Filters by
+  `convertedAt IS NOT NULL`, so when timestamps are missing the
+  count flips to 0 and the section's `hasData` becomes false.
+
+**New endpoint — `GET /api/reports/sales-funnel?range=last_30_days`:**
+- Mounted under `requireRole(MANAGER_ROLES)` in
+  `server/routes/reports.ts`.
+
+**New shared contract — `shared/reports/salesFunnel.ts`:**
+- `SalesFunnelResponse` re-exports the existing Sales section
+  shapes (`SalesCountTrendSection` /
+  `SalesConversionTrendSection` / `LeadStatusBreakdownSection` /
+  `QuoteStatusBreakdownSection`).
+- `FunnelStageKey` is the closed union
+  `"leads_created" | "leads_converted" | "quotes_created" |
+  "quotes_converted"` — fixed order, no inference.
+- `FunnelStage.percentOfPrevious` is `null` when the previous
+  stage's count is 0 (ratio undefined → "—" in the UI).
+- `ConversionLagSection.hasData` flips to false when neither leads
+  nor quotes have any timestamped conversion in the window. Per
+  spec: "If timestamps missing: hasData=false."
+
+**Funnel-specific computation:**
+- Stages declared in spec order; UI iterates the array verbatim
+  (no client reorder).
+- Funnel `hasData` rule: ANY stage > 0 (so tenants that book
+  quotes directly without a lead pipeline still see the lower
+  stages instead of a section-level empty state).
+- `percentOfPrev(current, previous)` returns `null` when
+  `previous <= 0` — guard against fabricated "Infinity%".
+
+**UI — `client/src/pages/ReportsSalesFunnel.tsx`:**
+- Header + range selector + back-to-Reports button.
+- KPI strip (5 cards, 1 col mobile / 2 col md / 5 col lg).
+- Funnel section: 4 horizontal bars sized as share of the largest
+  stage; each row shows count + "% of previous".
+- Trend cards: 2x2 grid (lead create / lead conv / quote create /
+  quote conv) using the same compact-bar visual the Sales tab uses.
+- Status breakdowns: 2-column grid (leads + quotes).
+- Conversion lag: 2-up cards showing avg days + count for each.
+- Full-page error path triggers ONLY on a true API failure
+  (`isError || !data`); per-section empty states inline.
+
+**App + Library wiring:**
+- `App.tsx` mounts `/reports/sales-funnel` under `<ProtectedRoute
+  requireAdmin>`.
+- `client/src/lib/reportsLibrary.ts` adds an active "Sales Funnel"
+  entry under Sales Reports with `href: "/reports/sales-funnel"`,
+  listed ABOVE the existing tab section deep-links.
+
+**Tests — `tests/reports-sales-funnel.test.ts` (24 tests):** page
+source guards (sections, query key, empty states, no front-end
+aggregation in the Funnel / trend / status / lag cards); no-fake-
+data scans; server route + aggregator wiring (role gating, the
+Funnel aggregator imports NO db / schema directly, KPIs route
+through `sharedQueries` including `leadsConverted` /
+`quotesConverted`, funnel-stage keys appear in fixed order with
+no `.sort()`, `percentOfPrev` is null-safe on zero baseline,
+canonical lead + quote conversion predicates are EXACT-matched in
+both `leadsConverted`/`quotesConverted` and the existing
+`*ConversionPercent` lambdas, lag uses `convertedAt - createdAt`
+with `isNotNull` filters, status breakdowns expose only canonical
+enum keys, no GROUP BY alias regression); reuse canonicality (the
+six section helpers + the new lag helper live in reportsCommon;
+both Sales aggregator and Funnel aggregator import them; Sales
+aggregator has no in-file copies of any helper); App route +
+library catalog (route mounted under `requireAdmin`; catalog
+includes an active Sales Funnel entry under Sales with the
+canonical `href`).
+
+**Verification:**
+- `npm run check` clean (ignoring pre-existing
+  `client/src/pages/NewInvoicePage.tsx` WIP errors unrelated to
+  this work).
+- Live read-only probe against the production Neon DB confirmed
+  both tenants return well-formed Funnel responses; sections with
+  no data correctly report `hasData: false`. Samcor showed real
+  funnel signal at the quotes_created stage (1 quote in window).
+- `npx vitest run tests/reports-sales-funnel.test.ts tests/reports-jobs.test.ts tests/reports-revenue.test.ts tests/reports-ar.test.ts tests/reports-library.test.ts tests/reports-snapshot.test.ts tests/reports-financial.test.ts tests/reports-operations.test.ts tests/reports-sales.test.ts`
+  — **230 / 230 pass** (was 206; +24 new Funnel tests; +6 net
+  updates to Sales tests that followed the lifted helpers into
+  `reportsCommon.ts`).
+
+No new business logic outside the funnel-stage assembly + the
+calendar-month-agnostic conversion-lag query. No schema changes.
+No fake data.
+
+#### Reports — Job Performance deep-report at /reports/jobs (2026-05-03)
+
+Standalone Job Performance drill-down page (NOT a tab) with KPI
+strip, the four Operations sections (completion trend, status mix,
+avg job value trend, unbillable breakdown), and a recently-completed
+jobs activity table. Real data only — every section carries
+`hasData` and renders an empty state when false.
+
+**KPI strip (4 metrics):**
+- Jobs completed (`higher_is_better`)
+- Avg job invoice value (`higher_is_better`)
+- Unbillable time cost (`lower_is_better`)
+- Active jobs (`higher_is_better` — open + non-deleted as-of window
+  end). Driven by a NEW `sharedQueries.activeJobsAtPoint` lambda.
+
+**Reuse, not duplication.** All four Operations section helpers were
+lifted from `reportsOperations.ts` into `reportsCommon.ts` in this
+pass:
+- `getCompletionTrendShared(companyId, current)`
+- `getJobStatusBreakdownShared(companyId)` + `JOB_STATUS_LABELS`
+- `getAvgJobValueTrendShared(companyId, current)`
+- `getUnbillableBreakdownShared(companyId, current)` +
+  `UNBILLABLE_TYPE_LABELS` + `KNOWN_UNBILLABLE_TYPES`
+
+The Operations aggregator now calls the shared helpers — its
+output is byte-for-byte unchanged. The Jobs aggregator is a thin
+orchestrator (zero direct DB or schema imports — locked by test):
+it only calls `sharedQueries` lambdas and the `get*Shared` section
+helpers.
+
+**New shared helper — `getCompletedJobsListShared`:**
+- One row per `to_status='completed'` event in window (matches the
+  Jobs Completed KPI count). Joins `jobs` + `client_locations` +
+  optional `customer_companies` for display name + LEFT JOIN on
+  `jobs.invoiceId` for the primary invoice total. Server-side
+  `ORDER BY desc(changedAt)` + `LIMIT 50`. Soft-deleted jobs
+  excluded. Tech assignment is intentionally NOT joined — the
+  canonical source is `job_visits.assignedTechnicianIds`
+  (multi-row, multi-tech), which is ambiguous to surface in a
+  single row. Per spec: "Do not infer tech/client if relationship
+  is unclear."
+
+**New shared lambda — `sharedQueries.activeJobsAtPoint`:**
+- Count of jobs with `status='open'`, `deletedAt IS NULL`, and
+  `created_at <= w.to`. Drives the "Active jobs" KPI per window.
+
+**New endpoint — `GET /api/reports/jobs?range=last_30_days`:**
+- Mounted under `requireRole(MANAGER_ROLES)` in
+  `server/routes/reports.ts`.
+
+**New shared contract — `shared/reports/jobs.ts`:**
+- `JobsResponse` re-exports the existing
+  `JobCompletionTrendSection` / `JobStatusBreakdownSection` /
+  `AvgJobValueTrendSection` / `UnbillableBreakdownSection` from
+  the operations contract so the two surfaces consume identical
+  shapes.
+- `CompletedJobItem` / `CompletedJobsSection` for the activity
+  table.
+
+**UI — `client/src/pages/ReportsJobs.tsx`:**
+- Header + range selector + back-to-Reports button.
+- KPI strip (4 cards, 1 col mobile / 2 col md / 4 col lg).
+- Completion trend bars (sky), status breakdown bars, avg job
+  value trend bars (emerald), unbillable breakdown bars (rose).
+- Completed jobs table — Job # / Client / Location / Completed /
+  Invoice total. Newest first per backend.
+- Full-page error path triggers ONLY on a true API failure
+  (`isError || !data`); per-section empty states inline for
+  partial-data tenants.
+
+**App + Library wiring:**
+- `App.tsx` mounts `/reports/jobs` under `<ProtectedRoute
+  requireAdmin>`.
+- `client/src/lib/reportsLibrary.ts` adds an active "Job
+  Performance" entry under Operations Reports with `href:
+  "/reports/jobs"`. Listed ABOVE the existing tab section
+  deep-links so the dedicated page is the first thing users see.
+
+**Tests — `tests/reports-jobs.test.ts` (24 tests):** page source
+guards (sections, query key, empty states, no front-end aggregation
+in any of the trend / status / avg-value / unbillable / completed
+cards); no-fake-data scans; server route + aggregator wiring (role
+gating, the Jobs aggregator imports NO db / schema directly — it's
+purely an orchestrator, KPIs route through `sharedQueries`,
+including the new `activeJobsAtPoint`; completion trend uses
+`job_status_events.toStatus='completed'`, avg job value uses
+`invoices.total` and never joins payments, unbillable excludes null
+`costRateSnapshot`, completed jobs are server-sorted DESC by
+`changedAt`, soft-deleted jobs are excluded, tech assignment is NOT
+inferred via `job_visits`); reuse canonicality (the four section
+helpers + the new completed-jobs helper live in reportsCommon; both
+Operations and Jobs aggregators import them; Operations has no
+in-file copy of any helper); App route + library catalog (route
+mounted under `requireAdmin`; catalog includes an active Job
+Performance entry under Operations with the canonical `href`).
+
+**Verification:**
+- `npm run check` clean (ignoring pre-existing
+  `client/src/pages/NewInvoicePage.tsx` WIP errors unrelated to
+  this work).
+- Live read-only probe against the production Neon DB confirmed
+  both tenants return well-formed Jobs responses; sections with no
+  data correctly report `hasData: false`. Samcor returned 6 real
+  completion-trend points + 6 completed-job rows.
+- `npx vitest run tests/reports-jobs.test.ts tests/reports-revenue.test.ts tests/reports-ar.test.ts tests/reports-library.test.ts tests/reports-snapshot.test.ts tests/reports-financial.test.ts tests/reports-operations.test.ts tests/reports-sales.test.ts`
+  — **206 / 206 pass** (was 183; +24 new Jobs tests; +6 net
+  updates to operations tests that followed the lifted helpers
+  into `reportsCommon.ts`).
+
+No new business logic outside the completed-jobs join + the
+activeJobsAtPoint lambda. No schema changes. No fake data.
+
+#### Reports — Revenue deep-report at /reports/revenue (2026-05-03)
+
+Standalone Revenue drill-down page (NOT a tab) with KPI strip,
+revenue trend chart, payment-method breakdown, top revenue clients,
+recent-payments activity table, and a calendar-month-over-month
+comparison. Real data only — every section carries `hasData` and
+renders an empty state when false.
+
+**KPI strip (4 metrics, all `higher_is_better`):**
+- Total revenue — cash-basis sum of `payments.amount` for
+  `paymentType='payment'` over the window. Same lambda the Snapshot
+  Revenue & Cash Flow card uses.
+- Payments collected — count of payment events.
+- Avg payment amount — `SUM(amount) / COUNT(*)` over the window
+  (NEW shared lambda `sharedQueries.avgPaymentAmount`).
+- Revenue change vs previous period — derived from the revenue
+  scalars (current vs prevMonth, prevMonth vs prevQuarter, etc.) —
+  no new query.
+
+**Reuse, not duplication.** The revenue trend bars and the
+payment-method breakdown reuse the SAME backend helpers the
+Financial tab uses — they were lifted from `reportsFinancial.ts`
+into `reportsCommon.ts` in this pass:
+- `getRevenueTrendShared(companyId, current)`
+- `getPaymentBreakdownShared(companyId, current)` + the canonical
+  `PAYMENT_METHOD_LABELS` map and `KNOWN_PAYMENT_METHODS` set.
+
+The Financial aggregator now calls the shared helpers through thin
+wrappers; its output is unchanged. The Revenue page calls the
+shared helpers directly. Drift between the two surfaces is now
+structurally impossible.
+
+**New shared helpers in `reportsCommon.ts`:**
+- `getRevenueByClientShared(companyId, current, limit)` — top N
+  client locations by sum of payments received in window. Joins
+  `client_locations` + `customer_companies` and uses the canonical
+  `locationDisplayNameExpr` so client names match the rest of the
+  app. No fabricated catch-all rows.
+- `getRecentPaymentsShared(companyId, current, limit)` — newest-
+  first list of payment events with denormalized invoice + client
+  info. Server-side `ORDER BY desc(receivedAt)` + `LIMIT` — the UI
+  doesn't re-sort.
+
+**New shared lambda — `sharedQueries.avgPaymentAmount`:**
+- Average payment amount per window for cash-basis payments.
+
+**New endpoint — `GET /api/reports/revenue?range=last_30_days`:**
+- Mounted under `requireRole(MANAGER_ROLES)` in
+  `server/routes/reports.ts`.
+- Aggregator in `server/storage/reportsRevenue.ts` runs every
+  section concurrently. The only Revenue-specific computation is
+  the calendar month-over-month section (NOT a 30-day window — it
+  uses `Date.UTC(y, m, 1)` first-of-month boundaries with a
+  null-safe percent change when the previous month was zero).
+
+**New shared contract — `shared/reports/revenue.ts`:**
+- `RevenueResponse` with `kpis`, `revenueTrend`, `paymentMethods`,
+  `revenueByClient`, `recentPayments`, `monthComparison`.
+- `RecentPaymentItem` carries `id`, `receivedAtISO`, `amount`,
+  `method`, `methodLabel`, `invoiceId`, `invoiceNumber`,
+  `clientId`, `clientName`.
+- `MonthOverMonthSection` carries `currentMonthYmd`,
+  `previousMonthYmd`, the two month revenues, and a nullable
+  `changePercent`.
+
+**UI — `client/src/pages/ReportsRevenue.tsx`:**
+- Header with title + back-to-Reports button + the same date range
+  selector (`Last 30 days` enabled, longer spans disabled).
+- KPI strip (4 cards, 1 col mobile / 2 col md / 4 col lg).
+- Revenue trend bars (full width).
+- Payment methods + month-over-month comparison side by side on lg.
+- Revenue by client list (full width).
+- Recently received payments table — Date / Client / Invoice # /
+  Method / Amount, newest first per backend.
+- Full-page error path triggers ONLY on a true API failure
+  (`isError || !data`); per-section empty states inline for
+  partial-data tenants.
+
+**App + Library wiring:**
+- `App.tsx` mounts `/reports/revenue` under `<ProtectedRoute
+  requireAdmin>`.
+- `client/src/lib/reportsLibrary.ts` adds an active "Revenue" entry
+  under Financial Reports with `href: "/reports/revenue"`. Listed
+  ABOVE the existing "Revenue trend" deep-link to the Financial
+  tab so the dedicated page is the first thing a user sees.
+
+**Tests — `tests/reports-revenue.test.ts` (24 tests):** page source
+guards (sections, query key, empty states, no front-end aggregation
+in the trend / methods / by-client / recent-payments cards);
+no-fake-data scans; server route + aggregator wiring (role gating,
+real-data tables only, KPIs route through `sharedQueries`, all four
+KPIs `higher_is_better`, revenue uses `payments.receivedAt`,
+payment-method section reuses the canonical helper without a local
+`METHOD_LABELS` copy, revenue-by-client groups by
+`clientLocations.id` with no inferred catch-all rows, recent
+payments are server-sorted DESC by `receivedAt`, MoM uses calendar-
+month UTC bounds, MoM change is null-safe on zero baseline, no
+GROUP BY alias regression); reuse canonicality (the four shared
+helpers live in reportsCommon; both Financial and Revenue
+aggregators import them; Financial has no in-file copy of either
+trend or breakdown helper); App route + library catalog (route
+mounted under `requireAdmin`; catalog includes an active Revenue
+entry under Financial with the canonical `href`).
+
+**Verification:**
+- `npm run check` clean (ignoring pre-existing
+  `client/src/pages/NewInvoicePage.tsx` WIP errors unrelated to
+  this work).
+- Live read-only probe against the production Neon DB confirmed
+  both tenants return well-formed Revenue responses; sections with
+  no data correctly report `hasData: false`.
+- `npx vitest run tests/reports-revenue.test.ts tests/reports-ar.test.ts tests/reports-library.test.ts tests/reports-snapshot.test.ts tests/reports-financial.test.ts tests/reports-operations.test.ts tests/reports-sales.test.ts`
+  — **183 / 183 pass** (was 159; +24 new Revenue tests; +3 net
+  updates to financial tests that followed the lifted helpers into
+  `reportsCommon.ts`).
+
+No new business logic outside the calendar-month MoM helper. No
+schema changes. No fake data.
+
+#### Reports — Accounts Receivable deep-report at /reports/ar (2026-05-03)
+
+Standalone AR drill-down page (NOT a tab) with KPI strip, expanded
+4-bucket aging, full overdue invoices table, top outstanding clients
+list, and a daily avg-payment-time trend. Real data only — every
+section carries `hasData` and renders an empty state when false.
+
+**KPI strip (4 metrics, all `lower_is_better`):**
+- Total outstanding — sum of unpaid balances as of the window end.
+- Total overdue — sum of unpaid balances whose dueDate is strictly
+  past the window end (any bucket past due, NOT just 30+).
+- Avg payment time — same shared lambda the Snapshot tab + Financial
+  tab use; identical numbers.
+- % overdue — `totalOverdue / totalOutstanding × 100` per window.
+  `hasData` follows `totalOutstanding`'s allZero check so an empty
+  AR doesn't render a fabricated 0%.
+
+**Reuse, not duplication.** Both the aging buckets and the overdue
+invoice list derive from a single call to the canonical
+`reportsRepository.getARAgingReport(companyId)` — no new aging
+math. The top-clients query was lifted out of `reportsFinancial.ts`
+into `reportsCommon.getTopOutstandingClientsShared(companyId, limit)`
+so the Financial tab's section and the AR deep-report consume the
+same join + sort. KPI scalars route through `sharedQueries`.
+
+**New shared contract — `shared/reports/ar.ts`:**
+- `ARReportResponse` with `kpis`, `aging`, `overdueInvoices`,
+  `topOutstandingClients`, `paymentTimeTrend`.
+- `OverdueInvoiceRow` carries `id`, `invoiceNumber`, `clientName`,
+  `amount` (BALANCE — what's actually owed; not invoice total),
+  `dueDate`, `daysOverdue`.
+- `PaymentTimePoint` carries `date` (paid date), `avgDays`,
+  `invoiceCount`.
+
+**New endpoint — `GET /api/reports/ar?range=last_30_days`:**
+- Mounted under `requireRole(MANAGER_ROLES)` in
+  `server/routes/reports.ts`.
+- Aggregator in `server/storage/reportsAR.ts` runs all sections
+  concurrently. Adds one new query (`getPaymentTimeTrend`) — a daily
+  bucket of the canonical paid-invoice predicate, grouped by paid
+  date. Every other piece reuses existing helpers.
+
+**New shared lambda — `sharedQueries.totalOverdueAtPoint`:**
+- Sum of unpaid balances with `dueDate < window.to` (server-side
+  date math; no JS timezone drift). Distinct from
+  `ar30PlusAtPoint` which only counts >30 days. Drives the "Total
+  overdue" KPI and the "% overdue" KPI numerator.
+
+**New shared helper — `getTopOutstandingClientsShared`:**
+- Lifted from `reportsFinancial.ts` into `reportsCommon.ts`. The
+  Financial aggregator now calls the shared helper through a thin
+  wrapper that preserves the existing section-shape contract;
+  external behavior unchanged.
+
+**UI — `client/src/pages/ReportsAR.tsx`:**
+- Header with title, description, "Back to Reports" button, and the
+  same date range selector pattern (`Last 30 days` enabled, longer
+  spans disabled with "(coming soon)").
+- KPI strip (4 cards, 1 col mobile / 2 col md / 4 col lg).
+- AR aging cards (4 buckets + total outstanding/overdue footer).
+- Overdue invoices table with shadcn `Table` (Invoice # / Client /
+  Amount / Due date / Days overdue). Backend returns rows already
+  sorted desc by `daysOverdue` — UI does NOT re-sort.
+- Top outstanding clients list (left col, lg screens).
+- Avg payment time trend bars (right col, lg screens).
+- Full-page error path triggers ONLY on a true API failure
+  (`isError || !data`); per-section empty states inside the layout
+  for partial-data tenants.
+
+**App + Library wiring:**
+- `App.tsx` mounts `/reports/ar` under `<ProtectedRoute requireAdmin>`.
+- `client/src/lib/reportsLibrary.ts` gained an optional `href` field
+  on `LibraryReport` so reports with their own dedicated page
+  (instead of an in-tab section) can declare the direct route.
+  `reportLinkFor(report)` honors `href` first, then falls back to
+  the `?tab=&section=` deep-link, then to bare `/reports` for
+  coming-soon entries.
+- New library entry under Financial: "Accounts receivable
+  (deep report)" → `/reports/ar`. The library page renders it
+  alongside the in-tab AR section row.
+
+**Tests — `tests/reports-ar.test.ts` (20 tests):** AR page source
+guards (sections present, query key, empty states, no front-end
+sort/filter on overdue table, no aggregation on payment-time
+trend); no-fake-data scans; server route + aggregator wiring (role
+gating, real-data tables only, KPIs route through `sharedQueries`,
+all four KPIs are `lower_is_better`, aging derives from
+`getARAgingReport` without reimplementing the CASE math, overdue
+filter is `daysOverdue > 0 && balance > 0` with no client sort,
+payment-time predicate is `status='paid'` + `paymentType='payment'`
+with bucketing by paid date, `totalOverdueAtPoint` uses
+`dueDate < w.to::date` and NOT the >30 day predicate, no GROUP BY
+alias regression); reuse canonicality (the top-clients helper lives
+in reportsCommon; Financial aggregator imports it; AR aggregator
+imports it; Financial has no in-file copy of the query); App route
++ library catalog (route mounted under `requireAdmin`; catalog
+includes an active AR deep-report entry under Financial with the
+canonical `href`).
+
+**Verification:**
+- `npm run check` clean (ignoring pre-existing
+  `client/src/pages/NewInvoicePage.tsx` WIP errors unrelated to
+  this work).
+- Live read-only probe against the production Neon DB confirmed
+  both tenants return well-formed AR responses with real data.
+- `npx vitest run tests/reports-ar.test.ts tests/reports-library.test.ts tests/reports-snapshot.test.ts tests/reports-financial.test.ts tests/reports-operations.test.ts tests/reports-sales.test.ts`
+  — **159 / 159 pass** (was 137; +20 new AR tests; +2 net updates
+  to library catalog tests for the new `href` field; +2 net updates
+  to financial tests that followed the top-clients query into
+  `reportsCommon`).
+
+No new business logic outside the payment-time trend (the only
+genuinely new piece). No schema changes. No fake data.
+
+#### Reports — "All reports" library page at /reports/library (2026-05-02 phase 5)
+
+The "View all reports" button now navigates to a dedicated library
+page (`/reports/library`) instead of opening an in-page side sheet.
+The page lists every renderable Reports section grouped into the five
+spec categories (Financial / Operations / Sales / Team / Equipment).
+Active rows deep-link back into the Reports page with a tab + section
+query string; the Reports page reads those params, switches the
+active tab, and scrolls the matching section into view. Coming-soon
+rows are visibly disabled and do not navigate.
+
+**New canonical catalog — `client/src/lib/reportsLibrary.ts`:**
+- `REPORTS_LIBRARY` array exposes one `LibraryCategory` per spec
+  category, each with one `LibraryReport` per renderable section.
+- Each report carries `id`, `title`, `description`, `tab`,
+  `sectionTestId`, and `status` (`"active"` or `"coming_soon"`).
+- Descriptions are short factual sentences mirroring what the
+  backend section computes — no marketing copy. Tests forbid
+  `mockMetrics` / `lorem ipsum` / hardcoded business numbers.
+- `reportLinkFor(report)` returns the deep-link path; falls back to
+  bare `/reports` for coming-soon entries so a click bypass cannot
+  navigate to a non-existent anchor.
+
+**New page — `client/src/pages/ReportsLibrary.tsx`:**
+- Card-based grid (1 col on mobile, 2 cols on `lg`) with one
+  `CategoryCard` per catalog entry.
+- Each report renders as a clickable button with title + short
+  description + status badge. The button declares
+  `disabled={!isActive}`, `aria-disabled={!isActive}`, and a
+  defense-in-depth status check inside the click handler.
+- Header shows the count of "active · total" reports per category
+  so a user can see how much of the library is live at a glance —
+  derived from the catalog, not hardcoded.
+- "Back to Reports" button in the page header.
+
+**New route — `App.tsx`:**
+- `/reports/library` mounted under `<ProtectedRoute requireAdmin>`,
+  matching the auth wrapper used by the rest of the Reports surface.
+
+**Reports.tsx changes:**
+- The button block now calls `setLocation("/reports/library")`
+  instead of toggling a sheet state.
+- New `useEffect` reads `?tab=` + `?section=` from
+  `window.location.search` on mount AND on browser back/forward
+  (`popstate`). Validates `tab` against the canonical six-tab
+  whitelist; if it matches, calls `setActiveTab(...)`. If `section`
+  is present, defers a `scrollIntoView({ behavior: "smooth" })` via
+  two RAFs so React has time to commit the new tab content.
+- The legacy `ReportsLibrarySheet` component, the stale
+  `REPORT_LIBRARY` array, the `ReportLibraryEntry` type, and the
+  `Sheet`/`SheetContent`/etc. imports are all removed.
+
+**Tests — `tests/reports-library.test.ts` (22 tests):** catalog
+integrity (five categories in spec order, unique ids, every active
+report's `tab` and `sectionTestId` resolve, coming-soon entries
+have empty `sectionTestId`, `reportLinkFor` builds correct
+deep-links); reverse coverage (every
+`(financial|operations|sales)-section-…` rendered in `Reports.tsx`
+is registered in the catalog, with a documented allow-list for KPI
+strips and the supplementary Top-Outstanding-Clients card the user
+spec excluded); library page source (page test ids; iterates the
+catalog; per-category / per-report test ids; active rows are
+`disabled={!isActive}` buttons that fire `onSelect(report)` only
+when active; click handler short-circuits when status isn't
+active); Reports page wiring (View-all button navigates to
+`/reports/library`, no `setLibraryOpen`, no
+`ReportsLibrarySheet`, no `@/components/ui/sheet` import;
+`URLSearchParams` reads `tab` + `section`; tab whitelist matches
+the canonical six keys; `setActiveTab` mutates; `querySelector` +
+`scrollIntoView({ behavior: "smooth" })` run); App.tsx mounts
+`/reports/library` under `<ProtectedRoute requireAdmin>`;
+no-fake-data scans.
+
+**Verification:**
+- `npm run check` clean (ignoring pre-existing
+  `client/src/pages/NewInvoicePage.tsx` WIP errors unrelated to
+  this work).
+- `npx vitest run tests/reports-library.test.ts tests/reports-snapshot.test.ts tests/reports-financial.test.ts tests/reports-operations.test.ts tests/reports-sales.test.ts`
+  — **137 / 137 pass** (was 116; +22 new library tests; minor
+  updates to two snapshot tests that referenced the now-removed
+  in-page sheet).
+
+No new business logic. No new endpoints. No new metrics. No fake
+data. No schema changes.
+
+#### Reports — Sales tab (drill-down for leads + quotes) (2026-05-02 phase 4)
+
+The Reports page's Sales tab moves from a "Coming soon" placeholder
+to a full drill-down for lead and quote performance. Real data only —
+every section carries a server-set `hasData` flag and renders
+"Not enough data yet" when false.
+
+**KPI strip parity with Snapshot.** Leads created, Lead conversion,
+Quotes created, and Quote conversion on the Sales tab are computed
+from the SAME query lambdas the Snapshot tab uses. This pass lifted
+those four lambdas (`leadsCreated`, `leadConversionPercent`,
+`quotesCreated`, `quoteConversionPercent`) out of
+`reportsSnapshot.ts`'s local `queries` object into `sharedQueries` in
+`reportsCommon.ts`. The Snapshot tab's behavior is unchanged — the
+SQL is byte-for-byte identical, just relocated. The local `queries`
+object in `reportsSnapshot.ts` is now empty and removed; every
+scalar metric in the Snapshot response routes through `sharedQueries`.
+
+**Canonical conversion definitions** — same predicates the rest of
+the app uses; no new "inferred conversion" signals are introduced.
+Anti-regression tests forbid them:
+- Lead converted ⇔ `convertedAt IS NOT NULL OR status = 'won'`
+- Quote converted ⇔ `convertedAt IS NOT NULL OR status IN
+  ('converted', 'approved')`
+
+**New shared contract — `shared/reports/sales.ts`:**
+- `SalesResponse` with `kpis`, `leadCreationTrend`,
+  `leadConversionTrend`, `quoteCreationTrend`,
+  `quoteConversionTrend`, `leadStatusBreakdown`,
+  `quoteStatusBreakdown`.
+- `LeadStatusKey` mirrors `leadStatusEnum` exactly (`new` /
+  `contacted` / `quoted` / `won` / `lost`); `QuoteStatusKey` mirrors
+  `quoteStatusEnum` (`draft` / `sent` / `approved` / `declined` /
+  `expired` / `converted`). No fabricated buckets.
+- Conversion trend points carry `createdCount` + `convertedCount`
+  alongside `conversionPercent` so the UI can show the underlying
+  ratio when the percentage alone is misleading on small denominators.
+
+**New endpoint — `GET /api/reports/sales?range=last_30_days`:**
+- Mounted under `requireRole(MANAGER_ROLES)` in
+  `server/routes/reports.ts`.
+- Aggregator in `server/storage/reportsSales.ts` runs every section
+  concurrently, tenant-scoped, indexed.
+
+**Sections — what's computed:**
+- **KPI strip (4 metrics)**: Leads created, Lead conversion %,
+  Quotes created, Quote conversion %. All `higher_is_better` per
+  spec. Lead/Quote conversion's `hasData` follows the count metric
+  (no created leads/quotes in the period → conversion is meaningless).
+- **Lead creation trend**: daily buckets of `leads.createdAt` with
+  `isActive = true`.
+- **Lead conversion trend**: per-bucket `(convertedCount /
+  createdCount) * 100` using the canonical conversion predicate.
+  Conversion bars scaled to a fixed 0-100 ceiling — no per-section
+  max needed.
+- **Quote creation trend**: daily buckets of `quotes.createdAt`.
+- **Quote conversion trend**: same shape as lead conversion, with
+  the canonical 3-signal quote predicate.
+- **Lead status breakdown**: count + percentOfTotal per
+  `leads.status`, only the five canonical enum keys; sorted by
+  count desc.
+- **Quote status breakdown**: same shape for quotes; six canonical
+  enum keys.
+
+**UI — `client/src/pages/Reports.tsx`:**
+- New `SalesBody` component replaces the previous
+  `<ComingSoonTab label="Sales" />` mount.
+- New section components: `LeadCreationTrendCard`,
+  `LeadConversionTrendCard`, `QuoteCreationTrendCard`,
+  `QuoteConversionTrendCard`, `LeadStatusBreakdownCard`,
+  `QuoteStatusBreakdownCard`.
+- New shared `StatusBreakdownList` primitive used by both status
+  cards (eliminates copy-pasted markup; tests verify it doesn't
+  re-sort/filter items either).
+- New `SalesCountBar` and `SalesConversionBar` primitives mirror
+  the trend-bar pattern from Operations / Financial. No third-party
+  chart library.
+- Full-page error path triggers ONLY on `isError || !data`. Per-
+  section empty states handle partial payloads.
+- Two-column layout for the four trend cards (creation + conversion
+  side-by-side per noun) so the UI fits comfortably without
+  scrolling on standard widths.
+
+**Tests — `tests/reports-sales.test.ts` (21 tests):** source-grep
+guards on Reports.tsx (SalesBody mount, query key, seven section
+test ids, per-section SectionEmpty short-circuits, full-page error
+gating, spec-order section layout, no front-end aggregation in
+trend or status cards including `StatusBreakdownList`); no-fake-data
+guards (forbidden phrases + non-zero metric-output literals); server
+route + aggregator wiring (role gating, real-data tables only, every
+section emits `hasData`, every `buildMetric` carries `polarity`,
+canonical conversion predicates EXACT-matched in both the Sales
+aggregator and `reportsCommon`, fabricated lead/quote status
+buckets forbidden, no `groupBy(sql\`alias\`)` regression, trend
+queries group by `createdAt::date`); shared-helper canonicality
+(reportsCommon owns the four lead/quote KPI lambdas; both Snapshot
+and Sales import them; Snapshot has no local copies that could
+drift).
+
+**Verification:**
+- `npm run check` clean (ignoring pre-existing
+  `client/src/pages/NewInvoicePage.tsx` WIP errors unrelated to
+  this work).
+- `npx vitest run tests/reports-snapshot.test.ts tests/reports-financial.test.ts tests/reports-operations.test.ts tests/reports-sales.test.ts`
+  — **116 / 116 pass** (was 95; +21 new Sales tests, plus minor
+  test updates: two source-guard tests in Financial / Operations
+  switched their "still Coming Soon" target from sales → team, and
+  three full-page-error tests across Financial / Operations / Sales
+  switched from a brittle `\n\}\n` regex to a CRLF-tolerant
+  split-on-`function ` extraction).
+
+No new business logic. No detail tables. No changes to other
+Reports tabs' output. No new sidebar entries. No schema changes.
+
+#### Client Detail — read-only "Pricing" workspace tab (2026-05-02)
+
+New workspace tab on the Client Detail page that surfaces the canonical
+per-location pricing history (invoice + quote derived line items only).
+Read-only; no editing, no overrides, no "use this price" actions, no
+pricing-difference warnings. Backend contract is the previously locked
+`GET /api/clients/:clientId/pricing-history` — no API changes.
+
+**Frontend only.** No backend changes, no migration, no schema touch.
+
+**Files added:**
+- `client/src/components/LocPricingTab.tsx` — encapsulates the
+  TanStack `useQuery` against the pricing-history endpoint, the search
+  input (debounced 250ms, server-side via `?search=`), the table, and
+  loading / empty / error / search-empty states. Uses the same
+  `Intl.NumberFormat` shape and the same div-based table convention
+  (`border ... rounded ... divide-y`) as `LocInvoicesTab` /
+  `LocQuotesTab` on the same page; does NOT introduce shadcn `Table`
+  or pull from the canonical `formatCurrency` helper. Both deviations
+  are deliberate — global formatter / table-primitive cleanup is out
+  of scope for this PR (see `LocPricingTab.tsx` header comment).
+
+**Files changed:**
+- `client/src/pages/ClientDetailPage.tsx`:
+  - `WorkspaceTab` union extended with `"pricing"`. `WORKSPACE_TAB_KEYS`
+    is derived from `LOCATION_TABS`, so `?tab=pricing` is a valid deep
+    link automatically.
+  - `COMPANY_TABS` and `LOCATION_TABS` both gain `{ key: "pricing",
+    label: "Pricing" }`. Listed in both lists so the tab bar shape is
+    stable across scope toggles, mirroring how Equipment / Parts are
+    handled.
+  - Imported `LocPricingTab` from `@/components/LocPricingTab`.
+  - Company-scope branch renders `<ScopeRequiredEmpty>` with the
+    Receipt icon and copy explaining that pricing history is per-
+    location — same pattern as the Equipment / Parts company-scope
+    nudges.
+  - Location-scope branch renders
+    `<LocPricingTab locationId={selectedLocationId!}
+    onNavigate={setLocation} />` — passes wouter's `setLocation` so
+    invoice / quote click-through follows the same inline-string
+    convention as `LocInvoicesTab` / `LocQuotesTab`.
+
+**UI behavior:**
+- Tab persists through `?tab=pricing` URL deep links via the existing
+  scope-bar URL state.
+- All-locations / company scope: location-keyed nudge ("Pricing
+  history is per-location"), same shape as Equipment / Parts.
+- Location scope: fetches `GET /api/clients/<locationId>/pricing-
+  history`. Search input debounces and re-keys the query as
+  `["/api/clients", locationId, "pricing-history", search]`, calling
+  the backend with the `search` param.
+- Click-through: `Invoice` rows go to `/invoices/:id`, `Quote` rows
+  to `/quotes/:id`. No new URL helper introduced.
+- Empty: "No pricing history yet." Search empty: "No pricing matches
+  this search." Error: inline rose-tint banner suggesting a refresh.
+- Columns: Date / Source (badge) / # / Item / Qty / Unit / Total.
+  Money fields formatted via in-file `Intl.NumberFormat` (matches the
+  surrounding tabs' `fmt` constant).
+
+**Constraints honored:**
+- Read-only only.
+- No `job_parts` reintroduced (backend already excludes them).
+- No pricing warnings, no overrides, no editing.
+- No new route, no right-rail change.
+- No frontend test added — there is no existing component-test pattern
+  in `client/`; backend tests for the underlying endpoint already
+  cover contract / 400 / 404 / tenant-isolation cases (see
+  `tests/client-pricing-history.test.ts` +
+  `tests/client-pricing-history-http.test.ts`, 27 tests passing).
+
+#### Reports — Operations tab (drill-down for jobs + efficiency) (2026-05-02 phase 3)
+
+The Reports page's Operations tab moves from a "Coming soon"
+placeholder to a full drill-down for job performance and time-cost
+efficiency. Real data only — every section carries a server-set
+`hasData` flag and renders "Not enough data yet" when false.
+
+**KPI strip parity with Snapshot.** Jobs completed, Avg job invoice
+value, and Unbillable time cost on the Operations tab are computed
+from the SAME query lambdas the Snapshot tab uses — both tabs route
+through `reportsCommon.ts::sharedQueries` so they cannot disagree on
+those numbers. The four lambdas (`jobsCompleted`, `avgJobInvoiceValue`,
+`unbillableCost`, `unbillableEntriesWithCostRate`) were lifted out of
+`reportsSnapshot.ts`'s local `queries` object into `sharedQueries`
+in this pass; Snapshot's behavior is unchanged (the SQL is identical,
+just relocated).
+
+**New shared contract — `shared/reports/operations.ts`:**
+- `OperationsResponse` with `kpis`, `completionTrend`, `jobStatus`,
+  `avgJobValueTrend`, `unbillableBreakdown`.
+- `JobStatusKey` is `"open" | "completed" | "invoiced" | "archived"`
+  — exactly the four values from `jobStatusEnum`. The spec mentioned
+  `scheduled` / `cancelled` as possible buckets, but neither exists
+  in the schema; per the spec rule "use actual job.status / do not
+  infer missing states", they are NOT fabricated. A test fails the
+  build if a future change introduces those keys.
+- `JobCompletionTrendPoint` / `AvgJobValuePoint` for the daily
+  buckets; `UnbillableBreakdownItem` keyed by `time_entries.type`
+  (the canonical `timeEntryTypeEnum`).
+
+**New endpoint — `GET /api/reports/operations?range=last_30_days`:**
+- Mounted under `requireRole(MANAGER_ROLES)` in
+  `server/routes/reports.ts`.
+- Aggregator in `server/storage/reportsOperations.ts` runs every
+  section concurrently, tenant-scoped, indexed.
+
+**Sections — what's computed:**
+- **KPI strip (3 metrics)**: Jobs completed (count), Avg job invoice
+  value (currency), Unbillable time cost (currency). Polarity per
+  spec — Jobs / Avg ↑ green, Unbillable ↑ red. Same comparison
+  windows as every other Reports tab (current / prevMonth /
+  prevQuarter / prevYear, all 30-day spans shifted back by 30 / 90 /
+  365 days).
+- **Job completion trend**: daily buckets of
+  `job_status_events.toStatus='completed'` events over the current
+  window. NOT `jobs.actualEnd` / `jobs.completedAt` — re-completions
+  and reverts are reflected accurately via the events table. Anti-
+  regression test locks the input source.
+- **Job status breakdown**: count + `percentOfTotal` per
+  `jobs.status` (only the four canonical statuses; soft-deleted
+  jobs excluded via `isNull(jobs.deletedAt)`).
+- **Avg job invoice value trend**: daily buckets of
+  `AVG(invoices.total)` for invoices issued in window with
+  `jobId IS NOT NULL`. Accrual basis (NOT payments). Anti-regression
+  test enforces the invoice-only data source.
+- **Unbillable time breakdown**: SUM of
+  `(durationMinutes / 60) * costRateSnapshot` grouped by
+  `time_entries.type` (admin / break / travel_* / on_site / etc.).
+  Excludes rows with `costRateSnapshot IS NULL` — their cost is
+  unfabricable, so they're filtered upstream. Each row carries
+  cost, hours, count, and `percentOfTotal`.
+
+**UI — `client/src/pages/Reports.tsx`:**
+- New `OperationsBody` component replaces the previous
+  `<ComingSoonTab label="Operations" />` mount.
+- New section components: `JobCompletionTrendCard`,
+  `JobStatusBreakdownCard`, `AvgJobValueTrendCard`,
+  `UnbillableBreakdownCard`. Each gates on `!section.hasData` and
+  renders `SectionEmpty` ("Not enough data yet").
+- New `CountBar` and `AvgJobValueBar` primitives mirror the
+  `TrendBar` pattern from the Financial tab — same compact bar
+  chart, no third-party chart library.
+- Full-page error path triggers ONLY on a true API failure
+  (`isError || !data`). Per-section empty states handle partial
+  payloads inside the layout.
+
+**Tests — `tests/reports-operations.test.ts` (21 tests):** source-grep
+guards on Reports.tsx (OperationsBody mount, query key, five section
+test ids, per-section SectionEmpty short-circuits, full-page error
+gating, spec-order section layout, no front-end aggregation in trend
+or breakdown cards); no-fake-data guards (forbidden phrases +
+non-zero metric-output literals — accumulator zero-inits are
+correctly NOT flagged); server route + aggregator wiring (role
+gating, real-data tables only, every section emits `hasData`, every
+`buildMetric` carries `polarity`, completion trend reads
+`job_status_events` with `toStatus='completed'` and NOT
+`jobs.actualEnd` / `jobs.completedAt`, avg-job-value uses
+`invoices.total` and NEVER joins payments, unbillable excludes
+`costRateSnapshot IS NULL`, status breakdown groups by `jobs.status`
+with `isNull(deletedAt)` and does not invent `scheduled` /
+`cancelled` keys, no `.groupBy(sql\`bucket\`)` regression);
+shared-helper canonicality (the four KPI lambdas live in
+`reportsCommon.sharedQueries`; both Snapshot and Operations import
+from there; Snapshot has no local copies that could drift).
+
+**Verification:**
+- `npm run check` clean (ignoring pre-existing
+  `client/src/pages/NewInvoicePage.tsx` WIP errors unrelated to
+  this work).
+- Live read-only probe against the production Neon DB confirmed
+  both tenants return well-formed responses for all three Reports
+  endpoints. Sections with no data correctly report `hasData: false`.
+- `npx vitest run tests/reports-snapshot.test.ts tests/reports-financial.test.ts tests/reports-operations.test.ts`
+  — **95 / 95 pass** (was 74; +21 new Operations tests, plus minor
+  updates to two snapshot tests + one financial test that followed
+  the helpers into `reportsCommon.ts` / followed the Operations tab
+  out of "Coming soon").
+
+No new business logic. No detail tables. No changes to the Snapshot
+or Financial tabs' output. No new sidebar entries. No schema
+changes.
+
+### Changed
+
+#### Reports Financial — RevenueTrendCard + PaymentBreakdownCard locked to spec (2026-05-02 phase 2)
+
+The two top Financial-tab sections (built earlier today as part of the
+Financial drill-down) are now formally locked to the phase-2 spec rules:
+
+- **No front-end re-aggregation.** Both cards consume the backend
+  payload verbatim. Tests prohibit any `.filter()` / `.sort()` /
+  `.reduce()` over `section.points` / `section.items` that would
+  re-shape the data the aggregator already emitted. The single
+  permitted `.reduce()` in `RevenueTrendCard` is `Math.max(...)` for
+  relative bar height — that's presentation, not aggregation.
+- **Backend sort is preserved.** `getPaymentBreakdown` already sorts
+  `items` by `totalAmount` desc; the card renders that order
+  verbatim. A test pins the aggregator's sort line in place AND
+  forbids a duplicate client-side sort.
+- **Each row renders BOTH a currency amount and a percent.** The
+  card uses the canonical `formatMetricValue(amount, "currency")`
+  formatter so dollar rendering matches every other Reports
+  surface, and the percent uses `toFixed(1)` so the decimal grid
+  stays consistent.
+- **Empty handling.** `!section.hasData` short-circuits to
+  `<SectionEmpty />` with the canonical "Not enough data yet" copy
+  in both cards. Already wired; now locked by tests.
+- **No hardcoded values.** Tests fail the build if any literal
+  `amount: <n>` / `value: <n>` / `count: <n>` / `totalAmount: <n>` /
+  `percentOfTotal: <n>` / `$<n>` appears in either component body.
+
+**Section ordering inside `FinancialBody`** is also locked: KPI
+strip → Revenue Trend → Payments Breakdown → Accounts Receivable →
+Invoice Status → Top Outstanding Clients. A regression test asserts
+the layout-order of the JSX mounts in source.
+
+**Tests added — `tests/reports-financial.test.ts`
+"RevenueTrendCard + PaymentBreakdownCard" block (10 tests):**
+1. RevenueTrendCard reads from `FinancialResponse["revenueTrend"]`
+   and iterates `section.points` directly (no group-by / filter /
+   bucket math on the client).
+2. RevenueTrendCard short-circuits to SectionEmpty on
+   `!section.hasData`.
+3. RevenueTrendCard mounts `data-testid="financial-revenue-trend-chart"`
+   and each `TrendBar` derives its key from backend `p.date`.
+4. RevenueTrendCard contains no literal numeric values for amounts,
+   counts, or dates.
+5. PaymentBreakdownCard reads from
+   `FinancialResponse["paymentBreakdown"]` and iterates
+   `section.items` directly.
+6. PaymentBreakdownCard preserves the backend's descending
+   `totalAmount` order — no client `.sort()` / `.filter()` /
+   `.reduce()` on `section.items`; aggregator's sort line stays in
+   place.
+7. PaymentBreakdownCard renders `formatMetricValue(item.totalAmount,
+   "currency")` AND `item.percentOfTotal.toFixed(1)%` per row.
+8. PaymentBreakdownCard short-circuits to SectionEmpty on
+   `!section.hasData`.
+9. PaymentBreakdownCard contains no hardcoded amounts, percents,
+   counts, or dollar strings.
+10. `FinancialBody` mounts the two cards in spec order — Revenue
+    Trend after the KPI strip, Payments Breakdown after Revenue
+    Trend, Accounts Receivable after Payments Breakdown.
+
+No new component code was written this pass — both cards
+(`RevenueTrendCard`, `PaymentBreakdownCard`, supporting `TrendBar`)
+were already in place from the earlier "Financial tab (drill-down
+for money)" pass and already followed the spec. This is a
+regression-test pass that locks the design rules so a future
+contributor can't accidentally introduce front-end aggregation,
+duplicate sort logic, or fake KPI literals.
+
+**Verification:**
+- `npm run check` clean.
+- `npx vitest run tests/reports-snapshot.test.ts tests/reports-financial.test.ts`
+  — **74 / 74 pass** (was 64; +10 net new in this block).
+
+### Fixed
+
+#### Reports endpoints 500 — AR aging GROUP BY referenced an alias Drizzle didn't emit (2026-05-02)
+
+Both `GET /api/reports/snapshot` and `GET /api/reports/financial` were
+returning 500 Internal Server Error since they shipped today. Postgres
+rejected the AR aging query with `column "bucket" does not exist`.
+
+**Root cause:** the AR aging functions in both aggregators wrote
+`.groupBy(sql\`bucket\`)` against a SELECT expression of the form
+`select({ bucket: sql\`CASE…END\` })`. Drizzle does NOT emit the
+`AS "bucket"` alias for that select shape, so the generated SQL was
+`SELECT CASE…END, COUNT(*)::int FROM "invoices" … GROUP BY bucket`.
+With no real column named `bucket` in the FROM list and no alias
+introduced by the SELECT clause, Postgres errored at parse time. The
+top-level `Promise.all` in each aggregator rejected, both endpoints
+threw, and the frontend's `(isError || !data)` branch rendered the
+canonical "We couldn't load…" copy.
+
+This is one bug duplicated across two files. Both fail in the AR
+section; nothing else.
+
+**Fix — canonical "define-once / use-twice" pattern**:
+
+- `server/storage/reportsSnapshot.ts::getCurrentARBuckets` — the
+  3-bucket CASE (`current` / `d30` / `d60_plus`) is now declared
+  once as `const bucketExpr = sql<…>\`CASE…END\``. The same
+  reference is passed into both `.select({ bucket: bucketExpr, … })`
+  and `.groupBy(bucketExpr)`. Mirrors
+  `server/storage/reports.ts::agingBucketExpr` (the existing AR
+  aging report that has been working in production).
+- `server/storage/reportsFinancial.ts::getARAging` — same shape for
+  the 4-bucket CASE (`current` / `d30` / `d60` / `d90`).
+
+No schema changes. No migration. No frontend changes. No new
+endpoints. Response contracts unchanged.
+
+**Live verification (read-only probe against production Neon DB):**
+
+Before fix:
+```
+snapshot   FAIL — column "bucket" does not exist
+  at getCurrentARBuckets (server/storage/reportsSnapshot.ts:220:16)
+financial  FAIL — column "bucket" does not exist
+  at getARAging (server/storage/reportsFinancial.ts:167:16)
+```
+
+After fix (both tenants — `Charbel` and `Samcor Mechanical Inc.`):
+```
+snapshot   PASS — 3/3 revenue · 3/3 jobs · 4/4 sales · 4/4 AR
+financial  PASS — 5/5 KPIs · 0 trend pts · 0 method · 4/4 AR · 5/5 status · 0 top clients
+```
+
+The `0`s on the Financial side are real (these tenants have no
+payments / payment methods / outstanding clients in the last 30
+days) — the section-level `hasData: false` flag flips on those
+sections and the UI renders "Not enough data yet" per section, not
+a full-page error. Sections with data (KPIs, AR aging, invoice
+status) populate normally.
+
+**Regression tests added — `tests/reports-snapshot.test.ts`
+"Reports — GROUP BY alias regression guard" block (4 tests):**
+
+1. **Repository-wide forbidden-pattern guard.** Walks every
+   `server/storage/reports*.ts` file and fails the build if any
+   `.groupBy(sql\`<single identifier>\`)` slips back in. Catches
+   the exact mistake at the source-grep level — no DB needed.
+2. **`getCurrentARBuckets` shape lock.** The function body must
+   declare `const bucketExpr = sql…`, reference it in
+   `select({ bucket: bucketExpr, … })`, and reference it in
+   `.groupBy(bucketExpr)`. The literal
+   `.groupBy(sql\`bucket\`)` form is forbidden.
+3. **`getARAging` shape lock.** Same three assertions for the
+   Financial aggregator.
+4. **Drizzle `toSQL()` snapshot.** Builds a representative query
+   with the corrected pattern and asserts the generated SQL
+   contains `GROUP BY … CASE … END` (an actual expression) and
+   does NOT contain `GROUP BY bucket` (an alias reference). Cheap,
+   fast, no DB round-trip.
+
+**Test results:**
+- `npm run check` clean.
+- `npx vitest run tests/reports-snapshot.test.ts tests/reports-financial.test.ts`
+  — **64 / 64 pass** (was 60; +4 new GROUP BY regression tests).
+
+### Added
+
+#### Reports — Financial tab (drill-down for money) (2026-05-02)
+
+The Reports page's Financial tab moves from a "Coming soon"
+placeholder to a full drill-down for money. Real data only — no
+mocks, no fabricated values; every section carries a server-set
+`hasData` flag and renders a "Not enough data yet" empty state when
+that flag is false.
+
+**New shared contract — `shared/reports/financial.ts`:**
+- `FinancialResponse` with `kpis`, `revenueTrend`, `paymentBreakdown`,
+  `arAging`, `invoiceStatus`, `paymentTime`, `topOutstandingClients`.
+- `MetricCard` / `MetricPolarity` / `SnapshotRange` re-used from the
+  Snapshot contract so trend-color and null-safe-percent rules are
+  identical across tabs.
+- AR uses 4 buckets (`current` / `d30` / `d60` / `d90`) with explicit
+  invoice counts. Invoice status uses the canonical
+  `invoiceStatusEnum` plus a derived `overdue` row (count of unpaid
+  invoices with positive balance + dueDate in past).
+
+**New endpoint — `GET /api/reports/financial?range=last_30_days`:**
+- Mounted under `requireRole(MANAGER_ROLES)` in
+  `server/routes/reports.ts`.
+- Aggregator in `server/storage/reportsFinancial.ts` runs every
+  section concurrently, tenant-scoped, indexed.
+
+**Shared primitives extracted — `server/storage/reportsCommon.ts`:**
+- `Window`, `buildComparisonWindows`, `shiftWindow`,
+  `evaluateScalar`, `buildMetric`, `percentChange`, `round2`,
+  `allZero`.
+- `sharedQueries.revenue`, `sharedQueries.paymentsCollected`,
+  `sharedQueries.avgPaymentDays`, `sharedQueries.ar30PlusAtPoint`,
+  `sharedQueries.totalOutstandingAtPoint`.
+- Both `reportsSnapshot.ts` and `reportsFinancial.ts` import from
+  here so the two tabs cannot disagree on Revenue / Avg Payment Days
+  / AR-30+ math. Snapshot was refactored to drop its local copies of
+  these query lambdas — the SQL is unchanged, just relocated.
+
+**Sections — what's computed:**
+- **KPI strip (5 metrics)**: Revenue (cash-basis), Payments
+  collected (count), Outstanding AR, Overdue AR (30+ days), Avg
+  invoice payment time. Polarity rules per spec — Revenue / Payments
+  ↑ green, AR / Overdue / Payment time ↑ red. Each metric carries
+  current / prevMonth / prevQuarter / prevYear scalars and percent
+  change.
+- **Revenue trend**: daily buckets over last 30 days, sourced from
+  `payments.receivedAt` filtered to `paymentType='payment'`. Cash-
+  basis (NOT invoice issue date — anti-regression test locks this).
+  Renders as compact bars without a third-party chart library.
+- **Payments by method**: groups payments by `payments.method`,
+  normalizing unknown values to `"other"` per the canonical
+  `paymentMethodEnum`. Each row shows total amount, count, and
+  share-of-total %.
+- **Accounts Receivable (4 buckets)**: Current / 1–30 / 31–60 / 61+
+  days, computed from `invoices.dueDate` vs `CURRENT_DATE` (server-
+  side, tz-stable). Each bucket carries amount + invoice count, with
+  a section total below.
+- **Invoices by status**: Draft / Sent (folds legacy `'sent'` into
+  `'awaiting_payment'`) / Partially paid / Paid / Overdue (computed,
+  not stored). Each row shows count + total. Overdue uses the
+  invoice's outstanding balance, not its total — a partially-paid
+  invoice's overdue exposure is the unpaid remainder only.
+- **Invoice payment time**: average days from invoice issue → final
+  payment, over invoices reaching `paid` status with the closing
+  payment in window. Excludes unpaid + partially-paid invoices
+  (anti-regression test enforces this). Uses the same shared lambda
+  as the Snapshot tab.
+- **Top outstanding clients**: top 10 client locations by sum of
+  unpaid invoice balance. Joins `client_locations` +
+  `customer_companies` and uses the canonical
+  `locationDisplayNameExpr` so the names match the rest of the app.
+
+**UI — `client/src/pages/Reports.tsx`:**
+- New `FinancialBody` component replaces the previous
+  `<ComingSoonTab label="Financial" />` mount under the Financial
+  tab.
+- New section components: `RevenueTrendCard`, `PaymentBreakdownCard`,
+  `FinancialARSection`, `InvoiceStatusCard`, `PaymentTimeCard`,
+  `TopOutstandingClientsCard`. Each gates on `!section.hasData` /
+  `!metric.hasData` and renders the canonical `SectionEmpty`
+  ("Not enough data yet") used by the Snapshot tab.
+- Full-page error path triggers ONLY on a true API failure
+  (`isError || !data`) — partial / all-empty payloads still render
+  the section structure with per-section empty states inside, per
+  the same rule the Snapshot tab uses.
+- Reuses the existing `MetricTile` for the standalone payment-time
+  card so the comparison-row layout stays identical to the Snapshot
+  tab's KPI cards.
+
+**Tests — `tests/reports-financial.test.ts` (19 tests):** source-grep
+guards on Reports.tsx (FinancialBody mount, query key, six section
+test ids, per-section SectionEmpty short-circuits, full-page error
+gating); no-fake-data guards (forbidden phrases + literal
+`currentValue:` / `totalAmount:` regex over page + aggregator +
+shared contract); server route + aggregator wiring (role gating,
+real-data tables only, every section emits `hasData`, every
+`buildMetric` carries `polarity`, AR 4-buckets canonical keys,
+payment-time excludes unpaid invoices, payment grouping normalizes
+to `"other"`, top clients capped at 10, revenue trend uses
+`payments.receivedAt`); shared-helpers guard
+(`reportsCommon` is the canonical home, both aggregators import,
+percent-change short-circuit lives there).
+
+**Verification:**
+- `npm run check` clean.
+- `npx vitest run tests/reports-snapshot.test.ts tests/reports-financial.test.ts`
+  — **60 / 60 pass** (41 Snapshot + 19 Financial). Two Snapshot
+  guards updated to follow the helpers into `reportsCommon.ts`.
+  The Snapshot tab's behavior is unchanged — the helper extraction
+  is a pure code move.
+
+No new business logic. No detail tables built (the user marked
+those optional). No changes to other Reports tabs, the Snapshot
+tab's output, or the dashboard. No new sidebar entries.
+
+#### Client Pricing History — backend-only derived read service (2026-05-02)
+
+Canonical per-client pricing-history surface for future UI consumers.
+Read-only and derived: every row is composed at query time from existing
+billing/quoting tables; no new persistent pricing table is introduced and
+no write paths are touched.
+
+**Behavior:**
+- New service: `server/services/clientPricingHistoryService.ts`
+  exposing `getClientPricingHistory(ctx, clientId, filters)` →
+  `{ items: PricingHistoryItem[] }`.
+- Sources unioned in the response (each row tagged with `sourceType`):
+  - `invoice_lines` → `sourceType: "invoice"`
+  - `quote_lines` → `sourceType: "quote"`
+- `job_parts` is intentionally NOT a source. Job-side rows can represent
+  internal/staged data (PM template seeds, in-progress tech edits) before
+  the job is invoiced, so their prices are not confirmed customer
+  pricing. Pricing history surfaces only what the customer has been
+  billed (invoices) or formally quoted (quotes).
+- `PricingHistorySourceType` is therefore `"invoice" | "quote"` only.
+- `itemId` is the line's `productId` when present; otherwise `null` and
+  `itemName` falls back to the line description. No fuzzy matching, no
+  inferred pricing rules, no client-specific overrides.
+- `category` resolved via `LEFT JOIN items ON line.productId = items.id`.
+- Sort: newest-first by `issueDate` (fallback `createdAt`).
+- Default `limit` 50, clamped to `[1, 200]`. Filters: `limit`, `itemId`,
+  `search` (ILIKE description / item name), `locationId`, `sourceType`.
+- Tenant isolation enforced by `companyId = ctx.tenantId` on every SELECT
+  for invoices, invoice_lines, quotes, and quote_lines.
+
+**API endpoint:**
+- `GET /api/clients/:clientId/pricing-history` (`server/routes/clients.ts`):
+  - Validates `clientId` belongs to the authenticated tenant via
+    `storage.getClient(companyId, clientId)` — `404` otherwise.
+  - Validates each query param shape; rejects unknown `sourceType`,
+    non-positive `limit`, oversized `itemId`/`locationId`/`search`.
+  - When `locationId` query param differs from the path `:clientId`,
+    re-verifies that location belongs to the same tenant.
+  - Returns `{ items: [] }` for clients with no history.
+  - No new mounts: piggybacks on the existing `/api/clients` router
+    already registered in `server/routes/index.ts`.
+
+**Excluded from this change (deliberate):**
+- No UI consumer — the route is purely backend.
+- No pricing-difference warnings on job-to-invoice conversion. The
+  conversion flow in `server/services/invoiceCreationService.ts` is
+  untouched, and a regression test asserts that file does not import
+  the new service.
+- No new pricing-rule system, no client-specific price overrides, no
+  fuzzy matching. Lines without a `productId` keep `itemId: null`.
+
+**Files added:**
+- `server/services/clientPricingHistoryService.ts`
+- `tests/client-pricing-history.test.ts` (12 tests)
+
+**Files changed:**
+- `server/routes/clients.ts` — added the `pricing-history` route next to
+  the existing `billing-history` route. Imports the new service.
+
+**Tests added (`tests/client-pricing-history.test.ts`):**
+- Invoice line items returned for a client.
+- Quote line items returned.
+- Negative assertion: a seeded `job_parts` row for the same client is
+  NOT returned (no `sourceType: "job"`, no jobId in `sourceId`).
+- Newest-first ordering across mixed sources (invoice + quote).
+- Empty array for a client with no history.
+- Tenant isolation: companyA cannot see companyB's invoice line.
+- Filter coverage: `sourceType`, `itemId`, `limit`, `search`.
+- Regression: service module contains no INSERT/UPDATE/DELETE; the
+  conversion service does not import the pricing-history service and
+  has no `pricing-difference` / `price-warning` references.
+
+**No migration files** — strictly read-only over existing schema.
+
+### Removed
+
+#### `NewInvoiceModal` retired — `/invoices/new` is the only canonical create path (2026-05-02, Audit #2 invoice-flow Phase 7)
+
+Phase 7 of the invoice-creation refactor. With Phase 6 having rebuilt
+`/invoices/new` as a true unsaved invoice builder (no row created
+until Save), the legacy `NewInvoiceModal` is now dead weight — every
+entry point can simply route to the page. This PR removes the modal
+and migrates its two production call sites.
+
+**Frontend only.** No backend changes, no `/invoices/new` builder
+behavior change, no `/invoices/:id` editor change, no atomic-route
+or billable-preview change.
+
+**Files deleted:**
+- `client/src/components/NewInvoiceModal.tsx` — the legacy two-step
+  (location → create-draft) modal flow. The component allocated an
+  invoice number on its `POST /api/invoices` call before the user
+  ever saw the editor; that pre-Save row creation is exactly the
+  behavior Phase 6 eliminated.
+
+**Files changed:**
+- `client/src/App.tsx`:
+  - Removed the `NewInvoiceModal` import.
+  - Removed the `[newInvoiceModalOpen, setNewInvoiceModalOpen]` state
+    pair.
+  - Removed the `<NewInvoiceModal open={…} onOpenChange={…} />` mount
+    inside the global modal cluster.
+  - Header `+ New` → `New Invoice` dropdown item now calls
+    `setLocation("/invoices/new")` instead of opening the modal.
+    Existing `data-testid="quick-new-invoice"` preserved.
+- `client/src/pages/ClientDetailPage.tsx`:
+  - Removed the `NewInvoiceModal` import.
+  - Removed the `[invoiceDialogOpen, setInvoiceDialogOpen]` state pair
+    (the modal had no client pre-selection support anyway, per the
+    pre-existing comment, so behavior parity is maintained).
+  - Removed the `<NewInvoiceModal open={invoiceDialogOpen} … />` mount.
+  - Header `Create Invoice` button now calls
+    `setLocation("/invoices/new")` instead of opening the modal.
+    Existing `data-testid="header-create-invoice"` preserved.
+
+**Entry-point inventory (post-Phase-7):**
+- Header `+ New` → `New Invoice`: navigates to `/invoices/new`. ✓
+- Invoices list `New Invoice` button (`InvoicesListPage.tsx:269`):
+  already uses `<Link href="/invoices/new">`; no change required. ✓
+- Client detail header `Create Invoice` button: navigates to
+  `/invoices/new`. ✓
+- Direct URL entry to `/invoices/new`: still routes to
+  `NewInvoicePage` (the Phase 6 builder) via `App.tsx`. ✓
+- No remaining surfaces open a modal for invoice creation.
+
+**Stale references:**
+- `grep -rn "NewInvoiceModal\|newInvoiceModalOpen\|setNewInvoiceModalOpen" client/src`
+  returns three matches AFTER this PR — all in fresh comments added
+  in this PR documenting the retirement (gravestone comments so the
+  retirement is greppable from history). No live code references
+  remain.
+
+**Verification:**
+- Final `Grep` of all four affected identifiers (`NewInvoiceModal`,
+  `newInvoiceModalOpen`, `setNewInvoiceModalOpen`, `invoiceDialogOpen`,
+  `setInvoiceDialogOpen`): only the gravestone comments matched.
+- `npx tsc --noEmit` — clean across the entire `client/src` tree
+  (exit 0, zero errors).
+- `npm run build` — clean (pre-existing chunk-size warnings
+  unrelated).
+- Route verification: `/invoices/new` continues to render
+  `NewInvoicePage` via `App.tsx`'s `<ProtectedRoute requireAdmin>`
+  wrapper — untouched in this PR.
+
+**No follow-ups for this audit.** Phase 6 follow-ups (full
+`InvoiceMetaCard` extraction, `markJobsCompleted` checkbox, tax-group
+selector, live tax preview) remain on the optional list; none are
+blocked by Phase 7.
+
+### Changed
+
+#### Reports Snapshot — simplified Jobs & Operations + per-section empty states (2026-05-02)
+
+Refinement pass on the Snapshot tab landed earlier today. Three changes,
+no scope expansion:
+
+1. **Removed the `revenue_per_job` metric** end-to-end. It overlapped
+   conceptually with `avg_job_value` (both answer "what's a job
+   worth?") and added noise without clarity. Jobs & Operations now
+   ships exactly three metrics in the spec order
+   "output + value + efficiency loss":
+   `jobs_completed` → `avg_job_value` → `unbillable_cost`. Invoice-
+   based avg-job-value math is unchanged (`AVG(invoices.total)` for
+   invoices issued in window with `jobId IS NOT NULL`); cost-only
+   unbillable math is unchanged
+   (`SUM(durationMinutes/60 * costRateSnapshot)` excluding entries
+   without a rate). The repo-wide grep guard in
+   `tests/reports-snapshot.test.ts` walks `client/src`, `server`,
+   `shared` and fails the build if any future commit reintroduces
+   the metric.
+2. **Per-section empty states.** The previous full-page
+   "Snapshot unavailable." copy fired whenever the API request
+   errored OR returned data with all-empty sections. The full-page
+   branch now triggers only on a true API failure (`isError || !data`)
+   and the wording is "We couldn't load the snapshot. Try refreshing
+   in a moment." When the API succeeds but a section's metrics all
+   report `hasData: false`, the section renders one
+   "Not enough data yet" `SectionEmpty` (test id
+   `${sectionTestId}-empty`) instead of N empty tiles. Partial
+   sections still render per-tile empty states for the missing
+   metrics. AR section follows the same rule — degrades to one empty
+   state when every bucket has `amount === 0 && invoiceCount === 0`,
+   otherwise the four bucket cards stay visible (`Current AR: $0 ·
+   No invoices` is meaningful state, not empty).
+3. **Jobs section grid capped at 3 columns** (`md:grid-cols-3`),
+   matching the new metric count and the spec's "2–3 metrics max
+   per row" rule. Revenue stays at 3 cols; Sales (4 metrics) and AR
+   (4 buckets) keep their existing layouts.
+
+**Files changed:**
+- `server/storage/reportsSnapshot.ts` — dropped the `revenuePerJob`
+  derivation block + `revenue_per_job` `buildMetric` call site.
+- `client/src/pages/Reports.tsx` — extracted `MetricsSection` /
+  `ARSection` / `SectionEmpty` helpers; rewrote `SnapshotBody` to
+  pass each section through `MetricsSection` (which gates on
+  `metrics.every(m => !m.hasData)` for section-level empty); replaced
+  the old "Snapshot unavailable" copy.
+- `tests/reports-snapshot.test.ts` — added the
+  `Reports snapshot — refinement` block (8 tests) covering metric
+  removal, spec-order assertion, invoice-based vs payment-based
+  avg-job-value, cost-only unbillable, Jobs grid cap, the
+  per-section empty rendering branch, and the AR all-zero
+  degradation; updated the `buildCount` assertion from `>= 11` to
+  exactly `10` (the new total). Added the
+  `Repository-wide guard` block (1 test) that walks the source tree
+  and fails on any reintroduction of the removed metric.
+
+**Verification:**
+- `npm run check` clean.
+- `npx vitest run tests/reports-snapshot.test.ts` — **41 / 41 pass**
+  (was 33 / 33; +8 net new in the refinement block, +1 in the
+  repo-wide guard, -1 obsolete `>= 11` count).
+
+Untouched per spec: Revenue & Cash Flow logic, Sales logic, AR
+breakdown logic, the backend response shape (only `revenue_per_job`
+is no longer in the `jobsOperations.metrics` array — the contract's
+`MetricCard[]` shape is unchanged).
+
+### Added
+
+#### Reports page foundation + Company Snapshot tab (2026-05-02)
+
+The `/reports` page was previously a parts-order + PM-schedule surface
+whose backing endpoints (`/api/reports/parts/:month`,
+`/api/reports/schedule`) had been removed — the page rendered into 404s.
+Replaced with a tabs shell (Snapshot / Financial / Operations / Sales /
+Team / Equipment) with the **Snapshot** tab fully wired and the other
+five marked "Coming soon." Detailed sub-routes that already exist
+(`/reports/timesheets`, `/reports/accounts-receivable`) are linked from
+the new "View all reports" library sheet.
+
+**Strict no-fake-data rule.** Every snapshot metric carries a server-set
+`hasData: boolean`. When false, the UI renders "Not enough data yet" —
+never a fabricated zero. Percent-change is `null` when the comparison
+period had a zero baseline (UI renders "—", not Infinity / 0%). No
+hardcoded numeric KPI literals exist in the page source; a
+`reports-snapshot.test.ts` source-grep guard fails the build if any
+slip in.
+
+**New shared contract — `shared/reports/snapshot.ts`:**
+- `SnapshotResponse`, `MetricCard`, `ARBucket`, `MetricUnit`,
+  `MetricPolarity`, `SnapshotRange`. Both server and client import
+  from here so the JSON shape stays in lockstep.
+- Each `MetricCard` carries `currentValue`, `previousMonthValue`,
+  `previousQuarterValue`, `previousYearValue`,
+  `monthChangePercent` / `quarterChangePercent` / `yearChangePercent`,
+  `polarity` (`higher_is_better` / `lower_is_better`), and `hasData`.
+- AR uses a separate `ARBucket[]` shape (snapshot of CURRENT state, no
+  period comparisons by design).
+
+**New endpoint — `GET /api/reports/snapshot?range=last_30_days`:**
+- `server/routes/reports.ts` — added the route under `requireRole(MANAGER_ROLES)`,
+  zod-validated query.
+- `server/storage/reportsSnapshot.ts` — canonical aggregator. Window
+  math: `current = [now-30d, now)`; comparison windows are the same
+  span shifted back by 30 / 90 / 365 days. Each metric has one query
+  lambda invoked four times against the four windows, then assembled
+  via a shared `buildMetric` helper that handles `hasData` rules and
+  null-safe percent change. Reads only the canonical real-data
+  tables: `invoices`, `payments`, `jobs`, `job_status_events`,
+  `quotes`, `leads`, `time_entries`. No mock import paths.
+
+**Metrics computed from real data this pass:**
+- Revenue & Cash Flow: cash-basis revenue (sum of `payments.amount`
+  with `paymentType='payment'`), invoice payment time average (avg
+  `MAX(payment.receivedAt) - issuedAt` for invoices reaching `paid`
+  in window), AR 30+ days at point-in-time.
+- Jobs & Operations: jobs completed (count of
+  `job_status_events.toStatus='completed'` in window), revenue-per-
+  job (revenue ÷ jobsCompleted), average job invoice value,
+  unbillable time cost (`SUM(durationMinutes/60 * costRateSnapshot)`
+  for `billable=false`; `hasData=false` when no entries carry a
+  cost rate).
+- Sales: leads created, lead conversion %, quotes created, quote
+  conversion %.
+- Accounts Receivable: current state from the existing `invoices`
+  aging math — `current`, `1–30 days`, `30+ days`, `total overdue`,
+  with dollar amounts AND invoice counts.
+
+**New page — `client/src/pages/Reports.tsx`:**
+- Title + date-range selector (`Last 30 days` only enabled; quarter /
+  year placeholders are disabled and labeled "coming soon") +
+  "View all reports" button (opens a right-side library sheet
+  listing the six categories).
+- Six tabs in canonical order (Snapshot first); Snapshot is the
+  default. Other tabs render a `ComingSoonTab` placeholder until
+  detailed surfaces ship.
+- Snapshot body: one `SectionCard` per group (Revenue & Cash Flow,
+  Jobs & Operations, Sales, Accounts Receivable). Metrics render as
+  `MetricTile`s with the current value, three comparison rows
+  (Last month / Last quarter / Last year), and trend arrows colored
+  green/red per `metric.polarity` — `higher_is_better` ▲ green,
+  `lower_is_better` ▲ red.
+
+**New shared formatters — `client/src/lib/reportsFormatters.ts`:**
+- `formatMetricValue`, `formatPercentChange`, `trendColorClass`.
+  Extracted from the page so vitest can test the polarity rule and
+  null-safety without booting React. Reports.tsx re-exports them.
+
+**Tests — `tests/reports-snapshot.test.ts`:** 33 tests covering pure
+helpers (formatters + the polarity × direction trend-color matrix),
+Reports.tsx source-level regression guards (six tabs in canonical
+order, default tab = Snapshot, four section test ids, the canonical
+query key, "Not enough data yet" empty-state copy, six library
+categories, existing detail route links + "Coming soon" badge),
+no-fake-data guards (forbidden-phrase scan + regex that fails if any
+literal `currentValue: <number>` appears in the page source), and
+server route + aggregator wiring (role gating, real-data tables only,
+every `buildMetric` carries `polarity` and `hasData`, `if (prev === 0)
+return null` lock-in).
+
+**Verification:**
+- `npm run check` clean.
+- `npx vitest run tests/reports-snapshot.test.ts` — 33/33 pass.
+
+No detailed report pages built. No backend tables added. No mutations
+introduced. No changes to other pages, the dashboard, or the sidebar
+beyond the existing `/reports` route being repurposed (sidebar wiring
+unchanged — same href, same icon).
+
+#### `/invoices/new` rebuilt as a true unsaved invoice builder (2026-05-02, Audit #2 invoice-flow Phase 6)
+
+Phase 6 of the invoice-creation refactor. Replaces the old "minimal
+form → POST /api/invoices → redirect to detail" flow on
+`/invoices/new` with a full draft builder that mounts the canonical
+detail surfaces and only persists once, on Save, via the Phase 1
+atomic endpoint.
+
+**User-visible behavior:**
+- Opening `/invoices/new` does NOT create an invoice row, does NOT
+  consume an invoice number, does NOT touch the database in any way.
+- Header shows `New Invoice — Pending` until Save.
+- Save Invoice is disabled until a location is selected.
+- After picking a location with ≥ 1 ready-to-invoice job, the new
+  `<SelectJobsForInvoiceModal>` opens automatically. The user picks
+  zero or more jobs (or skips) and the page hydrates each chosen
+  job's billable preview into local draft line state.
+- The user edits the invoice on a single page, end-to-end:
+  identity / addresses (read-only display from the chosen location),
+  Issued date / Terms (`InvoiceMetaCard` in `mode="draft"`), Job
+  description, line items (`LineItemsCard` + draft adapter), totals
+  with `<DiscountEditor>` for discount, and inline inputs for
+  `notesInternal` / `notesCustomer` / `clientMessage` plus client-
+  visibility toggles.
+- Save Invoice fires a single `POST /api/invoices/atomic` and
+  redirects to `/invoices/:id` (the live detail page) on success.
+  Failures keep the draft in place and toast the message — the user
+  can fix and retry.
+- Cancel returns to `/invoices` with no backend cleanup (nothing was
+  created server-side).
+- Changing the location after jobs are selected clears
+  `selectedJobIds`, removes job-derived lines from the mirror, drops
+  the captured `customerCompanyId`, exits any in-flight line-items
+  edit mode, and toasts the affected line count.
+
+**Files created:**
+- `client/src/components/invoice/SelectJobsForInvoiceModal.tsx` — pure
+  presentational dialog. Props: `open`, `onOpenChange`, `jobs`,
+  `isLoading`, `onConfirm(jobIds)`, `onSkip`. Checkbox list with job
+  number, summary, status, scheduled date. Footer actions: "Continue
+  without job(s)" + "Continue with N selected". Selection state is
+  reset whenever the dialog re-opens or the underlying job list
+  changes. The page owns the
+  `GET /api/jobs?locationId=…&readyToInvoiceOnly=true&limit=100`
+  query; the modal is purely view-layer.
+
+**Files rewritten:**
+- `client/src/pages/NewInvoicePage.tsx` — full rebuild. Owns the
+  entire draft state in local React state:
+  - `selectedLocation: LocationOption | null`
+  - `customerCompanyId: string | null` (captured from the first
+    selected job's billable-preview response; null when no jobs are
+    linked — in which case the H1 in the meta card renders as plain
+    text instead of a `/clients/:id` link).
+  - `selectedJobIds: string[]`
+  - `metaDraft: { invoiceNumber: "Pending", issueDate, dueDate,
+    paymentTermsDays }` (passed straight into
+    `<InvoiceMetaCard.draft>`).
+  - `workDescDraft`, `notesInternal`, `notesCustomer`, `clientMessage`
+    as four independent strings.
+  - `discountValue: DiscountEditorValue` controlled by
+    `<DiscountEditor onChange={setDiscountValue}>`.
+  - `visibility: VisibilityFlags` (six booleans, all default true,
+    surfaced via a small toggle grid; defaults match the server's
+    create-invoice schema).
+  - `serverItemsMirror: InvoiceLine[]` — synthetic mirror rows with
+    stable `draft-…` ids generated via `crypto.randomUUID()`. Carries
+    the extension columns (`jobLineItemId`, `technicianId`, `date`)
+    that the canonical `LineItemDraft` shape doesn't expose, so the
+    page can project mirror lines directly to atomic-line wire shape
+    on Save without an extra side-map lookup.
+  - The `useLineItemsDrafts` adapter is the new
+    `createDraftInvoiceLineItemsAdapter`; its `onCommit(plan)`
+    callback reconciles `serverItemsMirror` by walking
+    `plan.entriesInFinalOrder` and matching `entry.serverId` against
+    existing mirror ids — preserving extension columns across every
+    edit-Save cycle. New entries (no `serverId`) get fresh ids; new
+    entries that fail the canonical validator (empty description /
+    qty ≤ 0) are dropped (mirrors the canonical `buildSavePlan` skip
+    rule). Source values `"tech"` / `"template"` from carry-over
+    drafts are coerced to `"manual"` since `invoice_lines.source`
+    only accepts `"manual" | "job"` at the storage layer.
+  - The `<LineItemsCard>` `renderTotalsFooter` slot shows: Subtotal,
+    `<DiscountEditor>`, Total preview, plus a small caption noting
+    that tax is applied at save based on the company's default tax
+    group (Phase 6 omits per-line tax editing — the atomic POST
+    leaves `taxGroupId` unset and the server applies the default).
+  - Page-level Save Invoice is disabled while
+    `lineItemsDrafts.editing` is true so the user must commit or
+    cancel pending line-items edits before submission.
+  - Atomic POST payload omits `invoiceNumber` (server allocates),
+    omits `taxGroupId` (server applies default), omits
+    `markJobsCompleted` (defaults false; UI affordance deferred),
+    and omits `customerCompanyId` when none was captured (server
+    resolves from `locationId`). All other fields documented in the
+    page's mutationFn body — discount fields, notes, visibility, and
+    `lines: AtomicCreateLine[]` projected via `mirrorLineToAtomic`.
+- `client/src/components/invoice/draftInvoiceLineItemsAdapter.ts` —
+  Phase 4 adapter API simplified for serverId-reconciliation. The
+  `onCommitLines(AtomicCreateLine[])` + `getLineExtension` +
+  `planCreatesToAtomicLines` helper + `AtomicLineExtension` /
+  `AtomicLineExtensionLookup` types were dropped; replaced with a
+  single `onCommit(plan: SavePlan)` callback that hands the canonical
+  `SavePlan` back to the page so it can reconcile its mirror by
+  `entry.serverId`. The `AtomicCreateLine` type and a slimmer
+  `draftToAtomicLine` helper are kept for callers that need the wire
+  shape directly. Phase 4's adapter had no production callers when
+  the API was simplified.
+
+**Files modified (additive `export` keywords only — no behavior change):**
+- `client/src/pages/InvoiceDetailPage.tsx`:
+  - `InvoiceMetaCard` (the local component) is now exported.
+  - `StructuredAddress` + `ReferenceFieldDTO` types are now exported.
+  - `toDateInputValue` helper is now exported.
+  - The full file-extraction of `InvoiceMetaCard` to its own module
+    is intentionally deferred (see follow-ups). All edits in this
+    PR are additive `export` keywords; the live page renders the
+    same component identity at the same JSX positions with no
+    contract changes.
+
+**Confirmation no invoice is created before Save:**
+- Mounting `/invoices/new` performs zero mutating requests. The page
+  fires read-only queries — `useLocationSearch` (location autocomplete)
+  and `GET /api/jobs?…readyToInvoiceOnly=true` only after a location
+  is selected — neither of which writes to the DB.
+- `GET /api/jobs/:id/billable-preview` (the Phase 2 read-only endpoint)
+  is called for each selected job; it explicitly does NOT create
+  invoices, allocate numbers, or mark time entries as invoiced (see
+  the service file's header guarantees).
+- `POST /api/invoices/atomic` is the ONLY mutating call this page
+  makes, and it fires only when the user clicks Save Invoice.
+
+**Confirmation existing `/invoices/:id` behavior unchanged:**
+- `InvoiceDetailPage` is touched only for additive `export` keywords
+  on existing types/functions/components. No JSX moved, no contract
+  changes, no live PATCH paths touched. The Phase 5 `mode` prop is
+  still required by the same call site that passes `mode="live"`.
+- The Phase 4 adapter's API change is invisible to live invoice
+  detail because `InvoiceDetailPage` builds its own adapter inline
+  and never imported from the draft adapter file.
+- The legacy `NewInvoiceModal` was NOT retired in this phase (per
+  spec — Phase 7 will retire it). The header `+ New Invoice` button
+  may still open the old modal until then.
+
+**Verification:**
+- `npx tsc --noEmit` — clean across all invoice flow files
+  (`NewInvoicePage`, `InvoiceDetailPage`, `draftInvoiceLineItemsAdapter`,
+  `SelectJobsForInvoiceModal`, `DiscountEditor`, `InvoiceMetaCard` exports).
+  `ClientDetailPage.tsx` continues to have pre-existing unrelated
+  errors from an uncommitted refactor that predate this work.
+- `npm run build` — clean (pre-existing chunk-size warnings unrelated).
+
+**Follow-ups for Phase 7:**
+1. Retire `NewInvoiceModal`. Migrate the `+ New Invoice` button on the
+   invoices list (and any other entry points) to navigate to
+   `/invoices/new` directly. Delete the modal component once no
+   callers remain.
+2. Extract `InvoiceMetaCard` (and its sibling helpers `MetaRow`,
+   `extractDateOnly`, `formatDateOnlyDisplay`, `META_LABEL_CLASS`,
+   `StructuredAddress`, `ReferenceFieldDTO`) to a dedicated
+   `client/src/components/invoice/InvoiceMetaCard.tsx` module so
+   `NewInvoicePage` no longer has to import from a sibling page file.
+   Phase 6 chose the lighter `export`-keyword route to avoid touching
+   the live-page header logic in a single PR (per spec: "Do not
+   start a larger header refactor").
+3. Optional: surface a `markJobsCompleted` checkbox in the page
+   header when at least one job is linked. The atomic POST already
+   accepts the field; only UI plumbing remains.
+4. Optional: surface a tax-group selector. The atomic POST accepts
+   `taxGroupId` (uuid | null | omit). Phase 6 omits it so the server
+   applies the company default; explicit overrides are a small
+   follow-up.
+5. Optional: per-line preview tax row in the totals footer. Today
+   the footer shows Subtotal → Discount → Total preview with a
+   caption that tax is computed at save. A live tax preview would
+   need either a client-side compute path or a debounced "compute
+   tax" endpoint.
+
+#### Draft-mode line-items adapter — `createDraftInvoiceLineItemsAdapter` for the future `/invoices/new` builder (2026-05-02, Audit #2 invoice-flow Phase 4)
+
+Phase 4 of the invoice-creation refactor. Adds an adapter factory that
+lets the canonical `<LineItemsCard>` operate against in-memory draft
+state BEFORE an invoice exists. The live `InvoiceDetailPage` adapter
+PATCHes `/api/invoices/:id/lines/...` on every mutation; the new draft
+adapter does NONE of that — `saveAll` is a pure no-op that hands the
+projected atomic-line payload back to the caller for the eventual
+`POST /api/invoices/atomic` (Phase 6).
+
+**Frontend only.** No backend changes, no live-invoice behavior
+changes, no `NewInvoicePage` wiring yet (per scope). No production
+caller is added in this PR. Adding the file does not produce any
+visible UI change.
+
+**Files changed:**
+- **`client/src/components/invoice/draftInvoiceLineItemsAdapter.ts`** (new):
+  - `createDraftInvoiceLineItemsAdapter(options)` →
+    `LineItemsAdapter<InvoiceLine>`. Mirrors the live adapter's
+    capability flags + validation rule byte-for-byte:
+    - `surface = "invoice"`
+    - `showCost: false`, `showTax: false`,
+      `allowReorder: true`, `allowEditExisting: true`
+    - `emptyStateLabel: "No line items yet."`,
+      `emptyStateCtaLabel: "Add line item"`
+    - `validateEntry`: identical rule (new rows must resolve a
+      description from typed text or `uiSelectedProduct.name` AND
+      have `qty > 0`; existing rows always pass).
+  - `saveAll(plan)`: no API call, no mutation. Projects
+    `plan.creates` into atomic-line shape via `draftToAtomicLine` and
+    (optionally) hands the array to `options.onCommitLines` so the
+    parent page can mirror the committed drafts into its own
+    `serverItems` array. Returns
+    `{ ok: true, failures: 0, skipped: plan.skipped }`.
+  - `hydrateDraft` / `resolveProduct` are defensive — `serverItems`
+    is `[]` in draft mode so they should never run, but they are
+    implemented (delegating to the canonical
+    `lib/entities/lineItemMapper`) so a future "saved drafts as
+    pseudo-server-rows" refactor doesn't crash.
+  - `onReorder` is intentionally omitted — `useLineItemsDrafts.reorderLocal`
+    already mutates the local entry list before the adapter callback
+    fires (`LineItemsCard.tsx:125`), so there is no separate
+    persistence step to trigger in draft mode.
+- **`AtomicCreateLine`** (exported type): the per-line shape accepted
+  by `POST /api/invoices/atomic`, mirroring the route's coalescing
+  map at `server/routes/invoices.ts:401–412`. Output of
+  `draftToAtomicLine` is directly assignable to the route's request
+  body without further projection.
+- **`AtomicLineExtension`** (exported type) + `AtomicLineExtensionLookup`:
+  per-draft metadata that doesn't fit on `LineItemDraft` itself
+  (`jobLineItemId`, `technicianId`, `date`, `sourceJobId`). These are
+  the fields that get populated when a draft is hydrated from
+  `GET /api/jobs/:id/billable-preview` (Phase 2). Phase 5 owns the
+  side-map (keyed by `LineItemDraft.id`); the adapter accepts an
+  optional `getLineExtension` lookup so the canonical draft shape
+  stays clean.
+- **`draftToAtomicLine(draft, extension?)`** (exported helper):
+  pure function projecting a `LineItemDraft` → `AtomicCreateLine`.
+  Defaults match the route's coalescing map.
+- **`planCreatesToAtomicLines(creates, getLineExtension?)`**
+  (exported helper): convenience used by the parent page's outer
+  "Save Invoice" button when it wants to serialize without going
+  through `useLineItemsDrafts.save` → `adapter.saveAll`.
+
+**How the existing contract is satisfied:**
+- The factory returns a plain `LineItemsAdapter<InvoiceLine>` —
+  the same generic the live adapter produces. Drop-in compatible
+  with `useLineItemsDrafts<InvoiceLine>({ adapter, serverItems: [] })`
+  and `<LineItemsCard adapter={…} drafts={…} serverItems={[]} />`.
+- All adapter callbacks are present (`hydrateDraft`, `resolveProduct`,
+  `validateEntry`, `saveAll`, `requestCreateProduct`,
+  `onInformationalToast`); optional callbacks the draft surface
+  doesn't need (`onReorder`, `applyProductCarryOver`) are omitted
+  per the contract's optionality.
+- Carry-over on product-change uses the hook's `defaultCarryOver`
+  (since the adapter doesn't override `applyProductCarryOver`),
+  matching live invoice behavior.
+
+**Confirmation:**
+- No backend calls inside the new file (no `apiRequest`, no `fetch`,
+  no `useMutation`, no `queryClient`). Verified by inspection.
+- No live invoice behavior change. `InvoiceDetailPage` continues to
+  build its own adapter inline and is untouched by this PR.
+- No `invoiceId` reference in the new file.
+
+**Architecture note for Phase 5 (documented in the file header):**
+- `useLineItemsDrafts.save()` clears its internal `drafts` to `null`
+  on `ok:true`. In draft mode (`serverItems: []`) the LineItemsCard
+  would visually wipe the user's lines on Save unless the parent
+  mirrors `plan.creates` into its own `serverItems` state via
+  `onCommitLines`. Phase 5's `NewInvoicePage` MUST own that mirror.
+  Documented in the new file's architecture-notes block so the
+  Phase 5 author can't miss it.
+
+**Verification:**
+- `npx tsc --noEmit` — no errors in any invoice flow, line-items
+  shell, mapper, or new file. (`ClientDetailPage.tsx` has pre-existing
+  unrelated errors from a separate uncommitted refactor;
+  `git status` confirms it was modified before this PR began.)
+- `npm run build` — clean (pre-existing chunk-size warnings unrelated).
+
+**Follow-up for Phase 5:**
+1. `NewInvoicePage` mounts `useLineItemsDrafts<InvoiceLine>` with
+   `createDraftInvoiceLineItemsAdapter({ onCommitLines, getLineExtension,
+   requestCreateProduct, onInformationalToast })`.
+2. Page owns a local `serverItems: InvoiceLine[]` mirror; `onCommitLines`
+   converts the atomic-line payload back to a synthetic `InvoiceLine`
+   shape with client-side ids and appends to the mirror so the card
+   shows the saved lines after the user clicks card-level Save.
+3. Page owns a `Map<draft.id, AtomicLineExtension>` side-table; populates
+   it on billable-preview hydration; passes `(draft) => sideMap.get(draft.id)`
+   as `getLineExtension`.
+4. Page-level "Save Invoice" button: serializes via either
+   `lineItemsDrafts.buildSavePlan().creates` →
+   `planCreatesToAtomicLines(creates, getLineExtension)` OR reads from
+   the post-commit mirror. Submits to `POST /api/invoices/atomic`
+   (Phase 1).
+5. On atomic POST success, navigate to `/invoices/:id` (the live
+   `InvoiceDetailPage`).
+
+### Fixed
+
+#### Line-items header / body alignment via shared column template (2026-05-03)
+
+Bug: in the canonical line-items card the column headers
+(`Description`, `Qty`, `Cost`, `Rate`, `Amount`) drifted out of
+alignment with the editable input columns below them, especially
+as the viewport width changed. The misalignment was visible at
+both wide and narrow widths.
+
+**Root cause — mechanism mismatch:**
+- The column-header row was a **CSS Grid `<div>`** with a rigid
+  `grid-cols-[32px_1fr_96px_110px_128px_110px_36px]` template
+  that strictly honored every column width.
+- The body rows lived in an **HTML `<table className="min-w-full
+  text-xs">`** without `table-layout: fixed`. Per-`<td>` `w-*`
+  classes (`w-8`, `w-24`, `w-[110px]`, `w-32`, `w-9`) were merely
+  hints to the browser's default `table-layout: auto` algorithm,
+  which is free to flex column widths based on content. The
+  description column especially expanded and contracted with its
+  contents, pushing every fixed-width body column off the
+  vertical line of its header label.
+- No shared constant — the header grid template and the body
+  per-cell widths were declared in separate places using different
+  CSS mechanisms, so the two could (and did) drift apart.
+
+**Fix:**
+- Introduced one canonical column spec in `LineItemsCard.tsx`
+  (`LINE_ITEM_COLUMNS_WITH_COST` and `LINE_ITEM_COLUMNS_NO_COST`).
+  Each spec is an array of `{ key, width }` rows in the exact
+  display order. `WITH_COST` is used by the Job Parts surface;
+  `NO_COST` is used by Invoice / Quote / NewInvoice.
+- Two small helpers — `gridTemplate(columns)` builds the
+  `grid-template-columns` string for the header; `colWidth(width)`
+  translates a spec entry's width into a `<col>`-valid value
+  (`1fr` → `auto`, since CSS Grid units don't apply inside an
+  HTML table).
+- The header row now reads its grid template from
+  `gridTemplate(columns)` via inline `style`, **not** a hardcoded
+  `grid-cols-[…]` className.
+- The body `<table>` now declares `<colgroup>` with one `<col>`
+  per spec entry and switched to `table-fixed w-full`. This
+  forces the browser to honor the spec widths regardless of
+  content — same widths the header grid uses.
+
+**Per-`<td>` `w-*` classes left in place** in `LineItemRow.tsx`
+and `AddLineItemForm.tsx` for diff scope — they're now redundant
+(`<colgroup>` + `table-fixed` controls the widths) but harmless.
+A future cleanup can remove them.
+
+**Canonical component changed:**
+- `client/src/components/line-items/LineItemsCard.tsx` (sole
+  runtime file). Added the column constants + helpers near the
+  top; updated the header `<div>` to read its template from
+  `gridTemplate(columns)`; added `<colgroup>` inside the `<table>`
+  and switched the table className to `w-full table-fixed`. The
+  rest of the file (header metrics, edit pencil, save/cancel,
+  add-another-line, totals footer slot, DnD context, empty
+  states) is untouched.
+
+**Surfaces using this canonical component (all benefit):**
+- `client/src/pages/JobDetailPage.tsx:656` — Job Parts (`showCost=true`).
+- `client/src/pages/InvoiceDetailPage.tsx:1715` — Invoice line items.
+- `client/src/pages/QuoteDetailPage.tsx:700` — Quote line items.
+- `client/src/pages/NewInvoicePage.tsx:944` — Draft-invoice builder.
+
+**No page-specific overrides** were introduced — the fix is in
+the shared component only.
+
+**Untouched (per guardrails):**
+- `LineItemRow.tsx` and `AddLineItemForm.tsx` — same `<td>` markup,
+  same input components, same display logic.
+- All financial calculations (`useLineItemsDrafts`, totals,
+  tax / discount / margin) — UI-only change.
+- Product / service search behaviour, Save / Cancel / Add behaviour,
+  empty-state CTAs, drag-and-drop reorder.
+- Horizontal-scroll wrapper (`overflow-x-auto` + `min-w-[720px]` /
+  `min-w-[640px]`) is preserved verbatim — the fix lives INSIDE
+  that wrapper so narrow-viewport scroll behaviour is unchanged.
+
+**Verification:**
+- `npm run check` clean.
+- Pre-existing test failures in `tests/invoice-status-contract.test.ts`
+  and `tests/invoice-soft-delete-integrity.test.ts` reproduce on
+  stashed HEAD — unrelated to this change (server-side status flow +
+  soft-delete integrity tests, no UI involvement).
+
+### Changed
+
+#### Job Detail context card — pencil + client name share one row (2026-05-03)
+
+UI polish. The "Service Address / client" card on the Job Detail
+page was wasting ~28 px of vertical space above the client-name
+title because the edit pencil rendered as its own row (`pt-2 pb-1`
+on its own `flex justify-end` div) BEFORE the body block that
+contained the title. Merged the two so the pencil and client name
+sit on a single row.
+
+**Audit finding:** there is **no shared component** for this card.
+Every detail page renders its own variant:
+- Job Detail uses an inline `SectionCard` composition built directly
+  in `JobDetailPage.tsx:1721` (the surface affected by this PR).
+- Invoice Detail / New Invoice use `InvoiceMetaCard`
+  (`client/src/components/invoice/InvoiceMetaCard.tsx`), which
+  already absolute-positions its pencil — no spacing issue.
+- Quote Detail uses `QuoteHeaderCard`
+  (`client/src/components/QuoteHeaderCard.tsx`), which also doesn't
+  exhibit the issue.
+
+So while the spec requested a shared-component fix and explicitly
+asked to avoid page-specific overrides, the audit proved the
+"shared component" doesn't exist — the empty band only manifests
+on Job Detail. Fix is therefore page-local, by necessity. Extracting
+this card into a shared `JobContextCard` / `ServiceAddressCard`
+component is a separate refactor and out of scope for a UI-polish
+pass.
+
+**Layout change:**
+- Old: pencil row (`flex items-center justify-end px-3 pt-2 pb-1`)
+  → body block (`px-5 pt-2 pb-4`) starting with the client-name
+  row (`mb-3 truncate`) → AddressBlock.
+- New: single row (`flex items-center justify-between gap-2 mb-3
+  -mr-2`) inside the body block carrying the client-name button on
+  the left and the edit pencil on the right; AddressBlock
+  underneath unchanged.
+- The `-mr-2` on the merged row cancels 8 px of the body's `px-5`
+  on the right, so the pencil lands at the same ~12 px from the
+  card edge it had before — its visible position is preserved.
+- The body's left padding (`px-5`) is unchanged, so the client
+  name's left position is preserved.
+- Vertical: the pencil's center moves up only by the height of
+  its old dedicated row (~28 px), which is the desired effect.
+
+**Preserved:**
+- Pencil's `onClick={enterHeaderEdit}`, `disabled={editingHeader}`,
+  `aria-label="Edit job header"`, `data-testid="button-edit-job-card"`,
+  hover/focus styling, icon size — all untouched.
+- Client name button (`text-section-title font-semibold
+  text-text-secondary hover:text-brand`,
+  `data-testid="link-client-context"`) — same component, same
+  click navigation to `/clients/:locationId`.
+- AddressBlock props (`variant`, `label`, `locationName`, `street`,
+  `cityLine`, `testId`) — unchanged.
+- Cards / right rail / canonical top header / sidebar / nav / page
+  background — all untouched.
+
+**Files changed:**
+- `client/src/pages/JobDetailPage.tsx` — sole runtime file. JSX
+  inside `card-job-context` SectionCard restructured; comment
+  block above the row updated to capture the rationale. No new
+  imports, no new state, no new test ids.
+
+**Typecheck:** clean.
+
+#### Detail-page header — center metadata as its own group (CanonicalDetailHeader) (2026-05-03)
+
+UI polish. The shared detail-page header was rendering metadata
+items (Job #, Scheduled, Invoice #, etc.) flush against the
+right-side action cluster — `ml-auto` on the items group pushed
+items + edit pencil + actions into one right-anchored bundle, and
+a vertical divider between them did little to break the visual
+grouping. Restructured the header into three discrete regions so
+metadata reads as its own informational block.
+
+**Layout — three regions on one row:**
+1. **Left:** title + status (natural width, left-justified).
+2. **Center:** metadata items + optional edit pencil. `mx-auto` on
+   the cluster consumes the leftover horizontal space symmetrically
+   on both sides, so items sit in the visual center between the
+   left title group and the right actions group.
+3. **Right:** actions cluster (natural width, right-justified).
+
+The items↔actions vertical divider was removed — the auto-margin
+gutter already visually separates the two groups, and keeping the
+divider would re-group them.
+
+**Responsive behaviour preserved:**
+- Outer row is still `flex flex-wrap items-center gap-x-4 gap-y-2`,
+  so when title + items + actions can't fit on one row, items wrap
+  cleanly onto a second line. Each row keeps `mx-auto` centering
+  for the items it contains. No new breakpoints introduced — the
+  same flex-wrap pattern that already handled iPad portrait keeps
+  working.
+- `min-w-0` on every region prevents long titles or item values
+  from blowing the row.
+
+**Affected pages (verified via `Grep CanonicalDetailHeader`):**
+- `client/src/pages/JobDetailPage.tsx` — items now centered.
+- `client/src/pages/InvoiceDetailPage.tsx` — same, mounted via
+  `InvoiceDetailShell`.
+- `client/src/pages/NewInvoicePage.tsx` — draft-invoice builder.
+- `client/src/components/invoice/InvoiceDetailShell.tsx` — passes
+  the canonical header verbatim.
+
+**Quote Detail (not affected):** still uses the legacy
+`QuoteHeaderCard` component (a multi-section card pattern, not the
+slim canonical header). Restructuring Quote into the canonical
+pattern is a separate refactor, out of scope.
+
+**Untouched:**
+- Item label / value rendering, dividers between items, edit-mode
+  swap (`editNode`), `data-testid` IDs (`detail-header-items`,
+  `detail-header-item-${key}`, `detail-header-actions`,
+  `detail-header-edit`, `detail-header-status`,
+  `detail-header-title`).
+- Action buttons, behavior, click handlers — entirely untouched.
+- Title typography, status badge styling.
+- Header background (`bg-app-bg` from this morning's polish) and
+  spacing rhythm (`px-6 py-3`).
+- Cards below the header, right rail, sidebar, top nav, page
+  background — none changed.
+
+**Files changed:**
+- `client/src/components/detail/CanonicalDetailHeader.tsx` — sole
+  runtime file. JSX restructured into three regions; visual-contract
+  comment block updated to capture the new shape. No new props, no
+  new imports, no new test ids.
+
+**Typecheck:** clean.
+
+#### Detail-page header — blend with page bg (CanonicalDetailHeader) (2026-05-03)
+
+UI polish. The shared header strip on Job / Invoice / New-Invoice
+detail pages was rendering with a white `bg-card` surface and a
+hairline `border-b border-card-border` — making it look like a
+disconnected card sitting on top of the gray page bg. Flipped the
+header to the canonical app background so it visually merges with
+the page; the white cards below keep their own surface.
+
+**Single source of truth:**
+`client/src/components/detail/CanonicalDetailHeader.tsx`. One class
+swap on the outer wrapper:
+- `bg-card border-b border-card-border` → `bg-app-bg`.
+- The bottom border was a card-edge cue that no longer applies once
+  the header is the same surface as the area below it.
+
+**Affected pages (verified via repo grep):**
+- `client/src/pages/JobDetailPage.tsx` — mounts `CanonicalDetailHeader`
+  directly; outer wrapper already uses `bg-app-bg`. Now seamless.
+- `client/src/pages/InvoiceDetailPage.tsx` — mounts via
+  `InvoiceDetailShell` (`bg-app-bg`) and passes the canonical header
+  through the `header` slot.
+- `client/src/pages/NewInvoicePage.tsx` — same canonical header for
+  the draft-invoice builder.
+- `client/src/components/invoice/InvoiceDetailShell.tsx` — already
+  `bg-app-bg`; consumes the canonical header verbatim.
+
+**Not affected (intentional):**
+- `client/src/components/QuoteHeaderCard.tsx` — the Quote detail
+  page uses a structurally different header (a multi-section card
+  with internal addresses + metadata table, mounted inside
+  `DetailPageShell`'s `leftColumn`, not a slim top strip). Leaving
+  it alone preserves its visual grouping. A follow-up could
+  restructure Quote into the canonical header + content-cards
+  pattern that Job / Invoice already use, but that's a behavioural
+  refactor (Section A/B card content would need to move into
+  separate cards), not a one-line surface change. Out of scope.
+
+**Untouched (per guardrails):**
+- App `<main>` background (`bg-app-bg` on `App.tsx:1116`) — unchanged.
+- The white/`bg-card` content cards below the header — unchanged.
+- Sidebar / top nav surfaces — unchanged.
+- Tailwind tokens (`--app-bg`, `--card`) in `index.css` /
+  `tailwind.config.ts` — unchanged.
+- Header content / actions / typography / spacing rhythm —
+  unchanged.
+- Test ids on the canonical header — unchanged.
+- No new components or page-specific overrides introduced.
+
+**Files changed:**
+- `client/src/components/detail/CanonicalDetailHeader.tsx` — one
+  className swap + comment updated to capture the rationale.
+
+**Typecheck:** clean. No tests asserted on the old class.
+
+#### Client Detail polish — inline jobTitle on contact card; drop pill-row address (2026-05-03)
+
+Two small UI refinements; nothing else touched.
+
+**ContactCard — single-line title:**
+- Job title rendered inline next to the contact name in parentheses
+  (`Peter Chiu (Owner)`). The previous standalone `text-[11px]
+  text-slate-500 truncate` subtitle row was removed.
+- The combined text shares one `truncate` line — very long names +
+  job titles degrade gracefully on narrow cards.
+- Job title visually subordinate (`font-normal text-slate-500`)
+  inside the otherwise `font-semibold text-slate-900` name span,
+  so the name stays the primary read.
+- Vertical space saved per card: ~1 line. On a 4-contact list this
+  is ~64 px reclaimed in the right-rail Contacts tab.
+- Whole card stays clickable (the `<button>` wrapper from the
+  earlier card-clickable refactor is unchanged).
+
+**Scope bar — drop the pill-row address:**
+- The selected location's address was rendered as a small
+  `text-[11px] text-slate-500` span next to the shortcut pills
+  (lg+ only). Removed.
+- The same address still appears in the main location header card
+  immediately below — no information lost. The active pill (solid
+  `[#76B054]`) is sufficient signal of which location is selected
+  in the scope bar itself.
+- Reclaims horizontal room for the 10-pill cap added earlier today.
+
+**Files changed:**
+- `client/src/pages/ClientDetailPage.tsx` — sole runtime file. Two
+  small JSX edits; no new state, helpers, props, or test ids.
+
+**Untouched (per guardrails):**
+- `nc.jobTitle` source / `normalizeContact` shape — unchanged.
+- ContactCard's phone/email/location-label/role-chip rows.
+- Primary star behavior.
+- Edit-on-card-click behavior.
+- The address inside the location header card (the spec's "main
+  location detail card") — left exactly as-is.
+- Scope routing, URL params, contact modal behavior — untouched.
+
+**Typecheck:** clean.
+
+#### Scope-bar pills — raise visible cap + pin active pill (2026-05-03)
+
+Day-of refinement of the morning's scope-bar shortcut pills. Pills
+were collapsing into `+1` / `+2` even when there was clear horizontal
+space for the remaining locations. Cap-and-pin behaviour now matches
+viewport width and never hides the currently-selected location.
+
+**New caps (per spec):**
+- Desktop (`≥ 1024 px`): up to **10** location pills.
+- Tablet (`768–1023 px`): up to **6** pills.
+- Mobile (`< 768 px`): up to **3** pills (was: hidden entirely).
+
+Caps are picked by a small inline `scopeBp` state — `mobile` /
+`tablet` / `desktop` — initialised synchronously from
+`window.innerWidth` (no first-render flash) and updated by a
+`resize` listener. Tailwind `md` / `lg` thresholds (768 / 1024)
+used verbatim.
+
+**Active-pill always visible:**
+- The displayed slice is computed in JS rather than via responsive
+  CSS hiding. Natural-order slice of `locations.slice(0, cap)` is
+  used unless the currently-active location's natural index is
+  beyond the cap — in which case the active row is bumped into the
+  last visible slot, replacing whichever location would have been
+  there. Order is otherwise preserved.
+- Result: the user never has to open the dropdown to confirm what
+  they've selected. Active pill is always on the bar when its
+  natural position would otherwise have been hidden behind `+N`.
+
+**Overflow:**
+- `+N` pill renders only when `hiddenCount > 0` (i.e. there are
+  actual locations not represented by a visible pill). N is the
+  exact remaining count — no premature collapsing when everything
+  fits.
+- Clicking `+N` still calls `setScopePopoverOpen(true)` to open the
+  existing canonical dropdown — no new selector mounted.
+
+**Removed (this PR's redundancy):**
+- Per-pill `idx >= 3 && "hidden lg:inline-flex"` responsive class —
+  hiding is now done by the JS slice instead.
+- Container `hidden md:flex` — phones used to see no pills at all;
+  now they get up to 3 (preserves spec of "Mobile: up to 3 pills").
+- Hard-coded `+5` overflow logic — replaced by `hiddenCount =
+  locations.length - displayed.length`.
+
+**Files changed:**
+- `client/src/pages/ClientDetailPage.tsx` — sole runtime file.
+  ~30 lines added (state + slicing); ~20 lines of JSX simplified.
+
+**Untouched (per guardrails):**
+- Pill abbreviation logic (`locationShortName`) — unchanged.
+- Pill colour, size, max-width, hover, active styling —
+  unchanged.
+- Existing scope dropdown / popover content — unchanged.
+- URL scope behaviour, create-job/quote/invoice prefill —
+  unchanged.
+- Header row never wraps — `flex-shrink min-w-0 overflow-hidden`
+  on the container plus `flex-shrink-0` on every pill.
+
+**Typecheck:** clean.
+
+#### ContactCard whole-card-clickable + scope-bar shortcut pills (2026-05-03)
+
+Two small Client Detail UI refinements. No data, API, schema, or
+URL-scope behavior changes.
+
+**ContactCard — entire card is now the click target:**
+- Removed the hover-revealed Pencil button from each contact card.
+- When `onEdit` is passed, the card itself renders as a native
+  `<button type="button">` so Enter / Space and click both open
+  `ContactFormDialog`. Cards without an `onEdit` prop continue to
+  render as a plain `<div>` (read-only).
+- Subtle hover `bg-slate-50/60` preserved; new
+  `focus-visible:ring-2 ring-[#76B054]/40` for keyboard users.
+- Card body markup is unchanged — the wrapper element is the only
+  swap. No nested interactive elements, so the wrapping `<button>`
+  stays HTML-valid.
+- New testid: `contact-card-edit` on the wrapping button.
+
+**Scope bar — quick-jump pills next to the canonical Viewing dropdown:**
+- New `client-scope-pills` row sits to the right of the existing
+  Viewing dropdown. The dropdown stays as the canonical full
+  selector — pills are shortcuts only.
+- One `All` pill plus up to five per-location pills. Pills 4–5 are
+  hidden below `lg` so tablet (`md`) caps at 3 + `All`. Phone
+  widths (`< md`) hide pills entirely and use the dropdown only.
+- Pills render the `locationShortName(...)` abbreviation (new
+  helper):
+  - Single short word ≤ 8 chars → verbatim (`Office`, `Shop`).
+  - Multi-word → leading-letter initials with non-letter tokens
+    filtered (`Yonge & Finch` → `YF`,
+    `Toronto General Hospital` → `TGH`).
+  - Long single word → 3-letter prefix (`Mississauga` → `MIS`).
+  - Full name lives on every pill's `title` attribute for tooltip
+    discoverability.
+- Active pill (matches selected scope) is the green-on-white solid
+  `[#76B054]`; inactive pills are white-bordered with hover.
+- Overflow indicator: when `locations.length > 5`, a dashed
+  `+N` pill (lg+ only) opens the canonical dropdown so users can
+  reach any location not on the pill row. Counts only the
+  truly-hidden remainder (locations past index 4).
+- Existing "Selected-scope subtitle" (the address shown next to the
+  dropdown) was demoted from `md+` to `lg+` so the tablet row
+  doesn't crowd when the pills are visible.
+
+**Test ids added:**
+- `client-scope-pills` (container).
+- `client-scope-pill-all`.
+- `client-scope-pill-{locationId}` (per-location pill).
+- `client-scope-pill-overflow` (the `+N` pill).
+
+**Files changed:**
+- `client/src/pages/ClientDetailPage.tsx` — sole runtime file.
+  `ContactCard` body factored into a fragment + conditional wrapper;
+  new `locationShortName()` helper added near `locationDisplayName`;
+  scope-bar JSX gained the pills row.
+
+**Untouched (per guardrails):**
+- `Viewing` dropdown / popover content.
+- URL scope behavior (`?scope=…&location=…&tab=…`).
+- Create-job/quote/invoice prefill behavior.
+- `ContactFormDialog` itself (still the canonical edit modal).
+- The persistent left Locations rail stays gone — pills are
+  inline shortcuts on the existing scope bar, not a new rail.
+
+**Typecheck:** clean.
+
+#### Contact modal — narrower width + denser identity grid (2026-05-03)
+
+UI-only compaction of the canonical contact modal. No data, API,
+validation, save, role, or location-linking changes — only width,
+spacing, and input height.
+
+**Width:**
+- `DialogContent` `max-w-3xl` (768 px) → `max-w-xl` (576 px). Still
+  fits iPad landscape comfortably; no longer dominates the desktop
+  viewport.
+
+**Identity section (left half of the body):**
+- Outer padding: `p-4` → `px-3 py-2.5`.
+- Vertical gap: `space-y-2` → `space-y-1.5`.
+- Row-1 grid (`Title` / `First` / `Last`): column widths
+  `[88px_1fr_1fr]` → `[80px_1fr_1fr]`; gap `gap-2` → `gap-1.5`.
+- Row-3 grid (`Phone` / `Email`): gap `gap-2` → `gap-1.5`.
+- Input height: `h-9` → `h-8` across every text input + the title
+  Select trigger. Title trigger picks up `px-2` so the value isn't
+  cramped against the chevron at the new height.
+- Job-title placeholder shortened: `"Job title (e.g. Operations
+  Manager)"` → `"Job title"` (matches the spec's stated text).
+- Email error spacing: `space-y-1` → `space-y-0.5`.
+- Primary-checkbox row top padding: `pt-1` → `pt-0.5`.
+
+**Locations section (outer chrome only — list rows + role pills
+unchanged):**
+- Section header: `px-4 pt-3 pb-1` → `px-3 pt-2 pb-1`.
+- Empty-state padding: `py-6 px-4` → `py-6 px-3`.
+- Select-all row: `px-4 py-1.5` → `px-3 py-1`.
+
+**Untouched:**
+- Per-row checkbox + role-pill layout, indentation, and visual
+  treatment.
+- Select-all tri-state behavior (Radix
+  `checked="indeterminate"`).
+- Footer (`[Delete] [Cancel] [Save Contact]`) layout, padding,
+  background.
+- Save logic, diff, role taxonomy, every `data-testid`,
+  `recipientResolverStrategies.ts`, contact / assignment
+  endpoints — all unchanged.
+
+**Files changed:**
+- `client/src/components/ContactFormDialog.tsx` — sole runtime file.
+  Net diff is class-name-only (no logic touched, no JSX shape
+  changes beyond removing the parenthetical from the job-title
+  placeholder).
+
+**Typecheck:** clean.
+
+#### Contact modal v3 — drop dropdown + link toggle, inline-list with per-row roles + Select-all (2026-05-03)
+
+Day-after refinement of the canonical contact modal. The
+dropdown-driven right column from v2 was removed in favor of a
+direct inline list that links/unlinks locations from a single
+checkbox per row.
+
+**Body layout — one column instead of two:**
+- Identity grid (Title / First / Last / Job title / Phone / Email /
+  Mark-as-primary) stays static at the top.
+- A `Locations` header + Select-all sits below.
+- A scrollable inline list of locations follows — the ONLY scrolling
+  region in the modal body, so `[Delete] [Cancel] [Save]` in the
+  footer never gets pushed off-screen even on a client with many
+  locations.
+
+**Per-location row — checkbox + inline pills:**
+- Single Radix `Checkbox` per location row. Checking the row links
+  the contact (creates an empty role set in `form.selected[locId]`);
+  unchecking deletes the entry.
+- Role pills (`[Billing] [Scheduling] [Site Contact] [Maintenance]`)
+  render INLINE under each linked row, indented so the parent/child
+  relationship is visually clear.
+- Pills do NOT render for unlinked rows. Tapping a pill only mutates
+  the role set for that specific row — `toggleRole(locId, role)`,
+  not `toggleRole(role)` against a "current" location.
+
+**Select-all — tri-state via Radix `checked="indeterminate"`:**
+- `false` when no location is linked.
+- `"indeterminate"` when some are linked.
+- `true` when every location is linked.
+- Toggling on links every location (preserving existing per-location
+  role sets so users don't lose work). Toggling off unlinks
+  everything (clears `form.selected`).
+
+**Removed (per spec):**
+- The top location `<Select>` dropdown.
+- The "✓ This contact is linked to this location" checkbox.
+- The bottom summary list (its function — show all locations + their
+  link state — is now the primary inline list).
+- React state: `currentLocationId`, `setCurrentLocationId`,
+  `currentLoc` / `currentLinked` / `currentRoles` derived state, and
+  the `toggleLink()` helper.
+- Test ids: `contact-modal-location-select`,
+  `contact-modal-location-option-{locId}`,
+  `contact-modal-link-toggle`, `contact-modal-summary-{locId}` are
+  gone.
+
+**New test ids:**
+- `contact-modal-select-all` — the global checkbox.
+- `contact-modal-loc-list` — the scrollable inline list container.
+- `contact-modal-loc-row-{locId}` — each per-location row.
+- `contact-modal-loc-toggle-{locId}` — each per-row checkbox.
+- `contact-modal-role-{locId}-{role}` — per-row role pill (was
+  `contact-modal-role-{role}` — now scoped per row because pills
+  exist per row, not just for the dropdown's "current" location).
+
+**Data shape unchanged:**
+- `form.selected: Record<locationId, Set<role>>` — same as v1/v2.
+- Save logic unchanged: create-path POST `/contacts` with
+  `association.locations[]`; edit-path PATCH identity then diff
+  assignments via POST `/assign` + PATCH `/assignments` + DELETE
+  `/assignments`. `filterCanonicalRoles()` still strips legacy
+  roles from outbound payloads. `recipientResolverStrategies.ts`
+  not modified.
+
+**Files changed:**
+- `client/src/components/ContactFormDialog.tsx` — sole runtime file.
+  Net line count down (~695 → ~655) from removing the dropdown +
+  link-toggle + summary section. Identity grid + footer + save logic
+  + role taxonomy untouched.
+
+**Typecheck:** clean.
+
+#### Contact role taxonomy — restrict to four canonical roles (2026-05-02)
+
+Same-day refinement of `STANDARD_CONTACT_ROLES`. The pill set in the
+canonical contact modal collapses from eight roles to four:
+
+```
+Before:  billing, scheduling, operations, site, manager, owner,
+         after-hours, maintenance
+After:   billing, scheduling, site_contact, maintenance
+```
+
+`site_contact` replaces both `site` and `operations` as the on-site
+recipient label; `manager` / `owner` / `after-hours` were
+indicative-only roles that the recipient resolver in
+`server/services/recipientResolverStrategies.ts` does NOT key off,
+so dropping them from the pill set is purely a UI clean-up.
+
+**Display labels** (explicit map — `capitalize` CSS won't render
+`site_contact` correctly):
+- billing → Billing
+- scheduling → Scheduling
+- site_contact → Site Contact
+- maintenance → Maintenance
+
+**Tooltips on each pill:**
+- Billing → Receives invoices, quotes, reminders.
+- Scheduling → Handles scheduling updates.
+- Site Contact → On-site contact for jobs.
+- Maintenance → Service / maintenance contact.
+
+**Legacy data preserved (no DB migration):**
+- Existing `contact_assignments.roles` rows that carry
+  `operations`, `manager`, `owner`, `after-hours`, `site`,
+  `primary`, etc. remain intact.
+- UI: legacy roles are filtered out at render time (the pill list
+  iterates `STANDARD_CONTACT_ROLES`; the summary-row inline chips
+  filter the per-row Set against `CANONICAL_ROLE_SET`).
+- Save: a new `filterCanonicalRoles()` helper strips legacy roles
+  from every outbound payload (POST `/contacts`
+  `association.locations[]`, POST `/contacts/:id/assign`,
+  PATCH `/assignments/:id`). The diff comparison still uses the
+  FULL role set so a no-op save (open → close without changes) does
+  NOT spuriously fire a PATCH and strip legacy roles. Only an
+  actively-touched assignment normalizes to the canonical four —
+  exactly the spec behavior:
+  > Existing contacts may still have old roles. Do NOT delete them
+  > from database automatically … only persist roles from the new
+  > set, remove any legacy roles from the assignment payload.
+
+**Recipient routing unchanged:**
+- `server/services/recipientResolverStrategies.ts` is NOT modified.
+- `billing` still routes invoices/quotes/overdue/payment-receipt mail.
+- `scheduling`, `site` (legacy), `primary` (legacy) still route
+  visit/job mail. The new `site_contact` role does NOT add a new
+  routing path; it's the canonical UI label for the on-site role.
+  Existing rows tagged `site` continue to receive site-targeted
+  notifications until a future refactor adds `site_contact` to the
+  resolver's preferred-roles list (out of scope for this UI-only
+  change).
+
+**Files changed:**
+- `client/src/components/ContactFormDialog.tsx` — sole runtime file.
+  `STANDARD_CONTACT_ROLES`, `ROLE_DESCRIPTIONS`, new `ROLE_LABELS`
+  + `CANONICAL_ROLE_SET` + `filterCanonicalRoles()` helpers; pill
+  + summary-chip rendering routed through the label map; save-time
+  filter applied at four payload-emission sites.
+
+**Layout / interaction unchanged:** modal structure, spacing, the
+dropdown-driven right column, the sticky footer, every existing
+`data-testid` — all preserved exactly. Only the role set + labels
+changed.
+
+**Typecheck:** clean.
+
+#### Contact modal v2 — compact iPad layout, dropdown-driven Locations & Roles (2026-05-02)
+
+Same-day refinement of the canonical contact modal. The right-column
+"Locations & Roles" section was redesigned from a long scrolling list
+of per-location cards into a dropdown-driven view that fits comfortably
+on iPad landscape without scrolling.
+
+**Right column is now four stacked sections:**
+1. Location dropdown (`<Select>`) — picks ONE location to focus on.
+   Dropdown items show a `✓` / `○` glyph indicating link state.
+2. "✓ This contact is linked to this location" toggle — checkbox that
+   adds/removes the focused location from `form.selected`.
+3. Role pills for the focused location — `[Billing] [Scheduling] …`.
+   Disabled (greyed) when the location isn't linked. Tooltips describe
+   what mail each role triggers (canonical
+   `recipientResolverStrategies.ts` semantics — no separate
+   notification system).
+4. Linked Locations summary — compact one-line-per-location list with
+   `✓ / ○` glyphs and inline role chips. Clicking a row jumps the
+   dropdown to that location. Row max-height capped at `44`
+   (`max-h-44 overflow-y-auto`) so even 20+ locations stay one
+   scroll, not a full-modal scroll.
+
+**Left column tightened:**
+- Top labels removed; placeholders only (`First name`, `Last name`,
+  `Job title`, `Phone`, `Email`).
+- Single tight grid: `[Title▼][First][Last]` row 1, `[Job title]`
+  row 2, `[Phone][Email]` row 3, `☐ Mark as primary` row 4. No more
+  large `Label`-above-`Input` vertical bloat.
+- Input height reduced from `h-8` to `h-9` for better tap targets
+  while overall column shrank by removing label rows.
+
+**Removed (per spec):**
+- "Communication Preferences" section — never built. Recipient routing
+  is already role-driven; adding flag columns would create a duplicate
+  notification system. Confirmed not added in v2.
+- Notes field — never present.
+- The role `primary` was dropped from `STANDARD_CONTACT_ROLES`. The
+  "primary contact for this client" concept is expressed by the
+  identity-level `isPrimary` checkbox; carrying it as a per-location
+  role too was double-modelling. Server-side recipient resolver still
+  has a `"primary"` fallback path which works against any legacy
+  assignment row that retains the label — no migration needed, the
+  role just isn't surfaced as a new pill.
+
+**Data shape unchanged:**
+- `form.selected: Record<locationId, Set<role>>` — same as v1.
+- Save logic unchanged: create-path POST `/contacts` with
+  `association.locations[]`; edit-path PATCH identity then diff
+  assignments via POST `/assign` + PATCH `/assignments` + DELETE
+  `/assignments`.
+- All `data-testid` IDs from v1 preserved
+  (`contact-modal-firstname`, `contact-modal-role-{role}`,
+  `contact-modal-save`, etc.). New IDs:
+  `contact-modal-location-select`,
+  `contact-modal-location-option-{locId}`,
+  `contact-modal-link-toggle`, `contact-modal-summary-{locId}`.
+
+**Files changed:**
+- `client/src/components/ContactFormDialog.tsx` — sole runtime file
+  touched. Net line count slightly down as the long per-location card
+  markup was replaced with a dropdown + summary.
+
+**Behavior preserved:** every guardrail from the v1 entry still holds
+— no new APIs, no duplicate role/notification systems, permissions /
+RBAC untouched, `recipientResolverStrategies.ts` not modified.
+
+**Typecheck:** clean.
+
+#### Client/location contact unification — one canonical Add/Edit Contact modal (2026-05-02)
+
+Three client/location contact modals (`ContactFormDialog`,
+`AssignContactDialog`, `EditAssignmentRolesDialog`) were collapsed
+into a single canonical `ContactFormDialog`. The new modal is the
+SOLE entry point for adding or editing a contact from any surface
+(All Locations, a specific location, or an existing contact card).
+
+**Modal layout (iPad-friendly, 2-column on `md+`):**
+- Left column: Title (Mr./Mrs./Ms./Miss/Dr./none), First Name,
+  Last Name, Job Title, Phone, Email, Primary checkbox.
+- Right column: every client location with a checkbox; per-location
+  multi-select role chips, enabled only when that location is
+  checked.
+- Footer: Delete (left, edit-mode only), Cancel + Save (right).
+  Sticky over a scrollable body.
+- Stacks vertically on narrower widths.
+
+**Roles drive recipient routing — no comm-prefs UI added.**
+Per the audit (existing `recipientResolverStrategies.ts` already
+chooses recipients by role: `billing` → invoices/quotes/overdue
+reminders/payment receipts, `scheduling`/`site`/`primary` →
+visit + closure mail), the spec's "Communication Preferences"
+section was deliberately NOT implemented. Adding flag columns
+would create a duplicate notification system. The modal exposes
+per-role tooltips ("Billing — receives invoices, quotes, overdue
+reminders") so the user understands what mail each role triggers.
+
+**Schema split (migration: `2026_05_02_contact_persons_honorific_split.sql`):**
+- `contact_persons.title` is repurposed as **honorific** (Mr./Mrs./
+  Ms./Miss/Dr./null).
+- New nullable column `contact_persons.job_title` holds the freeform
+  professional role ("Operations Manager", "Owner", …).
+- Migration moves every existing `title` value into `job_title`
+  (existing data is job-title-shaped, populated by Jobber's `Title`
+  CSV column), then nulls out `title`. Idempotent guards on both
+  steps; reversible by reversing the copy.
+
+**Canonical save paths (no new endpoints):**
+- Edit: PATCH `/contacts/:id` for identity (extended to accept
+  `title` + `jobTitle`); diff vs. existing assignments runs
+  POST `/contacts/:id/assign`, PATCH `/assignments/:id`,
+  DELETE `/assignments/:id` per row.
+- Create: single round-trip POST `/contacts` with
+  `association.locations[]` of `{locationId, roles}` — endpoint
+  already supported this shape (Phase 5).
+
+**Files changed:**
+- `shared/schema.ts` — `contactPersons.jobTitle: text("job_title")`
+  added; comment block on `title` reflects the new honorific role.
+- `server/routes/customer-companies.ts` — `contactFieldsSchema` +
+  `updateContactSchema` accept `title` + `jobTitle`. POST/PATCH
+  handlers persist both.
+- `server/storage/clientContacts.ts` — `updatePerson` signature
+  widened to include `title` + `jobTitle`. Both DTO mappers
+  (`getContactsForCustomerCompany`, `getContactsForLocation`)
+  surface the new fields.
+- `server/services/importPipeline/adapters/ClientImportAdapter.ts`
+  — Jobber's `Title` CSV column now maps to `jobTitle` (it has
+  always been a job-title string). The CSV alias `contactTitle`
+  is unchanged; only the destination column moves.
+- `client/src/components/ContactFormDialog.tsx` — full rewrite into
+  the canonical modal. Exports new types `ContactModalLocation` and
+  `ContactModalAssignment`.
+- `client/src/pages/ClientDetailPage.tsx` —
+  `CompanyContactsCompact` + `LocContactsCompact` route every
+  Add/Edit through the canonical modal. Both build a
+  `ContactModalLocation[]` from the page's `locations` array and a
+  `Map<personId, ContactModalAssignment[]>` from
+  `allLocationContacts` so the modal can pre-check the right-column
+  state without a second fetch. `ContactCard` lost its
+  `onEditRoles` / `onDelete` / `deleteLabel` props — both are
+  reachable from the unified Edit flow now. `normalizeContact`
+  surfaces `jobTitle` and prefixes the display name with the
+  honorific when present.
+- `client/src/components/AssignContactDialog.tsx` — DELETED. No
+  remaining callers anywhere in the repo.
+- `client/src/components/EditAssignmentRolesDialog.tsx` — DELETED.
+  No remaining callers anywhere in the repo.
+
+**Migration applied locally** against the dev Neon DB during
+implementation; reversible via the comment block in the migration
+file.
+
+**Behavior preserved:**
+- Roles still drive every existing recipient pathway (invoice send,
+  quote send, overdue reminder, scheduled-visit notification,
+  job-closure follow-up). `recipientResolverStrategies.ts` is
+  untouched.
+- The dedupe cascade in `createOrGetPerson` (email → name+phone →
+  name) prevents duplicate person rows when the modal is used to
+  "assign" an existing contact by re-typing their identity with a
+  new location checked.
+- Multi-location-per-contact, per-location roles: still backed by
+  `contact_assignments` (the architecture already supported this;
+  the legacy split modals just didn't expose the full picker).
+
+**Typecheck:** clean.
+**Tests:** `tests/client-deletion.test.ts` (12/12 passing).
+
+#### Client Detail layout v2 — simplify right rail, scope-aware tag row, client-tag editor (2026-05-02)
+
+Follow-up to the morning's layout collapse. Three small things, all
+inside `ClientDetailPage`; no API / schema / permission / unrelated-page
+changes.
+
+**Right "Client Information" rail simplified:**
+- Removed the `fields` tab from `UtilityTab` and `UtilityRail`.
+  Reference-Fields data + APIs are untouched — the panel just no
+  longer surfaces the section here. Any other Reference-Fields
+  mount (Job / Quote / Invoice detail) continues to work.
+- Tab strip is now Contacts / Notes / Billing only (3 tabs ⇒ wider
+  per-tab hit area). `ReferenceFieldsSection` import removed.
+- Tightened tab content padding from `p-4` → `p-3` and the trigger
+  vertical padding from `py-2` → `py-1.5` so the rail no longer
+  feels visually heavy after the 4 ⇒ 3 tab simplification.
+
+**Scope-aware tag row near the header:**
+- Replaces the prior pair of inline tag renderings (always-on
+  `companyTags` next to the client name + a single-location-only
+  `locationTags` block right beside it). Now: one tag row directly
+  under the client subtitle, scope-aware:
+  - `scopeType === "company"` ⇒ renders `companyTags`.
+  - `scopeType === "location"` ⇒ renders the selected location's
+    `locationTags`.
+  Same data, same hooks (`useQuery` for
+  `/api/customer-companies/:id/tags` and `/api/locations/:id/tags`),
+  same color tokens, same `ClientTag` shape.
+- An `Add tag` / `Edit` affordance trails the row. Routes through
+  the canonical `EditTagsModal` for both scopes:
+  - Company scope → `entityType="customerCompany"`, mounted from
+    a new `editClientTagsOpen` state. The modal already supported
+    this entity type (see `EditTagsModal.getAssignmentUrl`); this
+    page just wasn't wiring it up. No new component, no new API.
+  - Location scope → `entityType="location"`, reuses the existing
+    `editLocationTagsOpen` flow.
+- The same Edit-Tags entries now appear in the More overflow menu:
+  `Edit Client Tags` (company scope) and the existing
+  `Edit Location Tags` is renamed for clarity.
+- Inline tag rendering inside the workspace card's scope-header
+  (the `!isSingleLocation` branch) was removed to avoid duplication
+  — the header tag row owns the display now.
+
+**Test ids added:**
+- `client-header-tags`, `client-header-tag-<id>`, `client-header-tags-edit`.
+
+**Files changed:**
+- `client/src/pages/ClientDetailPage.tsx` — sole runtime file touched.
+  Header subtitle / KPI strip / scope bar / scope popover / workspace
+  card body / right-rail title bar / dialogs / mutations untouched.
+
+**Behavior:**
+- URL deep-linking (`?scope=…&location=…&tab=…`) preserved — `tab` is
+  still in `WORKSPACE_TAB_KEYS` (workspace tabs); the rail tab is
+  separate state and was never URL-driven.
+- All scope rules preserved (Contacts / Notes / Billing still respect
+  `scopeType` + `selectedLocationId`).
+- Permissions / RBAC: untouched — same components, same APIs.
+
+Typecheck clean against the changes (an unrelated untracked WIP file
+`server/storage/reportsSnapshot.ts` has its own pre-existing errors;
+not part of this task).
+
+#### Client Detail layout — drop persistent Locations rail, add compact scope selector (2026-05-02)
+
+`ClientDetailPage` collapsed from a three-column layout (Locations
+rail | Workspace | Utility rail) to two columns (Workspace | Utility
+rail). The persistent left "Locations" rail and its desktop / small-
+screen variants were replaced with a single compact location scope
+selector in a bar directly under the page header. The selector
+trigger reads `Viewing: All Locations (N)` (or the selected
+location's name) and the popover lists every location with its
+address subtitle and active-job badge, with `All Locations` and an
+`Add Location` action pinned at the top and bottom of the list.
+Search input only appears when the client has more than 5 locations.
+
+The right-side utility rail (`Client Information`) gained a title bar
+above its tab strip: it now reads `Client Information ([scope])` —
+either `(All Locations)` for company scope or the selected location's
+display name. Tab content is unchanged; data still scopes to the
+current selection through the same `scopeType` / `selectedLocationId`
+state that previously drove the left rail.
+
+The unified workspace card (Active Work / Jobs / Invoices / Quotes /
+Equipment / PM / Parts) was extended so the company-scope tab strip
+matches the location-scope tab strip — Equipment and Parts are now
+visible in `All Locations` mode, with a `ScopeRequiredEmpty` empty
+state nudging the user to pick a specific location from the scope
+selector. PM remains location-only.
+
+**Removed (UI only — no data path change):**
+- `client-left-rail`, `client-left-rail-collapse`,
+  `client-left-rail-expand` test ids and the panel they belonged to.
+- `client-location-select` testid (small-screen `lg:hidden` Select
+  bar). Both desktop and mobile now share the new
+  `client-scope-trigger` popover.
+- `syntraro.client-detail.left-rail.collapsed` localStorage key (no
+  more persistent rail to collapse). Existing values are simply
+  ignored — no migration needed.
+- React state: `leftRailCollapsed`, `leftRailHydrated`,
+  `leftRailUserToggled`, `setLeftRailCollapsedExplicit`. Plus the
+  hydration / persistence `useEffect`s.
+- Imports: `Select*` primitives, `PanelLeftClose`, `PanelLeftOpen`,
+  `useRef`, `StickyNote` (all dead after the rail removal).
+
+**Added:**
+- `client-scope-bar`, `client-scope-trigger`, `client-scope-popover`,
+  `client-scope-option-all`, `client-scope-option-<locId>`,
+  `client-scope-add-location` testids.
+- `client-info-scope-label` testid on the rail title's parenthetical
+  scope label (e.g. `(All Locations)` / `(Acme Plaza)`).
+- `ScopeRequiredEmpty` helper component for Equipment / Parts in
+  `All Locations` scope.
+
+**Files changed:**
+- `client/src/pages/ClientDetailPage.tsx` — sole file touched.
+  Header, KPI block, Recent Activity card, action buttons (Create
+  Job / Quote / Invoice / More overflow including Add Location), all
+  data queries, all mutations, and all delete / archive / edit
+  flows are untouched. The Notes card was already only mounted
+  inside the right-rail Notes tab, so requirement #5 of the spec
+  ("remove duplicate lower Client Notes card") was already
+  satisfied; no change needed there.
+
+**Behavior:**
+- Default scope remains `All Locations`.
+- Single-location auto-select (sole location → location scope on
+  first load) preserved.
+- URL deep-linking (`?scope=…&location=…&tab=…`) preserved; same
+  state shape behind the new selector.
+- Action prefill (`jobPreselectedLocationId` for `CreateNewDialog`)
+  preserved in location scope; quote / invoice modals still rely on
+  in-dialog location pickers (canonical API contract unchanged).
+- Right-rail `fields` tab (canonical Reference-Fields surface from
+  Phase 2b) preserved alongside Contacts / Notes / Billing — the
+  guardrail "Do not remove any existing data access" overrides the
+  3-tab listing in the brief.
+
+No new APIs, no schema changes, no data-flow changes. Typecheck
+clean. Existing tests under `tests/client-deletion.test.ts` pass
+unchanged; no test referenced the removed left-rail testids.
+
+#### `InvoiceMetaCard` gains a `mode: "live" | "draft"` prop (2026-05-02, Audit #2 invoice-flow Phase 5)
+
+Phase 5 of the invoice-creation refactor. Adds a required `mode` prop
+to the in-page `InvoiceMetaCard` component (defined inside
+`client/src/pages/InvoiceDetailPage.tsx`) so the card can be reused
+on the future `/invoices/new` builder without requiring an
+`invoiceId` or any PATCH calls.
+
+**Frontend only.** No backend changes, no live-mode behavior change,
+no extraction into a separate file (intentionally deferred — the spec
+requires keeping the card in place for this phase). No `NewInvoicePage`
+wiring yet.
+
+**Files modified:**
+- **`client/src/pages/InvoiceDetailPage.tsx`** (in-place edit of the
+  local `InvoiceMetaCard` component):
+  - Added `mode: "live" | "draft"` as the first destructured prop.
+    Required, no default. Consumers must explicitly pass one of the
+    two literals.
+  - In **live mode** (the only existing call site): everything renders
+    exactly as before — the absolutely-positioned chrome action
+    cluster (edit pencil + any lifecycle actions the parent injects
+    via `headerActions`), the inline edit lifecycle driven by
+    `isEditing` / `draft` / `onDraftChange` / `onSave` / `onCancel`,
+    the unified Save/Cancel footer at the bottom of the card.
+  - In **draft mode** (used by Phase 6's `NewInvoicePage`):
+    - The chrome action cluster is suppressed entirely. The wrapper
+      `<div>` itself is gated, not just its children, so nothing
+      renders in the absolute-positioned slot.
+    - The inline Save/Cancel footer (`editing && (...)`) is gated to
+      `editing && mode === "live"` so the draft surface never
+      surfaces a card-local commit affordance — every keystroke
+      already propagates to the parent's draft state via the existing
+      `onDraftChange` / `onChangeJobDescriptionDraft` /
+      `onReferenceDraftChange` callbacks. The page-level "Save
+      Invoice" button (Phase 6) submits the atomic POST.
+  - The live call site at line ~2109 now passes `mode="live"`
+    explicitly. No other props changed.
+
+**Final `InvoiceMetaCard` props signature (additions only):**
+```ts
+{
+  /** REQUIRED. "live" preserves the existing PATCH-driven edit
+   *  lifecycle. "draft" hides the chrome action cluster + the
+   *  inline Save/Cancel footer; caller must pass isEditing={true}
+   *  and a non-null `draft` for the whole session. */
+  mode: "live" | "draft";
+  // …all existing props unchanged…
+}
+```
+
+**How draft mode is wired (props + callbacks):**
+- Parent passes `mode="draft"`, `isEditing={true}`, and a non-null
+  `draft: { invoiceNumber, issueDate, dueDate, paymentTermsDays }`
+  for the entire session.
+- Every meta-row keystroke fires `onDraftChange(patch)` → parent
+  merges into its local draft state.
+- Every reference-field keystroke fires
+  `onReferenceDraftChange(definitionId, value)` → parent merges into
+  its local reference draft.
+- Every job-description keystroke fires
+  `onChangeJobDescriptionDraft(value)` → parent updates its local
+  description draft.
+- Parent passes `headerActions={null}` (or any value — it's ignored
+  in draft mode).
+- Parent passes `onSave` and `onCancel` as no-ops (they are never
+  called in draft mode because the footer is hidden).
+- Parent passes `isSaving={false}` (no in-flight mutation in draft).
+
+**Confirmation no mutations occur in draft mode:**
+- The `InvoiceMetaCard` component body has zero direct API calls in
+  either mode — every commit fires through parent-supplied callbacks.
+  The `mode` prop only changes which affordances render; it does not
+  introduce any new side effects.
+- `onSave` is parent-owned. The live call site routes it through
+  `updateInvoiceFieldsMutation` + `saveReferenceFieldsMutation`. The
+  draft caller (Phase 6) will pass a no-op or omit Save entirely
+  because the footer is hidden.
+- No new network calls were introduced. No new `useMutation`,
+  `useQuery`, `apiRequest`, or `fetch` calls.
+
+**Confirmation live mode unchanged:**
+- The chrome action cluster, the unified Save/Cancel footer, the
+  pencil affordance, the meta rows (Issued / Terms / Reference
+  fields), the job description block, and the customer/address
+  identity column all render byte-for-byte the same as before for
+  any caller that passes `mode="live"`.
+- The live call site PATCH payload contract is untouched —
+  `updateInvoiceFieldsMutation` still receives the same delta built
+  from `metaDraft` against `invoice.*`, and
+  `saveReferenceFieldsMutation` still receives the same
+  `referenceDraft` payload. No new fields, no removed fields.
+- All existing `data-testid` attributes (`card-invoice-meta`,
+  `meta-customer-name`, `link-customer-name`,
+  `meta-service-location-name`, `input-meta-issue-date`,
+  `input-meta-payment-terms`, `input-meta-ref-*`, `meta-ref-*`,
+  `card-invoice-description`, `textarea-invoice-description`,
+  `text-invoice-description`, `button-meta-cancel`,
+  `button-meta-save`) continue to render in live mode at the same
+  positions.
+
+**Verification:**
+- `npx tsc --noEmit` — no errors in `InvoiceDetailPage.tsx` or any
+  invoice-flow file. (`ClientDetailPage.tsx` has pre-existing
+  unrelated errors from an uncommitted refactor that predates this
+  session.)
+- `npm run build` — clean (pre-existing chunk-size warnings
+  unrelated).
+
+**Follow-up for Phase 6:**
+- `NewInvoicePage` mounts `<InvoiceMetaCard mode="draft" isEditing={true} draft={…} … />`
+  with the parent owning the entire invoice draft. Reuses the
+  Phase 4 `createDraftInvoiceLineItemsAdapter` for line items, the
+  Phase 3 `<DiscountEditor>` for the discount editor, and a page-
+  level "Save Invoice" button that POSTs to `/api/invoices/atomic`
+  (Phase 1). Once Phase 6 stabilizes, `InvoiceMetaCard` can be
+  extracted into its own file under `client/src/components/invoice/`.
+
+#### `DiscountEditor` extracted from `InvoiceDetailPage` into a draft-capable primitive (2026-05-02, Audit #2 invoice-flow Phase 3)
+
+Phase 3 of the invoice-creation refactor. Extracts the totals-row
+discount editor — type-percent / type-amount paired inputs, auto-
+compute, Apply / Clear footer — out of `InvoiceDetailPage` into a
+reusable controlled component so the future client-side
+`/invoices/new` builder (Phases 4–6) can mount the same primitive
+against local draft state instead of the live PATCH path.
+
+**Frontend only.** No backend changes, no API calls inside the new
+component, no PATCH-payload changes, no UI redesign. The visual JSX
+is preserved byte-for-byte (rounded card, Tag/Percent/DollarSign
+icons, paired number inputs separated by "or", Clear + Apply buttons,
+all `data-testid` strings). The two-step "type → Apply" UX and the
+auto-compute math (`subtotal × percent/100 → amount`,
+`amount/subtotal × 100 → percent`) are identical to the pre-extraction
+inline handlers.
+
+**Files changed:**
+- **`client/src/components/invoice/DiscountEditor.tsx`** (new) —
+  pure controlled wrapper. Props:
+  - `value: { discountType, discountPercent?, discountAmount?,
+    discountNotes? }` — persisted state (parent-owned).
+  - `subtotal: string` — invoice subtotal, used by the auto-compute
+    helpers.
+  - `onChange(next)` — fires when the user commits via Apply or
+    Clear. The caller decides whether to PATCH or just update
+    local draft state (live invoice page does the former; the
+    future builder will do the latter).
+  - `disabled?: boolean` — mirrors a parent-side pending mutation.
+
+  Internal buffer state (`percent` / `amount` / `type`) is seeded
+  from `value` and resyncs whenever `value` changes (post-PATCH
+  parent prop refresh). The buffer is what backs the `Apply` button —
+  identical to the pre-extraction local-state UX. Notes are passed
+  through unchanged via `value.discountNotes` so a future caller
+  editing notes elsewhere never loses them.
+
+- **`client/src/pages/InvoiceDetailPage.tsx`**:
+  - Imported `DiscountEditor` + `DiscountType`.
+  - Replaced the inline JSX block (`canEdit && lineItemsDrafts.editing`
+    branch) with `<DiscountEditor value={…} subtotal={invoice.subtotal}
+    onChange={(next) => updateDiscountMutation.mutate({…})}
+    disabled={updateDiscountMutation.isPending} />`.
+  - Removed the now-unused `discountPercent` / `discountAmount` /
+    `discountType` `useState` hooks, the discount-state-sync
+    `useEffect`, and the four discount handlers
+    (`handleDiscountPercentChange`, `handleDiscountAmountChange`,
+    `handleSaveDiscount`, `handleClearDiscount`).
+  - Refactored `updateDiscountMutation.onError` to read the failed
+    payload from React Query's `variables` argument instead of the
+    deleted local state. The QBO-lock retry still re-issues the
+    same payload + override fields, behavior unchanged.
+  - Removed now-unused lucide imports (`Tag`, `Percent`,
+    `DollarSign`, `X`). All other icon imports unchanged.
+
+**Behavior parity:** identical PATCH payload contract
+(`{ discountType, discountPercent || null, discountAmount || null }`),
+identical Clear-button visibility rule (shows when either typed
+field has content), identical "Saving…" label while the mutation is
+in flight, identical disabled-Apply rule (no typed fields →
+disabled).
+
+**Read-only badge unchanged.** When the line-items card is NOT in
+edit mode, the page still renders the green "Discount (N%)" totals
+row inline. That branch was not part of the editor and was left as
+a pure totals-row sibling.
+
+**Verification:**
+- `npx tsc --noEmit` — clean.
+- `npm run build` — clean (pre-existing chunk-size warnings unrelated).
+
+### Added
+
+#### Job billable preview — `GET /api/jobs/:id/billable-preview` for the future client-side builder (2026-05-02, Audit #2 invoice-flow Phase 2)
+
+Phase 2 of the invoice-creation refactor. Adds a read-only endpoint
+that returns the canonical line-item preview a job would contribute
+to an invoice if the user picked it during the future client-side
+`/invoices/new` flow. The builder hydrates the response into local
+React state, lets the user edit / remove lines before Save, then
+submits the curated set via `POST /api/invoices/atomic` (Phase 1).
+
+**Backend only.** No frontend caller yet; existing invoice flows
+(`POST /api/invoices`, `POST /api/invoices/from-job/:jobId`,
+`POST /api/invoices/:id/refresh-from-job`) are unchanged.
+
+**Files changed:**
+- **`server/services/jobBillablePreviewService.ts`** (new) — pure
+  read-only helper `getJobBillablePreview(companyId, jobId)` plus
+  `JobBillablePreviewError` (mirrors `CreateAtomicValidationError`
+  shape). Reuses the same SELECT predicates as the existing
+  `storage.refreshInvoiceFromJob` mutator, minus every mutation:
+    - **Parts** (`job_parts`): `companyId + jobId + isActive=true`,
+      plus the canonical "not already on a sibling invoice"
+      allocation guard via `NOT EXISTS (… invoice_lines.source='job'
+      AND job_line_item_id = jobParts.id … invoices.job_id = jobId)`.
+      The `<> <THIS-INVOICE>` clause from the writer collapses
+      cleanly because no invoice exists at preview time.
+    - **Labor** (`time_entries`): `companyId + jobId + billable=true
+      + endAt NOT NULL + invoicedAt IS NULL`, then
+      `applyBillingRulesToEntries(rules, entries)` reused from
+      `server/storage/timeBillingRules.ts:159`, then grouped by
+      `technician + type` exactly the way the writer groups them
+      (so preview line shape matches what Save would actually
+      create at the atomic route).
+    - **Expenses**: NOT included. The existing
+      `refreshInvoiceFromJob` does not pull job expenses into
+      invoice lines today, so neither does this preview. Adding
+      expense support is a separate phase that would change both
+      the writer and this preview in lockstep.
+- **`server/routes/jobs.ts`**:
+  - Imported the new service.
+  - Added `GET /api/jobs/:id/billable-preview` gated by
+    `requireRole(MANAGER_ROLES)` (matches the existing
+    `POST /api/invoices/from-job/:jobId` role requirement — the
+    preview surfaces labor rates + cost data, same sensitivity).
+  - Catch block returns structured 4xx/9xx with
+    `{ error, detail: { … } }` so future client builders can branch
+    on `detail.invoiceId` (already-invoiced) or `detail.status`
+    (not-completed) without string-matching messages.
+
+**Helper / service: extracted vs. reused.**
+
+The preview reuses the same canonical SELECT predicates as
+`refreshInvoiceFromJob` (parts allocation guard + labor billing
+rules) but is implemented as a separate read-only function in a
+new file. Full extraction of a shared helper that the writer also
+adopts is a Phase 3 follow-up — it requires the writer to refactor
+its post-SELECT INSERT into "build line shapes → bulk INSERT" so the
+preview can call the same shape-builder. That's mechanically clean
+but touches an actively-relied-on creation path; out of Phase 2
+scope. **Documented duplication risk** in the file header so any
+future writer change keeps the two surfaces in sync.
+
+**Eligibility rules** (matches the existing canonical
+`readyToInvoiceOnly` predicate at
+`server/storage/dashboard.ts:811` — "status='completed' AND no
+invoice"):
+- Job not found / wrong tenant → `404`.
+- Job already invoiced (`jobs.invoiceId !== null`) → `409` with
+  `{ detail: { jobId, invoiceId } }`. Takes precedence over the
+  status check (more specific operator diagnostic).
+- Job not completed → `400` with `{ detail: { jobId, status } }`.
+- Otherwise → `200` with the full preview, including
+  `lines: []` when the job is eligible but has no billable parts /
+  no uninvoiced billable time entries (a valid state — an invoice
+  with header-only content can still be created).
+
+**Exact response shape:**
+
+```ts
+{
+  jobId: string;
+  jobNumber: number;
+  summary: string;
+  description: string | null;
+  customerCompanyId: string | null;
+  locationId: string;
+  workDescriptionCandidate: string;   // = jobs.summary
+  lines: Array<{
+    clientKey: string;                  // "part-<jobPart.id>" | "labor-<techId>-<type>"
+    sourceType: "part" | "labor";
+    source: "job";                      // matches canonicalLineItemInput.source
+    lineItemType: "service" | "material";
+    description: string;
+    quantity: string;
+    unitPrice: string;
+    unitCost: string | null;
+    productId: string | null;           // catalog ref (parts only)
+    jobLineItemId: string | null;       // jobParts.id (parts only)
+    technicianId: string | null;        // labor groups only
+    date: string | null;
+    lineSubtotal: string;               // pre-tax, qty * unitPrice rounded 2dp
+  }>;
+}
+```
+
+Each line is shaped to drop directly into `POST /api/invoices/atomic`'s
+`lines[]` field after the user edits — `clientKey`, `sourceType`, and
+`lineSubtotal` are extras the client can ignore on the way to Save
+(the atomic route's `atomicLineSchema` is `.strict()` and the route
+maps the payload through a fixed list of fields, so unknown extras
+should be stripped on the client side before posting).
+
+**No-mutation guarantee — verified.** The service contains zero
+INSERT / UPDATE / DELETE statements. Specifically it does NOT:
+- create or modify any invoice row,
+- allocate an invoice number / bump the company counter,
+- mark time entries as invoiced (no `invoicedAt` writes),
+- lock time entries (no `lockedAt` / `lockedByInvoiceId` writes),
+- change job status / lifecycle,
+- emit dispatch SSE events,
+- touch QBO sync state,
+- touch the activity log.
+
+This was a hard requirement per the spec; the file header in
+`jobBillablePreviewService.ts` repeats the contract for future
+maintainers.
+
+**Lock state caveat.** The existing writer THROWS when any time
+entry is already locked (a sibling invoice creation is in flight).
+Preview is informational and does NOT throw on locks — the user
+might still want to see the value before deciding. The save-time
+atomic create path (`POST /api/invoices/atomic`) is responsible
+for re-checking and rejecting if a lock conflict is still active
+when Save runs. Documented in the file header.
+
+**Backward compatibility:** confirmed. No existing route, service,
+or storage method is modified. The new route is purely additive.
+`refreshInvoiceFromJob` continues to perform its mutating work
+unchanged; the new preview helper is a separate read code path.
+
+**Verification:**
+- `npx tsc --noEmit` clean.
+- `npm run build` clean.
+- Manual API smoke-test plan (deferred to product/QA pass before
+  Phase 6 frontend lands):
+  1. `GET /api/jobs/:id/billable-preview` for a completed
+     uninvoiced job with parts + labor → 200 with both line types
+     in the response, `lineSubtotal` matches the writer's math.
+  2. Same for a completed uninvoiced job with **no** parts and no
+     uninvoiced billable time entries → 200 with `lines: []`.
+  3. Same for an already-invoiced job → 409 with
+     `detail.invoiceId`.
+  4. Same for an in-progress job → 400 with `detail.status`.
+  5. Same for a job from another tenant → 404.
+  6. After a successful preview call: confirm
+     `companyCounters.nextInvoiceNumber` is unchanged, no new
+     `invoices` rows, no `time_entries.invoicedAt` writes,
+     no audit-log entries.
+  7. `POST /api/invoices/from-job/:jobId` continues to work
+     unchanged on a job that's been previewed.
+
+**Known follow-ups for Phase 3+:**
+1. Extract a shared shape-builder so `refreshInvoiceFromJob` and
+   `getJobBillablePreview` consume the same lower-level helper —
+   eliminates the documented preview/writer duplication.
+2. Phase 3 (frontend extract): `<DiscountEditor>` from
+   `InvoiceDetailPage`.
+3. Phase 4 (frontend): `draftInvoiceLineItemsAdapter` factory for
+   the canonical `<LineItemsCard>`.
+4. Phase 5: `<InvoiceMetaCard>` `mode="draft"` toggle.
+5. Phase 6: rebuild `NewInvoicePage` against `/atomic` + this
+   preview endpoint.
+6. Phase 7: retire `NewInvoiceModal`.
+7. (Optional, post-MVP) job-expense support in both the writer
+   and this preview.
+
+#### Atomic invoice creation — `POST /api/invoices/atomic` for the future client-side builder (2026-05-02, Audit #2 invoice-flow Phase 1)
+
+Phase 1 of the invoice-creation refactor. Adds a single transactional
+backend route that the future `/invoices/new` client-side builder will
+post to on Save. The builder buffers the entire draft (location,
+optional jobIds, lines, discount, tax, terms, header fields) in
+client state and submits one payload — no invoice row is created
+until Save, no provisional invoice number is consumed, no jobs are
+marked invoiced.
+
+**Backend only.** Frontend behavior unchanged. The existing flows
+(`POST /api/invoices`, `POST /api/invoices/from-job/:jobId`,
+`POST /api/invoices/:id/refresh-from-job`) are untouched and continue
+to serve every existing caller (header `+ New` modal, Job Detail
+"Create Invoice", tech app, dashboard alerts, refresh-from-job).
+
+**Files changed:**
+
+- **`server/storage/invoices.ts`**:
+  - Added `"ATOMIC_ROUTE"` to `INVOICE_CREATION_SOURCES` (the
+    compile-time + runtime guard list).
+  - Added `createInvoiceAtomic(companyId, params, lines, source)`
+    repository method. Single `db.transaction` covering: shell
+    creation via `createInvoiceShell` (atomic counter allocation),
+    header overrides UPDATE, bulk-INSERT of all lines, tax-group
+    application via `applyTaxGroupToInvoice` (which itself runs
+    `batchApplyLineTax` + `recalculateInvoiceTotalsInTx` + tax-line
+    snapshot — all canonical writers per CLAUDE.md). Returns the
+    final invoice row.
+- **`server/storage/index.ts`** — exposed `createInvoiceAtomic` on
+  the storage façade.
+- **`server/services/invoiceCreationService.ts`** — added
+  `createInvoiceAtomicService(companyId, payload, actor)` plus its
+  payload + result types and a `CreateAtomicValidationError` class.
+  The service:
+  1. Validates the location belongs to the tenant; derives
+     `customerCompanyId` from `location.parentCompanyId`. Rejects
+     payload-asserted `customerCompanyId` mismatches up front.
+  2. For each `jobIds` entry: fetches the job; resolves its
+     customer via the job's location; rejects mixed-customer
+     batches (400 with `conflictJobIds`); rejects already-invoiced
+     jobs (409 with `conflictJobIds`); rejects non-completed jobs
+     (400 with `conflictJobIds`).
+  3. Resolves the tax group: explicit `null` disables tax;
+     explicit string is validated against
+     `taxRepository.getTaxGroup`; missing field falls back to the
+     company's default tax group (matches the existing
+     standalone-create behavior).
+  4. Validates discount mutual exclusivity (PERCENT + amount or
+     AMOUNT + percent → 400).
+  5. Calls `storage.createInvoiceAtomic(...)` with `primaryJobId =
+     jobIds[0]` (the schema's single-job pointer).
+  6. AFTER commit, if `markJobsCompleted: true`: fires
+     `lifecycle.markInvoiced` per jobId via the canonical lifecycle
+     orchestrator (each markInvoiced runs in its own short
+     transaction; failures are logged + skipped to avoid rolling
+     back the saved invoice).
+- **`server/routes/invoices.ts`**:
+  - Imported `createInvoiceAtomicService` +
+    `CreateAtomicValidationError`.
+  - Added `POST /api/invoices/atomic` route. Zod schema
+    (`createAtomicSchema`) is `.strict()` and accepts:
+    `locationId` (required UUID), `customerCompanyId?`, `jobIds?`,
+    `markJobsCompleted?`, `workDescription?`, `issueDate?`,
+    `dueDate?`, `paymentTermsDays?`, `invoiceNumber?` (override),
+    `notesInternal?`, `notesCustomer?`, `clientMessage?`,
+    visibility flags, discount fields, `taxGroupId?`, and
+    `lines: atomicLineSchema[]?` which extends the canonical
+    `canonicalLineItemInput` from `@shared/lineItem` with optional
+    `jobLineItemId / date / technicianId`.
+  - Catch block returns structured 4xx/9xx responses with
+    `{ error, detail: { conflictJobIds: [...] } }` so the future
+    client builder can highlight which jobs to deselect on a 409.
+  - Logs `invoice.created` audit event after success.
+
+**Job-derived lines: client-authoritative.**
+Per the user's spec ("Do not double-add job lines"), this route does
+NOT pull line items from `jobIds` server-side. The future client
+builder hydrates job-derived lines via a Phase 2 read-only endpoint
+(planned: `GET /api/jobs/:id/billable-preview`) and submits them as
+part of the `lines` array. The server treats the `lines` array as
+authoritative; `jobIds` are used only for:
+1. Validation (tenant ownership, customer match,
+   ready-to-invoice).
+2. Setting `invoices.jobId = jobIds[0]` (the schema's single-job
+   primary pointer).
+3. Optional `lifecycle.markInvoiced` per linked jobId.
+
+This keeps the route safely additive — the existing
+`POST /api/invoices/from-job/:jobId` continues to perform the
+server-side pull for callers (Job Detail, tech app, dashboard) that
+expect that behavior.
+
+**Multi-job linkage caveat.** The schema today supports a single
+`invoices.jobId` primary pointer. Multi-job invoices created here
+record the FIRST jobId on the invoice row; the remaining jobs are
+linked via the canonical `lifecycle.markInvoiced` lifecycle event
+(which writes `jobs.invoiceId` on each marked job). A future schema
+change could introduce a many-to-many `invoice_jobs` join table;
+until then, multi-job linkage is asymmetric (invoice → primary job;
+jobs → invoice). Documented inline in the storage method's
+docstring.
+
+**Backward compatibility:** all three existing creation paths
+(`POST /api/invoices`, `POST /api/invoices/from-job/:jobId`,
+`POST /api/invoices/:id/refresh-from-job`) and every storage method
+they consume are unchanged. No existing caller is migrated. No
+invoice-numbering behavior on existing routes changes. No counter
+peek/preview endpoint was added (per spec — invoice number stays
+"Pending" client-side until Save).
+
+**Verification:**
+- `npx tsc --noEmit` clean.
+- `npm run build` clean.
+- Manual API smoke-test plan (deferred to product/QA pass before
+  Phase 6 frontend lands):
+  1. `POST /api/invoices/atomic { locationId }` → 201, draft
+     invoice with no lines + auto-applied default tax group +
+     auto-allocated counter.
+  2. `POST /api/invoices/atomic { locationId, lines: [...] }` →
+     201, draft with the supplied lines + recalculated totals.
+  3. `POST /api/invoices/atomic { locationId, jobIds: ["…"], lines: [...], markJobsCompleted: true }`
+     → 201, invoice has the supplied lines (server doesn't
+     double-add), `invoices.jobId = jobIds[0]`, lifecycle fires
+     for each jobId.
+  4. `POST /api/invoices/atomic { locationId, jobIds: [J_A, J_B] }`
+     where J_A and J_B belong to different customers → 400 with
+     `{ detail: { conflictJobIds: [J_B] } }`.
+  5. `POST /api/invoices/atomic { locationId, jobIds: [already_invoiced_id] }`
+     → 409 with `{ detail: { conflictJobIds: [already_invoiced_id] } }`.
+  6. `POST /api/invoices/atomic { locationId, jobIds: [in_progress_id] }`
+     → 400 (status !== completed).
+  7. `POST /api/invoices/atomic { locationId, taxGroupId: null, lines: [...] }`
+     → 201, no tax applied, no snapshot rows.
+  8. `POST /api/invoices/atomic { locationId, taxGroupId: "<bad>" }`
+     → 404.
+  9. `POST /api/invoices/atomic { locationId, discountType: "PERCENT", discountAmount: "10.00" }`
+     → 400 (mutual-exclusivity).
+  10. Forced failure inside the transaction (e.g. line INSERT
+      throws) → no invoice row, no counter bump, no
+      `invoice.created` audit event (Postgres rolls back the bump
+      cleanly).
+
+**Known follow-ups for Phase 2 (NOT in this PR):**
+1. Add `GET /api/jobs/:id/billable-preview` — read-only wrapper
+   around the existing pull logic inside
+   `createInvoiceFromJobService`, returns `lineItemInput[]` ready
+   for client hydration.
+2. Phase 3: extract `<DiscountEditor>` from the inline discount
+   JSX in `InvoiceDetailPage`.
+3. Phase 4: `draftInvoiceLineItemsAdapter` factory for the
+   canonical `<LineItemsCard>`.
+4. Phase 5: `<InvoiceMetaCard>` `mode="draft"` toggle.
+5. Phase 6: rebuild `NewInvoicePage` against the atomic route.
+6. Phase 7: retire `NewInvoiceModal` after Phase 6 ships.
+7. (Optional, post-MVP) introduce `invoice_jobs` many-to-many
+   join for multi-job invoices, replacing the asymmetric
+   primary-pointer + `jobs.invoiceId` linkage.
+
+### Fixed
+
+#### `tests/find-next-available-slot.test.ts` — refresh QuickAddJobDialog source-grep guards for the availability-panel redesign (2026-05-02)
+
+Three source-level regression guards in `tests/find-next-available-slot.test.ts`
+were still pinned to the pre-redesign auto-pick implementation of
+`QuickAddJobDialog` and had been failing since the panel migration
+landed in `b2696e3`. No app behaviour changed — the tests were
+catching up to source that was already correct.
+
+What was guarded vs. what's there now:
+
+- **Trigger testid.** Old: `data-testid="button-find-next-available"`.
+  New: `data-testid="button-find-availability"` — the button now
+  toggles an in-dialog panel instead of auto-picking one slot.
+- **Slot label formatting.** Old: `formatSlotTimeLabel(match.date,
+  match.time)`. New: the `match` variable was deleted with auto-pick;
+  the panel renders one row per open gap with
+  `formatSlotTimeLabel(s.date, s.time)` and
+  `formatSlotTimeLabel(gap.date, gap.time)` /
+  `formatSlotTimeLabel(gap.date, gap.endTime)`. The negative
+  regression guard against hand-rolled `format(parseISO(...startISO))`
+  is preserved.
+- **Canonical-module imports.** Old: a single brittle regex requiring
+  both `findNextAvailableSlot` AND `formatSlotTimeLabel` inside one
+  `import { ... }` block. New: per-symbol assertions for the helpers
+  the panel actually uses — `formatSlotTimeLabel`,
+  `computeOpenGapsForTech`, `groupOpenGapsByTech` — plus a separate
+  assertion on the import path. The single-slot
+  `findNextAvailableSlot` helper is still exported from the module
+  (and still covered by the algorithm tests at the top of this file)
+  but the dialog no longer calls it directly.
+
+**Files changed:**
+- `tests/find-next-available-slot.test.ts` — three `it(...)` blocks
+  in the `QuickAddJobDialog wiring (source-level guard)` describe
+  updated. Test titles renamed to match new behaviour.
+
+**Out of scope (still failing, intentionally not touched):**
+- `server/vite.ts — production cache header policy > emits the
+  no-cache trifecta for update-sensitive static files` — driven by
+  unrelated WIP cache-header refactor in `server/vite.ts`.
+- `client/src/components/PwaUpdatePrompt.tsx — SW update lifecycle >
+  preserves the controllerchange listener with the sessionStorage
+  reload guard` — pinned to the old `RELOAD_FLAG` symbol; the
+  implementation has since moved to a build-aware
+  `RELOAD_BUILD_KEY`/`RELOAD_AT_KEY` pair (already shipped in
+  `3dd1372`). Both should be addressed in their own follow-ups.
+
+No runtime / app code touched. Typecheck clean.
+
+#### Find Availability panel — company-tz wall clock + 15-min rounding (2026-05-02)
+
+QuickAddJobDialog's "Find Availability" panel showed wrong start/end
+labels (e.g. "5:53 PM – 7:00 PM" at 1:53 PM EDT for a tech with an
+8 AM–5 PM workday and an existing 3–5 PM visit). The 2026-05-01 dashboard
+fix (`clampOpenBlockToNow` + `roundUpToNextInterval`) was scoped to
+`FinancialDashboard.tsx`'s display path only; the modal consumes the
+same `/api/dashboard/capacity` data through `groupOpenGapsByTech` /
+`computeOpenGapsForTech` and was untouched. The two surfaces share one
+backend endpoint but had two divergent rendering paths.
+
+Two compounding bugs in `findNextAvailableSlot.ts`:
+
+1. **UTC slice rendered as local wall clock.** Each emitted gap built
+   `date` / `time` from `new Date(startMs).toISOString().slice(0, 10)` /
+   `.slice(11, 16)` and the panel rendered them through
+   `formatSlotTimeLabel` (pure string math). For any company tz that
+   isn't UTC, the displayed clock was off by the tz offset — a 1:53 PM
+   EDT instant rendered as "5:53 PM" (UTC-slice "17:53").
+2. **Raw `Date.now()` not rounded.** `windowStart = max(workStart, now)`
+   used the click instant verbatim, so the form's start carried the
+   user's exact second-precision moment (e.g. 13:50) instead of the
+   next 15-min boundary.
+
+**Fix in `client/src/lib/findNextAvailableSlot.ts`:**
+- Extended `FindNextAvailableOptions` with `timezone?: string | null`
+  and `intervalMinutes?: number` (default 15).
+- New private helper `resolveAnchoredNowMs(opts)` rounds `now` up to
+  the next `intervalMinutes` boundary via the existing
+  `roundUpToNextInterval`. The `0` sentinel (caller-side "future
+  date — full workday") passes through unchanged.
+- New private helper `wallClockSlices(ms, timezone)` uses
+  `getWallClockInTimezone` (existing `schedulingConstants.ts` export)
+  to derive `{ date, time }` in the company's local wall clock when a
+  timezone is supplied; falls back to the UTC slice when the option is
+  omitted (preserves existing UTC-anchored test fixtures).
+- `OpenGap` gained an `endTime` field (company-local HH:mm of the
+  gap's END), so the panel's end label no longer re-slices `endISO`
+  in UTC.
+- Both `computeOpenGapsForTech` and `findNextAvailableSlot` route
+  through these helpers.
+
+**Fix in `client/src/components/QuickAddJobDialog.tsx`:**
+- The two helper call sites (`availabilityGroups` and
+  `availabilitySuggestions`) now pass
+  `timezone: capacityData?.timezone ?? companyTimezone ?? null`.
+- The two end-label render sites read `gap.endTime` instead of
+  `gap.endISO.slice(11, 16)`.
+
+**Verification:**
+- `npm run check` clean.
+- `npx vitest run tests/find-next-available-slot.test.ts` — 5 new
+  tests added (all pass) covering: 1:53 PM EDT rounds to 2:00 PM with
+  end at 5:00 PM, 2:01 PM rounds to 2:15 PM, 5:01 PM returns no
+  availability, future-date `now=0` emits the full 8 AM–5 PM workday
+  in company-local, and `gap.date` / `gap.time` are NEVER UTC slices
+  when a timezone is supplied. Two existing tests that asserted
+  unrounded behaviour (`now=1:50 PM` → `13:50`) updated to assert the
+  new rounded value (`14:00`).
+- Read-only DB check confirmed the production "7:00 PM" end label
+  was the UTC slice of an existing 19:00–21:00 UTC visit (3–5 PM EDT)
+  assigned to the user, not a working-hours misconfiguration. Custom
+  working hours for that user are 08:00–17:00 every day; company
+  business hours have Saturday closed but the user's `useCustomSchedule
+  = true` overrides.
+
+No backend / scheduling-logic / styling changes. No migration.
+
+#### Tech `VisitDetailPage` hook-order crash on freshly created visits (2026-05-02)
+
+Navigating from the technician page into a newly created job/visit
+detail crashed with `Rendered more hooks than during the previous
+render` originating at `VisitDetailPage.tsx:1355`
+(`closeJobMutation = useMutation(...)`).
+
+Root cause: `closeJobMutation` was declared AFTER the
+`if (isLoading) return <LoadingState />` and
+`if (isError || !visit) return <ErrorState ... />` early returns. On
+the first render the component bailed early (N hooks); on the next
+render `visit` was loaded and React reached the `useMutation` call (N+1
+hooks). The Rules of Hooks require the same hook count and order on
+every render.
+
+**Fix:** Hoist `closeJobMutation` above the early returns. The
+"is this visit linked to a job?" guard remains inside `mutationFn`
+(`if (!visit || !visit.jobId) throw ...`), and the buttons that
+trigger it (`handleCompleteInvoiceNow` / `handleCompleteInvoiceLater`)
+already short-circuit on `closeJobMutation.isPending`, so behaviour
+and wording (action sheet copy "Close visits", invoice now / invoice
+later) are preserved unchanged.
+
+**Files changed:**
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — moved
+  `closeJobMutation = useMutation({...})` block from inside the
+  post-early-return body up to immediately after `onBack` and before
+  the `isLoading` / `isError` returns. Inline comment explains why the
+  hook MUST stay above the early returns to avoid regression.
+
+No schema changes. No API changes. No migration.
+
+### Changed
+
+#### `AddressBlock` extracted — shared Service Address primitive (2026-05-02, Audit #2 follow-up)
+
+Audit #2 flagged the "Service Address" block as duplicated JSX between
+`JobDetailPage`'s header (lines 1763-1780 pre-extraction) and
+`InvoiceMetaCard`'s Service Address row (lines 455-460 pre-extraction).
+Same conceptual structure (label → emphasized location/company name →
+optional street → optional city line) but each surface had subtly
+different presentational rules that pre-dated the consolidation:
+
+  - **Job**: heavier label (`font-semibold` + `tracking-[0.08em]`),
+    heavier location-name (`text-row font-semibold`, weight 600),
+    `truncate` on every line, `mb-3` wrapper margin, hide whole
+    block when no values are set.
+  - **Invoice**: canonical `text-label` token defaults (weight 500,
+    tracking 0.04em), `text-row-emphasis` location-name (weight 500),
+    no truncate, no wrapper margin (parent owns divider rhythm),
+    dash fallback on the location-name row when missing.
+
+A `variant: "job" | "invoice"` discriminator on the new primitive
+preserves both presentations byte-for-byte.
+
+**Files created:**
+- `client/src/components/common/AddressBlock.tsx` — presentational
+  primitive. Props: `label`, `variant`, `locationName?`, `street?`,
+  `cityLine?`, `testId?`, `className?`. No data fetching, no
+  formatting. `data-testid` placement is variant-aware to preserve
+  the pre-extraction selectors exactly: "job" attaches it to the
+  outer wrapper (matched `block-service-address`); "invoice"
+  attaches it to the inner emphasized location-name `<div>`
+  (matched `meta-service-location-name`).
+
+**Files changed:**
+- `client/src/pages/JobDetailPage.tsx` — replaced the inline
+  Service Address block with
+  `<AddressBlock variant="job" label="Service Address"
+   locationName={…} street={streetLine} cityLine={cityLine}
+   testId="block-service-address" />`. The pre-extraction
+  call-site guard `{(streetLine || cityLine ||
+   job.location?.companyName) && (…)}` is now absorbed by the
+  variant's hide-when-empty rule.
+- `client/src/pages/InvoiceDetailPage.tsx` — replaced the inline
+  Service Address block (inside `InvoiceMetaCard`) with
+  `<AddressBlock variant="invoice" label="Service Address"
+   locationName={locationName} street={serviceAddress?.street ?? null}
+   cityLine={serviceCity || null}
+   testId="meta-service-location-name" />`. The Billing Address
+  block is intentionally left inline (see "Out of scope" below).
+
+**Exact duplicated blocks replaced:**
+
+Job — pre-extraction (`JobDetailPage.tsx:1763-1780`):
+```tsx
+{(streetLine || cityLine || job.location?.companyName) && (
+  <div className="mb-3" data-testid="block-service-address">
+    <div className="text-label font-semibold uppercase tracking-[0.08em] text-text-muted mb-0.5">
+      Service Address
+    </div>
+    {job.location?.companyName && (
+      <div className="text-row font-semibold text-text-primary truncate">
+        {job.location.companyName}
+      </div>
+    )}
+    {streetLine && (
+      <div className="text-row text-text-secondary truncate">{streetLine}</div>
+    )}
+    {cityLine && (
+      <div className="text-row text-text-secondary truncate">{cityLine}</div>
+    )}
+  </div>
+)}
+```
+
+Invoice — pre-extraction (`InvoiceDetailPage.tsx:455-460`):
+```tsx
+<div>
+  <div className={`${META_LABEL_CLASS} mb-0.5`}>Service Address</div>
+  <div className="text-row-emphasis text-text-primary" data-testid="meta-service-location-name">
+    {locationName || dash}
+  </div>
+  {serviceAddress?.street && <div className="text-row text-text-secondary">{serviceAddress.street}</div>}
+  {serviceCity && <div className="text-row text-text-secondary">{serviceCity}</div>}
+</div>
+```
+
+**Out of scope (intentionally not extracted):**
+- Invoice's "Billing Address" block — different shape (no
+  emphasized location-name row; first line gets a dash fallback at
+  regular weight) and exists only on Invoice. Not duplicated, so
+  no consolidation win. Left inline in `InvoiceMetaCard`.
+- Quote's chip-style "Service Address" with the `MapPin` icon
+  inside `QuoteHeaderCard` — different surface, different
+  primitive shape. Per spec, untouched.
+
+**Intentional visual differences preserved:**
+- Job's label remains `font-semibold` + `tracking-[0.08em]`
+  (weight 600 + wider tracking). Invoice's label uses canonical
+  `text-label` defaults (weight 500 + 0.04em tracking). Both
+  variants override / use the canonical token consistently with
+  the pre-extraction code.
+- Job's location-name remains `text-row font-semibold` (weight 600).
+  Invoice's remains `text-row-emphasis` (weight 500). The two
+  weights differ by design and were not normalized.
+- Job's `truncate` on every line is preserved on the "job" variant.
+  Invoice's no-truncate behavior is preserved on the "invoice"
+  variant.
+- Job's `mb-3` wrapper margin is preserved. Invoice's no-wrapper-
+  margin behavior is preserved (parent's divider provides
+  separation).
+
+**No layout / typography / spacing change at the call sites.** The
+primitive is a structural reorganization only.
+
+**Verification:**
+- `npx tsc --noEmit` clean.
+- `npm run build` clean.
+- Manual visual smoke-test plan (for product/QA):
+  1. Job Detail with full service address → label, company name,
+     street, city/prov render exactly as before.
+  2. Job Detail with partial service address (e.g. only street) →
+     other rows are skipped; whole block disappears when all
+     three are missing (matches pre-extraction guard).
+  3. Invoice Detail with full Billing + Service → both blocks
+     render; Billing row uses regular-weight first line with dash
+     fallback (Billing block is unchanged inline JSX); Service
+     row uses emphasized location-name with dash fallback.
+  4. Invoice Detail with partial addresses → dash fallbacks
+     appear on the location-name row when missing; street / city
+     lines are skipped when missing.
+  5. Narrow viewport on Job page → `truncate` ellipsis still
+     fires on long company names / street lines (variant="job"
+     preserves it).
+  6. Narrow viewport on Invoice page → no truncate (variant
+     ="invoice" preserves the no-truncate behavior).
+
+#### Notes consolidated — `EntityNotesSection` + `EntityNoteDialog` replace per-entity sections (2026-05-02, Audit #2 PR 3C)
+
+PR 3C completes the canonical-notes consolidation flagged in Audit #2.
+The three surfaces (Job / Invoice / Quote detail) now share one
+component pair — `EntityNotesSection` + `EntityNoteDialog` — instead
+of two parallel implementations (`JobNotesSection` shared by Job +
+Invoice, plus a parallel `QuoteNotesSection`). Quote notes gain
+attachment support end-to-end via the same R2 upload pipeline that
+job/client notes use.
+
+**Backend (`quote_note` upload type):**
+- **`server/routes/fileUploads.ts`** — added `"quote_note"` to the
+  `ENTITY_TYPES` enum (used by the upload-request + finalize Zod
+  validators).
+- **`server/services/fileUploadService.ts`** —
+  - imports `quoteNotes`, `quoteNoteAttachments`, `quotes` from the
+    canonical schema,
+  - added `"quote_note"` to the `FileEntityType` union,
+  - added `case "quote_note":` to `resolveCategory()` so quote-note
+    files categorize the same as job/client notes (`note_image` /
+    `note_pdf` by mime),
+  - added `resolveQuoteNote()` — one-for-one mirror of
+    `resolveJobNote()` walking `quote_notes → quotes` instead of
+    `job_notes → jobs`, with the same defensive parent-tenant
+    check,
+  - added a `quote_note: { resolve, buildObjectKey, ensureAttachment,
+    detachByFileId }` entry to `ENTITY_ADAPTERS`. Object-key format
+    is `tenants/${tenantId}/quotes/${quoteId}/notes/${noteId}/${fileId}/${filename}`
+    (mirrors the job version with `quotes` in place of `jobs`).
+    Writes through to `quote_note_attachments` (table added in PR 3A).
+- **`client/src/hooks/useFileUpload.ts`** — frontend `FileEntityType`
+  union mirrors the backend addition. Without this, the dialog's
+  `upload({ entityType: "quote_note", entityId })` call would have
+  type-failed.
+
+**Canonical frontend components:**
+- **`client/src/components/notes/EntityNoteDialog.tsx`** —
+  - `fileUploadEntityFor("quote")` now returns `"quote_note"`
+    (was `null` in PR 3B as a placeholder),
+  - `activityLogEntityFor("quote")` now returns `"quote"` (the
+    activity store's `ActivityEntityType` union already includes
+    `"quote"`, no store change needed),
+  - PR 3B's `if (uploadEntity)` gate around the staged-file UI
+    removed; every entity type now has a backend adapter,
+  - PR 3B's `if (activityEntity)` null-guards around `logActivity`
+    calls removed for the same reason.
+- **`client/src/components/notes/EntityNotesSection.tsx`** — new
+  canonical section. Parameterized by
+  `entityType: "job" | "invoice" | "quote"` + `entityId`. Internal
+  `resolveReadEndpoint()` maps to the right read URL + cache key.
+  Internal `isOwnedRowEditable()` decides which rows are editable
+  per surface (`origin === "quote"` for quote; `origin === "job"`
+  for job + invoice). Invoice surface accepts a `writeEntityId`
+  (the underlying jobId) which is passed to the dialog as
+  `entityId` — preserves the prior contract where invoice notes
+  WRITE through `/api/jobs/:jobId/notes` while READING from
+  `/api/invoices/:invoiceId/notes`. The invoice read-cache key is
+  passed through as `extraInvalidationKey` so cross-key refresh
+  works exactly as it did before. Inherited client-note rows
+  (`origin: "client_*"`) render with a chip and stay read-only on
+  every surface.
+
+**Caller migrations:**
+- **`client/src/pages/JobDetailPage.tsx`** —
+  `<JobNotesSection jobId={…}>` → `<EntityNotesSection entityType="job" entityId={…}>`.
+- **`client/src/pages/InvoiceDetailPage.tsx`** —
+  `<JobNotesSection jobId={…} source="invoice" invoiceId={…}>` →
+  `<EntityNotesSection entityType="invoice" entityId={invoiceId} writeEntityId={jobId}>`.
+- **`client/src/pages/QuoteDetailPage.tsx`** —
+  `<QuoteNotesSection quoteId={…}>` →
+  `<EntityNotesSection entityType="quote" entityId={…}>`.
+
+**Files deleted (3):**
+- `client/src/components/JobNotesSection.tsx` — caller list was
+  Job + Invoice detail pages, both migrated.
+- `client/src/components/QuoteNotesSection.tsx` — caller list was
+  Quote detail, migrated.
+- `client/src/components/JobNoteDialog.tsx` — the back-compat shim
+  added in PR 3B. Confirmed zero remaining `import JobNoteDialog`
+  callers (`grep -rnE "^import.*JobNoteDialog" client/src/` →
+  zero hits) before deletion.
+
+**Behavior preserved (job + invoice surfaces):** byte-equivalent.
+Same endpoints (`/api/jobs/:jobId/notes` for writes;
+`/api/jobs/:jobId/notes` and `/api/invoices/:invoiceId/notes` for
+reads), same `useFileUpload({ entityType: "job_note" })`, same
+activity-log entries (still `entityType="job"` against the
+underlying `jobId` for both surfaces — preserved the pre-existing
+quirk where invoice surface logs against the job).
+
+**Behavior CHANGED (quote surface):**
+1. **Quote attachments now work end-to-end.** `EntityNoteDialog`
+   stages files, the `useFileUpload` hook calls
+   `POST /api/files/upload-request` with
+   `entityType: "quote_note"`, the backend adapter walks
+   `quoteNotes → quotes` for tenant ownership, builds an R2 key
+   under `tenants/${tenantId}/quotes/${quoteId}/notes/${noteId}/`,
+   and on finalize inserts a `quote_note_attachments` row. Detach
+   works the same way (the PR 3A `DELETE
+   /api/quotes/:id/notes/:noteId/attachments/:attachmentId` route
+   is now used by the dialog's per-attachment remove + bulk
+   "Remove all" actions).
+2. **Quote notes now log activity.** Adding / editing a quote note
+   emits a `logActivity({ entityType: "quote", entityId: quoteId,
+   label: "Added Note" | "Edited Note", … })` event. The previous
+   `QuoteNotesSection` did NOT log activity. The activity store's
+   `ActivityEntityType` union already accepted `"quote"`; no
+   downstream consumer is required to opt in (the dashboard
+   activity card already supported the type per its existing union
+   `"job" | "invoice" | "quote"`). If any surface was relying on
+   "quote notes never appear in activity feeds" that contract is
+   now gone.
+3. **Quote inherited client notes still read-only.** PR 3A's GET
+   route already returns the merged feed with `origin: "client_*"`
+   rows; `isOwnedRowEditable()` keeps them non-clickable. No
+   regression here.
+
+**Verification:**
+- `npx tsc --noEmit` clean.
+- `npm run build` clean.
+- `grep -rnE "^import.*JobNotesSection|^import.*QuoteNotesSection|^import.*JobNoteDialog" client/src/`
+  → zero hits (no live imports remain; only historical comments).
+- Manual smoke-test plan (for product/QA):
+  1. Job Detail → add note with image attachment → save → thumbnail
+     renders. Edit, attach a 2nd file, remove the 1st via per-item
+     X. Delete note. Activity log shows "Added Note" / "Edited
+     Note" against the job.
+  2. Invoice Detail → add note, edit, delete. Verify both the
+     `/api/invoices/:id/notes` and `/api/jobs/:jobId/notes` caches
+     refresh.
+  3. Quote Detail → add note with image attachment → save →
+     thumbnail renders. Edit, attach a 2nd file, remove the 1st.
+     Detach via per-attachment X works. Delete the note (cascades
+     attachments). **Activity log now shows "Added Note" against
+     the quote** — confirm with product this is the desired
+     behavior (flagged in this entry as a NEW behavior).
+  4. Quote Detail → confirm inherited Location / Client / Company
+     notes still render read-only with the origin chip; clicking
+     them does not open the dialog.
+
+**Risks / known follow-ups:**
+- Stale comments in `JobDetailPage.tsx`, `InvoiceDetailPage.tsx`,
+  `QuoteDetailPage.tsx`, and `EquipmentDetailModal.tsx` still
+  reference the deleted `JobNotesSection` / `QuoteNotesSection` /
+  `JobNoteDialog` names. They're documentation-only — no code
+  references — and were left intact per "do not refactor unrelated
+  code." Easy follow-up: a tiny comment-only scrub PR (same
+  pattern as the dashboard-cleanup follow-up).
+- The activity-card UI on dashboards already supports
+  `entityType: "quote"` — no UI change is required to render
+  quote-note activity events.
+
+#### Notes dialog parameterized — `EntityNoteDialog` extracted from `JobNoteDialog` (2026-05-02, Audit #2 PR 3B)
+
+Audit #2's notes consolidation plan extracts a single canonical
+`EntityNoteDialog` that future `EntityNotesSection` (PR 3C) will mount
+for job / invoice / quote surfaces with one component instead of
+three parallel implementations. PR 3B is the dialog-extraction step:
+behavior is byte-equivalent for the existing job + invoice surfaces,
+quote support is in the API but unused (no consumer added in this
+PR; that's PR 3C).
+
+**Files created:**
+- `client/src/components/notes/EntityNoteDialog.tsx` — parameterized
+  dialog, ~640 lines. Discriminator `entityType: "job" | "invoice" |
+  "quote"` drives:
+  - **Endpoint resolver** (`resolveEndpoints`) — `"job"` and
+    `"invoice"` both write through `/api/jobs/:entityId/notes`
+    (invoice notes have always been stored under the underlying
+    job; the prior `JobNoteDialog` already worked this way),
+    `"quote"` writes through `/api/quotes/:entityId/notes` (added
+    in PR 3A).
+  - **File-upload entityType** (`fileUploadEntityFor`) — maps to
+    the canonical `FileEntityType` used by `useFileUpload`. `"job"`
+    and `"invoice"` resolve to `"job_note"` (unchanged from prior
+    behavior). `"quote"` returns `null` because the backend
+    `FileEntityType` enum doesn't yet include `"quote_note"`; the
+    staged-file UI is hidden for quote until a future backend
+    follow-up adds the enum value. When that lands, the helper
+    flips a single string and quote uploads start working — no
+    other change needed in the dialog.
+  - **Activity-log entity** (`activityLogEntityFor`) — preserves
+    pre-existing JobNoteDialog behavior: invoice surface logs
+    activity against the underlying JOB (not the invoice), so both
+    `"job"` and `"invoice"` log as `"job"`. Quote returns `null` to
+    skip activity logging entirely (matches current quote behavior
+    — `QuoteNotesSection` doesn't log activity today).
+  - **Read-cache invalidation key** built from the same resolver;
+    parents continue to pass `extraInvalidationKey` for the invoice
+    surface's `/api/invoices/:id/notes` cache.
+
+  All other UI / state / mutation logic is byte-equivalent to the
+  prior `JobNoteDialog` — same staged-file flow, same per-attachment
+  detach + bulk-detach, same delete-note confirmation dialog, same
+  toasts, same `data-testid`s.
+
+**Files changed:**
+- `client/src/components/JobNoteDialog.tsx` — collapsed from 660
+  lines to a 62-line back-compat shim that delegates to
+  `EntityNoteDialog` with `entityType="job"`. The pre-existing
+  `ExistingJobNote` type is kept as an alias of the new
+  `ExistingEntityNote` (same shape) so external imports continue
+  to type-check. Spec said "do not delete yet" — the file stays so
+  any future caller that imports `JobNoteDialog` still works
+  unchanged. PR 3C will delete this shim alongside
+  `JobNotesSection.tsx`.
+- `client/src/components/JobNotesSection.tsx` — swapped the
+  `JobNoteDialog` import + mount for `EntityNoteDialog` directly.
+  The `entityType` prop is computed from the section's existing
+  `source` flag (`source === "invoice"` ? `"invoice"` : `"job"`),
+  preserving the current job + invoice behavior. `entityId` is
+  still `jobId` (the underlying job id, exactly as
+  `JobNoteDialog` used to receive). `extraInvalidationKey` is
+  forwarded unchanged.
+
+**Files NOT changed:**
+- `client/src/components/QuoteNotesSection.tsx` — zero diff. Quote
+  surface still uses its own inline dialog. PR 3C will replace
+  this section with the consolidated `EntityNotesSection` (which
+  will mount `EntityNoteDialog` with `entityType="quote"`).
+- `client/src/components/attachments/NoteAttachmentStrip.tsx` —
+  unchanged. Already canonical, mounted by all three notes
+  surfaces.
+- All backend route + storage code — unchanged.
+
+**Behavior notes:**
+- Job surface (Job Detail right-rail): byte-equivalent. Same
+  endpoints, same `useFileUpload({entityType: "job_note"})`, same
+  activity-log entries.
+- Invoice surface (Invoice Detail right-rail, mounted via
+  `JobNotesSection source="invoice"`): byte-equivalent. Same
+  write path through `/api/jobs/:jobId/notes`, same
+  `extraInvalidationKey` for the invoice-notes cache, same
+  activity-log entries (still logged as
+  `entityType="job"` against `jobId`, unchanged).
+- Quote: no consumer in this PR. The dialog's quote branch is
+  exercised only by future `EntityNotesSection` callers. Until
+  then no quote-attachment upload path exists from the UI; PR 3A
+  added the backend routes but the file-upload `FileEntityType`
+  enum still needs `"quote_note"` before staged-file uploads can
+  succeed. This was a known follow-up flagged in PR 3A's
+  CHANGELOG entry.
+
+**Verification:**
+- `npx tsc --noEmit` clean.
+- `npm run build` clean (no migrations pending — PR 3A's already
+  applied).
+- `git diff --stat`: `JobNoteDialog.tsx` -598 lines (660 → 62);
+  `JobNotesSection.tsx` ±28 lines (import + mount swap +
+  comments). `QuoteNotesSection.tsx` zero diff.
+- Manual smoke-test plan (for product/QA before PR 3C):
+  1. Job Detail → right-rail "Add Note" → text + image attachment
+     → save. Note appears, attachment thumbnail renders.
+  2. Click the saved note → edit text, attach a second file,
+     remove the first via per-item X. Save. Both changes persist.
+  3. Click the saved note → "Delete note" → confirm. Note is gone,
+     activity log shows "Deleted Note" against the job (unchanged).
+  4. Invoice Detail → right-rail "Add Note" (mounted via
+     `JobNotesSection source="invoice"`) → save. Invoice notes
+     feed refreshes, job-notes cache also refreshes (cross-key
+     invalidation preserved).
+  5. Confirm Quote Detail right-rail still uses its own dialog
+     (unchanged in this PR).
+
+**Risks / follow-ups before PR 3C:**
+- Backend `FileEntityType` enum needs `"quote_note"` plus an
+  `ENTITY_ADAPTERS` entry that writes to `quote_note_attachments`
+  before quote staged-file uploads can succeed via this dialog.
+  Until then `EntityNoteDialog`'s quote branch displays existing
+  attachments + supports per-item / bulk detach (those use the
+  PR 3A routes), but the "Attach files" button is hidden.
+- No other behavior delta surfaced in tsc / build. The shim
+  preserves every existing import, so callers don't need to
+  migrate in lockstep.
+
+### Added
+
+#### Quote note attachments — backend prep for canonical-notes consolidation (2026-05-02, Audit #2 PR 3A)
+
+Audit #2 identified `JobNotesSection` and `QuoteNotesSection` as
+parallel implementations with three concrete divergences: (1) Quote
+backend had no attachment write/detach routes, (2) Quote used `PUT`
+where Job used `PATCH`, (3) Quote's create body shape was `{ text }`
+where Job used `{ noteText, attachmentFileIds }`. PR 3A is the
+backend prep step — frontend remains untouched and `QuoteNotesSection`
+keeps working as-is. The follow-up frontend pass (`EntityNoteDialog`
+extraction and `EntityNotesSection` consolidation) becomes a clean
+swap once these backend hooks land.
+
+**Schema (additive, no existing column changed):**
+- **New table** `quote_note_attachments` — join table between
+  `quote_notes` and `files`. Mirrors `job_note_attachments`
+  one-for-one (same column set, same FK cascades).
+- **`shared/schema.ts`** — added `quoteNoteAttachments` pgTable +
+  `QuoteNoteAttachment` type alongside the existing `quoteNotes`
+  table. The pre-existing comment "No attachments in this phase;
+  attachment parity with `jobNoteAttachments` is a separate,
+  additive follow-up" is the work that landed in PR 3A.
+- **Migration** `migrations/2026_05_02_quote_note_attachments.sql`
+  — `CREATE TABLE IF NOT EXISTS` + 2 lookup indexes (one on
+  `(note_id, company_id)`, one on `(file_id, company_id)`),
+  matching the `job_note_attachments` access pattern. Idempotent
+  by guards. Applied successfully via `npm run build`'s
+  `db:migrate` step (caught and applied by the canonical migrator).
+
+**New repository:**
+- **`server/storage/quoteNoteAttachments.ts`** —
+  `quoteNoteAttachmentRepository` with `listByNote`, `attach`,
+  `detach`. One-for-one mirror of
+  `server/storage/jobNoteAttachments.ts`. Same defensive checks
+  (tenant isolation, UUID validation, ownership verification on
+  both note and file before insert). Same R2 cleanup cascade on
+  detach via `services/fileUploadService.deleteFile()`. Any
+  divergence between the two repos would be a bug per the Audit
+  #2 plan.
+
+**Route changes (`server/routes/quotes.ts`):**
+
+- **GET `/api/quotes/:id/notes`** — owned-note rows now hydrate
+  `attachments[]` via `quoteNoteAttachmentRepository.listByNote`.
+  Inherited client notes already carried attachments; both branches
+  now produce a consistent shape (`id, noteId, fileId, originalName,
+  mimeType, size, createdAt`). N+1 read shape matches what
+  `JobNotesSection` consumes today, so the frontend renders both
+  sources uniformly.
+
+- **POST `/api/quotes/:id/notes`** — schema relaxed to accept BOTH
+  `{ text }` (legacy) AND `{ noteText, attachmentFileIds }`
+  (canonical). `noteText` wins when both are present. The
+  validator's `.refine(...)` enforces "at least one of the two is
+  non-empty after trim." Strict mode dropped so
+  `attachmentFileIds` doesn't trip an unknown-key error. Files are
+  linked through the canonical repo after the row insert; mirrors
+  `jobs.ts:1481-1488` exactly.
+
+- **PUT `/api/quotes/:id/notes/:noteId`** — preserved as a
+  back-compat alias. Schema relaxed to accept `{ text }` OR
+  `{ noteText }`; `noteText` wins.
+
+- **PATCH `/api/quotes/:id/notes/:noteId`** — added. Mirrors
+  `jobs.ts:1497`. Both PUT and PATCH share a single internal
+  handler (`updateQuoteNoteHandler`) so structural drift between
+  the two verbs is impossible.
+
+- **DELETE `/api/quotes/:id/notes/:noteId/attachments/:attachmentId`**
+  — added. Mirrors `jobs.ts:1518-1529`. Pre-detach guard verifies
+  the note belongs to the quote (and tenant) before calling the
+  repo's `detach`; the repo also gates by `companyId`. Cascade on
+  note delete still cleans up all attachments at once via the FK
+  `ON DELETE CASCADE` on `quote_note_attachments.note_id` — this
+  route is for removing a single file without touching the note.
+
+**Backward compatibility:**
+- Old POST body `{ text }` still accepted; all existing
+  `QuoteNotesSection` create calls continue to pass.
+- Old PUT route `PUT /api/quotes/:id/notes/:noteId` still alive and
+  accepts both body shapes; existing edit calls continue to pass.
+- Existing `quote_notes` table untouched. Existing `quoteNotes`
+  inserts continue to pass.
+- Response shape is purely additive: existing fields preserved;
+  `attachments[]` is new on owned notes (was already present on
+  inherited client notes, so frontend already knew how to render).
+- The frontend `QuoteNotesSection.tsx` was NOT modified. It will
+  continue to display attachments only on inherited client notes
+  (matches its current behavior). The owned-note attachment
+  display + attach/detach UI is the work of the upcoming
+  `EntityNoteDialog` / `EntityNotesSection` frontend consolidation
+  (Audit #2 follow-up PRs).
+
+**Files changed:**
+- `shared/schema.ts` — added `quoteNoteAttachments` pgTable +
+  `QuoteNoteAttachment` type. Updated the pre-existing comment to
+  reflect that the deferred attachment parity now exists.
+- `server/storage/quoteNoteAttachments.ts` — new file.
+- `server/routes/quotes.ts` — note schemas relaxed; GET hydrates
+  attachments; POST attaches files; PATCH alias added; DELETE
+  attachment route added.
+- `migrations/2026_05_02_quote_note_attachments.sql` — new file.
+
+**Verification:**
+- `npx tsc --noEmit` clean.
+- `npm run build` clean — and the migration was picked up + applied
+  in the same step (`Applying: 2026_05_02_quote_note_attachments.sql
+  OK`).
+- Greps confirm: POST accepts both `text` and `noteText`; PUT route
+  still exists; PATCH route added; DELETE attachment route added;
+  frontend `QuoteNotesSection.tsx` shows zero diff.
+
+**Manual / API smoke-test plan (for product/QA before frontend PR):**
+1. `POST /api/quotes/:id/notes` with old body `{ text: "old body test" }`
+   — should 201.
+2. `POST /api/quotes/:id/notes` with new body
+   `{ noteText: "new body test" }` — should 201.
+3. `POST /api/quotes/:id/notes` with new body
+   `{ noteText: "with files", attachmentFileIds: ["<existing-file-id>"] }`
+   — should 201, attachment appears on subsequent GET.
+4. `PUT /api/quotes/:id/notes/:noteId` with `{ text: "edit via put" }`
+   — should 200.
+5. `PATCH /api/quotes/:id/notes/:noteId` with
+   `{ noteText: "edit via patch" }` — should 200.
+6. `DELETE /api/quotes/:id/notes/:noteId/attachments/:attachmentId`
+   — should 200, attachment disappears from GET.
+7. `GET /api/quotes/:id/notes` — owned notes carry an `attachments[]`
+   array (empty for notes without attachments).
+
+**Follow-up risk before frontend consolidation:**
+- The repo's `detach` performs a best-effort R2 cleanup via dynamic
+  import of `fileUploadService.deleteFile`. Failure to delete the
+  R2 blob is swallowed via `.catch(() => {})` — same as job notes.
+  If product wants stricter cleanup semantics this is a separate
+  decision applying equally to both job + quote notes.
+- No realtime emit on quote-note mutations (jobs.ts has
+  `emitDispatch` calls; quotes don't broadcast over the dispatch
+  SSE stream). This is consistent with the current quote-notes
+  behavior — quote-detail surfaces don't subscribe to realtime
+  updates today. If realtime parity is desired later, add it as a
+  separate change rather than bundling with the consolidation PR.
+
+### Removed
+
+#### Send modal wrappers retired in favor of canonical SendCommunicationModal (2026-05-02, Audit #2 PR 2)
+
+Audit #2 confirmed `SendInvoiceModal`, `SendQuoteModal`, and
+`SendJobModal` are pure forwarding wrappers (each ~22 lines, no state,
+no effects, no entity-specific behavior — just hardcoded `entityType`
++ `title` props). All entity-typed branching lives in the shared
+`useSendCommunicationModal` hook (URL family per entity, invoice-only
+`attachPdf` + `attachmentFileIds` payload, invoice-only contact
+picker). Wrappers removed; callers now mount `SendCommunicationModal`
+directly.
+
+**Deleted (3 files):**
+- `client/src/components/communication/SendInvoiceModal.tsx`
+- `client/src/components/communication/SendQuoteModal.tsx`
+- `client/src/components/communication/SendJobModal.tsx`
+
+**Caller updates (3 files):**
+- `client/src/pages/JobDetailPage.tsx` — import + mount swap
+  (`<SendJobModal jobId=…>` →
+  `<SendCommunicationModal entityType="job" entityId={job.id} title="Send Email">`).
+- `client/src/pages/InvoiceDetailPage.tsx` — same shape with
+  `entityType="invoice"`, `title="Send Invoice"`.
+- `client/src/pages/QuoteDetailPage.tsx` — same shape with
+  `entityType="quote"`, `title="Send Quote"`.
+
+**Stale comment scrubs (in the same caller files):**
+- `InvoiceDetailPage.tsx:1018-1020,1824-1825` — comments mentioning
+  `<SendInvoiceModal>` rephrased to point at
+  `<SendCommunicationModal entityType="invoice">`.
+- `QuoteDetailPage.tsx:191-193,204-205` — same for quote comments.
+
+**Untouched per Audit #2 PR 2 rules:**
+- `SendCommunicationModal` body (the canonical modal) — no behavior
+  change.
+- `useSendCommunicationModal` hook — no logic change.
+- `BatchSendInvoicesModal` — separate batch orchestrator, preserved.
+- `SendPaymentLinkDialog` — separate portal magic-link flow,
+  preserved.
+- Email templates, recipient logic, payment links, view tracking —
+  zero changes; these all live below the wrapper layer.
+
+**Verification:**
+- `grep -rn "SendInvoiceModal\|SendQuoteModal\|SendJobModal"` →
+  remaining hits are explanatory comments documenting the deletion;
+  no live imports or JSX mounts.
+- `npx tsc --noEmit` clean.
+- `npm run build` clean.
+- Manual smoke-test plan (for product/QA):
+  1. JobDetailPage → "Send Email" overflow → modal opens, recipients
+     load, send succeeds.
+  2. InvoiceDetailPage → primary "Send invoice" CTA → modal opens
+     with attach-PDF toggle + image attachments + contact picker
+     (invoice-only flags) → send succeeds, invoice list refreshes.
+  3. QuoteDetailPage → "Send" → modal opens, send succeeds, quote
+     list refreshes.
+
+### Fixed
+
+#### Create Similar Job — broken `/jobs/new?cloneFrom=…` navigation replaced with canonical CreateNewDialog flow (2026-05-02, Audit #2 PR 1)
+
+The "Create Similar Job" overflow-menu item on Job Detail navigated to
+`setLocation('/jobs/new?cloneFrom=' + job.id)`. That route is not
+registered in `client/src/App.tsx` (only `/jobs` and `/jobs/:id` exist),
+so the click landed on NotFound. No `cloneFrom` query-param consumer
+exists anywhere; no `cloneJob` backend endpoint exists. The feature was
+shipped as a UI affordance but never wired end-to-end (per Audit #2,
+the migration that retired `/jobs/new` in favor of `QuickAddJobDialog`
+overlooked this menu item).
+
+PR 1 fixes the feature using the canonical create surface — no new
+route, no new backend endpoint, no new page.
+
+**Behavior contract (cloned vs preserved):**
+
+| Field | Cloned? | Note |
+|---|---|---|
+| `locationId` (customer + service location) | yes | Read from source job |
+| `summary` | yes | |
+| `description` | yes | |
+| Schedule (date / time / duration) | NO | User schedules the new job explicitly |
+| Assigned technicians / team | NO | Empty by default |
+| Job status | NO | New job starts in default state via `POST /api/jobs` |
+| Job services / line items | NO | QuickAddJobDialog's edit-mode prefill doesn't surface them today; out of PR 1 scope |
+| Job equipment | NO | Same — not surfaced by the dialog's prefill path |
+| Recurring config | NO | Recurring is a separate decision per new job |
+| Invoice / payment links | NO | New job has none |
+| Lifecycle history (close, archive, holds) | NO | New job is fresh |
+
+Save still flows through the existing `POST /api/jobs` mutation
+inside `QuickAddJobDialog` — no new endpoint or write path.
+
+**Files changed:**
+- `client/src/components/QuickAddJobDialog.tsx` — added optional
+  `cloneFromJobId?: string` prop. When set (and `editJob` is null),
+  a TanStack Query at key `["/api/jobs", "clone-source", id]` fetches
+  `GET /api/jobs/:id`. The existing prefill `useEffect` gains a clone
+  branch that seeds `locationId`, `summary`, `description` only.
+  60-second `staleTime` keeps the user's just-viewed job hot.
+- `client/src/components/CreateNewDialog.tsx` — added optional
+  `jobInitialCloneFromJobId?: string` prop, mirrors the existing
+  `jobInitialSchedule` prop pattern. Pure pass-through to
+  `<QuickAddJobDialog cloneFromJobId={…}>`.
+- `client/src/pages/JobDetailPage.tsx` —
+  - imported `CreateNewDialog`,
+  - added `createSimilarOpen` + `createSimilarFromId` state (cleared
+    when the dialog closes so the next "+ Create" starts clean),
+  - replaced the `setLocation` in the overflow-menu handler with
+    `setCreateSimilarFromId(job.id); setCreateSimilarOpen(true)`,
+  - mounted `<CreateNewDialog defaultTab="job" jobInitialCloneFromJobId={…}>`
+    near the other dialog mounts.
+- `client/src/components/JobHeaderCard.tsx` — added optional
+  `onCreateSimilar?: (sourceJobId: string) => void` prop. Replaced the
+  internal `setLocation('/jobs/new?cloneFrom=…')` with
+  `onCreateSimilar?.(job.id)`. When the prop is omitted, the menu
+  item is a silent no-op rather than a 404. JobDetailPage wires the
+  callback even though the hidden mount has `showActions={false}`,
+  so contract stays consistent if a future surface re-enables the
+  menu.
+
+**Verification:**
+- `grep -rn "/jobs/new"` → only explanatory comments referencing the
+  prior bug remain; no live navigation.
+- `grep -rn "cloneFrom"` (excluding the new `cloneFromJobId` prop) →
+  only the same explanatory comments.
+- `npx tsc --noEmit` clean.
+- `npm run build` clean.
+
+**Manual smoke-test plan (not run as part of the PR):**
+1. Open an existing job at `/jobs/:id`.
+2. Click the overflow menu → "Create Similar Job."
+3. `CreateNewDialog` opens on the Job tab; location, summary,
+   description are prefilled from the source.
+4. Schedule fields are empty (Unscheduled by default), no
+   technicians selected, recurring off.
+5. Save → new job is created via `POST /api/jobs` and the user's
+   jobs feed invalidates. Navigation back to the new job is
+   intentionally NOT performed (matches the rest of the
+   CreateNewDialog flows: close, refresh, stay).
+
+**Out of scope (deliberately deferred):**
+- Cloning services / line items / equipment from the source job.
+  The dialog's edit-mode prefill doesn't surface these today, so
+  adding them would be net-new behavior, not a fix. Tracked as a
+  follow-up if product wants richer parity with Jobber's "duplicate
+  job."
+- Retiring the `JobHeaderCard.tsx` controller-as-component pattern
+  (Audit #2 separate finding). Untouched by PR 1.
+
+### Removed
+
+#### Dead-code cleanup — operations-dashboard chain + replaced legacy components (2026-05-01)
+
+End-of-week refactor audit (Audit #1) approved the following dead-file
+cleanup. Strictly removal + stale-comment scrub; no behavior change.
+
+**Frontend files deleted (7):**
+- `client/src/pages/Dashboard.tsx` — Operations dashboard, retired
+  2026-04-26 when `/` and `/financials` both started rendering the
+  canonical Business Dashboard (`FinancialDashboard`). No callers.
+- `client/src/components/TodaysOperationsCard.tsx` — only consumer was
+  the deleted `Dashboard.tsx`.
+- `client/src/components/dashboard/DashboardViewToggle.tsx` — only
+  consumer was the deleted `Dashboard.tsx`. The Ops/Financial toggle
+  was removed when the two surfaces consolidated.
+- `client/src/components/MidnightRolloverCard.tsx` — only consumer was
+  the deleted `Dashboard.tsx`. The tech-app's
+  `MidnightRolloverBanner` is a separate live component, untouched.
+- `client/src/components/JobExpensesCard.tsx` — `JobDetailPage`
+  renders expenses inline since the 2026-04-27 mock-fidelity rebuild;
+  zero `import` callers (only comment mentions).
+- `client/src/components/JobInvoicesCard.tsx` — same: inline rendering
+  on `JobDetailPage`; zero `import` callers.
+- `client/src/components/InvoiceHeaderCard.tsx` — replaced by the
+  in-page `InvoiceMetaCard` in the 2026-04-27 Invoice Detail
+  redesign; zero `import` callers.
+
+**Stale comment scrubs (3 files, only the explicit comment blocks
+referencing deleted files):**
+- `client/src/App.tsx` (lines 16–19) — removed the 2026-04-26 comment
+  flagging `Dashboard.tsx` / `TodaysOperationsCard.tsx` /
+  `DashboardViewToggle.tsx` for follow-up deletion.
+- `client/src/pages/JobDetailPage.tsx` — tightened the expense-totals
+  comment block (~line 757) and the plural-invoice query-key comment
+  (~line 1057) so they reference the canonical query keys directly
+  instead of the deleted card files.
+- `client/src/pages/InvoiceDetailPage.tsx` — tightened the redesign
+  comment block (~line 87) so it no longer narrates the
+  `InvoiceHeaderCard` → `InvoiceMetaCard` replacement.
+
+**Backend — `timeAlertsWorker.ts` deletion BLOCKED.** Audit #1 flagged
+`server/services/timeAlertsWorker.ts` as "DEAD ON ARRIVAL" because
+no `startTimeAlertsWorker()` setInterval call exists in
+`server/index.ts`. Re-verification before deletion found that the
+worker's exported functions (`runTimeAlertsWorker`,
+`runTimeAlertsForCompany`, `getAlertThresholds`,
+`runWeeklyDigestWorker`) are imported and invoked on-demand by
+two LIVE route handlers:
+
+- `server/routes/admin.ts:21` (lines 613, 615, 651, 668)
+- `server/routes/timeAlerts.ts:17–20` (lines 98, 237, 239)
+
+The `/api/time-alerts/snoozes` and `/api/time-alerts/snooze`
+endpoints are called by `client/src/pages/NotificationsPage.tsx`,
+confirming the route is reachable from the frontend. The audit
+conflated "no autonomous setInterval startup" with "the file is
+dead." It's a manual-trigger architecture, not dead code. The user's
+explicit cleanup rule ("If timeAlertQueries.ts or timeAlerts routes
+are actively used by frontend/API, do not delete them in this pass")
+applies. **Worker file preserved.**
+
+**Verification:**
+- `npx tsc --noEmit` clean.
+- `npm run build` clean.
+- Final reference sweep — remaining hits are all in files OUTSIDE
+  the explicit scrub list (per the prompt's "Do not rewrite
+  unrelated comments" rule):
+  - `client/src/pages/FinancialDashboard.tsx:48,79` — historical
+    comments; no broken imports. **Do not touch FinancialDashboard
+    unless an import breaks.**
+  - `client/src/pages/DispatchPreview.tsx:122,136` — comments
+    referencing `DashboardViewToggle.tsx` for the
+    `DASHBOARD_VIEW_KEY` localStorage shape. Not in scrub list.
+  - `client/src/lib/formatters.ts:16` — JSDoc example mentioning
+    `JobExpensesCard.tsx` as a money-display consumer. Not in
+    scrub list.
+  - `client/src/components/QuoteHeaderCard.tsx:4,158,195` —
+    structural-mirror comments noting `InvoiceHeaderCard`
+    parallels. Not in scrub list.
+  - `server/storage/invoices.ts:2190` — `canDelete` eligibility
+    comment cross-ref to the UI gate that lived in
+    `InvoiceHeaderCard.tsx`. Not in scrub list.
+  - `server/storage/timeAlertQueries.ts:4,7` — JSDoc references
+    to `timeAlertsWorker` (preserved alongside the worker).
+
+**Follow-up candidates (NOT done in this pass):**
+1. `FinancialDashboard.tsx` historical comments (lines 48, 79) —
+   sweep when next visiting that file.
+2. `DispatchPreview.tsx` localStorage-shape comments — same.
+3. `formatters.ts` JSDoc consumer list — refresh when next touching
+   the helper.
+4. `QuoteHeaderCard.tsx` `InvoiceHeaderCard`-mirror comments —
+   either replace with `InvoiceMetaCard` references or rephrase
+   structurally.
+5. `server/storage/invoices.ts` `InvoiceHeaderCard.tsx` cross-ref —
+   point at `InvoiceMetaCard` location instead.
+6. **`timeAlertsWorker` autonomous trigger** — separate question:
+   is the manual-trigger-only architecture intentional, or should
+   `startTimeAlertsWorker()` be wired into `server/index.ts`
+   alongside `startTrialExpireWorker` and
+   `startInvoiceReminderWorker`? Decision belongs to a separate
+   PR; this pass strictly removed dead files.
+
+#### InvoiceDetailPage layout restructured to mirror JobDetailPage (2026-05-01, follow-up 2)
+
+The previous spacing pass (`py-4 → py-2`, action header `mb-3` removed)
+reduced the gap below the invoice action bar but the page still drifted
+from `JobDetailPage` because it used a single combined wrapper:
+
+```
+<div bg-app-bg>
+  <div px-4 lg:px-6 py-2>          ← single wrapper for action + body
+    <div bg-app-bg/95 px-1 py-1.5> ← action header (inset frosted bar)
+      ...
+    </div>
+    <div className="grid ...">     ← body grid (no own wrapper)
+      ...
+    </div>
+  </div>
+</div>
+```
+
+This produced ~14px above the action bar, ~6px below it, and only 8px
+below the body grid. `JobDetailPage` uses two sibling wrappers
+(`<header>` + body `<div>`) producing ~8px / ~8px / ~16px.
+
+Restructured `InvoiceDetailPage` to match Job's structure exactly:
+
+```
+<div bg-app-bg>
+  <header bg-app-bg/95>                                  ← frosted bar full-width
+    <div px-4 lg:px-6 py-2 flex items-center justify-between gap-3>
+      action content
+    </div>
+  </header>
+
+  <div px-4 lg:px-6 pt-0 pb-4>                            ← matches Job's body wrapper
+    <div className="grid ...">
+      ...
+    </div>
+  </div>
+</div>
+```
+
+Result:
+- Above action bar: ~8px (matches Job).
+- Between action bar and first card: 8px (action `py-2` bottom) + 0px
+  (body `pt-0`) = **8px**, matches Job.
+- Below body grid: 16px (`pb-4`), matches Job.
+- The frosted-edge `bg-app-bg/95` tint now spans full viewport width
+  on the `<header>` element instead of being inset by `px-1` — a
+  more standard scroll-edge bar pattern. No new spacing or new
+  tokens were introduced; only existing classes from Job's pattern
+  were applied.
+
+**Files changed:**
+- `client/src/pages/InvoiceDetailPage.tsx` — outer combined wrapper
+  replaced by `<header>` + sibling body `<div>`. Inner action div
+  now `px-4 lg:px-6 py-2 flex items-center justify-between gap-3`
+  (was `bg-app-bg/95 px-1 py-1.5 flex …`). The frosted tint moved
+  to the `<header>` parent. `data-testid="invoice-action-header"`
+  preserved on the inner action div so existing selectors keep
+  working; new `data-testid="invoice-top-bar"` added on the
+  `<header>` element. Stale 2026-04-29 / 2026-05-01 spacing comments
+  cleaned up alongside the restructure since they referenced the
+  prior `py-4` / `mb-3` / `py-1.5` geometry that no longer exists.
+
+**Final spacing classes (both pages):**
+
+| Slot | Job | Invoice |
+|---|---|---|
+| Outer page | `<div className="bg-app-bg">` | `<div className="bg-app-bg">` |
+| Action shell | `<header className="bg-transparent">` | `<header className="bg-app-bg/95">` |
+| Action inner | `<div className="px-4 lg:px-6 py-2 flex items-center justify-end gap-2 flex-wrap">` | `<div className="px-4 lg:px-6 py-2 flex items-center justify-between gap-3">` |
+| Body wrapper | `<div className="px-4 lg:px-6 pt-0 pb-4">` | `<div className="px-4 lg:px-6 pt-0 pb-4">` |
+
+Differences are intentional: Job's action bar is right-aligned
+actions only (`justify-end gap-2 flex-wrap`); Invoice's has a status
+pill on the left + actions on the right (`justify-between gap-3`).
+The frosted-tint on Invoice is a deliberate scroll-edge polish that
+Job doesn't need. The padding values that drive the spacing
+(`px-4 lg:px-6 py-2` / `pt-0 pb-4`) are identical.
+
+**Verification:**
+- `npx tsc --noEmit` clean.
+- `npm run build` clean.
+- Visual: Invoice action-bar → first-card gap matches Job. No extra
+  top/bottom padding remains unique to Invoice. Frosted bar still
+  visible on Invoice (now full-width).
+
+**No shared layout component extracted.** Both pages were already
+inside the app shell's `<main>` width; introducing a
+`<DetailPageHeader>` wrapper for two consumers is more abstraction
+than the divergence justifies right now. If a third detail page
+adopts the same pattern, lifting both into a shared shell is a
+clean follow-up.
+
+#### Detail-page header parity — invoice top spacing + job meta-row typography + invoice # label (2026-05-01, follow-up)
+
+Three lingering inconsistencies between `InvoiceDetailPage` and
+`JobDetailPage` after the same-day Phase C migration:
+
+1. **Top spacing.** `InvoiceDetailPage` used `py-4` on the outer
+   wrapper plus `mb-3` on the action header → ~18px gap below the
+   action bar; `JobDetailPage`'s tighter `py-2 / pt-0` scaffold
+   produced ~8px. Fix on the invoice side: `py-4` → `py-2` and
+   `mb-3` → none. Gap collapses to ~6px (the action header's own
+   `py-1.5` bottom), aligned with Job. No new spacing introduced;
+   only existing values reduced.
+2. **Meta-row value sizes mismatched.** `InvoiceDetailPage`'s
+   canonical `MetaRow` value uses `text-row text-text-primary`
+   (15/22 sans). `JobDetailPage`'s right-column meta values used
+   `text-caption font-mono tabular-nums` (14px, mono, tabular) on
+   Job # and Invoice and `text-caption font-medium` on Scheduled.
+   All three now use plain `text-row text-text-primary` — labels
+   stay at `text-caption` (14px), values at `text-row` (15px),
+   matching the invoice page exactly. The `font-mono tabular-nums`
+   mixin and `font-medium` weight were dropped to match the
+   invoice's plain-sans value typography.
+3. **Invoice # label/value split.** `JobDetailPage`'s Invoice row
+   rendered as label `Invoice` + value `#1179`. The `#` belongs to
+   the label per the InvoiceDetailPage canonical pattern (`MetaRow
+   label="Invoice #"`). Label updated to `Invoice #`; value renders
+   the plain number. Link target (`/invoices/${inv.id}`) is the
+   invoice UUID, not the display number, so navigation is
+   unaffected.
+
+**Files changed:**
+- `client/src/pages/InvoiceDetailPage.tsx` — outer wrapper `py-4`
+  → `py-2` (line ~1945); action header `mb-3` removed (line ~1964).
+- `client/src/pages/JobDetailPage.tsx` — Job # input + read-mode
+  value: `text-caption font-mono tabular-nums` → `text-row`.
+  Scheduled value: `text-caption font-medium` → `text-row`; empty
+  state: `text-caption text-text-disabled` → `text-row text-text-disabled`.
+  Invoice row: label `Invoice` → `Invoice #`; value text dropped
+  the `#` prefix; value class
+  `text-caption font-mono tabular-nums` → `text-row`; empty state
+  matched.
+
+**Hierarchy preserved:** labels remain at `text-caption` (smaller),
+values at `text-row` (larger), per the design-system contract. No
+unrelated components touched. No new tokens introduced; both pages
+now read from the same canonical `text-caption` / `text-row`
+combination.
+
+**Verification:**
+- `npx tsc --noEmit` clean.
+- Action-bar → first-card gap on `InvoiceDetailPage` matches
+  `JobDetailPage` (~6-8px each).
+- Invoice # row on `JobDetailPage` reads `Invoice #` / `1179`
+  (matches `InvoiceDetailPage`'s label/value split).
+- Job # / Scheduled / Invoice values on `JobDetailPage` render at
+  the same size + weight as `InvoiceDetailPage`'s `MetaRow` values.
+
+#### Typography Phase C — canonical tokens bumped to detail-page scale; InvoiceMetaCard migrated (2026-05-01)
+
+The Phase A canonical typography tokens were sized against an implicit
+16px html root, but the project's actual root is 19px (set in
+`client/src/index.css`). This made canonical-token consumers (Job
+detail, Job/Invoice/Lead/Quote list pages, Operations + Financial
+dashboards, `ui/list-surface` primitives) read visibly smaller than
+legacy-class consumers (`InvoiceDetailPage::InvoiceMetaCard` used
+`text-3xl` for the H1 and `text-xs` for the meta rows — those render
+~17% larger than the equivalent canonical tokens at the 19px root).
+
+Phase C raises every token by ~15-18% so:
+- Existing canonical consumers automatically scale up to match the
+  visual scale users were previously getting from `InvoiceMetaCard`'s
+  legacy classes.
+- `InvoiceDetailPage::InvoiceMetaCard` migrates to canonical tokens
+  with near-zero visible delta.
+
+**Token sizes (`tailwind.config.ts`, fontSize):**
+
+| Token | Before | After | Δ |
+|---|---|---|---|
+| `display` | 28 / 32 / 700 | **32 / 40 / 700** | +14% |
+| `page-title` | 22 / 28 / 600 | **30 / 36 / 700** | +36% size, +1 weight step |
+| `section-title` | 16 / 22 / 600 | **18 / 24 / 600** | +12% |
+| `subhead` | 14 / 20 / 500 | **16 / 22 / 500** | +14% |
+| `body` | 14 / 20 | **15 / 22** | +7% |
+| `row` | 13 / 18 | **15 / 22** | +15% |
+| `row-emphasis` | 13 / 18 / 500 | **15 / 22 / 500** | +15% |
+| `caption` | 12 / 16 | **14 / 20** | +17% |
+| `label` | 11 / 14 / 500 / 0.04em | **13 / 16 / 500 / 0.04em** | +18% |
+| `helper` | 11 / 14 | **13 / 16** | +18% |
+
+Token names and tuple shape are unchanged. `text-label` continues to
+apply `text-transform: uppercase` via the `@layer components` rule in
+`client/src/index.css`.
+
+**`page-title` weight bump (600 → 700):** `JobDetailPage` and
+`Quotes` / `Jobs` / `Leads` / `InvoicesListPage` headers explicitly
+combine `text-page-title` with `font-bold` already, so the new token
+default matches the existing override. `PMWorkspacePage` line 1421 +
+`Jobs` line 415 + `InvoicesListPage` line 264 + `Quotes` line 172 +
+`LeadsPage` line 119 use `text-page-title font-semibold` — those now
+render at 700 instead of 600 (visible weight step). Trade-off
+accepted to keep canonical tokens self-contained; consumers who want
+600 explicitly can add `font-semibold` after migration if they
+disagree.
+
+**Files changed:**
+
+- **`tailwind.config.ts`** — fontSize map bumped per the table above
+  (lines 45–58). Inline comments document Phase C rationale.
+- **`client/src/pages/InvoiceDetailPage.tsx`** —
+  `InvoiceMetaCard` migrated from legacy classes to canonical tokens:
+  - `META_LABEL_CLASS` (line 196):
+    `text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500`
+    → `text-label uppercase text-text-muted`.
+  - Customer H1 (line 337): `text-3xl font-bold tracking-tight
+    text-slate-900` → `text-page-title tracking-tight
+    text-text-primary`.
+  - Billing/Service Address body lines: `text-xs text-slate-700` →
+    `text-row text-text-secondary`. Location-name primary identifier:
+    `text-xs font-semibold text-slate-900` →
+    `text-row-emphasis text-text-primary`.
+  - `MetaRow` label/value: `text-xs text-slate-500` /
+    `text-xs text-slate-900` → `text-caption text-text-muted` /
+    `text-row text-text-primary`.
+  - Description label: `text-xs uppercase tracking-wide text-slate-500`
+    → `text-label uppercase text-text-muted`.
+  - Description body: `text-[13px] leading-5 text-slate-900` →
+    `text-row text-text-primary` (size +2px, line-height bundled by
+    the token).
+  - Description textarea: `text-sm text-slate-900` →
+    `text-body text-text-primary`.
+  - `inputClass` + the two `CanonicalDatePicker` className strings
+    on Issued / Due rows: `text-xs` → `text-row` so edit-mode height
+    matches the new read-mode value typography.
+- **`docs/UI_TYPOGRAPHY.md`** — token tables updated to reflect Phase
+  C sizes; Phase C rationale added at the top.
+
+**Verification:**
+
+- `npx tsc --noEmit` clean.
+- `npm run build` clean.
+- `JobDetailPage` consumes canonical tokens and was not touched —
+  it scales up automatically.
+- `InvoiceDetailPage` `InvoiceMetaCard` no longer references
+  `text-3xl`, `text-xs`, `text-sm`, or `text-[13px]` for its header
+  / address / meta / description sections (verified with grep).
+
+**App-wide legacy-typography audit summary:** ~2,500 legacy
+`text-xs`/`text-sm`/`text-base`/`text-lg`/`text-xl`/`text-2xl`/`text-3xl`
+occurrences across ~200 files remain. Categorized:
+
+- **Detail-page header typography to migrate now:** only
+  `InvoiceMetaCard` was in scope this pass. Done.
+- **General UI / body that should migrate later:** `QboConsolePage`
+  (229 hits), `tech-app/VisitDetailPage` (152), `ClientDetailPage`
+  (130), `PMWizardPage` (64), `tech-app/TodayPage` (47), and the
+  large clusters already documented in `docs/UI_TYPOGRAPHY.md:174–209`.
+  These are the candidates for Phase D (component-by-component
+  migration) and the eventual Phase H lint sweep that retires
+  the legacy ramp.
+- **Legitimate exceptions:** shared `ui/*` primitives
+  (`input.tsx`, `textarea.tsx`, `select.tsx`, `table.tsx`,
+  `dropdown-menu.tsx`, `command.tsx`) need their own scoped sweep
+  per `docs/UI_TYPOGRAPHY.md:213–226`. Micro-badges and counter
+  glyphs at `text-[10px]` / `text-[11px]` are intentional outside
+  the canonical scale.
+
+**Recommended follow-up passes** (NOT done in this pass):
+1. `JobDetailPage` line-item card and `LineItemsCard` body — already
+   uses canonical tokens, but check for stray legacy `text-xs` in
+   row chrome after the bump.
+2. `QboConsolePage` + `tech-app/VisitDetailPage` — biggest single-file
+   legacy-class clusters; high payoff for Phase D.
+3. shared `ui/*` primitive defaults (`input` / `textarea` / `table` /
+   `select`) — flip to canonical with one coordinated sweep so the
+   primitive defaults land in lockstep with their consumers.
+4. After all migrations, retire the legacy ramp from `tailwind.config.ts`
+   (Phase H).
+
+#### Job Detail — Job # folded into unified header edit (2026-05-01, follow-up 2)
+
+The earlier follow-up moved Summary + Description into a unified
+`editingHeader` flow but left Job # on its own standalone inline-edit
+(separate `editingJobNumber` state, separate
+`updateJobNumberMutation`). The user wants the header pencil to be
+the single edit entry point for ALL editable header fields. This
+pass folds Job # into the same flow.
+
+- **`client/src/pages/JobDetailPage.tsx`** —
+  - `headerDraft` extended to `{ summary, description, jobNumber }`
+    where `jobNumber` is a string for input control and parsed on
+    save. Standalone `editingJobNumber` / `jobNumberDraft` /
+    `jobNumberError` / `jobNumberInputRef` state removed.
+  - `updateJobNumberMutation` removed; `updateHeaderMutation`'s
+    body now PATCHes
+    `{ summary, description, jobNumber, version }` in one
+    round-trip. The route handler in `server/routes/jobs.ts`
+    already accepts these together (per `updateJobSchema` in
+    `shared/schema.ts` — all four fields are
+    `z....optional()`); no backend change required. Server-side
+    `JOB_NUMBER_DUPLICATE` (409) and positive-integer validation
+    are preserved and surface through the existing `headerError`
+    span instead of a Job-#-specific row error.
+  - `enterHeaderEdit` now seeds `jobNumber` from `String(job.jobNumber)`.
+  - `handleHeaderSave` validates the same positive-integer rule
+    that the prior standalone handler used
+    ("Job # must be a positive whole number") and short-circuits
+    to close edit mode when all three fields are unchanged.
+  - `handleHeaderCancel` resets `jobNumber` along with the other
+    two fields.
+  - Job # row JSX: the inline pencil-on-hover is gone. Read mode
+    renders a plain `<span>` (no edit affordance — the header
+    pencil is now the single entry point). Edit mode renders a
+    numeric `<input>` with the same `w-20 h-6` chrome the
+    standalone editor used. Enter saves; Esc cancels (matches the
+    summary + description textareas).
+
+**Verification:**
+- `npx tsc --noEmit` clean.
+- Job # row no longer has its own pencil/Save/Cancel; the header
+  pencil is the single entry point.
+- Clicking the header pencil enables editing of summary,
+  description, AND job #. A single PATCH persists all three;
+  Cancel restores all three.
+- Status, Scheduled, and Invoice rows remain read-only.
+- Old Edit Job modal is not reintroduced.
+
+**Files changed:** `client/src/pages/JobDetailPage.tsx` only.
+**PATCH body sent:** `{ summary, description, jobNumber, version }`.
+
+#### Typography audit — Job page is canonical, Invoice page drifts (2026-05-01, NOTE — no code change)
+
+User flagged that the Job header reads visually smaller than the
+Invoice header and asked which page tracks the canonical typography
+system. The audit reversed the premise:
+
+- **Canonical tokens** live in `tailwind.config.ts:45–73` —
+  `text-display` (28), `text-page-title` (22), `text-section-title`
+  (16), `text-row` (13), `text-caption` (12), `text-label` (11).
+- **`JobDetailPage.tsx` header** uses these tokens consistently
+  (`text-page-title font-bold`, `text-section-title font-semibold`,
+  `text-row`, `text-caption`, `text-label`). Already canonical.
+- **`InvoiceDetailPage.tsx` `InvoiceMetaCard`** uses LEGACY
+  Tailwind classes (`text-3xl`, `text-xs`, `text-sm`, `text-[13px]`).
+  Combined with the project's `html { font-size: 19px }`, the
+  legacy classes render visibly larger than the equivalent tokens —
+  which is why the invoice "looks correct" and the job "looks small."
+
+The user constraint says *Invoice header remains unchanged*, but the
+canonical-tokens constraint says *use existing canonical
+classes/tokens*. These are mutually exclusive on the typography
+question — bringing Job up to match Invoice would require regressing
+Job onto the legacy classes. **No code change made on this pass; awaiting
+direction.** The two coherent options:
+
+  - **(A) Bring Invoice down to canonical** — visually
+    smaller invoice headers; one-line-per-field swaps in
+    `InvoiceMetaCard` (`text-3xl` → `text-page-title`,
+    `text-xs` → `text-caption`/`text-row`/`text-label`,
+    `text-[13px]` → `text-row`). Aligns both pages with the design
+    system; matches the architectural rule.
+  - **(B) Status quo** — accept the visual drift; both pages
+    retain their current classes. Defensible if invoice's larger
+    type was an intentional emphasis decision that simply isn't
+    documented as a token yet.
+
+#### Job Detail — header edit ported to InvoiceMetaCard pattern; Job Description added (2026-05-01, follow-up)
+
+Follow-up to the same-day Job-Detail edit refactor. The first pass
+moved Summary edit out of the Edit Job modal and into a small
+inline editor whose Save / Cancel sat next to the textarea. The
+user wants the Job page edit chrome to match the Invoice page
+exactly: pencil flips the WHOLE header card into edit mode, an
+optional Job Description section sits at the bottom, and Save /
+Cancel render in a footer row at the card bottom-right.
+
+- **`client/src/pages/JobDetailPage.tsx`** —
+  - State refactored: `editingSummary` / `summaryDraft` /
+    `summaryError` replaced with a single
+    `editingHeader` boolean + `headerDraft` object
+    `{ summary: string; description: string }` + `headerError`. The
+    `summaryInputRef` ref name is preserved for clarity (still
+    points at the in-card summary textarea).
+  - `updateSummaryMutation` (PATCH `{summary, version}`) replaced
+    with `updateHeaderMutation` (PATCH `{summary, description,
+    version}`). Description is sent as `null` when the trimmed
+    value is empty so the column reflects "no description set"
+    canonically (`description: text("description")` is nullable in
+    `shared/schema.ts`); the `updateJobSchema` accepts
+    `summary: z.string().nullable().optional()` and
+    `description: z.string().nullable().optional()` together — same
+    field set the prior modal payload covered.
+  - New helpers: `enterHeaderEdit` (seeds both drafts and focuses
+    the summary textarea), `handleHeaderSave`,
+    `handleHeaderCancel`. Cmd/Ctrl+Enter saves; Esc cancels (in
+    both textareas).
+  - Header pencil now triggers `enterHeaderEdit` and is disabled
+    while editing.
+  - JSX: the H1 flips to a textarea-only block in edit mode (no
+    inline buttons). The 2-column identity / meta grid is unchanged
+    in either mode — Location, Status, Job #, Scheduled, and
+    Invoice metadata stay read-only here. Job # keeps its own
+    canonical inline-edit (separate state, separate mutation).
+  - JSX: appended INSIDE `<SectionCard>` after the 2-column grid:
+    - **Job Description (Optional)** section — `border-t
+      border-card-border px-5 py-3`, label
+      "Job description (optional)" in `text-xs uppercase
+      tracking-wide text-slate-500`, read mode renders
+      `<p className="text-sm whitespace-pre-line">`, edit mode
+      renders a `min-h-[88px]` textarea with `maxLength={600}`.
+      Visibility: hidden in read mode when empty (`(editingHeader
+      || job.description?.trim().length > 0)`); always visible
+      while editing.
+    - **Save / Cancel footer** — `border-t border-card-border px-5
+      py-3 flex items-center justify-end gap-2`. Cancel uses
+      `<Button variant="outline" size="sm">`; Save uses the default
+      brand-green Button. Disabled while saving. Inline error span
+      pushed to `mr-auto` when present.
+
+**Verification:**
+- `npx tsc --noEmit` clean.
+- Read mode hides the description section entirely when
+  `job.description` is empty, so empty jobs don't reserve dead
+  space at the bottom of the header card.
+- Pencil enters edit mode; the H1 becomes a textarea, the
+  description section always renders, and Save / Cancel sit at
+  the bottom-right.
+- A single PATCH persists `summary` + `description` together; both
+  fields restore on Cancel.
+- Location is not editable; Team Instructions are not exposed.
+
+**Shared components touched:** none. Both `InvoiceMetaCard` (in
+InvoiceDetailPage) and the job header live in their own page
+files; no shared "section card with edit mode" wrapper exists. The
+job page mirrors the invoice JSX inline. If a third detail surface
+ever needs the same shell, lifting it into a shared
+`<DetailMetaCard>` wrapper is a clean follow-up — but neither this
+pass nor the invoice page pays for that abstraction yet.
+
+#### Job Detail — Edit Job modal removed; inline summary edit; line-item column reorder (2026-05-01)
+
+The Job Detail surface no longer mounts the multi-field "Edit Job"
+modal. The modal exposed Location, Summary, and Team Instructions —
+two of which should not be editable from this page (Location is
+identity / immutable here; Team Instructions are visit-scoped, living
+on `job_visits`, not `jobs`). Summary is the only job-level field
+that legitimately edits from this page, so it now edits inline on
+the header card via the same pattern Job # already uses.
+
+- **`client/src/pages/JobDetailPage.tsx`** —
+  - `<QuickAddJobDialog editJob=...>` mount, `showEditDialog` state,
+    `import` for `QuickAddJobDialog`, and the overflow menu
+    "Edit Job" item all removed. The component itself is preserved —
+    `CreateNewDialog`, `PMWorkspacePage`, and `RecurringJobsPage`
+    still consume it for create / recurring flows.
+  - New inline-edit state mirroring Job #: `editingSummary`,
+    `summaryDraft`, `summaryError`, `summaryInputRef`,
+    `updateSummaryMutation`, `handleSummarySave`,
+    `handleSummaryCancel`. Mutation body is intentionally minimal:
+    `{ summary, version }` only. Location and `description` (the
+    legacy job-level field that some surfaces called "team
+    instructions") are explicitly NOT in the payload.
+  - The header card pencil button now triggers the inline edit.
+    The H1 flips to a 2-row textarea + Save / Cancel. Cmd/Ctrl+Enter
+    saves; Esc cancels.
+  - Hidden `JobHeaderCard` mount's `onEdit` prop is now a no-op
+    comment — the imperative ref access (close / reopen / archive)
+    is unaffected.
+- **`client/src/components/line-items/LineItemsCard.tsx`** —
+  Job-surface column order changed from
+  `Description / Qty / Rate / Cost / Amount` to
+  `Description / Qty / Cost / Rate / Amount`. Header grid template
+  swapped accordingly (`128px_110px` → `110px_128px` for the
+  Cost+Rate slots). Invoice / Quote surfaces (`showCost=false`) are
+  unchanged because there is no Cost column there.
+- **`client/src/components/line-items/LineItemRow.tsx`** — display
+  row + EditCells row swapped Cost ↔ Rate in cell order. Column
+  widths follow the column type, not the position (Cost stays
+  `w-[110px]`, Rate stays `w-32`).
+- **`client/src/components/line-items/AddLineItemForm.tsx`** — same
+  Cost-before-Rate swap on the new-line form so all three rendering
+  paths stay aligned.
+
+**Verification:**
+- `npx tsc --noEmit` clean.
+- Pencil on header card no longer opens a modal; opens inline editor.
+- Saving persists `summary` only via `PATCH /api/jobs/:id`; Location
+  cannot be edited from this page; Team Instructions are not in the
+  payload or the UI.
+- Line-item table on Job Detail renders Qty / Cost / Rate / Amount.
+  Invoice + Quote line-item tables are unchanged (`showCost: false`).
+
+**Files reviewed but not changed:** `QuickAddJobDialog.tsx` is shared
+across 3 other surfaces and stays as-is. `JobHeaderCard.tsx` exposes
+no inline-edit pattern of its own; the inline summary state lives at
+the page level since the page already owns the canonical
+`updateJobNumberMutation` it mirrors.
+
+### Fixed
+
+#### Operational search — strict mode (no stale parented names) (2026-05-01, fourth pass)
+
+Closes the last operational symptom from the rename-propagation
+audit: typing the OLD parented-location name (e.g. "Hockey Stuff"
+after rename to "App Business") still surfaced the row in operational
+search because every name predicate matched the legacy denormalized
+`client_locations.company_name` column. **Display behavior is
+unchanged.** Historical reads (jobs/invoices/quotes/activity-log
+snapshots) are untouched. No new helpers, no schema changes, no new
+write paths.
+
+**Strict-mode predicate** (used at every operational name-search site):
+- For parented locations (`parent_company_id IS NOT NULL`): name
+  matches `customer_companies.name` ONLY.
+- For standalone locations (`parent_company_id IS NULL`): name
+  matches `client_locations.company_name`.
+- Address / city / postal / phone / email / location-label matchers
+  continue to work — those are location attributes, not names.
+
+**Files changed:**
+- `server/storage/search.ts` — universalSearch location query:
+  WHERE clause and match-rank CASE both gated on `parent_company_id`.
+- `server/routes/clients.ts` (`/search-locations`) — search-query
+  branch: WHERE and match-rank CASE both parent-aware.
+- `server/storage/jobsFeed.ts` — Jobs feed search: replaced
+  `ilike(clients.companyName, ...)` with two parent-aware branches.
+- `server/storage/invoicesFeed.ts` — Invoice feed search: same.
+- `server/storage/timeTracking.ts` — visit-search ILIKE: same.
+- `server/storage/clients.ts` — `getPaginatedClients` search filter:
+  parent name match via correlated `EXISTS` subquery (no JOIN added,
+  storage layer's `Client[]` return type preserved).
+
+**Before / After (representative WHERE clause from `search.ts`):**
+
+```sql
+-- BEFORE — matches stale denormalized name on parented rows
+AND (
+  cl.company_name ILIKE $2          -- leaks old/typo names
+  OR cc.name ILIKE $2
+  OR cl.address ILIKE $2
+  ...
+)
+
+-- AFTER — strict
+AND (
+  (cl.parent_company_id IS NOT NULL AND cc.name ILIKE $2)
+  OR (cl.parent_company_id IS NULL AND cl.company_name ILIKE $2)
+  OR cl.address ILIKE $2
+  ...
+)
+```
+
+**Display logic unchanged.** Every read continues to render
+`COALESCE(cc.name, NULLIF(cl.company_name, ''))`
+(`locationDisplayNameExpr` or inline mirror).
+
+**Historical capability unchanged.** Jobs/invoices/quotes snapshot
+fields and activity-log entries are untouched. No "formerly known
+as" / alias system introduced; no new snapshot columns; no schema
+changes.
+
+**Intentionally NOT changed (out of scope per user constraints):**
+- `server/storage/customerCompanies.ts:520`
+  (`getOrphanLocationsByCompanyName`) — already gated on
+  `parentCompanyId IS NULL`; aligns with strict rule.
+- `server/storage/clients.ts:278, 323` — orphan dedupe by raw name
+  equality; matching context, not search.
+- `server/storage/clients.ts` orderBy tie-breakers — sort key, not
+  name match.
+- All snapshot reads — historical capability, not operational
+  search.
+
+**Verification:**
+- `npm run check` — only one TS error, in
+  `client/src/pages/JobDetailPage.tsx:1156` (`'job' is possibly
+  'undefined'` on `job.version ?? 0`). This is from a parallel
+  edit in another terminal; not produced by this task. All files
+  touched in this task compile clean.
+- Targeted greps confirm no operational name-search predicate
+  matches the location's own column without first gating on
+  `parent_company_id IS NULL`.
+
+#### Visit completion → close-job → invoice flow + invoice correctness (2026-05-01)
+
+Four canonical-architecture fixes — no new endpoints, no new services,
+no duplicate write paths.
+
+**1. Post-visit-completion decision dialog (NEW canonical surface)**
+
+- Added `client/src/components/PostVisitCompletionDialog.tsx`. One
+  canonical component for the 3-option prompt:
+  - Close job and invoice now → `POST /api/jobs/:id/close { mode:
+    "invoice_now", autoCompleteOpenVisits }` → server returns invoice
+    → navigate to `/invoices/:id`.
+  - Close job, invoice later → same endpoint with
+    `mode: "invoice_later"` → toast, no navigation.
+  - Leave job open → no-op (visit completion already happened).
+- Copy adapts when other open visits remain (excludes the
+  just-completed visit by id from the count). When `hasRemaining`,
+  `autoCompleteOpenVisits: true` is sent — the canonical close
+  endpoint completes the remaining visits + closes the job + (if
+  `mode: "invoice_now"`) creates the invoice atomically server-side.
+  **No new orchestration endpoint.**
+- Mounted ONCE inside `client/src/components/dispatch/VisitEditorLauncher.tsx`
+  so every consumer (Dashboard, DispatchPreview, FinancialDashboard,
+  JobDetailPage) gets the prompt without per-page wiring.
+- `client/src/components/visits/EditVisitModal.tsx` gained an
+  `onAfterComplete` prop. Fires only on successful visit completion
+  (any outcome: completed / needs_parts / needs_followup), wiring
+  the launcher's mount. Other mutations (reschedule / unschedule /
+  delete) do NOT fire it; the existing generic `onAfterMutation`
+  contract is unchanged for those callers.
+
+**2. InvoiceCompositionDialog bypass on the Job Detail "Close & Invoice" CTA**
+
+- `client/src/pages/JobDetailPage.tsx` — replaced the
+  `setShowCreateInvoiceDialog(true)` modal trigger with a direct
+  canonical mutation: `POST /api/invoices/from-job/:jobId
+  { markJobCompleted: false }`. With `selection` omitted, the server
+  includes all eligible labour / parts / expenses (see
+  `invoiceSelectionSchema.optional()` at
+  `server/routes/invoices.ts:91-94` and the selection-omitted guards
+  at `server/storage/invoices.ts:1227-1233 / 1358-1362`). The
+  `<InvoiceCompositionDialog mode="create">` mount, its state hook,
+  and its import are removed from this page. The component itself is
+  preserved for `InvoiceDetailPage.tsx`'s rare manual "refresh from
+  job" flow (mode="refresh") — unchanged.
+
+**3. Line-item subtotal bug — Qty × Rate persisting as $0**
+
+Root cause: the canonical client draft hook (`useLineItemsDrafts`) had
+no auto-derivation for `lineSubtotal` when `quantity` or `unitPrice`
+changed. The edit cells displayed the multiplied total on screen but
+never wrote it back into the draft, so the saved payload carried
+`lineSubtotal: "0.00"` (the blank-draft default). Server's POST line
+route reads `lineData.lineSubtotal` directly to derive tax, so the
+line — and any group tax computed from it — both persisted as zero.
+
+- `client/src/components/line-items/useLineItemsDrafts.ts:162` —
+  `updateDraft` now recomputes `lineSubtotal` via `formatMoney(qty
+  * price)` whenever the patch contains `quantity` or `unitPrice`.
+  Single canonical choke point — both `LineItemRow.tsx` and
+  `AddLineItemForm.tsx` flow every `onChangeDraft` through this hook
+  (see `LineItemsCard.tsx:286, 306`). No component-level changes
+  needed.
+- `server/routes/invoices.ts` — added defense-in-depth recompute on
+  both `POST /api/invoices/:id/lines` and
+  `PATCH /api/invoices/:id/lines/:lineId`: when `lineSubtotal`
+  arrives as 0 but `quantity` and `unitPrice` are non-zero, recompute
+  before persisting. No behavior change when the canonical client
+  payload is correct; catches future regressions and third-party
+  callers.
+
+**4. Tax not applying — tenant has HST 13% but invoice shows "No Tax"**
+
+Root cause: `server/services/invoiceCreationService.ts` calls
+`getDefaultTaxGroup(companyId)` and silently skips tax application
+when no group is flagged `is_default = TRUE`. Tenants whose tax was
+configured pre-Phase-2.7 only have the legacy
+`companies.default_tax_rate` / `companies.tax_name` fields — never
+backfilled into the canonical `company_tax_groups` /
+`company_tax_rates` / `company_tax_group_rates` chain.
+
+- `migrations/2026_05_01_seed_default_tax_groups.sql` (new) —
+  idempotent backfill that creates one canonical default group + rate
+  + junction row for any company where:
+  - `default_tax_rate > 0`, AND
+  - no existing `company_tax_groups` row is flagged
+    `is_default = TRUE AND active = TRUE`.
+
+  Tenants with a 0 rate (opted out) and tenants already on canonical
+  groups are skipped. Includes a verification SELECT in the trailer
+  comments. Run via: `npm run db:migrate:one --
+  migrations/2026_05_01_seed_default_tax_groups.sql`.
+- `server/services/invoiceCreationService.ts` — added a structured
+  `console.warn({ event: "invoice.created.no_default_tax_group", … })`
+  log inside the `enrichInTx` helper, fired when the silent-skip
+  guard hits. Makes any post-migration gaps observable in production
+  logs without throwing on invoice creation.
+
+**Architecture compliance**
+- Route → Service → Storage preserved on every change.
+- No new endpoints. No new services. No new orchestrators.
+- No per-line tax loops introduced (the canonical
+  `batchApplyLineTax()` performance baseline is intact —
+  `applyTaxGroupToInvoice` still uses the single batched UPDATE).
+- Canonical owners reused: `closeJobMutation` semantics replicated
+  in `PostVisitCompletionDialog` as a thin client of the same
+  canonical `POST /api/jobs/:id/close` endpoint (no lifecycle logic
+  duplicated; lifecycle remains in the server orchestrator).
+- `InvoiceCompositionDialog` preserved in isolation for its remaining
+  legitimate caller (manual refresh).
+
+**Files changed**
+- `client/src/components/PostVisitCompletionDialog.tsx` (new)
+- `client/src/components/dispatch/VisitEditorLauncher.tsx`
+- `client/src/components/visits/EditVisitModal.tsx`
+- `client/src/components/line-items/useLineItemsDrafts.ts`
+- `client/src/pages/JobDetailPage.tsx`
+- `server/routes/invoices.ts`
+- `server/services/invoiceCreationService.ts`
+- `migrations/2026_05_01_seed_default_tax_groups.sql` (new)
+
+**TypeScript:** `npx tsc --noEmit -p tsconfig.json` passes clean.
+
+#### Client rename propagation — final bypass sweep (2026-05-01, third pass)
+
+System-wide migration of remaining raw `clients.companyName` /
+`cl.company_name` display reads to the canonical
+`locationDisplayNameExpr` (Drizzle) or inline
+`COALESCE(cc.name, NULLIF(cl.company_name, ''))` (pure SQL). Closes
+the bypass list catalogued in the prior validation entry. **No new
+helpers, no new write paths, no schema changes, no broad refactors.**
+Each fix adds a `LEFT JOIN customer_companies` (using
+`idx_client_locations_parent_company`) only where one was missing;
+performance-neutral.
+
+**Drizzle paths migrated to `locationDisplayNameExpr`:**
+- `server/storage/jobs.ts:365` (Job Detail nested location.companyName,
+  list query — JOIN already present)
+- `server/storage/jobs.ts:530` (Job Detail nested location.companyName,
+  `getJob` query — added `LEFT JOIN customerCompanies`)
+- `server/storage/jobsFeed.ts:265` (Jobs feed nested
+  `location.companyName` — JOINs at 572 + 672 already present)
+- `server/storage/scheduling.ts:567` (`getUnscheduledJobs.locationName`
+  — added JOIN)
+- `server/storage/jobVisits.ts:288` (Visit detail location lookup —
+  added JOIN)
+- `server/storage/timeTracking.ts:2344, 2450, 2637` (tech day-view +
+  week-view + visit-search `locationName` — added JOIN; the
+  visit-search ILIKE additionally now matches `customerCompanies.name`
+  so post-rename queries find rows whose child column is stale)
+- `server/routes/techField.ts:794, 909` (tech-field job/time-entry
+  display — JOINs already present)
+- `server/routes/admin.ts:826` (admin sample locations — added JOIN)
+- `server/routes/clients.ts` GET `/api/clients` enrichment — the
+  list response now also exposes `parentName` and overrides
+  `companyName` to the resolved display value (parent's current
+  name when present; raw column for standalone)
+
+**Pure-SQL paths migrated to inline COALESCE:**
+- `server/storage/scheduling.ts:301, 717` (scheduled-in-range +
+  follow-up-needed raw queries — added `LEFT JOIN
+  customer_companies`)
+- `server/lib/visitIntelligence.ts:120, 471, 494` (three visit-fetch
+  queries — added JOIN)
+- `server/lib/autoGapScheduling.ts:124` (auto-gap visit fetch —
+  added JOIN)
+- `server/storage/invoiceAudit.ts:78` (audit-only sample query —
+  added JOIN)
+
+**Intentionally left raw (out-of-scope per task constraints):**
+- `server/storage/clients.ts:47, 94, 126, 132, 141, 147, 155, 161` —
+  sort tie-breakers and the Clients-page search ilike. Migrating the
+  search would require adding a join to `getPaginatedClients`, which
+  changes the storage layer's return type; deferred.
+- `server/storage/clients.ts:278, 323` and
+  `server/storage/customerCompanies.ts:486, 520` — dedupe equality
+  matching by raw name (intentional; matches on the override column,
+  not on display name).
+- `server/storage/customerCompanies.ts:838` — orphan-locations list.
+  By definition `parent_company_id IS NULL`, so `cl.companyName` IS
+  the only valid display source for this query.
+- `server/routes/clients.ts:207, 208, 218` and
+  `server/storage/search.ts:288, 305` — match-rank scoring against
+  the raw column. Lets users find rows by typing the legacy override
+  value; the displayed name (separately resolved via COALESCE) is
+  always parent-first.
+- `server/storage/dashboard.ts:315, 536, 595, 993, 1075, 1103, 1134`
+  and `server/storage/reports.ts:151`,
+  `server/storage/recurringJobs.ts:88, 624` — "frontend-resolves"
+  pattern. These queries return BOTH `customerCompanies.name` and
+  the location's raw column as separate fields; the frontend picks
+  parent first. Documented behavior, no staleness risk.
+- `server/storage/invoices.ts:145, 285` — Invoice list/detail nested
+  `client.companyName`. Not in the explicit task scope; can be
+  migrated in a follow-up.
+- `server/routes/leads.ts:86`,
+  `server/services/qbo/QboCustomerImportService.ts:295`,
+  `server/services/technicianCalendarIcsService.ts:88`,
+  `server/services/importPipeline/adapters/JobImportAdapter.ts:739` —
+  matching/sync contexts or a small calendar-export surface;
+  frontend has parent identity available where applicable.
+
+**Verification:**
+- `npm run check` clean.
+- Targeted grep confirms only documented-safe classes remain
+  (canonical helper definition, COALESCE-wrapped uses, intentional
+  matching/dedupe, out-of-scope tie-breakers, frontend-resolves
+  pattern).
+
+#### Today's Schedule — open slots clamp to next 15-min boundary, hide past windows (2026-05-01)
+
+The Financial dashboard's "Today's Schedule" card showed past
+availability as actionable. At 1:48 PM a tech with shift 8:00–17:00
+rendered "8:00–5:00 Open Slot", and clicking it pre-filled the
+create modal's start time as 8:00 AM — both wrong. Root cause:
+`/api/dashboard/capacity` ships full-workday `scheduleBlocks` (open
+windows are NOT clamped server-side; only the aggregate `slot` field
+is). The dashboard rendered + click-handled blocks verbatim and only
+applied a visual `opacity-60` to past-open rows.
+
+The fix clamps every open block on the frontend so the row label
+AND the click-prefilled start time consume the same value:
+
+- **`client/src/lib/findNextAvailableSlot.ts`** — new exports:
+  - `roundUpToNextInterval(timestampMs, intervalMinutes)` — rounds an
+    absolute UTC ms anchor up to the next quarter-hour (or any
+    interval) boundary. Lands on a wall-clock quarter-hour for every
+    real-world IANA timezone (every offset is itself a multiple of
+    15 minutes — including +5:30 / +5:45 / +9:30 / +8:45 — and the
+    Unix epoch sits on every quarter-hour, so absolute-ms math
+    suffices; no timezone arithmetic needed).
+  - `clampOpenBlockToNow(block, nowMs, intervalMinutes = 15)` —
+    returns the block unchanged when `kind !== "open"` or when the
+    block is already at/after the rounded `nowMs`; returns a new
+    block with adjusted `startISO` + `durationMinutes` when the
+    start lands in the past but `endISO` is still in the future;
+    returns `null` when the entire window is in the past.
+- **`client/src/pages/FinancialDashboard.tsx`** — `visibleTechs`
+  derivation now maps each block through `clampOpenBlockToNow`,
+  dropping rows where the helper returns `null`. The single-tech
+  view, the multi-tech-grid view, and `handleBlockClick` all read
+  from the SAME clamped array, so display + click can never
+  disagree on the start time. The previous `isPastOpen` muting path
+  (visible-but-`opacity-60`) becomes unreachable for clamped open
+  blocks; it is preserved as defensive code for non-open completed
+  rows that still mute via the same flag.
+- **`client/src/pages/FinancialDashboard.tsx`** — added a
+  15-minute re-clamp tick. The first tick aligns to the next
+  wall-clock quarter-hour boundary via `roundUpToNextInterval`, then
+  ticks every 15 minutes. No high-frequency timers (cf. the
+  performance baseline). The capacity query keeps its existing
+  `staleTime: 30_000` + `refetchOnWindowFocus: true`; the local
+  re-clamp ensures rows refresh on the boundary even when the
+  tab stays focused without a refetch.
+
+**Examples (Now = 1:48 PM):**
+| Original slot | Clamped row | Click prefill |
+|---|---|---|
+| 8:00–5:00 (9h) | 2:00–5:00 (3h) | 2:00 PM |
+| 1:00–3:00 (2h) | 2:00–3:00 (1h) | 2:00 PM |
+| 8:00–1:45 (5.75h) | hidden | n/a |
+| 2:00–5:00 (3h) | 2:00–5:00 (3h) | 2:00 PM |
+
+**Out-of-scope cleanup blocking type-check:** removed the orphan
+`<InvoiceCompositionDialog mode="create">` mount in
+`client/src/pages/JobDetailPage.tsx` whose driving state
+(`showCreateInvoiceDialog`) was deleted in a prior session. The
+component itself is preserved for `mode="refresh"` on
+InvoiceDetailPage.
+
+**Verification:** `npx tsc --noEmit` clean; `npm run build` clean.
+The companion helper `groupOpenGapsByTech` (used by the
+"Find Availability" panel inside `QuickAddJobDialog`) was already
+clamping at `max(workStart, now)` since 2026-04-26 and is unchanged.
+
+### Changed
+
+#### Embedded create modal — inline add/remove fields, availability restyle, color-coded assigned chips (2026-05-01)
+
+Refinement pass on the embedded Create flow (Job tab in the
+"+ Create" modal mounted on FinancialDashboard). Touches the
+`embedded === true` branch only; the standalone Edit Job dialog and
+non-embedded mounts are untouched.
+
+- **`client/src/components/QuickAddJobDialog.tsx`** — bottom secondary-action
+  stack converted from accordion-style triggers (`+ Add X` ↔ `− X`) to
+  the inline add/remove pattern that was already in use for
+  "+ Add instructions" directly under Summary:
+  - Collapsed: `[+ Add service]` / `[+ Add equipment]` / `[+ Make recurring]`
+  - Expanded:  `[<picker / panel>]   [×]`
+  - The `×` button clears the section's content AND hides the field —
+    `Service` clears `selectedServices`, `Equipment` clears
+    `selectedEquipmentIds`, and `Make recurring` flips `isRecurring`
+    off and resets the recurrence preset / start / end so the next
+    open starts clean. No more "− Section" trigger text and no inner
+    section heading inside the expanded panel.
+- **`client/src/components/QuickAddJobDialog.tsx`** — Find-availability panel
+  restyled:
+  - Container: `rounded-md border border-slate-200 bg-slate-50/70 p-2.5`
+    → `rounded-md border bg-muted/30 p-3`
+  - Range buttons: `<Button variant="secondary" size="sm">` →
+    plain `<button class="h-7 px-2 text-xs rounded-md border bg-white hover:bg-muted">`
+    in both the embedded per-tech rendering and the legacy
+    grouped fallback.
+- **`client/src/components/QuickAddJobDialog.tsx`** — embedded
+  assigned-technician chip strip now renders each chip in the
+  technician's canonical calendar color via `resolveTechnicianColor`
+  (`@shared/colors`). Soft 10%-alpha fill, 40%-alpha border, full-strength
+  text + a small color dot. Same color source dispatch board / team
+  hub / technician selector use, so a chip in the create modal
+  matches the dot on the dispatch row for the same tech.
+
+No server-side changes. No new state, no new props, no new exports.
+The inline pattern reuses existing `embServiceOpen`,
+`embEquipmentOpen`, `embRecurringOpen` flags from the prior pass.
+
+**Verification:** `npx tsc --noEmit` clean.
+
+### Fixed
+
+#### Client rename propagation — canonical resolver flipped + write-side drift blocked (2026-05-01, follow-up validation)
+
+Validation pass on the prior 2026-05-01 fix discovered a competing
+authority: `server/lib/queryHelpers.ts::locationDisplayNameExpr` is
+the documented canonical resolver for "what name should the UI render
+for a location?" and is consumed by ~13+ Drizzle read sites
+(`jobsFeed`, `invoicesFeed`, `dashboard`, `jobs`, `invoices`,
+`reports`, `visits`). Its 2026-04-10 ordering was CHILD-first, which
+is the OPPOSITE of what the user-reported rename-propagation symptom
+requires. The prior fix added inline `COALESCE(cc.name, ...)` in four
+sites without flipping the helper, leaving the architecture
+inconsistent. This follow-up enforces Option A (deprecated-override
+semantics) consistently.
+
+- **`server/lib/queryHelpers.ts`** — `locationDisplayNameExpr` flipped
+  to PARENT-first:
+  `COALESCE(NULLIF(cc.name,''), NULLIF(cl.company_name,''),
+  NULLIF(cl.address,''), …)`. Every Drizzle consumer of the helper
+  now reflects parent renames automatically. Standalone locations
+  (no `parent_company_id`, hence `cc.name IS NULL`) fall through to
+  the location's own column unchanged. The docstring documents the
+  Option A contract (override semantics deprecated; if true overrides
+  are ever needed, add an explicit flag column rather than reusing
+  `company_name`).
+- **`server/services/importPipeline/adapters/JobImportAdapter.ts`**
+  (line 606) — parented location creation no longer denormalizes
+  `row.clientName` into `client_locations.company_name`. Writes
+  `companyName: null` so the read-side helper's parent-first
+  COALESCE keeps the location in lockstep with `customer_companies.name`.
+- **`server/services/importPipeline/adapters/ClientImportAdapter.ts`**
+  (line 739) — same treatment for the client-import path that creates
+  parented locations.
+- **`server/routes/clients.ts`** `POST /api/clients/quick-create` —
+  intentionally untouched. This path creates a STANDALONE location
+  (`parentCompanyId: null`); the location's own `company_name` IS
+  the only display source for orphan locations and is correct as-is.
+- **Prior-fix sites preserved** — the four 2026-05-01 changes
+  (`server/storage/search.ts` location query,
+  `server/routes/clients.ts` `/search-locations` both branches,
+  `GET /api/clients/:id` parentCompanyName enrichment,
+  `client/src/lib/entities/locationEntity.ts::normalizeLocationRow`)
+  are pure-SQL or client-side resolvers that cannot import the
+  Drizzle SQL fragment; their inline COALESCE order matches the new
+  canonical contract and is preserved.
+
+**Bypass paths catalogued (NOT auto-fixed per scope rules)** — the
+following sites still read `clients.companyName` raw without going
+through `locationDisplayNameExpr`. They will display stale names only
+for rows whose `company_name` column was populated BEFORE this fix
+and has not been backfilled to NULL via the diagnostic. New data
+written through the hardened import paths will not drift. Listed for
+follow-up:
+
+- `server/storage/jobs.ts:530` — Job Detail nested location object
+- `server/storage/clients.ts:47, 94, 126–161, 278, 323` — list /
+  paginated / dedupe paths
+- `server/storage/customerCompanies.ts:838` — orphan-locations list
+- `server/storage/scheduling.ts:301, 567, 717` — schedule readers
+- `server/lib/visitIntelligence.ts:120, 471, 494` — visit feed
+- `server/lib/autoGapScheduling.ts:124` — auto-gap raw SQL
+- `server/storage/invoiceAudit.ts:78` — audit-only sample query
+- `server/routes/admin.ts:826` — admin sample
+- `server/routes/techField.ts:794, 909` — tech-field display
+
+Each can be migrated to `locationDisplayNameExpr` in isolated PRs
+without further architectural change.
+
+**Verification:**
+- `npm run check` clean.
+- Canonical owner verified: only one `locationDisplayNameExpr`
+  definition; no parallel resolvers exist after this change.
+- Write-side: only the standalone-location path (`quick-create`) and
+  the canonical edit dialog (`PATCH /api/clients/:id` via
+  `insertClientSchema.partial()` — preserved as the manual edit
+  surface) write `client_locations.company_name`. Both import
+  adapters now write `null` for parented locations.
+
+#### Client rename propagation + Client Detail address rendering (2026-05-01)
+
+Single-symptom audit ("renamed customer company; global search and
+Create Job still show the old name; service vs billing address render
+inconsistently"). Root-cause and surgical fixes below. **No backend
+domain writes added, no canonical workflow changes, no schema
+changes, no destructive data migration.**
+
+**Root cause — stale denormalization on `client_locations.company_name`.**
+The schema documents that column as nullable with the comment "when
+null/blank, UI falls back to customerCompanies.name" (a per-location
+override field). In practice, create flows have eagerly populated
+`cl.company_name = cc.name` on every location, turning every location
+into a de-facto override. When a customer company was renamed via
+`PATCH /api/customer-companies/:id` (the canonical writer; routes
+through `customerCompanies` storage and is unchanged here), the
+denormalized location-level field was NOT cascaded — so any read path
+that consulted `cl.company_name` directly kept showing the old name.
+The page header was unaffected because it reads `parentCompany.name`
+from `customer_companies`. Search results, the locations search
+endpoint feeding job creation, and the bare `GET /api/clients/:id`
+were affected because they all read `cl.company_name` raw.
+
+**Fixes — all read-side; canonical writers and storage layer
+untouched:**
+
+- **`server/storage/search.ts`** — universal-search location query now
+  joins `customer_companies` and returns
+  `COALESCE(cc.name, NULLIF(cl.company_name, '')) AS title` (and the
+  same expression in `ORDER BY`). The `WHERE` clause additionally
+  matches on `cc.name` so a search by the new parent name finds
+  sub-locations even before any data backfill. The match-rank
+  classifier still inspects `cl.company_name` first so legacy override
+  values keep ranking 0/1 if a user types them; this is purely
+  additive.
+- **`server/routes/clients.ts`** `/api/clients/search-locations` —
+  both the empty-query branch and the search-query branch now SELECT
+  `COALESCE(cc.name, NULLIF(cl.company_name, '')) AS company_name` and
+  ORDER BY the same expression. The `LEFT JOIN customer_companies cc`
+  was already present (used for `parent_company_name`), so the change
+  is SELECT/ORDER only — the WHERE already covered parent-name
+  matching.
+- **`server/routes/clients.ts`** `GET /api/clients/:id` — adds a
+  single field `parentCompanyName` to the response, fetched via the
+  canonical `storage.getCustomerCompany(companyId, parentCompanyId)`
+  reader. Raw `companyName` is preserved in the payload so edit forms
+  see the underlying override column unchanged. No new mutation, no
+  new write path.
+- **`client/src/lib/entities/locationEntity.ts`** —
+  `normalizeLocationRow` now prefers `parent_company_name` for the
+  display `companyName` when the API supplies it (every
+  location-display endpoint does as of this change). Falls back to
+  the location's own `company_name` for standalone locations and for
+  any consumer that still returns the bare row. `useLocationById` and
+  `useLocationSearch` consume this resolver, so the QuickAddJobDialog
+  prefill (`selectedLocation.companyName`) now reflects the parent's
+  current name without the dialog itself changing.
+- **`client/src/pages/ClientDetailPage.tsx`** — the dual-address card
+  (single-location case) now renders Service Address and Billing
+  Address with the same multi-line shape. New helper
+  `locationAddressLines(loc)` returns `[street, street2, "City,
+  Province, Postal"]` matching the existing `billingAddressLines`
+  memo. The single-line `locationAddress(loc)` helper is kept for the
+  compact left-rail location list where multi-line would break
+  truncation behavior.
+
+**Diagnostic** — `scripts/audit-location-name-drift.ts` (read-only,
+run with `npx tsx scripts/audit-location-name-drift.ts [--company
+<id>]`) reports three classes of identity drift surfaced by this
+audit:
+1. **Stale denormalization** — locations whose `company_name` differs
+   from their parent's current `customer_companies.name`. Suggests a
+   spot-checked `UPDATE client_locations SET company_name = NULL` per
+   reviewed row; explicitly does NOT auto-write.
+2. **Duplicate customer companies** — same `name_normalized` within a
+   tenant. Reported only; merging cascades to many entities and is
+   out of scope.
+3. **Orphaned locations** — `parent_company_id` points at a
+   soft-deleted or missing customer company.
+
+**Design clarification** — per the user's question "If the location
+has its own display name, clarify whether it should remain
+independently editable. If not, prevent it from drifting from the
+company name": all DISPLAY surfaces now treat the parent customer
+company as authoritative. The location-level `company_name` column is
+preserved for edit flows and standalone (parentless) locations only.
+A future change could remove the column entirely once the diagnostic
+shows zero in-tenant drift; that's a follow-up.
+
+**Verification:**
+- `npm run check` clean.
+- Diagnostic script compiles via `tsc` (no run-time check until
+  invoked against a populated DB).
+- Manual verification (per the user's checklist) is required against
+  a tenant that exhibits the symptom — automated tests are not wired
+  in this repo.
 
 #### EquipmentDetailModal — compact, iPad-friendly redesign (2026-04-30)
 

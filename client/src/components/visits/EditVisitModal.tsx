@@ -121,6 +121,12 @@ export interface EditVisitModalProps {
   jobId: string;
   visitId: string;
   onAfterMutation?: () => void;
+  /** 2026-05-01: fired ONLY after a successful visit completion (any
+   *  outcome: completed / needs_parts / needs_followup). Mounted by
+   *  `VisitEditorLauncher` to surface the `PostVisitCompletionDialog`
+   *  next-action prompt. Other mutations (reschedule / unschedule /
+   *  delete) do not fire this. */
+  onAfterComplete?: (params: { jobId: string; visitId: string; outcome: "completed" | "needs_parts" | "needs_followup" }) => void;
   customerName?: string;
   customerCompanyId?: string;
   jobNumber?: number;
@@ -203,7 +209,7 @@ const FOLLOWUP_OPTIONS: { value: FollowUpReason; label: string; outcome: "needs_
 // ============================================================================
 
 export function EditVisitModal({
-  open, onOpenChange, jobId, visitId, onAfterMutation,
+  open, onOpenChange, jobId, visitId, onAfterMutation, onAfterComplete,
   customerName, customerCompanyId, jobNumber, jobSummary,
   locationName, locationAddress, locationPhone, locationId,
 }: EditVisitModalProps) {
@@ -593,6 +599,14 @@ export function EditVisitModal({
       }
       onAfterMutation?.();
       onOpenChange(false);
+      // 2026-05-01: fire the post-completion next-action callback AFTER
+      // closing this modal so the launcher can mount its decision
+      // dialog without competing focus traps. Generic
+      // `onAfterMutation` fires for every mutation (reschedule /
+      // unschedule / delete / etc.); `onAfterComplete` fires ONLY for
+      // visit completion so the launcher's prompt isn't triggered by
+      // unrelated saves.
+      onAfterComplete?.({ jobId, visitId, outcome: payload.outcome });
     } finally {
       setIsSavingOperational(false);
     }

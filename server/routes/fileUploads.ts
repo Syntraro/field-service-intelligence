@@ -34,8 +34,13 @@ const ALLOWED_MIME = ["image/jpeg", "image/png", "image/webp", "application/pdf"
 
 // 2026-04-12 Phase 2: entityType now covers every file-owning entity. Each
 // value maps to an adapter inside fileUploadService; routes stay thin.
+// 2026-05-02 (Audit #2 PR 3C): `quote_note` added so the canonical
+// `EntityNoteDialog` can stage + upload attachments for quote notes the
+// same way it does for job/client notes. The adapter writes through to
+// `quote_note_attachments` (added in PR 3A).
 const ENTITY_TYPES = [
   "job_note",
+  "quote_note",
   "client_note",
   "client_document",
   "contract_document",

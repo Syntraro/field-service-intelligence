@@ -133,7 +133,7 @@ router.post(
         });
       }
 
-      req.logIn(user, (loginErr) => {
+      req.logIn(user, async (loginErr) => {
         if (loginErr) {
           console.error(`[AUTH] Login error:`, loginErr);
           return res.status(500).json({ error: "Login error" });
@@ -151,6 +151,29 @@ router.post(
           .catch((err: unknown) => {
             console.error(`[AUTH] Failed to stamp lastLoginAt for ${user.email}:`, err);
           });
+
+        // 2026-05-03 first-login race fix (server-side): explicitly persist
+        // the session BEFORE responding so the `Set-Cookie` header on the
+        // first login response is backed by a committed PgStore row. The
+        // platform-auth route already does this (see
+        // `server/routes/platformAuth.ts:138-142`); the tenant route was
+        // the asymmetric one. Without this await, `res.json` can flush
+        // before express-session's wrapped `res.end` finishes
+        // round-tripping the session to PgStore. On slow store latency
+        // the browser receives a `Set-Cookie` whose session id has not
+        // been written yet, so the very next request's `deserializeUser`
+        // misses and the user is bounced back to /login on the first
+        // click. Reject path returns 500 so a save failure surfaces
+        // instead of silently shipping a half-committed session.
+        try {
+          await new Promise<void>((resolve, reject) => {
+            if (typeof req.session?.save !== "function") return resolve();
+            req.session.save((err: any) => (err ? reject(err) : resolve()));
+          });
+        } catch (saveErr) {
+          console.error(`[AUTH] Session save error for ${user.email}:`, saveErr);
+          return res.status(500).json({ error: "Session save error" });
+        }
 
         res.json({
           id: user.id,

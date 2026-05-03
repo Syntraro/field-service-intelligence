@@ -31,13 +31,17 @@
  */
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft, Navigation, MapPin, StickyNote, AlertCircle, Check,
   Loader2, RefreshCw, Send, Plus, Wrench, Package, Trash2, Paperclip, X as CloseIcon,
   ChevronRight, Search, X, FileText, Clock, Pause, Camera, File as FileIcon, Phone,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
+import { useHasPermission } from "@/hooks/useEffectivePermissions";
+// 2026-05-01: canonical shift state + clock-in mutation (single owner —
+// no parallel clock-in path).
+import { useTechShift } from "../hooks/useTechShift";
 import { MobileShell } from "../components/MobileShell";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
@@ -146,6 +150,141 @@ function OutcomeModal({ onSelect, onCancel }: {
             disabled={!canSubmit}
             className="flex-1 h-10 rounded-md bg-emerald-600 text-white text-sm font-semibold disabled:bg-slate-200 disabled:text-slate-400">
             Confirm
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Post-completion action sheet ──
+//
+// 2026-05-01: Shown after a successful visit completion ONLY for users
+// with `invoices.create` permission (canonical fine-permission gate from
+// useEffectivePermissions; mirrors what the office close-job endpoint
+// already enforces server-side via requireRole(MANAGER_ROLES)).
+//
+// Buttons map directly to the existing canonical close-job flow:
+//   POST /api/jobs/:id/close { mode, version, autoCompleteOpenVisits }
+// — same endpoint office (JobHeaderCard.closeJobMutation) and Job
+// Detail (createInvoiceFromJobMutation) already use. No duplicate
+// completion logic, no new endpoint, no new service.
+
+interface CompletionActionSheetProps {
+  busy: boolean;
+  onInvoiceNow: () => void;
+  onInvoiceLater: () => void;
+  onCompleteVisitOnly: () => void;
+  onDismiss: () => void;
+}
+
+// 2026-05-01 (refined): exactly 3 actions + an X dismiss in the header.
+//   1. Close visit + Invoice now    (primary — emerald solid)
+//   2. Close visit + Invoice later  (secondary — emerald outline)
+//   3. Complete visit only          (tertiary — text link, no API call)
+// Dismiss (X): closes the sheet WITHOUT any navigation; user stays on
+// the visit page (which is now in the "completed" terminal state).
+function CompletionActionSheet({ busy, onInvoiceNow, onInvoiceLater, onCompleteVisitOnly, onDismiss }: CompletionActionSheetProps) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40">
+      <div className="w-full max-w-md bg-white rounded-t-2xl p-5 space-y-3 shadow-xl">
+        {/* Header: title/subtitle on the left, X dismiss on the right. */}
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-base font-bold text-slate-900">Job completed</h2>
+            <p className="text-xs text-slate-500 mt-0.5">Choose what happens next.</p>
+          </div>
+          <button
+            type="button"
+            onClick={onDismiss}
+            disabled={busy}
+            aria-label="Dismiss"
+            className="-mr-1 -mt-1 h-8 w-8 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:text-slate-300"
+            data-testid="visit-complete-dismiss"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="space-y-2">
+          {/* Primary: close visit + create invoice now. Canonical close
+              with mode=invoice_now, autoCompleteOpenVisits=true. */}
+          <button
+            type="button"
+            onClick={onInvoiceNow}
+            disabled={busy}
+            className="w-full h-11 rounded-md bg-emerald-600 text-white text-sm font-semibold disabled:bg-slate-200 disabled:text-slate-400"
+            data-testid="visit-complete-invoice-now"
+          >
+            Close visit + Invoice now
+          </button>
+          {/* Secondary: close visit without invoicing (mode=invoice_later). */}
+          <button
+            type="button"
+            onClick={onInvoiceLater}
+            disabled={busy}
+            className="w-full h-11 rounded-md border border-emerald-600 text-emerald-700 text-sm font-semibold disabled:border-slate-200 disabled:text-slate-400"
+            data-testid="visit-complete-invoice-later"
+          >
+            Close visit + Invoice later
+          </button>
+        </div>
+        {/* Tertiary: keep job open — no extra API call (visit was already
+            completed via /api/tech/visits/:visitId/complete before the
+            sheet appeared); just navigate back. */}
+        <button
+          type="button"
+          onClick={onCompleteVisitOnly}
+          disabled={busy}
+          className="w-full h-10 text-sm font-medium text-slate-700 underline-offset-2 hover:underline disabled:text-slate-400"
+          data-testid="visit-complete-visit-only"
+        >
+          Complete visit only
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Clock-in nudge modal ──
+//
+// 2026-05-01: Soft prompt (NOT a blocker) shown when a tech taps Start
+// Route or Start Visit/Job while not clocked in. Reuses canonical
+// `useTechShift().clockIn` (POST /api/time/clock-in) — no new endpoint,
+// no new service. "No, continue anyway" sets a sessionStorage flag so
+// the prompt does not interrupt the same tab session twice.
+
+interface ClockInPromptModalProps {
+  busy: boolean;
+  onConfirmClockIn: () => void;
+  onSkip: () => void;
+}
+
+function ClockInPromptModal({ busy, onConfirmClockIn, onSkip }: ClockInPromptModalProps) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40">
+      <div className="w-full max-w-md bg-white rounded-t-2xl p-5 space-y-3 shadow-xl">
+        <div>
+          <h2 className="text-base font-bold text-slate-900">You are not clocked in</h2>
+          <p className="text-xs text-slate-500 mt-0.5">Would you like to clock in now?</p>
+        </div>
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={onConfirmClockIn}
+            disabled={busy}
+            className="w-full h-11 rounded-md bg-emerald-600 text-white text-sm font-semibold disabled:bg-slate-200 disabled:text-slate-400"
+            data-testid="clock-in-prompt-yes"
+          >
+            {busy ? "Clocking in…" : "Yes, clock me in"}
+          </button>
+          <button
+            type="button"
+            onClick={onSkip}
+            disabled={busy}
+            className="w-full h-11 rounded-md border border-slate-200 text-slate-700 text-sm font-medium disabled:text-slate-400"
+            data-testid="clock-in-prompt-no"
+          >
+            No, continue anyway
           </button>
         </div>
       </div>
@@ -1018,6 +1157,18 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
   const { isOnline } = useOnline();
 
   const [showOutcome, setShowOutcome] = useState(false);
+  // 2026-05-01: post-completion action sheet (Owner/Admin/Manager users
+  // only — gated by `invoices.create` capability, same as office).
+  const [showCompletionSheet, setShowCompletionSheet] = useState(false);
+  const canInvoice = useHasPermission("invoices.create");
+  // 2026-05-01: clock-in nudge before Start Route / Start Visit. Read
+  // shift state from canonical hook; no parallel state.
+  const { isClockedIn, isLoading: isShiftLoading, clockIn } = useTechShift();
+  // Pending action to run after the user resolves the clock-in modal
+  // (either by clocking in or by tapping "continue anyway"). The
+  // function captures the original Start Route / Start Visit handler.
+  const [pendingStart, setPendingStart] = useState<(() => Promise<void>) | null>(null);
+  const showClockInPrompt = pendingStart !== null;
   const [activeTab, setActiveTab] = useState<Tab>("Overview");
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
@@ -1040,6 +1191,43 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
   const [confirmDeletePartId, setConfirmDeletePartId] = useState<string | null>(null);
 
   const onBack = () => setLocation("/tech/today");
+
+  // 2026-05-01: canonical close-job mutation. Hits `POST /api/jobs/:id/close`
+  // — the SAME endpoint the office Job Detail page uses
+  // (`createInvoiceFromJobMutation`, JobDetailPage.tsx:1148). No duplicate
+  // service. `autoCompleteOpenVisits: true` lets the server complete any
+  // sibling visits in the same transaction (server returns 409 with
+  // visit details if uncompleted siblings exist and the flag is false —
+  // we always send true here because the action sheet's "Close visits"
+  // wording IS that consent).
+  // 2026-05-02 hook-order fix: this hook MUST be declared before the
+  // `isLoading` / `isError` early returns below. Previously sat after
+  // them, which meant on the first (loading) render React saw N hooks
+  // and on the next (loaded) render it saw N+1 — triggering "Rendered
+  // more hooks than during the previous render". The runtime guard for
+  // a missing visit/jobId lives inside `mutationFn`, not around the hook.
+  const closeJobMutation = useMutation({
+    mutationFn: async (mode: "invoice_now" | "invoice_later") => {
+      if (!visit || !visit.jobId) throw new Error("Visit is not linked to a job");
+      return apiRequest<{ job: { id: string }; invoice: { id: string; invoiceNumber?: string } | null }>(
+        `/api/jobs/${visit.jobId}/close`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            mode,
+            version: visit.jobVersion ?? 0,
+            autoCompleteOpenVisits: true,
+          }),
+        },
+      );
+    },
+    onSuccess: () => {
+      // Invalidate visit + tech today feeds so any post-close navigation
+      // sees the closed job, not the stale "open" state.
+      queryClient.invalidateQueries({ queryKey: ["/api/tech/visits", visitId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/tech/today"], exact: false });
+    },
+  });
 
   if (isLoading) return <LoadingState />;
   if (isError || !visit) return <ErrorState onBack={onBack} onRetry={refetch} />;
@@ -1090,15 +1278,84 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
   // still in flight. TanStack Query will dedupe identical mutateAsync calls
   // but these guards make the contract obvious to readers and close the
   // window between user tap and React re-render disabling the button.
-  const handleStartTravel = async () => {
+  // 2026-05-01: clock-in nudge wrapper. Trigger points are Start Route
+  // (handleStartTravel) and Start Visit/Job (handleStartJob). The
+  // wrapper checks shift state and either:
+  //   (a) runs the original action immediately (clocked in / shift state
+  //       still loading / suppression flag set), OR
+  //   (b) defers the action behind the clock-in prompt modal.
+  // Critically: the prompt is a NUDGE, not a blocker. "No, continue
+  // anyway" runs the original action exactly as before.
+  const CLOCK_IN_PROMPT_DISMISSED_KEY = "tech:clockInPrompt:dismissed";
+  const isPromptDismissed = (): boolean => {
+    try {
+      return window.sessionStorage.getItem(CLOCK_IN_PROMPT_DISMISSED_KEY) === "1";
+    } catch {
+      // sessionStorage unavailable (private mode / sandbox) — never
+      // suppress; the prompt is harmless to show.
+      return false;
+    }
+  };
+  const setPromptDismissed = () => {
+    try {
+      window.sessionStorage.setItem(CLOCK_IN_PROMPT_DISMISSED_KEY, "1");
+    } catch {
+      // ignore — losing the suppression flag just means the user might
+      // see the prompt one more time, which matches "do not block".
+    }
+  };
+  const maybeNudgeClockIn = (run: () => Promise<void>) => {
+    // Run immediately if the user is clocked in, or if the shift query
+    // hasn't loaded yet (don't block on UI we don't have yet), or if
+    // the user already dismissed the nudge in this tab session.
+    if (isShiftLoading || isClockedIn || isPromptDismissed()) {
+      void run();
+      return;
+    }
+    setPendingStart(() => run);
+  };
+
+  const handleStartTravel = () => {
     if (startTravel.isPending) return;
     setActionError(null);
-    try { await startTravel.mutateAsync(); showSuccess("En route"); } catch (err: any) { showError(err); }
+    maybeNudgeClockIn(async () => {
+      try { await startTravel.mutateAsync(); showSuccess("En route"); } catch (err: any) { showError(err); }
+    });
   };
-  const handleStartJob = async () => {
+  const handleStartJob = () => {
     if (startJob.isPending) return;
     setActionError(null);
-    try { await startJob.mutateAsync(); showSuccess("On site — job started"); } catch (err: any) { showError(err); }
+    maybeNudgeClockIn(async () => {
+      try { await startJob.mutateAsync(); showSuccess("On site — job started"); } catch (err: any) { showError(err); }
+    });
+  };
+
+  // Modal handlers.
+  const handleClockInPromptYes = async () => {
+    if (clockIn.isPending) return;
+    setActionError(null);
+    try {
+      await clockIn.mutateAsync();
+      showSuccess("Clocked in");
+      const run = pendingStart;
+      setPendingStart(null);
+      if (run) await run();
+    } catch (err: any) {
+      // Clock-in failed — surface the error and keep the modal open so
+      // the user can retry or tap "No, continue anyway". The original
+      // action is NOT auto-run here; the user explicitly chose to
+      // clock in first.
+      showError(err);
+    }
+  };
+  const handleClockInPromptNo = () => {
+    // Suppress for the rest of this tab session, then run the original
+    // action immediately. Matches "do not repeatedly interrupt
+    // workflow" + "do NOT block".
+    setPromptDismissed();
+    const run = pendingStart;
+    setPendingStart(null);
+    if (run) void run();
   };
   // 2026-04-09: reversible workflow + pause/resume handlers.
   // Sub-1-minute time entries created by accidental taps are dropped on the
@@ -1127,7 +1384,72 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
   const handleComplete = async (outcome: string, outcomeNote?: string) => {
     if (complete.isPending) return;
     setActionError(null); setShowOutcome(false);
-    try { await complete.mutateAsync({ outcome, outcomeNote }); showSuccess("Visit completed"); } catch (err: any) { showError(err); }
+    try {
+      await complete.mutateAsync({ outcome, outcomeNote });
+      showSuccess("Visit completed");
+      // 2026-05-01: post-completion routing.
+      // - Users with `invoices.create` permission see the action sheet
+      //   and can close-+-invoice / close-only / leave-open from here.
+      // - Everyone else (techs without the capability) goes straight
+      //   back to Today — same behavior as the prior implementation
+      //   minus the manual back-tap.
+      // The completed-only "completed" outcome triggers the sheet;
+      // needs_parts / needs_followup intentionally do NOT (those are
+      // "this visit isn't really finishing the job" outcomes — closing
+      // the job would contradict the outcome the tech just chose).
+      if (outcome === "completed" && canInvoice === true) {
+        setShowCompletionSheet(true);
+      } else {
+        setLocation("/tech/today");
+      }
+    } catch (err: any) {
+      showError(err);
+    }
+  };
+
+  // 2026-05-01: action-sheet handlers.
+  const handleCompleteInvoiceNow = async () => {
+    if (closeJobMutation.isPending) return;
+    setActionError(null);
+    try {
+      const result = await closeJobMutation.mutateAsync("invoice_now");
+      setShowCompletionSheet(false);
+      if (result.invoice) {
+        // Office invoice editor — tech app does not own an invoice
+        // editor surface, so we leave the tech-app shell. Same route
+        // the office uses.
+        setLocation(`/invoices/${result.invoice.id}`);
+      } else {
+        // Defensive: server contract returns non-null invoice for
+        // mode=invoice_now. Fall back to a stable destination.
+        setLocation("/tech/today");
+      }
+    } catch (err: any) {
+      showError(err);
+    }
+  };
+  const handleCompleteInvoiceLater = async () => {
+    if (closeJobMutation.isPending) return;
+    setActionError(null);
+    try {
+      await closeJobMutation.mutateAsync("invoice_later");
+      setShowCompletionSheet(false);
+      setLocation("/tech/today");
+    } catch (err: any) {
+      showError(err);
+    }
+  };
+  // "Complete visit only" — visit already completed via the existing
+  // POST /api/tech/visits/:visitId/complete (that's what triggered the
+  // sheet). No additional API call here; just navigate to Today.
+  const handleCompleteVisitOnly = () => {
+    setShowCompletionSheet(false);
+    setLocation("/tech/today");
+  };
+  // X dismiss — sheet closes, user stays on the (now-completed) visit
+  // page. No navigation, no API.
+  const handleCompleteDismiss = () => {
+    setShowCompletionSheet(false);
   };
   const handleAddNote = async (text: string, equipmentId: string | null, attachments: File[]) => {
     setActionError(null);
@@ -1422,18 +1744,11 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
         </div>
       )}
 
-      {/* Visit Instructions — dispatch-authored notes shown persistently
-          across all tabs so the tech does not have to switch to Overview
-          to read them. Compact (small leading + condensed font) so it does
-          not steal real estate when the body is more important. */}
-      {visit.visitNotes && (
-        <div className="px-3 py-1.5 bg-emerald-50 border-b border-emerald-100">
-          <p className="text-[10px] font-semibold text-emerald-700 uppercase tracking-wider">Instructions</p>
-          <p className="text-xs text-slate-700 leading-snug whitespace-pre-wrap">{visit.visitNotes}</p>
-        </div>
-      )}
-
       {/* ══════ TABS ══════ */}
+      {/* 2026-05-01: Team Instructions banner removed from above the tabs.
+          The block now lives inside Overview directly above Job
+          Description so techs read priority guidance before scope. See
+          the Overview block below. */}
       <div className="flex border-b border-slate-200 bg-white px-1 overflow-x-auto">
         {TABS.map(tab => (
           <button key={tab} onClick={() => setActiveTab(tab)}
@@ -1462,11 +1777,19 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 Job # {visit.jobNumber}
               </div>
             )}
-            {/* Visit Instructions are now rendered as a persistent banner
-                above the tabs bar (visible on every tab), so the redundant
-                Overview-only card has been removed. Job Description and
-                Site Instructions remain here — they are reference content,
-                not in-flight dispatch notes. */}
+            {/* 2026-05-01: Team Instructions (priority visit/team guidance,
+                often exception-based) renders ABOVE Job Description so
+                techs see dispatch-authored direction before they read
+                the broader scope. Source field is `visit.visitNotes`
+                (unchanged backend shape). The trim()-guard ensures
+                empty / whitespace-only values render nothing — no empty
+                card, no orphan header. */}
+            {visit.visitNotes && visit.visitNotes.trim() && (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3">
+                <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wider mb-1">Team Instructions</p>
+                <p className="text-sm text-slate-800 leading-relaxed whitespace-pre-wrap">{visit.visitNotes}</p>
+              </div>
+            )}
             {visit.jobDescription && (
               <div className="rounded-md border border-slate-200 bg-white p-3">
                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Job Description</p>
@@ -1501,10 +1824,13 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 </div>
               </div>
             )}
-            {/* visitNotes is now displayed in the persistent banner above
-                the tabs, not inside Overview, so it no longer suppresses
-                the Overview empty-state. */}
-            {visit.equipment.length === 0 && !visit.jobDescription && !visit.accessInstructions && (
+            {/* Empty-state suppressor: 2026-05-01 — `visit.visitNotes`
+                (Team Instructions) is now an Overview block, so it
+                participates in the "is Overview empty?" check. */}
+            {visit.equipment.length === 0
+              && !visit.jobDescription
+              && !visit.accessInstructions
+              && !(visit.visitNotes && visit.visitNotes.trim()) && (
               <EmptyState message="No overview information" className="py-8" />
             )}
             {/* Create Lead from visit context */}
@@ -1739,6 +2065,22 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
 
       {/* ══════ SHEETS / MODALS ══════ */}
       {showOutcome && <OutcomeModal onSelect={handleComplete} onCancel={() => setShowOutcome(false)} />}
+      {showClockInPrompt && (
+        <ClockInPromptModal
+          busy={clockIn.isPending}
+          onConfirmClockIn={handleClockInPromptYes}
+          onSkip={handleClockInPromptNo}
+        />
+      )}
+      {showCompletionSheet && (
+        <CompletionActionSheet
+          busy={closeJobMutation.isPending}
+          onInvoiceNow={handleCompleteInvoiceNow}
+          onInvoiceLater={handleCompleteInvoiceLater}
+          onCompleteVisitOnly={handleCompleteVisitOnly}
+          onDismiss={handleCompleteDismiss}
+        />
+      )}
       {/* EquipmentSheet modal removed — equipment card opens detail screen directly */}
       {addPartForEquipment !== undefined && (
         <AddPartSheet

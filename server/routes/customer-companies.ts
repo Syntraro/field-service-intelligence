@@ -160,13 +160,29 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
       // re-submit (or a second location with the same primary contact)
       // attaches the existing person rather than creating a twin.
       // Cascade: lower(email) → name+phone → name. Returns {contact, created}.
-      await clientContactRepository.createOrGetPersonTx(tx, tenantCompanyId!, {
+      const { contact: person } = await clientContactRepository.createOrGetPersonTx(tx, tenantCompanyId!, {
         customerCompanyId: companyId,
         firstName,
         lastName,
         email: contactEmail,
         phone: contactPhone,
         isPrimary: true,
+      });
+
+      // Step 3: Link the contact to the just-created location.
+      // 2026-05-02 root-cause fix: previously this step did NOT exist —
+      // the contact_persons row was created but never assigned to any
+      // location. The right-rail Contacts tab on Client Detail renders
+      // the `locationContacts` array (flattened `contact_assignments`
+      // rows) and showed "No contacts assigned" because there was no
+      // assignment row, even though the directory had the person.
+      // `assignToLocationTx` is idempotent on the
+      // (contactPersonId, locationId) pair so repeated submits or
+      // dedup'd location creations don't produce twin assignments.
+      await clientContactRepository.assignToLocationTx(tx, tenantCompanyId!, {
+        contactPersonId: person.id,
+        locationId: location.id,
+        roles: [],
       });
 
       return location;
@@ -334,9 +350,14 @@ router.get("/:companyId/contacts", asyncHandler(async (req: AuthedRequest, res: 
 
 // Validation: name present + (phone or email)
 // Phase 5: association.locations[] carries per-location roles
+// 2026-05-02 honorific split: `title` is honorific (Mr./Mrs./…),
+// `jobTitle` is the freeform professional role (Operations Manager).
+// See migrations/2026_05_02_contact_persons_honorific_split.sql.
 const contactFieldsSchema = z.object({
   firstName: z.string().optional().default(""),
   lastName: z.string().optional().default(""),
+  title: z.string().optional().nullable(),
+  jobTitle: z.string().optional().nullable(),
   phone: z.string().optional().nullable(),
   // 2026-04-14: shape-validate emails at the API boundary so bad data
   // (e.g. "huda@huda") never lands in `contact_persons.email`.
@@ -385,6 +406,8 @@ router.post("/:companyId/contacts", requireRole(MANAGER_ROLES), asyncHandler(asy
     customerCompanyId,
     firstName: contactFields.firstName ?? "",
     lastName: contactFields.lastName ?? "",
+    title: contactFields.title ?? null,
+    jobTitle: contactFields.jobTitle ?? null,
     phone: contactFields.phone ?? null,
     email: contactFields.email ?? null,
     isPrimary: contactFields.isPrimary,
@@ -420,6 +443,10 @@ router.post("/:companyId/contacts", requireRole(MANAGER_ROLES), asyncHandler(asy
 const updateContactSchema = z.object({
   firstName: z.string().optional(),
   lastName: z.string().optional(),
+  // 2026-05-02 honorific split — see contactFieldsSchema above for
+  // semantics. Both fields nullable so the modal can clear them.
+  title: z.string().optional().nullable(),
+  jobTitle: z.string().optional().nullable(),
   phone: z.string().optional().nullable(),
   email: z
     .string()
@@ -461,6 +488,12 @@ router.patch("/:companyId/contacts/:contactId", requireRole(MANAGER_ROLES), asyn
   const merged = {
     firstName: data.firstName ?? existing.firstName,
     lastName: data.lastName ?? existing.lastName,
+    // 2026-05-02 honorific split: `title` and `jobTitle` are
+    // independently nullable. The modal sends `null` to clear, an
+    // empty string for the same effect, or the new value. `undefined`
+    // means "don't touch this field" — preserve existing.
+    title: data.title !== undefined ? data.title : existing.title,
+    jobTitle: data.jobTitle !== undefined ? data.jobTitle : existing.jobTitle,
     phone: data.phone !== undefined ? data.phone : existing.phone,
     email: data.email !== undefined ? data.email : existing.email,
   };
@@ -473,6 +506,8 @@ router.patch("/:companyId/contacts/:contactId", requireRole(MANAGER_ROLES), asyn
   const updated = await clientContactRepository.updatePerson(tenantCompanyId!, contactId, {
     firstName: merged.firstName,
     lastName: merged.lastName,
+    title: merged.title ?? null,
+    jobTitle: merged.jobTitle ?? null,
     phone: merged.phone ?? null,
     email: merged.email ?? null,
     isPrimary: data.isPrimary ?? existing.isPrimary,

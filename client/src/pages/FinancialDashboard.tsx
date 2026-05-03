@@ -29,7 +29,7 @@
  *   Customer rows       → /clients/:customerCompanyId
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
@@ -44,9 +44,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-// 2026-04-26: Operations / Financial mode toggle removed — there is now
-// a single Business Dashboard. `DashboardViewToggle` is no longer
-// imported by any surface.
 import {
   VisitEditorLauncher,
   type VisitEditorState,
@@ -75,15 +72,21 @@ import {
 // absolute-positioned popover gets clipped by DashCard's overflow-hidden.
 // Today's Schedule now uses the canonical <Popover> primitive
 // (`@/components/ui/popover`) which renders via <PopoverPrimitive.Portal>
-// and escapes the card's overflow boundary. DispatchFiltersBar and
-// TodaysOperationsCard still consume <MultiSelectDropdown> — they live
-// inside surfaces without overflow-hidden parents and aren't affected.
+// and escapes the card's overflow boundary. Other consumers
+// (e.g. DispatchFiltersBar) live inside surfaces without
+// overflow-hidden parents and aren't affected.
 // 2026-04-24: shared adapter that fills in the prop fields the canonical
 // Edit Visit modal reads (customerName, jobNumber, locationId, ...) when
 // the caller only holds visitId + jobId. Dispatch already passes the full
 // payload and hits the adapter's fast-path no-op; the dashboard takes the
 // fetch path so its click hydrates the modal identically.
 import { enrichVisitEditorState } from "@/lib/visitEditorPayloadBuilder";
+// 2026-05-01 — clamp helper used to drop / shrink past-time portions of
+// today's open slots so the row label and the click-prefilled start
+// time can never disagree. See clampOpenBlockToNow's docstring for the
+// exact contract; the dashboard applies it once per render so display +
+// click consume the same clamped block.
+import { clampOpenBlockToNow, roundUpToNextInterval } from "@/lib/findNextAvailableSlot";
 
 // ---------------------------------------------------------------------------
 // Types — mirror server/storage/dashboard.ts FinancialSummary
@@ -911,6 +914,31 @@ function TodaysScheduleCard({
     return techs.filter((t) => scopeIds.includes(t.technicianId));
   }, [techs, scopeIds, isMultiTech, isAllTeam]);
 
+  // 2026-05-01: dashboard re-clamp tick. The server's
+  // `/api/dashboard/capacity` returns each tech's full workday
+  // (`scheduleBlocks` is unclamped), so the row label and the
+  // click-prefilled start time must both be derived from a clamped
+  // copy here. We anchor the clamp to `nowTickMs` (state) instead of
+  // `Date.now()` so the schedule rows refresh on a known cadence
+  // even if no other event triggers a re-render. The `useEffect`
+  // below aligns the FIRST tick to the next 15-minute wall-clock
+  // boundary, then ticks every 15 minutes — exactly when a new
+  // open-slot start is unlocked / the prior one rolls off.
+  const [nowTickMs, setNowTickMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const initialDelay = roundUpToNextInterval(Date.now(), 15) - Date.now();
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const timeout = setTimeout(() => {
+      setNowTickMs(Date.now());
+      interval = setInterval(() => setNowTickMs(Date.now()), 15 * 60_000);
+    }, Math.max(initialDelay, 1));
+    return () => {
+      clearTimeout(timeout);
+      if (interval) clearInterval(interval);
+    };
+  }, []);
+  const nowMs = nowTickMs;
+
   // Per-column row filter. When `openOnly` is on, every visible tech keeps
   // its column slot but the booked rows are dropped. A column with zero
   // open slots renders the per-state empty copy below ("No open slots")
@@ -918,25 +946,30 @@ function TodaysScheduleCard({
   // user toggles the filter on/off, and gives selected technicians
   // explicit "nothing for you to take" feedback rather than silently
   // hiding them.
+  //
+  // 2026-05-01: open blocks are also clamped via `clampOpenBlockToNow`
+  // here so EVERY consumer downstream (display row, click handler) sees
+  // the same already-clamped block. The helper is a no-op for booked
+  // blocks and for open blocks whose start is already at/after the next
+  // 15-minute boundary, so future-day slots and entirely-future "today"
+  // slots pass through unchanged. Open blocks whose entire window is in
+  // the past return `null` and are dropped from the column.
   const visibleTechs = useMemo(() => {
-    if (!openOnly) return activeTechs;
-    return activeTechs.map((t) => ({
-      ...t,
-      scheduleBlocks: t.scheduleBlocks.filter((b) => b.kind === "open"),
-    }));
-  }, [activeTechs, openOnly]);
+    return activeTechs.map((t) => {
+      const filtered = openOnly
+        ? t.scheduleBlocks.filter((b) => b.kind === "open")
+        : t.scheduleBlocks;
+      const clamped: CapacityBlockDto[] = [];
+      for (const block of filtered) {
+        const next = clampOpenBlockToNow(block, nowMs, 15);
+        if (next === null) continue;
+        clamped.push(next);
+      }
+      return { ...t, scheduleBlocks: clamped };
+    });
+  }, [activeTechs, openOnly, nowMs]);
 
   const isSingleTechView = visibleTechs.length === 1;
-
-  // 2026-04-30: schedule-row state markers (computed once per render).
-  //   - Past open slot: `kind === "open"` AND `endISO` < now
-  //   - Completed job:   `kind === "booked"` AND `visitStatus === "completed"`
-  // Both are rendered as muted + line-through (with subtly different
-  // opacity per spec). The comparison uses absolute ISO milliseconds so
-  // it is timezone-independent — `block.endISO` and `Date.now()` are both
-  // absolute moments. Same parser the existing `formatClock12Short`
-  // already relies on; no new timezone utility needed.
-  const nowMs = Date.now();
 
   const scopeLabel = useMemo(() => {
     if (isAllTeam) return "All team";

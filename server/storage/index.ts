@@ -155,6 +155,9 @@ export interface IStorage {
   updateInvoice: typeof invoiceRepository.updateInvoice;
   createInvoiceFromJob: typeof invoiceRepository.createInvoiceFromJob;
   createStandaloneInvoice: typeof invoiceRepository.createStandaloneInvoice;
+  // 2026-05-02 (Audit #2 invoice-flow Phase 1): atomic create-with-lines
+  // for the future client-side `/invoices/new` builder.
+  createInvoiceAtomic: typeof invoiceRepository.createInvoiceAtomic;
   bumpInvoiceCounterIfNeeded: typeof invoiceRepository.bumpInvoiceCounterIfNeeded;
   reorderInvoiceLines: typeof invoiceRepository.reorderInvoiceLines;
 
@@ -361,6 +364,7 @@ export const storage: IStorage = {
   updateInvoice: invoiceRepository.updateInvoice.bind(invoiceRepository),
   createInvoiceFromJob: invoiceRepository.createInvoiceFromJob.bind(invoiceRepository),
   createStandaloneInvoice: invoiceRepository.createStandaloneInvoice.bind(invoiceRepository),
+  createInvoiceAtomic: invoiceRepository.createInvoiceAtomic.bind(invoiceRepository),
   bumpInvoiceCounterIfNeeded: invoiceRepository.bumpInvoiceCounterIfNeeded.bind(invoiceRepository),
   reorderInvoiceLines: invoiceRepository.reorderInvoiceLines.bind(invoiceRepository),
 

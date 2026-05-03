@@ -64,6 +64,11 @@ export interface CreateNewDialogProps {
    * currently-viewed client/location). Mirrors `QuickAddJobDialog`'s
    * existing `preselectedLocationId` prop one-for-one. */
   jobPreselectedLocationId?: string;
+  /** 2026-05-02 — "Create Similar Job" entry point. When set, the Job
+   * tab's `QuickAddJobDialog` fetches the source job and prefills its
+   * safe identity fields (location, summary, description). Schedule
+   * and team are intentionally NOT cloned. Pass-through prop only. */
+  jobInitialCloneFromJobId?: string;
   /** Task / Supplier-Visit tab prefill (dispatch slot quick-create). */
   taskInitialData?: {
     assignedToUserId?: string;
@@ -93,6 +98,7 @@ export function CreateNewDialog({
   defaultTab = "job",
   jobInitialSchedule,
   jobPreselectedLocationId,
+  jobInitialCloneFromJobId,
   taskInitialData,
   onJobCreated,
   onTaskChanged,
@@ -181,6 +187,7 @@ export function CreateNewDialog({
               compact
               preselectedLocationId={jobPreselectedLocationId}
               initialSchedule={jobInitialSchedule}
+              cloneFromJobId={jobInitialCloneFromJobId}
               onSuccess={onJobCreated}
             />
           </TabsContent>

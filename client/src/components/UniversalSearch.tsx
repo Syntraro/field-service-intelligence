@@ -15,6 +15,10 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useSurfaceController } from "@/hooks/useSurfaceController";
 import { getClientDisplayName } from "@shared/clientDisplayName";
+// 2026-05-02 entity-number visual language: same primitive used by
+// detail headers + list rows. Search rows render the structured
+// number as a blue pill when the server supplies the new fields.
+import { EntityNumber } from "@/components/common/EntityNumber";
 import {
   Search, Loader2, Briefcase, FileText, Building2, MapPin, Truck, UserCircle,
   LayoutDashboard, LayoutGrid, ClipboardList, Receipt, FileCheck,
@@ -39,6 +43,14 @@ interface SearchResult {
   firstName?: string | null;
   lastName?: string | null;
   useCompanyAsPrimary?: boolean | null;
+  // 2026-05-02 entity-number visual language. Server-supplied
+  // structured fields. When present, the row renders the number
+  // through the canonical `EntityNumber` primitive (blue pill);
+  // when absent the row falls back to the legacy `title` string.
+  entityNumber?: string | null;
+  entityNumberLabel?: "Job #" | "Invoice #" | "Quote #";
+  entityNumberType?: "job" | "invoice" | "quote";
+  titleText?: string;
 }
 
 interface SearchResponse {
@@ -418,7 +430,34 @@ export default function UniversalSearch() {
       >
         <Icon className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
         <div className="flex-1 min-w-0">
-          <div className="font-medium truncate">{sr.type === "customerCompany" ? getClientDisplayName({ name: sr.title, firstName: sr.firstName, lastName: sr.lastName, useCompanyAsPrimary: sr.useCompanyAsPrimary }) : sr.title}</div>
+          {/* 2026-05-02 entity-number rendering. When the server sends
+              the structured `entityNumberType` field, render the
+              number as a blue pill via the canonical EntityNumber
+              primitive followed by the descriptive `titleText`. When
+              `entityNumberType` is absent, fall back to the legacy
+              `title` rendering verbatim — back-compat for result
+              types not migrated (customerCompany / location / supplier
+               / contact). The `customerCompany` branch keeps using
+              `getClientDisplayName` to honor the canonical identity
+              resolver. No duplicated number text — when the pill
+              renders we use `titleText` (server-stripped of the
+              embedded number) instead of `title`. */}
+          {sr.entityNumberType ? (
+            <div className="flex items-center gap-2 min-w-0">
+              {sr.entityNumber
+                ? <EntityNumber variant="primary">{sr.entityNumber}</EntityNumber>
+                : <EntityNumber variant="missing" />}
+              {sr.titleText && (
+                <span className="font-medium truncate min-w-0">{sr.titleText}</span>
+              )}
+            </div>
+          ) : (
+            <div className="font-medium truncate">
+              {sr.type === "customerCompany"
+                ? getClientDisplayName({ name: sr.title, firstName: sr.firstName, lastName: sr.lastName, useCompanyAsPrimary: sr.useCompanyAsPrimary })
+                : sr.title}
+            </div>
+          )}
           {sr.subtitle && (
             <div className="text-xs text-muted-foreground truncate">{sr.subtitle}</div>
           )}

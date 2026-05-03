@@ -9,8 +9,341 @@ import { MANAGER_ROLES } from "../auth/roles";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { reportsRepository } from "../storage/reports";
+import { getCompanySnapshot } from "../storage/reportsSnapshot";
+import { getCompanyFinancial } from "../storage/reportsFinancial";
+import { getCompanyOperations } from "../storage/reportsOperations";
+import { getCompanySales } from "../storage/reportsSales";
+import { getCompanyAR } from "../storage/reportsAR";
+import { getCompanyRevenue } from "../storage/reportsRevenue";
+import { getCompanyJobs } from "../storage/reportsJobs";
+import { getCompanySalesFunnel } from "../storage/reportsSalesFunnel";
+import { getCompanyTeam } from "../storage/reportsTeam";
+import { getCompanyPartsForecast } from "../storage/reportsPartsForecast";
+import type { SnapshotRange } from "@shared/reports/snapshot";
+import type { FinancialRange } from "@shared/reports/financial";
+import type { OperationsRange } from "@shared/reports/operations";
+import type { SalesRange } from "@shared/reports/sales";
+import type { ARRange } from "@shared/reports/ar";
+import type { RevenueRange } from "@shared/reports/revenue";
+import type { JobsRange } from "@shared/reports/jobs";
+import type { SalesFunnelRange } from "@shared/reports/salesFunnel";
+import type { TeamRange } from "@shared/reports/team";
+import type { PartsForecastRange } from "@shared/reports/partsForecast";
 
 const router = Router();
+
+/**
+ * GET /api/reports/snapshot?range=last_30_days
+ *
+ * Canonical aggregator for the Reports → Snapshot tab. Returns the
+ * full structured response (revenueCashFlow, jobsOperations, sales,
+ * accountsReceivable) computed from real persisted data. Every metric
+ * carries a `hasData` flag so the UI can render an empty state instead
+ * of a fabricated zero.
+ *
+ * Range is parameterized so additional spans (last_quarter / last_year)
+ * can be wired without restructuring the contract; only `last_30_days`
+ * is supported in this first pass.
+ */
+const snapshotQuerySchema = z.object({
+  range: z.enum(["last_30_days"]).default("last_30_days"),
+});
+
+router.get(
+  "/snapshot",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const parsed = snapshotQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw createError(400, parsed.error.issues.map((i) => i.message).join("; "));
+    }
+    const range = parsed.data.range as SnapshotRange;
+    const snapshot = await getCompanySnapshot(companyId, range);
+    res.json(snapshot);
+  }),
+);
+
+/**
+ * GET /api/reports/financial?range=last_30_days
+ *
+ * Drill-down aggregator for the Reports → Financial tab. Returns the
+ * full structured response (kpis, revenueTrend, paymentBreakdown,
+ * arAging, invoiceStatus, paymentTime, topOutstandingClients) computed
+ * from real persisted data. Every section carries a `hasData` flag so
+ * the UI can render per-section empty states.
+ *
+ * Reuses the Snapshot tab's shared query primitives (revenue / avg
+ * payment days / AR 30+) via `server/storage/reportsCommon.ts` so the
+ * two tabs cannot disagree on those definitions.
+ */
+const financialQuerySchema = z.object({
+  range: z.enum(["last_30_days"]).default("last_30_days"),
+});
+
+router.get(
+  "/financial",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const parsed = financialQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw createError(400, parsed.error.issues.map((i) => i.message).join("; "));
+    }
+    const range = parsed.data.range as FinancialRange;
+    const financial = await getCompanyFinancial(companyId, range);
+    res.json(financial);
+  }),
+);
+
+/**
+ * GET /api/reports/operations?range=last_30_days
+ *
+ * Drill-down aggregator for the Reports → Operations tab. Returns the
+ * full structured response (kpis, completionTrend, jobStatus,
+ * avgJobValueTrend, unbillableBreakdown) computed from real persisted
+ * data. Every section carries a `hasData` flag so the UI can render
+ * per-section empty states.
+ *
+ * KPIs reuse the canonical `sharedQueries` from `reportsCommon.ts`
+ * (jobs completed, avg job invoice value, unbillable time cost) so the
+ * Snapshot and Operations tabs cannot disagree on those numbers.
+ */
+const operationsQuerySchema = z.object({
+  range: z.enum(["last_30_days"]).default("last_30_days"),
+});
+
+router.get(
+  "/operations",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const parsed = operationsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw createError(400, parsed.error.issues.map((i) => i.message).join("; "));
+    }
+    const range = parsed.data.range as OperationsRange;
+    const operations = await getCompanyOperations(companyId, range);
+    res.json(operations);
+  }),
+);
+
+/**
+ * GET /api/reports/sales?range=last_30_days
+ *
+ * Drill-down aggregator for the Reports → Sales tab. Returns the full
+ * structured response (kpis, leadCreationTrend, leadConversionTrend,
+ * quoteCreationTrend, quoteConversionTrend, leadStatusBreakdown,
+ * quoteStatusBreakdown) computed from real persisted data.
+ *
+ * KPIs reuse `sharedQueries` (leadsCreated / leadConversionPercent /
+ * quotesCreated / quoteConversionPercent) so the Snapshot tab's Sales
+ * section and the Sales drill-down tab cannot disagree.
+ */
+const salesQuerySchema = z.object({
+  range: z.enum(["last_30_days"]).default("last_30_days"),
+});
+
+router.get(
+  "/sales",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const parsed = salesQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw createError(400, parsed.error.issues.map((i) => i.message).join("; "));
+    }
+    const range = parsed.data.range as SalesRange;
+    const sales = await getCompanySales(companyId, range);
+    res.json(sales);
+  }),
+);
+
+/**
+ * GET /api/reports/ar?range=last_30_days
+ *
+ * Backs the Accounts Receivable deep-report page (`/reports/ar`).
+ * Returns the full structured response (kpis, aging, overdueInvoices,
+ * topOutstandingClients, paymentTimeTrend). Reuses the canonical
+ * `getARAgingReport` for buckets + invoice list + the
+ * `sharedQueries` for windowed totals.
+ */
+const arQuerySchema = z.object({
+  range: z.enum(["last_30_days"]).default("last_30_days"),
+});
+
+router.get(
+  "/ar",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const parsed = arQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw createError(400, parsed.error.issues.map((i) => i.message).join("; "));
+    }
+    const range = parsed.data.range as ARRange;
+    const ar = await getCompanyAR(companyId, range);
+    res.json(ar);
+  }),
+);
+
+/**
+ * GET /api/reports/revenue?range=last_30_days
+ *
+ * Backs the Revenue deep-report page (`/reports/revenue`). Returns
+ * KPIs, revenue trend, payment methods, revenue by client, recent
+ * payments, and a calendar-month comparison. Reuses
+ * `sharedQueries.revenue` / `paymentsCollected` / `avgPaymentAmount`
+ * for the KPI strip and `getRevenueTrendShared` /
+ * `getPaymentBreakdownShared` for the chart sections — same queries
+ * the Financial tab uses, so the two surfaces cannot disagree.
+ */
+const revenueQuerySchema = z.object({
+  range: z.enum(["last_30_days"]).default("last_30_days"),
+});
+
+router.get(
+  "/revenue",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const parsed = revenueQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw createError(400, parsed.error.issues.map((i) => i.message).join("; "));
+    }
+    const range = parsed.data.range as RevenueRange;
+    const revenue = await getCompanyRevenue(companyId, range);
+    res.json(revenue);
+  }),
+);
+
+/**
+ * GET /api/reports/jobs?range=last_30_days
+ *
+ * Backs the Job Performance deep-report page (`/reports/jobs`).
+ * Returns KPIs (jobs completed, avg job invoice value, unbillable
+ * cost, active jobs), the four Operations sections (completion
+ * trend, status breakdown, avg job value trend, unbillable
+ * breakdown), and a completed-jobs activity table.
+ *
+ * KPIs + sections route through the canonical `sharedQueries` and
+ * `get*Shared` helpers in `reportsCommon`, so this surface and the
+ * Operations tab cannot disagree.
+ */
+const jobsQuerySchema = z.object({
+  range: z.enum(["last_30_days"]).default("last_30_days"),
+});
+
+router.get(
+  "/jobs",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const parsed = jobsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw createError(400, parsed.error.issues.map((i) => i.message).join("; "));
+    }
+    const range = parsed.data.range as JobsRange;
+    const jobs = await getCompanyJobs(companyId, range);
+    res.json(jobs);
+  }),
+);
+
+/**
+ * GET /api/reports/sales-funnel?range=last_30_days
+ *
+ * Backs the Sales Funnel deep-report page (`/reports/sales-funnel`).
+ * Returns 5 KPIs (leads / lead conv % / quotes / quote conv % /
+ * lead→quote drop-off), a fixed-order 4-stage funnel, the four Sales
+ * tab trend sections, both status breakdowns, and a conversion-lag
+ * section.
+ *
+ * KPIs + section helpers all route through `sharedQueries` and
+ * `get*Shared` in `reportsCommon`, so the Sales tab and this surface
+ * cannot disagree on any number.
+ */
+const salesFunnelQuerySchema = z.object({
+  range: z.enum(["last_30_days"]).default("last_30_days"),
+});
+
+router.get(
+  "/sales-funnel",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const parsed = salesFunnelQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw createError(400, parsed.error.issues.map((i) => i.message).join("; "));
+    }
+    const range = parsed.data.range as SalesFunnelRange;
+    const funnel = await getCompanySalesFunnel(companyId, range);
+    res.json(funnel);
+  }),
+);
+
+/**
+ * GET /api/reports/team?range=last_30_days
+ *
+ * Backs the Team Performance deep-report page (`/reports/team`).
+ * Returns hour totals, per-user hours, per-user unbillable cost,
+ * per-user completed-jobs counts, and a time-distribution summary.
+ *
+ * Attribution is FK-clean only: time queries key on
+ * `time_entries.technicianId`; job-completion queries key on
+ * `job_status_events.changedBy`. Multi-tech `job_visits` arrays are
+ * NOT used. Per spec: "If attribution is unclear → hasData=false."
+ */
+const teamQuerySchema = z.object({
+  range: z.enum(["last_30_days"]).default("last_30_days"),
+});
+
+router.get(
+  "/team",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const parsed = teamQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw createError(400, parsed.error.issues.map((i) => i.message).join("; "));
+    }
+    const range = parsed.data.range as TeamRange;
+    const team = await getCompanyTeam(companyId, range);
+    res.json(team);
+  }),
+);
+
+/**
+ * GET /api/reports/parts-forecast?range=next_30_days
+ *
+ * Backs the Parts Forecast deep-report page (`/reports/parts-forecast`).
+ * Forecasts parts demand for upcoming PM work by joining scheduled
+ * `job_visits` (jobType='maintenance', in window) to active
+ * `location_pm_part_templates`. Each visit contributes
+ * `quantityPerVisit` once — visits are NOT deduplicated by location.
+ *
+ * Per-section helpers route through `reportsCommon` so the same
+ * (visit × part) join definition is applied consistently across the
+ * KPIs, the parts-by-product roll-up, the per-visit roll-up, and
+ * the missing-parts gap report.
+ */
+const partsForecastQuerySchema = z.object({
+  range: z.enum(["next_30_days"]).default("next_30_days"),
+});
+
+router.get(
+  "/parts-forecast",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const parsed = partsForecastQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw createError(400, parsed.error.issues.map((i) => i.message).join("; "));
+    }
+    const range = parsed.data.range as PartsForecastRange;
+    const forecast = await getCompanyPartsForecast(companyId, range);
+    res.json(forecast);
+  }),
+);
 
 /**
  * Query params schema for action-required-kpis

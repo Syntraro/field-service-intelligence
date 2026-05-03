@@ -362,7 +362,11 @@ export class JobRepository extends BaseRepository {
       locationAddress: clients.address,
       location: {
         id: clients.id,
-        companyName: clients.companyName,
+        // 2026-05-01 bypass cleanup: nested location.companyName resolves
+        // through the canonical helper. The customer_companies JOIN is
+        // already present below; no extra cost. The parent's name wins
+        // for parented locations; standalone falls through to cl.companyName.
+        companyName: locationDisplayNameExpr,
         location: clients.location,
         address: clients.address,
         city: clients.city,
@@ -525,9 +529,14 @@ export class JobRepository extends BaseRepository {
         createdAt: jobs.createdAt,
         updatedAt: jobs.updatedAt,
         // Add location data
+        // 2026-05-01 bypass cleanup: nested location.companyName resolves
+        // through the canonical helper (parent-first COALESCE). The
+        // customer_companies LEFT JOIN below is added so the helper has
+        // a `cc` row to reference; uses the existing
+        // idx_client_locations_parent_company index, cost negligible.
         location: {
           id: clients.id,
-          companyName: clients.companyName,
+          companyName: locationDisplayNameExpr,
           location: clients.location,
           address: clients.address,
           city: clients.city,
@@ -537,6 +546,7 @@ export class JobRepository extends BaseRepository {
       })
       .from(jobs)
       .leftJoin(clients, eq(jobs.locationId, clients.id))
+      .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
       .where(
         and(
           eq(jobs.id, jobId),

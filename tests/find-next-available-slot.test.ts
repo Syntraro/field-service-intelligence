@@ -137,9 +137,11 @@ describe("findNextAvailableSlot", () => {
 
   // ── Past-time clipping ──
 
-  it("ignores past time when the workday is today (now=1:50 PM, morning gap dropped)", () => {
+  it("ignores past time when the workday is today (now=1:50 PM, rounds up to 2:00 PM)", () => {
     // Morning gap exists 9-11, but now is 1:50 PM — that gap is fully past.
-    // Afternoon gap [11, 17] minus busy nothing → starts at max(11, 13:50) = 13:50.
+    // 2026-05-02: the helper rounds `now` up to the next 15-min boundary,
+    // so 13:50 becomes 14:00 and the slot starts on a quarter-hour rather
+    // than carrying the user's exact click instant into the form.
     const cap: CapacityResponse = {
       technicians: [
         tech({
@@ -150,8 +152,8 @@ describe("findNextAvailableSlot", () => {
       ],
     };
     const match = findNextAvailableSlot(cap, 60, new Date(ONE_FIFTY_PM));
-    expect(match?.startISO).toBe(ONE_FIFTY_PM);
-    expect(match?.time).toBe("13:50");
+    expect(match?.startISO).toBe(TWO_PM);
+    expect(match?.time).toBe("14:00");
   });
 
   it("returns null when 'now' is past the workday end (day_over)", () => {
@@ -378,10 +380,19 @@ describe("QuickAddJobDialog wiring (source-level guard)", () => {
     expect(source).toMatch(/estimatedDurationMinutes/);
   });
 
-  it("exposes a Find Next Available control wired to the capacity endpoint", () => {
-    expect(source).toMatch(/data-testid="button-find-next-available"/);
+  it("exposes a Find Availability control wired to the capacity endpoint", () => {
+    // 2026-05-02: the dialog migrated from a single-shot "Find Next
+    // Available" auto-pick button to an in-dialog availability panel
+    // that surfaces every open gap per technician. The trigger testid
+    // changed from `button-find-next-available` to
+    // `button-find-availability`; the underlying capacity feed is
+    // unchanged (still GET /api/dashboard/capacity).
+    expect(source).toMatch(/data-testid="button-find-availability"/);
     expect(source).toMatch(/\/api\/dashboard\/capacity/);
-    expect(source).toMatch(/findNextAvailableSlot/);
+    // Panel is still wired to the canonical availability module —
+    // assert via the import path so a rename of any individual helper
+    // doesn't ripple into this guard.
+    expect(source).toMatch(/from\s*"@\/lib\/findNextAvailableSlot"/);
   });
 
   it("renders the service selector as a searchable combobox (Popover + CommandInput)", () => {
@@ -415,15 +426,29 @@ describe("QuickAddJobDialog wiring (source-level guard)", () => {
     expect(source).not.toMatch(/\$\{svc\.estimatedDurationMinutes\}m/);
   });
 
-  it("formats the next-available toast via the canonical formatSlotTimeLabel helper", () => {
-    expect(source).toMatch(/formatSlotTimeLabel\(match\.date, match\.time\)/);
-    expect(source).not.toMatch(/format\(parseISO\(match\.startISO\)/);
+  it("formats availability rows via the canonical formatSlotTimeLabel helper", () => {
+    // 2026-05-02: the auto-pick `match` variable is gone — the panel
+    // now renders one row per open gap (per technician). Assert the
+    // helper is still used with the panel's gap/slot shape, not raw
+    // ISO formatting. The shape is `{ date, time }` (and `endTime`
+    // for the panel rows), so we pin to `.date,` + `.time` access.
+    expect(source).toMatch(/formatSlotTimeLabel\([\w.]+\.date,\s*[\w.]+\.(?:time|endTime)\)/);
+    // Regression guard: never hand-roll the formatting from a raw ISO
+    // (the canonical helper exists precisely so no caller has to).
+    expect(source).not.toMatch(/format\(parseISO\([\w.]+\.startISO\)/);
   });
 
-  it("imports findNextAvailableSlot AND formatSlotTimeLabel from the canonical module", () => {
-    expect(source).toMatch(
-      /import\s*{[^}]*findNextAvailableSlot[^}]*formatSlotTimeLabel[^}]*}\s*from\s*"@\/lib\/findNextAvailableSlot"/,
-    );
+  it("imports the canonical availability helpers from @/lib/findNextAvailableSlot", () => {
+    // 2026-05-02: the panel computes gaps per-tech (not a single match)
+    // so the legacy single-slot helper `findNextAvailableSlot` is no
+    // longer imported here — `computeOpenGapsForTech` +
+    // `groupOpenGapsByTech` replace it. Assert per-symbol so a future
+    // import-formatting tweak (multi-line ↔ single-line, alias, ordering)
+    // does not break this guard.
+    expect(source).toMatch(/from\s*"@\/lib\/findNextAvailableSlot"/);
+    expect(source).toMatch(/\bformatSlotTimeLabel\b/);
+    expect(source).toMatch(/\bcomputeOpenGapsForTech\b/);
+    expect(source).toMatch(/\bgroupOpenGapsByTech\b/);
   });
 });
 
@@ -1232,11 +1257,11 @@ describe("groupOpenGapsByTech", () => {
     expect(groups[0].gaps[0].durationMinutes).toBe(240); // 13–17 = 4h
   });
 
-  it("excludes past-time windows when the search anchor is today (now=1:50 PM)", () => {
+  it("excludes past-time windows when the search anchor is today (now=1:50 PM, rounded to 2:00 PM)", () => {
     // Alice's only booking is 9:00–11:00 — leaves an 11:00–17:00 open window.
     // With `now=1:50 PM`, the past portion (11:00–13:50) must be clipped out.
-    // Result: a single gap starting at 13:50 (clipped window start) running
-    // to 17:00 (3h 10m / 190 min).
+    // 2026-05-02: `now` rounds up to the next 15-min boundary, so the slot
+    // starts at 14:00 (not 13:50). Result: 14:00–17:00 = 180 min.
     const cap: CapacityResponse = {
       technicians: [
         tech({
@@ -1250,8 +1275,8 @@ describe("groupOpenGapsByTech", () => {
     const groups = groupOpenGapsByTech(cap, 60, { now: new Date(ONE_FIFTY_PM) });
     expect(groups).toHaveLength(1);
     expect(groups[0].gaps).toHaveLength(1);
-    expect(groups[0].gaps[0].time).toBe("13:50"); // clipped to now
-    expect(groups[0].gaps[0].durationMinutes).toBe(190); // 13:50 → 17:00
+    expect(groups[0].gaps[0].time).toBe("14:00"); // rounded up
+    expect(groups[0].gaps[0].durationMinutes).toBe(180); // 14:00 → 17:00 = 3h
   });
 
   it("future-date search (now=0) does NOT clip morning availability", () => {
@@ -1355,6 +1380,136 @@ describe("groupOpenGapsByTech", () => {
     })();
     expect(buttonBlock).toContain('onClick={() => setAvailabilityPanelOpen((o) => !o)}');
     expect(buttonBlock).not.toMatch(/\.mutate\(/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2026-05-02: company-tz wall-clock + 15-min rounding regression guards.
+//
+// These tests reconstruct the production wiring (Toronto company tz,
+// 8 AM–5 PM workday) and exercise the helper through the same inputs the
+// Find Availability panel sends. They lock down:
+//
+//   1. emitted `gap.date` / `gap.time` / `gap.endTime` are company-LOCAL
+//      wall clock when `options.timezone` is passed (not UTC slices),
+//   2. raw `Date.now()` rounds up to the next 15-min boundary before any
+//      window math, so a 1:53 PM click lands at 2:00 PM, a 2:01 PM click
+//      lands at 2:15 PM, and 5:01 PM with an 8–5 workday returns no
+//      availability,
+//   3. the `now: 0` (future-date) sentinel is NEVER rounded — the full
+//      workday is evaluated and emits 8:00 AM–5:00 PM in company-local.
+// ---------------------------------------------------------------------------
+
+describe("Find Availability — Toronto company-tz, 8–5 workday, 15-min rounding", () => {
+  // 2026-04-26 was a Sunday; EDT = UTC-4. 8 AM EDT = 12:00 UTC, 5 PM EDT
+  // = 21:00 UTC. The fixture uses real ISO instants so the helper sees
+  // the same shape the server emits.
+  const TORONTO = "America/Toronto";
+  const WORKDAY_8_TO_5 = {
+    startISO: "2026-04-26T12:00:00.000Z", // 8 AM EDT
+    endISO: "2026-04-26T21:00:00.000Z", // 5 PM EDT
+  } as const;
+
+  function singleTechCap(): CapacityResponse {
+    return {
+      timezone: TORONTO,
+      technicians: [
+        tech({
+          id: "nadeem",
+          name: "Nadeem",
+          workday: { startISO: WORKDAY_8_TO_5.startISO, endISO: WORKDAY_8_TO_5.endISO },
+          booked: [],
+        }),
+      ],
+    };
+  }
+
+  it("now=1:53 PM EDT (no busy) rounds to 2:00 PM, ends at 5:00 PM, labels in company-local", () => {
+    // 1:53 PM EDT = 17:53 UTC. Next 15-min boundary = 18:00 UTC = 2:00 PM EDT.
+    const now = new Date("2026-04-26T17:53:00.000Z");
+    const groups = groupOpenGapsByTech(singleTechCap(), 60, {
+      now,
+      timezone: TORONTO,
+    });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].gaps).toHaveLength(1);
+    const gap = groups[0].gaps[0];
+    // Company-local wall clock — NOT the UTC slice (which would be "18:00").
+    expect(gap.date).toBe("2026-04-26");
+    expect(gap.time).toBe("14:00"); // 2:00 PM EDT
+    expect(gap.endTime).toBe("17:00"); // 5:00 PM EDT
+    expect(gap.durationMinutes).toBe(180); // 14:00–17:00 = 3h
+    // Underlying ISO instants stay UTC for downstream math.
+    expect(gap.startISO).toBe("2026-04-26T18:00:00.000Z");
+    expect(gap.endISO).toBe("2026-04-26T21:00:00.000Z");
+    // The toast / button label fed by formatSlotTimeLabel matches the
+    // company-local wall clock.
+    expect(formatSlotTimeLabel(gap.date, gap.time)).toBe("2:00 PM");
+    expect(formatSlotTimeLabel(gap.date, gap.endTime)).toBe("5:00 PM");
+  });
+
+  it("now=2:01 PM EDT rounds up to 2:15 PM (next quarter-hour, not the click instant)", () => {
+    // 2:01 PM EDT = 18:01 UTC. Next 15-min boundary = 18:15 UTC = 2:15 PM EDT.
+    const now = new Date("2026-04-26T18:01:00.000Z");
+    const groups = groupOpenGapsByTech(singleTechCap(), 60, {
+      now,
+      timezone: TORONTO,
+    });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].gaps[0].time).toBe("14:15");
+    // 14:15–17:00 = 165 min. Important: rounding is applied to the
+    // ANCHOR, not the workday end — so the duration shrinks to whatever
+    // remains of the workday after the rounded start.
+    expect(groups[0].gaps[0].durationMinutes).toBe(165);
+  });
+
+  it("now=5:01 PM EDT (workday 8–5) returns no availability — rounded anchor 5:15 is past day end", () => {
+    // 5:01 PM EDT = 21:01 UTC. Next 15-min boundary = 21:15 UTC.
+    // workEnd = 21:00 UTC → windowStart > windowEnd → no gaps emitted.
+    const now = new Date("2026-04-26T21:01:00.000Z");
+    const groups = groupOpenGapsByTech(singleTechCap(), 60, {
+      now,
+      timezone: TORONTO,
+    });
+    expect(groups).toEqual([]);
+  });
+
+  it("future-date search (now=0) emits the FULL workday 8:00 AM–5:00 PM in company-local", () => {
+    // The 0 anchor is the QuickAddJobDialog "future date" sentinel. It
+    // must bypass rounding entirely so the morning isn't dropped, and
+    // emitted labels must still be company-local.
+    const groups = groupOpenGapsByTech(singleTechCap(), 60, {
+      now: 0,
+      timezone: TORONTO,
+    });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].gaps).toHaveLength(1);
+    const gap = groups[0].gaps[0];
+    expect(gap.time).toBe("08:00");
+    expect(gap.endTime).toBe("17:00");
+    expect(gap.durationMinutes).toBe(540); // 9h workday
+    expect(formatSlotTimeLabel(gap.date, gap.time)).toBe("8:00 AM");
+    expect(formatSlotTimeLabel(gap.date, gap.endTime)).toBe("5:00 PM");
+  });
+
+  it("emitted gap.date / gap.time are company-local wall clock, not UTC slices", () => {
+    // Cross-check against the raw UTC slice the OLD code returned. With
+    // a Toronto-EDT workday 8–5 (12:00–21:00 UTC) and now=0, the helper
+    // must NOT emit "12:00" / "21:00" (those would be the UTC slice).
+    const groups = groupOpenGapsByTech(singleTechCap(), 60, {
+      now: 0,
+      timezone: TORONTO,
+    });
+    const gap = groups[0].gaps[0];
+    expect(gap.time).not.toBe("12:00");
+    expect(gap.endTime).not.toBe("21:00");
+    expect(gap.time).toBe("08:00");
+    expect(gap.endTime).toBe("17:00");
+    // Without timezone (back-compat path) the helper falls back to UTC
+    // slicing — important so existing UTC-anchored fixtures keep passing.
+    const utc = groupOpenGapsByTech(singleTechCap(), 60, { now: 0 });
+    expect(utc[0].gaps[0].time).toBe("12:00");
+    expect(utc[0].gaps[0].endTime).toBe("21:00");
   });
 });
 

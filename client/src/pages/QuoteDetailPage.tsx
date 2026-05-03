@@ -4,7 +4,10 @@ import { useRoute, useLocation, Link } from "wouter";
 import { format, isValid, parseISO, isPast } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 // Phase 12 (2026-04-12): Jobber-style send modal with backend-rendered preview.
-import { SendQuoteModal } from "@/components/communication/SendQuoteModal";
+// 2026-05-02 (Audit #2 PR 2): SendQuoteModal wrapper deleted — it was a
+// pure forwarding shim around SendCommunicationModal. Callers now use
+// the canonical modal directly with `entityType="quote"`.
+import { SendCommunicationModal } from "@/components/communication/SendCommunicationModal";
 // Phase 15 (2026-04-12): email delivery status card.
 import { DeliveryStatusCard } from "@/components/communication/DeliveryStatusCard";
 import { useToast } from "@/hooks/use-toast";
@@ -58,7 +61,9 @@ import type { Quote, QuoteLine, Client, CustomerCompany } from "@shared/schema";
 import { ApplyQuoteTemplateModal } from "@/components/ApplyQuoteTemplateModal";
 import { QuoteHeaderCard } from "@/components/QuoteHeaderCard";
 import { ActivityCard } from "@/components/activity/ActivityCard";
-import { QuoteNotesSection } from "@/components/QuoteNotesSection";
+// Canonical notes section. Quote notes share the same UI + dialog +
+// attachment pipeline as job / invoice notes.
+import EntityNotesSection from "@/components/notes/EntityNotesSection";
 // 2026-04-29 (Phase 2 canonical extraction): the local CreateOrSelectField
 // + useProductSearch + product-helper imports have moved into the canonical
 // `<LineItemsCard>` / `<LineItemRow>` / `<AddLineItemForm>` components.
@@ -186,7 +191,8 @@ export default function QuoteDetailPage() {
   };
 
   // Phase 13 (2026-04-12): legacy send-quote modal state removed. Send flow
-  // now lives in <SendQuoteModal>, driven by backend preview + overrides.
+  // now lives in <SendCommunicationModal entityType="quote">, driven by
+  // backend preview + overrides.
 
   const { data: details, isLoading } = useQuery<QuoteDetails>({
     queryKey: ["quote", quoteId, "details"],
@@ -198,8 +204,9 @@ export default function QuoteDetailPage() {
     enabled: !!quoteId,
   });
 
-  // Phase 13 (2026-04-12): legacy `sendMutation` removed. <SendQuoteModal>
-  // is the canonical send entry point and owns its own mutation.
+  // Phase 13 (2026-04-12): legacy `sendMutation` removed.
+  // <SendCommunicationModal entityType="quote"> is the canonical send
+  // entry point and owns its own mutation.
 
   const approveMutation = useMutation({
     mutationFn: () => apiRequest(`/api/quotes/${quoteId}/approve`, { method: "POST" }),
@@ -741,10 +748,10 @@ export default function QuoteDetailPage() {
                   JobDetailPage notes card byte-for-byte: Collapsible
                   shell, bg-[#f8fafc] header bar with MessageSquare icon,
                   ghost "+" button that stops propagation, ChevronDown
-                  (open) / ChevronRight (closed). QuoteNotesSection is
+                  (open) / ChevronRight (closed). EntityNotesSection is
                   rendered in `embedded hideHeader hideAddButton` mode so
-                  the parent drives the header affordance, same as
-                  JobNotesSection's invocation on Job Detail. */}
+                  the parent drives the header affordance, same as the
+                  Job Detail invocation. */}
               <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="section-quote-notes">
                 <Collapsible open={notesExpanded} onOpenChange={setNotesExpanded}>
                   <CollapsibleTrigger asChild>
@@ -772,8 +779,9 @@ export default function QuoteDetailPage() {
                   </CollapsibleTrigger>
                   <CollapsibleContent>
                     <div className="border-t border-slate-200">
-                      <QuoteNotesSection
-                        quoteId={quote.id}
+                      <EntityNotesSection
+                        entityType="quote"
+                        entityId={quote.id}
                         embedded
                         hideHeader
                         hideAddButton
@@ -854,11 +862,15 @@ export default function QuoteDetailPage() {
           + body loaded from backend preview; Send submits with overrides.
           Phase 13 (2026-04-12): legacy inline Dialog and its companion state
           (sendMutation, sendRecipients, sendSubject, sendMessage) removed —
-          this modal is the only send path for quotes. */}
-      <SendQuoteModal
-        quoteId={quoteId}
+          this modal is the only send path for quotes.
+          2026-05-02 (Audit #2 PR 2): canonical SendCommunicationModal used
+          directly — wrapper SendQuoteModal was deleted. */}
+      <SendCommunicationModal
+        entityType="quote"
+        entityId={quoteId}
         isOpen={showSendModal}
         onClose={() => setShowSendModal(false)}
+        title="Send Quote"
         onSuccess={() => {
           queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
           queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });

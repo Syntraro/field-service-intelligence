@@ -121,12 +121,16 @@ async function fetchVisitsInRange(
       jv.assigned_technician_ids[1] AS "technicianId",
       cl.lat AS "locationLat",
       cl.lng AS "locationLng",
-      cl.company_name AS "locationName",
+      -- 2026-05-01 bypass cleanup: locationName resolves via the
+      -- canonical parent-first COALESCE so auto-gap suggestions show
+      -- the current parent name even on stale-denormalized rows.
+      COALESCE(cc.name, NULLIF(cl.company_name, '')) AS "locationName",
       j.job_number AS "jobNumber"
     FROM job_visits jv
     JOIN jobs j ON j.id = jv.job_id AND j.company_id = ${companyId}
       AND ${sql.raw(JOB_ACTIVE_SQL_J)}
     LEFT JOIN client_locations cl ON cl.id = j.location_id
+    LEFT JOIN customer_companies cc ON cl.parent_company_id = cc.id
     WHERE jv.company_id = ${companyId}
       AND jv.is_active = true
       AND jv.archived_at IS NULL

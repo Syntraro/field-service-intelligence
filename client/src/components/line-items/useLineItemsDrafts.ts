@@ -161,9 +161,30 @@ export function useLineItemsDrafts<TServerLine extends { id: string }>({
 
   const updateDraft = useCallback((clientKey: string, patch: Partial<LineItemDraft>) => {
     setDrafts((prev) =>
-      prev?.map((e) =>
-        e.clientKey === clientKey ? { ...e, draft: { ...e.draft, ...patch } } : e,
-      ) ?? null,
+      prev?.map((e) => {
+        if (e.clientKey !== clientKey) return e;
+        const nextDraft = { ...e.draft, ...patch };
+        // 2026-05-01: when quantity OR unitPrice is part of the patch,
+        // recompute lineSubtotal so the saved draft persists the correct
+        // qty × price total. Prior behavior left lineSubtotal at its
+        // initial blank-draft value ("0.00") because the LineItemRow /
+        // AddLineItemForm onChange handlers only displayed the multiplied
+        // total — they never wrote it back into the draft. Server-side
+        // POST /api/invoices/:id/lines reads `lineData.lineSubtotal`
+        // from the payload (server/routes/invoices.ts:707), so a draft
+        // with lineSubtotal="0.00" persisted as $0 even though qty/rate
+        // were correct. Fix is centralized at this single canonical
+        // choke point — both LineItemRow and AddLineItemForm route
+        // every patch through this hook's `updateDraft` (see
+        // LineItemsCard.tsx:286, 306). No component-level changes
+        // needed; no server contract change needed.
+        if ("quantity" in patch || "unitPrice" in patch) {
+          const qty = parseMoney(nextDraft.quantity);
+          const price = parseMoney(nextDraft.unitPrice);
+          nextDraft.lineSubtotal = formatMoney(qty * price);
+        }
+        return { ...e, draft: nextDraft };
+      }) ?? null,
     );
   }, []);
 

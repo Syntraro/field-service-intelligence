@@ -27,6 +27,12 @@ import { computeNextDueDate } from "@shared/nextDue";
 // 2026-04-18 Client-billing workstream: per-location aggregates reuse the
 // canonical invoices-feed storage methods (no direct table access here).
 import { getClientBillingSummary, getClientBillingHistory } from "../storage/invoicesFeed";
+// 2026-05-02: derived per-client pricing history (read-only).
+import {
+  getClientPricingHistory,
+  type PricingHistoryFilters,
+  type PricingHistorySourceType,
+} from "../services/clientPricingHistoryService";
 
 const router = Router();
 
@@ -149,10 +155,16 @@ router.get("/search-locations", asyncHandler(async (req: AuthedRequest, res: Res
   const limit = Math.min(Math.max(limitParam || 30, 1), 50);
 
   // If no query, return most recent / alphabetical locations (initial load for empty search)
-  // This lets the dropdown show options before the user types anything
+  // This lets the dropdown show options before the user types anything.
+  // 2026-05-01 stale-rename fix: `company_name` in the response is the
+  // resolved display name (parent's current name when location has a
+  // parent, else the location's own column). See `server/storage/search.ts`
+  // location query for the full rationale.
   if (rawQuery.length === 0) {
     const { rows } = await (await import("../db")).pool.query(
-      `SELECT cl.id, cl.company_name, cl.location, cl.address, cl.city,
+      `SELECT cl.id,
+              COALESCE(cc.name, NULLIF(cl.company_name, '')) AS company_name,
+              cl.location, cl.address, cl.city,
               cl.parent_company_id, cl.needs_details,
               cc.name AS parent_company_name
        FROM client_locations cl
@@ -160,7 +172,7 @@ router.get("/search-locations", asyncHandler(async (req: AuthedRequest, res: Res
        WHERE cl.company_id = $1
          AND cl.deleted_at IS NULL
          AND (cl.inactive = false OR cl.inactive IS NULL)
-       ORDER BY cl.company_name ASC
+       ORDER BY COALESCE(cc.name, NULLIF(cl.company_name, '')) ASC
        LIMIT $2`,
       [companyId, limit]
     );
@@ -183,17 +195,32 @@ router.get("/search-locations", asyncHandler(async (req: AuthedRequest, res: Res
   const stripChars = "'''`\u2018\u2019\u201B\u2032";
 
   // Single query: join customer_companies for parent name,
-  // search across companyName, parent name, location, address, city
-  // using translate() to strip apostrophes on the DB side too
+  // search across name, location, address, city using translate() to
+  // strip apostrophes on the DB side too.
+  // 2026-05-01 strict-search: parented locations match only against the
+  // parent customer company's current name; standalone locations match
+  // their own `cl.company_name`. The legacy denormalized override on
+  // parented rows is NOT searchable — the prior fallback behavior let
+  // typos/old/stale names surface results, which violated the rename-
+  // propagation contract. Match-rank scoring is now also parent-aware.
   const { rows } = await (await import("../db")).pool.query(
-    `SELECT cl.id, cl.company_name, cl.location, cl.address, cl.city,
+    `SELECT cl.id,
+            COALESCE(cc.name, NULLIF(cl.company_name, '')) AS company_name,
+            cl.location, cl.address, cl.city,
             cl.parent_company_id, cl.needs_details,
             cc.name AS parent_company_name,
-            -- Rank: 0=exact name, 1=prefix name, 2=parent match, 3=address/city
+            -- Rank: 0=exact name, 1=prefix name, 2=address/city. Strict:
+            -- parented ranks against parent name; standalone ranks
+            -- against its own name.
             CASE
-              WHEN translate(lower(cl.company_name), $5, '') = lower($2) THEN 0
-              WHEN translate(lower(cl.company_name), $5, '') LIKE lower($2) || '%' THEN 1
-              WHEN translate(lower(COALESCE(cc.name, '')), $5, '') LIKE '%' || lower($2) || '%' THEN 2
+              WHEN cl.parent_company_id IS NOT NULL
+                   AND translate(lower(COALESCE(cc.name, '')), $5, '') = lower($2) THEN 0
+              WHEN cl.parent_company_id IS NOT NULL
+                   AND translate(lower(COALESCE(cc.name, '')), $5, '') LIKE lower($2) || '%' THEN 1
+              WHEN cl.parent_company_id IS NULL
+                   AND translate(lower(cl.company_name), $5, '') = lower($2) THEN 0
+              WHEN cl.parent_company_id IS NULL
+                   AND translate(lower(cl.company_name), $5, '') LIKE lower($2) || '%' THEN 1
               ELSE 3
             END AS match_rank
      FROM client_locations cl
@@ -202,13 +229,16 @@ router.get("/search-locations", asyncHandler(async (req: AuthedRequest, res: Res
        AND cl.deleted_at IS NULL
        AND (cl.inactive = false OR cl.inactive IS NULL)
        AND (
-         translate(lower(cl.company_name), $5, '') ILIKE $3
-         OR translate(lower(COALESCE(cc.name, '')), $5, '') ILIKE $3
+         -- Strict name predicate (parent-only for parented; own-only for standalone).
+         (cl.parent_company_id IS NOT NULL
+            AND translate(lower(COALESCE(cc.name, '')), $5, '') ILIKE $3)
+         OR (cl.parent_company_id IS NULL
+            AND translate(lower(COALESCE(cl.company_name, '')), $5, '') ILIKE $3)
          OR translate(lower(COALESCE(cl.location, '')), $5, '') ILIKE $3
          OR lower(COALESCE(cl.address, '')) ILIKE $3
          OR lower(COALESCE(cl.city, '')) ILIKE $3
        )
-     ORDER BY match_rank ASC, cl.company_name ASC
+     ORDER BY match_rank ASC, COALESCE(cc.name, NULLIF(cl.company_name, '')) ASC
      LIMIT $4`,
     [companyId, normalized, likePattern, limit, stripChars]
   );
@@ -257,22 +287,34 @@ const limit = clampInt(req.query.limit as string | undefined, 50, 1, 500);
 
   const futureDueByClientId = buildFutureDueIndex(assignments);
 
-  // Enrich with parent company identity fields for canonical display-name resolution
+  // Enrich with parent company identity fields for canonical display-name resolution.
+  // 2026-05-01 bypass cleanup: also include `parentName` and override
+  // `companyName` to the resolved display name (parent's current name
+  // when location has a parent). This closes the "Clients page shows
+  // stale name after parent rename" symptom without changing the
+  // storage layer's return type. The raw `parentCompanyId` and the
+  // identity sub-fields remain so edit flows / dedupe logic that need
+  // the underlying values still see them.
   const parentIdSet = new Set(result.data.map((c: any) => c.parentCompanyId).filter(Boolean));
   const parentIds: string[] = [];
   parentIdSet.forEach(id => parentIds.push(id));
-  const parentIdentityMap = new Map<string, { firstName: string | null; lastName: string | null; useCompanyAsPrimary: boolean }>();
+  const parentIdentityMap = new Map<string, { name: string | null; firstName: string | null; lastName: string | null; useCompanyAsPrimary: boolean }>();
   if (parentIds.length > 0) {
     const parents = await customerCompanyRepository.listCustomerCompanies(companyId!);
-    for (const p of parents) parentIdentityMap.set(p.id, { firstName: p.firstName, lastName: p.lastName, useCompanyAsPrimary: p.useCompanyAsPrimary });
+    for (const p of parents) parentIdentityMap.set(p.id, { name: p.name, firstName: p.firstName, lastName: p.lastName, useCompanyAsPrimary: p.useCompanyAsPrimary });
   }
 
   // Add nextDue + parent identity to each client
   const clientsWithDue = result.data.map((c: any) => {
     const parent = c.parentCompanyId ? parentIdentityMap.get(c.parentCompanyId) : null;
+    const parentName = parent?.name ?? null;
     return {
       ...c,
       nextDue: deriveNextDueForClient(c, futureDueByClientId),
+      // Resolved display name: parent's current name wins; fall back to
+      // the location's own column for standalone (parentless) rows.
+      companyName: (parentName && parentName.trim()) ? parentName : c.companyName,
+      parentName,
       parentFirstName: parent?.firstName ?? null,
       parentLastName: parent?.lastName ?? null,
       parentUseCompanyAsPrimary: parent?.useCompanyAsPrimary ?? true,
@@ -1088,9 +1130,23 @@ router.get("/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
 
   const assignments = await storage.getAssignmentsByClient(companyId, client.id);
   const futureDueByClientId = buildFutureDueIndex(assignments);
+
+  // 2026-05-01 stale-rename fix: include the parent customer company's
+  // current name so display consumers (`useLocationById` →
+  // `normalizeLocationRow`) can resolve to the authoritative name even
+  // when `client_locations.company_name` holds a stale denormalized
+  // value. The raw `companyName` column is preserved for edit forms;
+  // only the new `parentCompanyName` field is added.
+  let parentCompanyName: string | null = null;
+  if (client.parentCompanyId) {
+    const parent = await storage.getCustomerCompany(companyId, client.parentCompanyId);
+    parentCompanyName = parent?.name ?? null;
+  }
+
   const clientWithDue = {
     ...client,
     nextDue: deriveNextDueForClient(client, futureDueByClientId),
+    parentCompanyName,
   };
 
   res.json(clientWithDue);
@@ -1131,6 +1187,90 @@ router.get("/:id/billing-history", asyncHandler(async (req: AuthedRequest, res: 
     { limit: Number.isFinite(limitParam) ? limitParam : undefined },
   );
   res.json({ items: history });
+}));
+
+// 2026-05-02 — GET /api/clients/:clientId/pricing-history
+// Derived read-only pricing history for one client (location). Aggregates
+// invoice line items and quote line items. job_parts is intentionally NOT
+// a source — see clientPricingHistoryService.ts for the full rationale.
+// Tenant-scoped via the storage.getClient() existence check (same pattern
+// as billing-history above) and via companyId guards inside the service.
+//
+// Validation contract:
+//   limit       — integer, must parse to >= 1; missing → service default 50;
+//                 service clamps the upper bound to 200.
+//   itemId      — non-empty string, <= 100 chars, else 400.
+//   search      — string, <= 200 chars, else 400; empty/whitespace ignored.
+//   locationId  — non-empty string, <= 100 chars; rechecked against tenant.
+//                 Cross-tenant ids → 404, never 500.
+//   sourceType  — must be exactly "invoice" or "quote"; "job" or anything
+//                 else → 400 ("Invalid sourceType").
+// Auth comes from the global /api requireAuth + ensureTenantContext gates;
+// req.companyId is enforced before any storage / service call.
+// Backend-only — no UI consumer yet.
+const pricingHistorySourceTypes: PricingHistorySourceType[] = ["invoice", "quote"];
+router.get("/:clientId/pricing-history", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const { clientId } = req.params;
+
+  if (!clientId || typeof clientId !== "string" || clientId.length > 100) {
+    throw createError(400, "Invalid clientId");
+  }
+
+  const location = await storage.getClient(companyId, clientId);
+  if (!location) throw createError(404, "Client not found");
+
+  const filters: PricingHistoryFilters = {};
+
+  const limitRaw = req.query.limit;
+  if (typeof limitRaw === "string" && limitRaw.length > 0) {
+    const parsed = parseInt(limitRaw, 10);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      throw createError(400, "Invalid limit");
+    }
+    filters.limit = parsed;
+  }
+
+  const itemId = req.query.itemId;
+  if (itemId !== undefined) {
+    if (typeof itemId !== "string" || itemId.length === 0 || itemId.length > 100) {
+      throw createError(400, "Invalid itemId");
+    }
+    filters.itemId = itemId;
+  }
+
+  const search = req.query.search;
+  if (search !== undefined) {
+    if (typeof search !== "string" || search.length > 200) {
+      throw createError(400, "Invalid search");
+    }
+    if (search.trim().length > 0) filters.search = search;
+  }
+
+  const locationId = req.query.locationId;
+  if (locationId !== undefined) {
+    if (typeof locationId !== "string" || locationId.length === 0 || locationId.length > 100) {
+      throw createError(400, "Invalid locationId");
+    }
+    // Cross-tenant guard: caller cannot pivot to another tenant's location.
+    const altLocation = await storage.getClient(companyId, locationId);
+    if (!altLocation) throw createError(404, "Location not found");
+    filters.locationId = locationId;
+  }
+
+  const sourceTypeRaw = req.query.sourceType;
+  if (sourceTypeRaw !== undefined) {
+    if (
+      typeof sourceTypeRaw !== "string" ||
+      !pricingHistorySourceTypes.includes(sourceTypeRaw as PricingHistorySourceType)
+    ) {
+      throw createError(400, "Invalid sourceType");
+    }
+    filters.sourceType = sourceTypeRaw as PricingHistorySourceType;
+  }
+
+  const result = await getClientPricingHistory(getQueryCtx(req), clientId, filters);
+  res.json(result);
 }));
 
 // GET /api/clients/:id/report - Get client report

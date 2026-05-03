@@ -70,15 +70,19 @@ export async function runLegacyInvoiceAudit(): Promise<InvoiceAuditResult> {
 
   // 1) Missing customerCompanyId
   // Find invoices where customerCompanyId IS NULL but should be populated
+  // 2026-05-01 bypass cleanup: locationCompanyName resolves via the
+  // canonical parent-first COALESCE so the audit sample displays the
+  // same name a user sees on the Invoice Detail page.
   const missingCustomerCompanyResults = await db.execute(sql`
     SELECT
       i.id as "invoiceId",
       i.invoice_number as "invoiceNumber",
       i.location_id as "locationId",
-      cl.company_name as "locationCompanyName",
+      COALESCE(cc.name, NULLIF(cl.company_name, '')) as "locationCompanyName",
       cl.parent_company_id as "locationParentCompanyId"
     FROM invoices i
     LEFT JOIN client_locations cl ON i.location_id = cl.id
+    LEFT JOIN customer_companies cc ON cl.parent_company_id = cc.id
     WHERE i.customer_company_id IS NULL
       AND i.is_active = true
     ORDER BY i.created_at DESC
