@@ -9,11 +9,13 @@ import { cn } from "@/lib/utils"
 /**
  * UI typography standard (see docs/UI_TYPOGRAPHY.md).
  *
- * 2026-04-29 Typography Phase C: SelectTrigger default migrated from
- * `text-sm` (17.1px) to canonical `text-row` (13px / 18px). SelectLabel
- * (`text-sm font-semibold`) and SelectItem (`text-sm`) are explicitly
- * NOT migrated in this phase per scope; SelectItem aligns with
- * dropdown-menu items in a future sweep.
+ * Every typography slot in this primitive is driven by a canonical
+ * semantic token from the project's tailwind theme.fontSize map:
+ *   - SelectTrigger → text-row (15px / 22px)        [Phase C]
+ *   - SelectLabel   → text-select-label (15.2px/600) [Phase F]
+ *   - SelectItem    → text-select-item  (15.2px/400) [Phase F]
+ * No raw `text-xs` / `text-sm` / `text-base` classes remain on
+ * Select primitive content.
  */
 
 const Select = SelectPrimitive.Root
@@ -115,7 +117,12 @@ const SelectLabel = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <SelectPrimitive.Label
     ref={ref}
-    className={cn("py-1.5 pl-8 pr-2 text-sm font-semibold", className)}
+    // 2026-05-03 Phase F: migrated from raw `text-xs font-semibold` to
+    // the canonical `text-select-label` semantic token. Pixel-identical
+    // (15.2px / 600). Used for group/section headings inside a Select
+    // dropdown panel — heavier weight than form labels so they read
+    // as a header above the option rows below.
+    className={cn("py-1.5 pl-8 pr-2 text-select-label", className)}
     {...props}
   />
 ))
@@ -128,7 +135,11 @@ const SelectItem = React.forwardRef<
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
-      "relative flex w-full cursor-default select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-sm outline-none focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+      // 2026-05-03 Phase F: migrated from raw `text-xs` to the
+      // canonical `text-select-item` semantic token. Pixel-identical
+      // (15.2px / 22.8px). Single named role for every option row in
+      // every Select dropdown across the app.
+      "relative flex w-full cursor-default select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-select-item outline-none focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
       className
     )}
     {...props}

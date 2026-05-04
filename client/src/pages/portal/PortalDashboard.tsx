@@ -17,7 +17,14 @@ import { Link } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { DollarSign, FileText, ArrowRight, Inbox, CheckCircle2 } from "lucide-react";
+import {
+  ArrowRight,
+  CheckCircle2,
+  CreditCard,
+  DollarSign,
+  FileText,
+  Inbox,
+} from "lucide-react";
 import { formatCurrency, formatDate, portalStatusBadge, formatDueLabel } from "./portalUtils";
 
 interface InvoiceRow {
@@ -35,12 +42,43 @@ interface InvoicesResponse {
   summary: { totalBalance: string; openCount: number; totalCount: number };
 }
 
+// 2026-05-03 PR C — saved-card hook on the dashboard. The list endpoint
+// returns active cards in default-first order; the dashboard surfaces
+// only the default (or null) as a passive line.
+interface PaymentMethodSummary {
+  id: string;
+  cardBrand: string;
+  cardLast4: string;
+  cardExpMonth: number;
+  cardExpYear: number;
+  isDefault: boolean;
+}
+
+interface PaymentMethodsResponse {
+  paymentMethods: PaymentMethodSummary[];
+}
+
 export default function PortalDashboard() {
   const { user } = usePortalAuth();
 
   const { data, isLoading } = useQuery<InvoicesResponse>({
     queryKey: ["/api/portal/invoices"],
   });
+  // Saved-card hook. The endpoint requires the
+  // `customer_portal_payments` entitlement — when off, this returns
+  // 403 and we leave the line off the dashboard. We don't show a
+  // loading skeleton for this hook (it's a passive nice-to-have, not
+  // a primary surface) — render only on success.
+  const { data: pmData } = useQuery<PaymentMethodsResponse>({
+    queryKey: ["/api/portal/payment-methods"],
+    // Don't retry on 403/404 — the entitlement gate is sticky for the
+    // session.
+    retry: false,
+  });
+  const defaultCard =
+    pmData?.paymentMethods.find((m) => m.isDefault) ??
+    pmData?.paymentMethods[0] ??
+    null;
 
   const firstName = user?.firstName || "there";
   const balanceNum = parseFloat(data?.summary.totalBalance || "0");
@@ -132,6 +170,43 @@ export default function PortalDashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* ── Saved card hook (2026-05-03 PR C) ─────────────────────────
+          Passive line linking to /portal/payment-methods. Only renders
+          when the customer has at least one active card on file AND
+          the customer_portal_payments entitlement is enabled (the
+          query 403s otherwise + the hook silently no-ops). */}
+      {defaultCard && (
+        <Link
+          href="/portal/payment-methods"
+          className="block"
+          data-testid="portal-dashboard-default-card-link"
+        >
+          <Card className="hover:border-slate-300 hover:shadow-sm transition-all cursor-pointer">
+            <CardContent className="py-3 flex items-center gap-3">
+              <CreditCard className="h-5 w-5 text-slate-500 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
+                  Default card on file
+                </p>
+                <p
+                  className="text-sm font-medium text-slate-900 mt-0.5 tabular-nums"
+                  data-testid="portal-dashboard-default-card"
+                >
+                  {(defaultCard.cardBrand || "Card").toUpperCase()} ••••{" "}
+                  {defaultCard.cardLast4}
+                  <span className="ml-2 text-xs text-slate-500 font-normal">
+                    Expires{" "}
+                    {String(defaultCard.cardExpMonth).padStart(2, "0")}/
+                    {String(defaultCard.cardExpYear).slice(-2)}
+                  </span>
+                </p>
+              </div>
+              <ArrowRight className="h-4 w-4 text-slate-400 shrink-0" />
+            </CardContent>
+          </Card>
+        </Link>
+      )}
 
       {/* ── Recent invoices ───────────────────────────────────────── */}
       <section>

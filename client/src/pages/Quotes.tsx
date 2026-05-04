@@ -18,14 +18,16 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
-import { getQuoteStatusBadge } from "@/lib/statusBadges";
-import { tableRowClass } from "@/components/ui/list-surface";
+import { StatusBadge } from "@/components/StatusBadge";
+import { getQuoteStatusMeta } from "@/lib/statusBadges";
 // 2026-05-02 entity-number visual language: blue pill for current entity row.
 import { EntityNumber } from "@/components/common/EntityNumber";
 import { EmptyState } from "@/components/ui/empty-state";
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from "@/components/ui/table";
+// 2026-05-03: migrated from shadcn `<Table>` to canonical EntityListTable.
+// The status column relies on the component's flex-wrap status cell
+// rule so the assessment sub-badges can wrap without pushing the row.
+import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
+import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
 import type { Quote } from "@shared/schema";
 import { NewQuoteModal } from "@/components/NewQuoteModal";
 import { formatCurrency } from "@/lib/formatters";
@@ -36,6 +38,10 @@ interface EnrichedQuote extends Quote {
 }
 
 type QuoteStatusFilter = "all" | "draft" | "sent" | "approved" | "declined" | "expired" | "converted";
+
+// 2026-05-03 Load more pattern. Underlying fetch ceiling stays at 200
+// (server-side limit on `/api/quotes/list`); this only paginates render.
+const QUOTES_PAGE_SIZE = 50;
 
 // Summary card with optional small icon accent — matches Jobs/Invoices hierarchy
 function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg }: {
@@ -70,6 +76,9 @@ export default function Quotes() {
 
   const [activeFilter, setActiveFilter] = useState<QuoteStatusFilter>(initialStatus);
   const [searchQuery, setSearchQuery] = useState("");
+  const [visibleCount, setVisibleCount] = useState(QUOTES_PAGE_SIZE);
+  // Reset slice on filter / search change.
+  useEffect(() => { setVisibleCount(QUOTES_PAGE_SIZE); }, [activeFilter, searchQuery]);
   // 2026-04-15: the list-page "New Quote" button opens the unified
   // NewQuoteModal directly. Template selection is inline inside that
   // modal — the prior two-step chooser → modal flow was collapsed.
@@ -142,7 +151,7 @@ export default function Quotes() {
   }, [quotes]);
 
   const filteredQuotes = useMemo(() => {
-    let result = quotes.map(q => ({ ...q, statusInfo: getQuoteStatusBadge(q.status) }));
+    let result = quotes.map(q => ({ ...q, statusMeta: getQuoteStatusMeta(q.status) }));
     if (activeFilter !== "all") result = result.filter(q => q.status === activeFilter);
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
@@ -162,6 +171,106 @@ export default function Quotes() {
     for (const q of quotes) counts[q.status] = (counts[q.status] || 0) + 1;
     return counts;
   }, [quotes]);
+
+  /**
+   * Column config for EntityListTable. Defined inside the component
+   * because three columns close over component-local values:
+   *   - status uses each row's pre-computed `statusMeta`
+   *   - owner reads `userNameMap` (built from the team query)
+   *   - updated uses `safeFormatDate`
+   * The render functions otherwise mirror the prior shadcn-Table cells.
+   * The status cell deliberately renders all assessment sub-badges as
+   * siblings; EntityListTable's `status` kind wraps them in a
+   * `flex items-center gap-2 flex-wrap` container so they wrap inside
+   * the cell instead of pushing Total / Updated.
+   */
+  type QuoteRow = typeof filteredQuotes[number];
+  const quoteColumns = useMemo<EntityListColumn<QuoteRow>[]>(() => [
+    {
+      id: "client",
+      header: "Client / Location",
+      kind: "primary",
+      ratio: 1.5,
+      render: (quote) => (
+        <div className="min-w-0">
+          <p className="truncate" data-testid={`text-quote-client-${quote.id}`}>
+            {quote.customerCompany?.name || quote.location?.companyName || "Unknown"}
+          </p>
+          {quote.customerCompany?.name && quote.location?.companyName && (
+            <p className="text-caption text-slate-500 font-normal truncate">{quote.location.companyName}</p>
+          )}
+        </div>
+      ),
+      cellClassName: "px-4 py-2.5 min-w-0",
+    },
+    {
+      id: "quoteNumber",
+      header: "Quote #",
+      kind: "badge",
+      ratio: 0.7,
+      minWidthPx: 96,
+      render: (quote) => (
+        // 2026-05-02 entity-number system: row IS a quote → primary
+        // blue pill. Empty fallback (`Q-{id.slice}`) preserved for
+        // quotes that haven't been assigned a number yet.
+        <EntityNumber variant="primary" data-testid={`text-quote-number-${quote.id}`}>
+          {quote.quoteNumber || `Q-${quote.id.slice(0, 8)}`}
+        </EntityNumber>
+      ),
+    },
+    {
+      id: "title",
+      header: "Title",
+      kind: "text",
+      ratio: 1.2,
+      render: (quote) => <span className="text-slate-500">{quote.title || "-"}</span>,
+    },
+    {
+      id: "status",
+      header: "Status",
+      kind: "status",
+      // Multi-badge composition. EntityListTable wraps these in a
+      // flex-wrap container at the cell level — no need to add it here.
+      render: (quote) => (
+        <>
+          <StatusBadge meta={quote.statusMeta} />
+          {(quote as any).assessmentStatus === "required" && (
+            <Badge variant="outline" className="text-helper border-amber-300 text-amber-700">Assessment needed</Badge>
+          )}
+          {(quote as any).assessmentStatus === "scheduled" && (
+            <Badge variant="outline" className="text-helper border-amber-400 text-amber-800 bg-amber-50">Assessment scheduled</Badge>
+          )}
+          {(quote as any).assessmentStatus === "completed" && (
+            <Badge variant="outline" className="text-helper border-emerald-300 text-emerald-700">Assessment done</Badge>
+          )}
+        </>
+      ),
+    },
+    {
+      id: "owner",
+      header: "Owner",
+      kind: "text",
+      ratio: 0.8,
+      render: (quote) => (
+        <span className="text-slate-500">
+          {(quote as any).salesOwnerUserId ? userNameMap.get((quote as any).salesOwnerUserId) || "—" : "—"}
+        </span>
+      ),
+    },
+    {
+      id: "total",
+      header: "Total",
+      kind: "money",
+      // Money kind provides text-row text-slate-700 + right + tabular + nowrap.
+      render: (quote) => formatCurrency(quote.total),
+    },
+    {
+      id: "updated",
+      header: "Updated",
+      kind: "date",
+      render: (quote) => <span className="text-slate-500">{safeFormatDate(quote.updatedAt || quote.createdAt)}</span>,
+    },
+  ], [userNameMap]);
 
   // List stability: single return path — loading state renders inside content area only
   return (
@@ -242,93 +351,32 @@ export default function Quotes() {
         </div>
 
         {/* ── 4. Main Table ── */}
-        <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="table-quotes">
-          {isLoading ? (
-            <div className="text-center py-8 text-slate-500" data-testid="quotes-loading">Loading quotes...</div>
-          ) : filteredQuotes.length === 0 ? (
+        <EntityListTable<typeof filteredQuotes[number]>
+          rows={filteredQuotes.slice(0, visibleCount)}
+          rowKey={(quote) => quote.id}
+          onRowClick={(quote) => setLocation(`/quotes/${quote.id}`)}
+          loadingState={
+            isLoading ? (
+              <div className="text-center py-8 text-slate-500" data-testid="quotes-loading">Loading quotes...</div>
+            ) : undefined
+          }
+          emptyState={
             <EmptyState
               icon={FileText}
               message={searchQuery || activeFilter !== "all" ? "No quotes match your filters" : "No quotes found"}
               description={!searchQuery && activeFilter === "all" ? "Create your first quote to get started." : undefined}
             />
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-slate-50">
-                  <TableHead className="text-caption font-medium text-slate-600">Client / Location</TableHead>
-                  <TableHead className="text-caption font-medium text-slate-600">Quote #</TableHead>
-                  <TableHead className="text-caption font-medium text-slate-600">Title</TableHead>
-                  <TableHead className="text-caption font-medium text-slate-600">Status</TableHead>
-                  <TableHead className="text-caption font-medium text-slate-600">Owner</TableHead>
-                  <TableHead className="text-caption font-medium text-slate-600 text-right">Total</TableHead>
-                  <TableHead className="text-caption font-medium text-slate-600">Updated</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredQuotes.map((quote) => (
-                  <TableRow
-                    key={quote.id}
-                    className={tableRowClass}
-                    onClick={() => setLocation(`/quotes/${quote.id}`)}
-                    data-testid={`row-quote-${quote.id}`}
-                  >
-                    <TableCell>
-                      <div>
-                        <p className="text-row font-medium text-slate-800" data-testid={`text-quote-client-${quote.id}`}>
-                          {quote.customerCompany?.name || quote.location?.companyName || "Unknown"}
-                        </p>
-                        {quote.customerCompany?.name && quote.location?.companyName && (
-                          <p className="text-caption text-slate-500">{quote.location.companyName}</p>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      {/* 2026-05-02 entity-number system: row IS a
-                          quote → primary blue pill. Empty fallback
-                          (`Q-{id.slice}`) preserved for quotes that
-                          haven't been assigned a number yet. */}
-                      <EntityNumber variant="primary" data-testid={`text-quote-number-${quote.id}`}>
-                        {quote.quoteNumber || `Q-${quote.id.slice(0, 8)}`}
-                      </EntityNumber>
-                    </TableCell>
-                    <TableCell>
-                      <span className="text-row text-slate-500">{quote.title || "-"}</span>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1.5">
-                        <Badge variant={quote.statusInfo.variant}>{quote.statusInfo.label}</Badge>
-                        {(quote as any).assessmentStatus === "required" && (
-                          <Badge variant="outline" className="text-helper border-amber-300 text-amber-700">Assessment needed</Badge>
-                        )}
-                        {(quote as any).assessmentStatus === "scheduled" && (
-                          <Badge variant="outline" className="text-helper border-amber-400 text-amber-800 bg-amber-50">Assessment scheduled</Badge>
-                        )}
-                        {(quote as any).assessmentStatus === "completed" && (
-                          <Badge variant="outline" className="text-helper border-emerald-300 text-emerald-700">Assessment done</Badge>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <span className="text-row text-slate-500">{(quote as any).salesOwnerUserId ? userNameMap.get((quote as any).salesOwnerUserId) || "—" : "—"}</span>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <span className="text-row text-slate-700 tabular-nums">{formatCurrency(quote.total)}</span>
-                    </TableCell>
-                    <TableCell>
-                      <span className="text-row text-slate-500">{safeFormatDate(quote.updatedAt || quote.createdAt)}</span>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </div>
+          }
+          columns={quoteColumns}
+        />
 
-        {filteredQuotes.length > 0 && (
-          <div className="text-caption text-slate-500 mt-2" data-testid="text-quote-count">
-            Showing {filteredQuotes.length} quote{filteredQuotes.length !== 1 ? "s" : ""}
-          </div>
-        )}
+        <ListLoadMoreFooter
+          visibleCount={Math.min(visibleCount, filteredQuotes.length)}
+          totalCount={filteredQuotes.length}
+          hasMore={visibleCount < filteredQuotes.length}
+          onLoadMore={() => setVisibleCount((c) => c + QUOTES_PAGE_SIZE)}
+          label="quote"
+        />
       </div>
 
       <NewQuoteModal

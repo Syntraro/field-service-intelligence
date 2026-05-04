@@ -4,8 +4,14 @@ import { cva, type VariantProps } from "class-variance-authority"
 
 import { cn } from "@/lib/utils"
 
+// 2026-05-03 Phase F: migrated from raw `text-xs font-medium` to the
+// canonical `text-form-label` semantic token. Pixel-identical (the
+// token's tuple bakes 15.2px / 500 — same as the prior raw combo).
+// Every consumer of `<Label>` and the react-hook-form `<FormLabel>`
+// (which wraps Label) now reads its size + weight from a single
+// named role rather than a raw-class combo.
 const labelVariants = cva(
-  "text-sm font-medium leading-none text-[#334155] peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+  "text-form-label leading-none text-[#334155] peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
 )
 
 const Label = React.forwardRef<

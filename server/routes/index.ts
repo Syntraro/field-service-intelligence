@@ -14,6 +14,10 @@ import onboardingRouter from "./onboarding";
 import usersAdminRouter from "./users_admin";
 import itemsRouter from "./items";
 import companySettingsRouter from "./companySettings";
+// 2026-05-03: tenant tax registration identity (multi-row).
+// See `server/routes/companyTaxRegistrations.ts` for the two
+// endpoints (GET list + PUT replace-all).
+import companyTaxRegistrationsRouter from "./companyTaxRegistrations";
 import communicationTemplatesRouter from "./communicationTemplates";
 // Phase 15 (2026-04-12): cross-entity delivery-history endpoint.
 import communicationsRouter from "./communications";
@@ -51,6 +55,12 @@ import reportsRouter from "./reports";
 import { timesheetReportsRouter } from "./timesheetReports";
 import paymentsRouter from "./payments";
 import stripePaymentsRouter from "./stripePayments";
+// 2026-05-03 PR2 — tenant payments onboarding API surface
+// (GET /api/payments/account, POST /api/payments/account/onboard,
+// POST /api/payments/account/refresh). Mounted alongside paymentsRouter
+// so the legacy invoice-payment paths and the new account-onboarding
+// paths share the same `/api` prefix.
+import paymentAccountRouter from "./paymentAccount";
 import qboRouter from "./qbo";
 import quotesRouter from "./quotes";
 import quoteTemplatesRouter from "./quoteTemplates";
@@ -252,6 +262,11 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/jobs", jobExpensesRouter); // Job expenses: CRUD + approval
   app.use("/api/invoices", invoicesRouter);
   app.use("/api", paymentsRouter); // Payment routes: /api/invoices/:id/payments, /api/payments/:id
+  // 2026-05-03 PR2 — tenant payments onboarding (Stripe Connect):
+  //   GET  /api/payments/account
+  //   POST /api/payments/account/onboard
+  //   POST /api/payments/account/refresh
+  app.use("/api", paymentAccountRouter);
   // 2026-04-14 Stripe Phase 1: in-app Stripe PaymentIntent creation.
   // Staff-only. Webhook lives in server/routes/stripeWebhook.ts mounted
   // BEFORE express.json() at the app level.
@@ -270,6 +285,7 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/users-admin", usersAdminRouter);
   app.use("/api/items", itemsRouter);
   app.use("/api/company-settings", companySettingsRouter);
+  app.use("/api/company-tax-registrations", companyTaxRegistrationsRouter);
   app.use("/api/communication-templates", communicationTemplatesRouter);
   app.use("/api/communications", communicationsRouter);
   app.use("/api/company/business-hours", businessHoursRouter);

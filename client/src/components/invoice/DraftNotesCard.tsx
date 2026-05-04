@@ -28,14 +28,25 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
 export interface DraftNotesCardProps {
-  /** Current `notesInternal` draft value. */
+  /** Current `notesInternal` value (from invoice column, or local
+   *  draft state on /invoices/new). */
   value: string;
-  /** Commit a new value. Called when the user clicks Save in the
-   *  inline editor. Sync — the parent stores it directly. */
-  onChange: (next: string) => void;
+  /** Commit a new value. Sync handlers cause the card to exit edit
+   *  mode immediately (matches the create-mode UX where local state
+   *  updates synchronously). Async handlers (e.g. wrapping a TanStack
+   *  Query `mutateAsync`) cause the card to show "Saving…" and exit
+   *  edit on Promise resolve — same async pattern
+   *  `<EditableMessageCard>` uses. */
+  onChange: (next: string) => void | Promise<void>;
   /** When true, hides the "+ Add Note" affordance and locks editing.
    *  Used by /invoices/new before a client/location is picked. */
   disabled?: boolean;
+  /** Optional external "saving" signal. Useful when the consumer
+   *  holds the in-flight state itself (e.g. a TanStack Query
+   *  mutation already exposes `isPending`). Combined with the
+   *  internal saving state via OR — either signal sets the Save
+   *  button to "Saving…". */
+  isSaving?: boolean;
   /** Outer card data-testid. Defaults to `card-invoice-notes` to
    *  mirror the live page's testid contract. */
   testId?: string;
@@ -45,10 +56,12 @@ export function DraftNotesCard({
   value,
   onChange,
   disabled = false,
+  isSaving = false,
   testId = "card-invoice-notes",
 }: DraftNotesCardProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
+  const [localSaving, setLocalSaving] = useState(false);
 
   // Resync from props when value changes externally (e.g. parent
   // resets) — same pattern as EditableMessageCard.
@@ -58,6 +71,7 @@ export function DraftNotesCard({
 
   const hasContent = value.trim().length > 0;
   const isDirty = draft !== value;
+  const showSavingLabel = isSaving || localSaving;
 
   const enterEdit = () => {
     setDraft(value);
@@ -67,9 +81,26 @@ export function DraftNotesCard({
     setDraft(value);
     setEditing(false);
   };
-  const handleSave = () => {
-    onChange(draft);
-    setEditing(false);
+  const handleSave = async () => {
+    if (!isDirty) {
+      setEditing(false);
+      return;
+    }
+    const result = onChange(draft);
+    if (result instanceof Promise) {
+      setLocalSaving(true);
+      try {
+        await result;
+        setEditing(false);
+      } catch {
+        // Consumer surfaces its own error toast; stay in edit so the
+        // user can retry or cancel.
+      } finally {
+        setLocalSaving(false);
+      }
+    } else {
+      setEditing(false);
+    }
   };
 
   // Header — verbatim copy of EntityNotesSection.tsx:233–253 (same
@@ -120,6 +151,7 @@ export function DraftNotesCard({
               size="sm"
               className="h-7 text-xs"
               onClick={handleCancel}
+              disabled={showSavingLabel}
             >
               Cancel
             </Button>
@@ -127,11 +159,11 @@ export function DraftNotesCard({
               variant="outline"
               size="sm"
               className="h-7 text-xs"
-              disabled={!isDirty}
-              onClick={handleSave}
+              disabled={showSavingLabel || !isDirty}
+              onClick={() => void handleSave()}
               data-testid="button-save-note"
             >
-              Save
+              {showSavingLabel ? "Saving..." : "Save"}
             </Button>
           </div>
         </>

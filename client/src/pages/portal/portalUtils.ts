@@ -79,11 +79,17 @@ export function portalStatusBadge(params: {
     case "paid":
       return { kind, label: "Paid", className: "bg-emerald-50 text-emerald-700 border-emerald-200" };
     case "partial_paid":
-      return { kind, label: "Partial", className: "bg-sky-50 text-sky-700 border-sky-200" };
+      // 2026-05-03 PR 5: yellow per spec — distinguishes "partial
+      // payment received" from the orange "due soon" indicator and
+      // the red "past due" indicator.
+      return { kind, label: "Partial", className: "bg-yellow-50 text-yellow-800 border-yellow-200" };
     case "past_due":
       return { kind, label: "Past Due", className: "bg-red-50 text-red-700 border-red-200" };
     case "due_soon":
-      return { kind, label: "Due Soon", className: "bg-amber-50 text-amber-800 border-amber-200" };
+      // 2026-05-03 PR 5: orange per spec — distinct from the yellow
+      // "partial" badge so a partially-paid invoice that's also due
+      // soon doesn't blur into the same color tier.
+      return { kind, label: "Due Soon", className: "bg-orange-50 text-orange-700 border-orange-200" };
     case "voided":
       return { kind, label: "Voided", className: "bg-slate-100 text-slate-500 border-slate-200" };
     case "draft":

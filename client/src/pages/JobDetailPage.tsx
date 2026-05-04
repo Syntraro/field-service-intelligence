@@ -2404,7 +2404,13 @@ export default function JobDetailPage() {
         entityId={job.id}
         isOpen={showSendJobEmail}
         onClose={() => setShowSendJobEmail(false)}
-        title="Send Email"
+        title={
+          job.jobNumber && clientName
+            ? `Email job #${job.jobNumber} to ${clientName}`
+            : job.jobNumber
+              ? `Email job #${job.jobNumber}`
+              : "Send Email"
+        }
         onSuccess={() => {
           toast({ title: "Job email sent" });
         }}

@@ -2,9 +2,9 @@
  * Tax & Billing Rules Page — Payment terms + tax rates/groups CRUD.
  * Replaces the "Coming Soon" placeholder with full v1 tax management UI.
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Link } from "wouter";
-import { ArrowLeft, Receipt, Calendar, Save, Plus, Pencil, Trash2, Star } from "lucide-react";
+import { ArrowLeft, Receipt, Calendar, Save, Plus, Pencil, Trash2, Star, X } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -55,6 +55,29 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 
 interface CompanySettings {
   defaultPaymentTermsDays?: number;
+}
+
+// 2026-05-03: tenant tax-registration identity is now a multi-row
+// list managed through `/api/company-tax-registrations`. Each entry
+// is a { label?, number } pair; an empty list means no tax-ID lines
+// on the customer-facing invoice PDF (existing-tenant default).
+interface TaxRegistrationRow {
+  /** Stable client-side key. Server-assigned ids are NOT used in
+   *  the UI because PUT semantics are replace-all — the server
+   *  re-assigns ids on every save. A monotonically-increasing local
+   *  counter keeps React keys stable across rerenders. */
+  key: number;
+  label: string;
+  number: string;
+}
+
+interface TaxRegistrationsResponse {
+  registrations: Array<{
+    id: string;
+    label: string | null;
+    number: string;
+    sortOrder: number;
+  }>;
 }
 
 interface TaxRate {
@@ -129,6 +152,96 @@ export default function TaxBillingRulesPage() {
       return;
     }
     updateSettingsMutation.mutate({ defaultPaymentTermsDays: days });
+  };
+
+  // ========================================
+  // TAX REGISTRATIONS STATE (2026-05-03 — multi-row refactor)
+  //
+  // Tenants can now store one or more tax registration entries
+  // (e.g. HST + GST, or VAT + EORI). The customer-facing invoice
+  // PDF renders one line per active row under the company contact
+  // block. PUT semantics are replace-all — the server takes the
+  // entire list, deletes old rows, and inserts the new ones with
+  // sort_order = 0..N-1. UI keeps a local list state and saves
+  // the whole list on a single Save click.
+  // ========================================
+  const [taxRegistrationRows, setTaxRegistrationRows] = useState<TaxRegistrationRow[]>([]);
+  // Monotonically-increasing local counter for stable React keys.
+  // Server-assigned ids are intentionally not used because PUT
+  // semantics are replace-all (server re-assigns on every save).
+  const taxRowKeyCounter = useRef(0);
+  const nextTaxRowKey = () => {
+    taxRowKeyCounter.current += 1;
+    return taxRowKeyCounter.current;
+  };
+
+  const { data: taxRegistrationsData, isLoading: taxRegistrationsLoading } =
+    useQuery<TaxRegistrationsResponse>({
+      queryKey: ["/api/company-tax-registrations"],
+      staleTime: 5 * 60 * 1000,
+    });
+
+  // Hydrate local list state from the server response. Runs only
+  // when the server payload identity changes — local edits inside a
+  // session are NOT clobbered until the user explicitly refetches
+  // (e.g. after Save invalidates the query).
+  useEffect(() => {
+    if (!taxRegistrationsData) return;
+    setTaxRegistrationRows(
+      taxRegistrationsData.registrations.map((r) => ({
+        key: nextTaxRowKey(),
+        label: r.label ?? "",
+        number: r.number,
+      })),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taxRegistrationsData]);
+
+  const replaceTaxRegistrationsMutation = useMutation({
+    mutationFn: async (registrations: Array<{ label: string; number: string }>) =>
+      apiRequest("/api/company-tax-registrations", {
+        method: "PUT",
+        body: JSON.stringify({ registrations }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/company-tax-registrations"] });
+      toast({ title: "Tax registrations saved" });
+    },
+    onError: () => {
+      toast({ title: "Failed to save tax registrations", variant: "destructive" });
+    },
+  });
+
+  const addTaxRegistrationRow = () => {
+    setTaxRegistrationRows((prev) => [
+      ...prev,
+      { key: nextTaxRowKey(), label: "", number: "" },
+    ]);
+  };
+
+  const updateTaxRegistrationRow = (
+    key: number,
+    field: "label" | "number",
+    value: string,
+  ) => {
+    setTaxRegistrationRows((prev) =>
+      prev.map((row) => (row.key === key ? { ...row, [field]: value } : row)),
+    );
+  };
+
+  const removeTaxRegistrationRow = (key: number) => {
+    setTaxRegistrationRows((prev) => prev.filter((row) => row.key !== key));
+  };
+
+  const handleSaveTaxRegistrations = () => {
+    // Drop rows with no number (they'd render as empty lines on
+    // the PDF). Trim every value before sending — the server trims
+    // again, this just keeps the saved-then-rehydrated values
+    // consistent with what the user typed.
+    const payload = taxRegistrationRows
+      .map((r) => ({ label: r.label.trim(), number: r.number.trim() }))
+      .filter((r) => r.number.length > 0);
+    replaceTaxRegistrationsMutation.mutate(payload);
   };
 
   // ========================================
@@ -364,6 +477,105 @@ export default function TaxBillingRulesPage() {
             <Button size="sm" onClick={handleSavePaymentTerms} disabled={updateSettingsMutation.isPending} data-testid="button-save-payment-terms">
               <Save className="h-4 w-4 mr-1.5" />
               {updateSettingsMutation.isPending ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Tax Registrations — multi-row list editor. 2026-05-03 */}
+      <Card>
+        <CardContent className="pt-4 space-y-3">
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+              <Receipt className="h-3.5 w-3.5" /> Tax Registrations
+            </p>
+            <p className="text-xs text-muted-foreground">
+              These appear on customer-facing invoices.
+            </p>
+          </div>
+
+          {taxRegistrationRows.length === 0 ? (
+            <p className="text-xs text-muted-foreground py-2">
+              No tax registrations. Add one to display it on customer-facing invoices.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {taxRegistrationRows.map((row, idx) => (
+                <div
+                  key={row.key}
+                  className="grid grid-cols-[120px_1fr_auto] gap-2 items-end"
+                  data-testid={`row-tax-reg-${idx}`}
+                >
+                  <div className="space-y-1.5">
+                    {idx === 0 && (
+                      <Label className="text-xs" htmlFor={`tax-reg-label-${row.key}`}>
+                        Label
+                      </Label>
+                    )}
+                    <Input
+                      id={`tax-reg-label-${row.key}`}
+                      value={row.label}
+                      onChange={(e) => updateTaxRegistrationRow(row.key, "label", e.target.value)}
+                      placeholder="HST"
+                      maxLength={50}
+                      className="h-8 text-sm"
+                      disabled={taxRegistrationsLoading}
+                      data-testid={`input-tax-reg-label-${idx}`}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    {idx === 0 && (
+                      <Label className="text-xs" htmlFor={`tax-reg-number-${row.key}`}>
+                        Number
+                      </Label>
+                    )}
+                    <Input
+                      id={`tax-reg-number-${row.key}`}
+                      value={row.number}
+                      onChange={(e) => updateTaxRegistrationRow(row.key, "number", e.target.value)}
+                      placeholder="e.g. 739597326 RT0001"
+                      maxLength={100}
+                      className="h-8 text-sm"
+                      disabled={taxRegistrationsLoading}
+                      data-testid={`input-tax-reg-number-${idx}`}
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={() => removeTaxRegistrationRow(row.key)}
+                    aria-label={`Remove tax registration ${idx + 1}`}
+                    data-testid={`button-remove-tax-reg-${idx}`}
+                  >
+                    <X className="h-4 w-4 text-muted-foreground" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex items-center justify-between pt-1 border-t">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={addTaxRegistrationRow}
+              disabled={taxRegistrationsLoading}
+              data-testid="button-add-tax-registration"
+            >
+              <Plus className="h-4 w-4 mr-1.5" />
+              Add Tax Registration
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleSaveTaxRegistrations}
+              disabled={replaceTaxRegistrationsMutation.isPending}
+              data-testid="button-save-tax-registrations"
+            >
+              <Save className="h-4 w-4 mr-1.5" />
+              {replaceTaxRegistrationsMutation.isPending ? "Saving..." : "Save"}
             </Button>
           </div>
         </CardContent>

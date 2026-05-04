@@ -17,6 +17,13 @@ import { useAuth } from "@/lib/auth";
  * 2026-04-19 Portal auth fix: include portal auth pages so a stale
  * session-expired event can't cover them while the portal login flow
  * is in progress.
+ * 2026-05-03 platform-auth-leak fix: include every `/platform/*`
+ * path. The platform console has its own psid-cookie auth UX —
+ * the tenant SessionExpiredDialog must never appear over it. The
+ * upstream dispatcher in `queryClient.ts::notifySessionExpired`
+ * also gates on these prefixes; this dialog-side guard is
+ * belt-and-suspenders for the case where a stale event arrives
+ * during a navigation gap.
  */
 const AUTH_PAGE_PREFIXES = [
   "/login",
@@ -25,6 +32,7 @@ const AUTH_PAGE_PREFIXES = [
   "/reset-password",
   "/portal/login",
   "/portal/verify",
+  "/platform",
 ];
 
 /**

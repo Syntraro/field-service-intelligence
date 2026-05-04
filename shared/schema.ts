@@ -63,6 +63,21 @@ export const companies = pgTable("companies", {
   // Tax settings
   taxName: text("tax_name").notNull().default("HST"), // Default tax name (e.g., HST, GST, PST, VAT)
   defaultTaxRate: numeric("default_tax_rate", { precision: 5, scale: 2 }).notNull().default("13.00"), // Default tax rate as percentage (e.g., 13.00 for 13%)
+  // 2026-05-03 — DEPRECATED (single-pair model).
+  // These two columns held a tenant's *single* tax registration
+  // identity for customer-facing invoices. Replaced the same day by
+  // the multi-row `company_tax_registrations` child table — tenants
+  // now store ONE OR MORE registration entries (e.g. HST + GST, or
+  // VAT + EORI) and the PDF renders every active row as its own
+  // line. The columns are kept here only to preserve rollback
+  // safety: existing data is mirrored into the new table by the
+  // backfill in `migrations/2026_05_03_company_tax_registrations_table.sql`,
+  // and a rollback to the prior code path keeps reading these
+  // columns. NO CURRENT CALLER WRITES THEM. A follow-up PR will
+  // drop the columns + this comment block once the new code path
+  // has been live for one release cycle.
+  taxRegistrationLabel: text("tax_registration_label"),
+  taxRegistrationNumber: text("tax_registration_number"),
   // QBO item/tax mapping configuration
   // JSON structure: { productServiceItemId, taxableCode, nonTaxableCode } (legacy per-type fields also accepted)
   qboMappingConfig: jsonb("qbo_mapping_config"),
@@ -75,6 +90,14 @@ export const companies = pgTable("companies", {
   // payment correction. Gates BOTH the post-write hook AND manual retry —
   // when false, payment sync does not happen at all.
   qboPaymentSyncEnabled: boolean("qbo_payment_sync_enabled").notNull().default(false),
+  // 2026-05-03 PR1 (tenant-payments foundation) — tenant's chosen
+  // payment-collection provider. NULL until onboarding picks one. Drives
+  // `resolveForCompany()` in the provider resolver. Provider-neutral on
+  // purpose: today the only valid value is `stripe`, but Adyen / Square /
+  // etc. join the same column without a schema migration. Distinct from
+  // the legacy `stripeCustomerId` / `stripeSubscriptionId` columns above
+  // (which are SUBSCRIPTION billing, not customer-payment collection).
+  paymentProvider: text("payment_provider"),
   // QBO onboarding — set once on first successful import run (fetched > 0)
   qboOnboardingCatalogImportedAt: timestamp("qbo_onboarding_catalog_imported_at"),
   qboOnboardingCustomersImportedAt: timestamp("qbo_onboarding_customers_imported_at"),
@@ -93,6 +116,40 @@ export const insertCompanySchema = createInsertSchema(companies).omit({
 export type InsertCompany = z.infer<typeof insertCompanySchema>;
 export type Company = typeof companies.$inferSelect;
 
+// ============================================================================
+// Company Tax Registrations (2026-05-03)
+// ============================================================================
+//
+// Tenant-level multi-row tax registration identity for customer-facing
+// invoices. Each row carries an optional `label` (e.g. "HST", "GST",
+// "VAT", "EORI") and a required `number` (the registration ID itself).
+// A company has zero or more rows; the customer-facing invoice PDF
+// renders one line per row under the company contact block.
+//
+// `sort_order` determines presentation order on the PDF and in the
+// settings UI. The replace-all PUT endpoint reassigns sort_order
+// based on input order on every save, so re-orderable lists are
+// trivial to implement.
+//
+// UNRELATED to `company_tax_rates` / `company_tax_groups` — those
+// drive the tax-RATE calculation engine (the math). This table
+// describes the business as a tax-REGISTERED entity for display
+// only. No invoice math reads this table.
+export const companyTaxRegistrations = pgTable("company_tax_registrations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id")
+    .notNull()
+    .references(() => companies.id, { onDelete: "cascade" }),
+  label: text("label"),
+  number: text("number").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export type CompanyTaxRegistration = typeof companyTaxRegistrations.$inferSelect;
+export type InsertCompanyTaxRegistration = typeof companyTaxRegistrations.$inferInsert;
+
 // 2026-04-19 Profile consolidation (Phase 1): canonical Zod schema for the
 // Company Settings profile form. Fields live on `companies` (canonical) but
 // the API contract — and this schema's field names — preserve `companyName`
@@ -107,6 +164,11 @@ export const companyProfileFormSchema = z.object({
   postalCode: postalCodeSchema,
   email: z.string().email().max(255).optional().nullable().or(z.literal("")),
   phone: z.string().max(30).optional().nullable(),
+  // 2026-05-03: tax registration moved from these single-pair fields
+  // to the dedicated `company_tax_registrations` table (one row per
+  // registration, multiple rows per company). The settings page now
+  // edits the list via /api/company-tax-registrations; the profile
+  // form schema no longer carries any tax-registration fields.
 });
 export type CompanyProfileFormData = z.infer<typeof companyProfileFormSchema>;
 
@@ -256,6 +318,108 @@ export const passwordResetTokens = pgTable("password_reset_tokens", {
   requestedIp: text("requested_ip"),
 });
 
+// 2026-05-03: dedicated reset-token table for platform-role users.
+// Deliberately separate from `passwordResetTokens` above so a tenant
+// reset link can never be redeemed at the platform endpoint and vice
+// versa — the two flows live in distinct token tables, distinct
+// repositories, and distinct services. Same separation-of-purpose
+// principle that gates the psid vs sid cookie split. See
+// `server/services/platformPasswordResetService.ts`.
+export const platformPasswordResetTokens = pgTable("platform_password_reset_tokens", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: timestamp("expires_at").notNull(),
+  usedAt: timestamp("used_at"),
+  requestedIp: text("requested_ip"),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export type PlatformPasswordResetToken = typeof platformPasswordResetTokens.$inferSelect;
+
+// ============================================================================
+// Platform Identity (Phase 2-A, 2026-05-04)
+// ============================================================================
+//
+// Dedicated tables for SaaS-vendor staff identities (`platform_admin`,
+// `platform_support`, `platform_billing`, `platform_readonly_audit`).
+// Replace the legacy "platform user parked in tenant `users` with a
+// fake `companyId`" model. Created by
+// `migrations/2026_05_04_platform_users_create.sql` and backfilled
+// from the legacy rows by `*_platform_users_backfill.sql`.
+//
+// Decision (2026-05-04, Option 1): same email is allowed across
+// platform + tenant. Uniqueness is enforced WITHIN this surface only;
+// the tenant `user_identities` table is queried independently. A real
+// human MAY hold both a tenant account and a platform-staff account
+// at the same email — the two surfaces are deliberately separate
+// identity worlds.
+//
+// `platform_password_reset_tokens.user_id` will be repointed to
+// `platform_users.id` in a follow-up migration once the backfill
+// has run; the FK rewrite is a no-op on existing tokens because
+// the backfill preserves user-ids byte-for-byte.
+
+export const platformUsers = pgTable("platform_users", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  email: text("email").notNull(),
+  fullName: text("full_name"),
+  firstName: text("first_name"),
+  lastName: text("last_name"),
+  // 'active' | 'deactivated'. Smaller enum than tenant `users.status`
+  // — platform users are bootstrapped via the seed script, never invited.
+  status: text("status").notNull().default("active"),
+  disabled: boolean("disabled").notNull().default(false),
+  // Same session-invalidation lever as tenant `users.token_version`.
+  tokenVersion: integer("token_version").notNull().default(0),
+  lastLoginAt: timestamp("last_login_at"),
+  deletedAt: timestamp("deleted_at"),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export type PlatformUser = typeof platformUsers.$inferSelect;
+export type InsertPlatformUser = typeof platformUsers.$inferInsert;
+
+export const platformUserIdentities = pgTable("platform_user_identities", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id")
+    .notNull()
+    .references(() => platformUsers.id, { onDelete: "cascade" }),
+  // 'email' (SSO providers may be added later without schema change).
+  provider: text("provider").notNull(),
+  identifier: text("identifier").notNull(),
+  passwordHash: text("password_hash"),
+  verifiedAt: timestamp("verified_at"),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export type PlatformUserIdentity = typeof platformUserIdentities.$inferSelect;
+export type InsertPlatformUserIdentity = typeof platformUserIdentities.$inferInsert;
+
+// Multi-role join. Today every platform user has exactly one role
+// (legacy single-role model); the schema is multi-role-ready so a
+// future "grant additional role" flow doesn't need a migration.
+// Role strings match the canonical PLATFORM_ROLES list in
+// server/auth/roles.ts — application layer is source of truth, no
+// CHECK constraint at the DB level (matches the existing users.role
+// pattern).
+export const platformUserRoles = pgTable("platform_user_roles", {
+  userId: varchar("user_id")
+    .notNull()
+    .references(() => platformUsers.id, { onDelete: "cascade" }),
+  role: text("role").notNull(),
+  grantedAt: timestamp("granted_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  // Nullable so the bootstrap seed (the very first platform user) can
+  // insert without a circular FK. ON DELETE SET NULL preserves audit
+  // trail when a granter is later removed.
+  grantedBy: varchar("granted_by"),
+});
+
+export type PlatformUserRole = typeof platformUserRoles.$inferSelect;
+export type InsertPlatformUserRole = typeof platformUserRoles.$inferInsert;
+
 // Phase B: insertPasswordResetTokenSchema removed (unused export)
 
 // ============================================================================
@@ -392,6 +556,14 @@ export const customerCompanies = pgTable("customer_companies", {
   qboLastSyncedAt: timestamp("qbo_last_synced_at"),
   qboSyncStatus: text("qbo_sync_status").notNull().default("NOT_SYNCED"), // NOT_SYNCED | SYNCED | PENDING | ERROR
   qboSyncError: text("qbo_sync_error"), // Last sync error message if any
+  // 2026-05-03 PR A — saved-payment-method foundation. Provider-neutral
+  // reference to the bill-to party's identity at whichever payment
+  // provider the tenant uses. Stripe is the first concrete provider;
+  // a future Adyen/Square adapter writes to the same column. Lazily
+  // minted by `customerCompanyPaymentService.resolveOrCreateProviderCustomer`
+  // on the first save-card request and reused thereafter. Never set
+  // by user input — always provider-issued.
+  providerCustomerId: text("provider_customer_id"),
   // Legacy nameSource replaced by useCompanyAsPrimary boolean (2026-04-10)
   nameSource: text("name_source").notNull().default("company"),
   // Soft delete
@@ -404,6 +576,13 @@ export const customerCompanies = pgTable("customer_companies", {
   qboCustomerIdUq: uniqueIndex("customer_companies_company_qbo_customer_id_uq")
     .on(table.companyId, table.qboCustomerId)
     .where(sql`qbo_customer_id is not null`),
+  // 2026-05-03 PR A — same shape for the provider-neutral customer id.
+  // Tenant-scoped uniqueness; partial because the column is nullable
+  // (most rows stay NULL forever — only customer_companies whose
+  // customers actually save a card get one minted).
+  providerCustomerIdUq: uniqueIndex("customer_companies_company_provider_customer_id_uq")
+    .on(table.companyId, table.providerCustomerId)
+    .where(sql`provider_customer_id is not null`),
 }));
 
 export const insertCustomerCompanySchema = createInsertSchema(customerCompanies).omit({
@@ -1574,6 +1753,10 @@ export const invoices = pgTable("invoices", {
   // Notes
   notesInternal: text("notes_internal"), // Not sent to QBO
   notesCustomer: text("notes_customer"), // Maps to QBO CustomerMemo
+  // 2026-05-03: canonical invoice title/summary. Short, editable, used
+  // as the page-level header label. Distinct from workDescription
+  // (long body) and from the linked job's summary (separate entity).
+  summary: text("summary"),
   // Work description (copied from job description when invoice created from job)
   workDescription: text("work_description"), // Full job description / work performed
   // Client message (customer-facing message for invoice PDF/email)
@@ -1602,10 +1785,17 @@ export const invoices = pgTable("invoices", {
   qboOutOfSyncReason: text("qbo_out_of_sync_reason"), // "Edited after QBO sync: <reason>"
   lastBillingEditAt: timestamp("last_billing_edit_at"), // Last time billing fields were modified
   lastBillingEditBy: varchar("last_billing_edit_by"), // User who made last billing edit
-  // Reminder tracking (2026-04-16). Populated by the canonical
-  // invoiceReminderService; never written from a route handler directly.
-  lastReminderAt: timestamp("last_reminder_at"),
-  reminderCount: integer("reminder_count").notNull().default(0),
+  // 2026-05-03: generalized email-send tracking. Bumped by every
+  // outbound invoice email (manual or automated reminder). The
+  // automated sweep worker reads these to gate cadence
+  // (`first_delay_days` / `repeat_every_days`) — every send counts
+  // toward the next cadence interval. Renamed from `last_reminder_at`
+  // / `reminder_count` per migration 2026_05_03_rename_invoice_email_columns.
+  lastEmailedAt: timestamp("last_emailed_at"),
+  emailSendCount: integer("email_send_count").notNull().default(0),
+  // Reminder pause / snooze remain reminder-specific — they only
+  // affect the automated sweep worker. Manual "Email invoice" sends
+  // ignore these flags.
   remindersPaused: boolean("reminders_paused").notNull().default(false),
   reminderSnoozeUntil: timestamp("reminder_snooze_until"),
   // Discount fields (Phase 11: Invoice Corrections + Discount Support)
@@ -1675,6 +1865,9 @@ export const updateInvoiceSchema = z.object({
   notesInternal: z.string().nullable().optional(),
   notesCustomer: z.string().nullable().optional(),
   workDescription: z.string().nullable().optional(),
+  // 2026-05-03: short editable invoice title. Distinct from
+  // workDescription. Surfaces in the canonical detail header.
+  summary: z.string().max(255).nullable().optional(),
   clientMessage: z.string().nullable().optional(),
   showQuantity: z.boolean().optional(),
   showUnitPrice: z.boolean().optional(),
@@ -1780,6 +1973,67 @@ export type InsertInvoiceLine = z.infer<typeof insertInvoiceLineSchema>;
 export type UpdateInvoiceLine = z.infer<typeof updateInvoiceLineSchema>;
 export type InvoiceLine = typeof invoiceLines.$inferSelect;
 
+// ---------------------------------------------------------------------------
+// Invoice notes — first-class threaded notes scoped to an invoice
+// ---------------------------------------------------------------------------
+//
+// 2026-05-03: invoices previously had no notes table of their own. The
+// `/api/invoices/:id/notes` GET endpoint borrowed entity-owned notes from
+// the linked job (and fell back to the flat `invoices.notesInternal`
+// column for no-job invoices). That coupled invoice notes to the job's
+// lifecycle and broke for invoices created standalone (no jobId), which
+// is a fully supported tenant workflow.
+//
+// This pair of tables (`invoice_notes` + `invoice_note_attachments`)
+// mirrors the canonical per-entity pattern already used by job_notes,
+// quote_notes, client_notes and lead_notes. Same shape, same FK
+// behavior, same R2 attachment plumbing — extending the existing
+// fileUploadService adapter map covers the upload pipeline. Invoice
+// notes live and die with the invoice (cascade on delete), independent
+// of any job. `notesInternal` stays on the invoices table for QBO
+// `PrivateNote` mapping + import snapshots, but is no longer the
+// primary user-facing notes surface.
+export const invoiceNotes = pgTable("invoice_notes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  noteText: text("note_text").notNull(),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const insertInvoiceNoteSchema = createInsertSchema(invoiceNotes).omit({
+  id: true,
+  companyId: true,
+  userId: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateInvoiceNoteSchema = z.object({
+  noteText: z.string().optional(),
+});
+
+export type InsertInvoiceNote = z.infer<typeof insertInvoiceNoteSchema>;
+export type UpdateInvoiceNote = z.infer<typeof updateInvoiceNoteSchema>;
+export type InvoiceNote = typeof invoiceNotes.$inferSelect;
+
+// Invoice note attachments — join table linking invoice notes to files.
+// Mirrors `job_note_attachments` shape exactly so the fileUploadService
+// adapter, the R2 object-key layout, and the read-side hydration are
+// identical patterns to the job-note pipeline.
+export const invoiceNoteAttachments = pgTable("invoice_note_attachments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  noteId: varchar("note_id").notNull().references(() => invoiceNotes.id, { onDelete: "cascade" }),
+  fileId: varchar("file_id").notNull().references(() => files.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdBy: varchar("created_by").references(() => users.id),
+});
+
+export type InvoiceNoteAttachment = typeof invoiceNoteAttachments.$inferSelect;
+
 // 2026-04-14 Payments ledger foundation (Phase 1): paymentType enum +
 // parent-payment self-reference so future refund/reversal rows can attach
 // to the payment they offset. Stripe-compatible: Stripe Charge/Refund
@@ -1793,7 +2047,13 @@ export type PaymentType = (typeof paymentTypeEnum)[number];
 export const payments = pgTable("payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }), // Denormalized for tenant isolation
-  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: "cascade" }),
+  // 2026-05-03 multi-invoice payments (PR 1): nullable. Legacy 1:1
+  // payments still set this column; multi-invoice payments will leave
+  // it NULL and rely on `payment_allocations` (below). FK + cascade
+  // behaviour preserved for legacy rows. The "either invoiceId IS NOT
+  // NULL OR ≥1 payment_allocations row" invariant is enforced at the
+  // repo / service write path, not by a DB CHECK.
+  invoiceId: varchar("invoice_id").references(() => invoices.id, { onDelete: "cascade" }),
   amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
   method: text("method").notNull().default("other"), // cash, credit, debit, e-transfer, cheque, other
   reference: text("reference"), // Transaction ID, cheque number, etc.
@@ -1827,6 +2087,19 @@ export const payments = pgTable("payments", {
   // `qboPaymentId`-only rows and new `providerSource`-tagged rows.
   providerSource: text("provider_source").notNull().default("manual"),
   providerEventId: text("provider_event_id"),
+  // 2026-05-03 PR1 (tenant-payments foundation): identifies which tenant
+  // provider account processed this row. Nullable because:
+  //   * `manual` / `qbo` rows have no provider account.
+  //   * Pre-tenant-onboarding `stripe` rows that ran on the platform
+  //     account also leave this NULL (will be backfilled or excluded
+  //     from per-tenant payout reconciliation explicitly).
+  // `paymentProviderAccountId` is the FK to our internal account row;
+  // `providerAccountId` mirrors the provider's own opaque account id
+  // (e.g. Stripe `acct_...`) for cross-reference in webhook payloads /
+  // dashboard links without requiring a join. Both written together by
+  // the future provider-aware payment writer.
+  paymentProviderAccountId: varchar("payment_provider_account_id").references((): any => paymentProviderAccounts.id, { onDelete: "set null" }),
+  providerAccountId: text("provider_account_id"),
   // 2026-04-09: Outbound QBO payment sync fields. Mirror the convention used
   // on customer_companies / items / invoices. None of these are mutated by the
   // canonical local payment writer (paymentRepository.recalculateInvoiceBalance);
@@ -1908,6 +2181,14 @@ export const insertPaymentSchema = createInsertSchema(payments).omit({
   // enforced at the validation layer.
   providerSource: true,
   providerEventId: true,
+  // 2026-05-03 PR1 (tenant-payments foundation): provider-account
+  // attribution. Set by the future provider-aware payment writer
+  // (resolves the active `payment_provider_accounts` row for the tenant
+  // and stamps both fields together). Never user input — that's how the
+  // canonical-writer / provider-account separation is enforced at the
+  // validation layer.
+  paymentProviderAccountId: true,
+  providerAccountId: true,
 }).extend({
   method: z.enum(paymentMethodEnum).default("other"),
   receivedAt: z.string().optional(), // Accept string for date input
@@ -1924,6 +2205,157 @@ export const updatePaymentSchema = z.object({
 export type InsertPayment = z.infer<typeof insertPaymentSchema>;
 export type UpdatePayment = z.infer<typeof updatePaymentSchema>;
 export type Payment = typeof payments.$inferSelect;
+
+// ============================================================================
+// PAYMENT ALLOCATIONS (Multi-invoice payments — PR1, 2026-05-03)
+// ============================================================================
+// One payment can be allocated across many invoices (e.g. customer pays
+// 3 outstanding invoices in a single Stripe checkout). This junction
+// table captures how a payment row's gross `amount` was split across
+// the invoices it paid.
+//
+// Co-existence with the legacy 1:1 model:
+//   • Legacy single-invoice payments: `payments.invoice_id` is set,
+//     and the row has ZERO `payment_allocations` entries. Read code
+//     can treat `payments.invoice_id` as the canonical attribution.
+//   • Modern multi-invoice payments: `payments.invoice_id` is NULL,
+//     and the row has ≥1 `payment_allocations` entries. Each
+//     allocation row carries the slice of the payment applied to a
+//     specific invoice.
+//
+// See `migrations/2026_05_03_payment_allocations.sql` for the SQL.
+// The "either FK or allocations, never both, never neither" invariant
+// is enforced at the repo write path (not via a DB CHECK because the
+// cross-table predicate is awkward to express).
+export const paymentAllocations = pgTable("payment_allocations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  paymentId: varchar("payment_id").notNull().references(() => payments.id, { onDelete: "cascade" }),
+  // RESTRICT (not CASCADE) — once an invoice has been paid, deleting
+  // the invoice should not silently destroy the payment-attribution
+  // record. The hard-delete path on invoices already blocks delete
+  // when payments exist; this index just makes that cross-table
+  // safety symmetric.
+  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: "restrict" }),
+  allocatedAmount: numeric("allocated_amount", { precision: 12, scale: 2 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  // At most one allocation row per (payment, invoice) pair. Top-up
+  // semantics use UPDATE on the existing row, never INSERT a second.
+  paymentInvoiceUq: uniqueIndex("payment_allocations_payment_invoice_uq")
+    .on(table.paymentId, table.invoiceId),
+  // Per-invoice lookup for "how much has been allocated to this
+  // invoice across all payments". Tenant-scoped because every legit
+  // query is.
+  invoiceLookupIdx: index("payment_allocations_invoice_idx")
+    .on(table.companyId, table.invoiceId),
+}));
+
+export const insertPaymentAllocationSchema = createInsertSchema(paymentAllocations).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertPaymentAllocation = z.infer<typeof insertPaymentAllocationSchema>;
+export type PaymentAllocation = typeof paymentAllocations.$inferSelect;
+
+// ============================================================================
+// PAYMENT METHODS — saved-card foundation (PR A, 2026-05-03)
+// ============================================================================
+//
+// One row per saved card, tenant + customer-company scoped. Stores ONLY the
+// metadata the payment provider returns (card_brand / last4 / exp_*). Raw
+// card numbers + CVV NEVER touch this table.
+//
+// Provider-neutral by design: `provider_source` carries which adapter wrote
+// the row (`stripe` for now); column names use `provider_*` so a future
+// non-Stripe adapter (Adyen, Square, etc.) writes to the same table without
+// a schema migration.
+//
+// Invariants (mirrored by indexes — see migration 2026_05_03_payment_methods.sql):
+//   * `(company_id, provider_source, provider_payment_method_id)` UNIQUE —
+//     webhook replay collides on this index, the application service
+//     classifies SQLSTATE 23505 as "replay" + ACKs 200 (same idempotency
+//     contract `payments_provider_event_id_uq` established in PR 1).
+//   * At most ONE active default per (tenant, customer-company) — partial
+//     unique index excludes detached rows so soft-deleting the old default
+//     doesn't block setting a new one.
+//
+// Lifecycle:
+//   * `consent_at` / `consent_text` / `consent_ip` / `consent_user_agent`
+//     captured at save-time → auditable when a regulator asks "what did
+//     the customer agree to?".
+//   * `detached_at` is soft-delete; the provider-side detach happens at the
+//     same time so future charges fail at the provider, while the local row
+//     stays for forensic queries.
+export const paymentMethods = pgTable("payment_methods", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  customerCompanyId: varchar("customer_company_id").notNull().references(() => customerCompanies.id, { onDelete: "cascade" }),
+
+  // Provider attribution — opaque tokens the provider issued.
+  providerSource: text("provider_source").notNull(),
+  providerCustomerId: text("provider_customer_id").notNull(),
+  providerPaymentMethodId: text("provider_payment_method_id").notNull(),
+
+  // Card metadata mirrored from the provider PaymentMethod object.
+  // SAFE to mirror locally — the customer already sees these on their
+  // statement. Raw PAN + CVV stay at the provider.
+  cardBrand: text("card_brand").notNull(),
+  cardLast4: text("card_last4").notNull(),
+  cardExpMonth: integer("card_exp_month").notNull(),
+  cardExpYear: integer("card_exp_year").notNull(),
+  cardFunding: text("card_funding"),
+  cardCountry: text("card_country"),
+
+  isDefault: boolean("is_default").notNull().default(false),
+
+  // Consent capture — see header note. NOT NULL on `consent_at` +
+  // `consent_text` so every row carries auditable proof of authorization.
+  consentAt: timestamp("consent_at", { withTimezone: true }).notNull(),
+  consentText: text("consent_text").notNull(),
+  consentIp: text("consent_ip"),
+  consentUserAgent: text("consent_user_agent"),
+  createdByContactId: varchar("created_by_contact_id").references(() => contactPersons.id, { onDelete: "set null" }),
+
+  // Soft-delete bookkeeping. `detached_at IS NULL` = active.
+  detachedAt: timestamp("detached_at", { withTimezone: true }),
+  detachedByContactId: varchar("detached_by_contact_id").references(() => contactPersons.id, { onDelete: "set null" }),
+  detachReason: text("detach_reason"),
+
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().default(sql`now()`),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().default(sql`now()`),
+}, (table) => ({
+  // Webhook replay anchor.
+  providerPmUq: uniqueIndex("payment_methods_provider_pm_uq")
+    .on(table.companyId, table.providerSource, table.providerPaymentMethodId),
+  // At-most-one active default.
+  oneDefaultPerCustomer: uniqueIndex("payment_methods_one_default_per_customer")
+    .on(table.companyId, table.customerCompanyId)
+    .where(sql`is_default = true and detached_at is null`),
+  // Hot-path lookup for the portal "list my saved cards" screen.
+  lookupIdx: index("payment_methods_lookup_idx")
+    .on(table.companyId, table.customerCompanyId, table.detachedAt),
+}));
+
+// `provider_source`, `provider_customer_id`, `provider_payment_method_id`,
+// `card_*`, `consent_*`, `created_by_contact_id` are all required on insert.
+// `id` / timestamps default at the DB; `is_default` defaults false; the
+// `detach_*` columns are populated only at delete-time.
+// Naming note: the enum at line ~1628 already owns `PaymentMethod` (the
+// payments-table `method` enum: cash | credit | …). The saved-card row
+// type uses `SavedPaymentMethod` to avoid the collision and to make the
+// "this is the saved-card concept, not the payments.method enum"
+// distinction unambiguous to readers.
+export const insertSavedPaymentMethodSchema = createInsertSchema(paymentMethods).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  detachedAt: true,
+  detachedByContactId: true,
+  detachReason: true,
+});
+export type InsertSavedPaymentMethod = z.infer<typeof insertSavedPaymentMethodSchema>;
+export type SavedPaymentMethod = typeof paymentMethods.$inferSelect;
 
 // ============================================================================
 // PAYMENT WEBHOOK EVENTS (Payment Ops Dashboard — PR1, 2026-04-22)
@@ -1946,8 +2378,42 @@ export type Payment = typeof payments.$inferSelect;
 // and are not needed for ops triage.
 export const paymentWebhookEventKindEnum = [
   "payment_succeeded",
+  // 2026-05-03 multi-invoice payments: one Stripe Checkout Session ⇒
+  // one payment row + N allocations. Distinct from `payment_succeeded`
+  // so ops can filter / alert on multi-invoice flow specifically.
+  "multi_invoice_payment_succeeded",
+  // 2026-05-03 PR B — saved-card foundation. Stripe
+  // `payment_method.attached` events that carry our save-card consent
+  // metadata land in `payment_methods`. Distinct kind so ops can
+  // filter / alert on save-card-specific failures separately from
+  // payment failures.
+  "payment_method_attached",
   "payment_failed",
   "refund_created",
+  // 2026-05-03 PR2 — tenant payments onboarding. Stripe Connect
+  // `account.updated` lifecycle events land under this kind so ops
+  // can filter / alert on onboarding-state regressions (e.g. a
+  // `restricted` flip after a payouts-disable) separately from
+  // payment-flow failures.
+  "account_updated",
+  // 2026-05-04 PR5 — payout lifecycle. One kind per Stripe payout
+  // event so ops dashboards can graph each transition independently
+  // (e.g. failure spike, in_transit-to-paid lag). The matching
+  // handler in paymentApplicationService folds all five back into a
+  // single `paymentPayoutsRepository.upsertFromProviderEvent` call.
+  "payout_created",
+  "payout_updated",
+  "payout_paid",
+  "payout_failed",
+  "payout_canceled",
+  // 2026-05-04 PR6 — dispute / chargeback lifecycle. Three kinds map
+  // to Stripe's `charge.dispute.created / .updated / .closed`. The
+  // matching handler folds all three through
+  // `paymentDisputesRepository.upsertFromProviderEvent` keyed on
+  // `(provider, provider_dispute_id)`.
+  "dispute_created",
+  "dispute_updated",
+  "dispute_closed",
   "unsupported",
   "signature_failed",
 ] as const;
@@ -2033,6 +2499,325 @@ export type PaymentWebhookEvent = typeof paymentWebhookEvents.$inferSelect;
 // log line plus the provider webhook's automatic ledger backfill.
 // See migrations/2026_04_22_rollback_payment_ops_tables.sql for the DB
 // drop statement (apply only where the forward migration ran).
+
+// ============================================================================
+// TENANT PAYMENT PROVIDER FOUNDATION — PR1 (2026-05-03)
+// ============================================================================
+// Schema-only foundation for tenant-owned payment collection (Stripe
+// Connect-style onboarding, payouts, disputes). NO behavior change in
+// this PR — the resolver, adapter, webhook handlers, and UI all keep
+// running on the existing platform-account path. PR2+ wires service
+// logic on top of these tables.
+//
+// Provider-neutral by design:
+//   * Column names use `provider_*` (not `stripe_*`) so a future
+//     non-Stripe adapter (Adyen, Square, etc.) writes to the same
+//     tables without a schema migration.
+//   * `provider` text column carries the adapter id (today only
+//     `stripe` is meaningful — see `paymentProviderEnum` below).
+//   * Stripe-specific opaque tokens live in `provider_account_id` /
+//     `provider_payout_id` / `provider_dispute_id` — the columns are
+//     untyped from our perspective; the adapter validates shape.
+
+// Provider-neutral enum of currently-supported payment-collection
+// adapters. Today only `stripe` is shippable; the array exists so future
+// adapter additions are a one-line change.
+export const paymentProviderEnum = ["stripe"] as const;
+export type PaymentProvider = (typeof paymentProviderEnum)[number];
+
+// Lifecycle of the tenant's connected provider account. Mirrors the
+// states every Connect-style provider exposes (Stripe `charges_enabled`
+// + `payouts_enabled` + `requirements`-driven gating roll up into one
+// of these). Provider-specific raw status is preserved on the row in
+// case operators need to reconcile divergence.
+//   * not_started  — row exists but `provider_account_id` is NULL
+//                    (we've reserved a local slot, no provider call yet).
+//   * pending      — provider account created; tenant has not finished
+//                    onboarding (requirements_due non-empty).
+//   * active       — charges_enabled = true AND payouts_enabled = true.
+//   * restricted   — charges_enabled = true but payouts_enabled = false
+//                    (tenant can collect, can't be paid out yet).
+//   * disabled     — provider has disabled the account; see
+//                    `disabled_reason` for the human-readable cause.
+export const paymentProviderAccountStatusEnum = [
+  "not_started",
+  "pending",
+  "active",
+  "restricted",
+  "disabled",
+] as const;
+export type PaymentProviderAccountStatus =
+  (typeof paymentProviderAccountStatusEnum)[number];
+
+// Payout lifecycle. Aligns with the canonical Stripe Payout statuses
+// (pending → in_transit → paid, plus failed/canceled terminal states).
+// `raw_provider_status` on the row preserves the verbatim provider
+// string when it's something more granular than this normalized enum.
+export const paymentPayoutStatusEnum = [
+  "pending",
+  "in_transit",
+  "paid",
+  "failed",
+  "canceled",
+] as const;
+export type PaymentPayoutStatus = (typeof paymentPayoutStatusEnum)[number];
+
+// Dispute / chargeback lifecycle. Covers both hard disputes (which
+// require evidence + a win/lose outcome) and early-warning fraud
+// notifications (Stripe `radar.early_fraud_warning` style — the
+// `warning_*` triplet). `raw_provider_status` preserves the verbatim
+// provider string.
+//   * needs_response          — operator action required (evidence)
+//   * under_review            — evidence submitted, provider deciding
+//   * won / lost              — terminal outcomes
+//   * warning_needs_response  — early-warning, no money moved yet
+//   * warning_under_review    — early-warning, provider deciding
+//   * warning_closed          — early-warning resolved, no escalation
+//   * closed                  — terminal "no further action" catch-all
+export const paymentDisputeStatusEnum = [
+  "needs_response",
+  "under_review",
+  "won",
+  "lost",
+  "warning_needs_response",
+  "warning_under_review",
+  "warning_closed",
+  "closed",
+] as const;
+export type PaymentDisputeStatus =
+  (typeof paymentDisputeStatusEnum)[number];
+
+// ----------------------------------------------------------------------------
+// payment_provider_accounts — one row per (tenant, provider).
+// ----------------------------------------------------------------------------
+// Replaces the never-shipped `companies.stripe_connected_account_id`
+// shortcut. Putting account state in its own table means:
+//   1. Future multi-provider tenants get one row per provider (no
+//      column explosion on `companies`).
+//   2. Lifecycle metadata (`charges_enabled`, `payouts_enabled`,
+//      `requirements_due`) lives next to the FK that owns it.
+//   3. `payment_payouts` and `payment_disputes` can FK directly to the
+//      account row, so a delete-the-account path doesn't have to
+//      cascade through `companies`.
+//
+// `provider_account_id` is nullable because PR2 will create the local
+// row in `not_started` state BEFORE the provider's
+// `accounts.create` call. If the provider call fails, the local row
+// stays around as a retry slot.
+export const paymentProviderAccounts = pgTable(
+  "payment_provider_accounts",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull(),
+    // Opaque provider-issued account id (Stripe `acct_...`). Nullable
+    // until the provider's `accounts.create` call returns successfully.
+    providerAccountId: text("provider_account_id"),
+    status: text("status").notNull().default("not_started"),
+    chargesEnabled: boolean("charges_enabled").notNull().default(false),
+    payoutsEnabled: boolean("payouts_enabled").notNull().default(false),
+    detailsSubmitted: boolean("details_submitted").notNull().default(false),
+    // Provider-specific structured requirements payload — Stripe returns
+    // a nested object with `currently_due` / `eventually_due` /
+    // `past_due` / `pending_verification` arrays. We mirror it whole as
+    // JSONB so the onboarding UI can render the live remediation list
+    // without a second provider round-trip.
+    requirementsDue: jsonb("requirements_due"),
+    disabledReason: text("disabled_reason"),
+    defaultCurrency: text("default_currency"),
+    country: text("country"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`now()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`now()`),
+  },
+  (table) => ({
+    // One account per (tenant, provider). A tenant cannot have two
+    // Stripe accounts; if they switch providers they get a NEW row for
+    // the new provider while the old one stays for historical lookup.
+    companyProviderUq: uniqueIndex("payment_provider_accounts_company_provider_uq")
+      .on(table.companyId, table.provider),
+    // Webhook resolver hot path: incoming `account.updated` events
+    // arrive with `acct_...` and need to find their owning row fast.
+    // Partial because rows in `not_started` state legitimately have
+    // NULL `provider_account_id`.
+    providerAccountIdIdx: index("payment_provider_accounts_provider_account_id_idx")
+      .on(table.provider, table.providerAccountId),
+  }),
+);
+
+export const insertPaymentProviderAccountSchema = createInsertSchema(
+  paymentProviderAccounts,
+).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertPaymentProviderAccount = z.infer<
+  typeof insertPaymentProviderAccountSchema
+>;
+export type PaymentProviderAccount =
+  typeof paymentProviderAccounts.$inferSelect;
+
+// ----------------------------------------------------------------------------
+// payment_payouts — provider payout lifecycle.
+// ----------------------------------------------------------------------------
+// One row per provider payout event (Stripe `payout.created /
+// .updated / .paid / .failed`). Tracks the provider's own settlement
+// of funds from the connected account → tenant bank account. We do
+// NOT initiate payouts ourselves; we mirror what the provider tells us.
+//
+// `payment_provider_account_id` (FK) and `provider_account_id` (text
+// mirror) are stored together — same pattern as the `payments` table.
+// Lookup-by-FK for our queries; lookup-by-`acct_...` for cross-
+// reference with the provider dashboard without a join.
+export const paymentPayouts = pgTable(
+  "payment_payouts",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull(),
+    paymentProviderAccountId: varchar("payment_provider_account_id")
+      .notNull()
+      .references(() => paymentProviderAccounts.id, { onDelete: "restrict" }),
+    providerAccountId: text("provider_account_id").notNull(),
+    // Opaque provider-issued payout id (Stripe `po_...`). Nullable for
+    // local-only rows queued before a provider call (rare, but the
+    // schema permits it for symmetry with `payment_provider_accounts`).
+    providerPayoutId: text("provider_payout_id"),
+    // Same convention as `payments.amount` — numeric(12,2), tenant
+    // currency stored separately in `currency`. Sign convention: always
+    // positive (payout is money LEAVING the connected account, but we
+    // record the gross transferred-to-bank amount). `failure_*` fields
+    // explain reversals; we don't model them as negative-amount rows.
+    amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+    currency: text("currency").notNull(),
+    status: text("status").notNull(),
+    arrivalDate: timestamp("arrival_date", { withTimezone: true }),
+    destinationLast4: text("destination_last4"),
+    failureCode: text("failure_code"),
+    failureMessage: text("failure_message"),
+    rawProviderStatus: text("raw_provider_status"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`now()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`now()`),
+  },
+  (table) => ({
+    // Webhook replay anchor — same pattern as
+    // `payments.providerEventIdUq` / `payment_methods.providerPmUq`.
+    // Partial because `provider_payout_id` is nullable for the
+    // edge-case local-only row.
+    providerPayoutIdUq: uniqueIndex("payment_payouts_provider_payout_id_uq")
+      .on(table.provider, table.providerPayoutId)
+      .where(sql`provider_payout_id IS NOT NULL`),
+    // Tenant + recency index — drives the future "Payouts" dashboard
+    // listing.
+    companyArrivalIdx: index("payment_payouts_company_arrival_idx")
+      .on(table.companyId, table.arrivalDate),
+    // Per-account drilldown index.
+    accountIdx: index("payment_payouts_account_idx")
+      .on(table.paymentProviderAccountId),
+  }),
+);
+
+export const insertPaymentPayoutSchema = createInsertSchema(paymentPayouts).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertPaymentPayout = z.infer<typeof insertPaymentPayoutSchema>;
+export type PaymentPayout = typeof paymentPayouts.$inferSelect;
+
+// ----------------------------------------------------------------------------
+// payment_disputes — chargeback / dispute lifecycle.
+// ----------------------------------------------------------------------------
+// One row per provider dispute event (Stripe `charge.dispute.created /
+// .updated / .closed`, plus `radar.early_fraud_warning.*` for the
+// `warning_*` enum members).
+//
+// `payment_id` and `invoice_id` are nullable because:
+//   * Webhook arrives BEFORE local payment row is written (race
+//     against `charge.refunded` ordering): disputes resolver creates
+//     the dispute row with NULL refs and backfills on next match.
+//   * Standalone disputes opened from the provider dashboard for
+//     payments not yet in our ledger.
+// `provider_payment_id` (Stripe `ch_...`) is non-nullable so the
+// dispute row always carries enough context to backfill.
+export const paymentDisputes = pgTable(
+  "payment_disputes",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    paymentId: varchar("payment_id").references(() => payments.id, {
+      onDelete: "set null",
+    }),
+    invoiceId: varchar("invoice_id").references(() => invoices.id, {
+      onDelete: "set null",
+    }),
+    provider: text("provider").notNull(),
+    paymentProviderAccountId: varchar("payment_provider_account_id")
+      .notNull()
+      .references(() => paymentProviderAccounts.id, { onDelete: "restrict" }),
+    providerAccountId: text("provider_account_id").notNull(),
+    // Opaque provider-issued dispute id (Stripe `dp_...` /
+    // `du_...` for unhandled types). Nullable to symmetry-match the
+    // payouts table; in practice every dispute has one.
+    providerDisputeId: text("provider_dispute_id"),
+    // Stripe `ch_...` — the charge being disputed. Always populated;
+    // it's how we backfill `payment_id` later if the local row arrives
+    // out of order.
+    providerPaymentId: text("provider_payment_id").notNull(),
+    amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+    currency: text("currency").notNull(),
+    status: text("status").notNull(),
+    // Provider's reason code (Stripe: `fraudulent`, `product_not_received`,
+    // `duplicate`, …). Free text because the enum varies per provider.
+    reason: text("reason"),
+    // Provider deadline for evidence submission. NULL for warnings
+    // (which don't accept evidence).
+    evidenceDueBy: timestamp("evidence_due_by", { withTimezone: true }),
+    rawProviderStatus: text("raw_provider_status"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`now()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`now()`),
+  },
+  (table) => ({
+    // Webhook replay anchor.
+    providerDisputeIdUq: uniqueIndex("payment_disputes_provider_dispute_id_uq")
+      .on(table.provider, table.providerDisputeId)
+      .where(sql`provider_dispute_id IS NOT NULL`),
+    // Tenant + recency index — drives the future "Disputes" dashboard.
+    companyCreatedIdx: index("payment_disputes_company_created_idx")
+      .on(table.companyId, table.createdAt),
+    // Backfill helper: when a payment row arrives after its dispute,
+    // the resolver looks up open disputes by `provider_payment_id` and
+    // wires `payment_id` / `invoice_id` in.
+    providerPaymentIdIdx: index("payment_disputes_provider_payment_id_idx")
+      .on(table.provider, table.providerPaymentId),
+  }),
+);
+
+export const insertPaymentDisputeSchema = createInsertSchema(paymentDisputes).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertPaymentDispute = z.infer<typeof insertPaymentDisputeSchema>;
+export type PaymentDispute = typeof paymentDisputes.$inferSelect;
 
 // ============================================
 // JOBS SYSTEM

@@ -17,10 +17,12 @@
  *   - Failures in any stage are thrown so the route returns a proper error.
  */
 
-import { getResendClient } from "../resendClient";
+import { getResendClient, formatFromHeader, isPlausibleEmail } from "../resendClient";
 import { storage } from "../storage/index";
 import { createError } from "../middleware/errorHandler";
 import { generateInvoicePdf } from "./invoicePdfService";
+// 2026-05-03: tenant tax-registration identity (multi-row).
+import { companyTaxRegistrationRepository } from "../storage/companyTaxRegistrations";
 import { generateQuotePdf } from "./quotePdfService";
 import { getFileBufferForTenant } from "./fileUploadService";
 import { normalizeEmailList, recipientResolverService } from "./recipientResolverService";
@@ -29,6 +31,12 @@ import { communicationTemplatesService } from "./communicationTemplatesService";
 import { emailDeliveryTrackingService } from "./emailDeliveryTrackingService";
 import { renderTemplate } from "./templateRenderer";
 import { quoteRepository } from "../storage/quotes";
+// 2026-05-03: invoice email-send cadence bump. Centralized here so
+// EVERY successful invoice email send (manual via SendCommunicationModal,
+// automated via invoiceReminderService.sweepTenant, future callers)
+// records `last_emailed_at` + `email_send_count` exactly once. Prior
+// behavior bumped only on the reminder path.
+import { invoiceRepository } from "../storage/invoices";
 import type {
   CommunicationTemplateEntityType,
   DeliveryAttachmentMetadata,
@@ -284,15 +292,276 @@ function linkifyEscapedHtml(escaped: string): string {
 }
 
 /**
+ * 2026-05-03 polish — minimal Markdown-bold support inside email bodies.
+ *
+ * Replaces `**word(s)**` with `<strong>word(s)</strong>` so the system
+ * default templates can emphasise the headline total / outstanding
+ * balance line without needing an additional sentinel. The regex is
+ * intentionally conservative:
+ *   • cannot span newlines — a stray `**` in user copy can't bold the
+ *     rest of the email
+ *   • requires non-asterisk content immediately after the opening `**`
+ *     so the empty `****` token is left alone
+ *   • non-greedy match so the FIRST `**` after the open token closes
+ *     the run (avoids accidentally bolding huge stretches when a
+ *     line contains multiple emphasised phrases)
+ *
+ * Tenants whose saved templates don't include `**` markers get
+ * exactly the same output as before — this is a no-op on bodies that
+ * lack the syntax.
+ */
+function applyBoldMarkers(input: string): string {
+  return input.replace(
+    /\*\*([^\n*][^\n]*?)\*\*/g,
+    (_match, inner) => `<strong>${inner}</strong>`,
+  );
+}
+
+/**
+ * 2026-05-03: Pay-Invoice button sentinel.
+ *
+ * The default invoice / invoice_reminder templates emit the literal
+ * string `__PAY_INVOICE_BUTTON__` in place of the legacy
+ * `{{PAY_NOW_CTA}}` token. This sentinel is intentionally NOT a
+ * `{{VAR}}` so the renderer ignores it; instead, `bodyToHtml` swaps
+ * it for a styled HTML button block (Outlook-safe, table-based)
+ * when an invoice's `PAYMENT_URL` is non-empty. When empty, the
+ * sentinel is stripped — same semantic as the prior empty-string
+ * `PAY_NOW_CTA` substitution.
+ *
+ * Tenants with saved (overridden) templates that still reference
+ * `{{PAY_NOW_CTA}}` continue to render the legacy text link via
+ * `templateDataBuilder.PAY_NOW_CTA` — no behaviour change for them.
+ */
+const PAY_INVOICE_BUTTON_SENTINEL = "__PAY_INVOICE_BUTTON__";
+
+/**
+ * 2026-05-03 PR 4 — multi-invoice payment-receipt allocations sentinel.
+ *
+ * Replaced by `bodyToHtml` with a per-invoice "Invoice #X — $Y.YY"
+ * list when allocations are passed. Same contract as the Pay-Invoice
+ * sentinel: NOT a `{{VAR}}`, so the renderer ignores it; the
+ * substitution happens at HTML build time. Bodies without the
+ * sentinel are unaffected — tenants with saved/overridden receipt
+ * templates that don't reference the marker render exactly as
+ * before.
+ */
+const PAYMENT_ALLOCATIONS_SENTINEL = "__PAYMENT_ALLOCATIONS_TABLE__";
+
+export interface PaymentReceiptAllocationLine {
+  invoiceNumber: string;
+  /** Dollars string — pre-formatted by the caller. */
+  allocatedAmount: string;
+}
+
+/**
+ * Render the per-invoice allocations block for a multi-invoice
+ * payment receipt. Email-safe HTML — inline styles, no external CSS,
+ * no `<style>` blocks, Outlook-friendly.
+ *
+ * Layout: a borderless 2-column table — invoice label on the left,
+ * money on the right, right-aligned. Reads as a list in plain-text
+ * email clients that don't render HTML; emphasises the invoice
+ * numbers in HTML clients via `<strong>` weight.
+ */
+function buildPaymentAllocationsHtml(
+  allocations: readonly PaymentReceiptAllocationLine[],
+): string {
+  if (allocations.length === 0) return "";
+  const rows = allocations
+    .map((a) => {
+      const safeNumber = htmlEscape(a.invoiceNumber);
+      const safeAmount = htmlEscape(a.allocatedAmount);
+      return [
+        `<tr>`,
+        `<td style="padding:6px 0;font-family:Arial,Helvetica,sans-serif;`,
+        `font-size:14px;color:#1f2937;border-bottom:1px solid #e5e7eb;">`,
+        `<strong>Invoice #${safeNumber}</strong>`,
+        `</td>`,
+        `<td style="padding:6px 0;font-family:Arial,Helvetica,sans-serif;`,
+        `font-size:14px;color:#1f2937;border-bottom:1px solid #e5e7eb;`,
+        `text-align:right;font-variant-numeric:tabular-nums;">${safeAmount}</td>`,
+        `</tr>`,
+      ].join("");
+    })
+    .join("");
+  return [
+    `<table role="presentation" cellspacing="0" cellpadding="0" border="0" `,
+    `style="margin:8px 0;border-collapse:collapse;width:100%;max-width:480px;">`,
+    rows,
+    `</table>`,
+  ].join("");
+}
+
+/**
+ * Render the styled Pay-Invoice button block for a given URL. The
+ * markup is intentionally:
+ *   • All inline-styled (no external CSS / no <style> blocks).
+ *   • Outlook-safe: wrapping <table role="presentation"> ensures the
+ *     anchor's clickable area sizes correctly even in Word-rendering
+ *     Outlook builds.
+ *   • Single-line: emitted as one string with no leading/trailing
+ *     newlines so the surrounding `white-space: pre-wrap` div doesn't
+ *     introduce stray blank lines around the button.
+ *   • Includes a fallback "If the button doesn't work" paragraph
+ *     beneath the button, per the spec.
+ */
+function buildPayInvoiceButtonHtml(url: string): string {
+  // Escape the URL for safe HTML attribute embedding. The URL itself
+  // comes from `buildPortalInvoiceUrl(invoiceId)` (token-bearing
+  // portal route, server-controlled), so XSS via injection is
+  // already off-table — this is defence in depth.
+  const safeUrl = htmlEscape(url);
+  // 2026-05-03 polish (round 2): button uses the Syntraro brand
+  // green (#76B054, the same `--brand` / `--primary` token primary
+  // app actions use). Previously the button was navy (#111827),
+  // which read as a generic transactional CTA rather than a
+  // branded action. Hover state isn't expressible inline for email
+  // clients, so we emit a single solid colour — Outlook + Gmail
+  // both render it consistently.
+  // 2026-05-03 polish (round 3): margin rhythm tuned to the rest of
+  // the email body. ~20px above the button (separates the closing
+  // signature from the CTA), ~8px between the button and the
+  // fallback paragraph (they read as one CTA block), 0px below the
+  // fallback (the wrapper's `pre-wrap` block already provides the
+  // trailing whitespace from the template).
+  return [
+    `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:20px 0 8px 0;border-collapse:collapse;">`,
+    `<tr><td align="center" style="padding:0;">`,
+    `<a href="${safeUrl}" target="_blank" rel="noopener" `,
+    `style="display:inline-block;padding:12px 24px;`,
+    `font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:600;`,
+    `color:#ffffff;background-color:#76B054;text-decoration:none;border-radius:6px;`,
+    `mso-padding-alt:12px 24px;">Pay Invoice</a>`,
+    `</td></tr></table>`,
+    `<p style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#9ca3af;`,
+    `margin:0;line-height:1.4;">`,
+    `If the button doesn't work, copy and paste this link into your browser:<br/>`,
+    `<a href="${safeUrl}" style="color:#9ca3af;">${safeUrl}</a>`,
+    `</p>`,
+  ].join("");
+}
+
+/**
  * Wrap the rendered plain-text body in minimal HTML so Resend renders line
  * breaks correctly. The template itself stays plain-text (portable to SMS
  * later); only the email transport converts newlines to <br> and turns
  * bare URLs into clickable links.
+ *
+ * 2026-05-03: optional `opts.paymentUrl` triggers Pay-Invoice button
+ * substitution. If the body contains the sentinel
+ * `__PAY_INVOICE_BUTTON__` (literal, NOT a `{{VAR}}`):
+ *   • paymentUrl non-empty → sentinel replaced with the styled
+ *     button + fallback paragraph block.
+ *   • paymentUrl empty/undefined → sentinel stripped.
+ * Bodies without the sentinel are unaffected. Quote / Job /
+ * payment-receipt sends therefore call `bodyToHtml(body)` with no
+ * options and behave exactly as before.
  */
-function bodyToHtml(body: string): string {
+export function bodyToHtml(
+  body: string,
+  opts?: {
+    paymentUrl?: string | null;
+    /**
+     * 2026-05-03 PR 4: allocations for the multi-invoice payment
+     * receipt. When present + the body contains
+     * `__PAYMENT_ALLOCATIONS_TABLE__`, the sentinel is replaced
+     * with a styled per-invoice list. Empty / missing → sentinel
+     * stripped. Bodies without the sentinel are unaffected.
+     */
+    allocations?: readonly PaymentReceiptAllocationLine[] | null;
+  },
+): string {
   const escaped = htmlEscape(body);
   const linked = linkifyEscapedHtml(escaped);
-  return `<div style="font-family: Arial, sans-serif; white-space: pre-wrap;">${linked}</div>`;
+  // 2026-05-03 polish (round 3): apply `**bold**` markers AFTER
+  // linkify so the auto-linkifier can't accidentally wrap part of a
+  // `<strong>` tag. Asterisks pass through `htmlEscape` unchanged
+  // (they are plain ASCII), so the markers reach this stage intact.
+  const bolded = applyBoldMarkers(linked);
+  // The sentinel is plain ASCII (no `<`, `>`, `&`) so `htmlEscape`
+  // leaves it intact. Replace AFTER linkify + bolding so neither
+  // step accidentally wraps parts of it.
+  const paymentUrl = opts?.paymentUrl?.trim();
+  const replacement = paymentUrl ? buildPayInvoiceButtonHtml(paymentUrl) : "";
+  // Use String#replaceAll-style semantics via `split/join` to handle
+  // (extremely unlikely) multiple sentinel occurrences without depending
+  // on lib version.
+  const withButton = bolded.split(PAY_INVOICE_BUTTON_SENTINEL).join(replacement);
+
+  // 2026-05-03 PR 4: payment-allocations sentinel.
+  const allocations = opts?.allocations ?? null;
+  const allocationsHtml =
+    allocations && allocations.length > 0
+      ? buildPaymentAllocationsHtml(allocations)
+      : "";
+  const withAllocations = withButton
+    .split(PAYMENT_ALLOCATIONS_SENTINEL)
+    .join(allocationsHtml);
+  // Reassign so the rest of the function references one final string.
+  // (Keeping `withButton` named was simpler; rename for clarity.)
+  const withAllSentinels = withAllocations;
+  // 2026-05-03 polish (round 3): bumped base font-size to 14px and
+  // line-height to 1.55 so the `pre-wrap`-rendered body reads with
+  // the same vertical rhythm a transactional email normally has.
+  // `color:#1f2937` (slate-800) is a touch warmer than pure black —
+  // softer for the bulk of the message — while bold lines emitted
+  // by `applyBoldMarkers` stay at the same color and inherit weight
+  // from the wrapper, providing the headline emphasis the spec asks
+  // for without an extra inline style.
+  return `<div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.55; color: #1f2937; white-space: pre-wrap;">${withAllSentinels}</div>`;
+}
+
+/**
+ * 2026-05-03: Per-tenant sender headers for outbound entity emails.
+ *
+ * Returns the `from` and (optional) `replyTo` strings that should be
+ * passed to `client.emails.send(...)`, derived from the tenant's
+ * `companies.{name, email}` row. The actual `from` email address
+ * stays the verified Resend platform sender — only the display name
+ * varies per-tenant. This lets a customer see "Samcor Mechanical Inc.
+ * <notifications@mail.syntraro.com>" in their inbox while the
+ * verified-domain constraint is preserved.
+ *
+ * `replyTo` is set to `companies.email` when present and a plausible
+ * email shape; otherwise falls back to the platform-level
+ * `RESEND_REPLY_TO` env (which itself is optional).
+ *
+ * Failure modes are non-fatal: any storage error or missing tenant
+ * row falls back to the default platform `from` header. The send
+ * itself MUST succeed even if branding lookup degrades.
+ */
+export interface SenderHeaders {
+  from: string;
+  replyTo?: string;
+}
+
+export async function buildSenderHeaders(tenantId: string): Promise<SenderHeaders> {
+  const { fromEmail, defaultFromHeader, defaultReplyTo } = await getResendClient();
+
+  // Best-effort tenant lookup. If anything goes wrong (e.g. the
+  // tenant row was just deleted, or storage layer hiccups), fall
+  // back to platform defaults — outbound mail must not be blocked
+  // by branding lookups.
+  let companyName: string | null = null;
+  let companyEmail: string | null = null;
+  try {
+    const company = await storage.getCompanyById(tenantId);
+    companyName = company?.name ?? null;
+    companyEmail = company?.email ?? null;
+  } catch {
+    // Swallow: degrade to default below.
+  }
+
+  const from = companyName && companyName.trim().length > 0
+    ? formatFromHeader(companyName, fromEmail)
+    : defaultFromHeader;
+
+  const replyTo = isPlausibleEmail(companyEmail)
+    ? companyEmail
+    : defaultReplyTo;
+
+  return replyTo ? { from, replyTo } : { from };
 }
 
 export const emailDispatchService = {
@@ -354,10 +623,15 @@ export const emailDispatchService = {
     });
 
     // 6. Assemble PDF-generation inputs (reuses fetched invoice) ────────────
-    const [lines, location, company] = await Promise.all([
+    // 2026-05-03: tax registrations fetched alongside the company so
+    // the email-attached PDF carries the same tax-ID lines as the
+    // staff/portal downloads (canonical contract: every PDF surface
+    // the customer can see renders the same registration block).
+    const [lines, location, company, taxRegistrations] = await Promise.all([
       storage.getInvoiceLines(tenantId, invoiceId),
       storage.getClient(tenantId, invoice.locationId),
       storage.getCompanyById(tenantId),
+      companyTaxRegistrationRepository.list(tenantId),
     ]);
     if (!location) throw createError(400, "Invoice has invalid location reference");
     if (!company) throw createError(500, "Company not found");
@@ -392,6 +666,7 @@ export const emailDispatchService = {
             email: (location as any).email,
           },
           customerCompany,
+          taxRegistrations,
         });
       } catch (err: any) {
         throw createError(500, `Invoice PDF generation failed: ${err?.message ?? "unknown error"}`);
@@ -432,7 +707,14 @@ export const emailDispatchService = {
     });
 
     // 8. Send via Resend and transition the delivery row.
-    const { client, fromEmail } = await getResendClient();
+    const { client } = await getResendClient();
+    // 2026-05-03: per-tenant sender headers. `from` carries the
+    // tenant's company name as the display portion (verified Resend
+    // domain stays in the email-address portion); `replyTo` routes
+    // customer replies into the tenant's own inbox when their
+    // company.email is set. Falls back to platform defaults if
+    // tenant lookup fails — see buildSenderHeaders().
+    const senderHeaders = await buildSenderHeaders(tenantId);
     let resendResult: Awaited<ReturnType<typeof client.emails.send>>;
     try {
       // Phase A hardening: pass the delivery row id as the Resend
@@ -441,11 +723,17 @@ export const emailDispatchService = {
       // original result instead of sending a second email.
       resendResult = await client.emails.send(
         {
-          from: fromEmail,
+          from: senderHeaders.from,
+          replyTo: senderHeaders.replyTo,
           to: normalizedRecipients,
           cc: ccList.length > 0 ? ccList : undefined,
           subject,
-          html: bodyToHtml(body),
+          // 2026-05-03: pass the entitlement-gated PAYMENT_URL through
+          // so the `__PAY_INVOICE_BUTTON__` sentinel in the default
+          // template renders as a styled "Pay Invoice" button.
+          // Empty/undefined PAYMENT_URL → sentinel stripped, no
+          // button. Same gate as before; just better UI.
+          html: bodyToHtml(body, { paymentUrl: data.PAYMENT_URL }),
           attachments: outboundAttachments.length > 0 ? outboundAttachments : undefined,
         },
         { idempotencyKey: delivery.id },
@@ -490,6 +778,30 @@ export const emailDispatchService = {
         providerMessageId: resendResult.data?.id ?? null,
       }).catch(() => {});
     }
+
+    // 2026-05-03: bump invoice email-send cadence on success. Failure
+    // paths above (Resend transport error, Resend body error, PDF
+    // generation error, queued-conflict pre-check) all throw before
+    // reaching this point — the bump fires only when the email is
+    // actually accepted by the provider AND the delivery row has been
+    // flipped to `sent`. Counter advances regardless of `templateEntityType`,
+    // so manual + automated reminder + any future caller share the
+    // same single record path.
+    await invoiceRepository.recordEmailSent(tenantId, invoiceId).catch((err) => {
+      // Non-critical — log + continue. The send already succeeded; a
+      // counter-update failure shouldn't surface as a 500 to the
+      // caller. The next successful send will reconverge the cadence.
+      // eslint-disable-next-line no-console
+      console.warn(
+        JSON.stringify({
+          event: "invoice.email.cadence_bump_failed",
+          tenantId,
+          invoiceId,
+          error: err instanceof Error ? err.message : String(err),
+          timestamp: new Date().toISOString(),
+        }),
+      );
+    });
 
     return {
       emailId: resendResult.data?.id ?? null,
@@ -547,6 +859,19 @@ export const emailDispatchService = {
       paymentAmount,
     );
 
+    // 2026-05-03 PR 4: synthesize a single-row allocation entry for
+    // legacy 1:1 payments so the unified default template's
+    // `__PAYMENT_ALLOCATIONS_TABLE__` sentinel renders cleanly even on
+    // single-invoice receipts. Tenants whose saved templates don't
+    // include the sentinel render exactly as before — the sentinel is
+    // a no-op in that case (split/join with a missing needle).
+    const allocations: PaymentReceiptAllocationLine[] = [
+      {
+        invoiceNumber: data.INVOICE_NUMBER || invoiceId,
+        allocatedAmount: data.PAYMENT_AMOUNT,
+      },
+    ];
+
     const { subject, body, templateSource } = await resolveRenderedMessage({
       tenantId,
       entityType: "payment_receipt",
@@ -581,15 +906,23 @@ export const emailDispatchService = {
       retriedFromDeliveryId: null,
     });
 
-    const { client, fromEmail } = await getResendClient();
+    const { client } = await getResendClient();
+    // 2026-05-03: per-tenant sender headers. `from` carries the
+    // tenant's company name as the display portion (verified Resend
+    // domain stays in the email-address portion); `replyTo` routes
+    // customer replies into the tenant's own inbox when their
+    // company.email is set. Falls back to platform defaults if
+    // tenant lookup fails — see buildSenderHeaders().
+    const senderHeaders = await buildSenderHeaders(tenantId);
     let resendResult: Awaited<ReturnType<typeof client.emails.send>>;
     try {
       resendResult = await client.emails.send(
         {
-          from: fromEmail,
+          from: senderHeaders.from,
+          replyTo: senderHeaders.replyTo,
           to: normalizedRecipients,
           subject,
-          html: bodyToHtml(body),
+          html: bodyToHtml(body, { allocations }),
         },
         { idempotencyKey: delivery.id },
       );
@@ -614,6 +947,176 @@ export const emailDispatchService = {
         })
         .catch(() => {});
       throw createError(500, `Payment receipt send failed: ${msg}`);
+    }
+
+    await emailDeliveryTrackingService
+      .markSent({
+        tenantId,
+        deliveryId: delivery.id,
+        providerMessageId: resendResult.data?.id ?? null,
+      })
+      .catch(() => {});
+
+    return {
+      emailId: resendResult.data?.id ?? null,
+      recipients: normalizedRecipients,
+      subject,
+    };
+  },
+
+  // ==========================================================================
+  // 2026-05-03 PR 4: sendMultiInvoicePaymentReceiptEmail.
+  //
+  // Fires after a successful multi-invoice (Stripe Checkout Session)
+  // payment via the canonical webhook path
+  // (`handleMultiInvoicePaymentSucceeded` in
+  // `paymentApplicationService`). One email per payment row, never
+  // per invoice — the receipt enumerates every invoice the payment
+  // covered via the `__PAYMENT_ALLOCATIONS_TABLE__` sentinel.
+  //
+  // Idempotency:
+  //   The webhook handler only reaches this method when the parent
+  //   payment row insert has SUCCEEDED inside the multi-invoice tx
+  //   (replays collide on `payments_provider_event_id_uq` and the
+  //   classifier short-circuits to "replay" before the email send).
+  //   Per-payment uniqueness on the receipt is therefore inherited
+  //   from the canonical idempotency anchor on `payments`. The
+  //   `assertNoActiveQueuedDelivery` guard provides a second-tier
+  //   safety net the single-invoice send path also uses.
+  //
+  // Recipient resolution:
+  //   Reuses the canonical `getDefaultRecipients` strategy for each
+  //   covered invoice and de-duplicates across the set so a customer
+  //   who is the bill-to on multiple invoices in the batch only
+  //   receives one copy.
+  // ==========================================================================
+  async sendMultiInvoicePaymentReceiptEmail(input: {
+    tenantId: string;
+    paymentId: string;
+    /** Optional explicit recipient list. Defaults to per-invoice billing-first dedup. */
+    recipients?: string[];
+  }): Promise<{ emailId: string | null; recipients: string[]; subject: string } | null> {
+    const { tenantId, paymentId } = input;
+    if (!tenantId) throw createError(400, "tenantId is required");
+    if (!paymentId) throw createError(400, "paymentId is required");
+
+    // Build the canonical receipt data + allocations list. Throws 404
+    // when the payment doesn't exist or isn't tenant-scoped — the
+    // webhook caller wraps this in try/catch and never lets a receipt
+    // failure bubble to the webhook ACK.
+    const { data, allocations, primaryInvoiceId, coveredInvoiceIds } =
+      await templateDataBuilder.buildPaymentReceiptTemplateDataByPaymentId(
+        tenantId,
+        paymentId,
+      );
+
+    // Recipient resolution. Explicit override wins; otherwise resolve
+    // billing recipients for EVERY covered invoice and dedupe so a
+    // customer who is the bill-to on multiple invoices in the batch
+    // only receives one receipt.
+    let normalizedRecipients = normalizeEmailList(input.recipients ?? []);
+    if (normalizedRecipients.length === 0) {
+      const seen = new Set<string>();
+      const collected: string[] = [];
+      for (const invoiceId of coveredInvoiceIds) {
+        try {
+          const r = await recipientResolverService.getDefaultRecipients({
+            tenantId,
+            entityType: "payment_receipt",
+            entityId: invoiceId,
+          });
+          for (const e of r.recipients) {
+            if (!seen.has(e)) {
+              seen.add(e);
+              collected.push(e);
+            }
+          }
+        } catch {
+          // A single invoice failing recipient resolution must not
+          // block the receipt for the rest. The receipt either lands
+          // with the recipients it could resolve, or — if none
+          // resolved — quietly skips per the existing contract.
+        }
+      }
+      normalizedRecipients = collected;
+    }
+    if (normalizedRecipients.length === 0) return null;
+
+    const { subject, body, templateSource } = await resolveRenderedMessage({
+      tenantId,
+      entityType: "payment_receipt",
+      data,
+    });
+
+    // Single-flight guard: if a delivery row for THIS multi-invoice
+    // payment is already queued / sending (e.g. an unrelated retry
+    // path), refuse to start a second one. We use the primary
+    // invoice id as the entity key — same convention as the
+    // single-invoice send path so the customer's email history
+    // for the lead invoice contains the receipt event.
+    await emailDeliveryTrackingService.assertNoActiveQueuedDelivery(
+      tenantId,
+      "invoice",
+      primaryInvoiceId,
+    );
+
+    const delivery = await emailDeliveryTrackingService.createQueuedDelivery({
+      tenantId,
+      entityType: "invoice",
+      entityId: primaryInvoiceId,
+      recipients: normalizedRecipients,
+      cc: [],
+      attachments: [],
+      subject,
+      bodySnapshot: body,
+      templateSource,
+      createdByUserId: null,
+      retriedFromDeliveryId: null,
+    });
+
+    const { client } = await getResendClient();
+    const senderHeaders = await buildSenderHeaders(tenantId);
+    let resendResult: Awaited<ReturnType<typeof client.emails.send>>;
+    try {
+      resendResult = await client.emails.send(
+        {
+          from: senderHeaders.from,
+          replyTo: senderHeaders.replyTo,
+          to: normalizedRecipients,
+          subject,
+          html: bodyToHtml(body, {
+            allocations: allocations.map((a) => ({
+              invoiceNumber: a.invoiceNumber,
+              allocatedAmount: "$" + parseFloat(a.allocatedAmount).toFixed(2),
+            })),
+          }),
+        },
+        { idempotencyKey: delivery.id },
+      );
+    } catch (err: any) {
+      await emailDeliveryTrackingService
+        .markFailed({
+          tenantId,
+          deliveryId: delivery.id,
+          errorMessage: err?.message ?? "Resend transport error",
+        })
+        .catch(() => {});
+      throw createError(
+        500,
+        `Multi-invoice payment receipt send failed: ${err?.message ?? "unknown"}`,
+      );
+    }
+
+    if (resendResult.error) {
+      const msg = resendResult.error.message ?? resendResult.error.name ?? "unknown";
+      await emailDeliveryTrackingService
+        .markFailed({
+          tenantId,
+          deliveryId: delivery.id,
+          errorMessage: msg,
+        })
+        .catch(() => {});
+      throw createError(500, `Multi-invoice payment receipt send failed: ${msg}`);
     }
 
     await emailDeliveryTrackingService
@@ -745,13 +1248,21 @@ export const emailDispatchService = {
       retriedFromDeliveryId: parentDeliveryId ?? null,
     });
 
-    const { client, fromEmail } = await getResendClient();
+    const { client } = await getResendClient();
+    // 2026-05-03: per-tenant sender headers. `from` carries the
+    // tenant's company name as the display portion (verified Resend
+    // domain stays in the email-address portion); `replyTo` routes
+    // customer replies into the tenant's own inbox when their
+    // company.email is set. Falls back to platform defaults if
+    // tenant lookup fails — see buildSenderHeaders().
+    const senderHeaders = await buildSenderHeaders(tenantId);
     let resendResult: Awaited<ReturnType<typeof client.emails.send>>;
     try {
       // Phase A hardening: delivery.id as Resend idempotency key.
       resendResult = await client.emails.send(
         {
-          from: fromEmail,
+          from: senderHeaders.from,
+          replyTo: senderHeaders.replyTo,
           to: normalizedRecipients,
           cc: quoteCcList.length > 0 ? quoteCcList : undefined,
           subject,
@@ -852,13 +1363,21 @@ export const emailDispatchService = {
       retriedFromDeliveryId: parentDeliveryId ?? null,
     });
 
-    const { client, fromEmail } = await getResendClient();
+    const { client } = await getResendClient();
+    // 2026-05-03: per-tenant sender headers. `from` carries the
+    // tenant's company name as the display portion (verified Resend
+    // domain stays in the email-address portion); `replyTo` routes
+    // customer replies into the tenant's own inbox when their
+    // company.email is set. Falls back to platform defaults if
+    // tenant lookup fails — see buildSenderHeaders().
+    const senderHeaders = await buildSenderHeaders(tenantId);
     let resendResult: Awaited<ReturnType<typeof client.emails.send>>;
     try {
       // Phase A hardening: delivery.id as Resend idempotency key.
       resendResult = await client.emails.send(
         {
-          from: fromEmail,
+          from: senderHeaders.from,
+          replyTo: senderHeaders.replyTo,
           to: normalizedRecipients,
           subject,
           html: bodyToHtml(body),

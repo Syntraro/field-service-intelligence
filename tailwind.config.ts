@@ -78,6 +78,92 @@ export default {
         label:           ["13px", { lineHeight: "16px", fontWeight: "500", letterSpacing: "0.04em" }],
         helper:          ["13px", { lineHeight: "16px" }],
 
+        // ──────────────────────────────────────────────────────────────
+        // 2026-05-03 Phase E — semantic role tokens for app-wide
+        // typography enforcement. Each new token is either an ALIAS of
+        // an existing token (preserves pixel output exactly) OR a new
+        // size that pixel-matches a current approved primitive class.
+        //
+        // Goal: every typography-bearing surface uses a SEMANTIC token
+        // by role rather than a raw `text-xs`/`text-sm` etc. The role
+        // names map 1:1 to the user's stated role list:
+        //   text-label         (compact uppercase tracked — table heads,
+        //                       KPI labels, "BILL TO" metadata keys)
+        //   text-helper        (compact non-uppercase — tooltips,
+        //                       "as of" timestamps)
+        //   text-body          (default reading text)
+        //   text-caption       (secondary text alongside row content)
+        //   text-section-title (h2 inside a card / panel / modal body)
+        //   text-table-header  ALIAS of label — for column headers
+        //   text-table-cell    ALIAS of row — for table cells
+        //   text-input         ALIAS of body — for form input/textarea
+        //   text-email-body    ALIAS of body — for email composition
+        //   text-modal-title   NEW 21.4px/600 — pixel-matches the
+        //                       legacy `text-lg font-semibold` that
+        //                       DialogTitle currently uses
+        //   text-error         NEW 15.2px/500 — pixel-matches the
+        //                       legacy `text-xs font-medium` that
+        //                       FormMessage uses (color via separate
+        //                       `text-destructive` utility — fontSize
+        //                       tuples can't carry color)
+        //   text-empty-state   NEW 15.2px — pixel-matches the legacy
+        //                       `text-xs` empty-state copy in
+        //                       reports / lists / modals
+        //
+        // Note: form-context labels/helpers (Label, FormDescription,
+        // SelectLabel, SelectItem) intentionally remain on raw
+        // `text-xs` (15.2px) because the existing `text-label` /
+        // `text-helper` tokens are 13px UPPERCASE TRACKED — a
+        // different visual role from sentence-case form labels.
+        // Migrating those primitives to `text-label` would change
+        // both size (15.2px → 13px) and case (sentence → upper) which
+        // violates the "preserve current approved visual output"
+        // rule. The raw classes are documented as the form-label /
+        // form-helper canonical pattern in those primitives' source.
+        // ──────────────────────────────────────────────────────────────
+        "modal-title":  ["1.125rem", { lineHeight: "1.6rem", fontWeight: "600" }],
+        "table-header": ["13px", { lineHeight: "16px", fontWeight: "500", letterSpacing: "0.04em" }],
+        "table-cell":   ["15px", { lineHeight: "22px" }],
+        input:          ["15px", { lineHeight: "22px" }],
+        "email-body":   ["15px", { lineHeight: "22px" }],
+        error:          ["0.8rem", { lineHeight: "1.2rem", fontWeight: "500" }],
+        "empty-state":  ["0.8rem", { lineHeight: "1.2rem" }],
+
+        // ──────────────────────────────────────────────────────────────
+        // 2026-05-03 Phase F — form & select semantic tokens. These
+        // close the last raw-class gap in the form/select primitives:
+        //   Label / FormDescription / SelectLabel / SelectItem all
+        //   previously kept raw `text-xs` / `text-xs font-medium`
+        //   because the existing `text-label` (13px UPPERCASE TRACKED)
+        //   was the wrong role for sentence-case form labels.
+        //
+        // The tokens below name the form/select roles explicitly:
+        //   text-form-label    — sentence-case form label (Label,
+        //                        FormLabel via wrap)
+        //   text-form-helper   — helper / hint copy below a field
+        //                        (FormDescription); color via
+        //                        `text-muted-foreground` utility
+        //   text-select-label  — group label inside a Select dropdown
+        //                        (heavier weight than form-label)
+        //   text-select-item   — option row inside a Select dropdown
+        //
+        // Pixel output matches the prior raw classes exactly:
+        //   form-label   = text-xs (15.2px) + font-medium (500)
+        //   form-helper  = text-xs (15.2px), no weight baked
+        //   select-label = text-xs (15.2px) + font-semibold (600)
+        //   select-item  = text-xs (15.2px), no weight baked
+        //
+        // text-label remains the canonical compact UPPERCASE TRACKED
+        // role (KPI labels, "BILL TO" metadata keys) — separate
+        // identity from these form roles. This is NOT a second
+        // typography system: same naming convention, same tailwind
+        // theme.fontSize map, just additional semantic roles.
+        // ──────────────────────────────────────────────────────────────
+        "form-label":   ["0.8rem", { lineHeight: "1.2rem", fontWeight: "500" }],
+        "form-helper":  ["0.8rem", { lineHeight: "1.2rem" }],
+        "select-label": ["0.8rem", { lineHeight: "1.2rem", fontWeight: "600" }],
+        "select-item":  ["0.8rem", { lineHeight: "1.2rem" }],
+
         // ─── Legacy ramp (deprecated — retained for backward compat) ───
         // Renders against `html { font-size: 19px }` set in
         // `client/src/index.css:245`. The previous comments here assumed

@@ -11,6 +11,12 @@ import { MobileShell } from "../components/MobileShell";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { useLocationSearch, type LocationResult } from "@/hooks/useLocationSearch";
+// 2026-05-04 form-canonicalization: tech-app raw <input>/<textarea>
+// migrated to canonical primitives. Layout (h-9 px-3) preserved by
+// the primitive defaults; raw `text-sm border-slate-200` styling
+// replaced by canonical `text-input` typography.
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 
 function getQueryParam(key: string): string {
   return new URLSearchParams(window.location.search).get(key) || "";
@@ -154,9 +160,8 @@ export function CreateLeadPage() {
             </div>
           ) : (
             <>
-              <input value={locationSearch} onChange={e => setLocationSearch(e.target.value)}
-                placeholder="Search locations..."
-                className="w-full h-9 pl-3 pr-3 text-sm border border-slate-200 rounded-md" />
+              <Input value={locationSearch} onChange={e => setLocationSearch(e.target.value)}
+                placeholder="Search locations..." />
               {(locationSearch?.length ?? 0) >= 2 && (locations ?? []).length > 0 && (
                 <div className="mt-1 border border-slate-200 rounded-md overflow-hidden max-h-40 overflow-y-auto">
                   {(locations ?? []).map(loc => (
@@ -175,17 +180,16 @@ export function CreateLeadPage() {
         {/* Title */}
         <div>
           <label className="text-xs font-semibold text-slate-500 mb-1 block">What did you find? *</label>
-          <input value={title} onChange={e => setTitle(e.target.value)}
-            placeholder="e.g. Compressor needs replacement, water heater leaking..."
-            className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
+          <Input value={title} onChange={e => setTitle(e.target.value)}
+            placeholder="e.g. Compressor needs replacement, water heater leaking..." />
         </div>
 
         {/* Description */}
         <div>
           <label className="text-xs font-semibold text-slate-500 mb-1 block">Details</label>
-          <textarea ref={descRef} value={description} onChange={e => setDescription(e.target.value)}
+          <Textarea ref={descRef} value={description} onChange={e => setDescription(e.target.value)}
             placeholder="Additional details for the office..."
-            className="w-full text-sm border border-slate-200 rounded-md px-3 py-2 resize-none h-24" />
+            className="resize-none h-24" />
         </div>
 
         {/* Submit */}

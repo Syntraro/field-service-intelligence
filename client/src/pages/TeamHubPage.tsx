@@ -17,6 +17,13 @@ import { InviteMemberDialog } from "@/components/team-hub/InviteMemberDialog";
 import { TeamMetricsStrip } from "@/components/team-hub/TeamMetricsStrip";
 import type { TeamMemberRow } from "@/components/team-hub/types";
 import { useState } from "react";
+// 2026-05-04 platform/tenant identity containment — defensive filter.
+// The canonical fix is at the SQL layer in
+// `server/storage/tenantUserPredicate.ts`, but this page also drops
+// any platform-role row defensively in case the backend ever
+// regresses or a stale cache entry from before the containment fix
+// is still in flight. Cheap, additive, no false-negative risk.
+import { isPlatformRole } from "@/lib/platformRoles";
 
 const VALID_TABS = ["members", "schedules", "compensation", "access"] as const;
 type TabId = (typeof VALID_TABS)[number];
@@ -76,7 +83,18 @@ export default function TeamHubPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
 
-  const { data: members = [] } = useQuery<TeamMemberRow[]>({ queryKey: ["/api/team"] });
+  const { data: rawMembers = [] } = useQuery<TeamMemberRow[]>({ queryKey: ["/api/team"] });
+  // 2026-05-04: defensive frontend filter. Rows whose role is a canonical
+  // platform role are silently dropped before rendering — they should
+  // already have been excluded by `nonPlatformUserPredicate()` at the
+  // storage layer, but this layered guard means a regression in the
+  // SQL filter cannot surface a "Platform Admin" row inside Team
+  // Management. The dropped rows are NOT counted, NOT rendered in
+  // any tab, and NOT addressable via the URL `?member=…` selector.
+  const members = useMemo(
+    () => rawMembers.filter((m) => !isPlatformRole(m.role)),
+    [rawMembers],
+  );
   const totalCount = members.length;
   const activeCount = members.filter((m) => m.status === "active" && !m.disabled).length;
 

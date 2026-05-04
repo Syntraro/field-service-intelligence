@@ -121,10 +121,11 @@ import {
 } from "./InvoiceDetailPage";
 import { EditableMessageCard } from "@/components/invoice/EditableMessageCard";
 // 2026-05-03 visual-parity pass: mount the same canonical layout shell
-// the live page uses, and the same notes-card chrome substitute for
-// the right rail's EntityNotesSection (which can't run pre-save).
+// the live page uses. Pre-save the right-rail notes card surfaces a
+// disabled "Save first" state inline (see render below) — no
+// DraftNotesCard, since the prior `notesInternal`-as-draft-notes
+// pattern was retired alongside the canonical invoice-notes rewrite.
 import { InvoiceDetailShell } from "@/components/invoice/InvoiceDetailShell";
-import { DraftNotesCard } from "@/components/invoice/DraftNotesCard";
 import { formatCurrency } from "@/lib/formatters";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -336,19 +337,24 @@ export default function NewInvoicePage() {
   }, [selectedLocation?.id, eligibleJobsQuery.isLoading, eligibleJobs.length]);
 
   // ── Meta draft state (shape mirrors InvoiceMetaCard's `draft` prop) ─
+  // 2026-05-03: `summary` is the canonical short invoice title. Empty
+  // by default; the user enters one before save (or it auto-adopts
+  // from the first selected job's summary on billable-preview hydration).
   const [metaDraft, setMetaDraft] = useState({
     invoiceNumber: "Pending",
     issueDate: todayISO(),
     dueDate: plusDaysISO(DEFAULT_PAYMENT_TERMS_DAYS),
     paymentTermsDays: String(DEFAULT_PAYMENT_TERMS_DAYS),
+    summary: "",
   });
 
-  // ── Job description + canonical internal/client copy ────────────────
-  // 2026-05-02 layout polish: only internal notes + client message live
-  // on this page; the customer-notes field was dropped (the work
-  // description already carries the client-facing copy slot).
+  // ── Job description + canonical client copy ─────────────────────────
+  // 2026-05-03: `notesInternal` state retired here. Notes on this page
+  // are now gated behind save (see right-rail "Save first" placeholder);
+  // the field still exists on the invoice row for QBO PrivateNote
+  // mapping + import snapshots, but the new-invoice flow no longer
+  // surfaces a competing user-facing editor for it.
   const [workDescDraft, setWorkDescDraft] = useState("");
-  const [notesInternal, setNotesInternal] = useState("");
   const [clientMessage, setClientMessage] = useState("");
 
   // Discount value (controlled).
@@ -618,6 +624,18 @@ export default function NewInvoicePage() {
       return candidate || current;
     });
 
+    // 2026-05-03: also adopt the same candidate as the canonical
+    // invoice summary (header title) when the user hasn't typed one.
+    // The `workDescriptionCandidate` is the job's `summary` field
+    // (per the billable-preview contract), so it's the right source
+    // for both the page-level title AND the long body field. The
+    // user can override either independently in the meta card.
+    setMetaDraft((current) => {
+      if (current.summary.trim().length > 0) return current;
+      const candidate = previews[0]?.workDescriptionCandidate?.trim();
+      return candidate ? { ...current, summary: candidate } : current;
+    });
+
     // Hydrate lines into the mirror, appended after any existing
     // (manual) lines. Generate fresh synthetic ids; preserve the
     // preview's column data (jobLineItemId, technicianId, date).
@@ -674,12 +692,14 @@ export default function NewInvoicePage() {
         ...(customerCompanyId ? { customerCompanyId } : {}),
         ...(selectedJobIds.length > 0 ? { jobIds: selectedJobIds } : {}),
         // markJobsCompleted intentionally omitted for Phase 6 (defaults false).
+        ...(metaDraft.summary.trim() ? { summary: metaDraft.summary.trim() } : {}),
         ...(workDescDraft.trim() ? { workDescription: workDescDraft.trim() } : {}),
         issueDate: metaDraft.issueDate,
         ...(metaDraft.dueDate ? { dueDate: metaDraft.dueDate } : { dueDate: null }),
         ...(termsNum !== null ? { paymentTermsDays: termsNum } : {}),
         // invoiceNumber intentionally omitted — server allocates.
-        ...(notesInternal.trim() ? { notesInternal: notesInternal.trim() } : {}),
+        // notesInternal omitted from the create payload — notes are
+        // added post-save via /api/invoices/:id/notes (canonical).
         ...(clientMessage.trim() ? { clientMessage: clientMessage.trim() } : {}),
         // Visibility — submitted from local draft state (toggled via
         // the right-rail ClientVisibilityCardV2). Defaults to
@@ -775,11 +795,12 @@ export default function NewInvoicePage() {
         header={
           <CanonicalDetailHeader
             testId="new-invoice-header"
-            title={
-              workDescDraft.trim() ||
-              selectedLocation?.companyName ||
-              "New Invoice"
-            }
+            // 2026-05-03: header title resolves from the canonical
+            // invoice `summary` only. Falls back to "New Invoice"
+            // when the user hasn't typed one yet. Never falls through
+            // to the customer/company name — that's an identity field,
+            // not an invoice title.
+            title={metaDraft.summary.trim() || "New Invoice"}
             statusBadge={<StatusPill status="draft" isPastDue={false} />}
             items={[
               {
@@ -867,6 +888,7 @@ export default function NewInvoicePage() {
               }
               customerName={selectedLocation?.companyName || ""}
               customerCompanyId={customerCompanyId}
+              summary={metaDraft.summary}
               billLine1={billLine1}
               billLine2={billLine2}
               serviceAddress={serviceAddressForCard}
@@ -1054,17 +1076,30 @@ export default function NewInvoicePage() {
               disabled={!selectedLocation}
             />
 
-            {/* Internal notes — DraftNotesCard mirrors the visual
-                chrome of <EntityNotesSection embedded> exactly so the
-                rail looks identical to the live page. The single
-                draft value flows into the atomic POST's
-                `notesInternal` field on Save. */}
-            <DraftNotesCard
-              value={notesInternal}
-              onChange={setNotesInternal}
-              disabled={!selectedLocation}
-              testId="card-invoice-notes"
-            />
+            {/* Notes placeholder — 2026-05-03 rewrite. Invoice notes
+                are first-class via /api/invoices/:id/notes; the saved
+                detail page mounts the canonical EntityNotesSection.
+                Pre-save, no invoiceId exists yet so the notes card
+                surfaces a disabled "Save first" state instead of a
+                competing draft editor. The visual chrome matches
+                `<EntityNotesSection embedded>` so the rail layout is
+                stable across new ↔ saved transitions. */}
+            <div
+              className="overflow-hidden rounded-lg border border-card-border bg-card shadow-card"
+              data-testid="card-invoice-notes"
+            >
+              <div className="flex items-center justify-between gap-2 border-b border-card-border px-4 py-3">
+                <h3 className="text-sm font-semibold text-foreground">
+                  Notes
+                </h3>
+              </div>
+              <p
+                className="px-4 py-6 text-sm text-muted-foreground"
+                data-testid="invoice-notes-save-first"
+              >
+                Save the invoice before adding notes.
+              </p>
+            </div>
           </>
         }
       />

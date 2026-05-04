@@ -8,6 +8,8 @@
 import { db } from "../db";
 import { eq, and, desc, sql, isNull, count } from "drizzle-orm";
 import { notifications, users, type InsertNotification, type Notification, type NotificationType } from "@shared/schema";
+// 2026-05-04: tenant-user containment predicate.
+import { nonPlatformUserPredicate } from "./tenantUserPredicate";
 
 // ============================================================================
 // Types
@@ -276,7 +278,13 @@ export async function getUsersByRole(
         eq(users.companyId, companyId),
         sql`${users.role} = ANY(${roles})`,
         eq(users.status, "active"),
-        isNull(users.deletedAt)
+        isNull(users.deletedAt),
+        // 2026-05-04: notification recipients must be tenant users only.
+        // The `roles` argument here is a tenant-role allow-list, but
+        // composing the canonical predicate keeps the contract uniform
+        // with every other tenant user query AND defends against a
+        // caller passing a list that accidentally includes a platform role.
+        nonPlatformUserPredicate(),
       )
     );
 

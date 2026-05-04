@@ -15,6 +15,14 @@ import { MobileShell } from "../components/MobileShell";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { useLocationSearch, useLocationById, type LocationResult } from "@/hooks/useLocationSearch";
+// 2026-05-04 form-canonicalization: migrate raw <input>/<textarea>
+// to canonical primitives. Compact schedule inputs (h-8 text-xs) keep
+// their layout via className overrides. The native <select> at line
+// ~217 is INTENTIONALLY left as raw HTML — Radix Select migration is
+// a separate, more invasive concern (dropdown positioning + mobile
+// portal integration on a tech-app surface).
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { getMemberDisplayName } from "@/lib/displayName";
@@ -180,8 +188,8 @@ export function CreateJobPage() {
             <>
               <div className="relative">
                 <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
-                <input value={locationSearch} onChange={e => setLocationSearch(e.target.value)}
-                  placeholder="Search locations..." className="w-full h-9 pl-9 pr-3 text-sm border border-slate-200 rounded-md" />
+                <Input value={locationSearch} onChange={e => setLocationSearch(e.target.value)}
+                  placeholder="Search locations..." className="pl-9" />
               </div>
               {locationSearch.length >= 2 && (
                 <div className="mt-1 border border-slate-200 rounded-md overflow-hidden max-h-48 overflow-y-auto">
@@ -207,8 +215,8 @@ export function CreateJobPage() {
         {/* Summary */}
         <div>
           <label className="text-xs font-semibold text-slate-500 mb-1 block">Summary *</label>
-          <input value={summary} onChange={e => setSummary(e.target.value)}
-            placeholder="Brief job summary..." className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
+          <Input value={summary} onChange={e => setSummary(e.target.value)}
+            placeholder="Brief job summary..." />
         </div>
 
         {/* Assigned Technician */}
@@ -255,14 +263,14 @@ export function CreateJobPage() {
               </div>
               <div className="flex-1">
                 <label className="text-[10px] font-semibold text-slate-400 mb-0.5 block">Start Time</label>
-                <input type="time" value={schedTime} onChange={e => setSchedTime(e.target.value)}
-                  className="w-full h-8 px-2 text-xs border border-slate-200 rounded-md" />
+                <Input type="time" value={schedTime} onChange={e => setSchedTime(e.target.value)}
+                  className="h-8 px-2 text-xs" />
               </div>
             </div>
             <div>
               <label className="text-[10px] font-semibold text-slate-400 mb-0.5 block">Duration (minutes)</label>
-              <input type="number" value={schedDuration} onChange={e => setSchedDuration(e.target.value)}
-                min="15" step="15" className="w-full h-8 px-2 text-xs border border-slate-200 rounded-md" />
+              <Input type="number" value={schedDuration} onChange={e => setSchedDuration(e.target.value)}
+                min="15" step="15" className="h-8 px-2 text-xs" />
             </div>
           </div>
         )}
@@ -270,8 +278,8 @@ export function CreateJobPage() {
         {/* Description */}
         <div>
           <label className="text-xs font-semibold text-slate-500 mb-1 block">Description</label>
-          <textarea value={description} onChange={e => setDescription(e.target.value)}
-            placeholder="Additional details..." className="w-full text-sm border border-slate-200 rounded-md px-3 py-2 resize-none h-20" />
+          <Textarea value={description} onChange={e => setDescription(e.target.value)}
+            placeholder="Additional details..." className="resize-none h-20" />
         </div>
 
         {/* Submit */}

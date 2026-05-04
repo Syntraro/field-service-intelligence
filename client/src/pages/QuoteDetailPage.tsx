@@ -870,7 +870,13 @@ export default function QuoteDetailPage() {
         entityId={quoteId}
         isOpen={showSendModal}
         onClose={() => setShowSendModal(false)}
-        title="Send Quote"
+        title={
+          quote.quoteNumber && clientName
+            ? `Email quote ${quote.quoteNumber} to ${clientName}`
+            : quote.quoteNumber
+              ? `Email quote ${quote.quoteNumber}`
+              : "Send Quote"
+        }
         onSuccess={() => {
           queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
           queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });

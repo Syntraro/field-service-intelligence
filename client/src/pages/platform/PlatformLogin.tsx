@@ -140,6 +140,20 @@ export default function PlatformLogin() {
               </Button>
             </form>
           </Form>
+          {/* 2026-05-03: dedicated platform password reset flow. Uses
+              `/platform/request-reset` — explicitly NOT the tenant
+              `/request-reset` so a forgotten-platform-password attempt
+              cannot accidentally route into the tenant reset surface. */}
+          <div className="mt-3 text-center">
+            <button
+              type="button"
+              className="text-xs text-slate-400 underline-offset-4 hover:underline hover:text-slate-200"
+              onClick={() => setLocation("/platform/request-reset")}
+              data-testid="platform-link-forgot-password"
+            >
+              Forgot password?
+            </button>
+          </div>
           <div className="mt-4 text-center text-xs text-slate-500">
             Not a platform admin?{" "}
             <button

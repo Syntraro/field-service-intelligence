@@ -336,7 +336,7 @@ These pages are authorized to use direct `useQuery` instead of canonical hooks:
 | Settings pages (`CompanySettings`, `ManageTeam`, etc.) | Low-traffic admin pages |
 | `TasksPanel` (in Dashboard) | Task management; own query pattern |
 | `ClientDetailPage` / `LocationDetailPage` | Multi-resource detail views |
-| Admin pages (`Admin.tsx`, `AdminTenants`, etc.) | Platform admin operations |
+| Platform pages (`PlatformTenantsList`, `PlatformTenantDetail`, etc. under `client/src/pages/platform/`) | Platform admin operations — psid-authenticated, capability-gated |
 | Tech field pages (`TechHomePage`, `TechSchedulePage`, etc.) | Field worker interface |
 
 All other new pages should use canonical hooks or justify the exception here.

@@ -1,25 +1,62 @@
 /**
- * Admin Routes - Tenant Health Dashboard & Support Mode
+ * Admin Routes — Tenant-Owner Operational Tools (post 2026-05-03 lockdown)
  *
- * Owner-only admin area for platform-wide tenant health monitoring
- * and support mode impersonation.
+ * 2026-05-03 SECURITY LOCKDOWN — Cross-tenant boundary fix:
+ *
+ *   The legacy `/api/admin/*` surface used to host both (a) genuinely
+ *   tenant-scoped owner tools (bulk archived-job cleanup, orphan locations,
+ *   diagnostics, single-tenant time-alerts trigger, impersonation
+ *   bootstrap) AND (b) cross-tenant *platform* dashboards (tenant list,
+ *   QBO oversight aggregator, weekly digest worker, time-alerts worker
+ *   `allCompanies=true`). Both groups were gated only on the tenant role
+ *   `owner` (`OWNER_ONLY`). That meant any tenant owner could read the
+ *   complete cross-tenant tenant catalog, owner emails, and QBO sync
+ *   queue across the SaaS — and replay another tenant's QBO jobs.
+ *
+ *   Cross-tenant routes have been DELETED from this router. The canonical
+ *   home for cross-tenant platform-admin operations is `/api/platform/*`,
+ *   which authenticates via the separate `psid` session and gates by
+ *   capability (`requirePlatformSession` + `requireCapability`). The
+ *   tenant cookie cannot reach `/api/platform/*`.
+ *
+ *   What remains here is genuinely tenant-scoped: every handler reads
+ *   `req.companyId` (or rejects cross-tenant id parameters) and operates
+ *   only on data owned by the caller's own tenant. Each route keeps the
+ *   `requireRole(OWNER_ONLY)` gate. The router-wide `router.use(requireRole(...))`
+ *   has been replaced with explicit per-route gates so future maintainers
+ *   cannot silently hang a cross-tenant handler off this file by appending
+ *   to the bottom.
+ *
+ *   Removed routes (never reintroduce on a tenant-auth surface):
+ *     - GET    /tenants                          (cross-tenant company list)
+ *     - GET    /qbo/overview                     (cross-tenant QBO summary)
+ *     - GET    /qbo/runs                         (cross-tenant QBO runs)
+ *     - GET    /qbo/runs/:runId                  (cross-tenant QBO run detail)
+ *     - GET    /qbo/queue                        (cross-tenant QBO queue)
+ *     - GET    /qbo/queue/failed-count           (cross-tenant)
+ *     - GET    /qbo/mappings/summary             (cross-tenant)
+ *     - POST   /qbo/queue/:id/replay             (cross-tenant write)
+ *     - POST   /qbo/queue/replay-failed          (cross-tenant write)
+ *     - POST   /run-weekly-digest                (cross-tenant write)
+ *     - The `?allCompanies=true` branch of POST /run-time-alerts
+ *
+ *   If platform operators still need any of those views, build them under
+ *   `/api/platform/*` with the appropriate capability gate.
  */
 
 import { Router, Response } from "express";
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
-import { OWNER_ONLY } from "../auth/roles";
+import { OWNER_ONLY, isPlatformRole } from "../auth/roles";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { adminRepository } from "../storage/admin";
-import { adminQboRepository } from "../storage/adminQbo";
 import { customerCompanyRepository } from "../storage/customerCompanies";
 import { impersonationService } from "../impersonationService";
 import { userRepository } from "../storage/users";
-import { platformAuditService } from "../services/platformAuditService";
 import type { AuthedRequest } from "../auth/tenantIsolation";
-import { runTimeAlertsForCompany, runTimeAlertsWorker, getAlertThresholds, runWeeklyDigestWorker } from "../services/timeAlertsWorker";
-// 2026-04-09: Bulk archived-job cleanup tool (admin-only)
+import { runTimeAlertsForCompany, getAlertThresholds } from "../services/timeAlertsWorker";
+// 2026-04-09: Bulk archived-job cleanup tool (tenant owner only).
 import {
   previewBulkCleanup,
   runBulkCleanup,
@@ -27,45 +64,19 @@ import {
 } from "../services/bulkJobCleanupService";
 
 // ============================================================================
-// Security: Confirmation Token
+// Security: Confirmation Token (impersonation only — see legacy use below)
 // ============================================================================
-
-const REPLAY_CONFIRM_TOKEN = "REPLAY";
-
-// ============================================================================
-// Security: Data Masking Utilities
-// ============================================================================
-
-/**
- * Mask sensitive identifiers for admin display
- * Shows first 4 and last 4 characters with asterisks in between
- */
-function maskId(id: string | null | undefined): string | null {
-  if (!id) return null;
-  if (id.length <= 8) return "****" + id.slice(-4);
-  return id.slice(0, 4) + "****" + id.slice(-4);
-}
-
-/**
- * Mask QBO Realm ID for display
- */
-function maskRealmId(realmId: string | null | undefined): string | null {
-  if (!realmId) return null;
-  if (realmId.length <= 6) return "****";
-  return realmId.slice(0, 3) + "****" + realmId.slice(-3);
-}
 
 const router = Router();
 
-// ============================================================================
-// Middleware: Owner-Only Access
-// ============================================================================
+// 2026-05-03 lockdown: NO router-wide `requireRole` gate. Every handler in this
+// file MUST attach its own `requireRole(OWNER_ONLY)` (or stricter) so a future
+// edit cannot accidentally inherit auth from the top of the file. If you find
+// yourself wanting cross-tenant data, build the route under
+// `/api/platform/*`, not here.
 
-// All admin routes require owner role
-router.use(requireRole(OWNER_ONLY));
-
 // ============================================================================
-// Bulk Archived-Job Cleanup (2026-04-09)
+// Bulk Archived-Job Cleanup
 // ============================================================================
 //
 // Two-step admin tool for permanently deleting archived jobs in batches.
@@ -78,9 +89,8 @@ router.use(requireRole(OWNER_ONLY));
 //        → executes in batches; refuses to proceed if invoice-linked archived
 //          jobs are present and `confirmed !== true`.
 //
-// Tenant scope: req.companyId from the authenticated owner (the same tenant
-// the admin is operating in). Cross-tenant cleanup is intentionally not
-// supported here — the tool runs on the operator's own tenant only.
+// Tenant scope: req.companyId from the authenticated owner. Cross-tenant
+// cleanup is intentionally not supported.
 
 const bulkCleanupFiltersSchema = z.object({
   archivedOnly: z.literal(true),
@@ -96,6 +106,7 @@ const bulkCleanupRunSchema = z.object({
 
 router.post(
   "/jobs/bulk-cleanup/preview",
+  requireRole(OWNER_ONLY),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
     const filters = validateSchema(bulkCleanupFiltersSchema, req.body?.filters ?? req.body);
@@ -106,6 +117,7 @@ router.post(
 
 router.post(
   "/jobs/bulk-cleanup/run",
+  requireRole(OWNER_ONLY),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
     const { filters, confirmed } = validateSchema(bulkCleanupRunSchema, req.body);
@@ -124,46 +136,24 @@ router.post(
 );
 
 // ============================================================================
-// Routes
+// Tenant Detail (own tenant only)
 // ============================================================================
 
 /**
- * GET /api/admin/tenants
- * List all tenants with health metrics summary
- *
- * Returns account-level metrics per tenant (no operational data):
- * - Company info (name, subscription status, created)
- * - Owner contact (email, name)
- * - User counts (total, last login)
- * - QBO integration status (connected, last sync, failed count, queue size)
- */
-router.get(
-  "/tenants",
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const tenants = await adminRepository.getTenantHealthList();
-    res.json({ tenants });
-  })
-);
-
-/**
  * GET /api/admin/tenants/:companyId
- * Get detailed account metrics for a specific tenant
+ * Detailed account metrics for the caller's OWN tenant.
  *
- * Returns:
- * - All account summary metrics
- * - Recent sync errors (last 10)
- * - Recent users (last 10 by activity)
+ * 2026-04-26 cross-tenant guard preserved: rejects any `:companyId` other
+ * than `req.companyId`. Cross-tenant reads must use
+ * `/api/platform/tenants/*`, which is psid-gated and capability-gated.
  *
- * 2026-04-26 — Cross-tenant guard. The router gates on `OWNER_ONLY`,
- * which is *tenant* owner role — not platform role. Without the guard
- * below, a tenant owner could pass another tenant's id as `:companyId`
- * and read account metadata for that tenant. Same shape as the legacy
- * `PATCH /api/admin/tenants/:companyId/billing` cross-tenant mutation
- * bug (already retired). Cross-tenant reads now flow exclusively
- * through `/api/platform/tenants/*` (capability-gated).
+ * 2026-05-03: this is the SOLE remaining `/api/admin/tenants*` route. The
+ * unscoped list endpoint (`GET /api/admin/tenants`) was removed — it
+ * exposed cross-tenant company data to any tenant owner.
  */
 router.get(
   "/tenants/:companyId",
+  requireRole(OWNER_ONLY),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { companyId } = req.params;
 
@@ -194,52 +184,106 @@ const impersonateSchema = z.object({
 
 /**
  * POST /api/admin/impersonate
- * Start impersonation session for a target user
+ * Start impersonation session for a target user inside the OWN tenant.
  *
- * Security:
- * - Owner-only access
- * - Target user must exist
- * - Cannot impersonate yourself
- * - Audit logged
- * - Session expires after 60 minutes
- * - Stored in DB with httpOnly cookie
+ * 2026-05-03 (follow-up): tenant boundary hardening. The previous version
+ * called `userRepository.getUser(targetUserId)` which is unscoped, then
+ * proceeded to start a session with `targetUser.companyId` regardless of
+ * the operator's tenant. A tenant owner could therefore (a) impersonate a
+ * non-owner user in another tenant, and (b) probe whether arbitrary user
+ * UUIDs existed in the SaaS via the 404-vs-500 timing.
+ *
+ * Hardened contract:
+ *   1. Lookup uses `getUserByCompany(req.companyId, targetUserId)`, which
+ *      returns null for both "no such user" and "user in another tenant".
+ *      We translate either case into a uniform `404 Target user not found`
+ *      so cross-tenant existence cannot be inferred.
+ *   2. Disabled, soft-deleted, and non-active-status users also resolve
+ *      to the same `404` — for the same reason (no probing of account
+ *      state across the SaaS).
+ *   3. Platform roles (platform_admin / platform_support / platform_billing
+ *      / platform_readonly_audit) cannot be impersonated through the
+ *      tenant surface even if they happen to share a companyId. They are
+ *      rejected with `403`.
+ *   4. Other tenant `owner` users remain rejected with `403` (preserved).
+ *   5. Self-impersonation rejected with `400` (preserved).
+ *
+ * Cross-tenant impersonation must never start. The session row is written
+ * with `targetCompanyId = req.companyId`, not `targetUser.companyId` — by
+ * this point the two are equal anyway, but the explicit form makes the
+ * tenant boundary impossible to drift past in a future refactor.
  */
 router.post(
   "/impersonate",
+  requireRole(OWNER_ONLY),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const owner = req.user!;
+    const operatorCompanyId = req.companyId;
+    if (!operatorCompanyId) {
+      // requireRole(OWNER_ONLY) ran upstream so req.user must be present;
+      // companyId being absent would mean the tenant context middleware
+      // mis-fired. Treat as 401 so the caller re-authenticates.
+      throw createError(401, "Missing tenant context");
+    }
+
     const data = validateSchema(impersonateSchema, req.body);
 
-    // Cannot impersonate yourself
     if (data.targetUserId === owner.id) {
       throw createError(400, "Cannot impersonate yourself");
     }
 
-    // Check if already impersonating
     const existingSession = await impersonationService.getActiveImpersonation(req);
     if (existingSession) {
       throw createError(400, "Already in an impersonation session. Stop current session first.");
     }
 
-    // Get target user
-    const targetUser = await userRepository.getUser(data.targetUserId);
+    // Tenant-scoped lookup. Returns null for cross-tenant ids — the
+    // 404 below is identical to "no such user" so other tenants'
+    // ids are not enumerable.
+    const targetUser = await userRepository.getUserByCompany(operatorCompanyId, data.targetUserId);
     if (!targetUser) {
       throw createError(404, "Target user not found");
     }
 
-    // Cannot impersonate another owner
+    // Defense-in-depth even though getUserByCompany already enforced this.
+    if (targetUser.companyId !== operatorCompanyId) {
+      throw createError(404, "Target user not found");
+    }
+
+    // Soft-deleted / disabled / non-active accounts are not impersonatable.
+    // 404 (not 403) is intentional — same surface as "doesn't exist" so the
+    // operator can't probe account state.
+    if (
+      targetUser.deletedAt !== null ||
+      targetUser.disabled === true ||
+      targetUser.status !== "active"
+    ) {
+      throw createError(404, "Target user not found");
+    }
+
+    // Platform-role accounts are never tenant-impersonatable, even if they
+    // share a companyId row in the DB. 403 here is intentional — the role
+    // string is already known to the caller (the user is in their tenant
+    // listing), so the existence isn't a secret; only the operation is
+    // refused.
+    if (isPlatformRole(targetUser.role)) {
+      throw createError(403, "Cannot impersonate a platform user");
+    }
+
     if (targetUser.role === "owner") {
       throw createError(403, "Cannot impersonate another owner");
     }
 
-    // Start impersonation session (sets httpOnly cookie)
     const session = await impersonationService.startImpersonation(
       req,
       res,
       owner.id,
       owner.email || "unknown",
       targetUser.id,
-      targetUser.companyId,
+      // Pinned to the operator's tenant. If a future refactor of
+      // getUserByCompany ever leaks a cross-tenant row, the session is
+      // still bound to the operator's own tenant — never the target's.
+      operatorCompanyId,
       data.reason || "Admin support session"
     );
 
@@ -258,42 +302,30 @@ router.post(
   })
 );
 
-/**
- * POST /api/admin/impersonate/stop
- * End current impersonation session (clears httpOnly cookie)
- */
 router.post(
   "/impersonate/stop",
+  requireRole(OWNER_ONLY),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
-    // Use realUser (the owner) when impersonating, otherwise use user
     const owner = (req as any).isImpersonating ? (req as any).realUser : req.user!;
 
-    // Check for active session
     const session = await impersonationService.getActiveImpersonation(req);
     if (!session) {
-      // No active session is fine - just return success
       res.json({ success: true, message: "No active impersonation session" });
       return;
     }
 
-    // Stop the session (clears cookie)
     await impersonationService.stopImpersonation(req, res, owner.id, owner.email || "unknown");
 
     res.json({ success: true, message: "Impersonation session ended" });
   })
 );
 
-/**
- * GET /api/admin/impersonate/status
- * Get current impersonation status
- */
 router.get(
   "/impersonate/status",
+  requireRole(OWNER_ONLY),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
-    // Use realUser (the owner) when impersonating, otherwise use user
     const owner = (req as any).isImpersonating ? (req as any).realUser : req.user!;
 
-    // Check and validate session (handles expiration, clears cookie if invalid)
     const session = await impersonationService.checkImpersonation(req, res);
 
     if (!session) {
@@ -304,7 +336,6 @@ router.get(
       return;
     }
 
-    // Get target user details (null for Phase 4 read-only sessions).
     const targetUser = session.targetUserId
       ? await userRepository.getUser(session.targetUserId)
       : null;
@@ -331,294 +362,41 @@ router.get(
 );
 
 // ============================================================================
-// QBO Oversight Routes (Cross-Tenant Monitoring)
-// ============================================================================
-
-/**
- * GET /api/admin/qbo/overview
- * Cross-tenant QBO overview dashboard
- *
- * Returns:
- * - Total/enabled/connected companies
- * - Queue depth and failed count aggregates
- * - Recent failures across all tenants
- * - Per-company QBO status summary (with masked sensitive IDs)
- */
-router.get(
-  "/qbo/overview",
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const overview = await adminQboRepository.getOverview();
-
-    // Apply data masking to sensitive fields
-    const maskedOverview = {
-      ...overview,
-      companies: overview.companies.map((c) => ({
-        ...c,
-        qboRealmId: maskRealmId(c.qboRealmId),
-      })),
-      recentFailures: overview.recentFailures.map((f) => ({
-        ...f,
-        entityId: maskId(f.entityId),
-      })),
-    };
-
-    res.json(maskedOverview);
-  })
-);
-
-/**
- * GET /api/admin/qbo/runs
- * List recent sync runs across all tenants
- *
- * Query params:
- * - limit: Max results (default 50, max 100)
- */
-router.get(
-  "/qbo/runs",
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 50, 1), 100);
-    const runs = await adminQboRepository.getRuns({ limit });
-    res.json({ runs, count: runs.length });
-  })
-);
-
-/**
- * GET /api/admin/qbo/runs/:runId
- * Get details for a specific sync run
- */
-router.get(
-  "/qbo/runs/:runId",
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const { runId } = req.params;
-    const runDetail = await adminQboRepository.getRunDetail(runId);
-
-    if (!runDetail) {
-      throw createError(404, "Sync run not found");
-    }
-
-    res.json(runDetail);
-  })
-);
-
-/**
- * GET /api/admin/qbo/queue
- * Get queue jobs across all tenants
- *
- * Query params:
- * - status: "failed" | "pending" | "all" (default "all")
- * - companyId: Filter by company (optional)
- * - limit: Max results (default 50, max 200)
- */
-router.get(
-  "/qbo/queue",
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const status = (req.query.status as "failed" | "pending" | "all") || "all";
-    const companyId = req.query.companyId as string | undefined;
-    const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 50, 1), 200);
-
-    const jobs = await adminQboRepository.getQueueJobs({ status, companyId, limit });
-    res.json({ jobs, count: jobs.length });
-  })
-);
-
-// Validation schema for replay actions
-const replayConfirmSchema = z.object({
-  confirmToken: z.literal(REPLAY_CONFIRM_TOKEN, {
-    errorMap: () => ({ message: `confirmToken must be "${REPLAY_CONFIRM_TOKEN}"` }),
-  }),
-});
-
-const replayFailedSchema = z.object({
-  confirmToken: z.literal(REPLAY_CONFIRM_TOKEN, {
-    errorMap: () => ({ message: `confirmToken must be "${REPLAY_CONFIRM_TOKEN}"` }),
-  }),
-  companyId: z.string().uuid().optional(),
-});
-
-/**
- * GET /api/admin/qbo/queue/failed-count
- * Get count of failed jobs for confirmation dialog
- *
- * Query params:
- * - companyId: Filter by company (optional)
- */
-router.get(
-  "/qbo/queue/failed-count",
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const companyId = req.query.companyId as string | undefined;
-    const count = await adminQboRepository.getFailedJobsCount(companyId);
-    res.json({ count, companyId: companyId || null });
-  })
-);
-
-/**
- * POST /api/admin/qbo/queue/:id/replay
- * Reset a failed job to QUEUED for replay
- *
- * Security:
- * - Requires confirmToken: "REPLAY" in body
- * - Audit logged with full job details
- */
-router.post(
-  "/qbo/queue/:id/replay",
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const owner = (req as any).isImpersonating ? (req as any).realUser : req.user!;
-    const { id } = req.params;
-
-    // Validate confirmation token
-    validateSchema(replayConfirmSchema, req.body);
-
-    const result = await adminQboRepository.resetJobForReplay(id);
-
-    if (!result.success) {
-      throw createError(400, result.error || "Failed to reset job");
-    }
-
-    // Audit log the replay action
-    await platformAuditService.logQboReplayOne(
-      owner.id,
-      owner.email || "unknown",
-      id,
-      result.job!.companyId,
-      result.job!.entityType,
-      result.job!.entityId,
-      result.previousStatus || "UNKNOWN",
-      req
-    );
-
-    res.json(result);
-  })
-);
-
-/**
- * POST /api/admin/qbo/queue/replay-failed
- * Reset all failed jobs to QUEUED for replay
- *
- * Security:
- * - Requires confirmToken: "REPLAY" in body
- * - Audit logged with affected job count and company IDs
- *
- * Body:
- * - confirmToken: "REPLAY" (required)
- * - companyId: Filter by company (optional)
- */
-router.post(
-  "/qbo/queue/replay-failed",
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const owner = (req as any).isImpersonating ? (req as any).realUser : req.user!;
-
-    // Validate confirmation token
-    const data = validateSchema(replayFailedSchema, req.body);
-    const companyId = data.companyId;
-
-    const result = await adminQboRepository.resetAllFailedForReplay(companyId);
-
-    // Audit log the bulk replay action
-    await platformAuditService.logQboReplayAllFailed(
-      owner.id,
-      owner.email || "unknown",
-      result.count,
-      result.affectedCompanyIds,
-      companyId,
-      req
-    );
-
-    res.json(result);
-  })
-);
-
-/**
- * GET /api/admin/qbo/mappings/summary
- * Get mapping summary per company
- *
- * Returns per-company counts of:
- * - customerCompanies: total, synced, pending, error
- * - clientLocations: total, synced, pending, error
- * - invoices: total, synced, pending, error
- */
-router.get(
-  "/qbo/mappings/summary",
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const summary = await adminQboRepository.getMappingSummary();
-    res.json({ companies: summary, count: summary.length });
-  })
-);
-
-// ============================================================================
-// Billing Routes (REMOVED 2026-04-26)
-// ============================================================================
-//
-// `PATCH /api/admin/tenants/:companyId/billing` was removed because this
-// router gates only on tenant role `owner` — meaning any tenant owner could
-// pass an arbitrary `:companyId` and mutate billing for a different tenant.
-// All billing / lifecycle mutations now route through the platform-scoped
-// endpoint, which enforces the platform capability:
-//
-//   PATCH /api/platform/tenants/:tenantId/subscription
-//     guard: requireCapability("tenant:lifecycle:write")
-//     accepts: { subscriptionPlan?, subscriptionStatus?, trialEndsAt? }
-//
-// The legacy feature-flag admin endpoints (
-//   GET  /api/admin/tenants/:id/billing-features,
-//   PATCH /api/admin/tenants/:id/features
-// ) were already deleted in 2026-04-21 Phase 3 — entitlement reads / writes
-// flow through the canonical resolver + platform override endpoints.
-
-// ============================================================================
-// Time Alerts Worker Routes
+// Time Alerts Worker — TENANT SCOPE ONLY
 // ============================================================================
 
 /**
  * POST /api/admin/run-time-alerts
- * Manually trigger time alerts worker for the current user's company
+ * Manually trigger the time-alerts worker for the caller's OWN tenant.
+ *
+ * 2026-05-03 lockdown: the prior `?allCompanies=true` branch invoked
+ * `runTimeAlertsWorker()` against EVERY tenant in the SaaS while gated
+ * only on tenant role `owner`. That branch and its query parameter have
+ * been removed. Cross-tenant worker triggers are an `/api/platform/*`
+ * concern, not a tenant-app concern.
  *
  * Query params:
- * - allCompanies: "true" to run for all companies (owner-only)
- * - date: Override date for daily checks (YYYY-MM-DD format)
- * - runDigest: "true" to also run weekly digest
- *
- * Security:
- * - Owner-only access
- * - Audit logged
+ *   - date: Override date for daily checks (YYYY-MM-DD format)
+ *   - runDigest: "true" to also run weekly digest for THIS tenant
  */
 router.post(
   "/run-time-alerts",
+  requireRole(OWNER_ONLY),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const owner = (req as any).isImpersonating ? (req as any).realUser : req.user!;
-    const runAllCompanies = req.query.allCompanies === "true";
     const dateOverride = req.query.date as string | undefined;
     const runDigest = req.query.runDigest === "true";
 
-    // Validate date format if provided
     if (dateOverride && !/^\d{4}-\d{2}-\d{2}$/.test(dateOverride)) {
       throw createError(400, "Invalid date format. Use YYYY-MM-DD.");
     }
 
-    // Audit log the trigger
-    await platformAuditService.log({
-      platformAdminId: owner.id,
-      platformAdminEmail: owner.email || "unknown",
-      action: "time_alerts_worker_triggered" as any,
-      targetCompanyId: runAllCompanies ? undefined : owner.companyId,
-      req,
-      details: {
-        allCompanies: runAllCompanies,
-        dateOverride: dateOverride || null,
-        runDigest,
-      },
-    });
-
-    let result;
-    if (runAllCompanies) {
-      result = await runTimeAlertsWorker({ dateOverride, runDigest });
-    } else {
-      result = await runTimeAlertsForCompany(owner.companyId, { dateOverride, runDigest });
-    }
+    const result = await runTimeAlertsForCompany(owner.companyId, { dateOverride, runDigest });
 
     res.json({
       success: true,
-      mode: runAllCompanies ? "all_companies" : "single_company",
-      companyId: runAllCompanies ? null : owner.companyId,
+      mode: "single_company",
+      companyId: owner.companyId,
       dateChecked: dateOverride || "yesterday",
       runDigest,
       result,
@@ -626,43 +404,9 @@ router.post(
   })
 );
 
-/**
- * POST /api/admin/run-weekly-digest
- * Manually trigger weekly digest worker for all companies
- *
- * Security:
- * - Owner-only access
- * - Audit logged
- */
-router.post(
-  "/run-weekly-digest",
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const owner = (req as any).isImpersonating ? (req as any).realUser : req.user!;
-
-    // Audit log the trigger
-    await platformAuditService.log({
-      platformAdminId: owner.id,
-      platformAdminEmail: owner.email || "unknown",
-      action: "weekly_digest_worker_triggered" as any,
-      req,
-      details: {},
-    });
-
-    const result = await runWeeklyDigestWorker();
-
-    res.json({
-      success: true,
-      result,
-    });
-  })
-);
-
-/**
- * GET /api/admin/time-alerts/thresholds
- * Get current alert thresholds for documentation
- */
 router.get(
   "/time-alerts/thresholds",
+  requireRole(OWNER_ONLY),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { companyId } = req.user!;
     const thresholds = await getAlertThresholds(companyId);
@@ -671,19 +415,12 @@ router.get(
 );
 
 // ============================================================================
-// Orphan Location Management
+// Orphan Location Management (tenant-scoped)
 // ============================================================================
 
-/**
- * GET /api/admin/orphan-locations
- * Get all orphan locations (locations without parentCompanyId) for the current tenant
- *
- * Returns locations with suggested matches based on exact company name match
- * Note: This uses the owner's companyId, not cross-tenant. For support mode,
- * the impersonated user's companyId is used automatically.
- */
 router.get(
   "/orphan-locations",
+  requireRole(OWNER_ONLY),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { companyId } = req;
     if (!companyId) {
@@ -695,19 +432,15 @@ router.get(
     res.json({
       orphans,
       count: orphans.length,
-      // Summary stats
       withSuggestions: orphans.filter(o => o.suggestedCustomerCompanyId).length,
       withoutSuggestions: orphans.filter(o => !o.suggestedCustomerCompanyId).length,
     });
   })
 );
 
-/**
- * GET /api/admin/orphan-locations/count
- * Get count of orphan locations (for dashboard badge)
- */
 router.get(
   "/orphan-locations/count",
+  requireRole(OWNER_ONLY),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { companyId } = req;
     if (!companyId) {
@@ -720,22 +453,12 @@ router.get(
 );
 
 // ============================================================================
-// Data Visibility Diagnostics (Regression Detection) - PERMANENT
+// Data Visibility Diagnostics (tenant-scoped, regression detection)
 // ============================================================================
 
-/**
- * GET /api/admin/diagnostics/visibility
- * Returns comprehensive counts to verify data visibility (detect regressions where data exists but isn't shown)
- *
- * Compares:
- * - Total records in DB for this tenant
- * - Records after each filter
- * - Records returned by actual storage methods (same ones routes use)
- *
- * If storage method returns fewer than expected, there may be a filter regression.
- */
 router.get(
   "/diagnostics/visibility",
+  requireRole(OWNER_ONLY),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { companyId } = req;
     if (!companyId) {
@@ -746,17 +469,8 @@ router.get(
     const { invoices, clients, customerCompanies } = await import("@shared/schema");
     const { eq, sql } = await import("drizzle-orm");
     const { storage } = await import("../storage/index");
-    // 2026-05-01: canonical location-name resolver for the admin
-    // diagnostic sample so it shows the same display name as user-
-    // facing surfaces.
     const { locationDisplayNameExpr } = await import("../lib/queryHelpers");
 
-    // =========================================================================
-    // INVOICES - DB counts
-    // =========================================================================
-    // 2026-04-09: invoices.isActive / deletedAt buckets removed — invoices use
-    // permanent-delete model (no soft delete). The diagnostic now reports total
-    // count and a status breakdown only.
     const [invoiceTotalResult] = await db
       .select({ count: sql<number>`count(*)` })
       .from(invoices)
@@ -771,7 +485,6 @@ router.get(
       .where(eq(invoices.companyId, companyId))
       .groupBy(invoices.status);
 
-    // Sample invoices (up to 5)
     const sampleInvoices = await db
       .select({
         id: invoices.id,
@@ -782,12 +495,8 @@ router.get(
       .where(eq(invoices.companyId, companyId))
       .limit(5);
 
-    // CALL ACTUAL STORAGE METHOD (same one the route uses)
     const storageInvoiceResult = await storage.getInvoices(companyId, { limit: 1000, offset: 0 });
 
-    // =========================================================================
-    // LOCATIONS - DB counts
-    // =========================================================================
     const [locationTotalResult] = await db
       .select({ count: sql<number>`count(*)` })
       .from(clients)
@@ -823,10 +532,6 @@ router.get(
       .from(clients)
       .where(sql`${clients.companyId} = ${companyId} AND ${clients.parentCompanyId} IS NULL`);
 
-    // Sample locations (up to 10)
-    // 2026-05-01 bypass cleanup: companyName resolves through the
-    // canonical helper. LEFT JOIN customer_companies so the helper has
-    // the parent row to consult; uses idx_client_locations_parent_company.
     const sampleLocations = await db
       .select({
         id: clients.id,
@@ -843,12 +548,8 @@ router.get(
       .where(eq(clients.companyId, companyId))
       .limit(10);
 
-    // CALL ACTUAL STORAGE METHOD for locations (getAllClients)
     const storageClientsResult = await storage.getAllClients(companyId);
 
-    // =========================================================================
-    // CUSTOMER COMPANIES - DB counts
-    // =========================================================================
     const [customerCompanyTotalResult] = await db
       .select({ count: sql<number>`count(*)` })
       .from(customerCompanies)
@@ -859,12 +560,8 @@ router.get(
       .from(customerCompanies)
       .where(sql`${customerCompanies.companyId} = ${companyId} AND ${customerCompanies.deletedAt} IS NOT NULL`);
 
-    // =========================================================================
-    // Health checks
-    // =========================================================================
     const totalInDb = Number(invoiceTotalResult.count);
     const returnedByStorage = storageInvoiceResult.items.length;
-    // 2026-04-09: invoices have no soft-delete state — storage should return all rows.
     const expectedExclusions = 0;
 
     const locationTotalInDb = Number(locationTotalResult.count);
@@ -875,7 +572,6 @@ router.get(
       companyId,
       invoices: {
         totalInDb,
-        // 2026-04-09: report status breakdown instead of soft-delete buckets
         statusBreakdown: invoiceStatusBreakdown.map(r => ({ status: r.status, count: Number(r.count) })),
         returnedByStorageGetInvoices: returnedByStorage,
         expectedAfterExclusions: totalInDb,
@@ -916,243 +612,114 @@ router.get(
 );
 
 // ============================================================================
-// Scheduling Health Endpoint (Canonical Scheduling Model Checks)
+// Scheduling Health Endpoint (tenant-scoped)
 // ============================================================================
 
 /**
  * GET /api/admin/scheduling-health
- * Run scheduling sanity checks and return counts + samples
  *
- * CANONICAL SCHEDULING MODEL: A job is scheduled if scheduledStart IS NOT NULL.
- * isAllDay is a DISPLAY flag only - all-day events MUST have scheduledStart set to midnight.
- *
- * Returns aggregated health status for scheduling data integrity:
- * - A) Legacy status values
- * - B) Terminal jobs with schedule
- * - C) Invalid openSubStatus
- * - D) All-day normalization violations
- * - E) Missing scheduledEnd
- * - F) Invalid time range
- * - G) NULL version on scheduled jobs
- * - H) Invalid version < 1
+ * 2026-05-03 lockdown: previously selected from `jobs` with NO companyId
+ * filter (cross-tenant data leak — returned IDs/job_numbers/statuses for
+ * EVERY tenant's jobs). Now scoped to `req.companyId`.
  */
 router.get(
   "/scheduling-health",
+  requireRole(OWNER_ONLY),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { companyId } = req;
+    if (!companyId) {
+      throw createError(401, "Missing company context");
+    }
+
     const { db } = await import("../db");
     const { sql } = await import("drizzle-orm");
 
     const MAX_SAMPLES = 20;
 
-    // Define all checks - Normalized 4-status model: open, completed, invoiced, archived
     const validStatuses = "'open', 'completed', 'invoiced', 'archived'";
     const terminalStatuses = "'invoiced', 'archived'";
+
+    // 2026-05-03: every check now filters by company_id. Without that filter
+    // a tenant owner could read job IDs/statuses across the entire SaaS.
+    const tenantPredicate = sql`company_id = ${companyId}`;
 
     const checks = [
       {
         code: "A",
         name: "Legacy status values",
         description: "Jobs with status NOT IN normalized values (open, completed, invoiced, archived)",
-        query: `
-          SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND status NOT IN (${validStatuses})
-          LIMIT ${MAX_SAMPLES}
-        `,
-        countQuery: `
-          SELECT count(*) as count
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND status NOT IN (${validStatuses})
-        `,
+        countSql: sql`SELECT count(*) as count FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND status NOT IN (${sql.raw(validStatuses)})`,
+        sampleSql: sql`SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND status NOT IN (${sql.raw(validStatuses)}) LIMIT ${MAX_SAMPLES}`,
       },
       {
         code: "B",
         name: "Terminal jobs with schedule",
         description: "Jobs with terminal status but still have schedule fields set",
-        query: `
-          SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND status IN (${terminalStatuses})
-            AND (scheduled_start IS NOT NULL OR scheduled_end IS NOT NULL OR is_all_day = true)
-          LIMIT ${MAX_SAMPLES}
-        `,
-        countQuery: `
-          SELECT count(*) as count
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND status IN (${terminalStatuses})
-            AND (scheduled_start IS NOT NULL OR scheduled_end IS NOT NULL OR is_all_day = true)
-        `,
+        countSql: sql`SELECT count(*) as count FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND status IN (${sql.raw(terminalStatuses)}) AND (scheduled_start IS NOT NULL OR scheduled_end IS NOT NULL OR is_all_day = true)`,
+        sampleSql: sql`SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND status IN (${sql.raw(terminalStatuses)}) AND (scheduled_start IS NOT NULL OR scheduled_end IS NOT NULL OR is_all_day = true) LIMIT ${MAX_SAMPLES}`,
       },
       {
         code: "C",
         name: "Invalid openSubStatus",
         description: "Jobs with openSubStatus set but status != 'open'",
-        query: `
-          SELECT id, job_number, status, open_sub_status, scheduled_start, is_all_day
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND open_sub_status IS NOT NULL
-            AND status != 'open'
-          LIMIT ${MAX_SAMPLES}
-        `,
-        countQuery: `
-          SELECT count(*) as count
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND open_sub_status IS NOT NULL
-            AND status != 'open'
-        `,
+        countSql: sql`SELECT count(*) as count FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND open_sub_status IS NOT NULL AND status != 'open'`,
+        sampleSql: sql`SELECT id, job_number, status, open_sub_status, scheduled_start, is_all_day FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND open_sub_status IS NOT NULL AND status != 'open' LIMIT ${MAX_SAMPLES}`,
       },
       {
         code: "D",
         name: "All-day without scheduledStart (CANONICAL VIOLATION)",
-        description: "All-day events must have scheduledStart set to midnight (canonical scheduling model)",
-        query: `
-          SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND is_all_day = true
-            AND scheduled_start IS NULL
-          LIMIT ${MAX_SAMPLES}
-        `,
-        countQuery: `
-          SELECT count(*) as count
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND is_all_day = true
-            AND scheduled_start IS NULL
-        `,
+        description: "All-day events must have scheduledStart set to midnight",
+        countSql: sql`SELECT count(*) as count FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND is_all_day = true AND scheduled_start IS NULL`,
+        sampleSql: sql`SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND is_all_day = true AND scheduled_start IS NULL LIMIT ${MAX_SAMPLES}`,
       },
       {
         code: "D2",
         name: "All-day normalization violations",
-        description: "All-day events with incorrect start/end times (should be midnight to 23:59:59)",
-        query: `
-          SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND is_all_day = true
-            AND scheduled_start IS NOT NULL
-            AND (
-              EXTRACT(HOUR FROM scheduled_start) != 0
-              OR EXTRACT(MINUTE FROM scheduled_start) != 0
-              OR scheduled_end IS NULL
-            )
-          LIMIT ${MAX_SAMPLES}
-        `,
-        countQuery: `
-          SELECT count(*) as count
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND is_all_day = true
-            AND scheduled_start IS NOT NULL
-            AND (
-              EXTRACT(HOUR FROM scheduled_start) != 0
-              OR EXTRACT(MINUTE FROM scheduled_start) != 0
-              OR scheduled_end IS NULL
-            )
-        `,
+        description: "All-day events with incorrect start/end times",
+        countSql: sql`SELECT count(*) as count FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND is_all_day = true AND scheduled_start IS NOT NULL AND (EXTRACT(HOUR FROM scheduled_start) != 0 OR EXTRACT(MINUTE FROM scheduled_start) != 0 OR scheduled_end IS NULL)`,
+        sampleSql: sql`SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND is_all_day = true AND scheduled_start IS NOT NULL AND (EXTRACT(HOUR FROM scheduled_start) != 0 OR EXTRACT(MINUTE FROM scheduled_start) != 0 OR scheduled_end IS NULL) LIMIT ${MAX_SAMPLES}`,
       },
       {
         code: "E",
         name: "Missing scheduledEnd",
         description: "Jobs with scheduledStart but no scheduledEnd",
-        query: `
-          SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND scheduled_start IS NOT NULL
-            AND scheduled_end IS NULL
-          LIMIT ${MAX_SAMPLES}
-        `,
-        countQuery: `
-          SELECT count(*) as count
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND scheduled_start IS NOT NULL
-            AND scheduled_end IS NULL
-        `,
+        countSql: sql`SELECT count(*) as count FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND scheduled_start IS NOT NULL AND scheduled_end IS NULL`,
+        sampleSql: sql`SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND scheduled_start IS NOT NULL AND scheduled_end IS NULL LIMIT ${MAX_SAMPLES}`,
       },
       {
         code: "F",
         name: "Invalid time range (end <= start)",
         description: "Jobs where scheduledEnd is not after scheduledStart",
-        query: `
-          SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND scheduled_start IS NOT NULL
-            AND scheduled_end IS NOT NULL
-            AND scheduled_end <= scheduled_start
-          LIMIT ${MAX_SAMPLES}
-        `,
-        countQuery: `
-          SELECT count(*) as count
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND scheduled_start IS NOT NULL
-            AND scheduled_end IS NOT NULL
-            AND scheduled_end <= scheduled_start
-        `,
+        countSql: sql`SELECT count(*) as count FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND scheduled_start IS NOT NULL AND scheduled_end IS NOT NULL AND scheduled_end <= scheduled_start`,
+        sampleSql: sql`SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND scheduled_start IS NOT NULL AND scheduled_end IS NOT NULL AND scheduled_end <= scheduled_start LIMIT ${MAX_SAMPLES}`,
       },
       {
         code: "G",
         name: "NULL version on scheduled jobs",
-        description: "Scheduled jobs with NULL version (canonical: scheduledStart IS NOT NULL)",
-        query: `
-          SELECT id, job_number, status, scheduled_start, version
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND scheduled_start IS NOT NULL
-            AND version IS NULL
-          LIMIT ${MAX_SAMPLES}
-        `,
-        countQuery: `
-          SELECT count(*) as count
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND scheduled_start IS NOT NULL
-            AND version IS NULL
-        `,
+        description: "Scheduled jobs with NULL version",
+        countSql: sql`SELECT count(*) as count FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND scheduled_start IS NOT NULL AND version IS NULL`,
+        sampleSql: sql`SELECT id, job_number, status, scheduled_start, version FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND scheduled_start IS NOT NULL AND version IS NULL LIMIT ${MAX_SAMPLES}`,
       },
       {
         code: "H",
         name: "Invalid version (< 1)",
         description: "Jobs with version < 1",
-        query: `
-          SELECT id, job_number, status, version
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND version IS NOT NULL
-            AND version < 1
-          LIMIT ${MAX_SAMPLES}
-        `,
-        countQuery: `
-          SELECT count(*) as count
-          FROM jobs
-          WHERE deleted_at IS NULL
-            AND version IS NOT NULL
-            AND version < 1
-        `,
+        countSql: sql`SELECT count(*) as count FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND version IS NOT NULL AND version < 1`,
+        sampleSql: sql`SELECT id, job_number, status, version FROM jobs WHERE ${tenantPredicate} AND deleted_at IS NULL AND version IS NOT NULL AND version < 1 LIMIT ${MAX_SAMPLES}`,
       },
     ];
 
-    // Run all checks
     const results = [];
     let totalViolations = 0;
 
     for (const check of checks) {
-      const countRows = await db.execute(sql.raw(check.countQuery)) as unknown as { count: string }[];
+      const countRows = await db.execute(check.countSql) as unknown as { count: string }[];
       const count = Number(countRows[0]?.count || 0);
       totalViolations += count;
 
       let samples: any[] = [];
       if (count > 0) {
-        samples = await db.execute(sql.raw(check.query)) as unknown as any[];
+        samples = await db.execute(check.sampleSql) as unknown as any[];
       }
 
       results.push({
@@ -1184,20 +751,12 @@ router.get(
 );
 
 // ============================================================================
-// Guardrail Tests - Regression Prevention (PERMANENT)
+// Guardrail Tests — tenant-scoped regression detection
 // ============================================================================
 
-/**
- * GET /api/admin/diagnostics/guardrails
- * Runs automated checks to detect data visibility regressions.
- * Returns PASS/FAIL for each test with details.
- *
- * Tests:
- * 1. Invoice visibility: If DB has invoices, route must return invoices
- * 2. Location consistency: orphan + linked = total (accounting for soft-deleted)
- */
 router.get(
   "/diagnostics/guardrails",
+  requireRole(OWNER_ONLY),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { companyId } = req;
     if (!companyId) {
@@ -1217,11 +776,6 @@ router.get(
       severity: "critical" | "warning";
     }> = [];
 
-    // =========================================================================
-    // Test 1: Invoice visibility - if DB has invoices with isActive=true|NULL,
-    // storage method must return at least one
-    // =========================================================================
-    // 2026-04-09: invoices have no soft-delete state under the permanent-delete model.
     const [invoiceTotalResult] = await db
       .select({ count: sql<number>`count(*)` })
       .from(invoices)
@@ -1239,10 +793,6 @@ router.get(
       severity: "critical",
     });
 
-    // =========================================================================
-    // Test 2: Location count consistency - orphan + linked should equal total
-    // (excluding soft-deleted if your schema uses deletedAt)
-    // =========================================================================
     const [locationTotalResult] = await db
       .select({ count: sql<number>`count(*)` })
       .from(clients)
@@ -1271,9 +821,6 @@ router.get(
       severity: "warning",
     });
 
-    // =========================================================================
-    // Test 3: Storage getAllClients returns locations when DB has them
-    // =========================================================================
     const storageClientsResult = await storage.getAllClients(companyId);
 
     tests.push({
@@ -1284,9 +831,6 @@ router.get(
       severity: "critical",
     });
 
-    // =========================================================================
-    // Summary
-    // =========================================================================
     const failedTests = tests.filter(t => !t.passed);
     const criticalFailures = failedTests.filter(t => t.severity === "critical");
 
@@ -1302,6 +846,42 @@ router.get(
       },
       tests,
     });
+  })
+);
+
+// ============================================================================
+// Removed-route catch-alls (defense-in-depth)
+// ============================================================================
+//
+// 2026-05-03 lockdown: explicit 410 Gone responses for the cross-tenant
+// endpoints that used to live on this router. If anything in the codebase
+// still constructs URLs to these paths it will get a clean rejection
+// pointing to the canonical platform surface, not silent success.
+
+router.all("/tenants", (_req, res) =>
+  res.status(410).json({
+    error: "Gone",
+    code: "ADMIN_CROSS_TENANT_ROUTE_RETIRED",
+    message:
+      "GET /api/admin/tenants was removed (2026-05-03) — it leaked cross-tenant data to tenant owners. Cross-tenant tenant lists live at /api/platform/tenants (psid + tenant:read).",
+  })
+);
+
+router.all(/^\/qbo(\/.*)?$/, (_req, res) =>
+  res.status(410).json({
+    error: "Gone",
+    code: "ADMIN_CROSS_TENANT_ROUTE_RETIRED",
+    message:
+      "/api/admin/qbo/* routes were removed (2026-05-03) — they leaked cross-tenant QBO data to tenant owners. Platform QBO oversight belongs under /api/platform/* with the appropriate capability.",
+  })
+);
+
+router.all("/run-weekly-digest", (_req, res) =>
+  res.status(410).json({
+    error: "Gone",
+    code: "ADMIN_CROSS_TENANT_ROUTE_RETIRED",
+    message:
+      "POST /api/admin/run-weekly-digest was removed (2026-05-03) — it ran cross-tenant under tenant auth.",
   })
 );
 

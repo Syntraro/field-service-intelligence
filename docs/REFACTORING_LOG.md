@@ -4,6 +4,47 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-05-03: Platform Admin Identity — Recorded Debt (Documentation Only)
+
+### Status
+**Open. Documentation only — no schema or runtime change in this entry.** Tracked here so future work has a definitive scoping target.
+
+### Context
+The 2026-04-22 Phase 1 Platform Auth Separation introduced a separate `psid` cookie, a separate session secret, the `requirePlatformSession` middleware, and capability-gated routes under `/api/platform/*`. The 2026-05-03 follow-up added the platform-only password reset flow on its own token table (`platform_password_reset_tokens`) and a CLI seed script for provisioning platform admins. Authorization on the platform console is sound — login rejects non-platform-role accounts (`server/routes/platformAuth.ts:112`), every endpoint under `/api/platform/*` is gated by `requirePlatformSession`, and tokens cannot cross-redeem between the tenant and platform flows.
+
+What remains is a **storage-layer coupling** that should be cleaned before scaling the platform-staff headcount.
+
+### The Debt
+
+1. **Platform users still live in the tenant `users` table.** A platform admin is functionally a row in `users` whose `role` happens to be one of `platform_admin / platform_support / platform_billing / platform_readonly_audit`. There is no dedicated `platform_users` table today.
+
+2. **`users.companyId` is NOT NULL**, so every platform user carries a parking FK to some tenant company. The seed script (`server/scripts/seedPlatformUser.ts`) picks the first available `companies.id` as a placeholder. **The platform login flow does not use that company id for any tenant-scoping decision** — `requirePlatformSession` reads `req.platformUser` from a separate identity surface and never consults `companies` — but the FK still exists at the schema level. Side-effects: deleting that tenant `ON DELETE CASCADE`s the platform user, and tenant-scoped queries against `users WHERE company_id = ?` can incidentally see the platform user's row.
+
+3. **Future target: dedicated `platform_users` + `platform_user_roles` tables.** Multi-role join, no tenant FK. The plan was already referenced in `shared/platformCapabilities.ts:13–15` (the comment block discussing the multi-role union shape being "Phase 2-ready").
+
+4. **`users.password` is still NOT NULL.** The runtime platform login flow reads `user_identities.password_hash` (the canonical credential surface for the `provider="email"` row) and **does not consult `users.password` at all**. To satisfy the legacy NOT NULL constraint, the seed (`seedPlatformUser.ts`) and the reset confirm (`confirmPlatformPasswordReset` in `server/services/platformPasswordResetService.ts`) **mirror** the bcrypt hash into `users.password`. The mirror is a schema-compatibility shim only — the authoritative credential is on `user_identities`.
+
+5. **No immediate production blocker.** The runtime contract is correct; this is a pre-scale cleanup, not a security fix.
+
+### Proposed Cleanup Sequencing (not scheduled)
+
+- **Phase 2-A:** introduce `platform_users` + `platform_user_roles` tables. Backfill from `users WHERE role IN (PLATFORM_ROLES)`. Update `requirePlatformSession` to resolve against the new table. Update `seedPlatformUser.ts` to write into the new table. Keep the legacy rows readable for one release as a fallback.
+- **Phase 2-B:** drop the `companyId` FK requirement for platform identities. Migrate password identity from `user_identities` (currently company-scoped via the unique index `user_identities_company_provider_identifier_idx`) to a platform-scoped equivalent. Decouples platform users from tenant `ON DELETE CASCADE`.
+- **Phase 2-C:** relax `users.password` to nullable (or drop entirely once tenant auth migrates fully to `user_identities`). Remove the mirroring writes from the platform reset and seed paths. Verify no caller reads `users.password` directly.
+
+### Why Capture This Now
+
+Every additional platform admin compounds the surface area of point #2 (parked tenant FK, cascade delete risk). Capturing the debt with named target tables, migration sequencing, and code-pointer references means the future refactor can be picked up by anyone with a clear scope rather than re-discovering the coupling under deadline pressure.
+
+### Files Referenced
+- `server/scripts/seedPlatformUser.ts` — schema-coupling caveat in the file header.
+- `server/services/platformPasswordResetService.ts` — `users.password` mirror write at `confirmPlatformPasswordReset`.
+- `server/routes/platformAuth.ts` — login reads `identity.passwordHash`, never `users.password`.
+- `shared/platformCapabilities.ts:13–15` — original Phase 2 hint.
+- `SECURITY.md` — "Platform Admin Identity — Architectural Debt" section.
+
+---
+
 ## 2026-04-21: Canonical Import Pipeline — One Backend Engine, One Frontend Wizard
 
 ### Problem

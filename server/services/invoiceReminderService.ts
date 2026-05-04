@@ -16,7 +16,13 @@
  * Canonical owners reused:
  *   - emailDispatchService.sendInvoiceEmail → with templateEntityType:
  *     "invoice_reminder" so rendering picks up the reminder template.
- *   - invoiceRepository.recordReminderSent → atomic counter bump.
+ *   - invoiceRepository.recordEmailSent → atomic counter bump.
+ *     2026-05-03: the bump moved INSIDE
+ *     `emailDispatchService.sendInvoiceEmail` so EVERY successful
+ *     invoice email (manual + automated + any future caller) records
+ *     `last_emailed_at` / `email_send_count` exactly once. This
+ *     service no longer calls it directly — the underlying send path
+ *     does.
  *   - invoicesFeed.getInvoicesDueForReminder → sweep predicate.
  *   - companyRepository.getCompanySettings → per-tenant cadence settings.
  *   - storage.getInvoice → fetch + gate checks.
@@ -56,7 +62,9 @@ export interface SendOneResult {
   skipped?: true;
   skipReason?: string;
   deliveryId?: string | null;
-  reminderCount?: number;
+  /** 2026-05-03: renamed from `reminderCount`. Generalized post-rename
+   *  to mean "total emails sent for this invoice (manual + automated)". */
+  emailSendCount?: number;
 }
 
 /**
@@ -67,6 +75,17 @@ export interface SendOneResult {
  * `reminderCount >= maxCount` check has been removed per locked
  * product decision; `tenant_features.invoice_reminder_max_count` is
  * deprecated (unread) but still present in the schema.
+ *
+ * 2026-05-03 simplification: the `not_overdue` gate has been removed.
+ *   • The automated sweep query (`getInvoicesDueForReminder`) only
+ *     surfaces invoices whose due date has passed (per its SQL
+ *     predicate), so dropping the JS-side check has no effect on
+ *     worker behavior — the worker still never sees non-overdue rows.
+ *   • The bulk-send-reminders endpoint now succeeds for invoices that
+ *     have a balance regardless of past-due status, matching the
+ *     unified "Email invoice always works" product directive.
+ *   • The other gates (paid / voided / draft / zero-balance / paused
+ *     / snoozed) remain — they're real reasons not to send a reminder.
  */
 function eligibility(invoice: any): true | string {
   if (!invoice) return "not_found";
@@ -77,7 +96,6 @@ function eligibility(invoice: any): true | string {
   if (parseFloat(invoice.balance ?? "0") <= 0) return "zero_balance";
   if (invoice.remindersPaused === true) return "paused";
   if (invoice.reminderSnoozeUntil && new Date(invoice.reminderSnoozeUntil) > new Date()) return "snoozed";
-  if (!computeIsPastDue(status ?? "", invoice.dueDate, invoice.balance)) return "not_overdue";
   return true;
 }
 
@@ -125,14 +143,16 @@ async function sendOne(input: SendOneInput): Promise<SendOneResult> {
     templateEntityType: "invoice_reminder",
   });
 
-  // On success, bump the counter. Failures above would have thrown and
-  // never reached here — no zombie counter bumps.
-  await invoiceRepository.recordReminderSent(input.tenantId, input.invoiceId);
+  // 2026-05-03: counter bump moved into `emailDispatchService.sendInvoiceEmail`
+  // so every successful invoice email send (manual + automated +
+  // future) records `last_emailed_at` / `email_send_count` exactly
+  // once at the canonical send path. This service no longer touches
+  // those columns directly.
 
   return {
     sent: true,
     deliveryId: dispatch?.emailId ?? null,
-    reminderCount: (invoice?.reminderCount ?? 0) + 1,
+    emailSendCount: (invoice?.emailSendCount ?? 0) + 1,
   };
 }
 

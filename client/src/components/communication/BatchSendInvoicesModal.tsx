@@ -151,7 +151,10 @@ export function BatchSendInvoicesModal(props: BatchSendInvoicesModalProps) {
                     className="mt-1"
                     data-testid="radio-recipient-mode-defaults"
                   />
-                  <span className="text-sm">
+                  {/* 2026-05-03 typography standardization: radio
+                      labels drop from `text-sm` (17.1px) to `text-xs`
+                      (15.2px) to match canonical body text in modals. */}
+                  <span className="text-xs">
                     <span className="font-medium">Use default recipients per invoice</span>
                     <span className="block text-xs text-muted-foreground">
                       Each invoice uses its own billing contacts. Invoices with no recipients on file will fail and be reported in the results.
@@ -168,7 +171,7 @@ export function BatchSendInvoicesModal(props: BatchSendInvoicesModalProps) {
                     className="mt-1"
                     data-testid="radio-recipient-mode-manual"
                   />
-                  <span className="text-sm">
+                  <span className="text-xs">
                     <span className="font-medium">Use the same recipients for every invoice</span>
                     <span className="block text-xs text-muted-foreground">
                       One list applied to all invoices in this batch. Useful when the client asks for "all open invoices".
@@ -247,7 +250,9 @@ export function BatchSendInvoicesModal(props: BatchSendInvoicesModalProps) {
         ) : (
           // Results view
           <div className="space-y-3 py-2">
-            <div className="flex items-center gap-4 text-sm">
+            {/* 2026-05-03 typography standardization: results summary
+                row drops from `text-sm` (17.1px) to `text-xs` (15.2px). */}
+            <div className="flex items-center gap-4 text-xs">
               <div className="flex items-center gap-1.5 text-emerald-700">
                 <CheckCircle2 className="h-4 w-4" />
                 <span className="font-medium">{result.successCount} sent</span>

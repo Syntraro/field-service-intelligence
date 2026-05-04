@@ -56,7 +56,19 @@ export type AuditAction =
   | "entitlement_plan_metadata_updated"
   | "entitlement_tenant_plan_assigned"
   | "entitlement_tenant_override_upsert"
-  | "entitlement_tenant_override_removed";
+  | "entitlement_tenant_override_removed"
+  // 2026-04-22 Phase 1 Platform Auth Separation — login + logout audit
+  // events emitted by `server/routes/platformAuth.ts`. Previously logged
+  // via `as any` casts; now first-class members of the union so future
+  // typos surface at compile time.
+  | "platform_login"
+  | "platform_login_failed"
+  | "platform_login_rejected_non_platform"
+  | "platform_logout"
+  // 2026-05-03 Platform-only password reset flow — request + completion
+  // audit events emitted by the new platform reset endpoints.
+  | "platform_password_reset_requested"
+  | "platform_password_reset_completed";
 
 interface AuditLogParams {
   platformAdminId: string;

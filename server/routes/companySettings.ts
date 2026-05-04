@@ -33,6 +33,10 @@ const updateCompanySettingsSchema = z.object({
   postalCode: postalCodeSchema,
   email: z.string().email().max(255).optional().or(z.literal("")),
   phone: z.string().max(30).optional(),
+  // 2026-05-03: tenant tax-registration identity moved to the
+  // dedicated `/api/company-tax-registrations` endpoints (multi-row
+  // child table). The legacy single-pair fields are no longer
+  // accepted here.
   // Preference keys → company_settings
   timezone: z.string().max(100).optional(),
   calendarStartHour: z.number().int().min(0).max(23).optional(),

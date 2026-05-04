@@ -50,7 +50,7 @@ export function InvoiceMetaCard({
   // changes which affordances render.
   mode,
   // Body data
-  customerName, customerCompanyId, billLine1, billLine2,
+  customerName, customerCompanyId, summary, billLine1, billLine2,
   serviceAddress, locationName,
   invoiceNumber, issueDate, dueDate, isPastDue, paymentTermsDays,
   jobNumber, jobId,
@@ -94,6 +94,10 @@ export function InvoiceMetaCard({
   /** Optional canonical client id. When present, the H1 customer name
    *  becomes a link to `/clients/:id`; otherwise plain text. */
   customerCompanyId: string | null;
+  /** 2026-05-03: persisted canonical short invoice title. Read-mode
+   *  value of the new Summary row in the right column. Optional /
+   *  null when the invoice has no summary set. */
+  summary?: string | null;
   billLine1: string | null;
   billLine2: string | null;
   serviceAddress: StructuredAddress | null | undefined;
@@ -107,8 +111,12 @@ export function InvoiceMetaCard({
   jobId: string | null;
   headerActions: ReactNode;
   isEditing: boolean;
-  draft: { invoiceNumber: string; issueDate: string; dueDate: string; paymentTermsDays: string } | null;
-  onDraftChange: (patch: Partial<{ invoiceNumber: string; issueDate: string; dueDate: string; paymentTermsDays: string }>) => void;
+  // 2026-05-03: `summary` is the canonical short invoice title. Surfaces
+  // in the page-level header. Editable in this card; flows back via
+  // `onDraftChange({ summary })`. Optional in legacy callers — when
+  // omitted from the draft type, the input simply isn't rendered.
+  draft: { invoiceNumber: string; issueDate: string; dueDate: string; paymentTermsDays: string; summary?: string } | null;
+  onDraftChange: (patch: Partial<{ invoiceNumber: string; issueDate: string; dueDate: string; paymentTermsDays: string; summary: string }>) => void;
   onSave: () => void;
   onCancel: () => void;
   isSaving: boolean;
@@ -269,6 +277,29 @@ export function InvoiceMetaCard({
             top of the (single-column) body and column padding is
             unnecessary. */}
         <div className="md:pl-0 md:pt-11">
+          {/* 2026-05-03: canonical Summary row. Editable single-line
+              input in edit mode; plain text (or em-dash) in read mode.
+              Surfaces the value that drives the page-level header
+              title. Wider than the date/terms inputs because the title
+              tends to be longer than a date. */}
+          <MetaRow
+            label="Summary"
+            value={
+              editing ? (
+                <Input
+                  type="text"
+                  value={draft!.summary ?? ""}
+                  onChange={(e) => onDraftChange({ summary: e.target.value })}
+                  maxLength={255}
+                  placeholder="e.g. Spring AC tune-up"
+                  className={`${inputClass} w-56`}
+                  data-testid="input-meta-summary"
+                />
+              ) : (
+                summary && summary.trim() ? summary : dash
+              )
+            }
+          />
           <MetaRow
             label="Issued"
             value={

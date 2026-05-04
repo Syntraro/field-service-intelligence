@@ -61,6 +61,11 @@ interface NoteAttachment {
 type NoteOrigin =
   | "job"
   | "quote"
+  // 2026-05-03: invoice notes are now first-class. The server tags
+  // entity-owned invoice rows with origin "invoice" (not "job"), so
+  // the surface can correctly distinguish owned-on-invoice from
+  // borrowed-from-job — the latter is no longer emitted.
+  | "invoice"
   | "client_location"
   | "client_company"
   | "client_tenant";
@@ -88,20 +93,20 @@ export type EntityNotesEntityType = "job" | "invoice" | "quote";
 interface EntityNotesSectionProps {
   entityType: EntityNotesEntityType;
   /**
-   * The id used for the canonical READ cache + display key:
-   *   - "job"     → jobId (matches /api/jobs/:jobId/notes)
-   *   - "invoice" → invoiceId (matches /api/invoices/:invoiceId/notes)
-   *   - "quote"   → quoteId (matches /api/quotes/:quoteId/notes)
+   * The id used for BOTH the canonical READ cache and the WRITE path:
+   *   - "job"     → jobId     (read + write /api/jobs/:jobId/notes)
+   *   - "invoice" → invoiceId (read + write /api/invoices/:invoiceId/notes)
+   *   - "quote"   → quoteId   (read + write /api/quotes/:quoteId/notes)
    *
-   * For the "invoice" surface, `writeEntityId` is also required because
-   * invoice notes are stored under jobs server-side.
+   * 2026-05-03: invoice writes now use the same id as read. The
+   * `writeEntityId` prop below is retained as a no-op for backward
+   * compat with call sites that still pass it; it is ignored.
    */
   entityId: string;
   /**
-   * Required for `entityType="invoice"` only — the underlying jobId
-   * that the WRITE path uses (`/api/jobs/:jobId/notes`). Ignored on
-   * other surfaces. This mirrors the prior JobNotesSection contract
-   * where the invoice surface received both `jobId` and `invoiceId`.
+   * @deprecated 2026-05-03. Previously required for `entityType="invoice"`
+   * to route writes through the underlying jobId; that indirection is
+   * gone. The prop is accepted but ignored. New call sites should omit it.
    */
   writeEntityId?: string;
   /** When true, renders without Card wrapper for integration into a unified surface. */
@@ -155,8 +160,12 @@ function resolveReadEndpoint(entityType: EntityNotesEntityType, entityId: string
 /**
  * Decide which rows on the merged feed are editable from this surface.
  * Owned rows for the entity are editable; inherited client_* rows are
- * never editable. The invoice surface treats `origin === "job"` as
- * editable because invoice notes are stored under jobs server-side.
+ * never editable.
+ *
+ * 2026-05-03: invoice surface now expects `origin === "invoice"` on
+ * owned rows (the GET endpoint reads from invoice_notes, not jobs).
+ * Previously invoice rows arrived with `origin === "job"` because the
+ * server borrowed the linked job's notes; that fallback is gone.
  */
 function isOwnedRowEditable(
   note: EntityNote,
@@ -164,7 +173,7 @@ function isOwnedRowEditable(
 ): boolean {
   if (note.editable === false) return false;
   if (entityType === "quote") return note.origin === "quote";
-  // job + invoice both expect origin "job" on owned rows
+  if (entityType === "invoice") return note.origin === "invoice";
   return note.origin === "job";
 }
 
@@ -316,17 +325,15 @@ export function EntityNotesSection({
     </div>
   );
 
-  // Dialog wiring: for "invoice" the dialog WRITES through the job-notes
-  // path with `entityId=writeEntityId` (the underlying jobId) and we
-  // pass the invoice read-cache key as `extraInvalidationKey` so both
-  // caches refresh on success. For "job" / "quote" the dialog's
-  // entityId === the section's entityId, no cross-key needed.
-  const dialogEntityId = entityType === "invoice"
-    ? (writeEntityId ?? entityId)
-    : entityId;
-  const extraInvalidationKey = entityType === "invoice"
-    ? (queryKey as unknown as readonly unknown[])
-    : undefined;
+  // Dialog wiring: for every surface, the dialog's WRITE entityId is the
+  // section's entityId. The 2026-05-03 invoice rewrite removed the prior
+  // job-id indirection, so `writeEntityId` (the legacy prop) is ignored
+  // here — invoice writes now go to /api/invoices/:invoiceId/notes
+  // directly. `extraInvalidationKey` is no longer needed since READ and
+  // WRITE share the same query key.
+  void writeEntityId; // referenced for prop preservation; intentionally unused
+  const dialogEntityId = entityId;
+  const extraInvalidationKey = undefined;
 
   return (
     <>

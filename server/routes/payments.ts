@@ -271,10 +271,15 @@ router.post(
     }
 
     const refund = result.row;
+    // Refunds/reversals are always children of legacy 1:1 payments, so they
+    // inherit a non-null invoiceId from the parent (see
+    // PaymentRepository.createLedgerAdjustment). The fallback to the empty
+    // string keeps TS quiet for the new nullable column type without
+    // changing any existing behavior.
     logEventAsync(getQueryCtx(req), {
       eventType: "invoice.refunded",
       entityType: "invoice",
-      entityId: refund.invoiceId,
+      entityId: refund.invoiceId ?? "",
       summary: `Refund recorded on invoice`,
       meta: {
         refundId: refund.id,
@@ -304,7 +309,8 @@ router.post(
       logEventAsync(getQueryCtx(req), {
         eventType: "invoice.payment_reversed",
         entityType: "invoice",
-        entityId: reversal.invoiceId,
+        // See refund handler above — reversals inherit the parent's invoiceId.
+        entityId: reversal.invoiceId ?? "",
         summary: `Payment reversed on invoice`,
         meta: {
           reversalId: reversal.id,

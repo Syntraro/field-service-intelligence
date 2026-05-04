@@ -37,6 +37,8 @@ import { BaseRepository } from "./base";
 import { resolveTechnicianName } from "../lib/resolveTechnicianName";
 // 2026-05-01: canonical location-name resolver for tech day-view + week-view.
 import { locationDisplayNameExpr } from "../lib/queryHelpers";
+// 2026-05-04: tenant-user containment predicate.
+import { nonPlatformUserPredicate } from "./tenantUserPredicate";
 import {
   isEntryLocked,
   checkEntryLock,
@@ -2266,7 +2268,10 @@ export class TimeTrackingRepository extends BaseRepository {
         and(
           eq(users.companyId, companyId),
           isNull(users.deletedAt),
-          eq(users.disabled, false)
+          eq(users.disabled, false),
+          // 2026-05-04: payroll/timesheet user switcher must not list
+          // platform-role rows that happen to be parked at this tenant.
+          nonPlatformUserPredicate(),
         )
       )
       .orderBy(asc(users.firstName), asc(users.lastName));

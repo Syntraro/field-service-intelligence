@@ -109,15 +109,25 @@ export function CanonicalDetailHeader({
       data-testid={testId}
     >
       {/* ── LEFT region: title + status ───────────────────────── */}
-      <div className="flex items-center gap-3 min-w-0 shrink">
+      {/* 2026-05-03 wrap-not-push fix: cap the LEFT region's width and
+          let the title wrap onto multiple lines instead of truncating
+          to a single line that would otherwise allow the rest of the
+          header to be pushed sideways via the outer flex-wrap. The
+          right-side metadata + actions stay aligned at their natural
+          right-justified position. The cap (`max-w-xl` = 576px) leaves
+          comfortable space for the center metadata cluster + right
+          actions even on standard 1280-1440px desktop widths. On
+          truly narrow viewports the outer `flex-wrap` still kicks in
+          as a safety net. */}
+      <div className="flex items-start gap-3 min-w-0 max-w-xl shrink">
         <h1
-          className="m-0 text-xl font-bold leading-tight text-text-primary truncate min-w-0"
+          className="m-0 text-xl font-bold leading-tight text-text-primary break-words min-w-0"
           data-testid={`${testId}-title`}
         >
           {title}
         </h1>
         {statusBadge && (
-          <div className="shrink-0" data-testid={`${testId}-status`}>
+          <div className="shrink-0 mt-0.5" data-testid={`${testId}-status`}>
             {statusBadge}
           </div>
         )}

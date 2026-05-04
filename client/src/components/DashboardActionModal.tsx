@@ -867,7 +867,12 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col p-0">
         <DialogHeader className="px-5 pt-5 pb-3 border-b border-[#e5e7eb] shrink-0">
-          <DialogTitle className="text-base font-semibold text-[#111827] flex items-center gap-2">
+          {/* 2026-05-03 typography standardization: dropped the
+              `text-base font-semibold` override and let `DialogTitle`'s
+              canonical default (`text-lg font-semibold text-[#0F172A]`)
+              size the heading. Keeps the layout/icon row but pulls
+              this modal's title in line with every other modal. */}
+          <DialogTitle className="text-[#111827] flex items-center gap-2">
             {config.title}
             {!isLoading && (
               <span className="inline-flex items-center justify-center h-5 min-w-5 px-1.5 rounded-full bg-[#f8fafc] text-xs font-bold text-[#4b5563] tabular-nums">

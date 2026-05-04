@@ -298,6 +298,10 @@ export interface CreateAtomicPayload {
   customerCompanyId?: string | null;
   jobIds?: string[];
   markJobsCompleted?: boolean;
+  // 2026-05-03: canonical invoice title. Surfaces in the page-level
+  // header. Defaults to the linked job's summary when one is provided
+  // by the caller and the field is not explicitly set.
+  summary?: string | null;
   workDescription?: string | null;
   issueDate?: string;
   dueDate?: string | null;
@@ -387,7 +391,7 @@ export async function createInvoiceAtomicService(
 
   // ── 2) Job validation (when jobIds present) ───────────────────────────
   const jobIds = (payload.jobIds ?? []).filter((id): id is string => typeof id === "string" && id.length > 0);
-  const jobs: Array<{ id: string; companyId: string; locationId: string | null; status: string; invoiceId: string | null; version: number | null; customerCompanyId: string | null }> = [];
+  const jobs: Array<{ id: string; companyId: string; locationId: string | null; status: string; invoiceId: string | null; version: number | null; customerCompanyId: string | null; summary: string | null }> = [];
 
   if (jobIds.length > 0) {
     // Fetch each job once (canonical `storage.getJob` returns the row
@@ -413,6 +417,10 @@ export async function createInvoiceAtomicService(
         invoiceId: (job as any).invoiceId ?? null,
         version: (job as any).version ?? 0,
         customerCompanyId: jobLocation?.parentCompanyId ?? null,
+        // 2026-05-03: surfaced so atomic invoices can default
+        // `invoices.summary` to the first selected job's summary
+        // when the caller doesn't supply one explicitly.
+        summary: (job as any).summary ?? null,
       });
     }
 
@@ -520,6 +528,13 @@ export async function createInvoiceAtomicService(
       locationId: payload.locationId,
       customerCompanyId: effectiveCustomerCompanyId,
       primaryJobId,
+      // 2026-05-03: canonical invoice title. Caller-supplied summary
+      // takes precedence; otherwise we adopt the FIRST validated job's
+      // summary so invoices created from a job inherit a sensible
+      // header label by default. Atomic invoices with no job and no
+      // summary keep `null` and the page-level header falls through
+      // to "Invoice <number>".
+      summary: payload.summary ?? (jobs[0]?.summary ?? null),
       workDescription: payload.workDescription ?? null,
       issueDate: payload.issueDate,
       dueDate: payload.dueDate,

@@ -43,6 +43,14 @@ import { useHasPermission } from "@/hooks/useEffectivePermissions";
 // no parallel clock-in path).
 import { useTechShift } from "../hooks/useTechShift";
 import { MobileShell } from "../components/MobileShell";
+// 2026-05-04 form-canonicalization: visible-text raw <input>/<textarea>
+// migrate to canonical primitives. Hidden file-pickers (capture flows
+// at lines ~2545+) and the native <select> for equipment-id selection
+// are intentionally left as raw HTML — the file inputs need native
+// camera capture, and the select is integrated with custom logic that
+// would require a Radix Select rewrite to migrate cleanly.
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   useTechVisitDetail,
@@ -140,9 +148,9 @@ function OutcomeModal({ onSelect, onCancel }: {
           ))}
         </div>
         {needsNote && (
-          <textarea value={note} onChange={e => setNote(e.target.value)}
+          <Textarea value={note} onChange={e => setNote(e.target.value)}
             placeholder="Required: describe what's needed…"
-            className="w-full text-sm border border-slate-200 rounded-md px-3 py-2 resize-none h-20" />
+            className="resize-none h-20" />
         )}
         <div className="flex gap-2">
           <button onClick={onCancel} className="flex-1 h-10 rounded-md border border-slate-200 text-sm font-medium text-slate-600">Cancel</button>
@@ -611,8 +619,8 @@ function AddPartSheet({ equipmentId, equipmentName, recentParts, onClose, onSucc
                     Service
                   </button>
                 </div>
-                <input value={newPrice} onChange={e => setNewPrice(e.target.value)} placeholder="Unit price (optional)"
-                  type="number" step="0.01" inputMode="decimal" className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
+                <Input value={newPrice} onChange={e => setNewPrice(e.target.value)} placeholder="Unit price (optional)"
+                  type="number" step="0.01" inputMode="decimal" />
                 <button onClick={handleCreateItem} disabled={createPending || !searchText.trim()}
                   className="w-full h-10 rounded-md bg-emerald-600 text-white text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-1.5">
                   {createPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}Create & Select
@@ -775,8 +783,8 @@ function AddEquipmentSheet({ visitId, onClose, onSuccess, addEquipment, onError 
           <>
             <div className="relative mb-2">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search location equipment…"
-                className="w-full h-9 pl-9 pr-3 text-sm border border-slate-200 rounded-md" autoFocus />
+              <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search location equipment…"
+                className="pl-9" autoFocus />
             </div>
             <div className="overflow-y-auto flex-1 -mx-1">
               {locationEquipError && (
@@ -812,23 +820,19 @@ function AddEquipmentSheet({ visitId, onClose, onSuccess, addEquipment, onError 
           <div className="space-y-3">
             <div>
               <label className="text-xs font-semibold text-slate-500 mb-1 block">Name *</label>
-              <input value={newName} onChange={e => setNewName(e.target.value)}
-                className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" autoFocus />
+              <Input value={newName} onChange={e => setNewName(e.target.value)} autoFocus />
             </div>
             <div>
               <label className="text-xs font-semibold text-slate-500 mb-1 block">Type</label>
-              <input value={newType} onChange={e => setNewType(e.target.value)} placeholder="e.g. RTU, Furnace"
-                className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
+              <Input value={newType} onChange={e => setNewType(e.target.value)} placeholder="e.g. RTU, Furnace" />
             </div>
             <div>
               <label className="text-xs font-semibold text-slate-500 mb-1 block">Model</label>
-              <input value={newModel} onChange={e => setNewModel(e.target.value)} placeholder="Model number"
-                className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
+              <Input value={newModel} onChange={e => setNewModel(e.target.value)} placeholder="Model number" />
             </div>
             <div>
               <label className="text-xs font-semibold text-slate-500 mb-1 block">Serial</label>
-              <input value={newSerial} onChange={e => setNewSerial(e.target.value)}
-                className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
+              <Input value={newSerial} onChange={e => setNewSerial(e.target.value)} />
             </div>
             <div className="flex gap-2">
               <button onClick={() => setCreating(false)} className="flex-1 h-10 rounded-md border border-slate-200 text-sm font-medium text-slate-600">Back</button>
@@ -1067,8 +1071,8 @@ function EditableField({ label, value, fieldKey, accentBorder, editingField, edi
     return (
       <div className={`rounded-md border ${borderCls} p-3`}>
         <p className={`text-xs font-semibold ${labelCls} uppercase tracking-wider mb-1`}>{label}</p>
-        <textarea value={editValue} onChange={e => onChange(e.target.value)}
-          className="w-full text-sm border border-slate-200 rounded-md px-2 py-1.5 resize-none h-20" autoFocus />
+        <Textarea value={editValue} onChange={e => onChange(e.target.value)}
+          className="px-2 py-1.5 resize-none h-20" autoFocus />
         <div className="flex gap-2 mt-2">
           <button onClick={onCancel} className="flex-1 h-8 rounded-md border border-slate-200 text-xs font-medium text-slate-500">Cancel</button>
           <button onClick={onSave} disabled={isPending}

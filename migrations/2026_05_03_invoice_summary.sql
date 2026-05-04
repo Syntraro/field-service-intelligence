@@ -1,0 +1,44 @@
+-- ============================================================================
+-- Migration: 2026_05_03_invoice_summary
+-- ============================================================================
+--
+-- Purpose
+--   Add a canonical `summary` column to the `invoices` table — a short,
+--   editable invoice title used as the page-level header label across
+--   the new-invoice builder and the live `/invoices/:id` editor. The
+--   prior implementation derived the header title from the linked
+--   job's `summary`, falling back to `invoiceNumber` and (incorrectly)
+--   the customer/company name when neither was present. This column
+--   gives the invoice its own dedicated title so the header no longer
+--   needs to overload `workDescription` (a long body field) or the
+--   customer name (an identity field).
+--
+-- Schema source
+--   `shared/schema.ts::invoices` (column added in the same commit).
+--
+-- Run instructions
+--   Local / dev:    npm run db:migrate:one -- migrations/2026_05_03_invoice_summary.sql
+--   Full sweep:     npm run db:migrate
+--
+-- Reversibility
+--   `ALTER TABLE invoices DROP COLUMN summary;` is safe — no FK, no
+--   index, no trigger references the column. Dropping the column does
+--   not affect any other invoice field. Frontend / API readers tolerate
+--   `null`.
+--
+-- Idempotency
+--   `ADD COLUMN IF NOT EXISTS` makes a re-run a no-op.
+--
+-- Backfill
+--   Intentionally left blank. Existing invoices keep `summary = NULL`;
+--   the application's title-fallback chain
+--   (`invoice.summary || job?.summary || \`Invoice ${invoiceNumber}\``)
+--   resolves cleanly through `job?.summary` (when a job is linked) or
+--   the `Invoice <number>` string. A backfill of
+--   `summary = job.summary` for invoices linked to a job is safe but
+--   not required for the page to render correctly; deferred to a
+--   follow-up if list/search surfaces want pre-populated values.
+-- ============================================================================
+
+ALTER TABLE "invoices"
+  ADD COLUMN IF NOT EXISTS "summary" text;

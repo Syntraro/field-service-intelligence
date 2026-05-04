@@ -9,6 +9,13 @@ import {
 } from "@shared/schema";
 import { BaseRepository } from "./base";
 import { cache, CacheKeys, CacheTTL } from "../services/cache";
+// 2026-05-04 platform/tenant identity containment: every tenant-facing
+// users-table read in this file composes `nonPlatformUserPredicate()`
+// into its where clause so platform-role rows (whose `companyId` is a
+// "parking" FK to some tenant) cannot appear in tenant team / technician
+// selector / dispatch surfaces. See server/storage/tenantUserPredicate.ts
+// for the full rationale.
+import { nonPlatformUserPredicate } from "./tenantUserPredicate";
 
 export class TeamRepository extends BaseRepository {
   /**
@@ -87,7 +94,9 @@ export class TeamRepository extends BaseRepository {
       .from(users)
       .where(and(
         eq(users.companyId, companyId),
-        isNull(users.deletedAt) // Exclude soft-deleted users only
+        isNull(users.deletedAt), // Exclude soft-deleted users only
+        // 2026-05-04: exclude platform-role rows. See file header.
+        nonPlatformUserPredicate(),
       ))
       .orderBy(users.fullName);
   }
@@ -99,7 +108,11 @@ export class TeamRepository extends BaseRepository {
       .select({ userId: technicianProfiles.userId, color: technicianProfiles.color })
       .from(technicianProfiles)
       .innerJoin(users, eq(users.id, technicianProfiles.userId))
-      .where(and(eq(users.companyId, companyId), isNull(users.deletedAt)));
+      .where(and(
+        eq(users.companyId, companyId),
+        isNull(users.deletedAt),
+        nonPlatformUserPredicate(),
+      ));
     const map = new Map<string, string>();
     for (const r of rows) {
       if (r.color) map.set(r.userId, r.color);
@@ -114,7 +127,11 @@ export class TeamRepository extends BaseRepository {
       .select({ userId: technicianProfiles.userId, laborCostPerHour: technicianProfiles.laborCostPerHour })
       .from(technicianProfiles)
       .innerJoin(users, eq(users.id, technicianProfiles.userId))
-      .where(and(eq(users.companyId, companyId), isNull(users.deletedAt)));
+      .where(and(
+        eq(users.companyId, companyId),
+        isNull(users.deletedAt),
+        nonPlatformUserPredicate(),
+      ));
     const map = new Map<string, string>();
     for (const r of rows) {
       if (r.laborCostPerHour) map.set(r.userId, r.laborCostPerHour);
@@ -129,7 +146,15 @@ export class TeamRepository extends BaseRepository {
     const rows = await db
       .select()
       .from(users)
-      .where(and(eq(users.id, userId), eq(users.companyId, companyId)))
+      .where(and(
+        eq(users.id, userId),
+        eq(users.companyId, companyId),
+        // 2026-05-04: ensures detail endpoint cannot resolve a platform
+        // user even via direct ID. The list endpoint already excludes
+        // platform rows, but a stale link or hand-typed URL with a
+        // platform user's id could otherwise pierce the boundary.
+        nonPlatformUserPredicate(),
+      ))
       .limit(1);
 
     return rows[0] ?? null;
@@ -157,7 +182,13 @@ export class TeamRepository extends BaseRepository {
     const rows = await db
       .update(users)
       .set(patch)
-      .where(and(eq(users.id, userId), eq(users.companyId, companyId)))
+      .where(and(
+        eq(users.id, userId),
+        eq(users.companyId, companyId),
+        // 2026-05-04: tenant write paths must never touch a platform-role
+        // row even if the URL is hand-crafted with a platform user's id.
+        nonPlatformUserPredicate(),
+      ))
       .returning();
 
     return rows[0] ?? null;
@@ -175,7 +206,11 @@ export class TeamRepository extends BaseRepository {
         disabled: true,
         deletedAt: new Date() // Soft delete timestamp
       })
-      .where(and(eq(users.id, userId), eq(users.companyId, companyId)))
+      .where(and(
+        eq(users.id, userId),
+        eq(users.companyId, companyId),
+        nonPlatformUserPredicate(),
+      ))
       .returning();
 
     return rows[0] ?? null;
@@ -193,7 +228,11 @@ export class TeamRepository extends BaseRepository {
         disabled: false,
         deletedAt: null // Clear soft delete timestamp
       })
-      .where(and(eq(users.id, userId), eq(users.companyId, companyId)))
+      .where(and(
+        eq(users.id, userId),
+        eq(users.companyId, companyId),
+        nonPlatformUserPredicate(),
+      ))
       .returning();
 
     return rows[0] ?? null;
@@ -363,7 +402,9 @@ export class TeamRepository extends BaseRepository {
         and(
           eq(users.companyId, companyId),
           eq(users.disabled, false),
-          isNull(users.deletedAt) // Exclude soft-deleted users
+          isNull(users.deletedAt), // Exclude soft-deleted users
+          // 2026-05-04: containment.
+          nonPlatformUserPredicate(),
         )
       )
       .orderBy(users.fullName);

@@ -1062,7 +1062,7 @@ export default function ClientDetailPage() {
   if (clientError || !client) {
     return (
       <div className="p-6 text-center py-16">
-        <h2 className="text-lg font-semibold text-destructive">Client not found</h2>
+        <h2 className="text-modal-title text-destructive">Client not found</h2>
         <p className="text-muted-foreground mt-2">The client you're looking for doesn't exist.</p>
         <Button variant="outline" className="mt-4" onClick={() => setLocation("/clients")}>
           <ArrowLeft className="mr-2 h-4 w-4" /> Back to Clients

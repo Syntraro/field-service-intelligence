@@ -474,22 +474,26 @@ export interface ReminderSweepConfig {
 export interface ReminderCandidate {
   id: string;
   companyId: string;
-  reminderCount: number;
+  /** 2026-05-03: renamed from `reminderCount`. Now counts every
+   *  outbound invoice email (manual + automated). The cadence still
+   *  uses it as the "have we sent before?" signal — every send,
+   *  reminder or otherwise, advances the cadence by one notch. */
+  emailSendCount: number;
   dueDate: string | Date | null;
-  lastReminderAt: Date | null;
+  lastEmailedAt: Date | null;
 }
 
 /**
- * Return invoices for a single tenant that are due for a reminder.
+ * Return invoices for a single tenant that are due for an automated
+ * reminder.
  *
  * Rules (matching `computeIsPastDue` semantics exactly):
  *   - status IN ('awaiting_payment', 'partial_paid', 'sent')
  *   - balance > 0
  *   - remindersPaused = false
  *   - reminderSnoozeUntil is null OR in the past
- *   - reminderCount < maxCount
- *   - If reminderCount = 0: due_date < now() - firstDelayDays
- *     Else: last_reminder_at < now() - repeatEveryDays
+ *   - If emailSendCount = 0: due_date < now() - firstDelayDays
+ *     Else: last_emailed_at < now() - repeatEveryDays
  */
 export async function getInvoicesDueForReminder(
   companyId: string,
@@ -499,9 +503,9 @@ export async function getInvoicesDueForReminder(
     .select({
       id: invoices.id,
       companyId: invoices.companyId,
-      reminderCount: invoices.reminderCount,
+      emailSendCount: invoices.emailSendCount,
       dueDate: invoices.dueDate,
-      lastReminderAt: invoices.lastReminderAt,
+      lastEmailedAt: invoices.lastEmailedAt,
     })
     .from(invoices)
     .where(and(
@@ -514,17 +518,17 @@ export async function getInvoicesDueForReminder(
         sql`${invoices.reminderSnoozeUntil} < NOW()`,
       ),
       or(
-        // First reminder: due date has passed by firstDelayDays
+        // First reminder: due date has passed by firstDelayDays.
         and(
-          eq(invoices.reminderCount, 0),
+          eq(invoices.emailSendCount, 0),
           isNotNull(invoices.dueDate),
           sql`${invoices.dueDate} < (CURRENT_DATE - (${config.firstDelayDays} || ' days')::interval)`,
         ),
-        // Subsequent reminders: repeat cadence elapsed since last
+        // Subsequent reminders: repeat cadence elapsed since last send.
         and(
-          sql`${invoices.reminderCount} > 0`,
-          isNotNull(invoices.lastReminderAt),
-          sql`${invoices.lastReminderAt} < (NOW() - (${config.repeatEveryDays} || ' days')::interval)`,
+          sql`${invoices.emailSendCount} > 0`,
+          isNotNull(invoices.lastEmailedAt),
+          sql`${invoices.lastEmailedAt} < (NOW() - (${config.repeatEveryDays} || ' days')::interval)`,
         ),
       ),
     ));
@@ -532,9 +536,9 @@ export async function getInvoicesDueForReminder(
   return rows.map((r) => ({
     id: r.id,
     companyId: r.companyId,
-    reminderCount: r.reminderCount,
+    emailSendCount: r.emailSendCount,
     dueDate: r.dueDate,
-    lastReminderAt: r.lastReminderAt,
+    lastEmailedAt: r.lastEmailedAt,
   }));
 }
 
@@ -697,7 +701,10 @@ export async function getClientBillingSummary(
       lastPayment: lastPaymentRow
         ? {
             paymentId: lastPaymentRow.id,
-            invoiceId: lastPaymentRow.invoiceId,
+            // INNER JOIN on invoices.id = payments.invoice_id filters out
+            // null-invoice rows (multi-invoice payments, post-2026-05-03).
+            // Coerce to string for the public API contract.
+            invoiceId: lastPaymentRow.invoiceId ?? "",
             amount: lastPaymentRow.amount ?? "0",
             receivedAt: toISOOrNull(lastPaymentRow.receivedAt) ?? "",
           }
@@ -825,7 +832,9 @@ export async function getClientBillingHistory(
       occurredAt: toISOOrNull(p.receivedAt as any) ?? new Date(ms || Date.now()).toISOString(),
       delta: -amt, // see docstring: signedDelta = -amount for every payment kind
       label: `${baseLabel} (${providerLabel}) · ${invoiceRef}`,
-      invoiceId: p.invoiceId,
+      // INNER JOIN on invoices.id = payments.invoice_id above filters out
+      // null-invoice rows; the `?? undefined` is a TS-only narrowing.
+      invoiceId: p.invoiceId ?? undefined,
       paymentId: p.id,
       providerSource: (p.providerSource ?? "manual") as ClientBillingHistoryRow["providerSource"],
     });

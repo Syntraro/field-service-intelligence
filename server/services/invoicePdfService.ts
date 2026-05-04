@@ -19,6 +19,20 @@ interface InvoicePdfData {
   customerCompany?: {
     name: string;
   } | null;
+  /**
+   * 2026-05-03: tenant tax-registration identity (multi-row).
+   * One line is rendered per entry under the company contact
+   * block. Empty / undefined / empty-array → no lines rendered.
+   * Each entry's label is optional (PDF falls back to "Tax ID:");
+   * each entry's number is required to render. Source of truth:
+   * `company_tax_registrations` table, fetched by callers via
+   * `companyTaxRegistrationRepository.list(tenantId)` and passed
+   * here in presentation order.
+   */
+  taxRegistrations?: ReadonlyArray<{
+    label: string | null;
+    number: string;
+  }>;
 }
 
 function formatCurrency(amount: string | number | null | undefined): string {
@@ -51,7 +65,7 @@ function getStatusWatermark(status: string): string | null {
 export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     try {
-      const { invoice, lines, company, location, customerCompany } = data;
+      const { invoice, lines, company, location, customerCompany, taxRegistrations } = data;
       const doc = new PDFDocument({
         size: "LETTER",
         margin: 50,
@@ -100,13 +114,44 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
         doc.text(cityLine, leftCol, companyY);
         companyY += 14;
       }
+      // 2026-05-03 polish (round 4): drop the "Phone: " / "Email: "
+      // label prefixes so the company block matches the location
+      // block formatting (which already renders raw values). The
+      // surrounding visual context already implies what each line is.
       if (company.phone) {
-        doc.text(`Phone: ${company.phone}`, leftCol, companyY);
+        doc.text(company.phone, leftCol, companyY);
         companyY += 14;
       }
       if (company.email) {
-        doc.text(`Email: ${company.email}`, leftCol, companyY);
+        doc.text(company.email, leftCol, companyY);
         companyY += 14;
+      }
+      // 2026-05-03: tenant tax-registration identity (multi-row).
+      // One line is rendered per active entry directly under the
+      // contact block so they read as part of the sender's identity
+      // (matches the Canadian invoice convention for the HST/GST
+      // registration line — and supports tenants with multiple
+      // registrations, e.g. HST + GST or VAT + EORI).
+      //   • label + number → "{label}: {number}"  e.g. "HST: 739597326 RT0001"
+      //   • only number    → "Tax ID: {number}"
+      //   • blank entries  → skipped (`number` is required to render)
+      //   • empty list     → no lines rendered, no whitespace
+      //                      advance — preserves the existing-tenant
+      //                      default and the current vertical rhythm
+      //                      for tenants who haven't filled it in.
+      // Source: `company_tax_registrations` table, passed in by the
+      // caller via `taxRegistrations` (already in presentation order).
+      // `companyY` advances 14pt per rendered entry — same line-height
+      // as every other contact-block line above.
+      if (taxRegistrations && taxRegistrations.length > 0) {
+        for (const reg of taxRegistrations) {
+          const number = (reg.number ?? "").trim();
+          if (!number) continue;
+          const label = (reg.label ?? "").trim();
+          const line = label ? `${label}: ${number}` : `Tax ID: ${number}`;
+          doc.text(line, leftCol, companyY);
+          companyY += 14;
+        }
       }
 
       // ========================================
@@ -180,29 +225,12 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       addDetail("Issue Date:", formatDate(invoice.issuedAt || invoice.issueDate));
       addDetail("Due Date:", formatDate(invoice.dueDate));
 
-      // Status badge
-      detailsY += 8;
-      const statusColors: Record<string, string> = {
-        draft: "#9e9e9e",
-        awaiting_payment: "#2196f3",
-        sent: "#2196f3",
-        partial_paid: "#ff9800",
-        paid: "#4caf50",
-        voided: "#f44336",
-      };
-      const statusLabels: Record<string, string> = {
-        draft: "DRAFT",
-        awaiting_payment: "AWAITING PAYMENT",
-        sent: "SENT",
-        partial_paid: "PARTIAL",
-        paid: "PAID",
-        voided: "VOIDED",
-      };
-      const statusColor = statusColors[invoice.status] || "#9e9e9e";
-      const statusLabel = statusLabels[invoice.status] || invoice.status.toUpperCase();
-      doc.roundedRect(detailsX, detailsY, 100, 20, 4).fill(statusColor);
-      doc.fontSize(9).fillColor("#ffffff").font("Helvetica-Bold");
-      doc.text(statusLabel, detailsX + 5, detailsY + 5, { width: 90, align: "center" });
+      // 2026-05-03 polish: the customer-facing PDF previously rendered an
+      // internal status pill ("AWAITING PAYMENT" / "PARTIAL" / etc.) under
+      // the dates. That state is internal context — customers don't need
+      // to see our billing-pipeline labels — so the badge has been removed.
+      // The diagonal watermark for DRAFT/VOID/PAID handled above remains,
+      // since those carry meaningful guidance for the recipient.
 
       // ========================================
       // LINE ITEMS TABLE (respects visibility flags)
@@ -214,12 +242,21 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       // 2026-04-14: client-visibility toggle for the work-description block.
       const showJobDescription = (invoice as any).showJobDescription !== false;
 
-      let descriptionTop = Math.max(clientInfoY + 30, detailsY + 50);
+      // 2026-05-03 polish (round 4): the `+50` here used to reserve
+      // 30pt gap + 20pt for the status pill that lived under the
+      // dates. The pill was removed in an earlier polish pass; the
+      // stale 20pt was leaving a visible whitespace hole below the
+      // dates block. Now `+30` matches the gap below BILL TO.
+      let descriptionTop = Math.max(clientInfoY + 30, detailsY + 30);
       const workDesc = (invoice as any).workDescription as string | null | undefined;
       if (showJobDescription && workDesc && workDesc.trim().length > 0) {
-        doc.fontSize(10).fillColor("#666666").font("Helvetica-Bold");
+        // 2026-05-03 polish (round 4): section header was muted gray
+        // (#666) at fontSize 10 — visually weaker than the body text
+        // (#333) it introduced. Bumped to fontSize 11 + #333 so the
+        // header reads as a proper section title.
+        doc.fontSize(11).fillColor("#333333").font("Helvetica-Bold");
         doc.text("Scope of Work", leftCol, descriptionTop);
-        doc.font("Helvetica").fillColor("#333333");
+        doc.font("Helvetica").fontSize(10).fillColor("#333333");
         const descHeight = doc.heightOfString(workDesc, { width: pageWidth });
         doc.text(workDesc, leftCol, descriptionTop + 14, { width: pageWidth });
         descriptionTop = descriptionTop + 14 + descHeight + 12;
@@ -232,11 +269,21 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
         // Table header
         doc.rect(leftCol, tableTop, pageWidth, 24).fill("#f5f5f5");
 
+        // 2026-05-03 polish (round 4): column offsets realigned so
+        // the Amount column ends inside the 512pt content width
+        // (was overflowing 18pt past the right margin). All four
+        // columns now fit within `pageWidth` with ~10pt right
+        // padding from the table edge.
+        //   Description: leftCol+10 .. width 240 → x 60..300
+        //   Qty:         leftCol+260 .. width 40, center → x 310..350
+        //   Rate:        leftCol+310 .. width 90, right → text ends at x 450
+        //   Amount:      leftCol+410 .. width 92, right → text ends at x 552
+        // Right margin starts at leftCol+pageWidth = 562 (pageWidth=512).
         doc.fontSize(10).fillColor("#333333").font("Helvetica-Bold");
-        doc.text("Description", leftCol + 10, tableTop + 7, { width: 280 });
-        if (showQty) doc.text("Qty", leftCol + 300, tableTop + 7, { width: 50, align: "center" });
-        if (showUnitPrice) doc.text("Rate", leftCol + 360, tableTop + 7, { width: 80, align: "right" });
-        if (showLineTotals) doc.text("Amount", leftCol + 450, tableTop + 7, { width: 80, align: "right" });
+        doc.text("Description", leftCol + 10, tableTop + 7, { width: 240 });
+        if (showQty) doc.text("Qty", leftCol + 260, tableTop + 7, { width: 40, align: "center" });
+        if (showUnitPrice) doc.text("Rate", leftCol + 310, tableTop + 7, { width: 90, align: "right" });
+        if (showLineTotals) doc.text("Amount", leftCol + 410, tableTop + 7, { width: 92, align: "right" });
 
         // Table rows
         rowY = tableTop + 24;
@@ -255,10 +302,10 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
             }
 
             doc.fillColor("#333333");
-            doc.text(line.description || "", leftCol + 10, rowY + 7, { width: 280 });
-            if (showQty) doc.text(line.quantity || "1", leftCol + 300, rowY + 7, { width: 50, align: "center" });
-            if (showUnitPrice) doc.text(formatCurrency(line.unitPrice), leftCol + 360, rowY + 7, { width: 80, align: "right" });
-            if (showLineTotals) doc.text(formatCurrency(line.lineSubtotal), leftCol + 450, rowY + 7, { width: 80, align: "right" });
+            doc.text(line.description || "", leftCol + 10, rowY + 7, { width: 240 });
+            if (showQty) doc.text(line.quantity || "1", leftCol + 260, rowY + 7, { width: 40, align: "center" });
+            if (showUnitPrice) doc.text(formatCurrency(line.unitPrice), leftCol + 310, rowY + 7, { width: 90, align: "right" });
+            if (showLineTotals) doc.text(formatCurrency(line.lineSubtotal), leftCol + 410, rowY + 7, { width: 92, align: "right" });
 
             rowY += lineHeight;
           }
@@ -275,9 +322,25 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       const totalsWidth = pageWidth - 350;
       rowY += 10;
 
-      // Calculate totals box height based on discount
+      // 2026-05-03 polish (round 4): totals-box height is now
+      // computed dynamically from the rows we will actually
+      // render. Was a fixed `hasDiscount ? 100 : 70` that ignored
+      // the optional Amount Paid + Balance Due block, leaving
+      // those rows rendered OUTSIDE the colored box on
+      // partially-paid invoices. Padding is a consistent 12pt
+      // top + 12pt bottom regardless of variant.
       const hasDiscount = invoice.discountAmount && parseFloat(invoice.discountAmount) > 0;
-      const totalsHeight = hasDiscount ? 100 : 70;
+      const showAmountPaid =
+        invoice.showBalance !== false && parseFloat(invoice.amountPaid || "0") > 0;
+      const totalsHeight =
+        12 +                              // top padding
+        16 +                              // subtotal row
+        (hasDiscount ? 16 : 0) +          // optional discount row
+        16 +                              // tax row
+        6 +                               // separator gap
+        16 +                              // total row (fontSize:12)
+        (showAmountPaid ? 36 : 0) +       // amount paid + balance due block
+        12;                               // bottom padding
 
       // Totals box
       doc.rect(totalsX, rowY, totalsWidth, totalsHeight).fill("#f9f9f9").stroke("#e0e0e0");
@@ -311,10 +374,10 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       doc.text("Total:", totalsX + 10, totalsRowY);
       doc.text(formatCurrency(invoice.total), totalsX + totalsWidth - 90, totalsRowY, { width: 80, align: "right" });
 
-      // Amount Paid and Balance (if any payments and showBalance is enabled)
-      const showBalance = invoice.showBalance !== false;
-      const amountPaid = parseFloat(invoice.amountPaid || "0");
-      if (showBalance && amountPaid > 0) {
+      // Amount Paid and Balance (if any payments and showBalance is enabled).
+      // `showAmountPaid` was computed above so the box height calc and
+      // the actual render path can never disagree.
+      if (showAmountPaid) {
         totalsRowY += 20;
         doc.fontSize(10).fillColor("#666666").font("Helvetica");
         doc.text("Amount Paid:", totalsX + 10, totalsRowY);
@@ -329,8 +392,16 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
 
       // ========================================
       // NOTES / CLIENT MESSAGE
+      //
+      // 2026-05-03 polish (round 4): Notes Y is now derived from
+      // the (dynamic, accurate) end of the totals box rather than
+      // the old fixed `totalsHeight`. With the height bug fixed
+      // above, `totalsEndY` is the actual bottom edge of the
+      // rendered box for every invoice variant, so notes can
+      // never overprint Amount Paid / Balance Due rows.
       // ========================================
-      const notesY = rowY + totalsHeight + 20;
+      const totalsEndY = rowY + totalsHeight;
+      const notesY = totalsEndY + 20;
       if (invoice.clientMessage || invoice.notesCustomer) {
         doc.fontSize(11).fillColor("#333333").font("Helvetica-Bold");
         doc.text("Notes:", leftCol, notesY);
@@ -339,15 +410,33 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       }
 
       // ========================================
-      // FOOTER
+      // FOOTER (rendered ONCE on the last page)
+      //
+      // 2026-05-03 polish (round 4): previously the footer was
+      // drawn inline at `Y = doc.page.height - 50`, which would
+      // either land on whichever page the PDFKit cursor happened
+      // to be on at that moment OR (worse) trigger an auto-paginate
+      // if the cursor had already crossed the bottom margin —
+      // producing occasional blank-looking page-2s.
+      //
+      // The new pattern uses the `bufferPages: true` doc option
+      // (already set on the constructor): walk the buffered page
+      // range AFTER all main rendering has finished, switch to
+      // the LAST page, and draw the footer there with
+      // `lineBreak: false` so the call cannot itself trigger a
+      // new page. Single-page invoices: footer on page 1.
+      // Multi-page invoices: footer on the last page only.
       // ========================================
+      const range = doc.bufferedPageRange();
+      const lastPage = range.start + range.count - 1;
+      doc.switchToPage(lastPage);
       const footerY = doc.page.height - 50;
       doc.fontSize(9).fillColor("#999999").font("Helvetica");
       doc.text(
         `Invoice generated on ${format(new Date(), "MMMM d, yyyy 'at' h:mm a")}`,
         leftCol,
         footerY,
-        { width: pageWidth, align: "center" }
+        { width: pageWidth, align: "center", lineBreak: false }
       );
 
       // Finalize PDF

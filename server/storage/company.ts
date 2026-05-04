@@ -46,6 +46,15 @@ export interface UpdateCompanyProfileInput {
   phone?: string | null;
 }
 
+// 2026-05-03: tenant tax-registration identity moved out of the
+// `companies` row and into the dedicated `company_tax_registrations`
+// child table (multi-row). Reads/writes go through
+// `companyTaxRegistrationRepository` in
+// `server/storage/companyTaxRegistrations.ts`. The two columns
+// (`tax_registration_label` / `tax_registration_number`) are kept
+// on `companies` for rollback safety only — no current writer
+// touches them.
+
 export class CompanyRepository extends BaseRepository {
   /**
    * Get company profile (name + contact fields) from the canonical

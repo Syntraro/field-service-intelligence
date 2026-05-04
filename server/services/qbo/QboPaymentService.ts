@@ -113,13 +113,27 @@ export class QboPaymentService {
       };
     }
 
+    // 2026-05-03 multi-invoice payments (PR 1): the QBO 1:1 sync model
+    // doesn't support multi-invoice payments. Skip with a clear message
+    // — the multi-invoice QBO mapping is a separate future workstream.
+    if (!payment.invoiceId) {
+      const reason = "Multi-invoice payments cannot be synced to QBO via the 1:1 path";
+      await this.logger.logPaymentSkipped("PAYMENT_CREATE", {
+        paymentId,
+        invoiceId: "",
+        reason,
+      });
+      return { success: false, skipped: true, skipReason: reason };
+    }
+    const paymentInvoiceId: string = payment.invoiceId;
+
     // Fetch parent invoice (tenant-isolated)
     const [invoice] = await db
       .select()
       .from(invoices)
       .where(
         and(
-          eq(invoices.id, payment.invoiceId),
+          eq(invoices.id, paymentInvoiceId),
           eq(invoices.companyId, this.companyId),
         ),
       )
@@ -129,7 +143,7 @@ export class QboPaymentService {
       const reason = "Parent invoice not found";
       await this.logger.logPaymentSkipped("PAYMENT_CREATE", {
         paymentId,
-        invoiceId: payment.invoiceId,
+        invoiceId: paymentInvoiceId,
         reason,
       });
       await this.updatePaymentSyncStatus(paymentId, null, null, "ERROR", reason);
@@ -141,7 +155,7 @@ export class QboPaymentService {
     if (!validation.valid) {
       await this.logger.logPaymentSkipped("PAYMENT_CREATE", {
         paymentId,
-        invoiceId: payment.invoiceId,
+        invoiceId: paymentInvoiceId,
         reason: validation.reason!,
       });
       // Skipped is a kind of failure for the user — surface it via the
@@ -156,7 +170,7 @@ export class QboPaymentService {
       const reason = "No QBO Customer ID available for this invoice. Sync the customer first.";
       await this.logger.logPaymentSkipped("PAYMENT_CREATE", {
         paymentId,
-        invoiceId: payment.invoiceId,
+        invoiceId: paymentInvoiceId,
         reason,
       });
       await this.updatePaymentSyncStatus(paymentId, null, null, "ERROR", reason);
@@ -171,7 +185,7 @@ export class QboPaymentService {
       const errorMessage = err instanceof Error ? err.message : String(err);
       await this.logger.logPaymentFailure("PAYMENT_CREATE", {
         paymentId,
-        invoiceId: payment.invoiceId,
+        invoiceId: paymentInvoiceId,
         errorMessage,
       });
       await this.updatePaymentSyncStatus(paymentId, null, null, "ERROR", errorMessage);
@@ -189,7 +203,7 @@ export class QboPaymentService {
 
       await this.logger.logPaymentFailure("PAYMENT_CREATE", {
         paymentId,
-        invoiceId: payment.invoiceId,
+        invoiceId: paymentInvoiceId,
         errorMessage,
         requestPayload: payload,
         durationMs,
@@ -206,7 +220,7 @@ export class QboPaymentService {
 
       await this.logger.logPaymentFailure("PAYMENT_CREATE", {
         paymentId,
-        invoiceId: payment.invoiceId,
+        invoiceId: paymentInvoiceId,
         errorMessage,
         errorCode,
         requestPayload: payload,
@@ -231,7 +245,7 @@ export class QboPaymentService {
 
     await this.logger.logPaymentSuccess("PAYMENT_CREATE", {
       paymentId,
-      invoiceId: payment.invoiceId,
+      invoiceId: paymentInvoiceId,
       qboPaymentId,
       qboSyncToken,
       requestPayload: payload,
@@ -279,12 +293,25 @@ export class QboPaymentService {
       return this.createPayment(paymentId);
     }
 
+    // 2026-05-03 multi-invoice payments (PR 1): same skip rule as
+    // createPayment — multi-invoice payments don't fit the QBO 1:1 model.
+    if (!payment.invoiceId) {
+      const reason = "Multi-invoice payments cannot be synced to QBO via the 1:1 path";
+      await this.logger.logPaymentSkipped("PAYMENT_UPDATE", {
+        paymentId,
+        invoiceId: "",
+        reason,
+      });
+      return { success: false, skipped: true, skipReason: reason };
+    }
+    const paymentInvoiceId: string = payment.invoiceId;
+
     const [invoice] = await db
       .select()
       .from(invoices)
       .where(
         and(
-          eq(invoices.id, payment.invoiceId),
+          eq(invoices.id, paymentInvoiceId),
           eq(invoices.companyId, this.companyId),
         ),
       )
@@ -294,7 +321,7 @@ export class QboPaymentService {
       const reason = "Parent invoice not found";
       await this.logger.logPaymentSkipped("PAYMENT_UPDATE", {
         paymentId,
-        invoiceId: payment.invoiceId,
+        invoiceId: paymentInvoiceId,
         reason,
       });
       await this.updatePaymentSyncStatus(paymentId, payment.qboPaymentId, payment.qboSyncToken, "ERROR", reason);
@@ -305,7 +332,7 @@ export class QboPaymentService {
     if (!validation.valid) {
       await this.logger.logPaymentSkipped("PAYMENT_UPDATE", {
         paymentId,
-        invoiceId: payment.invoiceId,
+        invoiceId: paymentInvoiceId,
         reason: validation.reason!,
       });
       await this.updatePaymentSyncStatus(paymentId, payment.qboPaymentId, payment.qboSyncToken, "ERROR", validation.reason!);
@@ -317,7 +344,7 @@ export class QboPaymentService {
       const reason = "No QBO Customer ID available for this invoice.";
       await this.logger.logPaymentSkipped("PAYMENT_UPDATE", {
         paymentId,
-        invoiceId: payment.invoiceId,
+        invoiceId: paymentInvoiceId,
         reason,
       });
       await this.updatePaymentSyncStatus(paymentId, payment.qboPaymentId, payment.qboSyncToken, "ERROR", reason);
@@ -332,7 +359,7 @@ export class QboPaymentService {
       const errorMessage = err instanceof Error ? err.message : String(err);
       await this.logger.logPaymentFailure("PAYMENT_UPDATE", {
         paymentId,
-        invoiceId: payment.invoiceId,
+        invoiceId: paymentInvoiceId,
         errorMessage,
       });
       await this.updatePaymentSyncStatus(paymentId, payment.qboPaymentId, payment.qboSyncToken, "ERROR", errorMessage);
@@ -350,7 +377,7 @@ export class QboPaymentService {
 
       await this.logger.logPaymentFailure("PAYMENT_UPDATE", {
         paymentId,
-        invoiceId: payment.invoiceId,
+        invoiceId: paymentInvoiceId,
         errorMessage,
         requestPayload: payload,
         durationMs,
@@ -367,7 +394,7 @@ export class QboPaymentService {
 
       await this.logger.logPaymentFailure("PAYMENT_UPDATE", {
         paymentId,
-        invoiceId: payment.invoiceId,
+        invoiceId: paymentInvoiceId,
         errorMessage,
         errorCode,
         requestPayload: payload,
@@ -392,7 +419,7 @@ export class QboPaymentService {
 
     await this.logger.logPaymentSuccess("PAYMENT_UPDATE", {
       paymentId,
-      invoiceId: payment.invoiceId,
+      invoiceId: paymentInvoiceId,
       qboPaymentId,
       qboSyncToken,
       requestPayload: payload,
@@ -463,7 +490,7 @@ export class QboPaymentService {
     if (!payment.qboPaymentId || !payment.qboSyncToken) {
       await this.logger.logPaymentSkipped("PAYMENT_DELETE", {
         paymentId,
-        invoiceId: payment.invoiceId,
+        invoiceId: payment.invoiceId ?? "",
         reason: "Payment was never synced to QBO; nothing to void",
       });
       return { success: true, skipped: true, skipReason: "Not synced to QBO" };
@@ -488,7 +515,7 @@ export class QboPaymentService {
 
       await this.logger.logPaymentFailure("PAYMENT_DELETE", {
         paymentId,
-        invoiceId: payment.invoiceId,
+        invoiceId: payment.invoiceId ?? "",
         errorMessage,
         requestPayload: voidPayload,
         durationMs,
@@ -505,7 +532,7 @@ export class QboPaymentService {
 
       await this.logger.logPaymentFailure("PAYMENT_DELETE", {
         paymentId,
-        invoiceId: payment.invoiceId,
+        invoiceId: payment.invoiceId ?? "",
         errorMessage,
         errorCode,
         requestPayload: voidPayload,
@@ -517,7 +544,7 @@ export class QboPaymentService {
 
     await this.logger.logPaymentSuccess("PAYMENT_DELETE", {
       paymentId,
-      invoiceId: payment.invoiceId,
+      invoiceId: payment.invoiceId ?? "",
       qboPaymentId: payment.qboPaymentId,
       qboSyncToken: response.data.SyncToken,
       requestPayload: voidPayload,

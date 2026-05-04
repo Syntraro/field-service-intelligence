@@ -43,6 +43,10 @@ export type FileEntityType =
   // to `quote_note_attachments` (table added in PR 3A). Mirror of
   // `server/services/fileUploadService.ts::FileEntityType`.
   | "quote_note"
+  // 2026-05-03: invoice-note attachments via the canonical pipeline.
+  // Backend adapter writes through to `invoice_note_attachments`.
+  // Mirror of `server/services/fileUploadService.ts::FileEntityType`.
+  | "invoice_note"
   | "client_note"
   | "client_document"
   | "contract_document"

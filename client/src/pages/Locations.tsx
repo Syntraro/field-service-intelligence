@@ -14,9 +14,24 @@ import { ListToolbar } from "@/components/layout/ListToolbar";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
 // Removed FixedSizeList (react-window) — plain rendering eliminates double-scroll UX
 import { apiRequest } from "@/lib/queryClient";
-import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
 import { TablePageShell } from "@/components/ui/table-page-shell";
 import BulkEditTagsModal from "@/components/BulkEditTagsModal";
+// 2026-05-03: migrated from a hand-rolled CSS-Grid div table (with the
+// retired `LOCATIONS_GRID_COLS = "40px repeat(6, minmax(0, 1fr))"`
+// template) to the canonical EntityListTable. Validates the V1 component
+// against bulk-select + multi-pill tag rendering + a custom-formatted
+// "Maintenance Months" column before Clients lands. The bulk-action bar
+// stays inside `ListToolbar` (the existing pattern), not inside the
+// table — same approach as Invoices.
+import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
+import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
+import { getLocationStatusMeta } from "@/lib/statusBadges";
+
+// 2026-05-03 Load more pattern. Underlying fetch ceiling stays at 500
+// (server-side `/api/clients?limit=500`); this only paginates the
+// rendered set. Bulk select / bulk-edit-tags continue to operate on
+// the FILTERED row list (preserving prior behavior).
+const LOCATIONS_PAGE_SIZE = 50;
 import type { Client, ClientTag } from "@shared/schema";
 
 /** Location tag assignment row from GET /api/tags/location-assignments */
@@ -32,9 +47,14 @@ const MONTH_NAMES = [
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-// Row height for consistent styling (no virtualization — page scroll handles everything)
-const ROW_HEIGHT = 52;
-const LOCATIONS_GRID_COLS = "40px repeat(6, minmax(0, 1fr))";
+/**
+ * Module-scoped helper — no per-render dependencies, so it's safe to
+ * lift out of the component body. Same semantics as before.
+ */
+function formatMonths(selectedMonths: number[] | null): string {
+  if (!selectedMonths || selectedMonths.length === 0) return "—";
+  return selectedMonths.map((m) => MONTH_NAMES[m]).join(", ");
+}
 
 export default function Locations() {
   const [, setLocation] = useLocation();
@@ -50,6 +70,9 @@ export default function Locations() {
   // Phase 2B: Row selection + bulk edit state
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
   const [bulkModalOpen, setBulkModalOpen] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(LOCATIONS_PAGE_SIZE);
+  // Reset visible slice when search / tag filter changes.
+  useEffect(() => { setVisibleCount(LOCATIONS_PAGE_SIZE); }, [search, selectedTagIds]);
 
   // Fetch all tenant tags (shared tag pool)
   const { data: allTags = [] } = useQuery<ClientTag[]>({
@@ -97,11 +120,6 @@ export default function Locations() {
   });
 
   const locations = (data?.data || []) as Client[];
-
-  const formatMonths = (selectedMonths: number[] | null) => {
-    if (!selectedMonths || selectedMonths.length === 0) return "—";
-    return selectedMonths.map((m) => MONTH_NAMES[m]).join(", ");
-  };
 
   // Sort by company name then location name, then apply tag filter (AND logic)
   const filteredLocations = useMemo(() => {
@@ -152,6 +170,121 @@ export default function Locations() {
     });
     return m;
   }, [filteredLocations, selectedRows]);
+
+  /**
+   * Column config for EntityListTable. Defined inside the component
+   * because every cell closes over render-state:
+   *   - select column reads `selectedRows` and `allVisibleSelected`
+   *   - tags column reads `locationTagsList`
+   *
+   * Sizing: the original page used `40px repeat(6, minmax(0, 1fr))` —
+   * six equal-weight tracks. We preserve that by setting `ratio: 1.0`
+   * on every fractional column. Status gets a 72px floor (the only
+   * intrinsic-text column — "Inactive" is ~52 px + cell padding) so it
+   * cannot collapse to garbage at narrow widths. Tags would otherwise
+   * be `text`-kind (which would clip via the default truncate wrapper),
+   * so it uses `badge` kind whose cell renders raw — leaving room for
+   * the existing `flex flex-wrap` pill row.
+   */
+  type LocationRow = Client;
+  const locationColumns = useMemo<EntityListColumn<LocationRow>[]>(() => [
+    {
+      id: "select",
+      kind: "select",
+      header: (
+        <Checkbox
+          checked={allVisibleSelected}
+          onCheckedChange={toggleSelectAll}
+          aria-label="Select all visible rows"
+        />
+      ),
+      // The original cell wrapper used `flex justify-center` instead of
+      // EntityListTable's default `flex items-center`. Override so the
+      // checkbox stays centered horizontally in the 40px track.
+      cellClassName: "px-4 py-2.5 flex items-center justify-center",
+      headerClassName: "px-4 flex items-center justify-center",
+      render: (loc) => (
+        <Checkbox
+          checked={selectedRows.has(loc.id)}
+          onCheckedChange={() => toggleRow(loc.id)}
+          aria-label={`Select ${loc.location || loc.companyName}`}
+        />
+      ),
+    },
+    {
+      id: "company",
+      header: "Company",
+      kind: "primary",
+      ratio: 1.0,
+      render: (loc) => loc.companyName,
+    },
+    {
+      id: "location",
+      header: "Location",
+      kind: "text",
+      ratio: 1.0,
+      render: (loc) => <span className="text-slate-500">{loc.location || "—"}</span>,
+    },
+    {
+      id: "tags",
+      header: "Tags",
+      // `badge` kind — the cell renders RAW (no truncate wrapper) so the
+      // existing multi-pill `flex flex-wrap` block stays intact. Using
+      // `text` here would clip the pills to a single line.
+      kind: "badge",
+      ratio: 1.0,
+      render: (loc) => (
+        <div className="flex flex-wrap gap-1">
+          {(locationTagsList.get(loc.id) ?? []).map((t) => (
+            <span
+              key={t.tagId}
+              className="inline-flex rounded-full px-1.5 py-0.5 text-[11px] font-medium text-white"
+              style={{ backgroundColor: t.tagColor }}
+            >
+              {t.tagName}
+            </span>
+          ))}
+        </div>
+      ),
+    },
+    {
+      id: "address",
+      header: "Address",
+      kind: "text",
+      ratio: 1.0,
+      render: (loc) => <span className="text-slate-500">{loc.address || "—"}</span>,
+    },
+    {
+      id: "status",
+      header: "Status",
+      // `text` kind — Active/Inactive is color-coded plain text in this
+      // page, not a Badge component, so per the column-kind rules the
+      // semantic match is `text`, not `status`. The 72 px floor protects
+      // the cell from collapsing below the longer label ("Inactive").
+      kind: "text",
+      ratio: 0.6,
+      minWidthPx: 72,
+      // 2026-05-03 status consolidation: label + tone via
+      // `getLocationStatusMeta`. Visual rendering preserved (plain
+      // colored text, not a Badge — page-level visual choice).
+      render: (loc) => {
+        const meta = getLocationStatusMeta(loc);
+        return (
+          <span className={`font-medium ${meta.tone === "success" ? "text-green-600" : "text-slate-500"}`}>
+            {meta.label}
+          </span>
+        );
+      },
+    },
+    {
+      id: "maintMonths",
+      header: "Maintenance Months",
+      kind: "text",
+      ratio: 1.0,
+      // Text kind provides text-row text-slate-700.
+      render: (loc) => formatMonths((loc as any).selectedMonths ?? null),
+    },
+  ], [allVisibleSelected, toggleSelectAll, selectedRows, toggleRow, locationTagsList]);
 
   // List stability: single return path — loading/empty states render inside content area only
   return (
@@ -228,88 +361,34 @@ export default function Locations() {
       </ListToolbar>
 
       {/* Locations table */}
-      <ListSurface>
-        {/* Grid header — always mounted */}
-        <div
-          className="grid items-center border-b border-gray-200 dark:border-gray-800 py-3 text-sm font-medium text-muted-foreground"
-          style={{ gridTemplateColumns: LOCATIONS_GRID_COLS }}
-        >
-          <div className="flex justify-center">
-            <Checkbox
-              checked={allVisibleSelected}
-              onCheckedChange={toggleSelectAll}
-              aria-label="Select all visible rows"
-            />
-          </div>
-          <div className="px-4">Company</div>
-          <div className="px-4">Location</div>
-          <div className="px-4">Tags</div>
-          <div className="px-4">Address</div>
-          <div className="px-4">Status</div>
-          <div className="px-4">Maintenance Months</div>
-        </div>
-
-        {/* List stability: loading/empty states render inside content area only */}
-        {isLoading ? (
-          <div className="flex items-center justify-center h-64">
-            <div className="text-muted-foreground">Loading locations...</div>
-          </div>
-        ) : filteredLocations.length === 0 ? (
+      <EntityListTable<LocationRow>
+        rows={filteredLocations.slice(0, visibleCount)}
+        rowKey={(loc) => loc.id}
+        onRowClick={(loc) =>
+          setLocation(loc.parentCompanyId ? `/clients/${loc.parentCompanyId}?location=${loc.id}` : `/clients`)
+        }
+        loadingState={
+          isLoading ? (
+            <div className="flex items-center justify-center h-64">
+              <div className="text-muted-foreground">Loading locations...</div>
+            </div>
+          ) : undefined
+        }
+        emptyState={
           <div className="text-center text-muted-foreground py-8">
             No locations found
           </div>
-        ) : (
-          /* Fix: plain rendering instead of FixedSizeList eliminates double-scroll.
-             Page scroll handles everything; no internal scroll region. */
-          <div>
-            {filteredLocations.map((loc) => (
-              <div
-                key={loc.id}
-                style={{ height: ROW_HEIGHT, gridTemplateColumns: LOCATIONS_GRID_COLS }}
-                className={`grid items-center ${tableRowClass}`}
-                onClick={() => setLocation(loc.parentCompanyId ? `/clients/${loc.parentCompanyId}?location=${loc.id}` : `/clients`)}
-                data-testid={`row-location-${loc.id}`}
-              >
-                <div className="flex justify-center" onClick={(e) => e.stopPropagation()}>
-                  <Checkbox
-                    checked={selectedRows.has(loc.id)}
-                    onCheckedChange={() => toggleRow(loc.id)}
-                    aria-label={`Select ${loc.location || loc.companyName}`}
-                  />
-                </div>
-                <div className="px-4 font-medium truncate">{loc.companyName}</div>
-                <div className="px-4 text-muted-foreground truncate">{loc.location || "—"}</div>
-                <div className="px-4">
-                  <div className="flex flex-wrap gap-1">
-                    {(locationTagsList.get(loc.id) ?? []).map((t) => (
-                      <span
-                        key={t.tagId}
-                        className="inline-flex rounded-full px-1.5 py-0.5 text-[11px] font-medium text-white"
-                        style={{ backgroundColor: t.tagColor }}
-                      >
-                        {t.tagName}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                <div className="px-4 text-muted-foreground truncate">{loc.address || "—"}</div>
-                <div className="px-4">
-                  <span className={`text-xs font-medium ${loc.inactive ? "text-muted-foreground" : "text-green-600"}`}>
-                    {loc.inactive ? "Inactive" : "Active"}
-                  </span>
-                </div>
-                <div className="px-4 text-sm truncate">
-                  {formatMonths((loc as any).selectedMonths ?? null)}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </ListSurface>
+        }
+        columns={locationColumns}
+      />
 
-      <div className="text-sm text-muted-foreground mt-4">
-        Showing {filteredLocations.length} locations
-      </div>
+      <ListLoadMoreFooter
+        visibleCount={Math.min(visibleCount, filteredLocations.length)}
+        totalCount={filteredLocations.length}
+        hasMore={visibleCount < filteredLocations.length}
+        onLoadMore={() => setVisibleCount((c) => c + LOCATIONS_PAGE_SIZE)}
+        label="location"
+      />
 
       {/* Phase 2B: Bulk Edit Tags Modal (location mode) */}
       <BulkEditTagsModal

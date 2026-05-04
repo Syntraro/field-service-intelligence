@@ -21,6 +21,45 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Request, Response, NextFunction } from "express";
 
+// 2026-05-03 test-isolation fix.
+//
+// `beforeEach(() => vi.resetModules())` inside the "Phase 1 boundaries
+// still enforced" describe block (below, line ~256) clears the module
+// cache before each test. The subsequent `await import("../server/auth/platformSession")`
+// re-evaluates the real module graph; that graph transitively loads
+// `server/storage/index.ts`, which at module-evaluation time runs
+// `userRepository.getUser.bind(userRepository)`. In the cleared-cache
+// path the imported `userRepository` resolves to a partially-constructed
+// object (its method bindings happen during class instantiation, which
+// races the storage/index aggregator on certain import orders) — and
+// `userRepository.getUser` is `undefined`, so `.bind(...)` throws
+// `TypeError: Cannot read properties of undefined (reading 'bind')`.
+//
+// The actual middleware behaviour the regression test exercises
+// (`requirePlatformSession` returns 401 when `req.platformSession` is
+// undefined) NEVER reaches `storage.getUser` — the early-return
+// happens at the very top of the function. The crash is purely a
+// module-load artifact of `vi.resetModules` interacting with the real
+// storage chain.
+//
+// Fix: file-level `vi.mock("../server/storage/index", …)` so the
+// dynamic import receives a stub instead of the real aggregator.
+// The stub provides only the methods callers in this file might
+// touch — `getUser` and `incrementTokenVersion` (the two members
+// `requirePlatformSession` would reach if the auth path actually ran).
+// All other tests in the file either don't load `storage/index` at
+// all (they read source files via `fs.readFileSync` for string-level
+// regression checks) or they exercise impersonation middleware whose
+// storage interactions are already stubbed via their own request-
+// shape mocks. No coverage is reduced.
+vi.mock("../server/storage/index", () => ({
+  storage: {
+    getUser: vi.fn().mockResolvedValue(null),
+    incrementTokenVersion: vi.fn().mockResolvedValue(undefined),
+    findUserByEmailGlobal: vi.fn().mockResolvedValue(null),
+  },
+}));
+
 function mkRes() {
   const res: any = {};
   res.status = vi.fn().mockReturnValue(res);

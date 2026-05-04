@@ -75,6 +75,36 @@ vi.mock("../server/storage/paymentWebhookEvents", () => ({
   safeRecordPaymentWebhookEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
+// 2026-05-03 PR4 — webhook handlers look up provider account row.
+// Mocks return null so the handler short-circuits to "skip" / "missing
+// account on event" and writes the ledger row with null attribution.
+vi.mock("../server/storage/paymentProviderAccounts", () => ({
+  paymentProviderAccountsRepository: {
+    getByProviderAndProviderAccountId: vi.fn(async () => null),
+    getByCompanyAndProvider: vi.fn(async () => null),
+    listByCompany: vi.fn(async () => []),
+    insertAccount: vi.fn(),
+    updateAccountState: vi.fn(),
+  },
+}));
+
+// 2026-05-03 PR4 — the createCheckout test branch in this file would
+// require an active account, but the existing tests in this file ONLY
+// exercise applyVerifiedWebhookBatch + refundPayment — neither calls
+// getActiveAccount today. The mock is here as a safety net.
+vi.mock("../server/services/payments/paymentProviderAccountService", () => ({
+  paymentProviderAccountService: {
+    getActiveAccount: vi.fn(async () => null),
+    applyAccountUpdate: vi.fn(),
+    normalizeAccountStatus: vi.fn(),
+    getAccountSnapshot: vi.fn(),
+    getOrCreateAccount: vi.fn(),
+    createOnboardingLink: vi.fn(),
+    retrieveAndSyncAccount: vi.fn(),
+    markAccountStatus: vi.fn(),
+  },
+}));
+
 // resolver — give us full control over provider routing per test.
 vi.mock("../server/services/payments/providers/resolver", () => {
   const stripeAdapter = {
@@ -85,6 +115,7 @@ vi.mock("../server/services/payments/providers/resolver", () => {
   };
   return {
     resolveForCompany: vi.fn(() => stripeAdapter),
+    resolveForCompanyAsync: vi.fn(async () => stripeAdapter),
     resolveById: vi.fn((id: string) => (id === "stripe" ? stripeAdapter : null)),
     resolveForProviderSource: vi.fn((providerSource: string | null | undefined) => {
       if (!providerSource || providerSource === "manual") return { manual: true };
@@ -440,6 +471,10 @@ describe("refundPayment — H1: overshoot rejected before any provider call", ()
       paymentType: "payment",
       providerSource: "stripe",
       reference: "ch_test_1",
+      // 2026-05-03 PR4 — refund flow now requires the parent's
+      // connected-account attribution to route the refund call.
+      providerAccountId: "acct_test_1",
+      paymentProviderAccountId: "ppa_test_1",
     });
   });
 
@@ -479,6 +514,10 @@ describe("refundPayment — H2: provider success + ledger failure → reconcilia
       paymentType: "payment",
       providerSource: "stripe",
       reference: "ch_test_1",
+      // 2026-05-03 PR4 — refund flow now requires the parent's
+      // connected-account attribution to route the refund call.
+      providerAccountId: "acct_test_1",
+      paymentProviderAccountId: "ppa_test_1",
     });
     (paymentRepository.assertRefundAmountWithinParent as any).mockResolvedValueOnce(
       undefined,
@@ -598,6 +637,10 @@ describe("refundPayment — H2: provider success + ledger failure → reconcilia
       paymentType: "payment",
       providerSource: "stripe",
       reference: "ch_test_1",
+      // 2026-05-03 PR4 — refund flow now requires the parent's
+      // connected-account attribution to route the refund call.
+      providerAccountId: "acct_test_1",
+      paymentProviderAccountId: "ppa_test_1",
     });
     (paymentRepository.assertRefundAmountWithinParent as any).mockResolvedValueOnce(
       undefined,
@@ -619,6 +662,10 @@ describe("refundPayment — H2: provider success + ledger failure → reconcilia
       paymentType: "payment",
       providerSource: "stripe",
       reference: "ch_test_1",
+      // 2026-05-03 PR4 — refund flow now requires the parent's
+      // connected-account attribution to route the refund call.
+      providerAccountId: "acct_test_1",
+      paymentProviderAccountId: "ppa_test_1",
     });
     (paymentRepository.assertRefundAmountWithinParent as any).mockResolvedValueOnce(
       undefined,

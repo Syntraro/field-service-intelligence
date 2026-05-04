@@ -24,6 +24,11 @@ import { invoiceReminderService, ReminderGateError } from "../services/invoiceRe
 import { invoiceRepository } from "../storage/invoices";
 import { jobNotesRepository } from "../storage/jobNotes";
 import { clientNotesRepository } from "../storage/clientNotes";
+// 2026-05-03: invoice notes are now first-class — own table, own routes,
+// own attachment join. The GET path below merges entity-owned invoice
+// notes with inherited client notes; the POST/PATCH/DELETE paths
+// route through this repo (no longer through `/api/jobs/:jobId/notes`).
+import { invoiceNotesRepository } from "../storage/invoiceNotes";
 import {
   isBillingLocked,
   isQboSynced,
@@ -36,6 +41,11 @@ import {
   isBillingImpactingPatch,
 } from "../utils/qboInvoiceLock";
 import { generateInvoicePdf } from "../services/invoicePdfService";
+// 2026-05-03: tenant tax-registration identity (multi-row).
+// Loaded alongside the company row and passed to the PDF service so
+// every active registration renders as its own line under the
+// company contact block.
+import { companyTaxRegistrationRepository } from "../storage/companyTaxRegistrations";
 import { getInvoiceTimeline } from "../storage/invoiceTimeline";
 // 2026-04-12 Phase 4: canonical email dispatch for invoice send flow.
 import { emailDispatchService } from "../services/emailDispatchService";
@@ -214,6 +224,8 @@ function validateSendRequirements(invoice: any): string[] {
 // Standalone invoice creation schema
 const createStandaloneInvoiceSchema = z.object({
   locationId: z.string().uuid(),
+  // 2026-05-03: optional canonical short invoice title.
+  summary: z.string().max(255).optional(),
   workDescription: z.string().max(2000).optional(),
 }).strict();
 
@@ -245,6 +257,7 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
     {
       locationId: validated.locationId,
       customerCompanyId: location.parentCompanyId ?? null,
+      summary: validated.summary,
       workDescription: validated.workDescription,
     },
     "STANDALONE_ROUTE"
@@ -317,6 +330,8 @@ const createAtomicSchema = z.object({
   markJobsCompleted: z.boolean().optional(),
 
   // Header / metadata
+  // 2026-05-03: canonical invoice title. Distinct from workDescription.
+  summary: z.string().max(255).optional(),
   workDescription: z.string().max(2000).optional(),
   issueDate: z.string().min(1).max(50).optional(),
   dueDate: z.string().nullable().optional(),
@@ -375,6 +390,7 @@ router.post("/atomic", requireRole(MANAGER_ROLES), asyncHandler(async (req: Auth
         customerCompanyId: validated.customerCompanyId,
         jobIds: validated.jobIds,
         markJobsCompleted: validated.markJobsCompleted,
+        summary: validated.summary,
         workDescription: validated.workDescription,
         issueDate: validated.issueDate,
         dueDate: validated.dueDate,
@@ -688,13 +704,24 @@ router.post(
   }),
 );
 
-// GET /api/invoices/:invoiceId/notes — canonical invoice notes feed.
-// 2026-04-18: new endpoint. Invoice detail previously reused
-// `/api/jobs/:jobId/notes` (via invoice.jobId), which had no way to consult
-// `show_on_invoices`. This endpoint owns the invoice surface: merges the
-// linked job's entity-owned notes (when invoice.jobId is set) with inherited
-// client notes where show_on_invoices=true, scoped by the invoice's
-// location + parent customer company.
+// ----------------------------------------------------------------------------
+// Invoice notes — canonical first-class surface (2026-05-03 rewrite)
+// ----------------------------------------------------------------------------
+//
+// Replaces the prior 2026-04-18 implementation that borrowed entity-owned
+// notes from the linked job (via invoice.jobId) and offered no write path.
+// Invoices now own their notes via the `invoice_notes` + `invoice_note_
+// attachments` tables. The shape returned here matches the job-notes feed
+// exactly so the polymorphic `EntityNotesSection` / `EntityNoteDialog`
+// components on the client side just need their endpoint resolver to
+// point at /api/invoices/:id/notes — no other special-casing.
+//
+// Inherited client notes (location + customer-company level, surface=
+// 'invoices') are still merged into the GET response so location-scoped
+// "show on invoices" notes continue to surface in the UI. Those rows are
+// non-editable from the invoice surface (origin = client_*).
+
+// GET /api/invoices/:invoiceId/notes
 router.get("/:invoiceId/notes", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
   const invoiceId = req.params.invoiceId;
@@ -702,15 +729,16 @@ router.get("/:invoiceId/notes", asyncHandler(async (req: AuthedRequest, res: Res
   const invoice = await storage.getInvoice(companyId, invoiceId);
   if (!invoice) throw createError(404, "Invoice not found");
 
-  // 1) Entity-owned notes: invoice "owns" its linked job's notes today.
-  //    When no job is linked, there are no entity-owned notes to show.
-  let owned: any[] = [];
-  if (invoice.jobId) {
-    const ownedRaw = await jobNotesRepository.listJobNotes(companyId, invoice.jobId);
-    owned = ownedRaw.map((n) => ({ ...n, origin: "job" as const, editable: true }));
-  }
+  // 1) Entity-owned invoice notes from the canonical invoice_notes table.
+  //    Origin is "invoice" (not "job") so the frontend's
+  //    isOwnedRowEditable() recognizes these as editable on the invoice
+  //    surface without confusing them with job-borrowed notes.
+  const ownedRaw = await invoiceNotesRepository.listInvoiceNotes(companyId, invoiceId);
+  const owned = ownedRaw.map((n) => ({ ...n, origin: "invoice" as const, editable: true }));
 
-  // 2) Inherited client notes for this invoice's location + customer company.
+  // 2) Inherited client notes for this invoice's location + customer
+  //    company (visibility flag show_on_invoices=true). Same shape as
+  //    the job-notes feed.
   let inherited: any[] = [];
   if (invoice.locationId) {
     const rows = await clientNotesRepository.listInheritedForEntity(companyId, {
@@ -720,8 +748,7 @@ router.get("/:invoiceId/notes", asyncHandler(async (req: AuthedRequest, res: Res
     });
     inherited = rows.map((r) => ({
       id: r.id,
-      jobId: null,
-      equipmentId: null,
+      invoiceId: null,
       noteText: r.noteText,
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
@@ -737,6 +764,80 @@ router.get("/:invoiceId/notes", asyncHandler(async (req: AuthedRequest, res: Res
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
   );
   res.json(merged);
+}));
+
+// POST /api/invoices/:invoiceId/notes — create invoice note (with optional
+// attachmentFileIds — same wire format as the job-notes route).
+router.post("/:invoiceId/notes", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const userId = req.user!.id;
+  const { noteText, attachmentFileIds } = req.body;
+
+  if (!noteText || typeof noteText !== "string" || noteText.trim().length === 0) {
+    throw createError(400, "noteText is required and must be a non-empty string");
+  }
+
+  const note = await invoiceNotesRepository.createInvoiceNote(
+    companyId,
+    req.params.invoiceId,
+    userId,
+    noteText.trim(),
+  );
+
+  if (Array.isArray(attachmentFileIds) && attachmentFileIds.length > 0 && note) {
+    const { invoiceNoteAttachmentRepository } = await import("../storage/invoiceNoteAttachments");
+    for (const fileId of attachmentFileIds) {
+      if (typeof fileId === "string" && fileId.length > 0) {
+        await invoiceNoteAttachmentRepository.attach(companyId, userId, note.id, fileId);
+      }
+    }
+  }
+
+  res.status(201).json(note);
+}));
+
+// PATCH /api/invoices/:invoiceId/notes/:noteId — update invoice note
+router.patch("/:invoiceId/notes/:noteId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const userId = req.user!.id;
+  const { noteText } = req.body;
+
+  if (!noteText || typeof noteText !== "string" || noteText.trim().length === 0) {
+    throw createError(400, "noteText is required and must be a non-empty string");
+  }
+
+  const note = await invoiceNotesRepository.updateInvoiceNote(
+    companyId,
+    req.params.noteId,
+    userId,
+    noteText.trim(),
+  );
+
+  res.json(note);
+}));
+
+// DELETE /api/invoices/:invoiceId/notes/:noteId/attachments/:attachmentId
+// Per-attachment removal (cascade on note delete still drops everything at
+// once). Mirrors the job-notes route's 2026-04-13 contract for the unified
+// EntityNoteDialog.
+router.delete(
+  "/:invoiceId/notes/:noteId/attachments/:attachmentId",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const { invoiceNoteAttachmentRepository } = await import("../storage/invoiceNoteAttachments");
+    const removed = await invoiceNoteAttachmentRepository.detach(companyId, req.params.attachmentId);
+    if (!removed) throw createError(404, "Attachment not found");
+    res.json({ success: true });
+  }),
+);
+
+// DELETE /api/invoices/:invoiceId/notes/:noteId — delete invoice note
+router.delete("/:invoiceId/notes/:noteId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const userId = req.user!.id;
+  const result = await invoiceNotesRepository.deleteInvoiceNote(companyId, req.params.noteId, userId);
+  res.json(result);
 }));
 
 // 2026-04-09: DELETE /api/invoices/:id — canonical permanent invoice delete.
@@ -1802,74 +1903,16 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
 }));
 
 // ─────────────────────────────────────────────────────────────────────
-// Reminder routes (2026-04-16)
+// 2026-05-03: Manual reminder routes retired.
 // ─────────────────────────────────────────────────────────────────────
-
-const sendReminderSchema = z.object({
-  recipients: z.array(z.string().email()).min(1).max(20).optional(),
-}).strict().optional();
-
-const patchRemindersSchema = z.object({
-  paused: z.boolean().optional(),
-  snoozeUntil: z.string().datetime().nullable().optional(),
-}).strict();
-
-// POST /api/invoices/:id/send-reminder
-// Manually trigger a reminder. Shares the exact canonical path (gates,
-// dispatch, PDF, delivery row, counter bump) with the sweep worker —
-// see invoiceReminderService.sendOne.
-router.post(
-  "/:id/send-reminder",
-  requireRole(MANAGER_ROLES),
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const parsed = sendReminderSchema?.safeParse(req.body ?? {});
-    const body = parsed && parsed.success ? parsed.data : undefined;
-    try {
-      const result = await invoiceReminderService.sendOne({
-        tenantId: req.companyId!,
-        invoiceId: req.params.id,
-        recipients: body?.recipients,
-        createdByUserId: req.user?.id ?? null,
-      });
-      res.json(result);
-    } catch (err: any) {
-      if (err instanceof ReminderGateError) {
-        throw createError(err.status, err.message, err.code);
-      }
-      throw err;
-    }
-  }),
-);
-
-// PATCH /api/invoices/:id/reminders — pause / resume / snooze
-router.patch(
-  "/:id/reminders",
-  requireRole(MANAGER_ROLES),
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const data = validateSchema(patchRemindersSchema, req.body ?? {});
-    const invoice = await storage.getInvoice(req.companyId!, req.params.id);
-    if (!invoice) throw createError(404, "Invoice not found");
-
-    // Two forms of pausing, both via the same storage helper.
-    if (data.paused !== undefined || data.snoozeUntil !== undefined) {
-      await invoiceRepository.setRemindersPaused(
-        req.companyId!,
-        req.params.id,
-        data.paused === true,
-        data.snoozeUntil ? new Date(data.snoozeUntil) : null,
-      );
-    }
-
-    const updated = await storage.getInvoice(req.companyId!, req.params.id);
-    res.json({
-      id: updated?.id,
-      remindersPaused: updated?.remindersPaused ?? false,
-      reminderSnoozeUntil: updated?.reminderSnoozeUntil ?? null,
-      reminderCount: updated?.reminderCount ?? 0,
-      lastReminderAt: updated?.lastReminderAt ?? null,
-    });
-  }),
-);
+// `POST /api/invoices/:id/send-reminder` and `PATCH /api/invoices/:id/reminders`
+// were the backend half of the now-deleted `<InvoiceRemindersButton>`
+// dropdown (Send reminder / Pause / Snooze 3d / Snooze 7d). Manual
+// invoice email sends now go through the canonical email send path
+// via `<SendCommunicationModal>`. The bulk endpoint
+// `POST /api/invoices/bulk-send-reminders` and the automated sweep
+// worker (`invoiceReminderWorker`) both continue to use the canonical
+// `invoiceReminderService.sendOne` — those paths are unchanged.
 
 // POST /api/invoices/:id/void - Void invoice
 // Phase 10A: Status changes on QBO-synced invoices require override
@@ -1954,13 +1997,15 @@ router.get("/:id/pdf", asyncHandler(async (req: AuthedRequest, res: Response) =>
     throw createError(404, "Invoice not found");
   }
 
-  // 2026-04-08: Parallelize independent reads — invoice lines, location, and
-  // company branding don't depend on each other. Reduces PDF latency by waiting
-  // only for the slowest of the three instead of summing all three.
-  const [lines, location, company] = await Promise.all([
+  // 2026-04-08: Parallelize independent reads — invoice lines, location,
+  // company branding, and (2026-05-03) the company's tax registrations
+  // list don't depend on each other. Reduces PDF latency by waiting
+  // only for the slowest of the four instead of summing all four.
+  const [lines, location, company, taxRegistrations] = await Promise.all([
     storage.getInvoiceLines(companyId, invoiceId),
     storage.getClient(companyId, invoice.locationId),
     storage.getCompanyById(companyId),
+    companyTaxRegistrationRepository.list(companyId),
   ]);
 
   if (!location) {
@@ -1994,6 +2039,7 @@ router.get("/:id/pdf", asyncHandler(async (req: AuthedRequest, res: Response) =>
       email: location.email,
     },
     customerCompany: customerCompany ? { name: customerCompany.name ?? "" } : null,
+    taxRegistrations,
   });
 
   const filename = `Invoice-${invoice.invoiceNumber || invoice.id.slice(0, 8)}.pdf`;

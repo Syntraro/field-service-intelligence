@@ -4,7 +4,7 @@
  * Matches Jobs/Invoices/Quotes page hierarchy:
  * Header → Summary cards → Search/filters → Table
  */
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { format, isValid, parseISO } from "date-fns";
 import { useLocation } from "wouter";
@@ -12,27 +12,101 @@ import {
   Plus, Search, FileText, Users, Briefcase, TrendingUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { StatusBadge } from "@/components/StatusBadge";
+import { getLeadStatusMeta } from "@/lib/statusBadges";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
 import { EmptyState } from "@/components/ui/empty-state";
-import { tableRowClass } from "@/components/ui/list-surface";
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from "@/components/ui/table";
+// 2026-05-03: migrated from shadcn `<Table>` to canonical EntityListTable.
+// See `client/src/components/lists/EntityListTable.tsx` for the rationale
+// and the per-kind sizing rules baked into the component.
+import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
+import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
 import { apiRequest } from "@/lib/queryClient";
 import { CreateLeadModal } from "@/components/CreateLeadModal";
 import type { Lead } from "@shared/schema";
 
 type LeadFilterStatus = "all" | "needs_action" | "quoted" | "won" | "lost";
 
-const STATUS_BADGE: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
-  new: { label: "New", variant: "default" },
-  contacted: { label: "Contacted", variant: "secondary" },
-  quoted: { label: "Quoted", variant: "outline" },
-  won: { label: "Won", variant: "default" },
-  lost: { label: "Lost", variant: "destructive" },
-};
+// 2026-05-03 Load more pattern: render in batches of 50 client-side. The
+// underlying `/api/leads` query fetches the full list per the existing
+// behavior; this only controls how many rows render at a time. Reset on
+// filter / search change.
+const LEADS_PAGE_SIZE = 50;
+
+// 2026-05-03 status consolidation: the inline `STATUS_BADGE` map was
+// migrated to `getLeadStatusMeta` in `lib/statusBadges.ts`. The status
+// cell now renders via the canonical `<StatusBadge>` component.
+
+/**
+ * Column config for the Leads list. Module-scoped so the array identity
+ * is stable across renders — passes through `EntityListTable`'s
+ * `useMemo` on `gridTemplateColumns` cleanly. The factory closes over
+ * the page's `safeFormatDate` so the date renderer keeps the same
+ * `parseISO + isValid + format` semantics as before.
+ */
+const LEAD_COLUMNS = (safeFormatDate: (v: unknown) => string): EntityListColumn<Lead>[] => [
+  {
+    id: "title",
+    header: "Title",
+    kind: "primary",
+    // Two-line cell: title + optional description. We render the
+    // wrapper ourselves so the description gets its own truncation.
+    // Primary line inherits the kind's `text-row-emphasis text-slate-800`;
+    // secondary line breaks the cascade with explicit
+    // `text-caption text-slate-500 font-normal`.
+    render: (lead) => (
+      <div className="min-w-0">
+        <div className="truncate">{lead.title}</div>
+        {lead.description && (
+          <div className="text-caption text-slate-500 font-normal truncate">{lead.description}</div>
+        )}
+      </div>
+    ),
+    // EntityListTable's `primary` kind wraps in `<div className="min-w-0
+    // truncate">` by default; that single-line truncate would clip the
+    // optional description. Override the cell wrapper so our own
+    // two-line block can render unmangled.
+    cellClassName: "px-4 py-2.5 min-w-0",
+  },
+  {
+    id: "source",
+    header: "Source",
+    kind: "text",
+    ratio: 0.7,
+    render: (lead) => <span className="capitalize">{lead.sourceType}</span>,
+  },
+  {
+    id: "priority",
+    header: "Priority",
+    kind: "text",
+    ratio: 0.6,
+    render: (lead) => <span className="capitalize">{lead.priority || "-"}</span>,
+  },
+  {
+    id: "status",
+    header: "Status",
+    kind: "status",
+    render: (lead) => <StatusBadge meta={getLeadStatusMeta(lead.status)} />,
+  },
+  {
+    id: "estValue",
+    header: "Est. Value",
+    kind: "money",
+    // Money kind provides text-row text-slate-700, right-align, tabular,
+    // nowrap. Render returns the raw string.
+    render: (lead) =>
+      lead.estimatedValue ? `$${parseFloat(lead.estimatedValue).toLocaleString()}` : "-",
+  },
+  {
+    id: "createdAt",
+    header: "Created",
+    kind: "date",
+    // Date kind provides text-row text-slate-700; date strings are
+    // typically shown a touch lighter, so we override with text-slate-500.
+    render: (lead) => <span className="text-slate-500">{safeFormatDate(lead.createdAt)}</span>,
+  },
+];
 
 function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg }: {
   label: string; value: string; note: string;
@@ -57,6 +131,11 @@ export default function LeadsPage() {
   const [activeFilter, setActiveFilter] = useState<LeadFilterStatus>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(LEADS_PAGE_SIZE);
+
+  // Reset slice on filter / search change so the user always sees the
+  // first page of the new result set.
+  useEffect(() => { setVisibleCount(LEADS_PAGE_SIZE); }, [activeFilter, searchQuery]);
 
   const { data: leadsResponse, isLoading } = useQuery<{ data: Lead[] }>({
     queryKey: ["leads"],
@@ -167,71 +246,32 @@ export default function LeadsPage() {
         </div>
 
         {/* Table */}
-        <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="table-leads">
-          {isLoading ? (
-            <div className="text-center py-8 text-slate-500">Loading leads...</div>
-          ) : filteredLeads.length === 0 ? (
+        <EntityListTable<Lead>
+          rows={filteredLeads.slice(0, visibleCount)}
+          rowKey={(lead) => lead.id}
+          onRowClick={(lead) => setLocation(`/leads/${lead.id}`)}
+          loadingState={
+            isLoading ? (
+              <div className="text-center py-8 text-slate-500">Loading leads...</div>
+            ) : undefined
+          }
+          emptyState={
             <EmptyState
               icon={Users}
               message={searchQuery || activeFilter !== "all" ? "No leads match your filters" : "No leads yet"}
               description={!searchQuery && activeFilter === "all" ? "Create your first lead to start tracking opportunities." : undefined}
             />
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-slate-50">
-                  <TableHead className="text-caption font-medium text-slate-600">Title</TableHead>
-                  <TableHead className="text-caption font-medium text-slate-600">Source</TableHead>
-                  <TableHead className="text-caption font-medium text-slate-600">Priority</TableHead>
-                  <TableHead className="text-caption font-medium text-slate-600">Status</TableHead>
-                  <TableHead className="text-caption font-medium text-slate-600 text-right">Est. Value</TableHead>
-                  <TableHead className="text-caption font-medium text-slate-600">Created</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredLeads.map((lead) => {
-                  const badge = STATUS_BADGE[lead.status] || STATUS_BADGE.new;
-                  return (
-                    <TableRow
-                      key={lead.id}
-                      className={tableRowClass}
-                      onClick={() => setLocation(`/leads/${lead.id}`)}
-                      data-testid={`row-lead-${lead.id}`}
-                    >
-                      <TableCell>
-                        <div className="text-row font-medium text-slate-800">{lead.title}</div>
-                        {lead.description && <div className="text-caption text-slate-500 truncate max-w-[300px]">{lead.description}</div>}
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-caption text-slate-600 capitalize">{lead.sourceType}</span>
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-caption text-slate-600 capitalize">{lead.priority || "-"}</span>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={badge.variant}>{badge.label}</Badge>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className="text-row text-slate-700 tabular-nums">
-                          {lead.estimatedValue ? `$${parseFloat(lead.estimatedValue).toLocaleString()}` : "-"}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-row text-slate-500">{safeFormatDate(lead.createdAt)}</span>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          )}
-        </div>
+          }
+          columns={LEAD_COLUMNS(safeFormatDate)}
+        />
 
-        {filteredLeads.length > 0 && (
-          <div className="text-caption text-slate-500 mt-2">
-            Showing {filteredLeads.length} lead{filteredLeads.length !== 1 ? "s" : ""}
-          </div>
-        )}
+        <ListLoadMoreFooter
+          visibleCount={Math.min(visibleCount, filteredLeads.length)}
+          totalCount={filteredLeads.length}
+          hasMore={visibleCount < filteredLeads.length}
+          onLoadMore={() => setVisibleCount((c) => c + LEADS_PAGE_SIZE)}
+          label="lead"
+        />
       </div>
 
       <CreateLeadModal open={createModalOpen} onOpenChange={setCreateModalOpen} />

@@ -120,6 +120,18 @@ export function LineItemRow({
   }
 
   // ── Display branch (read-only) ────────────────────────────────────
+  // 2026-05-03 contrast normalization: body cells now carry EXPLICIT
+  // slate text colors instead of inheriting from the parent context.
+  // The card's totals/footer slot already uses `text-slate-700` /
+  // `text-slate-900`; matching the body to that scale removes the
+  // "faded vs solid" perception on surfaces (notably invoice detail)
+  // whose parent text-color context happened to be muted. Job detail
+  // also picks this up — the change is uniformly more readable across
+  // every line-items mount.
+  //   - description (primary)         → text-slate-900
+  //   - qty / cost / rate (numerics)  → text-slate-700
+  //   - amount (semibold subtotal)    → text-slate-900
+  //   - date subline (intentionally muted) → text-muted-foreground
   if (!displayLine) return null;
   return (
     <tr
@@ -131,7 +143,7 @@ export function LineItemRow({
       <td className="py-2.5 pr-2 align-top w-8" />
       <td className="py-2.5 pr-3 align-top">
         <div className="flex items-center gap-2">
-          <div className="text-xs font-medium">{displayLine.description}</div>
+          <div className="text-xs font-medium text-slate-900">{displayLine.description}</div>
         </div>
         {displayLine.date && (
           <div className="mt-0.5 text-xs font-normal text-muted-foreground whitespace-pre-line">
@@ -139,15 +151,15 @@ export function LineItemRow({
           </div>
         )}
       </td>
-      <td className="py-2.5 px-3 text-right align-top text-xs w-24">{displayLine.quantity}</td>
+      <td className="py-2.5 px-3 text-right align-top text-xs text-slate-700 w-24">{displayLine.quantity}</td>
       {/* 2026-05-01: Cost moved BEFORE Rate (job surfaces only). */}
       {showCost && (
-        <td className="py-2.5 px-3 text-right align-top text-xs w-[110px]">
+        <td className="py-2.5 px-3 text-right align-top text-xs text-slate-700 w-[110px]">
           {displayLine.unitCost ? formatCurrency(displayLine.unitCost) : "—"}
         </td>
       )}
-      <td className="py-2.5 px-3 text-right align-top text-xs w-32">{formatCurrency(displayLine.unitPrice)}</td>
-      <td className="py-2.5 pl-3 pr-1 text-right align-top text-xs font-semibold w-[110px]">
+      <td className="py-2.5 px-3 text-right align-top text-xs text-slate-700 w-32">{formatCurrency(displayLine.unitPrice)}</td>
+      <td className="py-2.5 pl-3 pr-1 text-right align-top text-xs font-semibold text-slate-900 w-[110px]">
         {formatCurrency(displayLine.lineSubtotal)}
       </td>
       <td className="py-2.5 pl-1 pr-2 align-top w-9" />

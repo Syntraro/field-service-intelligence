@@ -829,7 +829,7 @@ function PreviewStage({
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold text-[#111827]">Preview</h2>
+        <h2 className="text-modal-title text-[#111827]">Preview</h2>
         <p className="text-sm text-[#4b5563] mt-1">
           Review how each row will be committed. Blocked rows are never imported; skipped rows are duplicates of earlier rows in this CSV.
         </p>
@@ -912,12 +912,12 @@ function ResultsStage({
         {commit.summary.failed === 0 ? (
           <>
             <CheckCircle2 className="h-6 w-6 text-emerald-600" />
-            <h2 className="text-lg font-semibold text-[#111827]">Import complete</h2>
+            <h2 className="text-modal-title text-[#111827]">Import complete</h2>
           </>
         ) : (
           <>
             <AlertTriangle className="h-6 w-6 text-amber-600" />
-            <h2 className="text-lg font-semibold text-[#111827]">Import completed with errors</h2>
+            <h2 className="text-modal-title text-[#111827]">Import completed with errors</h2>
           </>
         )}
       </div>

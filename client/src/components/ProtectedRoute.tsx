@@ -1,6 +1,19 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
+
+// ─── AUDIT INSTRUMENTATION (TEMPORARY) ──────────────────────────────────────
+const __rT0 = (): number => {
+  if (typeof window === "undefined") return Date.now();
+  if (typeof (window as any).__authAuditT0 !== "number") (window as any).__authAuditT0 = performance.now();
+  return (window as any).__authAuditT0;
+};
+const __rTs = (): string => (typeof performance === "undefined" ? String(Date.now()) : (performance.now() - __rT0()).toFixed(1) + "ms");
+function routeTrace(tag: string, payload: Record<string, unknown> = {}) {
+  // eslint-disable-next-line no-console
+  console.log(`[ROUTE-TRACE] ${__rTs()} ${tag}`, payload);
+}
+let __rMountSeq = 0;
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -29,7 +42,29 @@ const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
 export default function ProtectedRoute({ children, requireAdmin = false, requireManager = false, requirePlatformAdmin = false, requirePlatformRole = false }: ProtectedRouteProps) {
   const { user, isLoading } = useAuth();
-  const [, setLocation] = useLocation();
+  const [currentPath, setLocation] = useLocation();
+  const mountIdRef = useRef<number | null>(null);
+  if (mountIdRef.current === null) {
+    __rMountSeq += 1;
+    mountIdRef.current = __rMountSeq;
+    routeTrace("ProtectedRoute MOUNT", {
+      mountId: mountIdRef.current,
+      currentPath,
+      user: user ? { id: user.id, role: user.role } : user,
+      isLoading,
+    });
+  }
+  const mountId = mountIdRef.current;
+  routeTrace("ProtectedRoute RENDER", {
+    mountId,
+    currentPath,
+    user: user ? { id: user.id, role: user.role } : user,
+    isLoading,
+    requireAdmin,
+    requireManager,
+    requirePlatformAdmin,
+    requirePlatformRole,
+  });
 
   // 2026-05-03 first-login race fix: previously this effect used a
   // `hasCheckedAuth = useRef(false)` one-shot guard that locked in the
@@ -43,15 +78,26 @@ export default function ProtectedRoute({ children, requireAdmin = false, require
   // pairs with the AuthProvider wipe-condition tightening so a stale 401
   // can no longer null out a freshly-seeded user behind this guard's back.
   useEffect(() => {
-    if (isLoading) return;
+    routeTrace("ProtectedRoute effect run", {
+      mountId,
+      currentPath,
+      user: user ? { id: user.id, role: user.role } : user,
+      isLoading,
+    });
+    if (isLoading) {
+      routeTrace("ProtectedRoute effect early-return (isLoading=true)", { mountId });
+      return;
+    }
 
     if (!user) {
+      routeTrace("ProtectedRoute REDIRECT → /login (user falsy)", { mountId, from: currentPath });
       setLocation("/login");
       return;
     }
 
     // Technician hard guard: always redirect to tech app regardless of route
     if (user.role === "technician") {
+      routeTrace("ProtectedRoute REDIRECT → /tech/today (technician)", { mountId });
       setLocation("/tech/today");
       return;
     }
@@ -68,18 +114,21 @@ export default function ProtectedRoute({ children, requireAdmin = false, require
 
     // Platform admin check (most restrictive)
     if (requirePlatformAdmin && user.role !== "platform_admin") {
+      routeTrace("ProtectedRoute REDIRECT → /login (platformAdmin gate)", { mountId, role: user.role });
       setLocation("/login");
       return;
     }
 
     // Phase 6: any platform role
     if (requirePlatformRole && !PLATFORM_ROLES.includes(user.role as string)) {
+      routeTrace("ProtectedRoute REDIRECT → /login (platformRole gate)", { mountId, role: user.role });
       setLocation("/login");
       return;
     }
 
     // Regular admin check
     if (requireAdmin && user.role !== "owner" && user.role !== "admin" && !PLATFORM_ROLES.includes(user.role as string)) {
+      routeTrace("ProtectedRoute REDIRECT → /login (admin gate)", { mountId, role: user.role });
       setLocation("/login");
       return;
     }
@@ -88,12 +137,15 @@ export default function ProtectedRoute({ children, requireAdmin = false, require
     // admin, manager, dispatcher (matches the server's MANAGER_ROLES);
     // platform roles also pass for support sessions.
     if (requireManager && !MANAGER_ROLES.includes(user.role as string) && !PLATFORM_ROLES.includes(user.role as string)) {
+      routeTrace("ProtectedRoute REDIRECT → /login (manager gate)", { mountId, role: user.role });
       setLocation("/login");
       return;
     }
+    routeTrace("ProtectedRoute auth-check PASSED, render children", { mountId, userId: user.id, role: user.role });
   }, [user, isLoading, requireAdmin, requireManager, requirePlatformAdmin, requirePlatformRole, setLocation]);
 
   if (isLoading) {
+    routeTrace("ProtectedRoute RENDER → Loading…", { mountId });
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-lg">Loading...</div>
@@ -102,6 +154,7 @@ export default function ProtectedRoute({ children, requireAdmin = false, require
   }
 
   if (!user) {
+    routeTrace("ProtectedRoute RENDER → null (user falsy)", { mountId });
     return null;
   }
 

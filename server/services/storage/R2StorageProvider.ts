@@ -11,7 +11,9 @@
 
 import {
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   GetObjectCommand,
   S3Client,
@@ -126,6 +128,78 @@ export class R2StorageProvider implements StorageProvider {
 
   async deleteObject(bucket: string, objectKey: string): Promise<void> {
     await this.client.send(new DeleteObjectCommand({ Bucket: bucket, Key: objectKey }));
+  }
+
+  /**
+   * 2026-05-04 — paginated list under a key prefix. Used by the
+   * tenant-teardown service to inventory + bulk-delete every object a
+   * tenant owns.
+   *
+   * Yields keys page-by-page; each yielded array is a batch up to 1000
+   * keys (S3/R2's native ListObjectsV2 page size). The caller is
+   * responsible for rate-limiting / batching its delete calls.
+   *
+   * SAFETY: the caller MUST validate the prefix is non-empty + tenant-
+   * scoped BEFORE calling this. This method does not enforce — it just
+   * walks whatever prefix it's given.
+   */
+  async *iterListObjectsByPrefix(
+    bucket: string,
+    prefix: string,
+  ): AsyncGenerator<Array<{ key: string; sizeBytes: number }>> {
+    let continuationToken: string | undefined;
+    do {
+      const res = await this.client.send(
+        new ListObjectsV2Command({
+          Bucket: bucket,
+          Prefix: prefix,
+          ContinuationToken: continuationToken,
+          MaxKeys: 1000,
+        }),
+      );
+      const batch = (res.Contents ?? []).map((obj) => ({
+        key: obj.Key ?? "",
+        sizeBytes: typeof obj.Size === "number" ? obj.Size : 0,
+      }));
+      if (batch.length > 0) yield batch;
+      continuationToken = res.IsTruncated ? res.NextContinuationToken : undefined;
+    } while (continuationToken);
+  }
+
+  /**
+   * 2026-05-04 — bulk DeleteObjects. S3/R2 supports up to 1000 keys per
+   * request; the teardown service should chunk to that size.
+   *
+   * Returns { deleted, errors } so the caller can verify zero-objects-
+   * remain. Errors are non-fatal at this level — the service decides
+   * whether to retry / fail on the cumulative result.
+   */
+  async deleteObjectsBatch(
+    bucket: string,
+    keys: string[],
+  ): Promise<{ deleted: number; errors: Array<{ key: string; message: string }> }> {
+    if (keys.length === 0) return { deleted: 0, errors: [] };
+    if (keys.length > 1000) {
+      throw new Error(
+        `deleteObjectsBatch: max 1000 keys per call (received ${keys.length}). Caller must chunk.`,
+      );
+    }
+    const res = await this.client.send(
+      new DeleteObjectsCommand({
+        Bucket: bucket,
+        Delete: {
+          Objects: keys.map((k) => ({ Key: k })),
+          // R2 accepts Quiet mode the same way S3 does.
+          Quiet: true,
+        },
+      }),
+    );
+    const errors = (res.Errors ?? []).map((e) => ({
+      key: e.Key ?? "",
+      message: e.Message ?? e.Code ?? "unknown",
+    }));
+    const deleted = keys.length - errors.length;
+    return { deleted, errors };
   }
 
   async getObjectBuffer(bucket: string, objectKey: string): Promise<Buffer> {

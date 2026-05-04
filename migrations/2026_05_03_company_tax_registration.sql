@@ -1,0 +1,53 @@
+-- ============================================================================
+-- Migration: 2026_05_03_company_tax_registration
+-- ============================================================================
+--
+-- Purpose
+--   Add tenant-level tax registration identity fields to the `companies`
+--   table so the customer-facing invoice PDF can display the business's
+--   tax registration (e.g. "HST: 739597326 RT0001", "VAT: GB123456789",
+--   "Tax ID: 84-7398100"). Both fields are optional; tenants that leave
+--   them blank get the same PDF output as before.
+--
+--   These columns are NEW and unrelated to the existing `tax_name` /
+--   `default_tax_rate` columns on the same table — those drive the
+--   tax-rate calculation engine (the *math* of taxation: e.g.
+--   tax_name='HST', default_tax_rate=13.00). The two new columns
+--   describe the business's *identity* as a tax-registered entity for
+--   display on customer-facing documents. Distinct concepts, distinct
+--   columns, no shared writers.
+--
+-- Schema source
+--   `shared/schema.ts::companies` (columns added in the same commit).
+--
+-- Run instructions
+--   Local / dev:   npm run db:migrate:one -- migrations/2026_05_03_company_tax_registration.sql
+--   Full sweep:    npm run db:migrate
+--
+-- Reversibility
+--   `ALTER TABLE companies DROP COLUMN tax_registration_label;`
+--   `ALTER TABLE companies DROP COLUMN tax_registration_number;`
+--   are safe — no FK, no index, no trigger references either column.
+--   Frontend tolerates both fields being absent (renders nothing).
+--   PDF service tolerates both fields being absent (renders nothing).
+--
+-- Idempotency
+--   `ADD COLUMN IF NOT EXISTS` makes a re-run a no-op.
+--
+-- Backfill
+--   None. Existing tenants keep both columns NULL until they fill them
+--   in via Settings → Tax & Billing Rules → Tax Registration. A NULL
+--   pair causes the PDF to render no tax-registration line — matching
+--   the prior behaviour for every existing invoice and tenant.
+--
+-- Tenant safety
+--   Both columns are NULLable. No CHECK constraint enforces a
+--   particular format because international registration numbers vary
+--   widely (Canadian CRA business numbers, UK VAT numbers, US EINs,
+--   Australian ABNs, etc.). The settings-form layer (Zod) caps length
+--   only.
+-- ============================================================================
+
+ALTER TABLE "companies"
+  ADD COLUMN IF NOT EXISTS "tax_registration_label" text,
+  ADD COLUMN IF NOT EXISTS "tax_registration_number" text;

@@ -461,7 +461,7 @@ function StepBasics({
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold">Let's start with the basics</h2>
+        <h2 className="text-modal-title">Let's start with the basics</h2>
         <p className="text-xs text-muted-foreground mt-0.5">
           Who is this maintenance plan for?
         </p>
@@ -681,7 +681,7 @@ function StepSchedule({
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold">Set the schedule</h2>
+        <h2 className="text-modal-title">Set the schedule</h2>
         <p className="text-xs text-muted-foreground mt-0.5">How often should this plan run?</p>
       </div>
 
@@ -910,7 +910,7 @@ function StepPricing({
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold">Pricing and contract</h2>
+        <h2 className="text-modal-title">Pricing and contract</h2>
         <p className="text-xs text-muted-foreground mt-0.5">
           How will this plan be billed and how long does it run?
         </p>
@@ -1094,7 +1094,7 @@ function StepReview({ state }: { state: WizardState }) {
   return (
     <div className="space-y-3">
       <div>
-        <h2 className="text-lg font-semibold">Review your maintenance plan</h2>
+        <h2 className="text-modal-title">Review your maintenance plan</h2>
         <p className="text-xs text-muted-foreground mt-0.5">
           Please review the details below. You can go back to make changes.
         </p>

@@ -10,6 +10,13 @@ import { useLocation } from "wouter";
 import { ArrowLeft, Loader2, Check } from "lucide-react";
 import { MobileShell } from "../components/MobileShell";
 import { apiRequest } from "@/lib/queryClient";
+// 2026-05-04 form-canonicalization Phase 1: tech-app pages migrate
+// raw <input> elements to the canonical <Input> primitive so every
+// form-control surface in the app reads from the same primitive.
+// Layout (h-9 px-3) is preserved by the primitive's defaults; the
+// raw `text-sm border-slate-200` styling is replaced by the
+// primitive's canonical `text-input` typography + border.
+import { Input } from "@/components/ui/input";
 
 // Navigation uses query params (no sessionStorage)
 
@@ -109,76 +116,67 @@ export function CreateClientPage() {
         {/* Company Name */}
         <div>
           <label htmlFor="tech-cc-company" className="text-xs font-semibold text-slate-500 mb-1 block">Company Name</label>
-          <input id="tech-cc-company" value={companyName} onChange={e => setCompanyName(e.target.value)}
+          <Input id="tech-cc-company" value={companyName} onChange={e => setCompanyName(e.target.value)}
             placeholder="Business name (or leave blank for personal)"
-            autoComplete="organization"
-            className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
+            autoComplete="organization" />
         </div>
 
         {/* Name */}
         <div className="flex gap-2">
           <div className="flex-1">
             <label htmlFor="tech-cc-first" className="text-xs font-semibold text-slate-500 mb-1 block">First Name</label>
-            <input id="tech-cc-first" value={firstName} onChange={e => setFirstName(e.target.value)}
+            <Input id="tech-cc-first" value={firstName} onChange={e => setFirstName(e.target.value)}
               placeholder="First"
-              autoComplete="given-name"
-              className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
+              autoComplete="given-name" />
           </div>
           <div className="flex-1">
             <label htmlFor="tech-cc-last" className="text-xs font-semibold text-slate-500 mb-1 block">Last Name</label>
-            <input id="tech-cc-last" value={lastName} onChange={e => setLastName(e.target.value)}
+            <Input id="tech-cc-last" value={lastName} onChange={e => setLastName(e.target.value)}
               placeholder="Last"
-              autoComplete="family-name"
-              className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
+              autoComplete="family-name" />
           </div>
         </div>
 
         {/* Contact */}
         <div>
           <label htmlFor="tech-cc-phone" className="text-xs font-semibold text-slate-500 mb-1 block">Phone</label>
-          <input id="tech-cc-phone" value={phone} onChange={e => setPhone(e.target.value)}
+          <Input id="tech-cc-phone" value={phone} onChange={e => setPhone(e.target.value)}
             type="tel" placeholder="(555) 123-4567"
-            inputMode="tel" autoComplete="tel"
-            className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
+            inputMode="tel" autoComplete="tel" />
         </div>
         <div>
           <label htmlFor="tech-cc-email" className="text-xs font-semibold text-slate-500 mb-1 block">Email</label>
-          <input id="tech-cc-email" value={email} onChange={e => setEmail(e.target.value)}
+          <Input id="tech-cc-email" value={email} onChange={e => setEmail(e.target.value)}
             type="email" placeholder="contact@example.com"
-            inputMode="email" autoComplete="email" autoCapitalize="off" spellCheck={false}
-            className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
+            inputMode="email" autoComplete="email" autoCapitalize="off" spellCheck={false} />
         </div>
 
         {/* Address */}
         <div>
           <label htmlFor="tech-cc-address" className="text-xs font-semibold text-slate-500 mb-1 block">Address</label>
-          <input id="tech-cc-address" value={address} onChange={e => setAddress(e.target.value)}
+          <Input id="tech-cc-address" value={address} onChange={e => setAddress(e.target.value)}
             placeholder="Street address"
-            autoComplete="street-address"
-            className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
+            autoComplete="street-address" />
         </div>
         <div className="flex gap-2">
           <div className="flex-1">
             <label htmlFor="tech-cc-city" className="text-xs font-semibold text-slate-500 mb-1 block">City</label>
-            <input id="tech-cc-city" value={city} onChange={e => setCity(e.target.value)}
+            <Input id="tech-cc-city" value={city} onChange={e => setCity(e.target.value)}
               placeholder="City"
-              autoComplete="address-level2"
-              className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
+              autoComplete="address-level2" />
           </div>
           <div className="w-24">
             <label htmlFor="tech-cc-province" className="text-xs font-semibold text-slate-500 mb-1 block">Province</label>
-            <input id="tech-cc-province" value={province} onChange={e => setProvince(e.target.value)}
+            <Input id="tech-cc-province" value={province} onChange={e => setProvince(e.target.value)}
               placeholder="ON"
-              autoComplete="address-level1"
-              className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
+              autoComplete="address-level1" />
           </div>
         </div>
         <div className="w-32">
           <label htmlFor="tech-cc-postal" className="text-xs font-semibold text-slate-500 mb-1 block">Postal Code</label>
-          <input id="tech-cc-postal" value={postalCode} onChange={e => setPostalCode(e.target.value)}
+          <Input id="tech-cc-postal" value={postalCode} onChange={e => setPostalCode(e.target.value)}
             placeholder="A1A 1A1"
-            autoComplete="postal-code" autoCapitalize="characters"
-            className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md" />
+            autoComplete="postal-code" autoCapitalize="characters" />
         </div>
 
         {/* Submit */}

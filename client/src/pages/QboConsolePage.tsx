@@ -1571,7 +1571,7 @@ export default function QboConsolePage() {
       {/* SETUP SECTION — 2-column grid */}
       {/* ============================================================ */}
       <div>
-        <h2 className="text-lg font-semibold mb-4">Setup</h2>
+        <h2 className="text-modal-title mb-4">Setup</h2>
         <div className="grid gap-4 md:grid-cols-2">
 
           {/* Card 1 — Step 1: Connect QuickBooks (uses /api/qbo/connection-status + OAuth setup-info) */}

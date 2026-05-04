@@ -2,11 +2,14 @@
  * Platform Tenants Storage — Phase 2 (Ops Portal Core).
  *
  * Read-only search/list queries against the canonical `companies` table for
- * the internal Ops Portal. Feature-flag reads/writes and tenant detail are
- * delegated by the service layer to their existing canonical owners
- * (`tenantFeaturesRepository`, `adminRepository`). This module exists ONLY
- * because platform search has a different shape than the owner-facing
- * tenant health list (`adminRepository.getTenantHealthList`).
+ * the internal Ops Portal. Tenant detail is delegated by the service layer
+ * to its existing canonical owner (`adminRepository.getTenantDetail`).
+ *
+ * 2026-05-03 SECURITY LOCKDOWN: this is now the SOLE cross-tenant tenant
+ * listing path. The legacy `adminRepository.getTenantHealthList` (which
+ * powered the retired tenant-auth-gated `GET /api/admin/tenants`) has been
+ * deleted. Cross-tenant reads must come through `/api/platform/tenants`,
+ * which authenticates against psid + `requireCapability("tenant:read")`.
  *
  * Layering: Service is the only caller. No route or HTTP access here.
  */

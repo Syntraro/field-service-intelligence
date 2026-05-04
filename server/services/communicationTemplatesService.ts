@@ -47,19 +47,42 @@ const SYSTEM_DEFAULTS: Record<string, TemplateInput> = {
   // exists. See resolveRenderedMessage in emailDispatchService.ts.
   "invoice:email": {
     subjectTemplate: "Invoice #{{INVOICE_NUMBER}} — {{COMPANY_NAME}}",
+    // 2026-05-03 polish (round 3): tightened default body for
+    // readability + a cleaner visual hierarchy.
+    //   • Removed redundant "Thank you for choosing …" and
+    //     "Your invoice is attached and ready for payment."
+    //     openers — the subject line + signature already convey
+    //     the sender, and the attachment / Pay-Invoice button
+    //     speak for themselves.
+    //   • Total + due date are now a single tight block (single
+    //     `\n` between them) so they read as one fact, not two
+    //     scattered lines.
+    //   • The headline total line is wrapped in `**…**` markers
+    //     which `bodyToHtml.applyBoldMarkers` renders as
+    //     `<strong>…</strong>` for visual emphasis. Tenants
+    //     editing a saved template can use the same syntax; tenant
+    //     templates without `**` markers render unchanged.
+    //   • Closing softened from "If you have any questions, please
+    //     contact us." to "Have a question? Just reply to this
+    //     email." — explicit reply mechanism, lighter tone.
+    //
+    // The literal `__PAY_INVOICE_BUTTON__` sentinel still sits
+    // AFTER the signature. It is NOT a `{{VAR}}` (renderer ignores
+    // it); `bodyToHtml(body, {paymentUrl})` in
+    // `emailDispatchService.ts` swaps it for a styled CTA when
+    // `templateData.PAYMENT_URL` is non-empty (entitlement gate
+    // upstream), or strips it otherwise. The legacy `{{PAY_NOW_CTA}}`
+    // token is unused by the default but preserved for tenant
+    // templates that still reference the old text link.
     bodyTemplate:
       "Hello {{CLIENT_COMPANY_NAME}},\n\n" +
-      "Thank you for choosing {{COMPANY_NAME}}.\n\n" +
-      "Your invoice #{{INVOICE_NUMBER}} is attached and ready for payment.\n\n" +
-      "Total amount: {{INVOICE_TOTAL}}\n" +
-      "Due date: {{INVOICE_DUE_DATE}}\n\n" +
-      // 2026-04-19 Phase 12 — Pay Now CTA. Self-contained block
-      // (multi-line) that resolves to empty string when the invoice
-      // isn't payable, leaving the surrounding paragraphs untouched.
-      "{{PAY_NOW_CTA}}" +
-      "If you have any questions, please contact us.\n\n" +
+      "Invoice #{{INVOICE_NUMBER}} from {{COMPANY_NAME}} is ready for review.\n\n" +
+      "**Total: {{INVOICE_TOTAL}}**\n" +
+      "Due {{INVOICE_DUE_DATE}}\n\n" +
+      "Have a question? Just reply to this email.\n\n" +
       "Thank you,\n" +
-      "{{COMPANY_NAME}}",
+      "{{COMPANY_NAME}}\n" +
+      "__PAY_INVOICE_BUTTON__",
   },
   "quote:email": {
     subjectTemplate: "Quote #{{QUOTE_NUMBER}} — {{COMPANY_NAME}}",
@@ -98,30 +121,56 @@ const SYSTEM_DEFAULTS: Record<string, TemplateInput> = {
     // (tenant, "invoice_reminder", "email"). See resolveRenderedMessage
     // in server/services/emailDispatchService.ts.
     subjectTemplate: "Reminder: Invoice #{{INVOICE_NUMBER}} is {{DAYS_OVERDUE}} days overdue",
+    // 2026-05-03 polish (round 3): same readability/hierarchy pass
+    // as `invoice:email`. Headline outstanding balance is bolded
+    // via `**…**` markers (rendered by `bodyToHtml.applyBoldMarkers`
+    // as `<strong>…</strong>`); the two closing paragraphs are
+    // collapsed into one shorter sentence; signature unchanged.
     bodyTemplate:
       "Hello {{CLIENT_COMPANY_NAME}},\n\n" +
-      "This is a friendly reminder that invoice #{{INVOICE_NUMBER}} is now {{DAYS_OVERDUE}} days overdue.\n\n" +
-      "Outstanding balance: {{INVOICE_BALANCE}}\n\n" +
-      // 2026-04-19 Phase 12 — Pay Now CTA on overdue reminders, gated
-      // by the same payable + balance + feature-flag rules as the
-      // primary invoice send.
-      "{{PAY_NOW_CTA}}" +
-      "If payment has already been sent, please disregard this message.\n\n" +
-      "If you have any questions or need assistance, simply reply to this email.\n\n" +
+      "A friendly reminder that invoice #{{INVOICE_NUMBER}} is now {{DAYS_OVERDUE}} days overdue.\n\n" +
+      "**Outstanding balance: {{INVOICE_BALANCE}}**\n\n" +
+      "If payment has already been sent, please disregard this message — otherwise, reply if you need anything from us.\n\n" +
       "Thank you,\n" +
-      "{{COMPANY_NAME}}",
+      "{{COMPANY_NAME}}\n" +
+      "__PAY_INVOICE_BUTTON__",
   },
   // 2026-04-18 Phase 11 — payment receipt. Fires after a successful
   // portal (Stripe) payment via the canonical webhook path. Uses
   // {{PAYMENT_AMOUNT}} + {{INVOICE_BALANCE}} so the same copy works
   // for both full and partial payments — when the remaining balance
   // is zero the reminder text simply reflects that.
+  //
+  // 2026-05-03 PR 4 — multi-invoice payment receipts.
+  // The literal `__PAYMENT_ALLOCATIONS_TABLE__` sentinel is replaced
+  // by `bodyToHtml` with a per-invoice list when the payment covers
+  // ≥1 allocation (every modern receipt has ≥1 — single-invoice
+  // payments synthesize a 1-row allocation in the data builder).
+  // The sentinel is intentionally NOT a `{{VAR}}` so the renderer
+  // ignores it; same pattern as `__PAY_INVOICE_BUTTON__` on the
+  // invoice template. Tenants whose saved (overridden) templates
+  // never wrote the sentinel keep their existing copy unchanged —
+  // the substitution is a no-op when the sentinel isn't present.
   "payment_receipt:email": {
     subjectTemplate: "Payment received — Invoice #{{INVOICE_NUMBER}}",
+    // 2026-05-03 PR 5 polish:
+    //   • headline payment amount lifted to its own line with `**bold**`
+    //     emphasis (rendered as <strong>) — same hierarchy treatment
+    //     the invoice / reminder templates use for the headline number;
+    //   • per-invoice allocations table sentinel keeps its own block;
+    //   • remaining balance is bolded so the customer's eye lands on
+    //     "what do I still owe" without re-scanning the body;
+    //   • {{PORTAL_INVOICE_URL}} appended as a plain auto-linkified
+    //     line so receipts always offer a one-click path back to the
+    //     invoice in the portal. The renderer `linkifyEscapedHtml`
+    //     turns the bare URL into a clickable <a> in HTML clients
+    //     while leaving the plain-text version intact.
     bodyTemplate:
       "Hello {{CLIENT_COMPANY_NAME}},\n\n" +
-      "Thank you — we received your payment of {{PAYMENT_AMOUNT}} for invoice #{{INVOICE_NUMBER}}.\n\n" +
-      "Remaining balance: {{INVOICE_BALANCE}}\n\n" +
+      "Thank you — we received your payment of **{{PAYMENT_AMOUNT}}** on {{PAYMENT_DATE}}.\n\n" +
+      "__PAYMENT_ALLOCATIONS_TABLE__\n\n" +
+      "**Remaining balance: {{INVOICE_BALANCE}}**\n\n" +
+      "View your invoice in the portal: {{PORTAL_INVOICE_URL}}\n\n" +
       "If you have any questions about this payment, simply reply to this email.\n\n" +
       "Thank you,\n" +
       "{{COMPANY_NAME}}",

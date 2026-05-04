@@ -22,7 +22,7 @@ import { EntityNumber } from "@/components/common/EntityNumber";
 import {
   Search, Loader2, Briefcase, FileText, Building2, MapPin, Truck, UserCircle,
   LayoutDashboard, LayoutGrid, ClipboardList, Receipt, FileCheck,
-  Users, Wrench, Settings, Shield,
+  Users, Wrench, Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -98,7 +98,11 @@ const NAVIGATION_COMMANDS: CommandItem[] = [
   { id: "nav-suppliers",  label: "Suppliers",      keywords: ["suppliers", "supplier", "vendor", "vendors"], icon: Building2, route: "/suppliers" },
   { id: "nav-reports",    label: "Reports",        keywords: ["reports", "report", "analytics"], icon: FileText, route: "/reports" },
   { id: "nav-settings",   label: "Settings",       keywords: ["settings", "preferences", "config"], icon: Settings, route: "/settings" },
-  { id: "nav-admin",      label: "Admin",          keywords: ["admin", "tenants", "administration"], icon: Shield, route: "/admin/tenants" },
+  // 2026-05-03 SECURITY LOCKDOWN: the "Admin" command-palette entry that
+  // routed to /admin/tenants was removed. That URL rendered cross-tenant
+  // platform data under tenant auth. Platform admin lives at /platform/*
+  // (separate psid session); do not add a command-palette entry that
+  // exposes platform paths through the tenant search surface.
 ];
 
 // ========================================

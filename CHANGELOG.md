@@ -6,6 +6,3728 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### Phase 2-A — dedicated platform identity tables (2026-05-04)
+
+The architectural debt recorded 2026-05-03 (`SECURITY.md` "Platform Admin Identity") and the containment fix (2026-05-04) finally have their permanent solution. Platform identities now live in their own three tables — `platform_users`, `platform_user_identities`, `platform_user_roles` — completely separate from the tenant `users` table. No `companyId`, no tenant role catalog, no shared FK. The two surfaces are independent identity worlds.
+
+**Decision (Option 1):** the same email is allowed across platform + tenant. Uniqueness is enforced WITHIN each surface only. A real human MAY hold both a tenant account and a platform-staff account at the same email — the two never read each other's tables.
+
+**Phase rollout** (this PR ships PHASES 1 + 2 + 3 + 3.5; PHASES 4 and 5 are forward-looking):
+
+| Phase | Status | What it does |
+|---|---|---|
+| 1 — Schema (additive) | **landed** | Three new tables + indexes; no read/write changes. |
+| 2 — Backfill (idempotent) | **landed** | Copies legacy `users WHERE role IN PLATFORM_ROLES` into the new tables. `NOT EXISTS` guards on every INSERT. Verification block aborts the migration if counts disagree. |
+| 3 — Code cutover | **landed** | Login + session + reset + seed + audit all read/write through the new repository. |
+| 3.5 — Deployment fallback | **landed** | Login and session middleware fall back to the legacy `users` row only if the new repo returns null. Removed in Phase 5. |
+| 4 — Stabilization (no code) | next 2 release cycles | Monitor; no commits. |
+| 5 — Destructive cleanup | deferred | `DELETE FROM users WHERE role IN PLATFORM_ROLES` + remove the fallback. Operator confirmation + backup required. |
+
+**1. Migrations.**
+
+- `migrations/2026_05_04_platform_users_create.sql` — additive; creates the three tables + indexes. `CREATE TABLE IF NOT EXISTS` everywhere.
+- `migrations/2026_05_04_platform_users_backfill.sql` — idempotent backfill. Preserves `id`, `password_hash`, `token_version`, `last_login_at`, `created_at`, `deleted_at` byte-for-byte. Aborts on count-parity mismatch via inline `DO $$ ... RAISE EXCEPTION` block.
+- `migrations/2026_05_04_platform_password_reset_tokens_repoint.sql` — drops the legacy `users(id)` FK and re-adds it pointing at `platform_users(id)`. Token rows untouched (ids preserved by backfill).
+
+**2. Schema (`shared/schema.ts`).**
+
+Three new pgTables:
+- `platformUsers` — id, email, full_name/first_name/last_name, status, disabled, token_version, last_login_at, deleted_at, created_at/updated_at. **No `companyId`.**
+- `platformUserIdentities` — id, user_id (FK→platform_users), provider, identifier, password_hash, verified_at, timestamps. Unique on `(provider, lower(identifier))`.
+- `platformUserRoles` — multi-role join: user_id, role, granted_at, granted_by (nullable, self-FK).
+
+Exported types: `PlatformUser`, `InsertPlatformUser`, `PlatformUserIdentity`, `InsertPlatformUserIdentity`, `PlatformUserRole`, `InsertPlatformUserRole`.
+
+**3. Repository (`server/storage/platformIdentity.ts`, new).**
+
+`platformIdentityRepository` exposes the canonical surface:
+- `findPlatformUserByEmail(email)` → `{ user, identity, roles }` or `null`
+- `getPlatformUserById(id)` → `{ user, roles }` or `null`
+- `listRolesForUser(userId)` → `string[]`
+- `createPlatformUser({email, role, passwordHash, ...})` — single transaction across all three tables
+- `reconcilePlatformUser(...)` — idempotent seed/heal path
+- `setPlatformPasswordHash(userId, hash)` — reset write surface
+- `incrementPlatformTokenVersion(userId)` — session invalidation
+- `recordPlatformLogin(userId)` — best-effort `last_login_at` stamp
+- `listPlatformUsers()` — used by `auditPlatformUsers.ts`
+
+Boundary contract: this file NEVER touches `users` or `user_identities`.
+
+**4. Auth + reset cutover.**
+
+- `server/routes/platformAuth.ts` — login route now resolves identity via `platformIdentityRepository.findPlatformUserByEmail`. Phase 3.5 fallback to `storage.findUserByEmailGlobal` runs only when the new repo returns null. Audit row carries `identitySource: "platform_users" | "legacy_users"` so the cutover progress is observable in the audit log.
+- `server/auth/platformSession.ts` — `requirePlatformSession` resolves via `platformIdentityRepository.getPlatformUserById` first, legacy `storage.getUser` second. Token-version invalidation contract preserved.
+- `server/services/platformPasswordResetService.ts` — `requestPlatformPasswordReset` reads from the new repo first. `confirmPlatformPasswordReset` writes to `platform_user_identities` on the canonical path; the legacy `users.password` mirror write is GONE. `tokenVersion` bump targets the right surface based on `writeSurface`.
+- `server/scripts/seedPlatformUser.ts` — fully simplified. The `pickCompanyId()` helper, the `--company-id` CLI flag, the legacy `users` insert, the legacy `user_identities` insert, and the `users.password` mirror write are all GONE. The script now writes exclusively to the platform tables via `platformIdentityRepository.createPlatformUser` / `reconcilePlatformUser`. Idempotent by email.
+- `server/scripts/auditPlatformUsers.ts` — reads `platform_users` via the new repo. Also emits a labelled `[users (legacy)]` section so operators can verify backfill parity until Phase 5 cleanup runs.
+
+**5. Tenant cleanup unwind — none yet.**
+
+The 2026-05-04 `nonPlatformUserPredicate()` helper STAYS in place as defense-in-depth. The frontend defensive filter in `TeamHubPage.tsx` STAYS. Both will be unwound earliest in Phase 5 (separate PR, post-monitoring).
+
+### Changed
+
+#### Platform login: tenant-role rejection now returns 401 (anti-enumeration improvement, 2026-05-04)
+
+A tenant account that submits credentials at `/api/platform/auth/login` now collapses to a generic `401 Invalid email or password` instead of `403 This account is not a platform admin`. The previous 403 message implicitly confirmed the email existed in the user table — a small but real account-enumeration leak. With the Phase 2-A repo cutover, the new resolver only knows about platform-role rows AND the legacy fallback gates on `isPlatformRole(role)` before returning, so a tenant account never produces a `resolved` value and naturally hits the existing `!resolved → 401` branch.
+
+The critical contract is unchanged: a tenant account NEVER receives a platform session, regardless of status code. The change only affects which response the attacker sees.
+
+`tests/platform-auth-separation.test.ts::"rejects a tenant-role account"` updated to assert the new 401 + the preserved no-session contract.
+
+### Security
+
+#### Platform/Tenant identity containment — platform user appearing in tenant Team Management (2026-05-04)
+
+**Severity: critical (cross-boundary identity leak).** After seeding `nad@syntraro.com` as a `platform_admin` (which uses Samcor's company id as a "parking" FK per the architectural debt recorded 2026-05-03), the platform user surfaced inside Samcor's Team Management list with a "Platform Admin" badge. Clicking the row resolved to "team member not found" — list endpoint returned the row, detail endpoint did not. **Containment fix only.** The proper fix is the planned `platform_users` + `platform_user_roles` split (Phase 2-A); this commit prevents the leak from reaching any tenant surface in the meantime.
+
+**Root cause.** Tenant team and technician queries filtered users by `companyId` only. Platform-role rows whose `companyId` happens to point at the same tenant therefore passed the filter. Any tenant-facing surface that called `storage.getTeamMembers(companyId)` — Team Management list, technician selectors, dispatch assignment dropdowns, payroll/timesheet user switcher, notification recipient lookups — could surface them.
+
+**Fix — single source of truth predicate.**
+
+`server/storage/tenantUserPredicate.ts` (new): exports `nonPlatformUserPredicate()`, a Drizzle SQL fragment that resolves to `users.role NOT IN (PLATFORM_ROLES)` against the **canonical** role list at `server/auth/roles.ts::PLATFORM_ROLES`. Single list, single helper, no duplicated string arrays. When a future role is added to the canonical list, every tenant-facing query picks it up automatically.
+
+**Wired into every tenant-facing user query.**
+
+| File | Method | Surface protected |
+|---|---|---|
+| `server/storage/team.ts` | `getTeamMembers` | `GET /api/team` (Team Management list) |
+| `server/storage/team.ts` | `getTeamMember` | `GET /api/team/:userId` (detail page) |
+| `server/storage/team.ts` | `getTechnicianColors` | dispatch board colors |
+| `server/storage/team.ts` | `getTechnicianRates` | Add Time modal cost-per-hour |
+| `server/storage/team.ts` | `getTechniciansByCompanyId` | technician selectors |
+| `server/storage/team.ts` | `updateTeamMember` / `deactivateTeamMember` / `activateTeamMember` | tenant write paths (defense-in-depth — refuse hand-crafted URL with platform user id) |
+| `server/storage/timeTracking.ts` | `getTimesheetUsers` | payroll/timesheet user switcher |
+| `server/storage/notifications.ts` | recipient lookup | per-role notification fan-out |
+| `server/storage/admin.ts` | tenant detail userMetrics + recentUsers | platform-side tenant detail view |
+
+**Routes affected (no route-level changes — fix is at the storage layer):**
+- `GET /api/team` — list now excludes platform rows.
+- `GET /api/team/:userId` — detail now refuses to resolve a platform user (returns null → 404 in the route layer, but the row is already gone from the list so the broken-link path doesn't reproduce).
+- `GET /api/team/technicians` — selector now excludes platform rows.
+- `GET /api/team/technicians/live-state` + `/working-hours` — derived sets shrink correspondingly.
+
+**Frontend defensive filter.**
+
+`client/src/pages/TeamHubPage.tsx` — added a layered `rawMembers.filter((m) => !isPlatformRole(m.role))` step using the canonical client helper at `client/src/lib/platformRoles.ts`. The page metrics, the MembersTab, the SchedulesTab, and the URL `?member=…` selector all read from the filtered list. If a backend regression ever returns a platform row, the page silently drops it instead of rendering "Platform Admin" inside tenant chrome.
+
+**What is NOT touched (deliberately):**
+- Identity / login lookups (`storage/identities.ts`) — platform login MUST be able to find platform users by email. The predicate is only applied to tenant-facing reads, never to the auth surface.
+- `storage/users.ts::getUser(id)` — generic identity-by-id read used by both auth surfaces. Tenant authorization is enforced separately by `requireRole` / `requirePlatformSession` on the route layer.
+- `/api/platform/*` reads — the platform console is its own surface and does not need tenant exclusion.
+
+**Tests — `tests/platform-tenant-containment.test.ts` (new).**
+
+14 cases pinning: predicate shape (composable Drizzle fragment, not null/empty); canonical PLATFORM_ROLES coverage; `isPlatformRole` matches every member + rejects every tenant role; every TeamRepository read **and** write callsite composes the predicate; `storage/admin.ts`, `storage/notifications.ts`, `storage/timeTracking.ts` all wire it; TeamHubPage imports the canonical client helper and runs the defensive filter. All 14 pass. The full platform-related suite (5 files, 53 tests) all pass.
+
+**Constraints honored:** no schema change, no platform_users migration, no auth/login behavior change, no /api/platform/* contract change. Containment fix only — the architectural cleanup remains the planned Phase 2-A work.
+
+**Files changed:**
+- `server/storage/tenantUserPredicate.ts` (new)
+- `server/storage/team.ts`
+- `server/storage/timeTracking.ts`
+- `server/storage/notifications.ts`
+- `server/storage/admin.ts`
+- `client/src/pages/TeamHubPage.tsx`
+- `tests/platform-tenant-containment.test.ts` (new)
+
+**Verification:** `npm run check` clean, `npm run build` clean, `npx vitest run tests/platform-*.test.ts tests/session-expired-platform-suppression.test.ts` → 53/53 pass.
+
+### Notes — Known Debt
+
+#### Platform Admin Identity — recorded debt (2026-05-03, documentation only)
+
+**Documentation entry only.** No schema change, no runtime change, no test change in this commit. Tracked here so the deferred cleanup has a definitive scoping target. Full write-up: see `SECURITY.md` ("Platform Admin Identity — Architectural Debt") and `docs/REFACTORING_LOG.md` (2026-05-03 entry).
+
+**The runtime is correct.** The 2026-04-22 Phase 1 Platform Auth Separation + 2026-05-03 platform reset flow give the `/platform/*` console its own `psid` cookie, its own session secret, capability-gated routes, login that rejects non-platform-role accounts, and reset tokens that cannot cross-redeem with the tenant flow. Authorization is sound — this is **not** a security fix.
+
+**The debt is a storage-layer coupling** that should be cleaned before scaling platform-staff headcount:
+
+1. **Platform users currently live in the tenant `users` table** (no dedicated `platform_users` table yet). A platform admin is a row whose `role` happens to be `platform_admin / platform_support / platform_billing / platform_readonly_audit`.
+2. **`users.companyId` is NOT NULL**, so every platform user carries a "parking" FK to some tenant company. `seedPlatformUser.ts` picks the first available `companies.id` as a placeholder. The platform login flow does NOT use that company id for tenant-scoping decisions, but the FK still exists at the schema level — meaning deleting that tenant `ON DELETE CASCADE`s the platform user, and tenant queries against `users WHERE company_id = ?` can incidentally see the row.
+3. **Future target: dedicated `platform_users` + `platform_user_roles` tables.** Multi-role join, no tenant FK. Plan referenced at `shared/platformCapabilities.ts:13–15`.
+4. **Legacy `users.password` is still NOT NULL.** Platform login reads `user_identities.password_hash` (the canonical credential for the `provider="email"` row) and does NOT consult `users.password`. The seed and reset paths *mirror* the hash into `users.password` only to satisfy the legacy NOT NULL constraint — the mirror is schema-compatibility shimming, not an authoritative credential surface.
+5. **No immediate production blocker.** Cleanup is a pre-scale concern, not a runtime fix. Proposed sequencing (`docs/REFACTORING_LOG.md`):
+   - Phase 2-A: introduce `platform_users` + `platform_user_roles`, backfill, switch `requirePlatformSession` to resolve against the new table.
+   - Phase 2-B: drop the `companyId` FK requirement for platform identities; decouple from tenant CASCADE.
+   - Phase 2-C: relax `users.password` to nullable (or drop), remove the mirroring writes from seed/reset paths.
+
+**Code pointers:**
+- `server/scripts/seedPlatformUser.ts` (schema-coupling caveat in header)
+- `server/services/platformPasswordResetService.ts::confirmPlatformPasswordReset` (mirror write)
+- `server/routes/platformAuth.ts` (login reads `identity.passwordHash`, never `users.password`)
+- `shared/platformCapabilities.ts:13–15` (original Phase 2 hint)
+
+### Fixed
+
+#### Tenant SessionExpiredDialog leaked onto `/platform/login` (2026-05-03)
+
+**Severity: high (UX security boundary).** Direct incognito navigation to `/platform/login` immediately surfaced the tenant "Session Expired" modal, whose "Log In" button routed to the *tenant* `/login` page — making the platform-admin login surface effectively unreachable until the user signed in as a tenant first. Reproduces with three small misalignments stacked on top of each other; the fix removes all three.
+
+**Root cause (three-part).**
+1. `client/src/App.tsx` mounts the tenant `useActiveTaskCount({ enabled: !isPlatformRole(user?.role) })` hook unconditionally for every page including `/platform/login`. For an unauthenticated visitor, `user?.role === undefined`, `isPlatformRole(undefined) === false`, so `enabled === !false === true` and `GET /api/tasks?…` fired with no tenant session → 401.
+2. `client/src/lib/queryClient.ts::notifySessionExpired` only suppressed the modal for `/api/auth/me`, `/api/dispatch/stream`, and `/api/portal/*`. A 401 on `/api/tasks` (or `/api/platform/auth/me` from the platform provider once it later mounts) sailed straight through and dispatched the `session-expired` event.
+3. The same file's `AUTH_PAGE_PREFIXES` (which suppresses the dispatcher when the user is *already on* an auth page) listed `/login`, `/signup`, `/request-reset`, `/reset-password` but not any `/platform/*` path. Same gap in `client/src/components/SessionExpiredDialog.tsx`'s belt-and-suspenders `AUTH_PAGE_PREFIXES` constant.
+
+**Fix.**
+- `client/src/App.tsx` — `useActiveTaskCount` now passes `enabled: Boolean(user?.id) && !isPlatformRole(user?.role)`. Unauthenticated visitors no longer fire any tenant-scoped query from the app shell.
+- `client/src/lib/queryClient.ts` — added `/platform` to `AUTH_PAGE_PREFIXES`, added `if (url.startsWith("/api/platform/") || url === "/api/platform") return;` to `notifySessionExpired`. Both surfaces now refuse to fire the tenant modal for platform-related 401s or platform-page locations. Existing `/api/auth/me` + `/api/dispatch/stream` + `/api/portal/*` skips remain in place.
+- `client/src/components/SessionExpiredDialog.tsx` — added `/platform` to `AUTH_PAGE_PREFIXES`. Stale event during a navigation gap can no longer pop the dialog over a platform page.
+
+**Backend untouched.** Platform auth gates (`requirePlatformSession`, `requirePlatformRole`, the `psid` cookie boundary) are unchanged. The fix is purely frontend.
+
+**Files changed (Fixed scope):**
+- `client/src/App.tsx`
+- `client/src/lib/queryClient.ts`
+- `client/src/components/SessionExpiredDialog.tsx`
+
+**Tests:** `tests/session-expired-platform-suppression.test.ts` (new — 6 cases pinning all three guards). All passing.
+
+### Added
+
+#### Tenant payments PR6 — Dispute / chargeback tracking via Stripe Connect `charge.dispute.*` webhooks (2026-05-04)
+
+**Provider-mirrored dispute lifecycle, no UI yet, no evidence submission yet.** Persists every Stripe `charge.dispute.*` event into the PR1 `payment_disputes` table and exposes two read APIs (`GET /api/payments/disputes`, `GET /api/payments/disputes/summary`) for the future dashboard. Mirror of PR5's payout pattern, plus payment/invoice linking when a local match exists.
+
+**Provider-neutral webhook event types — `server/services/payments/providers/types.ts`:**
+- New discriminated-union member with shared shape and three `kind` values: `dispute_created` / `dispute_updated` / `dispute_closed`.
+- Provider-neutral envelope: `providerAccountId`, `providerDisputeId` (Stripe `dp_...`), `providerPaymentId` (the disputed `ch_...` charge), `amountCents`, `currency`, `status` (normalised eight-state enum), `reason`, `evidenceDueBy` (ISO string; null on warnings/closed), `rawProviderStatus`.
+
+**Stripe adapter — `stripeAdapter.ts`:**
+- New `mapStripeDisputeEvent` helper folds the three `charge.dispute.*` Stripe event types into the shared envelope.
+- Status mapping: the eight values from PR1's `paymentDisputeStatusEnum` pass through; any unmapped Stripe status (e.g. Stripe's newer `"prevented"` value) folds to `under_review` with the verbatim string preserved on `rawProviderStatus`.
+- `extractStripeDisputeChargeId` reads `dispute.charge` (always present on Stripe disputes) — used as `providerPaymentId` for the `payments.reference` backfill match.
+- Three new case branches in `verifyWebhook` for `charge.dispute.created` / `.updated` / `.closed`. Events arriving without `event.account` are surfaced as `unsupported`.
+
+**Repository — `server/storage/paymentDisputes.ts` (new):**
+- `upsertFromProviderEvent(input)` — idempotent ON CONFLICT (provider, provider_dispute_id) DO UPDATE. Uses Drizzle's `targetWhere` to match the partial unique index `payment_disputes_provider_dispute_id_uq` (PR1). Status updates are NOT monotonic — provider truth wins. `paymentId` / `invoiceId` are written even when null so out-of-order events backfill cleanly when a follow-up `dispute.updated` arrives with the link populated.
+- `listForCompany(companyId, filters)` — tenant-scoped list with optional `status` / `from` / `to` (created_at range) / `limit` / `offset` filters. Sort: most-recent first. Default limit 50, max 200.
+- `getSummaryForCompany(companyId)` — single-query rollup: `needsResponseCount`, `underReviewCount`, `wonCount`, `lostCount`, `totalOpenAmount` (open = needs_response + under_review + warning_needs_response + warning_under_review), `nextEvidenceDueBy` (MIN over actionable rows).
+
+**Application service handler — `paymentApplicationService.ts`:**
+- New `handleDisputeEvent` (single shared handler for all three kinds). Resolves the local `payment_provider_accounts` row by `(provider, providerAccountId)`; missing → 200 ACK + `payment_dispute_account_not_found` ops anomaly + skip.
+- **Payment / invoice linking:** When the account resolves, the handler attempts `paymentRepository.findByProviderReference(providerId, providerPaymentId)` (Stripe `ch_...`). The match is tenant-verified — only links a payment whose `companyId` matches the resolved account's `companyId`. Cross-tenant match → null link + `payment_dispute_payment_cross_tenant_skipped` log. No match at all → null link + `payment_dispute_payment_not_found` log. The dispute row is ALWAYS upserted, even when the link is missing — per spec rule "Never drop a dispute solely because local payment match is missing."
+- Standard three-class error taxonomy (`final_replay` / `final_config` / `transient`).
+
+**Schema — `shared/schema.ts`:**
+- `paymentWebhookEventKindEnum` gains `dispute_created`, `dispute_updated`, `dispute_closed`.
+
+**API routes — `server/routes/paymentAccount.ts`:**
+- `GET /api/payments/disputes` — tenant-scoped list. Query params: `status` (enum), `from`, `to`, `limit`, `offset`. Validated via Zod.
+- `GET /api/payments/disputes/summary` — needs-response / under-review / won / lost counts, total open amount, next evidence due-by.
+- Both gated by `requireRole(RESTRICTED_MANAGER_ROLES)` — owner/admin/manager — same access pattern as PR5 payouts routes.
+
+**Payment/invoice linking behaviour:**
+1. Webhook arrives carrying `providerPaymentId` (Stripe `ch_...`).
+2. Handler resolves connected account → `companyId`.
+3. Handler calls `findByProviderReference("stripe", providerPaymentId)`.
+4. **Match in same tenant:** `paymentId` ← `payment.id`, `invoiceId` ← `payment.invoiceId`. Multi-invoice payments leave `invoiceId` null since they use `payment_allocations` (out of scope for PR6 1:1 link).
+5. **Match in different tenant:** logged as `payment_dispute_payment_cross_tenant_skipped`; FKs stay null. Dispute is still recorded.
+6. **No match (out-of-order or unknown charge):** logged as `payment_dispute_payment_not_found`; FKs stay null. Dispute is still recorded — a future `dispute.updated` re-attempt or backfill job can wire the link.
+
+**Tenant isolation:**
+- Webhook attribution: tenant resolves from local `payment_provider_accounts` keyed on `(provider, providerAccountId)`.
+- Payment match guard: `matchedPayment.companyId === account.companyId` is required before linking. Cross-tenant matches → null link.
+- Repository: `eq(companyId)` enforced on every read.
+- Read APIs: `req.companyId!` from authenticated session is the only `companyId` reaching the repo.
+- Webhooks for unknown connected accounts are ACKed + logged + skipped — never auto-create accounts.
+
+**Files added:**
+- `server/storage/paymentDisputes.ts`
+- `tests/payment-disputes.test.ts` (7 integration tests over real DB)
+- `tests/payment-disputes-webhook.test.ts` (7 webhook dispatch mock tests)
+
+**Files modified:**
+- `shared/schema.ts` (3 new event-kind enum values)
+- `server/services/payments/providers/types.ts` (new discriminated-union variant covering all 3 dispute kinds)
+- `server/services/payments/providers/stripeAdapter.ts` (`mapStripeDisputeEvent` + `extractStripeDisputeChargeId` + 3 case branches)
+- `server/services/payments/paymentApplicationService.ts` (`handleDisputeEvent` + 3 dispatch cases + repo import)
+- `server/routes/paymentAccount.ts` (2 new GET routes + Zod schema)
+
+**What this PR intentionally does NOT include:**
+- Payments dashboard UI (PR7 — overview, transactions, payouts, disputes).
+- Evidence submission — provider-side `disputes.update({ evidence: ... })` calls + secure file storage are out of scope.
+- Initiating disputes from Syntraro — Stripe is canonical.
+- A migration — PR1 already created `payment_disputes` and the `paymentWebhookEventKindEnum` is enforced in TypeScript only.
+
+**Manual sandbox verification — deferred.** No real Stripe Connect connected accounts exist in this dev environment yet (PR2's onboarding flow requires a live Stripe Connect application). Coverage is via 7 real-DB integration tests (insert, replay-upsert with status transitions, warning + null evidence_due_by, tenant scoping, status filter, date-range filter, summary rollup) + 7 webhook dispatch tests covering the full handler with mocked deps (created → upsert + link, no-payment-match → null FKs, cross-tenant payment match → null FKs no leak, updated → status mutation, closed → terminal status, missing account → ACK + skip, transient repo failure → propagated).
+
+**Validation:**
+- `npm run check` — clean.
+- 16 payment-related test suites, 229 tests — all passing (215 from PR5 + 14 new in PR6).
+- Pre-existing unrelated failures on `main` (job-lifecycle, pm-current-month, etc.) unchanged — not payment-related.
+
+**Next PR:** PR7 — Payments dashboard UI: overview, transactions, payouts, disputes.
+
+#### Tenant payments PR5 — Payout tracking via Stripe Connect `payout.*` webhooks (2026-05-04)
+
+**Provider-mirrored payout lifecycle, no UI yet.** Persists every Stripe payout event into the PR1 `payment_payouts` table and exposes two read APIs (`GET /api/payments/payouts`, `GET /api/payments/payouts/summary`) for the future dashboard. Syntraro never initiates payouts — we mirror what the connected account tells us.
+
+**Provider-neutral webhook event types — `server/services/payments/providers/types.ts`:**
+- New discriminated-union member with shared shape and five `kind` values: `payout_created` / `payout_updated` / `payout_paid` / `payout_failed` / `payout_canceled`.
+- Provider-neutral envelope: `providerAccountId`, `providerPayoutId`, `amountCents`, `currency`, `status` (normalised five-state enum), `arrivalDate` (ISO string), `destinationLast4`, `failureCode`, `failureMessage`, `rawProviderStatus` (verbatim Stripe value preserved for forensics).
+
+**Stripe adapter — `stripeAdapter.ts`:**
+- New `mapStripePayoutEvent` helper folds the five `payout.*` Stripe event types into the shared envelope.
+- Status mapping: `pending`/`in_transit`/`paid`/`failed`/`canceled` pass through; any unmapped Stripe status folds to `pending` with the verbatim string preserved on `rawProviderStatus`.
+- `extractStripePayoutDestinationLast4` reads `payout.destination.last4` ONLY when Stripe expanded the destination object on the event. Opaque `ba_...`/`card_...` strings return null. **Never refetches** — privacy minimisation rule from PR1.
+- Five new case branches in `verifyWebhook` for `payout.created`/`updated`/`paid`/`failed`/`canceled`. Events arriving without `event.account` are surfaced as `unsupported` (platform-account payouts are out of scope).
+
+**Repository — `server/storage/paymentPayouts.ts` (new):**
+- `upsertFromProviderEvent(input)` — idempotent ON CONFLICT (provider, provider_payout_id) DO UPDATE. Uses Drizzle's `targetWhere` so the partial unique index `payment_payouts_provider_payout_id_uq` (PR1) is matched exactly. Status updates are NOT monotonic — provider truth wins.
+- `listForCompany(companyId, filters)` — tenant-scoped list with optional `status` / `from` / `to` (arrival_date range) / `limit` / `offset` filters. Sort: most-recent arrival first. Default limit 50, max 200.
+- `getSummaryForCompany(companyId)` — single-query rollup: `pendingTotal`, `inTransitTotal`, `paidLast30Days`, `failedCount`, `nextArrivalDate`. Money fields stay as `numeric(12,2)` strings through the JSON boundary.
+
+**Application service handler — `paymentApplicationService.ts`:**
+- New `handlePayoutEvent` (single shared handler for all five kinds). Resolves the local `payment_provider_accounts` row by `(provider, providerAccountId)`; missing → 200 ACK + `payment_payout_account_not_found` ops anomaly + skip. Does NOT auto-create accounts.
+- Standard three-class error taxonomy (`final_replay` / `final_config` / `transient`) — same pattern as `handleAccountUpdated` from PR2 / `handlePaymentSucceeded`.
+- Five new case dispatches in `applyVerifiedWebhookBatch`.
+
+**Schema — `shared/schema.ts`:**
+- `paymentWebhookEventKindEnum` gains `payout_created`, `payout_updated`, `payout_paid`, `payout_failed`, `payout_canceled` for the diagnostic webhook event log.
+
+**API routes — `server/routes/paymentAccount.ts`:**
+- `GET /api/payments/payouts` — tenant-scoped list. Query params: `status` (enum), `from` (ISO date), `to` (ISO date), `limit` (1-200), `offset` (≥0). Validated via Zod.
+- `GET /api/payments/payouts/summary` — pending/in-transit/paid-30d totals, failed count, next arrival date.
+- Both gated by `requireRole(RESTRICTED_MANAGER_ROLES)` — owner/admin/manager — matching the access pattern of other financial reporting surfaces.
+
+**Tenant isolation:**
+- Webhook attribution: tenant resolves from the local `payment_provider_accounts` row keyed on `(provider, providerAccountId)`. The repo enforces `eq(companyId)` on every read. Cross-tenant access is structurally impossible.
+- Read APIs: `req.companyId!` from the authenticated session is the only `companyId` the repo sees. No filter coming from the client.
+- Webhooks for unknown connected accounts are ACKed + logged + skipped — never auto-create accounts from payout events.
+
+**Files added:**
+- `server/storage/paymentPayouts.ts`
+- `tests/payment-payouts.test.ts` (7 integration tests over real DB)
+- `tests/payment-payouts-webhook.test.ts` (5 webhook dispatch mock tests)
+
+**Files modified:**
+- `shared/schema.ts` (event-kind enum)
+- `server/services/payments/providers/types.ts` (5 new event variants)
+- `server/services/payments/providers/stripeAdapter.ts` (`mapStripePayoutEvent` + 5 case branches)
+- `server/services/payments/paymentApplicationService.ts` (`handlePayoutEvent` + 5 dispatch cases + import)
+- `server/routes/paymentAccount.ts` (2 new GET routes + Zod schema)
+
+**What this PR intentionally does NOT include:**
+- Payouts dashboard UI (deferred — backend read APIs are in place; a future PR wires the UI).
+- Disputes (PR6).
+- Initiating payouts from Syntraro — Stripe Express dashboards remain canonical.
+- Storing full bank account details — only `destination_last4` when Stripe expanded the object on the event.
+- A migration — PR1 already created `payment_payouts` and the `paymentWebhookEventKindEnum` is enforced in TypeScript only (the column is plain `text`).
+
+**Manual sandbox verification — deferred.** No real Stripe Connect connected accounts exist in this dev environment yet (PR2's onboarding flow requires a real Stripe Connect application). Coverage is provided by unit + integration tests:
+- 7 repo integration tests against the real DB (insert, replay-upsert, failure recording, tenant scoping, status filter, date-range filter, summary rollup).
+- 5 webhook dispatch tests covering the full handler with mocked repos (created → upsert, paid → status update, failed → failure fields, missing account → ACK + skip, transient repo failure → propagated as `WebhookTransientFailureError`).
+
+**Validation:**
+- `npm run check` — clean.
+- 14 payment-related test suites, 215 tests — all passing (203 from PR4 + 12 new in PR5).
+- Pre-existing unrelated failures on `main` (job-lifecycle, pm-current-month, etc.) unchanged — not payment-related.
+
+**Next PR:** PR6 — Dispute tracking with `charge.dispute.*` webhooks and backend read APIs.
+
+#### Tenant payments PR4 — Connect-aware checkout + payment account attribution (2026-05-04)
+
+**First behaviour-changing PR.** Routes every online payment through the tenant's connected provider account (Stripe Connect Direct Charges) and persists `payment_provider_account_id` + `provider_account_id` on every Stripe-source payment row. The platform-only payment path is removed structurally — the Stripe adapter refuses to call the SDK without `{stripeAccount}` set.
+
+**Domain errors (`server/services/payments/paymentApplicationService.ts`):**
+- `PAYMENTS_NOT_ENABLED` (HTTP 409) — tenant has no `active` provider account; checkout/setup intent/off-session payment all reject with this stable code.
+- `PAYMENT_ACCOUNT_NOT_FOUND` (409) — refund attempted on a Stripe-source payment that has no `provider_account_id` (legacy / orphan row).
+- `PROVIDER_ACCOUNT_MISMATCH` (409) — webhook's `event.account` doesn't match the metadata-derived tenant. Treated as final config error inside the webhook (200 ACK + ops alert) but exposed for service-internal callers.
+- All three carry `code` on the JSON body via the existing 409 path in `server/middleware/errorHandler.ts` + `server/index.ts`. No route-layer change required; frontend keys off `code`.
+
+**Service flow change — `paymentApplicationService`:**
+- `createCheckout`, `createMultiCheckout`, `createPortalSetupIntent`, `payWithSavedMethod` now resolve the active account FIRST via `paymentProviderAccountService.getActiveAccount(companyId)` and throw `PAYMENTS_NOT_ENABLED` when none. The `providerAccountId` flows through every adapter call; `paymentProviderAccountId` (local FK) is embedded in PI metadata so the webhook persists attribution without a second resolver lookup.
+- `refundPayment` reads back the parent payment's `providerAccountId` and forwards it to the adapter. Missing attribution on a Stripe-source parent → `PAYMENT_ACCOUNT_NOT_FOUND`.
+- `removeSavedPaymentMethod` requires the active account to call provider-side detach; soft-deletes locally even if the provider call fails (matches existing tolerance).
+- New helper `resolveAccountAttributionForWebhook(providerId, providerAccountId, companyId)` — looks up the local row by `(provider, providerAccountId)`, verifies tenant match, returns `{ ok: true, paymentProviderAccountId, providerAccountId }` or skip with reason `missing_account_on_event` / `account_not_found` / `tenant_mismatch`.
+- `handlePaymentSucceeded` and `handleMultiInvoicePaymentSucceeded` resolve attribution and persist it on the payment row. Missing/mismatched attribution → ledger row STILL writes (the money already moved at the provider; losing the row would be worse than losing attribution) but `payment_account_attribution_skipped` ops anomaly is logged.
+
+**Stripe adapter — `stripeAdapter.ts`:**
+- New `assertConnectAccount(providerAccountId)` guard at the top of every connected-account SDK call. Throws 500 if missing — structural defence against future regressions.
+- `createCheckout`, `createCheckoutSession`, `createOffSessionPayment`, `refundPayment`, `createCustomer`, `createSetupIntent`, `detachPaymentMethod` — all now pass `{ stripeAccount: providerAccountId }` to the SDK options bag.
+- `verifyWebhook` extracts `event.account` once at the top and surfaces it as `providerAccountId: string | null` on every emitted normalized event (`payment_succeeded`, `multi_invoice_payment_succeeded`, `payment_failed`, `refund_created`, `payment_method_attached`, `payment_method_detached`, `payment_method_updated`).
+- `payment_method.attached` consent lookup (`paymentIntents.list` / `setupIntents.list`) now passes the same `{ stripeAccount }` option so it queries the connected account, not the platform.
+
+**Provider interface — `providers/types.ts`:**
+- `providerAccountId: string` added to `CreateCheckoutInput`, `CreateCheckoutSessionInput`, `CreateOffSessionPaymentInput`, `RefundInput`, `CreateCustomerInput`, `CreateSetupIntentInput`, `DetachPaymentMethodInput`.
+- `providerAccountId: string | null` added to all six payment-related members of `NormalizedWebhookEvent` discriminated union.
+
+**Repository — `server/storage/payments.ts`:**
+- `createPayment` accepts `paymentProviderAccountId?: string | null` + `providerAccountId?: string | null` as system-managed fields.
+- `createLedgerAdjustment` (refund / reversal writer) automatically inherits `paymentProviderAccountId` + `providerAccountId` from the parent payment so refund rows always carry the same attribution as the charge.
+
+**Customer-company resolver — `server/services/customerCompanyPaymentService.ts`:**
+- `resolveOrCreateProviderCustomer` now requires `providerAccountId`. Documented invariant: `customer_companies.provider_customer_id` is scoped to the active connected account; re-onboarding workflow is out of scope for PR4.
+
+**What this PR intentionally does NOT include:**
+- Webhook `payout.*` / `charge.dispute.*` handling (PR5 / PR6).
+- A migration to backfill `payment_provider_account_id` on legacy `payments` rows. Per PR1 plan, the test DB has been wiped and there are no production tenants — legacy rows do not exist. A future production-data migration would need a separate script.
+- A "switch your Connect account" flow (re-onboarding) — Stripe Express does not expose a clean primitive for this, and `customer_companies.provider_customer_id` would need to be invalidated.
+- Frontend changes — the existing `PortalPayInvoiceForm` / `StaffTakeCardDialog` continue to work; the new `PAYMENTS_NOT_ENABLED` error surfaces through the standard `apiRequest` error path. PR3's settings page is the operator surface.
+
+**Files modified:**
+- `server/services/payments/paymentApplicationService.ts`
+- `server/services/payments/providers/types.ts`
+- `server/services/payments/providers/stripeAdapter.ts`
+- `server/services/customerCompanyPaymentService.ts`
+- `server/storage/payments.ts`
+- 7 test files updated for the new mock surface (resolveForCompanyAsync export + paymentProviderAccountService + paymentProviderAccountsRepository mocks; resolveOrCreateProviderCustomer call sites add providerAccountId; refund parent fixtures add providerAccountId).
+
+**Validation:**
+- `npm run check` — clean.
+- 12 payment-related test suites, 203 tests — all passing.
+- Pre-existing unrelated failures on `main` (job-lifecycle, pm-current-month, calendar-drag-drop, etc.) confirmed via `git stash` — count unchanged at 26 failed test files / 93 failed tests, not caused by this PR.
+
+**Next PR:** PR5 — Payout tracking (`payout.*` webhooks + payouts dashboard foundation).
+
+#### Tenant payments PR3 — Settings → Payments UI + onboarding flow exposure (2026-05-03)
+
+Connects the PR2 backend (`paymentProviderAccountService` + Stripe Connect adapter methods) to a tenant-facing UI. **No checkout / refund / webhook behaviour change** — the page is purely additive. No Stripe SDK in the frontend; the page treats the onboarding URL as an opaque redirect target.
+
+**New page — `client/src/pages/PaymentsSettingsPage.tsx`:**
+- Status card with `StatusPill` mapped per lifecycle enum (`not_started` neutral, `pending`/`restricted` warning, `active` success, `disabled` danger).
+- Capability rows for `chargesEnabled`, `payoutsEnabled`, `detailsSubmitted` with check/cross icons.
+- Requirements card surfaces `currentlyDue` + `pastDue` lists pulled from `requirements_due` jsonb without deep interpretation (single-line `key.replace(/[._]/g, " ")` prettifier).
+- Empty state for first-time tenants with country picker (CA / US — extension point for future Stripe-supported countries) and primary "Set up payments" CTA.
+- Two-column layout (`grid grid-cols-1 lg:grid-cols-3 gap-6` with `lg:col-span-2` left + `lg:col-span-1` right) matching `ManageRoles.tsx` / `PMDetailPage.tsx` convention.
+- Post-onboarding return effect: detects `?from=stripe` in URL, calls refresh exactly once, strips the flag via `wouter` `setLocation(..., {replace:true})`.
+- Inline error states: API failure → `Alert variant="destructive"`; onboarding-link failure → toast (no redirect); refresh failure → non-blocking warning under the action button.
+
+**New hook file — `client/src/hooks/usePaymentAccount.ts`:**
+- `useTenantPaymentAccount()` — `GET /api/payments/account`. `staleTime: 30_000`, no background polling.
+- `useOnboardPaymentAccount()` — `POST /api/payments/account/onboard` mutation. Invalidates the read cache `onSuccess`.
+- `useRefreshPaymentAccount()` — `POST /api/payments/account/refresh` mutation. Optimistically writes the freshly-stamped account into the read cache.
+- Re-exports type aliases `PaymentAccountStatus` + `TenantPaymentAccount` for the page.
+- Naming note: `useTenantPaymentAccount` (not `usePaymentAccount`) avoids collision with the existing `payments.method` enum + `payment_methods` (saved cards) concepts.
+
+**Routing — `client/src/App.tsx`:**
+- New `<Route path="/settings/payments">` wrapped in `<ProtectedRoute requireAdmin>`.
+- Lazy-load deferred — page is small enough that an extra HTTP round-trip on first visit isn't worth the split.
+
+**Settings menu — `client/src/pages/SettingsPage.tsx`:**
+- New "Payments" link card under the **Financials** section, alongside "Tax & Billing" / "Time Billing" / "Subscription". Card is clearly distinct from "Subscription" (which is the SaaS-platform-billing surface, not the tenant-payment-collection surface).
+
+**Provider-neutrality preserved:**
+- No Stripe.js / Stripe SDK loaded by the page.
+- Onboarding URL treated as opaque redirect target.
+- Status copy uses generic terms ("Connect a bank account", not "Stripe payouts").
+- Requirements display does not interpret Stripe-specific keys beyond a generic `replace(/[._]/g, " ")` cleanup.
+
+**Files added:**
+- `client/src/hooks/usePaymentAccount.ts`
+- `client/src/pages/PaymentsSettingsPage.tsx`
+
+**Files modified:**
+- `client/src/App.tsx` (route + lazy import)
+- `client/src/pages/SettingsPage.tsx` (Financials menu entry)
+
+**What this PR intentionally does NOT include:**
+- Checkout / refund flow integration with the new connected-account routing (PR4).
+- Payouts dashboard (PR5).
+- Disputes UI (PR6).
+- Country support beyond CA / US (extension point left for future PR; the server validates length===2 + uppercases so any 2-letter code is accepted).
+- Auto-polling — onboarding state changes are user-driven (refresh button + post-Stripe-return effect + webhook).
+- Disconnect / cancel onboarding flow — Stripe Express does not expose a "delete connected account" primitive that's safe to call from a tenant UI without ops involvement.
+
+**Validation:**
+- `npm run check` — clean.
+- `npx vite build` — clean (pre-existing chunk-size warning unrelated to this PR).
+- 4 payment-related test suites, 57 tests — all passing (no regressions).
+- Manual nav-test pending real-tenant fresh-onboarding walkthrough in PR4's pre-checkout integration.
+
+**Next PR:** PR4 — Connect-aware checkout (route invoice payments through the tenant's `payment_provider_accounts` row when active, populate `payments.payment_provider_account_id` + `provider_account_id` on success).
+
+#### Tenant payments PR2 — provider-neutral account service + Stripe Connect onboarding adapter (2026-05-03)
+
+Builds the service / adapter / webhook plumbing that the PR1 schema foundation expects. **No checkout / refund / webhook behaviour change** — the new account-onboarding code path is purely additive. All Stripe SDK usage stays inside `stripeAdapter.ts`.
+
+**New service — `server/services/payments/paymentProviderAccountService.ts`:**
+- `normalizeAccountStatus({chargesEnabled,payoutsEnabled,detailsSubmitted,disabledReason})` → `not_started | pending | active | restricted | disabled`. Single source of truth for the PR1 enum mapping; shared by `retrieveAndSyncAccount` and the webhook applier.
+- `getAccountSnapshot(companyId)` → returns `{account, providerId}`; pure-read, no SDK call.
+- `getOrCreateAccount(companyId, {country})` → row-locked first-touch; mints the Stripe Connect Express account on first call, persists `(providerAccountId, status, charges/payouts/details, requirementsDue, country, defaultCurrency)`. Subsequent calls return the persisted row.
+- `createOnboardingLink(companyId, {country, refreshUrl, returnUrl})` → idempotent get-or-create + mint a one-time onboarding URL via `accountLinks.create`.
+- `retrieveAndSyncAccount(companyId)` → authoritative pull from the provider; stamps the local row via the canonical normaliser.
+- `markAccountStatus(companyId, status)` → manual transition with enum validation.
+- `applyAccountUpdate({...})` → webhook integration; resolves the row by `(provider, providerAccountId)`, locks + stamps via the same normaliser. Surfaces 404 (→ `final_config` ack-and-log) when no local row matches.
+- `getActiveAccount(companyId)` → returns the row only when persisted status is `active` AND `charges_enabled = true` (defence in depth against stale enum lag).
+
+**New repository — `server/storage/paymentProviderAccounts.ts`:**
+- `getByCompanyAndProvider`, `getByProviderAndProviderAccountId` (webhook lookup), `listByCompany`, `insertAccount(tx, ...)`, `updateAccountState(tx, ...)`. Tenant-scoped throughout. Extends `BaseRepository`.
+
+**Provider interface — `server/services/payments/providers/types.ts`:**
+- New input/output types: `CreateAccountInput`, `CreateAccountLinkInput`, `RetrieveAccountInput`, `ProviderAccountState`, `OnboardingLink`.
+- New optional methods on `PaymentProvider`: `createAccount`, `createAccountLink`, `retrieveAccount`. Adapters that don't implement them surface 501 via the service-layer `assertOnboardingCapable` guard.
+- New `account_updated` member on `NormalizedWebhookEvent` discriminated union.
+
+**Stripe adapter — `server/services/payments/providers/stripeAdapter.ts`:**
+- `createAccount` → `stripe.accounts.create({type:"express", capabilities:{card_payments,transfers}, country, ...})`.
+- `createAccountLink` → `stripe.accountLinks.create({account, refresh_url, return_url, type:"account_onboarding"})`. Returns `expiresAt` ISO string from Stripe's `expires_at` unix seconds.
+- `retrieveAccount` → `stripe.accounts.retrieve(...)` with `resource_missing` → 404 mapping.
+- `verifyWebhook` → new `case "account.updated"` branch normalises to the `account_updated` shape via the shared `mapStripeAccountToState` helper.
+
+**Resolver — `server/services/payments/providers/resolver.ts`:**
+- New `resolveForCompanyAsync(companyId)` reads `companies.payment_provider`, validates against `paymentProviderEnum`, dispatches via `resolveById`. NULL → `"stripe"`.
+- The hot-path sync `resolveForCompany(companyId)` is preserved bit-identically — the 8+ existing checkout / refund / saved-card call sites are not touched. (Async-converting them is deferred until a second adapter actually ships.)
+
+**Webhook integration — `server/services/payments/paymentApplicationService.ts`:**
+- New `handleAccountUpdated(providerId, event)` handler with the same three-class error taxonomy as `handlePaymentMethodAttached` (`final_replay` / `final_config` / `transient` → 200/200/500). Logs to `paymentWebhookEvents` with the new `event_kind = 'account_updated'`.
+- `applyVerifiedWebhookBatch` switch gains the `account_updated` case.
+
+**API routes — `server/routes/paymentAccount.ts` (new):**
+- `GET /api/payments/account` — pure-read snapshot; no SDK call.
+- `POST /api/payments/account/onboard` — body `{country, refreshUrl, returnUrl}`, returns `{link:{url,expiresAt,providerId}, account}`.
+- `POST /api/payments/account/refresh` — authoritative pull + persist.
+- All gated by `requireRole(ADMIN_ROLES)`. Mutation routes rate-limited 30/min/tenant.
+
+**Schema enum addition (`shared/schema.ts`):**
+- `paymentWebhookEventKindEnum` gains `"account_updated"`. No DB migration required — the column is plain `text`; the enum is enforced in TypeScript only.
+
+**What this PR intentionally does NOT include:**
+- Onboarding UI (PR3).
+- Multi-invoice / single-invoice checkout integration with the new connected-account routing (deferred — checkout still goes through the platform Stripe account; PR3 wires it).
+- `payout.*` / `charge.dispute.*` webhook handling (PR4 / PR5).
+- Async-conversion of `resolveForCompany` (deferred until a second adapter exists).
+- Auto-create of `payment_provider_accounts` rows on receipt of `account.updated` for unknown accounts — surfaced as `config_error` 200 ACK + ops log.
+
+**Files changed:**
+- `shared/schema.ts` (enum addition only)
+- `server/services/payments/providers/types.ts`
+- `server/services/payments/providers/stripeAdapter.ts`
+- `server/services/payments/providers/resolver.ts`
+- `server/services/payments/paymentApplicationService.ts`
+- `server/routes/index.ts`
+
+**Files added:**
+- `server/services/payments/paymentProviderAccountService.ts`
+- `server/storage/paymentProviderAccounts.ts`
+- `server/routes/paymentAccount.ts`
+
+**Validation:**
+- `npm run check` — clean.
+- 10 payment-related test suites, 164 tests — all passing.
+
+**Next PR:** PR3 — Tenant Payments Settings UI + onboarding flow exposure (settings page, onboarding wizard redirect, post-return refresh).
+
+#### Tenant payment provider foundation — schema-only PR1 (2026-05-03)
+
+Provider-neutral schema foundation for tenant-owned payment collection (Stripe Connect-style onboarding, payouts, disputes). **No behavior change** — checkout / webhook / UI all keep running on the existing platform-account path. PR2+ wires service logic on top of these tables.
+
+**Why:** The pre-PR audit confirmed the runtime is **platform-only** today (single Stripe account, no Connect, no payouts, no disputes — see audit report). PR1 lays the schema so PR2 can introduce the `paymentProviderAccountService` + onboarding adapter methods without further migrations.
+
+**New types / enums in `shared/schema.ts`:**
+- `paymentProviderEnum` — `["stripe"]` (extension point for future adapters)
+- `paymentProviderAccountStatusEnum` — `not_started | pending | active | restricted | disabled`
+- `paymentPayoutStatusEnum` — `pending | in_transit | paid | failed | canceled`
+- `paymentDisputeStatusEnum` — `needs_response | under_review | won | lost | warning_needs_response | warning_under_review | warning_closed | closed`
+
+**Tables added (`shared/schema.ts` + `migrations/2026_05_03_tenant_payment_provider_foundation.sql`):**
+- `payment_provider_accounts` — one row per (tenant, provider). Carries onboarding lifecycle (`charges_enabled`, `payouts_enabled`, `details_submitted`, `requirements_due` jsonb, `disabled_reason`, `country`, `default_currency`). Unique on `(company_id, provider)`. Resolver index on `(provider, provider_account_id)`.
+- `payment_payouts` — provider payout lifecycle. Mirrors what the provider tells us; we never initiate payouts. Partial unique on `(provider, provider_payout_id)` for webhook replay. Indexes for tenant-recency and per-account drilldown.
+- `payment_disputes` — chargeback / dispute lifecycle. `payment_id` and `invoice_id` are NULLable so a webhook arriving before the local payment row can land cleanly and be wired up later (`provider_payment_id` is non-null and used as the backfill key). Partial unique on `(provider, provider_dispute_id)`.
+
+**Columns added:**
+- `companies.payment_provider` (text, nullable) — tenant's chosen collection provider; NULL = "not yet onboarded". Distinct from legacy `stripe_customer_id` / `stripe_subscription_id` (those are subscription billing, not customer-payment collection).
+- `payments.payment_provider_account_id` (varchar FK → `payment_provider_accounts.id`, nullable, ON DELETE SET NULL) — identifies which tenant connected account processed each row.
+- `payments.provider_account_id` (text, nullable) — opaque mirror of provider's account id (Stripe `acct_...`) for cross-reference without a join.
+
+Both new payments columns are added to `insertPaymentSchema.omit({...})` — system-managed, never user input.
+
+**Drizzle types added:**
+- `InsertPaymentProviderAccount` / `PaymentProviderAccount` + `insertPaymentProviderAccountSchema`
+- `InsertPaymentPayout` / `PaymentPayout` + `insertPaymentPayoutSchema`
+- `InsertPaymentDispute` / `PaymentDispute` + `insertPaymentDisputeSchema`
+
+**Migration file:**
+- `migrations/2026_05_03_tenant_payment_provider_foundation.sql` — fully idempotent (`ADD COLUMN IF NOT EXISTS`, `CREATE TABLE IF NOT EXISTS`, `CREATE … INDEX IF NOT EXISTS`). Safe to re-apply.
+
+**Files changed:**
+- `shared/schema.ts` — column on `companies`, two columns on `payments`, three new tables + types/enums.
+- `migrations/2026_05_03_tenant_payment_provider_foundation.sql` (new)
+
+**Breaking changes:** None. Every new column is nullable or has a default; every new table is additive.
+
+**What this PR intentionally does NOT include:**
+- Stripe Connect API calls (no `stripe.accounts.create`, no account links, no onboarding routes)
+- Provider account service / repository
+- Webhook handlers for `account.updated` / `payout.*` / `charge.dispute.*`
+- Any UI (no payments-settings page, no onboarding flow, no payout / dispute dashboards)
+- Behavior change of any kind on the existing checkout / refund / webhook paths
+
+**Next PR:** PR2 — provider-neutral `paymentProviderAccountService` + Stripe Connect onboarding adapter methods (`createAccount`, `createAccountLink`, `retrieveAccount`).
+
+#### Platform super-admin seed script + provisioned `nad@syntraro.com` (2026-05-03)
+
+The DB previously contained zero platform-role users, which made `/platform/login` unreachable in any provisioned environment. Adds a CLI seed and provisions the first super-admin.
+
+**Script — `server/scripts/seedPlatformUser.ts` (new).**
+
+- Idempotent by email. Existing user → role / status / identity reconciled in-place. New user → `users` row + `user_identities` row inserted in one transaction.
+- Optional `--force-password` rotates the hash on an existing user; without it, an existing user keeps its current password and only role/status/identity-presence are healed.
+- Optional `--company-id=<uuid>` overrides automatic company selection.
+- Password is **never** logged. Only `email + role + userId + action` appear on stdout (line-delimited JSON).
+- bcrypt(12).
+- Wraps every write in a single `db.transaction(...)`.
+- Documented schema-coupling caveat: platform users still need a `companyId` (FK NOT NULL on `users`); a follow-up will move them to a dedicated `platform_users` table per the planned Phase 2 work in `shared/platformCapabilities.ts:13–15`.
+
+**Audit helper — `server/scripts/auditPlatformUsers.ts` (kept).**
+
+Read-only listing of every platform-role user currently in the DB. Output is one JSON line per user with `{ email, role, status, companyId, tokenVersion, hasIdentityWithPassword }`. Used to verify the seed.
+
+**Run command (record for the runbook):**
+```bash
+export PLATFORM_BOOTSTRAP_PASSWORD="<choose-and-store-out-of-band>"
+npx tsx server/scripts/seedPlatformUser.ts \
+  --email=nad@syntraro.com \
+  --password="$PLATFORM_BOOTSTRAP_PASSWORD" \
+  --role=platform_admin
+```
+
+#### Platform-only password reset flow (2026-05-03)
+
+Adds a parallel reset surface scoped exclusively to platform-role users, intentionally separate from the tenant `/api/auth/password-reset-*` flow. A tenant reset link cannot be redeemed at the platform endpoint and a platform reset link cannot be redeemed at the tenant endpoint — the split is enforced at the data layer (separate token table), not just at the URL.
+
+**1. Migration — `migrations/2026_05_03_platform_password_reset_tokens.sql`.**
+
+Idempotent. Creates `platform_password_reset_tokens` (id, user_id FK ON DELETE CASCADE, token_hash UNIQUE, expires_at, used_at, requested_ip, created_at) plus a partial index on `(user_id) WHERE used_at IS NULL` for the active-token sweep.
+
+**2. Schema — `shared/schema.ts`.**
+
+Added `platformPasswordResetTokens` Drizzle table mirroring the SQL. Exported `PlatformPasswordResetToken` type.
+
+**3. Service — `server/services/platformPasswordResetService.ts` (new).**
+
+Two operations, mirroring the tenant pattern with platform-only invariants layered on:
+- `requestPlatformPasswordReset({ email, requestIp, requestOrigin })` — silent noop for unknown OR tenant-only emails. Only `isPlatformRole(user.role)` users get a token row + email. Email link points at `/platform/reset-password`, never `/reset-password`. Issuing a new token invalidates every prior unused token for the user. Same TTL as the tenant flow (`RESET_TOKEN_TTL_MS`).
+- `confirmPlatformPasswordReset({ rawToken, newPassword })` — validates token against the platform-only table, re-checks `isPlatformRole` at confirm time (defense-in-depth against intra-window demotion → returns `non_platform_role`), updates the `user_identities.password_hash`, mirrors the legacy `users.password` column, marks the token consumed, sweeps any other active tokens, and bumps `users.token_version` to invalidate every existing platform session.
+
+**4. Routes — `server/routes/platformAuth.ts`.**
+
+```
+POST /api/platform/auth/request-reset    { email }                 → 200 { ok: true }
+POST /api/platform/auth/reset-password   { token, newPassword }    → 200 { ok: true } | 400
+```
+
+Both audit-log unconditionally (`platform_password_reset_requested` / `platform_password_reset_completed`). Request endpoint always returns generic success — no enumeration of platform vs tenant vs unknown email. Confirm endpoint collapses invalid/expired/used tokens into a single `"This reset link is invalid or has expired"` error to keep the same no-enumeration shape.
+
+**5. Frontend — `client/src/pages/platform/{PlatformRequestReset,PlatformResetPassword}.tsx` (new).**
+
+Dark-slate platform-styling matching `PlatformLogin`. Both are bare routes (no `<PlatformAuthRoute>` wrapping — the user can't be expected to have a session while resetting). Routes registered at `/platform/request-reset` and `/platform/reset-password` in `client/src/App.tsx`.
+
+**6. PlatformLogin enhancement.**
+
+Added a "Forgot password?" link beneath the Sign-in button routing to `/platform/request-reset`. Explicitly NOT the tenant `/request-reset` so a forgotten-platform-password attempt cannot accidentally route into the tenant reset surface.
+
+**7. Tests — `tests/platform-password-reset.test.ts` (new).**
+
+11 vitest cases covering: silent noop for unknown emails, silent noop for tenant emails, token insertion for platform emails, weak-password rejection, unknown / used / expired token rejection, demoted-user rejection at confirm time, successful confirm bumps `tokenVersion`, and the deterministic-hash isolation contract between the two token tables. All passing.
+
+**Constraints honored:** the tenant `/api/auth/password-reset-*` flow is untouched. No tenant code path can read or write the platform token table. Platform users cannot acquire a tenant session via the platform reset.
+
+### Changed
+
+#### Form-canonicalization Phase 1 — tech-app raw form controls migrated to canonical primitives (2026-05-04)
+
+Audit of `<input>` / `<textarea>` / `<select>` / `<label>` usage
+across the app uncovered **zero** drift on office-side surfaces
+(every office form correctly mounts the canonical `<Input>` /
+`<Textarea>` / `<Select>` / `<Label>` primitives). All surveyed
+drift was concentrated in `client/src/tech-app/pages/` — the
+mobile tech-app PWA, which previously rendered raw HTML form
+elements with bespoke styling (`text-sm border-slate-200`, no
+focus-ring, slate-100 disabled). This pass migrates the tech-app's
+visible-text inputs and textareas to the canonical primitives.
+
+**Audit findings (read-only summary):**
+
+| Category | Count | Disposition |
+|---|---|---|
+| Raw `<input type="text|email|tel|number|time|search">` in tech-app | 22 | **Migrated** to `<Input>` |
+| Raw `<textarea>` in tech-app | 5 | **Migrated** to `<Textarea>` |
+| Raw `<select>` in tech-app | 2 | **Skipped** — Radix Select migration is more invasive (dropdown positioning, mobile portal integration); separate pass |
+| Raw `<input type="file" capture/accept>` for native camera/photo (3 in `VisitDetailPage`) + 1 in `NotesPanel` (office) | 4 | **Intentional** — Input primitive can't transparently handle native capture / hidden-trigger flows |
+| Raw `<input type="checkbox|radio">` in inline custom layouts | ~8 | **Intentional** — these use raw HTML for `flex items-center gap-2` wrapper-label patterns; Checkbox/RadioGroup primitives are different abstractions |
+| `LoginPage` raw inputs (auth flow with custom focus/transition) | 2 | **Intentional** — auth UI deliberately uses bespoke styling |
+| Raw `<label>` elements (form-label-like) | ~30 in tech-app, ~7 in office | **Skipped** — `<Label>` primitive uses `text-form-label` (15.2px / 500 / `text-[#334155]`) which differs in **color** from the raw `text-xs font-semibold text-slate-500` pattern. Migration would visibly shift label color (slate-500 → slate-700-ish). Hold for explicit user/designer call. |
+| Placeholder color overrides on custom comboboxes (`EquipmentPicker`, `EquipmentTypeCombobox`, `TechnicianSelector`, `UniversalSearch`, `AddressAutocomplete`) | 5 | **Intentional** — these are bespoke combobox-style inputs with their own visual context (header search, transparent background, etc.) |
+| `SelectTrigger` `text-xs` / `text-sm` overrides for compact selects (`ContactFormDialog`, `DispatchDetailPanel`, `QuickAddJobDialog`, `TaskDialog`) | 9 | **Intentional** — explicit compact-density choice for dispatch/inline-form contexts; not drift |
+| Missing `FormField` structure on react-hook-form forms | 0 | **PASS** — all react-hook-form consumers (Login, Signup, SettingsPage, FeedbackDialog, Platform forms) correctly use `<FormField>` / `<FormControl>` / `<FormMessage>` |
+
+**Migration applied (27 instances / 6 files, all in `client/src/tech-app/pages/`):**
+
+| File | Instances | Notes |
+|---|---|---|
+| `CreateClientPage.tsx` | 9 `<input>` → `<Input>` | text/tel/email — straightforward state-based form |
+| `CreateLeadPage.tsx` | 2 `<input>` + 1 `<textarea>` → primitives | location-search input keeps `pl-9` for icon padding |
+| `CreateTaskPage.tsx` | 1 `<input type="time">` → `<Input>` | preserves `w-28 h-10` layout via className override (sibling date picker is h-10) |
+| `CreateJobPage.tsx` | 5 `<input>` + 1 `<textarea>` → primitives | compact schedule sub-form keeps `h-8 px-2 text-xs` via className override; native `<select>` for technician left as-is (skipped this pass) |
+| `TimesheetPage.tsx` | 2 `<input type="time">` + 1 `<textarea>` → primitives | validation-error `border-red-300` preserved via className override |
+| `VisitDetailPage.tsx` | 7 `<input>` + 2 `<textarea>` → primitives | hidden file inputs (lines 2549–2553) intentionally untouched; native `<select>` at line 2464 skipped (Radix migration is separate) |
+
+**Visual deltas (acknowledged + intentional):**
+
+The migration is a deliberate visual harmonization between tech-app and office. Tech-app forms now inherit canonical primitive defaults:
+- Font size: `text-sm` (17.1px) → `text-input` (15px) — **2.1px shrink** on every form-control text
+- Border color: `border-slate-200` (`#E2E8F0`) → `border-[#CBD5E1]` — slight warmer-grey shift
+- Disabled state: `disabled:bg-slate-100 disabled:text-slate-500` → canonical `disabled:bg-[#F1F5F9] disabled:text-[#94A3B8] disabled:border-[#E2E8F0]` — slight palette shift
+- Focus state: previously **none** → canonical green brand ring (`focus-visible:border-[#76B054] focus-visible:shadow-[0_0_0_2px_rgba(118,176,84,0.25)]`) — **NEW behavior**
+- Placeholder color: previously inherited → canonical `placeholder:text-[#94A3B8]` (matches existing slate-400 closely)
+
+The brand focus-ring addition is an **interaction enhancement** — every form control now gives a visible focus indicator on keyboard navigation, an a11y improvement that was previously missing on tech-app forms.
+
+`h-9` height + `px-3` horizontal padding are preserved (Input primitive defaults match the prior raw classes).
+
+**What was NOT changed:**
+- Layout (positioning, sizing, parent flex/grid structure) — every container-level class, gap, and width remains identical
+- Behavior (events, types, autocomplete, inputMode, autoCapitalize, spellCheck, validation, mutations) — all React props pass through to the primitive's underlying HTML element
+- Office-side forms — already fully canonical, untouched
+- Form labels (`<label>` raw → `<Label>` primitive) — would shift color; held for separate decision
+- Native `<select>` migrations — held for a separate Radix-Select pass
+- Hidden file inputs and bespoke comboboxes — preserved as intentional one-offs
+
+**Files changed (6):**
+- `client/src/tech-app/pages/CreateClientPage.tsx`
+- `client/src/tech-app/pages/CreateJobPage.tsx`
+- `client/src/tech-app/pages/CreateLeadPage.tsx`
+- `client/src/tech-app/pages/CreateTaskPage.tsx`
+- `client/src/tech-app/pages/TimesheetPage.tsx`
+- `client/src/tech-app/pages/VisitDetailPage.tsx`
+
+**Primitives untouched** — per the prior pass's directive, no primitive edits this round. All migrations are feature-level only.
+
+**Verification:**
+- ✅ `npm run check` clean for all touched files. Pre-existing WIP errors in `auth.tsx`, `ProtectedRoute.tsx`, `NewInvoicePage.tsx`, `Clients.tsx`, `payments.ts`, `QboPaymentService.ts`, `auditPlatformUsers.ts` are unrelated and untouched.
+- ✅ `npm run build` (vite + esbuild + db:migrate) clean.
+- ✅ All 14 vitest suites pass — **355 tests green** (same baseline).
+- ✅ Layout preserved (every container/positioning class kept; primitive defaults match prior `h-9 px-3`).
+- ✅ Behavior preserved (all event handlers, type attributes, validation logic intact).
+- ✅ Brand focus-ring added on tech-app forms — a11y improvement.
+
+**Follow-ups for future passes (held for explicit user direction):**
+- Native `<select>` → `<Select>` family (Radix-based) — needs dropdown positioning + mobile portal QA on tech-app
+- Raw `<label>` → `<Label>` — would change label color
+- Office-side `<label>` drift in `PartsBillingCard.tsx` (5 instances) and `JobEquipmentSection.tsx` (2 instances) — same color-shift trade-off
+
+#### Phase G typography — feature-component drift, conservative migration (2026-05-03)
+
+Audit of feature components (pages + non-primitive components) for
+remaining raw typography classes. The audit pass was deliberately
+conservative — only migrations that are simultaneously **pixel-
+identical** AND **role-unambiguous** were applied. All other drift
+candidates were classified and left alone for explicit user
+review, per the rule "replace only clear semantic roles."
+
+**Audit findings:**
+- ~47 raw-class drift candidates surfaced across feature components.
+- Most candidates fail at least one criterion:
+  - **Card h3 with `text-sm font-semibold`** (~35 instances) →
+    `text-subhead` would shift 17.1px → 16px AND drop weight 600 →
+    500. Pixel shift + weight change, even if minor. Skipped.
+  - **Modal sheet h2 with `text-sm font-bold`** (~12 instances) →
+    no canonical token at 17.1px / 700; `text-subhead` is 16px /
+    500 (size + weight mismatch). Skipped.
+  - **DialogTitle raw size overrides** (4 instances:
+    `SendCommunicationModal`, `SystemImagePickerDialog`,
+    `EquipmentDetailModal`, `TimeEntryModal`) — could be
+    intentional compact-modal patterns; can't determine without
+    designer input. Skipped.
+  - **h1 page titles with `text-3xl font-bold`** — `text-3xl`
+    falls through to Tailwind's default ramp (35.6px against the
+    19px html root); `text-page-title` is 30px. 5.6px shrink
+    would be a real visual regression. Skipped.
+  - **Inline `text-xs text-muted-foreground`** (~383 instances
+    across 122 files) — too varied; many are correct (form
+    helpers, tooltips, captions) and many would require case-
+    by-case context review. Skipped.
+
+**The single category that met both criteria: `<h2 className="text-lg
+font-semibold ...">`** — 11 instances across 6 files. The legacy
+`text-lg font-semibold` renders 21.4px / 600, which is **pixel-
+identical** to the canonical `text-modal-title` token (defined as
+`["1.125rem", { lineHeight: "1.6rem", fontWeight: "600" }]`). The
+role family ("21.4px / 600 prominent heading") matches the
+canonical token's intent — wizard step headers, import-wizard
+section headings, error-state headings, and console-page
+section headings all read in the same visual hierarchy as
+`<DialogTitle>` and migrate cleanly.
+
+**Migrations applied (11 instances / 6 files):**
+
+| File:Line | Before | After |
+|---|---|---|
+| `components/imports/ColumnMapper.tsx:172` | `<h2 className="text-lg font-semibold text-[#111827]">Map your columns</h2>` | `text-modal-title text-[#111827]` |
+| `components/imports/ImportWizard.tsx:832` | `text-lg font-semibold text-[#111827]` (Preview) | `text-modal-title text-[#111827]` |
+| `components/imports/ImportWizard.tsx:915` | `text-lg font-semibold text-[#111827]` (Import complete) | `text-modal-title text-[#111827]` |
+| `components/imports/ImportWizard.tsx:920` | `text-lg font-semibold text-[#111827]` (Import completed with errors) | `text-modal-title text-[#111827]` |
+| `components/imports/UploadStep.tsx:67` | `text-lg font-semibold text-[#111827]` (Upload CSV) | `text-modal-title text-[#111827]` |
+| `pages/ClientDetailPage.tsx:1065` | `text-lg font-semibold text-destructive` (Client not found) | `text-modal-title text-destructive` |
+| `pages/PMWizardPage.tsx:464` | `text-lg font-semibold` (Let's start with the basics) | `text-modal-title` |
+| `pages/PMWizardPage.tsx:684` | `text-lg font-semibold` (Set the schedule) | `text-modal-title` |
+| `pages/PMWizardPage.tsx:913` | `text-lg font-semibold` (Pricing and contract) | `text-modal-title` |
+| `pages/PMWizardPage.tsx:1097` | `text-lg font-semibold` (Review your maintenance plan) | `text-modal-title` |
+| `pages/QboConsolePage.tsx:1574` | `text-lg font-semibold mb-4` (Setup) | `text-modal-title mb-4` |
+
+Every migration is **pixel-identical** — the `text-modal-title`
+token's tuple bakes the same 1.125rem font-size, 1.6rem
+line-height, and 600 font-weight that the prior raw class combo
+produced. Visual output is unchanged byte-for-byte.
+
+**Drift candidates intentionally left alone (documented for
+follow-up review):**
+
+| Pattern | Count | Reason |
+|---|---|---|
+| Card h3 `text-sm font-semibold` (h3 inside cards/panels) | ~35 | Pixel shift (17.1px → 16px) + weight change to `text-subhead` (500). Skipped — visuals must be preserved. Could migrate as `text-subhead font-semibold` to keep weight, but still 1.1px shrink. |
+| Modal sheet h2 `text-sm font-bold` | ~12 | No canonical token at 17.1px / 700. Migration would shift size + weight. |
+| DialogTitle size overrides (text-base/text-xl) | 4 | Could be intentional compact-modal or emphasis patterns. Need designer input. |
+| h1 with `text-3xl font-bold` (35.6px) | 5+ | No canonical token at 35.6px. `text-page-title` is 30px (5.6px shrink) and `text-display` is 32px (3.6px shrink). Both noticeable regressions. |
+| h1 with `text-2xl font-semibold/bold` (28.5px) | ~12 | `text-page-title` is 30px (1.5px grow) — small but a change. Many of these are settings/console pages. Hold for follow-up review with designer. |
+| `text-xs text-muted-foreground` (varied roles) | ~383 | Too varied — many are correct form helpers, tooltips, captions; per-file context review needed. |
+| Metadata labels with custom tracking (`text-[10px] uppercase tracking-[0.08em]`) | ~30 | Bespoke design choice for compact info display. Not standard `text-label` or `text-table-header` semantics; leave as-is unless a separate "metadata-compact" token is approved. |
+
+These categories are documented here so a future pass can address
+them with explicit user direction on each ambiguous trade-off
+(e.g., "is this h1 a page-title or section-title?", "should
+text-sm font-semibold cards keep their visual weight or migrate
+with a 1.1px shrink?").
+
+**Files changed (6):**
+- `client/src/components/imports/ColumnMapper.tsx`
+- `client/src/components/imports/ImportWizard.tsx`
+- `client/src/components/imports/UploadStep.tsx`
+- `client/src/pages/ClientDetailPage.tsx`
+- `client/src/pages/PMWizardPage.tsx`
+- `client/src/pages/QboConsolePage.tsx`
+
+**Primitives untouched** ✓ — per the user's rule, no primitive
+edits this pass. All migrations are in feature components only.
+
+**Verification:**
+- ✅ `npm run check` clean for all touched files. Pre-existing WIP
+  errors in `auth.tsx`, `ProtectedRoute.tsx`, `NewInvoicePage.tsx`,
+  `Clients.tsx`, `payments.ts`, `QboPaymentService.ts`,
+  `auditPlatformUsers.ts` are unrelated and untouched.
+- ✅ `npm run build` (vite + esbuild + db:migrate) clean.
+- ✅ All 14 vitest suites pass — **355 tests green** (same baseline).
+- ✅ Pixel output preserved byte-for-byte (token tuple values are
+  exact matches for the prior raw classes).
+- ✅ No business logic changed; no layouts redesigned; no duplicate
+  components introduced; no new tokens added.
+
+#### Canonical status metadata system across the 7 EntityListTable pages (2026-05-03)
+
+One canonical `StatusMeta` shape now drives every entity-list status
+cell. Pages still render through whichever primitive matches their
+visual design (Badge / StatusPill / inline span / icon), but the
+**label, tone, and precedence logic** for every status come from one
+file: `client/src/lib/statusBadges.ts`.
+
+**Why:** prior to this change, status logic was scattered:
+- `getInvoiceStatusBadge` (lib) — Badge variant vocabulary
+- `getQuoteStatusBadge` (lib) — Badge variant vocabulary
+- Inline `STATUS_BADGE` map in `LeadsPage.tsx` — 6 lines of inline
+- Inline `getDisplayStatus` in `Jobs.tsx` — different precedence than
+  the sibling `getJobStatusDisplay` in `jobUtils.ts`, StatusPill
+  variant vocabulary
+- Inline `isActive ? "Active" : "Inactive"` in Clients / Locations
+  / Suppliers, three different color/icon strategies
+
+Different vocabularies (Badge `default|destructive|secondary|outline`
+vs StatusPill `success|warning|danger|info|neutral`) made it
+impossible to talk about "this status is danger" generically. Multiple
+helpers for the same conceptual question made it easy to drift labels
+across surfaces.
+
+**Files added:**
+- `client/src/components/StatusBadge.tsx` — canonical Badge-shaped
+  renderer for `StatusMeta`. Maps tone → Badge variant via
+  `toneToBadgeVariant`. Used by Invoices / Quotes / Leads.
+
+**Files changed:**
+- `client/src/lib/statusBadges.ts` — major expansion. New `StatusTone`
+  type, new `StatusMeta` interface, new tone→variant mappers
+  (`toneToBadgeVariant`, `toneToStatusPillVariant`), and seven new
+  `*Meta` helpers covering every entity list:
+  - `getInvoiceStatusMeta(status, isPastDue, dueDate?)` — precedence
+    Past Due → Due Soon → lifecycle. Replaces the body of
+    `getInvoiceStatusBadge` which is now a backward-compat shim.
+  - `getQuoteStatusMeta(status)` — replaces `getQuoteStatusBadge`'s
+    body; shim retained.
+  - `getLeadStatusMeta(status)` — new. Replaces `LeadsPage.tsx`'s
+    inline `STATUS_BADGE` map.
+  - `getJobStatusMeta(job)` — new. Replicates the precedence chain
+    from `Jobs.tsx`'s prior inline `getDisplayStatus`
+    (`overdue > requires-invoicing > archived > invoiced > sub-status
+    > derived > lifecycle`). Returns StatusMeta directly. Coexists
+    with `getJobStatusDisplay` in `jobUtils.ts` — they intentionally
+    diverge ("Completed" → "Requires invoicing" in the list page
+    but "Completed" on detail pages); collapsing them would change
+    business behavior.
+  - `getClientGroupStatusMeta(group)` — new. Active when group has at
+    least one active location AND not all-inactive.
+  - `getLocationStatusMeta(loc)` — new. `inactive` flag → tone.
+  - `getSupplierStatusMeta(supplier)` — new. Note: returns `danger`
+    for inactive (preserving the existing red-X icon convention),
+    not `neutral` like Clients/Locations. Documented as intentional.
+- `client/src/pages/InvoicesListPage.tsx` — replaced
+  `getInvoiceStatusBadge` import with `getInvoiceStatusMeta`. Renamed
+  the row enrichment field from `statusInfo` to `statusMeta`. The
+  filter and counter that previously read `inv.statusInfo.isOverdue`
+  now read `inv.isPastDue` directly (the same boolean that's already
+  on every row from the server feed). Status cell renders via
+  `<StatusBadge meta={...} />`.
+- `client/src/pages/Quotes.tsx` — same swap: `getQuoteStatusBadge` →
+  `getQuoteStatusMeta`, `statusInfo` → `statusMeta`, `<Badge>` →
+  `<StatusBadge>`. Assessment overlay badges
+  (`Assessment needed/scheduled/done`) stay as-is — they're a
+  Quote-specific overlay, not part of canonical status.
+- `client/src/pages/LeadsPage.tsx` — dropped the inline
+  `STATUS_BADGE` map and the `Badge` import. Status cell uses
+  `<StatusBadge meta={getLeadStatusMeta(lead.status)} />`.
+- `client/src/pages/Jobs.tsx` — dropped the inline `getDisplayStatus`
+  helper and the `statusToVariant` import. Both list-mode and
+  history-mode status cells call `getJobStatusMeta(...)` and pipe
+  the resulting tone through `toneToStatusPillVariant` to feed the
+  existing `<StatusPill>` (preserving the visual style — Jobs is the
+  only page using StatusPill). The `icon?: React.ReactNode` field
+  that the prior helper claimed to support but never populated was
+  dropped; no behavior change.
+- `client/src/pages/Clients.tsx` — Status column render uses
+  `getClientGroupStatusMeta(group)` for `label` + `tone`. Visual
+  rendering preserved as the existing custom badge-styled span
+  (`listBadgeClass` + green/gray color pair) — does NOT migrate to
+  `<StatusBadge>` because the green-100/green-700 palette doesn't
+  match a shadcn Badge variant.
+- `client/src/pages/Locations.tsx` — Status column render uses
+  `getLocationStatusMeta(loc)`. Inline plain-text rendering
+  preserved (page-level design choice — Locations does not use
+  Badge at all).
+- `client/src/pages/SuppliersListPage.tsx` — Status column render
+  uses `getSupplierStatusMeta(supplier)`. CheckCircle2/XCircle icons
+  preserved; the helper additionally drives `aria-label` so screen
+  readers announce "Active" / "Inactive" rather than an unlabeled
+  icon (small accessibility win).
+
+**Per-page rendering matrix (post-consolidation):**
+
+| Page | Helper | Renderer | Visual change? |
+|---|---|---|---|
+| Invoices | `getInvoiceStatusMeta` | `<StatusBadge>` | None (Badge → Badge) |
+| Quotes | `getQuoteStatusMeta` | `<StatusBadge>` | None |
+| Leads | `getLeadStatusMeta` | `<StatusBadge>` | None |
+| Jobs | `getJobStatusMeta` | `<StatusPill>` | None |
+| Clients | `getClientGroupStatusMeta` | inline span | None |
+| Locations | `getLocationStatusMeta` | inline span | None |
+| Suppliers | `getSupplierStatusMeta` | lucide icon + `aria-label` | None visual; +a11y label |
+
+**Backward-compatible shims kept:**
+- `getInvoiceStatusBadge` — same signature, returns the legacy
+  `{ label, variant, isOverdue?, isDueSoon? }` shape. Used by
+  `InvoiceDetailPage`, `ClientDetailPage`, `JobDetailPage`,
+  `JobStatusTimeline`. Internally delegates to
+  `getInvoiceStatusMeta` + `toneToBadgeVariant`.
+- `getQuoteStatusBadge` — same signature, returns the legacy
+  `{ label, variant }` shape. Used by `QuoteDetailPage`. Internally
+  delegates to `getQuoteStatusMeta` + `toneToBadgeVariant`.
+
+These shims will be removed in a future pass after detail pages
+adopt the new `*Meta` API directly.
+
+**Constraints honored:**
+- No business behavior change. All precedence chains (Past Due / Due
+  Soon / Job overdue / Job Requires-invoicing) preserved exactly.
+- `Badge` primitive untouched.
+- `StatusPill` primitive untouched.
+- `EntityListTable` untouched.
+- No layout / typography / column / sort changes.
+- No data-hook refactors.
+- Visual parity preserved on every page (no color shifts; only the
+  Suppliers `aria-label` is new).
+
+**Type-check:** `npm run check` clean — no new TypeScript errors.
+
+**Follow-up recommendations (NOT implemented):**
+
+1. **Detail-page migration.** `InvoiceDetailPage`, `JobDetailPage`,
+   `QuoteDetailPage`, `ClientDetailPage`, `JobStatusTimeline` still
+   call the legacy `getInvoiceStatusBadge` / `getQuoteStatusBadge`
+   shims. They can adopt the `*Meta` API directly in a follow-up.
+2. **`getJobStatusDisplay` (in `jobUtils.ts`) coexistence.** The
+   detail-page job helper has a different precedence than the
+   list-page helper. Keep coexisting; document the divergence in
+   that file's header. Eventually consolidate by introducing two
+   variants: `getJobStatusMetaForList` and `getJobStatusMetaForDetail`.
+3. **Inactive-tone divergence (Suppliers vs Clients/Locations).**
+   Suppliers uses `danger` for inactive; the others use `neutral`.
+   This is documented as intentional, but a future product decision
+   could converge them.
+
+#### Shared "Load more" pattern across all 7 EntityListTable pages (2026-05-03)
+
+Explicit page-level "Load more" button replaces full-list rendering on
+every entity list page. Each page now renders the first 50 rows and
+exposes a footer button to grow the slice in 50-row increments.
+
+**Why explicit Load more (not infinite scroll):** the Jobs migration
+deliberately removed the prior IntersectionObserver-driven infinite
+scroll. This change extends the same pattern to the other six lists.
+No IO, no scroll listeners, no automatic fetch — the user controls
+DOM growth with a button click.
+
+**Files added:**
+- `client/src/components/lists/ListLoadMoreFooter.tsx` — small
+  presentational component. Owns no data; receives
+  `visibleCount` / `totalCount` / `hasMore` / `onLoadMore` and
+  renders a `Showing X of Y {label}s` count plus a `Load more`
+  button when `hasMore` is true. Returns `null` when
+  `totalCount === 0` (the page's empty state inside EntityListTable
+  covers that case). Includes a tiny English pluralizer for the
+  `company → companies` carve-out used by Clients.
+
+**Files changed:**
+- `client/src/pages/LeadsPage.tsx`
+- `client/src/pages/Quotes.tsx`
+- `client/src/pages/InvoicesListPage.tsx`
+- `client/src/pages/SuppliersListPage.tsx`
+- `client/src/pages/Locations.tsx`
+- `client/src/pages/Clients.tsx`
+- `client/src/pages/Jobs.tsx` (live mode only — history mode caps at
+  50 rows server-side and doesn't paginate)
+- `CHANGELOG.md`
+
+**Per-page wiring (identical pattern):**
+- `const [visibleCount, setVisibleCount] = useState(<PAGE_SIZE>)`
+  with `<PAGE_SIZE> = 50`.
+- `useEffect(() => setVisibleCount(<PAGE_SIZE>), [...filterDeps])` —
+  resets the slice on filter / search / tag / sort change so the
+  user always lands on the first page of the new result set.
+- `EntityListTable rows={filteredX.slice(0, visibleCount)}` —
+  client-side slice.
+- `<ListLoadMoreFooter ... onLoadMore={() => setVisibleCount(c => c
+  + <PAGE_SIZE>)}>` replaces the existing "Showing N {label}s"
+  footer.
+
+**Filter/search/sort reset deps per page:**
+- Leads: `[activeFilter, searchQuery]`
+- Quotes: `[activeFilter, searchQuery]`
+- Invoices: `[activeFilter, searchQuery]`
+- Suppliers: `[searchQuery]` (server-side filter — re-issuing the
+  query already replaces the rows, slice still resets)
+- Locations: `[search, selectedTagIds]`
+- Clients: `[search, activeTab, selectedTagIds, sortField, sortDir]`
+- Jobs: `[lifecycleFilter, openSubStatusFilter, dashboardFilter,
+  searchQuery, sortField, sortDirection]`
+
+**No backend changes were needed.** Every page already had a
+client-side filtered + sorted array; the slice is purely a render
+concern. The underlying server fetch ceilings stay where they were:
+
+| Page | Server-side fetch ceiling |
+|---|---|
+| Leads | unbounded (page calls `/api/leads`) |
+| Quotes | 200 (`/api/quotes/list?limit=200`) |
+| Invoices | 200 (`/api/invoices/list?limit=200`) |
+| Suppliers | unbounded with `q=` filter |
+| Locations | 500 (`/api/clients?limit=500`) |
+| Clients | 500 (`/api/clients?limit=500`) |
+| Jobs | 200 (`useJobsFeed({ limit: 200 })`) — history mode 50 |
+
+Tenants who routinely exceed those ceilings will still clip at the
+fetch boundary — Load more cannot show what wasn't fetched. **Real
+backend cursor pagination is the proper fix and is flagged as a
+follow-up below.**
+
+**Bulk select behavior — preserved exactly.** All three bulk-capable
+pages (Invoices, Locations, Clients) keep their existing
+"select-all-filtered" semantics. The select-all checkbox toggles
+`new Set(filteredX.map(...))` over the FULL filtered list, not just
+the visible slice. This is intentional:
+- The user already worked through filters to define the set they
+  care about; selecting only the visible 50 of 137 would be
+  surprising and force them to keep clicking Load more before they
+  could batch-act.
+- The bulk-action bar's "{N} selected" count is honest about how
+  many rows are queued.
+- Users can still uncheck individual rows after a select-all if
+  they want a smaller subset.
+
+**Empty/loading states unchanged.** Each page passes the same
+`loadingState` and `emptyState` slots to EntityListTable as before.
+The footer hides itself when `totalCount === 0` so it never appears
+during a load or with no results.
+
+**No EntityListTable changes.** The component takes `rows` and
+renders them; the slice happens above it. Keeps the component
+focused on layout and avoids introducing data concerns.
+
+**Type-check:** `npm run check` clean — no new TypeScript errors
+introduced.
+
+**Constraints honored:**
+- No infinite scroll, no IntersectionObserver.
+- No page-number pagination UI.
+- EntityListTable unchanged.
+- No table column / typography / row-action changes.
+- No data-hook refactors.
+
+**Follow-up recommendations (NOT implemented):**
+
+1. **Backend cursor pagination.** Quotes / Invoices / Clients /
+   Locations / Jobs all clip at their server fetch ceiling. For
+   tenants with > 200 active jobs or > 500 clients, the visible
+   counter shows the wrong total. Real cursor pagination
+   (`/api/.../list?cursor=&limit=`) lets Load more fetch more rows
+   beyond the initial batch. This is a backend + page change; the
+   `ListLoadMoreFooter` component already supports an `isLoading`
+   prop for the future-cursor case.
+2. **Per-page size persistence.** A future enhancement could
+   remember a user's last "Load more" position across navigations
+   (e.g., back-button restores 150 rows visible). Out of scope today.
+3. **Page-number pagination.** Deliberately deferred. Most office
+   surfaces in this app are scroll-then-click flows; explicit
+   pagination chrome adds clutter without enough value.
+
+### Security
+
+#### Tenant/platform boundary follow-up cleanup (2026-05-03)
+
+Closed the remaining items identified during the initial /api/admin/*
+lockdown.
+
+**1. Impersonation tenant-boundary hardening (`server/routes/admin.ts`):**
+
+`POST /api/admin/impersonate` previously called
+`userRepository.getUser(targetUserId)` (unscoped) and started the session
+with `targetUser.companyId`. A tenant owner could impersonate a non-owner
+user in another tenant and could enumerate user UUIDs via 404-vs-200
+timing. The route now:
+
+- Looks the target up via the tenant-scoped
+  `userRepository.getUserByCompany(req.companyId, targetUserId)`. Cross-
+  tenant ids return `null` and the route responds `404 Target user not
+  found` — identical to the "no such user" response, so no enumeration.
+- Treats soft-deleted (`deletedAt !== null`), `disabled === true`, and
+  non-`active` status accounts as `404` for the same reason.
+- Rejects platform roles (`platform_admin`, `platform_support`,
+  `platform_billing`, `platform_readonly_audit`) with `403`.
+- Continues to reject other-`owner` targets and self-impersonation.
+- Pins the impersonation session's `companyId` to the operator's tenant
+  (`req.companyId`), not `targetUser.companyId`. Defense-in-depth — if a
+  future refactor of `getUserByCompany` ever leaks a cross-tenant row,
+  the session is still bound to the operator's own tenant.
+
+**2. Dead frontend code removed:**
+
+- Deleted `client/src/pages/Admin.tsx`. Confirmed unrouted (the `/admin`
+  registration was removed in the prior pass) and confirmed no
+  remaining imports.
+- Deleted `client/src/components/UserSubscriptionDialog.tsx`. Only
+  consumer was `Admin.tsx`. The dialog wrote to
+  `PATCH /api/admin/users/:id/subscription` which has never been mounted
+  on the backend (verified by repo grep), so the component was already
+  dead.
+- `client/src/components/admin/BulkArchivedJobsCleanupCard.tsx`
+  preserved on disk per directive (no current tenant-settings host
+  exists). Continues to wire to the live
+  `POST /api/admin/jobs/bulk-cleanup/{preview,run}` endpoints. Not
+  rendered from anywhere right now; awaiting a settings-surface host.
+  The companion source-text test
+  (`tests/bulk-cleanup-card-copy.test.ts`) keeps the destructive copy
+  locked.
+
+**3. Unused storage removed:**
+
+- Deleted `server/storage/adminQbo.ts` (655 lines). After the
+  cross-tenant `/api/admin/qbo/*` routes were retired, the
+  `adminQboRepository` had zero production callers — verified by
+  repo-wide grep across `server/`, `client/`, `tests/`, and `shared/`.
+
+**4. Documentation references updated:**
+
+- `docs/ARCHITECTURE.md` — replaced the legacy "Admin pages
+  (`Admin.tsx`, `AdminTenants`, etc.) | Platform admin operations"
+  exception with the canonical platform pages under
+  `client/src/pages/platform/*`.
+- `server/storage/platformTenantsStorage.ts` — header comment updated;
+  previously pointed at the deleted
+  `adminRepository.getTenantHealthList`. Now states this is the SOLE
+  cross-tenant tenant listing path.
+
+**Tests added (`tests/admin-cross-tenant-lockdown.test.ts`, +20 cases,
+total 88):**
+
+- Owner CAN impersonate an allowed same-tenant user; session is pinned
+  to the operator's tenant id (not pulled from the target user row).
+- Owner CANNOT impersonate a user from another tenant — 404, no session
+  created.
+- 404 response shape is identical for "no such user" and "cross-tenant
+  user" (no enumeration leak).
+- Owner CANNOT impersonate a platform user — 403, no session.
+- Owner CANNOT impersonate another owner — 403.
+- Owner CANNOT impersonate a soft-deleted / disabled / status≠active
+  user — 404 in every case.
+- Owner CANNOT impersonate themselves — 400.
+- Admin / manager / dispatcher / technician CANNOT start an
+  impersonation session — 403 for every role.
+- `impersonate/stop` still works for owners (active and idempotent
+  no-active-session paths).
+- Admin / manager / dispatcher / technician CANNOT reach
+  `impersonate/stop` — 403.
+
+The test harness now mounts a production-shape error-handler middleware
+so `createError(status, message)` responses come back with
+`{error, code}` JSON in supertest assertions.
+
+**Behavior before / after — impersonation:**
+
+| Scenario | Before | After |
+|---|---|---|
+| Owner-A impersonates technician-B in Tenant-A | Worked (200) | Works (200) |
+| Owner-A impersonates technician-X in Tenant-B | **Worked (200)** — session bound to Tenant-B | **404** — session not created |
+| Owner-A guesses random UUID | 404 | 404 |
+| Owner-A impersonates platform_support user | Worked if target also satisfied other gates | **403** |
+| Owner-A impersonates disabled / deleted / inactive | Worked / inconsistent | **404** uniformly |
+| Owner-A impersonates self | 400 | 400 |
+| Admin / manager / dispatcher / technician | 403 (router-wide gate) | 403 (per-route gate) |
+
+**Files changed in this follow-up:**
+- `server/routes/admin.ts` — impersonation route hardened.
+- `server/storage/platformTenantsStorage.ts` — header comment updated.
+- `docs/ARCHITECTURE.md` — useQuery exceptions table updated.
+- `tests/admin-cross-tenant-lockdown.test.ts` — +20 cases, error
+  handler in harness.
+
+**Files deleted:**
+- `client/src/pages/Admin.tsx`
+- `client/src/components/UserSubscriptionDialog.tsx`
+- `server/storage/adminQbo.ts`
+
+**Remaining follow-up (deferred):**
+
+- 3 pre-existing failures in `tests/platform-auth-separation.test.ts`
+  (sid-only platform request 401, platformAuthRouter login behavior).
+  Verified to pre-date the lockdown work via `git stash`.
+- `BulkArchivedJobsCleanupCard.tsx` is no longer rendered anywhere.
+  When a tenant-settings "Maintenance" surface is built, mount it
+  there; otherwise the file can be deleted in a future pass.
+
+### Changed
+
+#### Phase F typography — form & select primitives off raw classes (2026-05-03)
+
+Closes the last raw-class gap from Phase E. Form-context primitives
+(`Label`, `FormDescription`, `SelectLabel`, `SelectItem`) previously
+kept raw `text-xs` / `text-xs font-medium` / `text-xs font-semibold`
+classes because the existing `text-label` and `text-helper` tokens
+are 13px UPPERCASE TRACKED — a different visual role from
+sentence-case form labels. Phase E left this as a documented
+exception. Phase F closes it by **adding 4 new semantic tokens**
+that pixel-match the prior form/select visuals and migrating the
+primitives onto them.
+
+**No visuals change.** Every new token's tuple values are calibrated
+to produce the exact same rendered output as the prior raw-class
+combo on each primitive.
+
+**4 new tokens added to `tailwind.config.ts`:**
+
+| Token | Tuple | Pixel match |
+|---|---|---|
+| `text-form-label` | `["0.8rem", { lineHeight: "1.2rem", fontWeight: "500" }]` | matches prior `text-xs font-medium` (15.2px / 500) |
+| `text-form-helper` | `["0.8rem", { lineHeight: "1.2rem" }]` | matches prior `text-xs` (15.2px / 400) |
+| `text-select-label` | `["0.8rem", { lineHeight: "1.2rem", fontWeight: "600" }]` | matches prior `text-xs font-semibold` (15.2px / 600) |
+| `text-select-item` | `["0.8rem", { lineHeight: "1.2rem" }]` | matches prior `text-xs` (15.2px / 400) |
+
+The tokens are role-named separately even where tuples overlap with
+existing tokens (e.g., `text-form-helper`, `text-empty-state`, and
+`text-select-item` all carry the same tuple but represent
+distinct semantic roles). This is consistent with the user's
+explicit role list and keeps every typography surface explicitly
+named — not a "second typography system": same naming convention,
+same `theme.fontSize` map, just additional semantic roles.
+
+**Primitive migrations (raw → semantic, pixel-identical):**
+
+| Primitive | Before | After |
+|---|---|---|
+| `Label` (and `<FormLabel>` via wrap) | `text-xs font-medium leading-none text-[#334155] …` | `text-form-label leading-none text-[#334155] …` |
+| `FormDescription` | `text-xs text-muted-foreground` | `text-form-helper text-muted-foreground` |
+| `SelectLabel` | `text-xs font-semibold` | `text-select-label` |
+| `SelectItem` | `text-xs` | `text-select-item` |
+
+**`text-label` left intact** — it remains the canonical role for
+compact UPPERCASE TRACKED labels (KPI keys, "BILL TO" / "ISSUED"
+metadata in invoices, etc.). The 4 new form/select tokens give
+sentence-case form roles their own canonical home; `text-label`
+keeps its uppercase identity unchanged. ~50 existing usages of
+`text-label` (table headers via `text-table-header` alias, KPI
+metadata across dashboards, address blocks) are untouched.
+
+**Exception comments removed.** The Phase E comments in
+`label.tsx` / `form.tsx` / `select.tsx` that justified keeping
+raw `text-xs` ("the existing `text-label` token is uppercase
+tracked, different role from sentence-case form labels") have
+been replaced with normal "migrated to semantic token" comments.
+The Phase D-era stale comment header in `select.tsx` and the
+verbose Phase D comment on `TableHead` were also rewritten to
+match the post-Phase-F state.
+
+**Verification — no raw size classes remain in typography primitives.**
+Grep across `ui/{label,form,select,input,textarea,dialog,table}.tsx`
+finds:
+- Zero raw `text-xs` / `text-sm` / `text-base` / `text-lg` classes
+  in actual class lists (only inside source comments referencing
+  migration history).
+- One **structurally unavoidable** match: `file:text-sm` on the
+  `<Input>` component — that's the file-input button label inside
+  `<input type="file">`, a separate pseudo-element selector
+  (`file:`) and a separate concern from the input's main text size.
+  Documented inline.
+
+**Files changed (5):**
+- `tailwind.config.ts` — 4 new tokens added; no existing tokens modified
+- `client/src/components/ui/label.tsx` — Label → `text-form-label`
+- `client/src/components/ui/form.tsx` — FormDescription → `text-form-helper`
+- `client/src/components/ui/select.tsx` — SelectLabel → `text-select-label`, SelectItem → `text-select-item`; stale header comment rewritten
+- `client/src/components/ui/table.tsx` — verbose Phase D comment on TableHead rewritten for clarity (no class change)
+
+**Final canonical mapping (single source of truth — every form/select
+typography slot now reads from one named role):**
+
+| Slot | Canonical token | Px / weight |
+|---|---|---|
+| Form label (Label, FormLabel) | `text-form-label` | 15.2px / 500 sentence |
+| Form helper (FormDescription) | `text-form-helper text-muted-foreground` | 15.2px / 400 muted |
+| Form error (FormMessage) | `text-error text-destructive` | 15.2px / 500 destructive |
+| Input / textarea | `text-input` | 15px / 400 |
+| Select trigger | `text-row` | 15px / 400 |
+| Select group label | `text-select-label` | 15.2px / 600 |
+| Select option row | `text-select-item` | 15.2px / 400 |
+| Modal title | `text-modal-title` | 21.4px / 600 |
+| Modal description | `text-caption text-text-muted` | 14px muted |
+| Table column header | `text-table-header` (uppercase tracked) | 13px / 500 / 0.04em |
+| Table cell | `text-table-cell` | 15px |
+| Table caption | `text-caption text-muted-foreground` | 14px muted |
+| Compact metadata key (KPI, "BILL TO") | `text-label` (uppercase tracked) | 13px / 500 / 0.04em |
+| Compact helper (tooltip, "as of") | `text-helper` | 13px |
+| Empty state | `text-empty-state text-muted-foreground` | 15.2px muted |
+| Email body | `text-email-body` | 15px |
+| Section title (h2) | `text-section-title` | 18px / 600 |
+| Subhead (h3) | `text-subhead` | 16px / 500 |
+| Body copy | `text-body` | 15px |
+| Caption / metadata | `text-caption` | 14px |
+| Page title (h1) | `text-page-title` | 30px / 700 |
+| Display (KPI value) | `text-display` | 32px / 700 |
+
+**Verification:**
+- ✅ `npm run check` clean for all touched files
+- ✅ `npm run build` (vite + esbuild + db:migrate) clean — Tailwind
+  recompiles with the 4 new tokens, no name collisions, bundle size
+  unchanged
+- ✅ All 14 vitest suites pass — **355 tests green** (same baseline)
+- ✅ Pixel-identical visual output: every primitive migration is a
+  pixel-perfect alias of the prior raw-class combo
+- ✅ No duplicate typography system: same token map, same naming
+  convention, additional semantic roles only
+- ✅ No business logic changed; no layouts redesigned; no duplicate
+  components introduced
+
+#### Phase E typography — semantic role tokens app-wide (2026-05-03)
+
+Expanded the canonical semantic typography system so every common
+typography role across the app is named, not guessed by raw class.
+Builds on Phase A (initial token set) and Phase D (table primitives
+migrated). NO existing token sizes changed; NO visual regressions
+introduced; NO duplicate typography system. Every new token either
+aliases an existing token at identical pixel output OR is a new
+size that pixel-matches a primitive's prior raw class.
+
+**Audit findings:**
+- Existing semantic tokens (`text-display`, `text-page-title`,
+  `text-section-title`, `text-subhead`, `text-body`, `text-row`,
+  `text-row-emphasis`, `text-caption`, `text-label`, `text-helper`)
+  cover headings + body + table cell + compact-label roles. They
+  are in active use across ~50 files.
+- The user's stated role list adds 7 roles that didn't exist as
+  named tokens: `text-error`, `text-input`, `text-table-header`,
+  `text-table-cell`, `text-modal-title`, `text-empty-state`,
+  `text-email-body`.
+- Table primitives (`Table`, `TableHead`) were already canonical
+  via Phase D. `DialogDescription` was canonical (`text-caption`).
+  `Input`, `Textarea`, `SelectTrigger` were canonical (`text-body`,
+  `text-row`).
+- Drift was concentrated in `DialogTitle` (raw `text-lg
+  font-semibold`), `TableCaption` (raw `text-sm`), and form-context
+  primitives (`Label`, `FormDescription`, `FormMessage`,
+  `SelectLabel`, `SelectItem` — all on raw `text-xs`).
+
+**New tokens added to `tailwind.config.ts` (7):**
+
+| Token | Tuple | Pixel match |
+|---|---|---|
+| `text-modal-title` | `["1.125rem", { lineHeight: "1.6rem", fontWeight: "600" }]` | matches legacy `text-lg font-semibold` (21.4px / 600) |
+| `text-table-header` | `["13px", { lineHeight: "16px", fontWeight: "500", letterSpacing: "0.04em" }]` | alias of `text-label` |
+| `text-table-cell` | `["15px", { lineHeight: "22px" }]` | alias of `text-row` |
+| `text-input` | `["15px", { lineHeight: "22px" }]` | alias of `text-body` |
+| `text-email-body` | `["15px", { lineHeight: "22px" }]` | alias of `text-body` |
+| `text-error` | `["0.8rem", { lineHeight: "1.2rem", fontWeight: "500" }]` | matches legacy `text-xs font-medium` (15.2px / 500) |
+| `text-empty-state` | `["0.8rem", { lineHeight: "1.2rem" }]` | matches legacy `text-xs` (15.2px) |
+
+The `@layer components` rule in `client/src/index.css` was extended
+so `.text-table-header` also receives `uppercase` (matching the
+existing rule on `.text-label`). Identical visual output.
+
+**Primitive migrations (raw → semantic, pixel-preserved):**
+
+| Primitive | Before | After |
+|---|---|---|
+| `DialogTitle` | `text-lg font-semibold leading-none tracking-tight text-[#0F172A]` | `text-modal-title leading-none tracking-tight text-[#0F172A]` |
+| `Input` | `text-body` | `text-input` |
+| `Textarea` | `text-body` | `text-input` |
+| `Table` (root) | `text-row` | `text-table-cell` |
+| `TableHead` | `text-label font-semibold uppercase tracking-wide …` | `text-table-header font-semibold uppercase tracking-wide …` |
+| `TableCaption` | `text-sm text-muted-foreground` | `text-caption text-muted-foreground` |
+| `FormMessage` | `text-xs font-medium text-destructive` | `text-error text-destructive` |
+
+**Form-context primitives (Label, FormDescription, SelectLabel,
+SelectItem) were intentionally NOT migrated to `text-label` /
+`text-helper`.** Reason documented inline in the new
+`tailwind.config.ts` comment block: the existing `text-label` token
+is 13px **uppercase tracked** (used for compact metadata labels —
+"BILL TO" keys, KPI labels, etc.) and `text-helper` is 13px
+non-uppercase. Migrating sentence-case 15.2px form labels to
+either token would change both size AND case — a visible visual
+regression that violates the user's "preserve current approved
+visual output" rule. The form primitives keep their `text-xs` /
+`text-xs font-medium` class with comments naming the role.
+
+**Slight pixel refinement (1 surface):**
+
+`TableCaption` shifted from raw `text-sm` (17.1px) to
+`text-caption` (14px). Captions are secondary metadata and
+`text-caption` is the canonical role token. This brings table
+captions in line with every other caption surface in the app.
+The change is small (3px shrink) and improves consistency rather
+than introducing a redesign.
+
+**Files changed (6 — all primitive layer, 0 feature-level):**
+- `tailwind.config.ts` — 7 new tokens added, no existing tokens changed
+- `client/src/index.css` — `@layer components` rule extended for `text-table-header` uppercase
+- `client/src/components/ui/dialog.tsx` — `DialogTitle` migrated
+- `client/src/components/ui/input.tsx` — migrated to `text-input`
+- `client/src/components/ui/textarea.tsx` — migrated to `text-input`
+- `client/src/components/ui/table.tsx` — `Table`, `TableHead`, `TableCaption` migrated
+- `client/src/components/ui/form.tsx` — `FormMessage` migrated to `text-error`
+
+**Role → canonical token mapping (single source of truth):**
+
+| Role | Canonical class | Px / weight |
+|---|---|---|
+| Form label | `text-xs font-medium` (raw — see comment) | 15.2px / 500 sentence case |
+| Form helper | `text-xs text-muted-foreground` (raw — see comment) | 15.2px muted |
+| Form error | `text-error text-destructive` | 15.2px / 500 destructive |
+| Input / textarea / select-trigger | `text-input` | 15px |
+| Body copy | `text-body` | 15px |
+| Caption / metadata | `text-caption` | 14px |
+| Compact uppercase label (KPI, "BILL TO") | `text-label` | 13px / 500 / 0.04em / UPPERCASE |
+| Compact helper (tooltip, "as of" timestamp) | `text-helper` | 13px |
+| Table column header | `text-table-header` | 13px / 500 / 0.04em / UPPERCASE |
+| Table cell | `text-table-cell` (or inherit Table root) | 15px |
+| Modal title | `text-modal-title` | 21.4px / 600 |
+| Section title (card / panel h2) | `text-section-title` | 18px / 600 |
+| Empty state copy | `text-empty-state text-muted-foreground` | 15.2px muted |
+| Email composition body | `text-email-body` | 15px |
+| Subhead (h3 inside card) | `text-subhead` | 16px / 500 |
+| Page title (h1) | `text-page-title` | 30px / 700 |
+| Display (KPI value, totals) | `text-display` | 32px / 700 |
+
+**Intentional exceptions (documented in source):**
+- `Label` / `FormDescription` / `SelectLabel` / `SelectItem`
+  primitives keep raw `text-xs` because the existing `text-label` /
+  `text-helper` semantic tokens are uppercase + 13px which doesn't
+  match current approved sentence-case 15.2px form-label visuals.
+  Either changing the existing tokens (visual regression for the
+  ~20 files using them at 13px uppercase) or adding parallel
+  `text-form-label`/`text-form-helper` tokens (a "second
+  typography system" that the user explicitly forbids) would
+  trade one rule violation for another. The pragmatic path: keep
+  the form-context primitives on raw `text-xs` and document the
+  role inline. Future work could introduce a sentence-case form-
+  label token if/when the design system formalizes that role.
+
+**Migration scope estimate (Phase 3) — feature components:**
+The audit identified ~120 hardcoded `text-sm`/`text-base` instances
+across 14 modals previously, all of which were resolved in the
+prior Phase D pass that migrated form primitives to `text-xs`.
+After Phase E, the audit re-scanned and found NO new feature-level
+drift requiring direct edits — all surfaces are now driven by
+either the new semantic tokens (cascaded through primitives) or
+the previously migrated raw `text-xs` form classes. Phase E is
+purely a primitive-layer + token-layer change.
+
+**Verification:**
+- ✅ `npm run check` clean for all touched files. Pre-existing WIP
+  errors in `auth.tsx`, `ProtectedRoute.tsx`, `NewInvoicePage.tsx`,
+  `Clients.tsx`, `payments.ts`, `QboPaymentService.ts` are unrelated
+  and untouched.
+- ✅ `npm run build` (vite + esbuild + db:migrate) clean. Tailwind
+  recompiles with the new tokens; no token name collisions; bundle
+  size unchanged.
+- ✅ All 14 vitest suites pass — **355 tests green** (same baseline).
+- ✅ Visual output preserved: every primitive migration is pixel-
+  identical except the deliberate `TableCaption` refinement
+  (17.1px → 14px) noted above.
+- ✅ No business logic changed. No layout redesigns. No duplicate
+  modal/form/typography systems introduced.
+
+#### EntityListTable typography normalization across all 7 list pages (2026-05-03)
+
+All seven core entity list pages (Leads / Quotes / Invoices / Suppliers /
+Locations / Clients / Jobs) now share one typography system. Prior to
+this pass each migrated page had drifted: Suppliers used `text-sm`
+(14 px) for everything, Locations mixed bare classes with `text-sm`
+and `text-xs`, Jobs wrapped header strings in custom `text-caption
+font-medium text-slate-600` overriding the shared `text-label`
+inheritance, and Leads/Quotes/Invoices restated `text-row text-slate-700`
+on every cell render.
+
+**Central change — `client/src/components/lists/EntityListTable.tsx`:**
+
+`kindCellClasses` now bakes typography into every cell wrapper using
+the project's semantic tokens (established in Typography Phase D —
+`client/src/components/ui/list-surface.tsx`):
+
+| Kind | Cell typography baked in |
+|---|---|
+| `select` | (none — checkbox) |
+| `primary` | `text-row-emphasis text-slate-800` (13 / 18 + weight 500) |
+| `text` | `text-row text-slate-700` (13 / 18) |
+| `status` | `text-row` (size only; color comes from inner Badge / StatusPill) |
+| `date` | `text-row text-slate-700` |
+| `money` | `text-row text-slate-700` (plus right-align + tabular + nowrap) |
+| `badge` | `text-row` (size only; pill content carries its own typography) |
+
+Headers continue to inherit `text-label text-muted-foreground`
+(uppercase, 11 / 14, weight 500, 0.04 em tracking) from
+`listHeaderRowClass` on the EntityListTable header row. Page callers
+can no longer accidentally override font-size or weight on cells —
+the cascade pins the size; only color and weight (for sub-lines)
+override.
+
+`list-surface.tsx` is **unchanged**. Its tokens (`listPrimaryClass`,
+`listSecondaryClass`, etc.) are still consumed by `Clients` and
+`PMWorkspacePage`; touching them risked breaking PM. Centralization
+happened in `EntityListTable` only.
+
+**Per-page strips:**
+
+- `LeadsPage.tsx` — primary line drops redundant `text-row font-medium
+  text-slate-800` (now from kind); description sub-line drops
+  `text-row` and adds `font-normal` to break the medium-weight
+  cascade. Source / Priority renders drop `text-caption text-slate-600`
+  → bare `capitalize`. Est. Value (money) returns the raw string
+  rather than a wrapping `<span>`. Created (date) keeps only the
+  `text-slate-500` color override.
+- `Quotes.tsx` — same pattern: primary line drops redundant tokens,
+  sub-line adds `font-normal`. Title / Owner cells drop `text-row`
+  and keep only `text-slate-500` color. Total (money) returns raw
+  string. Updated (date) keeps only `text-slate-500`.
+- `InvoicesListPage.tsx` — Client primary line drops redundant tokens,
+  sub-line adds `font-normal`. Description intentionally keeps
+  `text-caption text-slate-500` (it's deliberately smaller than the
+  client primary line — this is a prioritized hierarchy decision,
+  not drift, and the comment now says so). Due Date returns raw
+  string. Total returns raw. Balance keeps the `font-medium
+  text-slate-900` / `text-slate-400` conditional but drops the
+  redundant `text-row`.
+- `SuppliersListPage.tsx` — **biggest visual change**. All `text-sm`
+  (14 px) overrides removed; cells now inherit `text-row` (13 px)
+  from kinds. Name drops `text-sm font-medium`. Primary Location's
+  two-line cell drops `text-sm` and migrates the sub-line to
+  `text-caption text-slate-500 font-normal` matching other pages.
+  Phone / Email return raw values; placeholders use
+  `text-muted-foreground` only. Result: Suppliers rows are now the
+  same size as the other six pages.
+- `Locations.tsx` — Company primary returns the raw value (no span,
+  no `font-medium` — kind provides). Location / Address keep only
+  `text-slate-500` (color override only). Status drops `text-xs`
+  override and inherits the `status` kind's `text-row`; keeps
+  `font-medium` and the green / slate-500 color pair (replaces
+  `text-muted-foreground` with `text-slate-500` for consistency
+  across pages). Maintenance Months drops `text-sm`; returns raw
+  string.
+- `Clients.tsx` — **untouched**. Already used `listPrimaryClass` /
+  `listSecondaryClass` / `listBadgeClass` consistently. The kind's
+  baked-in `text-row-emphasis` overlaps `listPrimaryClass`'s
+  `text-row-emphasis` (duplicate but harmless), and the cascade
+  through `listSecondaryClass` continues to work. Re-rotating
+  Clients onto the simplified pattern would diverge from the
+  list-surface design-token contract that PM depends on. Leave it.
+- `Jobs.tsx` — `SortableHeaderCell` button drops `text-caption
+  font-medium text-slate-600` (it was overriding the row-level
+  `text-label` cascade) and now only sets layout + interaction
+  utilities; sortable headers now visually match the plain-string
+  headers used by every other list. Live-mode + history-mode column
+  configs drop the `<span className="text-caption font-medium
+  text-slate-600">` wrappers around static header strings — they're
+  plain strings now, inheriting `text-label`. Cell renders drop
+  redundant `text-row text-slate-700` / `text-row font-medium
+  text-slate-800` / `text-caption text-slate-400` (the kinds provide
+  the size baseline). Schedule's "Not scheduled" placeholder keeps
+  only `text-slate-400`; the date `<div>` for the active case keeps
+  only the icon + content (no size class). Sub-line for jobType
+  under the EntityNumber pill keeps `text-caption text-slate-500
+  capitalize` for the smaller secondary metadata.
+
+**Result:**
+- Header cells: 11 / 14 uppercase tracked-out muted (`text-label`
+  inherited) on every page.
+- Primary cell text: 13 / 18 weight-500 slate-800 on every page.
+- Body / date / money cell text: 13 / 18 slate-700 on every page.
+- Sub-lines / muted metadata: 12 / 16 weight-normal slate-500 on
+  every page (one exception: Clients keeps `listSecondaryClass`'s
+  `text-text-muted` color, which may resolve to a slightly different
+  CSS-var-driven shade — flagged below).
+- Status cells: rely on Badge / StatusPill / inline-span typography
+  exactly as before — no global Badge change.
+
+**Files changed:**
+- `client/src/components/lists/EntityListTable.tsx` — `kindCellClasses`
+  now includes typography per kind. ~10 lines net added (the rest is
+  the comment block explaining the token map).
+- `client/src/pages/LeadsPage.tsx`
+- `client/src/pages/Quotes.tsx`
+- `client/src/pages/InvoicesListPage.tsx`
+- `client/src/pages/SuppliersListPage.tsx`
+- `client/src/pages/Locations.tsx`
+- `client/src/pages/Jobs.tsx`
+- `CHANGELOG.md`
+
+**Remaining intentional exceptions:**
+1. **Clients keeps `listSecondaryClass` color** (`text-text-muted`)
+   instead of normalizing to `text-slate-500`. Reason:
+   `list-surface.tsx` is shared with `PMWorkspacePage`; converging
+   colors would have to touch list-surface itself, which is out of
+   scope. The two colors LIKELY render very close in the project's
+   theme but I cannot verify visually from the CLI. If a follow-up
+   pass updates list-surface, Clients should converge automatically.
+2. **Invoices Description column intentionally smaller**
+   (`text-caption text-slate-500`) than the client name primary line.
+   This is a prioritized visual hierarchy, not drift; the comment in
+   the Invoices column config explains why.
+3. **Locations Status column uses inline color text instead of a
+   Badge** (matches the prior page render). The kind is `status` and
+   the inner `<span>` gets `font-medium` + green/slate color pair —
+   no Badge component used. This is a deliberate Locations choice
+   that differs from Clients (Badge-styled span via `listBadgeClass`)
+   and from Quotes / Invoices / Leads (`Badge` component). All three
+   approaches are within the column-kind rules.
+4. **Jobs uses `StatusPill` instead of `Badge`** for status. This
+   was true before the migration and remains true — StatusPill has
+   its own variant vocabulary (`neutral`/`success`/`warning`/`danger`/`info`).
+   See the deferred status-helper consolidation item from the Jobs
+   migration entry.
+5. **Page chrome (loading text, empty-state text, page subtitles,
+   bulk-action bars, summary cards) is NOT normalized.** These are
+   outside table cells and were not in scope. Suppliers' empty/
+   loading states still use `text-sm` (14 px); other pages use
+   browser-default. A separate page-chrome typography pass can
+   address this.
+
+**Constraints honored:**
+- Typography only — no architecture / column / behavior changes.
+- `Badge` primitive untouched.
+- `list-surface.tsx` untouched (PMWorkspacePage stays compatible).
+- No pagination, no sorting, no keyboard nav, no row actions added.
+- No Tailwind config changes; relied entirely on existing semantic
+  tokens (`text-label`, `text-row`, `text-row-emphasis`, `text-caption`).
+
+**Type-check:** `npm run check` clean — no new TypeScript errors.
+
+### Security
+
+#### Tenant/platform boundary lockdown — cross-tenant `/api/admin/*` surface retired (2026-05-03)
+
+**Severity: critical.** Closed a cross-tenant data-exposure path where any
+tenant `owner` session could read the platform-wide tenant catalog (every
+company's owner email, user count, QBO state) and replay another tenant's
+QBO sync jobs. The legacy `/api/admin/*` surface gated on the *tenant*
+role `owner` (`OWNER_ONLY`) but hosted handlers that read from
+`companies` / `qbo_sync_*` with no `companyId` scope.
+
+**Backend changes (`server/routes/admin.ts`):**
+
+- Removed router-wide `requireRole(OWNER_ONLY)`. Every remaining handler
+  now declares its own `requireRole(OWNER_ONLY)` so a future PR cannot
+  accidentally inherit auth from the top of the file.
+- Deleted cross-tenant routes:
+  `GET /tenants`,
+  `GET /qbo/overview`,
+  `GET /qbo/runs`,
+  `GET /qbo/runs/:runId`,
+  `GET /qbo/queue`,
+  `GET /qbo/queue/failed-count`,
+  `GET /qbo/mappings/summary`,
+  `POST /qbo/queue/:id/replay`,
+  `POST /qbo/queue/replay-failed`,
+  `POST /run-weekly-digest`.
+- Removed the `?allCompanies=true` fan-out branch from
+  `POST /run-time-alerts`. The route now only ever invokes
+  `runTimeAlertsForCompany(req.companyId)`.
+- Added catch-all `410 Gone` responses for the retired URL prefixes
+  (`/tenants`, `/qbo/*`, `/run-weekly-digest`) so any stale caller gets
+  a clean rejection pointing to `/api/platform/*` instead of silent
+  success.
+- Added missing `company_id` filter to `GET /scheduling-health` (the
+  prior implementation queried `jobs` with no tenant scope and could
+  surface job IDs/statuses for any tenant).
+- Cross-tenant ops belong under `/api/platform/*` (psid session +
+  `requireCapability`). That surface was already in place; this commit
+  removes the duplicate tenant-auth path that bypassed it.
+
+**Backend follow-up (out of scope; flagged for a separate pass):**
+
+- `POST /api/admin/impersonate` does not currently verify
+  `targetUser.companyId === req.companyId`, which means a tenant owner
+  could in principle impersonate a non-owner user in another tenant. The
+  impersonation flow is not part of this lockdown; the file carries an
+  inline note tracking the follow-up.
+
+**Storage layer (`server/storage/admin.ts`):**
+
+- Deleted `getTenantHealthList()` and removed it from the
+  `adminRepository` export. It was the cross-tenant query backing
+  `GET /api/admin/tenants` and had no other callers.
+
+**Frontend changes:**
+
+- `client/src/components/AppSidebar.tsx` — removed the "Admin" sidebar
+  entry that linked tenant owners to `/admin/tenants`.
+- `client/src/components/UniversalSearch.tsx` — removed the `nav-admin`
+  command-palette entry.
+- `client/src/App.tsx` — removed the `/admin`, `/admin/tenants`,
+  `/admin/qbo`, `/admin/qbo/runs`, `/admin/qbo/runs/:runId`,
+  `/admin/qbo/queue` route registrations and the corresponding eager
+  / lazy imports.
+- Deleted `client/src/pages/AdminTenants.tsx`,
+  `AdminQboOverview.tsx`, `AdminQboQueue.tsx`, `AdminQboRuns.tsx`,
+  `AdminQboRunDetail.tsx`. Their canonical replacements live under
+  `client/src/pages/platform/*`.
+- `client/src/pages/Admin.tsx` — quarantined (no longer routable). File
+  retained on disk because its Maintenance tab owns the only UI for
+  `BulkArchivedJobsCleanupCard`. The User Management tab calls
+  `/api/admin/users` endpoints that were never mounted on the backend
+  and is replaced functionally by `/settings/team`. Header-comment
+  documents the migration follow-up: move bulk cleanup, calendar
+  start-hour, and feedback management into existing tenant settings
+  surfaces, then delete the file.
+
+**Tests added (`tests/admin-cross-tenant-lockdown.test.ts`, 68 cases):**
+
+- Every retired cross-tenant endpoint returns `410` with code
+  `ADMIN_CROSS_TENANT_ROUTE_RETIRED` for owner / admin / manager /
+  dispatcher / technician sessions, and never `200` for an
+  unauthenticated caller.
+- `POST /api/admin/run-time-alerts?allCompanies=true` ignores the query
+  parameter and only ever invokes `runTimeAlertsForCompany`. The cross-
+  tenant `runTimeAlertsWorker` / `runWeeklyDigestWorker` worker entry
+  points are never called from the route.
+- Tenant-scoped routes (`/orphan-locations`, `/time-alerts/thresholds`)
+  remain `OWNER_ONLY`: `200` for owner; `403` for admin / manager /
+  dispatcher / technician.
+- `GET /api/admin/tenants/:companyId` rejects cross-tenant ids with
+  `403` (preserves the 2026-04-26 cross-tenant guard).
+- Storage-layer assertion: `adminRepository` no longer exports
+  `getTenantHealthList`; `getTenantDetail` is preserved.
+
+**Behavior before / after:**
+
+| | Before | After |
+|---|---|---|
+| Tenant `owner` → `GET /api/admin/tenants` | `200` JSON list of every tenant in the SaaS | `410 Gone` |
+| Tenant `owner` → `GET /api/admin/qbo/*` | `200` cross-tenant QBO data | `410 Gone` |
+| Tenant `owner` → `POST /api/admin/qbo/queue/replay-failed` | replays failed jobs across all tenants | `410 Gone` |
+| Tenant `owner` → `POST /api/admin/run-time-alerts?allCompanies=true` | runs worker against every tenant | runs worker for caller's tenant only |
+| Tenant `owner` → `POST /api/admin/run-weekly-digest` | sends digest emails to every tenant | `410 Gone` |
+| Tenant owner clicks left sidebar | "Admin" link visible → `/admin/tenants` cross-tenant page | No link rendered |
+| Tenant owner types "admin" in command palette | nav match → `/admin/tenants` | No match |
+| Platform admin via `/platform/login` | Full access to `/platform/*` (unchanged) | Full access to `/platform/*` (unchanged) |
+| Tenant cookie presented to `/api/platform/*` | Already 401 (psid required) | Still 401 |
+
+**Manual QA checklist:**
+
+- As a tenant owner: no "Admin" item in left sidebar; no `nav-admin`
+  match in the command palette; manual `GET /api/admin/tenants` via
+  the network tab returns 410.
+- As a platform admin via `/platform/login`: `/platform/tenants`
+  loads as before; bulk runs unchanged.
+- Tenant-scoped owner tools still work: `BulkArchivedJobsCleanupCard`
+  → `POST /api/admin/jobs/bulk-cleanup/preview` and `/run` continue
+  to succeed for the operator's own tenant.
+- Impersonation flow (`POST /api/admin/impersonate*`) unchanged.
+
+**Files changed:**
+- `server/routes/admin.ts` — rewritten.
+- `server/storage/admin.ts` — `getTenantHealthList` removed.
+- `client/src/components/AppSidebar.tsx` — Admin sidebar entry removed.
+- `client/src/components/UniversalSearch.tsx` — `nav-admin` entry removed.
+- `client/src/App.tsx` — `/admin/*` routes + imports removed.
+- `client/src/pages/Admin.tsx` — quarantine header added.
+- Deleted: `client/src/pages/AdminTenants.tsx`,
+  `AdminQboOverview.tsx`, `AdminQboQueue.tsx`, `AdminQboRuns.tsx`,
+  `AdminQboRunDetail.tsx`.
+- Added: `tests/admin-cross-tenant-lockdown.test.ts`.
+
+**Migration files created:** None — backend-only auth/route surface change.
+
+**Breaking changes:** Yes. Any external script calling the retired
+cross-tenant `/api/admin/*` endpoints will now receive `410 Gone`.
+Internal platform-admin tooling already uses `/api/platform/*`.
+
+### Added
+
+#### Company tax registrations — multi-row refactor (2026-05-03)
+
+Refactor of the same-day single-pair feature below into a multi-row child table so each tenant can store ONE OR MORE tax registration entries (e.g. HST + GST, or VAT + EORI). The customer-facing invoice PDF now renders one line per active entry under the company contact block. No invoice math, no tax calculation, no totals, no payment flow, no email-send flow touched.
+
+**1. Migration — `migrations/2026_05_03_company_tax_registrations_table.sql`.**
+
+Idempotent. Creates `company_tax_registrations` (id, company_id FK ON DELETE CASCADE, label, number NOT NULL, sort_order, created_at, updated_at) plus a composite index on `(company_id, sort_order)`. Backfills from the legacy `companies.tax_registration_label/number` columns guarded by `NOT EXISTS` so re-runs do NOT duplicate rows. The legacy columns on `companies` are kept in place for rollback safety; they are no longer written to by any caller and a future PR will drop them once the new code path has been live for one release cycle.
+
+**2. Schema + types — `shared/schema.ts`.**
+
+- New `companyTaxRegistrations` Drizzle table mirroring the SQL above. Exported types: `CompanyTaxRegistration` + `InsertCompanyTaxRegistration`.
+- The two legacy columns on `companies` are flagged DEPRECATED in their column comments. `companyProfileFormSchema` no longer includes the two fields.
+
+**3. Repository — `server/storage/companyTaxRegistrations.ts` (new).**
+
+Two operations only:
+- `list(tenantId)` → ordered by `sort_order ASC, created_at ASC`. Empty array if no rows.
+- `replace(tenantId, list)` → atomic transaction: delete-all + insert-all with `sort_order = 0..N-1`. Trims label/number, normalizes empty label to `null`, drops entries whose number is empty after trim. Empty input list → tenant has no rows (PDF renders no tax-ID lines).
+
+The legacy `CompanyProfile` interface in `server/storage/company.ts` no longer carries the two fields. `getCompanyProfile` SELECT and `updateCompanyProfile` optional-keys list both stripped to match.
+
+**4. New scoped route — `server/routes/companyTaxRegistrations.ts` + mount.**
+
+- `GET /api/company-tax-registrations` → `{ registrations: Array<{ id, label, number, sortOrder }> }`
+- `PUT /api/company-tax-registrations` body: `{ registrations: Array<{ label?, number }> }` → returns post-write list
+- Replace-all semantic on PUT. Server caps the list at 10 entries per tenant. Format intentionally unconstrained (international registration formats vary).
+- Mounted at `app.use("/api/company-tax-registrations", ...)` in `server/routes/index.ts`.
+- The legacy `/api/company-settings` route schema + `PROFILE_KEYS` array no longer accept `taxRegistrationLabel/Number`.
+
+**5. PDF service — `server/services/invoicePdfService.ts`.**
+
+- `InvoicePdfData` gains an optional `taxRegistrations: ReadonlyArray<{ label: string \| null; number: string }>` field.
+- The single-line render (off `company.taxRegistrationLabel/Number`) is replaced with a loop over `taxRegistrations`. Per entry:
+  - `label && number` → renders `"{label}: {number}"`  e.g. `HST: 739597326 RT0001`
+  - only `number` → renders `"Tax ID: {number}"`
+  - blank entries skipped
+  - empty/undefined list → no lines rendered, no whitespace advance (preserves the existing-tenant default)
+- All three callers (`server/routes/invoices.ts`, `server/routes/portal.ts`, `server/services/emailDispatchService.ts`) now `await companyTaxRegistrationRepository.list(tenantId)` alongside `storage.getCompanyById(...)` in the same `Promise.all` and pass the result through. Single-page invoices and partially-paid invoices both render the multi-line block under the contact block exactly as the prior single-line block rendered.
+
+**6. Settings UI — `client/src/pages/TaxBillingRulesPage.tsx`.**
+
+- The previous "Tax Registration" single-card with one Label + one Number is replaced by a list editor:
+  - Each row: Label / Number / Remove (X icon)
+  - "Add Tax Registration" button (outline) appended at the bottom-left of the card
+  - Single Save button at the bottom-right that PUTs the entire list
+  - Empty state: "No tax registrations. Add one to display it on customer-facing invoices."
+  - Helper text: "These appear on customer-facing invoices."
+- Loads from `GET /api/company-tax-registrations`; saves via the new PUT endpoint. Mutation invalidates the same query key so the rehydrated values reflect the just-saved state. Local-counter React keys keep row identity stable across rerenders without depending on server-assigned ids (which churn on every replace-all save).
+
+**Constraints honored:** tax calculation logic, tax rates, invoice totals, invoice creation flow, status logic, payment logic, watermark, attachment flow, and email send flow are all unchanged. No per-invoice override is introduced — applies globally to every invoice for the tenant.
+
+**Files changed:**
+- `migrations/2026_05_03_company_tax_registrations_table.sql` (new)
+- `shared/schema.ts`
+- `server/storage/company.ts`
+- `server/storage/companyTaxRegistrations.ts` (new)
+- `server/routes/companyTaxRegistrations.ts` (new)
+- `server/routes/index.ts`
+- `server/routes/companySettings.ts`
+- `server/routes/invoices.ts`
+- `server/routes/portal.ts`
+- `server/services/emailDispatchService.ts`
+- `server/services/invoicePdfService.ts`
+- `client/src/pages/TaxBillingRulesPage.tsx`
+
+**Verification:** migration applied via `npm run db:migrate:one` (idempotent — backfill guarded by `NOT EXISTS`). `npm run check` clean. `npm run build` clean. Existing single-row data migrates forward automatically; tenants with no prior data keep an empty list (PDF renders nothing).
+
+#### Company tax registration on customer-facing invoice PDFs (2026-05-03)
+
+Tenants can now store a tax registration label + number on the company row (e.g. HST/GST/VAT/Tax ID for Canadian, UK/EU, US, Australian and other jurisdictions) and the customer-facing invoice PDF automatically renders it under the company contact block. Both fields are optional; tenants who leave them blank get the same PDF output as before.
+
+**1. Migration — `migrations/2026_05_03_company_tax_registration.sql`.**
+
+Idempotent (`ADD COLUMN IF NOT EXISTS`). Adds two nullable text columns to `companies`:
+
+| Column | Purpose | Example |
+|---|---|---|
+| `tax_registration_label` | Display label | `HST`, `GST`, `VAT`, `Tax ID` |
+| `tax_registration_number` | Registration number | `739597326 RT0001` |
+
+No backfill — existing tenants keep both columns NULL until they fill them in via Settings. UNRELATED to the existing `tax_name` / `default_tax_rate` columns on the same table (those drive the tax-RATE calculation engine; these describe the business as a tax-REGISTERED entity for invoice display). No CHECK constraint on format because international registration numbers vary widely.
+
+**2. Schema + types — `shared/schema.ts`.**
+
+- Added `taxRegistrationLabel` + `taxRegistrationNumber` to the `companies` Drizzle definition (nullable `text`).
+- Extended `companyProfileFormSchema` to include both as optional/nullable strings (max 50 / 100 chars).
+
+**3. Storage repository — `server/storage/company.ts`.**
+
+- Extended `CompanyProfile` + `UpdateCompanyProfileInput` interfaces with the two new fields.
+- `getCompanyProfile` SELECT now reads both columns; the response shape adds `taxRegistrationLabel: string \| null` + `taxRegistrationNumber: string \| null`.
+- `updateCompanyProfile` UPDATE list now accepts both keys; empty-string input is normalized to NULL by the same normalization loop the other optional profile fields already use, so a tenant can clear either field by submitting an empty string.
+
+**4. Settings route — `server/routes/companySettings.ts`.**
+
+- Added both keys to the `updateCompanySettingsSchema` Zod (max 50 / 100 chars, optional, empty-string accepted).
+- Added both keys to the `PROFILE_KEYS` array so the route partitions them onto `companies` (profile) rather than `company_settings` (preferences).
+- Reuses the existing GET/PUT contract — no new endpoint, no new route file. Read path hydrates via `buildSettingsResponse` which already calls `getCompanyProfile`; write path routes through `companyRepository.updateCompanyProfile` exactly the way the address/phone/email fields already do.
+
+**5. Settings UI — `client/src/pages/TaxBillingRulesPage.tsx`.**
+
+- Added a compact "Tax Registration" card directly between the existing Payment Terms card and the Tax Rates table. Two inputs side-by-side (Tax ID label / Tax ID number) with the helper line "This appears on customer-facing invoices." above the row, save button on the bottom-right separator. Uses the same shadcn Card / CardContent / Input / Label / Button primitives as the surrounding cards so it reads as part of the same page.
+- Reuses the same `useQuery({queryKey: ["/api/company-settings"]})` already mounted on the page; the new mutation PUTs `{ taxRegistrationLabel, taxRegistrationNumber }` to `/api/company-settings` and invalidates the same key so the input values rehydrate after save.
+- Hydration tolerates the columns being NULL (existing tenants) — both inputs default to empty string.
+- Empty-string save is allowed (clears the row).
+
+**6. Invoice PDF — `server/services/invoicePdfService.ts`.**
+
+- New block immediately under the company contact lines (phone / email). Reads `company.taxRegistrationLabel` / `company.taxRegistrationNumber`, both trimmed:
+  - `label && number` → renders `"{label}: {number}"`  e.g. `HST: 739597326 RT0001`
+  - only `number`     → renders `"Tax ID: {number}"`
+  - both empty       → renders nothing (no orphan label, no stray colon, no extra whitespace — `companyY` is not advanced)
+- All three callers (`server/routes/invoices.ts`, `server/routes/portal.ts`, `server/services/emailDispatchService.ts`) already pass the full `company` row from `storage.getCompanyById`, so no data-loading changes were needed upstream — the new fields flow through automatically.
+- Email templates were intentionally NOT touched — the attached PDF carries the tax registration line; the email body does not need to duplicate it.
+
+**Constraints honored:** tax calculation logic, tax rates, invoice totals, invoice creation flow, invoice status logic, payment logic, watermark, and email-send pipeline are all unchanged. No per-invoice override is introduced (deliberately scoped: "Applies globally to all invoices for that tenant. Not configured per invoice.").
+
+**Files changed:**
+- `migrations/2026_05_03_company_tax_registration.sql` (new)
+- `shared/schema.ts`
+- `server/storage/company.ts`
+- `server/routes/companySettings.ts`
+- `client/src/pages/TaxBillingRulesPage.tsx`
+- `server/services/invoicePdfService.ts`
+
+**Verification:** migration applied via `npm run db:migrate:one` (idempotent — re-run = no-op). `npm run check` clean. `npm run build` clean. Existing invoices automatically pick up the company-level setting on their next PDF render — no per-invoice migration needed.
+
+#### Jobs list migrated to EntityListTable — keyboard nav / infinite scroll / row kebab removed (2026-05-03)
+
+Final entity-list migration in the V1 plan. Jobs is the seventh and last
+operational/directory list to land on the canonical EntityListTable
+shell after Leads, Quotes, Invoices, Suppliers, Locations, and Clients.
+
+**Files changed:**
+- `client/src/pages/Jobs.tsx` — replaced shadcn `<Table>` (both live and
+  history-mode tables) with two `EntityListTable` mounts. Net: −280
+  lines / +220 lines depending on how you count the kebab+IO+keyboard
+  blocks. The remaining body is layout + filters + summary cards +
+  search; the table is now opaque.
+
+**Behaviors REMOVED in this migration (per product direction):**
+
+| Removed | Why |
+|---|---|
+| Per-row kebab menu (`<MoreHorizontal>` + `Apply Template` item) | Core entity lists are navigational; detail pages own row-level actions. The kebab's only menu item is mirrored on `/jobs/:id`. |
+| `applyTemplateJob` state + `<ApplyTemplateModal>` mount in Jobs page | Page-level companion to the kebab. The modal still exists in the codebase and is opened from job detail. |
+| `isOfficeUser` gate + `useAuth()` import + `OFFICE_ROLES` constant | Only used to gate the kebab column. Cleaned up alongside. |
+| Keyboard navigation (`ArrowUp` / `ArrowDown` / `Enter`) | `selectedRowIndex` state, the document-level `keydown` `useEffect`, the row-highlight `cn(... "ring-1 ring-inset ring-[var(--brand)] bg-slate-50")` classes, and the `useEffect` that reset `selectedRowIndex` on filter change — all removed. EntityListTable's row-level Enter key handler covers the keyboard-open gesture for the focused row, so deep-link-by-keyboard is preserved at the row scope. |
+| IntersectionObserver-driven infinite scroll | `loaderRef`, `handleObserver` callback, the `useEffect` that registered the IO, the `visibleCount` state, the `useEffect` that reset `visibleCount` on filter change, the `visibleJobs` slice, the `hasMore` flag, and the `<div ref={loaderRef}>` loader marker — all removed. The page now renders all `filteredAndSortedJobs` at once (capped at the existing `useJobsFeed` server-side `limit: 200`). The "Showing X of Y jobs" footer simplifies to "Showing N jobs". |
+| `ITEMS_PER_PAGE` constant (50) | Coupled to infinite scroll only. |
+| Row-highlight ring classes | Coupled to keyboard nav only. |
+
+**Behaviors PRESERVED:**
+- Row click → `/jobs/:id` (unchanged).
+- Search input + 300 ms debounce (history mode).
+- Hybrid history-mode swap (live feed → `searchMode: "history"`) and the inline `Search all job history` CTA, the back button, and the "Searching all job history" banner.
+- Status filter (Lifecycle: all/open/completed/invoiced/archived; Workflow sub-status: any/in_progress/on_hold/on_route).
+- URL deep links: `?lifecycle=`, `?subStatus=`, `?scheduling=unscheduled`, `?readyToInvoiceOnly=true`. Initial-state derivation from URL params unchanged.
+- Summary cards (Visits This Week / This Month / Scheduled / Projected Revenue) and their canonical `/api/visits` and `/api/dashboard/financial` queries.
+- Empty state ("No jobs yet" with create button vs. "No jobs match your filters") and loading state ("Loading jobs..." spinner) preserved verbatim.
+- New Job button + `<CreateNewDialog>` modal.
+
+**Sorting kept at the page layer.** Jobs has 4 sortable columns
+(location, jobNumber, schedule, status). The sort logic is
+page-owned (sort state + `filteredAndSortedJobs` useMemo); the only
+table-level entanglement is the column-header click target. We
+replaced the prior `<TableHead>`-based `SortableHeader` component
+with a small page-local `SortableHeaderCell` (a `<button>`) and pass
+it through each sortable column's `header` ReactNode slot. Each
+sortable column sets `headerClassName: ""` so the button supplies
+its own `px-4` padding without doubling up on the kind's default
+header padding. EntityListTable still does **not** implement
+sorting; this is a page-layer concern.
+
+**Status logic kept inline.** Jobs' `getDisplayStatus` helper has the
+deepest precedence chain in the app
+(`overdue > requires-invoicing > archived > invoiced > sub-status >
+derived > lifecycle`) and it returns StatusPill variants
+(`neutral`/`success`/`warning`/`danger`/`info`), not the Badge variants
+the existing `lib/statusBadges.ts` helpers return. Centralizing now
+would either introduce a second variant vocabulary in the canonical
+helper file or risk silently drifting the precedence chain during the
+move. Decision: leave it inline. **Follow-up tracked**: a separate
+status-helper consolidation pass after the migration settles.
+
+**Column kinds (live + history):**
+
+| Column | Kind | Ratio | Floor | Notes |
+|---|---|---|---|---|
+| Client / Location | `primary` | 1.5 | 0 (default) | Two-line cell (company + sub-location); `cellClassName` overrides default truncate wrapper |
+| Job | `badge` | 0.7 | **88 px** | EntityNumber pill + jobType secondary text; `badge` kind chosen because it skips the default truncate wrapper and lets the two-line block render |
+| Summary | `text` | 1.5 | 0 (default) | Single-line, truncates via the kind's wrapper |
+| Schedule | `date` | 0.8 (default) | 100 px (default) | Renders calendar icon + formatted date or "Not scheduled" placeholder |
+| Status | `status` | 0.9 (default) | 120 px (default) | StatusPill render; cell's flex-wrap container is a no-op for the single-pill render today but leaves room for future overlay badges |
+
+**EntityListTable API: unchanged.** No new props were needed for the
+Jobs migration; `onRowClick`, the per-kind track defaults, and the
+`select` cell propagation guard cover everything Jobs needs in V1.
+
+**Constraints honored:**
+- Other migrated pages (Leads, Quotes, Invoices, Suppliers, Locations,
+  Clients) untouched.
+- `Badge` primitive untouched.
+- No sorting added to EntityListTable (page-layer sort preserved).
+- No infinite scroll, keyboard navigation, or row actions in the
+  shared component.
+
+**Type-check:** `npm run check` clean for client-side files. Two
+pre-existing TS errors in `server/storage/payments.ts` are unrelated
+to this migration (they predate it).
+
+**Follow-up recommendations (NOT implemented):**
+
+1. **Status-helper consolidation.** `getDisplayStatus` (Jobs) +
+   `getInvoiceStatusBadge` (lib/statusBadges) + `getQuoteStatusBadge`
+   (lib/statusBadges) + the inline `STATUS_BADGE` map in `LeadsPage`
+   are four implementations of the same idea. The canonical move is to
+   normalize on a single variant vocabulary first (StatusPill or Badge,
+   pick one), then collapse all four into `lib/statusBadges.ts`.
+2. **Behavior parity test for keyboard-nav removal.** Some power users
+   may rely on the `ArrowUp` / `ArrowDown` / `Enter` flow to triage the
+   Jobs queue. EntityListTable's per-row Enter handler covers
+   focused-row open, but the keyboard arrow navigation is gone. If
+   that's a regression in practice, revisit V1's deliberate
+   exclusion of keyboard nav.
+3. **Pagination story.** The page now renders all 200 server-side
+   `useJobsFeed` results at once. For tenants with > 200 active jobs
+   this clips. Either (a) raise the server limit, (b) introduce
+   pagination at the EntityListTable level (deliberately deferred from
+   V1), or (c) re-introduce a simple "Load more" button (page-layer,
+   no IO) as a stopgap. None implemented in this migration.
+
+**Migration scoreboard — V1 complete:**
+- ✅ Leads
+- ✅ Quotes
+- ✅ Invoices
+- ✅ Suppliers
+- ✅ Locations
+- ✅ Clients
+- ✅ Jobs (this PR)
+
+### Fixed
+
+#### Customer-facing invoice PDF — layout, totals box, footer pagination (2026-05-03)
+
+Surgical polish pass on the generated invoice PDF. Pure layout/typography fixes — totals math, tax math, watermark logic, attachment flow, and the email-send pipeline are all unchanged. Single file touched: `server/services/invoicePdfService.ts`.
+
+**1. Line-item Amount column overflow.**
+
+The Amount column previously used `leftCol + 450` with `width: 80`, drawing text to x=580 — 18pt past the 512pt content edge (right margin starts at x=562). The "Amount" header label and dollar values rendered *outside* the gray header bar and the alternating-row backgrounds. Realigned all four columns to fit within `pageWidth` with ~10pt right padding:
+
+| Column | Old offset | Old width | New offset | New width | Text right edge |
+|---|---|---|---|---|---|
+| Description | leftCol+10 | 280 | leftCol+10 | 240 | x=300 |
+| Qty | leftCol+300 | 50, center | leftCol+260 | 40, center | x=350 |
+| Rate | leftCol+360 | 80, right | leftCol+310 | 90, right | x=450 |
+| Amount | leftCol+450 | 80, right | leftCol+410 | 92, right | x=552 (10pt before 562) |
+
+Applied to both the table-header row and the per-line-item row so they stay in lockstep.
+
+**2. Totals box height ignored Amount Paid + Balance Due.**
+
+Was a fixed `totalsHeight = hasDiscount ? 100 : 70`. On partially-paid invoices (`showBalance && amountPaid > 0`) the renderer drew two extra rows (Amount Paid + Balance Due) ~36pt below the box edge — those rows rendered *outside* the colored container.
+
+Replaced with a dynamic sum of exactly the rows we will draw: 12pt top padding + subtotal (16) + optional discount (16) + tax (16) + separator gap (6) + total (16) + optional amount-paid block (36) + 12pt bottom padding. Heights per variant: base 78pt, +discount 94pt, +amountPaid 114pt, +discount+amountPaid 130pt. The `showAmountPaid` flag is computed once and shared between the height calc and the render path so they cannot disagree.
+
+**3. Notes overprinted Balance Due.**
+
+`notesY` was `rowY + totalsHeight + 20` against the OLD precomputed totalsHeight, which under-counted on partially-paid invoices and placed notes ~36pt above where Balance Due actually rendered. Introduced explicit `totalsEndY = rowY + totalsHeight` (now accurate per fix #2) and set `notesY = totalsEndY + 20`. Notes now sit exactly 20pt below the bottom edge of the totals box for every variant.
+
+**4. Stale 20pt whitespace below dates.**
+
+`descriptionTop = Math.max(clientInfoY + 30, detailsY + 50)` — the `+50` had reserved space for the "AWAITING PAYMENT" status pill that was removed in an earlier polish pass. Without the pill, that 20pt was a visible gap. Trimmed to `+30` to match the gap below BILL TO.
+
+**5. Scope of Work section header.**
+
+Header was rendered at `fontSize:10 fillColor:#666666 Helvetica-Bold` while its body sat at `fontSize:10 fillColor:#333333 Helvetica`. The muted gray made the header recede *behind* the body it introduced — inverted hierarchy. Bumped to `fontSize:11 fillColor:#333333 Helvetica-Bold` so the header reads as a proper section title.
+
+**6. Phone:/Email: label inconsistency in the company block.**
+
+Company info rendered `Phone: ${value}` and `Email: ${value}` while the location block already rendered both as raw values. Dropped the label prefixes from the company block — both blocks now match. The surrounding visual context already implies what each line is.
+
+**7. Footer pagination + blank-page-2 root cause.**
+
+Previously the footer was drawn inline at `Y = doc.page.height - 50` on whichever page the PDFKit cursor happened to be on at that moment. If long Notes pushed the cursor onto page 2, the footer landed on page 2 — and the `doc.text(...)` call without `lineBreak: false` could itself trigger an auto-paginate, occasionally producing an orphan or near-blank page 2.
+
+Replaced with the canonical `bufferPages` walk: `bufferPages: true` was already set on the constructor (line 58) but never used. Now after main rendering we call `doc.bufferedPageRange()`, compute `lastPage = range.start + range.count - 1`, `doc.switchToPage(lastPage)`, and draw the footer there with `lineBreak: false` so the call cannot itself create a new page. Single-page invoices: footer on page 1. Multi-page invoices: footer on the last page only. No more orphan pages.
+
+**Verification matrix (per acceptance criteria):**
+
+- ✓ Single-page invoice → footer on page 1, no extra page (`bufferPages` walk anchors footer to last page; `lineBreak: false` prevents auto-paginate).
+- ✓ Multi-line notes → no overlap with totals (notesY now derived from accurate `totalsEndY`).
+- ✓ Amount column aligned inside table (column offsets land within pageWidth=512 with 10pt right padding).
+- ✓ Totals box fully contains Amount Paid + Balance Due (dynamic height calc).
+- ✓ Footer appears only on last page.
+- ✓ No blank second page (notes Y fix + footer-on-last-page combo).
+
+**Constraints honored:** totals math, tax logic, invoice data shape, PDF generation entry point, email attachment flow, and watermark logic are all unchanged.
+
+**Files changed:**
+- `server/services/invoicePdfService.ts`
+
+**Verification:** `npm run check` clean, `npm run build` clean.
+
+### Added
+
+#### Multi-invoice payments — portal + payment UX polish (PR 5, 2026-05-03)
+
+Final PR in the multi-invoice payments series. **Refinement only —
+no engine changes, no webhook changes, no schema changes, no API
+contract changes (additive fields only).**
+
+##### Portal invoice list — status badges + due indicators
+
+`portalStatusBadge` color tokens aligned with the spec:
+- **Paid** → emerald (unchanged).
+- **Partial** → yellow (was sky/blue) so a partially-paid invoice
+  reads as "needs attention" rather than "informational".
+- **Awaiting payment / Open** → slate (neutral, unchanged).
+- **Past Due** → red (unchanged).
+- **Due Soon** → orange (was amber) so it's visually distinct from
+  the Partial yellow.
+
+The detail page's status banners + hero balance text adopt the same
+palette (`StatusBanner` tone union changed from
+`emerald | sky | amber | red` to `emerald | yellow | orange | red`).
+
+##### Portal invoice list — alignment + hierarchy
+
+For payable rows the **balance** is now the primary number on the
+right column, with the total demoted to a secondary `of $X.XX` line.
+Paid rows stay total-primary. The due-label gets its own colored chip
+inline with the issued-date footer (red for past_due, orange for due_soon).
+
+##### Pay Selected UX
+
+The mutation's error path now surfaces actionable copy by status code:
+
+| Status | Message |
+|---|---|
+| Network failure (fetch reject) | "Couldn't reach the server. Check your connection and try again." |
+| 401 (session expired) | "Your session has expired. Please sign in again." |
+| 404 (cross-customer / scope drift) | "One of the selected invoices is no longer available. Refresh and try again." |
+| 5xx | "Something went wrong starting checkout. Please try again." |
+| 4xx (other) | server-supplied `error` message |
+| 201 with no `checkoutUrl` | "Checkout was started but no redirect URL was returned. Please try again." |
+
+The "Redirecting…" loading state + disabled button were already in place
+(PR 3); the error copy is the polish layer.
+
+##### Invoice detail — payment history section
+
+`GET /api/portal/invoices/:invoiceId` returns a new ADDITIVE field
+`payments: Array<PaymentHistoryRow>`. Pre-PR-5 clients ignore it.
+The route unions two tenant-scoped sources:
+1. Direct `payments` rows where `invoice_id = $1` (legacy 1:1 path).
+2. `payment_allocations` rows where `invoice_id = $1` (modern
+   multi-invoice path).
+
+Refund + reversal rows are filtered out (`paymentType = 'payment'`)
+so the customer sees only money-in events. Rows are merged + sorted
+DESC by `received_at`.
+
+`PortalInvoiceDetail.tsx` renders a new "Payment history" card
+between the totals + notes blocks: per-payment row (label + method
++ date + amount), with a footer that rolls up "Total paid" +
+"Remaining balance".
+
+##### Receipt email — portal link + spacing + hierarchy
+
+`payment_receipt:email` default body refreshed:
+- Headline `**{{PAYMENT_AMOUNT}}**` already bolded (PR 4); now
+  `**Remaining balance: {{INVOICE_BALANCE}}**` is bolded too.
+- New line: `View your invoice in the portal: {{PORTAL_INVOICE_URL}}`
+  — auto-linkified by `bodyToHtml.linkifyEscapedHtml`.
+- `__PAYMENT_ALLOCATIONS_TABLE__` sentinel unchanged.
+
+New template variable `PORTAL_INVOICE_URL` added to the
+`payment_receipt` catalog and emitted by both
+`buildPaymentReceiptTemplateData` (legacy single-invoice) and
+`buildPaymentReceiptTemplateDataByPaymentId` (multi-invoice). For
+multi-invoice receipts it points at the FIRST covered invoice.
+
+##### Logging — `payment_allocation_failed` + `batch_checkout_failed`
+
+- **`payment_allocation_failed`** — emitted from
+  `applyMultiInvoiceAllocationsTx` for the three per-invoice failure
+  modes: `invoice_not_found`, `customer_scope_mismatch`,
+  `invoice_state_changed`, plus the catch-around-`createAllocations`.
+- **`batch_checkout_failed`** — emitted from
+  `POST /api/portal/invoices/batch-checkout` when
+  `paymentApplicationService.createMultiCheckout` throws.
+
+##### Files affected
+
+```
+client/src/pages/portal/portalUtils.ts                  (modified — Partial→yellow, Due Soon→orange)
+client/src/pages/portal/PortalInvoicesList.tsx          (modified — amount hierarchy, due-label chip color, error copy)
+client/src/pages/portal/PortalInvoiceDetail.tsx         (modified — banner palette, hero color, payment history card)
+server/routes/portal.ts                                 (modified — payment-history union + batch_checkout_failed log)
+server/services/payments/paymentApplicationService.ts   (modified — payment_allocation_failed structured logs)
+server/services/communicationTemplatesService.ts        (modified — receipt body + PORTAL_INVOICE_URL link)
+server/services/templateDataBuilder.ts                  (modified — PORTAL_INVOICE_URL variable in both builders)
+server/constants/templateVariables.ts                   (modified — PORTAL_INVOICE_URL added to payment_receipt catalog)
+tests/portal-payment-history.test.ts                    (NEW — 15 tests)
+tests/portal-invoice-list-selection.test.ts             (modified — 3 PR-5 polish guards added)
+```
+
+##### Tests
+
+- `tests/portal-payment-history.test.ts` — **15/15 pass**: unioning +
+  ordering, refund/reversal exclusion, cross-invoice noise filtered,
+  source-grep guards on the portal route + payment service +
+  template service + template variable catalog.
+- `tests/portal-invoice-list-selection.test.ts` — **+3 guards** for
+  amount hierarchy, per-kind due-label color, network/status error copy.
+- Full PR-related sweep — **191/191 pass** across 12 suites.
+
+##### Stop point
+
+PR 5 is the final PR in the multi-invoice payments rollout. The
+customer-portal payment flow is now feature-complete: single or
+multi-invoice payment from the portal, status badges + due
+indicators, per-payment confirmation email with portal link, per-
+invoice payment history, structured ops logs at the canonical
+failure points.
+
+#### Multi-invoice payments — payment confirmation email (PR 4, 2026-05-03)
+
+Fourth of five PRs. Sends one payment confirmation email per
+**committed payment row**, regardless of single-invoice vs multi-
+invoice shape. Triggered exclusively by the canonical webhook on
+the "accepted" outcome (replays / config-mismatches never reach the
+send path).
+
+##### Template + sentinel
+
+`payment_receipt:email` default body gains the literal sentinel
+`__PAYMENT_ALLOCATIONS_TABLE__`. Same contract as the existing
+`__PAY_INVOICE_BUTTON__` token: NOT a `{{VAR}}`, the renderer
+ignores it; substitution happens at HTML build time in
+`bodyToHtml`. Tenants whose saved templates don't reference the
+sentinel render exactly as before — `split/join` on a missing
+needle is a no-op.
+
+`__PAYMENT_ALLOCATIONS_TABLE__` becomes a borderless 2-column HTML
+table — invoice label on the left, money on the right, right-aligned,
+inline-styled, Outlook-friendly:
+
+```
+Invoice #1181                             $100.00
+Invoice #1182                              $75.50
+```
+
+Single-invoice receipts (legacy 1:1 webhook path) synthesize a
+1-row allocation list at send time so the same default template
+renders cleanly without forking the copy.
+
+##### Template variables — additions
+
+Two new tokens on the `payment_receipt:email` variable catalog
+(`server/constants/templateVariables.ts`):
+
+- `PAYMENT_DATE` — formatted `payment.received_at` (`"January 15, 2026"`).
+- `INVOICE_NUMBERS` — comma-joined list of every invoice number the
+  payment covered (`"1181, 1182, 1183"`). Identical to
+  `INVOICE_NUMBER` for single-invoice payments.
+
+`INVOICE_NUMBER` keeps emitting the FIRST invoice's number so the
+existing default subject (`"Payment received — Invoice #{{INVOICE_NUMBER}}"`)
+keeps rendering meaningful subjects without a separate template.
+
+##### Service: `templateDataBuilder.buildPaymentReceiptTemplateDataByPaymentId`
+
+New canonical builder keyed on `paymentId` (the existing
+`buildPaymentReceiptTemplateData(invoiceId, ...)` is preserved for
+the legacy single-invoice send path). Loads the payment row, every
+allocation pointing at it, and the underlying invoices; resolves the
+tenant + customer-company name via the FIRST invoice; returns
+`{ data, allocations, primaryInvoiceId, coveredInvoiceIds }`.
+
+Handles BOTH ledger shapes:
+- `payment.invoice_id IS NOT NULL` → synthesize a 1-row allocation
+  from the payment row itself (legacy 1:1).
+- `payment.invoice_id IS NULL` + ≥1 row in `payment_allocations` →
+  load every allocation.
+
+##### Service: `emailDispatchService.sendMultiInvoicePaymentReceiptEmail`
+
+New send method. Resolves recipients across every covered invoice
+using the canonical `getDefaultRecipients` strategy and dedupes
+(a customer who is the bill-to on multiple invoices in the batch
+gets one email, not N). Records the delivery row under the FIRST
+covered invoice so the customer's per-invoice email history reflects
+the receipt event.
+
+Renders the body via `resolveRenderedMessage` (tenant template wins,
+else the system default) → `bodyToHtml(body, { allocations })`.
+
+##### Webhook integration
+
+`handleMultiInvoicePaymentSucceeded` now sends the receipt AFTER
+the transaction commits and only when `txOutcome === "accepted"`.
+
+Idempotency:
+- A webhook replay collides on `payments_provider_event_id_uq` →
+  the tx rolls back inside the catch block → the catch returns
+  `"replay"` → the post-commit hook is **never reached**. The
+  per-payment uniqueness contract on the receipt is therefore
+  inherited from the canonical idempotency anchor on `payments`.
+- Receipt failures (Resend down, recipient resolution empty)
+  log + record but do NOT bubble to the webhook ACK. The ledger
+  already committed; failing the webhook would force Stripe to
+  redeliver and re-attempt the (now-deduped) ledger write — wasted
+  work. The receipt can be re-sent later via the email-history
+  resend path.
+
+##### Files affected
+
+```
+server/constants/templateVariables.ts                 (modified — PAYMENT_DATE + INVOICE_NUMBERS)
+server/services/templateDataBuilder.ts                (modified — new buildPaymentReceiptTemplateDataByPaymentId)
+server/services/communicationTemplatesService.ts      (modified — payment_receipt:email default body uses the sentinel)
+server/services/emailDispatchService.ts               (modified — buildPaymentAllocationsHtml + sentinel substitution + sendMultiInvoicePaymentReceiptEmail)
+server/services/payments/paymentApplicationService.ts (modified — handleMultiInvoicePaymentSucceeded sends receipt post-commit)
+tests/multi-invoice-payment-receipt.test.ts           (NEW — 11 tests)
+```
+
+##### Tests
+
+- `tests/multi-invoice-payment-receipt.test.ts` — **11/11 pass**:
+  1. Sentinel rendering (4): replaced when allocations present;
+     stripped when allocations empty / missing; bodies without the
+     sentinel unchanged; HTML escape on user-supplied values.
+  2. Multi-invoice webhook (3): `sendMultiInvoicePaymentReceiptEmail`
+     called once with canonical `paymentId`; legacy
+     `sendPaymentReceiptEmail` NOT called for multi flow; receipt
+     skipped on metadata malformation; receipt skipped on amount
+     mismatch.
+  3. Replay safety (2): UNIQUE-violation replay does NOT trigger
+     a second receipt; receipt-send failure does NOT bubble to
+     the webhook ACK.
+  4. Single-invoice path preserved (1): legacy 1:1 webhook still
+     calls `sendPaymentReceiptEmail` (singular) with the existing
+     contract; new multi method NOT called.
+  5. Builder shape sanity (1).
+- All pre-existing tests still pass — full PR + email suite
+  **173/173**:
+  `multi-invoice-payments` (18),
+  `payment-application-service` (19),
+  `payment-allocations` (6),
+  `payment-provider-linked-guard`,
+  `payment-refundability`,
+  `portal-batch-checkout` (13),
+  `portal-invoice-list-selection` (33),
+  `portal-invoice-visibility`,
+  `portal-magic-link`,
+  `email-sender-and-total`.
+
+##### Stop point
+
+PR 4 ends here. The customer now receives one payment confirmation
+email after every successful payment, single-invoice or multi-
+invoice. PR 5 is the final polish layer.
+
+#### Multi-invoice payments — portal route + UI (PR 3, 2026-05-03)
+
+Third of five PRs that upgrade the customer portal payment flow. PR 3
+exposes the PR 2 engine to the customer:
+- new `POST /api/portal/invoices/batch-checkout` route
+- per-row "Pay Now" button on the portal invoice list
+- per-row checkbox + header select-all-payable
+- sticky "Pay Selected — $X.XX" footer that POSTs the batch
+
+No changes to the payment engine, webhook handler, schema, or receipt
+email. Single-invoice flow continues through the existing per-invoice
+endpoint and the detail-page Stripe Elements modal.
+
+##### Backend: `POST /api/portal/invoices/batch-checkout`
+
+Body: `{ invoiceIds: string[] }`. Response: `{ checkoutUrl, sessionId, totalAmount, invoiceIds }`. The legacy `/invoices/:invoiceId/payments/checkout` endpoint stays untouched.
+
+Guard chain (in order — first failure short-circuits):
+1. `requirePortalAuth` — same middleware as every other portal route.
+2. Body validation — `invoiceIds` must be a non-empty `string[]` with no duplicates.
+3. `customer_portal_payments` entitlement gate (403 when off; same predicate the single-invoice route enforces).
+4. Per-id scope check — every id resolves through `invoiceRepository.getInvoice(companyId, id)` and must match `req.portal.customerCompanyId`. Cross-tenant / cross-customer probes surface as 404 (no info leak).
+5. Engine call — `paymentApplicationService.createMultiCheckout` runs the canonical payable + balance > 0 + server-side total + Stripe Checkout Session creation.
+
+Response shape is provider-neutral. Stripe-specific names (`providerPaymentIntentId`, `prospectivePaymentId`, `providerId`) are NOT exposed to the customer's browser; only `checkoutUrl` + `sessionId` + display total + invoiceIds are returned.
+
+The `GET /api/portal/invoices` list response now also includes `paymentsEnabled: boolean` so the UI can hide pay affordances when the entitlement is off, without needing a separate fetch.
+
+##### Frontend: `client/src/pages/portal/PortalInvoicesList.tsx`
+
+Per-row affordances (only on payable rows, only when `paymentsEnabled`):
+- **Checkbox** — left of the row body. Click does not propagate to the row link.
+- **Pay Now button** — right of the row body. Navigates to `/portal/invoices/:id?pay=1`, which auto-opens the existing single-invoice pay modal on the detail page (so 3DS / Stripe Elements live in one place — the detail page).
+
+Header (only when ≥1 payable row visible):
+- Select-all-payable checkbox. Tri-state: `false` / `"indeterminate"` / `true`.
+
+Sticky footer (only when ≥1 row selected):
+- "Pay Selected — $X.XX" button. Disabled when nothing is selected or while the redirect is pending. POSTs `{ invoiceIds }` to the batch route and `window.location.assign(checkoutUrl)` on success.
+- Display total is computed client-side for UI only. The backend recomputes from invoice balances and Stripe enforces server-priced line items at checkout — no frontend total is ever trusted.
+
+Existing row-click navigation is preserved (the `<Link>` wraps the row body, not the action surfaces).
+
+Selection logic was extracted to `client/src/pages/portal/portalSelection.ts` so it could be unit-tested without a React DOM mount. The page imports the helpers; nothing in the live render path duplicates them.
+
+##### Files affected
+
+```
+server/routes/portal.ts                                (modified — new POST /invoices/batch-checkout; GET /invoices now returns paymentsEnabled)
+client/src/pages/portal/PortalInvoicesList.tsx         (modified — checkbox / Pay Now / sticky Pay Selected footer)
+client/src/pages/portal/portalSelection.ts             (NEW — pure selection helpers, unit-testable)
+client/src/pages/portal/PortalInvoiceDetail.tsx        (modified — auto-open pay modal on ?pay=1 deep-link)
+tests/portal-batch-checkout.test.ts                    (NEW — 13 route tests via supertest + mocked deps)
+tests/portal-invoice-list-selection.test.ts           (NEW — 33 logic + source-grep regression tests)
+```
+
+##### Tests
+
+- `tests/portal-batch-checkout.test.ts` — **13/13 pass**:
+  - 401 without portal session
+  - 400 on empty / non-array / non-string / missing / duplicate invoiceIds
+  - 403 when `customer_portal_payments` entitlement is disabled (engine never called, repo never queried)
+  - 404 on unknown invoice, cross-customer invoice, cross-tenant probe
+  - First-failure short-circuits — engine never called when one of N is bad
+  - Happy path: forwards canonical args to `createMultiCheckout`, returns provider-neutral response (no Stripe-specific names leak)
+  - Engine 4xx propagates with the same status (e.g. paid invoice slipped through → 400)
+- `tests/portal-invoice-list-selection.test.ts` — **33/33 pass**:
+  - `isInvoicePayable` predicate (8 tests): payable statuses + balance > 0; paid / draft / voided / zero / negative / malformed all rejected
+  - `selectAllState` header tri-state (5 tests): false / indeterminate / true; ignores stale selection
+  - `effectiveSelection` drops stale ids (3 tests)
+  - `selectedTotalCents` (5 tests): cents-precise sum, zero on empty, ignores unmatched / malformed
+  - `isPaySelectedEnabled` (2 tests): disabled-when-empty contract
+  - Source-grep regression block on the page (10 guards): canonical predicate import, batch-checkout URL, `window.location.assign(checkoutUrl)` redirect, no client-side stripe-js, Pay Now / checkbox gating on `paymentsEnabled && payable`, no frontend total in batch body, row-click navigation preserved
+- All pre-existing tests still pass — full payment + portal suite **132/132**:
+  `payment-application-service` (19),
+  `multi-invoice-payments` (18),
+  `payment-allocations` (6),
+  `payment-provider-linked-guard`,
+  `payment-refundability`,
+  `portal-magic-link`,
+  `portal-invoice-visibility`.
+
+##### Stop point
+
+PR 3 ends here. The customer can now pay one invoice or multiple invoices from the portal. PR 4 layers receipt emails for multi-invoice payments; PR 5 wires the `success_url` redirect target and any post-payment portal polish.
+
+#### Multi-invoice payments — engine + webhook handler (PR 2, 2026-05-03)
+
+Second of five PRs that upgrade the customer portal payment flow. PR 2
+ships the **service-layer engine** that:
+- collects one Stripe payment that covers N invoices
+- writes one `payments` row + N `payment_allocations` rows in a single
+  transaction when the webhook fires
+- preserves the existing single-invoice (PaymentIntent) flow bit-for-bit
+
+No portal route changes, no frontend changes, no receipt-email change.
+Those land in PR 3 / PR 4 / PR 5.
+
+##### Architectural sketch
+
+```
+   portal/staff
+       │
+       │  invoiceIds[]                          ← (PR 3 will wire the route)
+       ▼
+   paymentApplicationService.createMultiCheckout
+       │  - validate every invoice (tenant + customer + payable + balance>0)
+       │  - server-side total = SUM(balance_cents)
+       │  - mint prospectivePaymentId
+       ▼
+   stripeAdapter.createCheckoutSession  (Stripe Checkout Sessions API)
+       │  - one line item per invoice, server-priced
+       │  - metadata: companyId, invoiceIds (JSON), prospectivePaymentId
+       ▼
+   { sessionId, checkoutUrl, prospectivePaymentId, totalAmount }
+
+
+   Stripe → POST /api/webhooks/stripe   (checkout.session.completed)
+       │
+       ▼
+   stripeAdapter.verifyWebhook  → multi_invoice_payment_succeeded
+       ▼
+   paymentApplicationService.applyVerifiedWebhookBatch
+       ▼
+   handleMultiInvoicePaymentSucceeded   (single transaction)
+       │  1. read every invoice balance, verify SUM == amount_total
+       │  2. INSERT one payment row (invoiceId=null, amount=total)
+       │  3. for each invoice: re-validate, INSERT allocation,
+       │     subtract allocated amount, transition status (paid / partial_paid)
+       │  4. COMMIT  — replay-safe via payments_provider_event_id_uq
+       ▼
+   ledger ✓
+```
+
+##### Service: `paymentApplicationService.createMultiCheckout`
+
+New method. Distinct from `createCheckout` (single-invoice / PaymentIntent).
+Signature:
+
+```ts
+createMultiCheckout({
+  companyId,
+  customerCompanyId,
+  invoiceIds: string[],
+  source: "staff" | "portal",
+  successUrl, cancelUrl,
+  currency?,
+}) → {
+  providerId: "stripe",
+  sessionId, checkoutUrl,
+  prospectivePaymentId,
+  totalAmount,        // dollars string, derived server-side
+  invoiceIds,
+}
+```
+
+Validation contract (every check is server-side; the client cannot
+override):
+- empty list → 400
+- duplicate ids in the request → 400
+- unknown invoice id → 404
+- cross-tenant invoice → 404 (no info leak)
+- cross-customer invoice → 404
+- non-payable status (`draft`, `voided`, `paid`, etc.) → 400
+- zero balance → 400
+- first failure short-circuits — no partial intake.
+
+Total amount and per-line-item amounts are derived from each invoice's
+current `balance` (in cents, server-side). The frontend never participates
+in pricing; Stripe Checkout enforces server-priced line items.
+
+##### Stripe adapter: `stripeAdapter.createCheckoutSession`
+
+New method. Optional on the `PaymentProvider` contract — providers
+without a "checkout session" primitive cleanly surface as HTTP 501.
+Implementation uses
+`stripe.checkout.sessions.create({ mode: "payment", line_items, success_url, cancel_url, metadata, payment_intent_data: { metadata } })`.
+
+The same metadata is forwarded to both the Session and the
+underlying PaymentIntent so the multi-invoice handler can resolve the
+event regardless of which Stripe object the webhook emits the event
+against.
+
+`createCheckout` (single-invoice / PaymentIntent) is **untouched** —
+both methods coexist on the same adapter object.
+
+##### Webhook: `multi_invoice_payment_succeeded`
+
+New normalized event kind, emitted by the Stripe adapter on
+`checkout.session.completed` events whose `payment_status === "paid"`.
+
+The pre-existing `payment_intent.succeeded` handler now defensively
+**ignores** PaymentIntent events whose metadata carries `invoiceIds`
+(JSON-encoded) — those are session-driven and the canonical recorder
+is the new `checkout.session.completed` handler. Single-invoice
+PaymentIntent events that carry the legacy `invoiceId` (singular)
+metadata flow through `handlePaymentSucceeded` exactly as before.
+
+Handler steps (single transaction):
+1. Parse and validate metadata (`companyId`, `invoiceIds` (JSON-encoded
+   string array), `prospectivePaymentId`). Malformed → skipped (200 ACK).
+2. Read every invoice's current balance inside the tx. Verify
+   `SUM(allocations) === amount_total_cents`. Mismatch → 4xx
+   classified as final_config (200 ACK + operator alert; never write a
+   partial ledger).
+3. INSERT one `payments` row (`invoice_id = NULL`, `amount = total`,
+   `provider_event_id = event.eventId`).
+4. For each invoice: re-validate (tenant + status), insert one
+   `payment_allocations` row, subtract allocated amount from
+   `invoices.balance`, bump `invoices.amount_paid`, set status to
+   `paid` (balance hit zero) or `partial_paid` (balance still > 0).
+5. Commit. Failure at any step rolls back the whole tx.
+
+Idempotency anchor: `payments_provider_event_id_uq`. A webhook replay
+with the same `event.id` collides on the parent payment row, the tx
+rolls back, no allocation rows are written, and the classifier
+returns `replay` (200 ACK). The Postgres SQLSTATE `23505` path is
+exercised by the test suite.
+
+##### Files affected
+
+```
+shared/schema.ts                                       (modified — paymentWebhookEventKindEnum gains "multi_invoice_payment_succeeded")
+server/services/payments/providers/types.ts            (modified — CreateCheckoutSessionInput/Result + new normalized event kind + optional createCheckoutSession on PaymentProvider)
+server/services/payments/providers/stripeAdapter.ts    (modified — implements createCheckoutSession; verifyWebhook adds checkout.session.completed; payment_intent.succeeded skips multi-invoice events)
+server/services/payments/paymentApplicationService.ts  (modified — createMultiCheckout + handleMultiInvoicePaymentSucceeded + readMultiInvoiceMetadata + applyMultiInvoiceAllocationsTx)
+tests/multi-invoice-payments.test.ts                   (NEW — 18 tests)
+```
+
+##### Tests
+
+- New suite `tests/multi-invoice-payments.test.ts` — **18/18 pass**:
+  1. Validation contract (9 tests): empty list, dupe ids, unknown id,
+     cross-customer, paid / draft / voided / zero-balance, first-failure.
+  2. Server-side total (2 tests): correct sum, line items aligned,
+     `invoiceIds` JSON-encoded; provider missing capability → 501.
+  3. Webhook happy path (4 tests): one payment + N allocations + status
+     transitions; partial → `partial_paid` / paid → `paid`; sum
+     mismatch rejected; malformed metadata skipped.
+  4. Idempotency (2 tests): replay 23505 → classified as replay; non-
+     unique transient → `WebhookTransientFailure`.
+  5. Legacy flow preserved (1 test): `createCheckout` still routes to
+     the `createCheckout` adapter method, never `createCheckoutSession`,
+     and metadata still uses singular `invoiceId`.
+- All pre-existing tests still pass:
+  `tests/payment-application-service.test.ts` (19),
+  `tests/payment-provider-linked-guard.test.ts`,
+  `tests/payment-refundability.test.ts`,
+  `tests/payment-allocations.test.ts` (6),
+  `tests/portal-magic-link.test.ts`,
+  `tests/portal-invoice-visibility.test.ts`.
+  **68/68 across the related suites — no regression.**
+
+##### Stop point
+
+PR 2 ends here. The service is callable but has no HTTP route attached
+yet (PR 3 wires the portal route), no UI (PR 4), and no receipt-email
+change (PR 5). The legacy single-invoice flow is intact and continues
+to write through `paymentRepository.createPayment`.
+
+#### Multi-invoice payments — schema foundation (PR 1, 2026-05-03)
+
+First of five PRs that upgrade the customer portal payment flow from
+1:1 (one payment row → one invoice) to multi-invoice (one payment row
+spanning N invoices via a junction table). PR 1 is **schema-only** — no
+service logic changes, no UI, no provider integration — so legacy 1:1
+payments remain bit-identical through every existing read/write path.
+
+##### What landed
+
+- **Migration:** `migrations/2026_05_03_payment_allocations.sql`
+  - New `payment_allocations` table (junction) with columns
+    `id, company_id, payment_id, invoice_id, allocated_amount,
+    created_at`. Tenant-scoped (`company_id` FK with `ON DELETE
+    CASCADE`), payment-scoped (`payment_id` FK with `ON DELETE
+    CASCADE`), invoice-scoped (`invoice_id` FK with `ON DELETE
+    RESTRICT` so an invoice cannot disappear out from under a
+    settled allocation).
+  - `payment_allocations_payment_invoice_uq` UNIQUE index on
+    `(payment_id, invoice_id)` — at most one allocation per pair.
+  - `payment_allocations_invoice_idx` non-unique index on
+    `(company_id, invoice_id)` for the per-invoice lookup hot path.
+  - `ALTER TABLE payments ALTER COLUMN invoice_id DROP NOT NULL` —
+    the modern multi-invoice path will leave this NULL and rely on
+    `payment_allocations` rows; legacy 1:1 keeps the FK set as
+    before. Idempotent (Postgres no-ops `DROP NOT NULL` on an
+    already-nullable column). All wrapped in a single
+    `BEGIN/COMMIT` block.
+- **Drizzle schema (`shared/schema.ts`):**
+  - `payments.invoiceId` → nullable (FK + cascade behavior preserved
+    for legacy rows).
+  - New `paymentAllocations` table definition + matching unique /
+    lookup indexes.
+  - Insert + select Zod / TS types: `insertPaymentAllocationSchema`,
+    `InsertPaymentAllocation`, `PaymentAllocation`.
+- **Repository (`server/storage/paymentAllocations.ts`):**
+  - Pure data-layer class — **no business logic** (no balance recalc,
+    no sum-equals-payment check, no provider hooks).
+  - `createAllocations(tx, companyId, paymentId, allocations[])` —
+    transaction-aware bulk insert, tenant + payment scoped.
+  - `listByPayment(companyId, paymentId)` — for the receipt /
+    payment-detail surfaces.
+  - `listByInvoice(companyId, invoiceId)` — for invoice-balance
+    paths to fold in multi-invoice contributions.
+  - Input validation: rejects empty allocation lists,
+    non-positive amounts, malformed UUIDs.
+- **Defensive guards in legacy 1:1 paths** (no behavior change for
+  legacy data, but TS now demands explicit handling of the now-nullable
+  column):
+  - `server/storage/payments.ts`: introduces
+    `assertLegacyInvoiceId()` helper, applied at the four sites
+    where the 1:1 update / delete / refund / reversal paths read
+    `payment.invoiceId`. Throws a clear runtime error if a
+    multi-invoice payment ever reaches these paths.
+  - `server/services/qbo/QboPaymentService.ts`: `createPayment` and
+    `updatePayment` now early-skip multi-invoice payments
+    (`payment.invoiceId === null`) with a clear "Multi-invoice
+    payments cannot be synced to QBO via the 1:1 path" message.
+  - `server/storage/invoicesFeed.ts`,
+    `server/routes/payments.ts`: tightened the few sites that read
+    the column directly (lastPayment summary, refund/reversal audit
+    log) to handle null safely.
+
+##### Tests
+
+- `tests/payment-allocations.test.ts` — 6 integration tests against
+  the dev DB:
+  1. 2-allocation insert succeeds with NULL parent `invoice_id`.
+  2. Unique-index duplicate rejection (Postgres SQLSTATE `23505`).
+  3. `payments.invoice_id` is `is_nullable = YES` per
+     `information_schema`.
+  4. Legacy 1:1 path: `paymentRepository.createPayment` round-trips
+     a row with `invoiceId` set; no allocation row written.
+  5. Repository input validation (empty list, zero / negative
+     amounts).
+  6. Tenant scoping — `listByPayment` / `listByInvoice` never
+     return rows from another tenant.
+- All 43 existing payment tests
+  (`payment-application-service.test.ts`,
+  `payment-provider-linked-guard.test.ts`,
+  `payment-refundability.test.ts`) still pass — no behavior
+  regression in the legacy 1:1 path.
+
+##### Files affected
+
+```
+migrations/2026_05_03_payment_allocations.sql       (NEW)
+shared/schema.ts                                    (modified — paymentAllocations + payments.invoiceId nullable)
+server/storage/paymentAllocations.ts                (NEW)
+server/storage/payments.ts                          (modified — assertLegacyInvoiceId guards)
+server/storage/invoicesFeed.ts                      (modified — null-safe lastPayment + history)
+server/services/qbo/QboPaymentService.ts            (modified — skip multi-invoice payments)
+server/routes/payments.ts                           (modified — null-safe entityId fallback)
+tests/payment-allocations.test.ts                   (NEW)
+```
+
+##### Stop point
+
+PR 1 ends here. No service writer, no portal UI, no Stripe Checkout
+Sessions adapter, no receipt email change. PRs 2–5 layer those on top
+of the foundation this PR ships.
+
+#### Clients list migrated to EntityListTable + minimal grouping API (2026-05-03)
+
+Sixth and final entity-list migration in the V1 plan. Clients was the
+last Group B page outstanding. The migration ships in two parts: (1) a
+small grouping API addition to the shared component, (2) the Clients
+page itself moved onto EntityListTable.
+
+##### Part 1 — Grouping API added to EntityListTable (1-level only)
+
+`client/src/components/lists/EntityListTable.tsx` gains two optional
+props:
+
+```ts
+groupBy?: (row: Row) => string | null;
+renderGroupHeader?: (groupKey: string, rows: Row[]) => React.ReactNode;
+```
+
+Behavior:
+- When `groupBy` is **undefined**, the component renders identically
+  to V1 — flat row list.
+- When `groupBy` is **provided**, rows are walked once in input order
+  and accumulated into buckets keyed by the function's return value.
+  Buckets render in first-appearance order (no internal sort).
+- A header row is rendered before each non-null bucket. The header
+  spans all columns via `gridTemplateColumns: "1fr"` (collapsing the
+  parent column grid for that one row only). Default styling: bold
+  label on a `bg-slate-50/70` background with a faint bottom border.
+- `renderGroupHeader` lets callers compose richer header content
+  (count badges, action buttons, etc.). Falls back to rendering the
+  raw `groupKey` string in bold when omitted.
+- **Null-keyed buckets** render their rows WITHOUT a header — useful
+  when callers want to mix grouped and ungrouped rows in one list.
+- Group headers are **inert**: not clickable, no `role="button"`, no
+  Enter handler, not part of selection logic.
+- Rows inside groups render exactly like ungrouped rows (same
+  `rowKey`, same `onRowClick`, same select-cell propagation guard).
+
+Refactor side-effect: the row body was extracted into a `renderRow`
+helper plus a sibling `renderGroupedBody` helper. No behavior change
+for non-grouping callers; the diff is mechanical.
+
+Out of scope for this V1 grouping pass (deferred): collapse/expand,
+nested groups, sortable group headers, group-level bulk select,
+sticky headers.
+
+##### Part 2 — Clients page migrated
+
+`client/src/pages/Clients.tsx` replaces its hand-rolled CSS-Grid div
+table (with `CLIENTS_GRID_COLS = "40px 2fr 1.5fr 1fr 100px"` + fixed
+`ROW_HEIGHT = 48`) with `EntityListTable<CompanyGroup>`.
+
+**Five columns mapped:**
+
+| Column | Kind | Ratio | Notes |
+|---|---|---|---|
+| Select | `select` | exact 40 px | Bulk-select checkbox; click propagation suppressed by the kind |
+| Name | `primary` | 2.0 | Two-line cell (company name + primary contact); `cellClassName` overrides the default truncate wrapper |
+| Address | `text` | 1.5 | Single-line; truncates via the kind's built-in wrapper |
+| Tags | `badge` | 1.0 | Custom `flex flex-wrap` of colored pill spans (NOT Badges); `badge` kind chosen because it skips the truncate wrapper |
+| Status | `status` | 0.4 (96 px floor) | Inline badge-styled `<span>` using `listBadgeClass` + a green/gray color pair; per the column-kind rules `status` is the right match for badge-styled cells |
+
+**Sorting preserved at the page layer.** Each column's `header` slot
+takes a `<SortHeader>` element — the existing sort logic
+(`sortField` / `sortDir` / `handleSort` / `sortedGroups` useMemo)
+is untouched. EntityListTable does not implement sorting; callers
+own the sort and pass already-sorted rows.
+
+**Grouping API NOT exercised on Clients.** Decision: the Clients page
+already aggregates its data to "1 row per parent company" via the
+`companyGroups` useMemo (with a "{N} properties" hint when a company
+has multiple locations). Switching to per-location rows-with-headers
+would change bulk-tag-edit semantics from company-level to location-
+level — out of scope for "match current visual hierarchy as closely
+as possible". The `groupBy` API is added for future pages or a
+deliberate Clients UX upgrade later. Clients renders as a flat list
+of `CompanyGroup` rows.
+
+**Behavior preserved:**
+- Row click → `/clients/{primaryLocationId}` (the company's primary
+  location, unchanged).
+- Bulk row select via checkbox column. Select-all toggle in the
+  header, per-row toggle in cell. `selectedRows` Set untouched.
+- Bulk-action bar (`{N} selected` · Bulk Edit Tags · Clear) stays
+  inside `ListToolbar` as children — same pattern as Locations and
+  Invoices.
+- `BulkEditTagsModal` integration unchanged (default `entityType`,
+  i.e. customer-company-level).
+- Filters: Active / Inactive tab + tag chips with AND logic. Search
+  with 300 ms debounce + `keepPreviousData` query option. All
+  preserved verbatim.
+- Sortable headers (Name / Address / Tags / Status) preserved via
+  the `<SortHeader>` ReactNode slots in each column's `header`.
+- Empty state ("No {active|inactive} clients found") and loading
+  state ("Loading clients...") preserved.
+- "Showing N companies" footer preserved.
+- "All Locations" + "New Client" header buttons unchanged.
+
+**Cleanups applied:**
+- Removed unused imports: `ListSurface`, `tableRowClass`,
+  `listHeaderRowClass` from `@/components/ui/list-surface` (the page
+  still uses `listPrimaryClass`, `listSecondaryClass`,
+  `listBadgeClass`, `listResultsClass` for cell-level styling).
+- Removed retired constants: `CLIENTS_GRID_COLS`, `ROW_HEIGHT`.
+- Column array (`clientColumns`) is `useMemo`-ed inside the
+  component because four of the five columns close over render-state
+  (selection, sort, tags map).
+
+**Constraints honored:**
+- Jobs untouched (deferred per migration sequence).
+- `Badge` primitive untouched.
+- Sorting was preserved at the page layer; EntityListTable still does
+  not own sorting.
+- No collapse/expand, no nested grouping, no keyboard navigation, no
+  pagination, no infinite scroll, no row actions.
+
+**Type-check:** `npm run check` clean for client-side files. Two
+pre-existing TS errors in `server/storage/payments.ts` are unrelated
+to this change and present before the migration.
+
+**Migration scoreboard:**
+- ✅ Leads
+- ✅ Quotes
+- ✅ Invoices
+- ✅ Suppliers
+- ✅ Locations
+- ✅ Clients (this PR)
+- ⏭ Jobs (deferred — heaviest opt-ins: keyboard nav + Intersection-Observer infinite scroll)
+
+#### Locations list migrated to EntityListTable (2026-05-03)
+
+Fifth entity list to land on the canonical EntityListTable shell after
+Leads, Quotes, Invoices, and Suppliers. Locations is the second
+directory-group page (Group B); Clients is the only one remaining and
+is deliberately deferred until the `groupBy` API decision.
+
+**What changed.** The page previously rendered a hand-rolled CSS-Grid
+div table backed by the constant `LOCATIONS_GRID_COLS = "40px repeat(6,
+minmax(0, 1fr))"` plus a fixed `ROW_HEIGHT = 52` px. Both constants
+have been removed; column sizing is now derived from EntityListTable's
+per-kind defaults plus narrow per-column overrides, and row height is
+allowed to vary naturally with content (matches the convention
+established by the four prior migrations).
+
+**Columns migrated (left-to-right, exactly preserved):**
+
+| Column | Kind | Ratio | Floor | Notes |
+|---|---|---|---|---|
+| Select | `select` | n/a | 40 px | Bulk-select checkbox; click propagation stopped automatically by the component so checkbox clicks don't fire `onRowClick` |
+| Company | `primary` | 1.0 | 0 (default) | `loc.companyName`, `font-medium` |
+| Location | `text` | 1.0 | 0 (default) | `loc.location \|\| "—"`, muted |
+| **Tags** | **`badge`** | 1.0 | 0 (default) | Custom render: `flex flex-wrap` of colored pill spans (NOT Badges). `badge` kind chosen because it does NOT apply EntityListTable's default `truncate` wrapper — `text` would have clipped pills to a single line |
+| Address | `text` | 1.0 | 0 (default) | Muted, single-line, truncates via the kind's built-in wrapper |
+| **Status** | **`text`** | 0.6 | **72 px** | Color-coded plain-text "Active" / "Inactive" — NOT a Badge component. `text` is correct per the column-kind rules; `status` would imply Badge composition |
+| Maint. Months | `text` | 1.0 | 0 (default) | Formatted via the lifted `formatMonths()` helper (now module-scoped) |
+
+The original was six equal-weight tracks (`repeat(6, minmax(0, 1fr))`).
+We preserve the visual proportion by setting `ratio: 1.0` on every
+fractional column, with two intentional deviations: Status gets ratio
+`0.6` + 72 px floor (it's the only intrinsic-text column — "Inactive"
+is ~52 px) so it cannot collapse, and the select track is exact `40px`
+per the `select` kind's hard rule.
+
+**Behavior preserved:**
+- Row click → `/clients/{parentCompanyId}?location={id}` (unchanged).
+  Falls back to `/clients` for orphan locations (parentCompanyId null).
+- Bulk row select via checkbox column. Select-all toggle in header,
+  per-row toggle in cell. `selectedRows` state untouched.
+- Bulk-action bar (`{N} selected` · Bulk Edit Tags · Clear) stays
+  inside `ListToolbar` as children — same pattern as today, sibling
+  to the table, not a row in it. Same approach as Invoices.
+- `BulkEditTagsModal` integration unchanged (`entityType="location"`).
+- Tag filter chips and tag-AND-logic filter unchanged.
+- Search debounce + `keepPreviousData` query option unchanged.
+- Empty state ("No locations found") and loading state ("Loading
+  locations...") preserved verbatim.
+- "Showing N locations" footer preserved.
+- `Back to Clients` action button in the page header preserved.
+
+**Cleanups applied:**
+- Removed unused imports: `ListSurface`, `tableRowClass` from
+  `@/components/ui/list-surface`.
+- Removed retired constants: `LOCATIONS_GRID_COLS`, `ROW_HEIGHT`.
+- Lifted `formatMonths()` from component-body scope to module scope
+  (no closures on render-state).
+- Column array (`locationColumns`) is `useMemo`-ed inside the
+  component body because the `select` and `tags` columns close over
+  render-state (`selectedRows`, `allVisibleSelected`, `toggleSelectAll`,
+  `toggleRow`, `locationTagsList`).
+
+**Constraints honored:**
+- Clients / Jobs untouched.
+- `Badge` primitive untouched.
+- `EntityListTable` itself unchanged — Locations needed no V1 API
+  extensions.
+- No grouping, sorting, keyboard nav, pagination, infinite scroll, or
+  row actions added.
+
+**Type-check:** `npm run check` clean — no new TypeScript errors.
+
+**Known visual change worth flagging.** The original code locked every
+row to a fixed `ROW_HEIGHT = 52` px even when a row had multiple wrapped
+tags. After migration, rows size naturally — a row with no tags is
+~36 px and a row with a single tag pill row is ~36 px; only rows where
+tags wrap to two lines exceed 52 px. This matches the height behaviour
+of Invoices / Quotes / Leads / Suppliers post-migration. If a stable
+row height is required across the directory pages, that's a follow-up
+EntityListTable feature (an opt-in `density` or `minRowHeightPx` prop),
+not part of this migration.
+
+#### Suppliers list migrated to EntityListTable (2026-05-03)
+
+Fourth entity list to land on the canonical EntityListTable shell after
+Leads, Quotes, and Invoices. Suppliers is the smallest of the directory
+group (Group B in the consolidation audit) and validates the V1 API for
+icon-only status indicators before Locations / Clients land.
+
+**Files changed:**
+- `client/src/pages/SuppliersListPage.tsx` — replaced shadcn `<Table>`
+  + `<ListSurface>` markup with `EntityListTable<SupplierWithLocations>`.
+  Five columns preserved exactly: Name (primary, with `Building2`
+  icon) · Primary Location (text, two-line — name + city/province) ·
+  Phone (text, 120px floor) · Email (text, ratio 1.4) · Active (text,
+  centered, 64px floor — icon-only). All column widths are derived
+  from the EntityListTable per-kind defaults plus narrow per-column
+  overrides; no bare `fr` tracks anywhere.
+- `client/src/pages/SuppliersListPage.tsx` cleanups: removed unused
+  `Table`, `TableBody`, `TableCell`, `TableHead`, `TableHeader`,
+  `TableRow` imports from `@/components/ui/table`; removed unused
+  `ListSurface` import from `@/components/ui/list-surface`. Moved
+  `getPrimaryLocation` from component-body scope to module scope (no
+  closures on render-state). Column array (`SUPPLIER_COLUMNS`) is
+  module-scoped — stable identity across renders, no `useMemo`
+  needed.
+
+**Active column kind decision: `text`.** The Active indicator is
+icon-only (`CheckCircle2` green / `XCircle` red), not a Badge and
+not a multi-pill status composition. Per the EntityListTable column-
+kind rules ("badge if it renders as a badge-like status; status if
+it behaves like a status indicator with Badge composition; text only
+if it is plain text/icon-only"), `text` is the correct semantic
+choice. The cell stays centered via `cellClassName: "px-4 py-2.5
+text-center"` and the header via `headerClassName: "px-4 text-center"`.
+
+**Behavior preserved:**
+- Row click → `/suppliers/:id` (unchanged).
+- Search via `ListToolbar` + the `?q=` query param (unchanged).
+- Empty state copy: "No suppliers found matching '...'" when
+  searching, otherwise "No suppliers yet. Click 'New Supplier' to
+  get started." Same two-branch logic as before.
+- Loading state: same "Loading suppliers..." copy.
+- `New Supplier` button still opens `QuickAddSupplierDialog`.
+- `TablePageShell` wrapper untouched.
+- No row-level actions before or after.
+
+**Constraints honored:**
+- Locations / Clients / Jobs untouched.
+- `Badge` primitive untouched.
+- `EntityListTable` itself unchanged — Suppliers needed no V1 API
+  extensions.
+- No grouping, sorting, keyboard nav, pagination, infinite scroll, or
+  row actions added.
+
+**Type-check:** `npm run check` clean — no new TypeScript errors.
+
+#### Invoice notes — first-class canonical surface (2026-05-03)
+
+Invoice notes are now a first-class entity, matching the per-entity
+pattern already used by `job_notes`, `quote_notes`, `client_notes`,
+and `lead_notes`. The prior implementation was a hybrid:
+- For job-linked invoices, the `EntityNotesSection` borrowed the
+  linked job's notes via `writeEntityId={jobId}`. Unlinking the job
+  destroyed the "invoice" notes.
+- For invoices without a linked job, the page fell back to a single-
+  string `DraftNotesCard` editing the flat `invoices.notes_internal`
+  column — no attachments, no edit history, no per-note authorship.
+
+The rewrite makes invoice notes own their lifecycle: own table, own
+routes, own attachment join. No `jobId` requirement. Job-linked
+invoices no longer write into the linked job's notes table.
+
+**New schema** (`shared/schema.ts`, migration
+`migrations/2026_05_03_invoice_notes.sql`):
+- `invoice_notes` — `(id, company_id, invoice_id, user_id, note_text,
+  created_at, updated_at)`. `invoice_id` cascade-deletes with the
+  invoice; `user_id` cascade-deletes with the author.
+- `invoice_note_attachments` — `(id, company_id, note_id, file_id,
+  created_at, created_by)`. `note_id` cascade-deletes with the note.
+- Indexes mirror `job_note_attachments` for parity.
+
+The migration is purely additive — `invoices.notes_internal` is left
+intact for QBO `PrivateNote` mapping + import-pipeline snapshots
+(soft-deprecated as a user-facing notes surface but still load-bearing
+for non-UI consumers).
+
+**New repositories** (`server/storage/`):
+- `invoiceNotes.ts` — `InvoiceNotesRepository` with `listInvoiceNotes`,
+  `createInvoiceNote`, `updateInvoiceNote`, `deleteInvoiceNote`.
+  Direct port of `JobNotesRepository` minus equipment-linkage
+  validation. Tenant-isolated; author-only edit/delete.
+- `invoiceNoteAttachments.ts` — `InvoiceNoteAttachmentRepository` with
+  `listByNote`, `attach`, `detach`. Mirrors `JobNoteAttachmentRepository`
+  exactly, including R2-cleanup-on-detach.
+
+**New routes** (`server/routes/invoices.ts`):
+- `GET /api/invoices/:invoiceId/notes` — replaced. Reads from
+  `invoice_notes` and merges with inherited client notes (location +
+  customer-company level, `show_on_invoices=true`). Entity-owned rows
+  carry `origin: "invoice"`; inherited rows carry their existing
+  `client_*` origins.
+- `POST /api/invoices/:invoiceId/notes` — create note (with optional
+  `attachmentFileIds[]`).
+- `PATCH /api/invoices/:invoiceId/notes/:noteId` — update note text.
+- `DELETE /api/invoices/:invoiceId/notes/:noteId/attachments/:attachmentId` — per-attachment removal.
+- `DELETE /api/invoices/:invoiceId/notes/:noteId` — delete note (cascade-
+  removes attachments).
+
+All four mutation routes go through `requireRole(MANAGER_ROLES)`,
+matching the job-notes contract.
+
+**File-upload pipeline extension** (`server/services/fileUploadService.ts`
++ `client/src/hooks/useFileUpload.ts`):
+- New `FileEntityType` member: `"invoice_note"`.
+- New `resolveInvoiceNote` resolver — walks `invoice_notes → invoices`
+  with the canonical defensive tenant check.
+- New `invoice_note` adapter in `ENTITY_ADAPTERS`. Writes through to
+  `invoice_note_attachments`. R2 object-key layout:
+  `tenants/{tenantId}/invoices/{invoiceId}/notes/{noteId}/{fileId}/{filename}`.
+  Same idempotent insert + detach-by-fileId pattern as `job_note` /
+  `quote_note`.
+
+**Frontend — same polymorphic primitives, new wiring:**
+- `EntityNoteDialog.tsx` (`resolveEndpoints`): invoice now writes
+  through `/api/invoices/:entityId/notes` (it had previously routed
+  invoice writes through `/api/jobs/:entityId/notes`).
+  `fileUploadEntityFor` returns `"invoice_note"` for the invoice
+  surface. Activity-log mapping now logs against `invoice` (not the
+  underlying job).
+- `EntityNotesSection.tsx`: `NoteOrigin` union gains `"invoice"`;
+  `isOwnedRowEditable` recognizes `origin === "invoice"` as
+  invoice-owned. The legacy `writeEntityId` prop is preserved as a
+  no-op for backward-compat with existing call sites.
+- `InvoiceDetailPage.tsx`: dropped both the `<DraftNotesCard>`
+  fallback and the `writeEntityId={jobId}` indirection. Every saved
+  invoice — job-linked or standalone — now mounts the canonical
+  `<EntityNotesSection entityType="invoice" entityId={invoiceId} embedded />`.
+  The DraftNotesCard import was removed (still exported by its module
+  for any future internal-only callers, but no longer used here).
+- `NewInvoicePage.tsx`: removed the `<DraftNotesCard>` mount + the
+  `notesInternal` local state + the `notesInternal` field on the
+  create payload. Pre-save the right rail surfaces a small disabled
+  "Save the invoice before adding notes." placeholder (matching the
+  EntityNotesSection embedded chrome) with stable testId
+  `invoice-notes-save-first`. After save, the canonical detail page
+  takes over.
+
+**Tests** (`tests/invoice-notes-canonical.test.ts`, 21 cases / two layers):
+- Layer 1 (execution): repository round-trip — create → list →
+  update → delete on a real tenant; mismatched-tenant create is
+  rejected; missing-invoice list is rejected; **most importantly**, a
+  job-linked invoice's note creation does NOT increase the linked
+  job's `job_notes` count (locks the no-shadow-write invariant).
+- Layer 2 (source guards): `InvoiceDetailPage` no longer mounts
+  `DraftNotesCard` and no longer passes `writeEntityId`; server
+  routes carry POST/PATCH/DELETE + per-attachment delete; GET tags
+  owned rows with `origin: "invoice"` and not `origin: "job"`;
+  `fileUploadService` registers the `invoice_note` adapter and
+  resolver; `EntityNoteDialog` resolves invoice writes through
+  `/api/invoices/...`; `NewInvoicePage` shows the "Save first"
+  placeholder and no longer includes `notesInternal` in the create
+  payload.
+
+**Data cleanup note.** Existing `invoices.notes_internal` values are
+NOT auto-migrated into `invoice_notes`. Reasons:
+- The column doubles as the QBO `PrivateNote` source, so its content
+  is not strictly user-authored "first user-facing note" data.
+- Most rows are already empty (the no-job branch was the only writer
+  surfacing it as a notes editor, and that branch was the rarer path).
+- A bulk migration would surface the same string in two places (the
+  flat column + the new threaded note), which is more confusing than
+  the soft-deprecated approach.
+
+Operators who want to backfill can run a one-shot script post-deploy.
+The path is documented in the migration file's header.
+
+**Acceptance criteria — verified.**
+- ✅ New no-job invoice can be saved (no `notesInternal` requirement).
+- ✅ Saved no-job invoice shows the canonical Notes card with Add Note.
+- ✅ Add Note opens the same `EntityNoteDialog` as the Job surface.
+- ✅ Attachments can be added (R2 pipeline via `invoice_note` adapter).
+- ✅ Notes persist across refresh (round-trip locked by Layer 1 test).
+- ✅ Job-linked invoice notes do NOT write to `job_notes` (locked by test).
+- ✅ Job notes remain unchanged (no edit to `jobNotesRepository` /
+  `/api/jobs/:jobId/notes`).
+- ✅ No `notesInternal` fallback for user-facing invoice notes.
+- ✅ No duplicate invoice-note UI / routes / pages.
+- ✅ `npm run check` clean. `npm run build` clean.
+- ✅ All Reports tests still pass (355 tests across 14 suites,
+  unchanged from prior baseline + 21 new for invoice notes).
+
+**Files touched (12):**
+- `shared/schema.ts` (+2 tables, +types)
+- `migrations/2026_05_03_invoice_notes.sql` (new)
+- `server/storage/invoiceNotes.ts` (new)
+- `server/storage/invoiceNoteAttachments.ts` (new)
+- `server/services/fileUploadService.ts` (+adapter, +resolver, +type union)
+- `server/routes/invoices.ts` (replaced GET, +POST/PATCH/DELETE × 2)
+- `client/src/hooks/useFileUpload.ts` (+`invoice_note` to FileEntityType)
+- `client/src/components/notes/EntityNoteDialog.tsx` (endpoint resolver,
+  upload-entity mapper, activity-log mapper)
+- `client/src/components/notes/EntityNotesSection.tsx` (origin union,
+  isOwnedRowEditable, dropped writeEntityId indirection)
+- `client/src/pages/InvoiceDetailPage.tsx` (dropped DraftNotesCard,
+  dropped writeEntityId)
+- `client/src/pages/NewInvoicePage.tsx` (dropped DraftNotesCard,
+  dropped notesInternal state, "Save first" placeholder)
+- `tests/invoice-notes-canonical.test.ts` (new — 21 tests)
+
+### Changed
+
+#### Typography standardization — centralized in primitives, not pages (2026-05-03)
+
+Hardened typography rules across modals + forms by baking the
+canonical sizes into the shadcn primitives instead of touching
+every consumer modal. Per the user's explicit spec: form labels
+`text-xs` medium-weight, helper/error `text-xs`, select rows
+`text-xs`. No new tokens introduced; no parallel modal/form
+systems created; no business logic changed.
+
+**Audit findings (Phase 1):**
+- The reference modal (Create Job — `CreateNewDialog.tsx`) was
+  already canonical; it has no inline typography overrides and
+  delegates to the shadcn primitives' baked-in defaults.
+- Drift was concentrated in the primitives' own defaults, not in
+  the modals: `Label`, `FormDescription`, `FormMessage`,
+  `SelectLabel`, and `SelectItem` all baked `text-sm` (renders
+  17.1px against the project's 19px html root) — heavier than the
+  rest of the form context. ~120 hardcoded `text-sm` instances
+  across 14 modals were downstream of these primitive defaults
+  and auto-fix once the primitives carry the right defaults.
+- Three isolated one-off overrides existed outside the primitive
+  cascade (`DashboardActionModal` title, `EquipmentDetailModal`
+  inline metadata, `BatchSendInvoicesModal` radio labels +
+  results row).
+- No parallel modal/form system existed — every dialog uses the
+  canonical shadcn `Dialog`, ensuring a single point of
+  centralization.
+
+**Phase 2 — Primitive bake-in edits (5 changes, cascading fix):**
+
+| File | Slot | Before | After |
+|---|---|---|---|
+| `client/src/components/ui/label.tsx` | `Label` (and `<FormLabel>` via wrap) | `text-sm font-medium` | `text-xs font-medium` |
+| `client/src/components/ui/form.tsx` | `FormDescription` (helper) | `text-sm text-muted-foreground` | `text-xs text-muted-foreground` |
+| `client/src/components/ui/form.tsx` | `FormMessage` (validation error) | `text-sm font-medium text-destructive` | `text-xs font-medium text-destructive` |
+| `client/src/components/ui/select.tsx` | `SelectLabel` (group label inside dropdown) | `text-sm font-semibold` | `text-xs font-semibold` |
+| `client/src/components/ui/select.tsx` | `SelectItem` (option row) | `text-sm` | `text-xs` |
+
+These 5 edits cascade through every modal that uses `Label` /
+`FormDescription` / `FormMessage` / `SelectLabel` / `SelectItem`
+without per-page overrides — the audit identified ~120 such
+instances across 14 modals. None of those modals needed direct
+edits; the cascade fixes them.
+
+**Primitives left UNCHANGED (already canonical):**
+- `Input` — `text-body` (15px) ≈ user-spec's `text-xs` (15.2px).
+- `Textarea` — same.
+- `SelectTrigger` — `text-row` (15px), same.
+- `DialogTitle` — `text-lg font-semibold` is the canonical modal
+  title size; user spec calls for "consistent canonical".
+- `DialogDescription` — `text-caption` (14px), already canonical.
+- `Button` default (`text-sm`) and `size="sm"` (`text-xs`) — already
+  the canonical button hierarchy.
+
+**Phase 3 — Three one-off cleanups (modals that bypassed the cascade):**
+
+| File:Line | Slot | Before | After |
+|---|---|---|---|
+| `DashboardActionModal.tsx:870` | `<DialogTitle>` override | `text-base font-semibold text-[#111827]` | `text-[#111827]` (let DialogTitle's `text-lg font-semibold` default win) |
+| `EquipmentDetailModal.tsx:222` | inline equipment-type metadata next to title | `text-base font-normal text-muted-foreground` (19px) | `text-xs font-normal text-muted-foreground` (15.2px) |
+| `BatchSendInvoicesModal.tsx:154,171,250` | radio labels + results-summary row | `text-sm` (17.1px) | `text-xs` (15.2px) |
+
+**Canonical scale enforced (the rules now baked into primitives):**
+- Modal title → `text-lg font-semibold` (DialogTitle default; ~21px)
+- Modal description → `text-caption` (DialogDescription default; 14px)
+- Form label → `text-xs font-medium` (Label default; 15.2px)
+- Input / textarea / select trigger → `text-body` ≈ `text-row` (15px)
+- Select item / select group label → `text-xs` (15.2px)
+- Helper text → `text-xs text-muted-foreground` (FormDescription default)
+- Error text → `text-xs font-medium text-destructive` (FormMessage default)
+- Button → `text-sm` default / `text-xs` size=sm (Button default)
+- Inter remains the global font; no font-family overrides exist.
+
+**Files touched (5 total — three primitives + two modals):**
+- `client/src/components/ui/label.tsx`
+- `client/src/components/ui/form.tsx`
+- `client/src/components/ui/select.tsx`
+- `client/src/components/DashboardActionModal.tsx`
+- `client/src/components/EquipmentDetailModal.tsx`
+- `client/src/components/communication/BatchSendInvoicesModal.tsx`
+
+**Before/after by component group:**
+- **Form labels** (Label + FormLabel) — uniformly drop from 17.1px to 15.2px, medium weight preserved. Affects ~80 surfaces app-wide.
+- **Helper / hint text below fields** — uniformly drop from 17.1px to 15.2px, muted color preserved. Affects ~30 surfaces.
+- **Validation error text** — same shift (17.1px → 15.2px), destructive color + medium weight preserved. Affects ~20 surfaces.
+- **Select dropdown rows + group labels** — uniformly drop from 17.1px to 15.2px so the dropdown panel matches the trigger.
+- **Modal titles** — DashboardActionModal aligns with the canonical 21px size (was 19px); every other modal already used the canonical default.
+- **Inline metadata** (e.g., EquipmentDetailModal type pill) — drops from 19px to 15.2px so secondary metadata reads as secondary.
+- **Inputs / textareas / select triggers** — unchanged at 15px; user-spec `text-xs` (15.2px) and project canonical `text-body`/`text-row` (15px) are pixel-equivalent in practice.
+- **Buttons** — unchanged.
+
+**No duplicate systems introduced** ✓. No new tokens added; the
+project already had `text-label` / `text-helper` / `text-body` /
+`text-caption` semantic tokens in `tailwind.config.ts`, but the
+user's stated spec specifically called for `text-xs` on labels /
+inputs / placeholders / errors. We honored that explicit spec
+rather than introducing the project's smaller `text-label` (13px)
+or `text-helper` (13px) — keeping body/UI text at the user's
+stated 15.2px floor. The semantic tokens remain available for
+table headers and other non-form contexts where they're already
+in use.
+
+**Verification:**
+- `npm run check` — clean for all touched files. Pre-existing WIP
+  errors in `auth.tsx`, `ProtectedRoute.tsx`, `NewInvoicePage.tsx`,
+  `Clients.tsx`, `payments.ts`, `QboPaymentService.ts` are
+  unrelated and untouched.
+- `npm run build` — vite + esbuild + db:migrate all pass. Tailwind
+  recompiles cleanly; no new tokens were added so output bundle
+  size is unchanged.
+- All 14 reports + invoice-notes vitest suites pass — **355 tests
+  green** (unchanged from prior baseline).
+- No business logic changed.
+- No layout regressions expected — every change is a font-size
+  reduction within form/modal context; line-heights scale with
+  the size (Tailwind's `text-xs` carries its own line-height).
+
+#### Invoice header wrap-not-push + line-item body contrast (2026-05-03)
+
+Two scoped UI polish fixes on shared detail-page primitives. No
+billing math changed; no business calculations changed; no per-page
+duplication of the canonical components.
+
+**1. Header summary no longer pushes right-side metadata sideways
+(`client/src/components/detail/CanonicalDetailHeader.tsx`).**
+
+Long invoice summaries on `/invoices/new` and `/invoices/:id` were
+making the title widen until the outer `flex-wrap` kicked in, at
+which point the metadata cluster (Invoice # / Due / Job #) and the
+action buttons wrapped to a second row. The previous `truncate +
+min-w-0 shrink` setup chose ellipsis-on-overflow as the failure
+mode, but in practice the title's natural intrinsic min-width was
+winning the flex negotiation against the right side.
+
+The fix rewrites the LEFT region's flex semantics:
+- LEFT region container: `flex items-center gap-3 min-w-0 shrink` →
+  `flex items-start gap-3 min-w-0 max-w-xl shrink`. The new
+  `max-w-xl` (576px) cap enforces a hard ceiling on the title area
+  width so it can never push the right side out, even at extreme
+  title lengths. `items-start` makes the status badge anchor at the
+  first line of a multi-line title rather than vertically centering
+  against a tall block.
+- Title `<h1>`: `truncate min-w-0` → `break-words min-w-0`. The
+  title now WRAPS naturally onto multiple lines within the capped
+  region (per user spec: "Do not truncate unless wrapping alone
+  fails"). `break-words` is the safety net for unbreakable strings
+  (e.g. very long single tokens).
+- Status badge: added `mt-0.5` so its vertical position aligns with
+  the first line of the wrapped title's x-height.
+- Outer `flex-wrap` is preserved as the narrow-viewport safety net.
+
+This is a "safe normalization" of the shared component per the
+user's spec — Job Detail and Quote Detail (when added) inherit the
+same wrap-not-push behavior. No per-page overrides needed.
+
+**2. Line-item body cells now carry explicit text colors that match
+the totals area's contrast scale
+(`client/src/components/line-items/LineItemRow.tsx`).**
+
+The audit confirmed that `LineItemsCard` + `LineItemRow` are the
+SAME component on both Job Detail and Invoice Detail (no
+duplication). The "faded" appearance on the invoice surface came
+from the body cells using bare `text-xs` / `text-xs font-medium`
+without explicit color — the cells inherited their parent's text
+color, and the invoice context apparently resolved to a more muted
+shade than the job context. The card's totals/footer slot already
+used explicit `text-slate-700` / `text-slate-900`, which made the
+contrast difference between body and totals visible to the user.
+
+The fix adds explicit slate colors to body cells:
+- Description (primary): `text-xs font-medium` → `text-xs font-medium text-slate-900`
+- Qty / Cost / Rate (numeric): `text-xs` → `text-xs text-slate-700`
+- Amount (subtotal): `text-xs font-semibold` → `text-xs font-semibold text-slate-900`
+- Date subline (intentionally muted): `text-muted-foreground` — UNCHANGED
+
+Color choices match the totals footer's existing palette
+(`text-slate-700` for "Subtotal" value, `text-slate-900` for
+"Balance due"). Body and totals now read with consistent contrast.
+
+This is also a "safe normalization" — Job Detail's line items pick
+up the same explicit colors and become slightly stronger. Visual
+weight is now uniform across every page that mounts `LineItemRow`.
+
+**Files changed (2):**
+- `client/src/components/detail/CanonicalDetailHeader.tsx` — LEFT
+  region flex semantics rewritten (cap + wrap + items-start).
+- `client/src/components/line-items/LineItemRow.tsx` — explicit
+  slate text colors added to read-mode display cells. Edit-mode
+  cells unchanged (their inputs already render at full contrast).
+
+**Verification:**
+- `npm run check` — no new TypeScript errors in the touched files.
+  Pre-existing WIP errors in `Clients.tsx`, `payments.ts`,
+  `QboPaymentService.ts`, `auth.tsx`, and `ProtectedRoute.tsx` are
+  outside scope and untouched.
+- `npm run build` — vite + esbuild + db:migrate all pass.
+- Existing test suite still passes (the `invoice-notes-canonical`
+  suite reads `InvoiceDetailPage.tsx` source and locks the
+  EntityNotesSection mount; that locked region was not touched and
+  the tests pass unchanged).
+
+**Acceptance — verified.**
+- ✅ Long invoice summary wraps onto subsequent lines and does not
+  shift Invoice # / Due / Job # / action buttons.
+- ✅ Invoice header right-side actions remain right-justified at
+  the same y-position relative to themselves.
+- ✅ Invoice line-item body and header text now match the job
+  detail readability — both surfaces share the same primitives and
+  the same explicit color scale.
+- ✅ /invoices/new and /invoices/:id render the same line-item
+  visual weight (they mount the same `LineItemsCard` /
+  `LineItemRow` with the same column spec).
+- ✅ Job Detail page renders identically except for the same
+  beneficial contrast normalization (per user-allowed shared-
+  component carve-out).
+- ✅ Typecheck + build pass.
+
+#### Invoice email content + typography polish (2026-05-03)
+
+Final readability + hierarchy pass on the customer-facing invoice and invoice-reminder emails. No functional changes — variables, payment-link generation, attachment logic, and the `__PAY_INVOICE_BUTTON__` sentinel mechanism are all unchanged.
+
+**1. Inline `**bold**` marker support in `bodyToHtml`.**
+
+- `server/services/emailDispatchService.ts` — added `applyBoldMarkers(input)` that replaces `**word(s)**` in escaped body text with `<strong>word(s)</strong>`. Conservative regex: cannot span newlines, requires non-asterisk content immediately after the opening `**`, non-greedy match. A stray `**` in user copy can't bold the rest of the email.
+- Wired into `bodyToHtml` AFTER `htmlEscape` + linkify and BEFORE the Pay-Invoice button substitution. Bodies without `**` markers render exactly as before — this is a no-op on tenant templates that don't use the syntax.
+- Lets the system default templates (and, optionally, tenant-edited templates) emphasise headline lines without introducing additional sentinel tokens.
+
+**2. Email body wrapper typography.**
+
+- `server/services/emailDispatchService.ts` — outer `<div>` wrapper now declares `font-size: 14px; line-height: 1.55; color: #1f2937` alongside the existing `font-family: Arial, sans-serif; white-space: pre-wrap;`. Sets a consistent transactional-email rhythm (was inheriting whatever default the client provided), gives bolded lines a clear weight contrast against body text, and uses `slate-800` (`#1f2937`) instead of pure black for a softer read.
+
+**3. Default `invoice:email` template polish.**
+
+- `server/services/communicationTemplatesService.ts` — tightened body. Removed redundant openers ("Thank you for choosing {{COMPANY_NAME}}." and "Your invoice #X is attached and ready for payment.") — the subject line already names the sender and the attached PDF + Pay-Invoice CTA make the intent self-evident. Total + due date are now a single tight block (single `\n` between them) so they read as one fact instead of two scattered lines. Headline total is wrapped in `**…**` markers for `<strong>` rendering. Closing softened from "If you have any questions, please contact us." to "Have a question? Just reply to this email." — explicit reply mechanism, lighter tone.
+- New body shape:
+  ```
+  Hello {{CLIENT_COMPANY_NAME}},
+
+  Invoice #{{INVOICE_NUMBER}} from {{COMPANY_NAME}} is ready for review.
+
+  **Total: {{INVOICE_TOTAL}}**
+  Due {{INVOICE_DUE_DATE}}
+
+  Have a question? Just reply to this email.
+
+  Thank you,
+  {{COMPANY_NAME}}
+  __PAY_INVOICE_BUTTON__
+  ```
+
+**4. Default `invoice_reminder:email` template polish.**
+
+- Same readability/hierarchy pass. Headline outstanding-balance line bolded via `**…**`. The two trailing closing paragraphs are collapsed into one shorter sentence ("If payment has already been sent, please disregard this message — otherwise, reply if you need anything from us.").
+
+**5. Pay-Invoice button block spacing tuned to the new rhythm.**
+
+- `buildPayInvoiceButtonHtml` margin top bumped 16px → 20px (clearer break from the closing signature). Margin between the button and the fallback paragraph tightened 0/16 → 0/8 so they read as one CTA group. Fallback link colour shifted from `#6b7280` (gray-500) to `#9ca3af` (gray-400) so the fallback subtext recedes more — keeping the button itself as the visual anchor.
+
+**6. Tenant override compatibility.**
+
+- Tenants with a saved row in `communication_templates` keep their existing template verbatim. Only the system default body shipped with the app changes. Tenant copy without `**` markers produces identical HTML to the previous build.
+
+**Files changed:**
+- `server/services/emailDispatchService.ts`
+- `server/services/communicationTemplatesService.ts`
+- `tests/email-sender-and-total.test.ts` (added 7 new cases for bold-marker rendering)
+
+**Verification:** `npm run check` clean, `npm run build` clean, `npx vitest run tests/email-sender-and-total.test.ts` → 30/30 pass (was 23/23 before round 3).
+
+#### Invoice email layout polish + compact-modal inline labels (2026-05-03)
+
+Two small surface polish passes on the invoice-email flow. No business logic, no API surface, no schema changes.
+
+**Scope A — outgoing invoice email body order + Pay-Invoice button colour.**
+
+- `server/services/communicationTemplatesService.ts` — moved the literal `__PAY_INVOICE_BUTTON__` sentinel in the default `invoice:email` and `invoice_reminder:email` templates from between the totals block and the closing message to AFTER the closing/signature. Customers now read greeting → invoice summary → totals → editable closing → "Thank you, {{COMPANY_NAME}}" → Pay-Invoice CTA, instead of having the button interrupt the readable body. The fallback "If the button doesn't work, copy and paste this link…" paragraph still renders directly beneath the button (it's emitted as part of the same HTML block).
+- `server/services/emailDispatchService.ts` — `buildPayInvoiceButtonHtml` now emits `background-color:#76B054` (Syntraro brand green, matches the `--brand` / `--primary` token used by every primary app action) instead of `#111827` (navy/almost-black). The button now reads as a branded action rather than a generic transactional CTA. Top margin bumped from `8px` to `16px` so the button has clearer breathing room from the closing signature it now sits beneath.
+- `tests/email-sender-and-total.test.ts` — updated the regression assertion that pinned the button colour from `#111827` to `#76B054`. All 23 tests in the file pass.
+- Tenants who have saved their own `communication_templates` row keep their existing template verbatim — only the system default body shipped with the app is reordered. Secure-payment-link generation, the `PAYMENT_URL` entitlement gate, and the sentinel-substitution mechanism are all unchanged.
+
+**Scope B — `SendCommunicationModal` compact field inline labels.**
+
+- `client/src/components/ui/compact-field.tsx` — added an `inline` prop. When true, the label sits in a fixed-width column on the LEFT of the bordered container with the children on the RIGHT, both inside the same flex row. Chip rows inside the children container still wrap naturally — multi-row chip stacks expand the field downward with the label staying pinned at the top-left. Default behaviour (stacked label-above-content) is unchanged so existing callers (`Body` textarea, other consumers of the primitive) keep their current layout.
+- `client/src/components/communication/SendCommunicationModal.tsx` — passed `inline` to the To / CC / Subject `<CompactField>`s. Each field now reads as `[ TO  ][chips][input………]` on a single line instead of a stacked label-on-top-of-input box. Subject inner `Input` height tightened from `h-7` to `h-6` so the inline-label row matches the To/CC chip row vertically. Message textarea continues to use the stacked layout — multi-line input + larger surface benefits from a top label, not a side label.
+- A11y preserved: `htmlFor` → real `<label>` association still runs for both layouts; the only difference is visual position.
+- Send logic, recipients, attachments, PDF behaviour, contact picker, and all template tokens are untouched.
+
+**Why bundled:** both surfaces are part of the same "compose + send invoice email" flow. Scope A polishes the outbound message a customer sees; Scope B polishes the form the operator fills in to send it. Verifying them together catches any layout/visual regression in either half.
+
+**Files changed:**
+- `server/services/communicationTemplatesService.ts`
+- `server/services/emailDispatchService.ts`
+- `tests/email-sender-and-total.test.ts`
+- `client/src/components/ui/compact-field.tsx`
+- `client/src/components/communication/SendCommunicationModal.tsx`
+
+**Verification:** `npm run check` clean, `npm run build` clean, `npx vitest run tests/email-sender-and-total.test.ts` → 23/23 pass.
+
+#### Send-email modal compact polish + invoice PDF status pill removed (2026-05-03)
+
+Two small visual polish passes from earlier today bundled into one entry. No business logic, no API surface, no schema changes.
+
+**Scope A — `SendCommunicationModal` compact email UI.**
+
+- `client/src/components/communication/SendCommunicationModal.tsx` — modal max-width tightened from `max-w-[720px]` to `max-w-[640px]`. The previous width left an awkward right-side gutter on the To / CC / Subject rows; 640px reads like a normal compact email composer instead of a full-page form.
+- `client/src/components/ui/compact-field.tsx` — internal-label wrapper padding tightened from `px-3 py-1.5` to `px-2.5 py-1`. The wrapper was rendering "tall labelled boxes" instead of normal compact-input height; the new padding lines up with the inner control's `h-6` / `h-7` track so each row is just one input tall.
+- `SendCommunicationModal.tsx` — CC field placeholder copy ("Optional — click to pick a contact") removed. The `CompactField`'s small uppercase "CC" label inside the bordered container already communicates the field's purpose; the long placeholder added visual noise next to the chip row.
+- `client/src/components/communication/ContactPickerPopover.tsx` — when the resolved + filtered contact list is empty (and we are not loading and not in an error state), the popover now returns `null` at the outer level instead of rendering a "No matching contacts." / "No contacts with email addresses for this customer." text row. The empty card felt noisy in the new compact modal — there is nothing for the user to pick, so we show nothing rather than a dead-end panel. Loading + error + non-empty paths are unchanged.
+
+**Scope B — Invoice PDF status pill removed.**
+
+- `server/services/invoicePdfService.ts` — the rounded status badge ("DRAFT" / "AWAITING PAYMENT" / "SENT" / "PARTIAL" / "PAID" / "VOIDED") that rendered under the Issue Date / Due Date block in the customer-facing PDF has been removed. The full block (status-color map, status-label map, `roundedRect` + `fillColor` + `text` calls, and the preceding `detailsY += 8` spacer) is gone. A short replacement comment documents the rationale: those labels are internal billing-pipeline state — customers do not need to see them on the document we send them.
+- The diagonal **watermark** for `DRAFT`, `VOIDED`, and `PAID` (handled separately, much earlier in the document) is intentionally **kept** — those carry meaningful, recipient-facing guidance (this is a draft, this is voided, this is already paid).
+- Detail-page status display (`InvoiceDetailPage.tsx`) and list-page status display (`InvoicesListPage.tsx` via `EntityListTable` status column) are **unchanged** — the change is PDF-only.
+
+**Why bundled:** both passes are surface-only polish on the email-an-invoice flow (modal that composes the email + PDF that is attached to the email). Verifying them together catches any layout regression in either surface.
+
+**Files changed:**
+- `client/src/components/communication/SendCommunicationModal.tsx`
+- `client/src/components/ui/compact-field.tsx`
+- `client/src/components/communication/ContactPickerPopover.tsx`
+- `server/services/invoicePdfService.ts`
+
+**Verification:** `npm run check` clean, `npm run build` clean.
+
+### Added
+
+#### Canonical EntityListTable + Leads / Quotes / Invoices migration (2026-05-03)
+
+New shared list-table primitive at `client/src/components/lists/EntityListTable.tsx` — the start of a canonical list-table system for core entity list pages. V1 ships with three migrations (Leads, Quotes, Invoices). Jobs / Clients / Suppliers / Locations are deliberately deferred.
+
+**Why this exists.** The Invoices list page used a hand-tuned `gridTemplateColumns` string with bare fractional tracks (`0.7fr`, `0.9fr`, …). At moderate desktop widths the "Awaiting Payment" status badge — `whitespace-nowrap inline-flex` — became the longest intrinsic content in its track and forced CSS Grid's track-sizing algorithm to shrink the lowest-weight tracks (Total / Balance) to satisfy it. The earlier surgical fix put explicit `minmax(<floor>, fr)` floors on the Invoice grid; this PR makes the same protective rule **structural**: the shared component computes track templates from per-column `kind` defaults and **never** emits bare `Nfr`. A caller cannot accidentally re-introduce the bug.
+
+**Component scope (V1, deliberately small):**
+- Column kinds: `select`, `primary`, `text`, `status`, `date`, `money`, `badge`.
+- Row click → detail navigation (default UX).
+- Empty / loading slots.
+- `selectedRowKey` highlight.
+- **Not** in V1: row-action menus (per product direction — core lists are navigational; detail pages own actions), grouping (Clients-only), keyboard navigation (Jobs-only), infinite scroll (Jobs-only), pagination, sorting, drag/drop, virtualization. Each is an opt-in slot that can land later without breaking V1 callers.
+
+**Hard rules baked into the renderer (callers cannot break them):**
+- Track sizing always emits `minmax(<floor>, ratio*fr)` for fractional kinds; bare `Nfr` is impossible.
+- `money` cells: right-aligned, `whitespace-nowrap`, `tabular-nums`.
+- `date` cells: `whitespace-nowrap`.
+- `status` cells: `flex flex-wrap min-w-0` container so multi-badge compositions (Invoices + QboSyncBadge, Quotes + assessment overlays) wrap inside the cell instead of pushing neighbours.
+- `primary` / `text` cells: `min-w-0 truncate` so they yield space to fixed-floor neighbours.
+- `select` cells: `e.stopPropagation()` so checkbox clicks don't fire `onRowClick`.
+- Per-kind defaults: `primary` 1.5fr/0px floor · `text` 1.0fr/0px · `status` 0.9fr/120px · `date` 0.8fr/100px · `money` 0.7fr/96px · `badge` 0.7fr/0px · `select` exact 40px.
+
+**Pages migrated:**
+
+1. **`pages/LeadsPage.tsx`** — replaced shadcn `<Table>` with `EntityListTable<Lead>`. Six columns: Title (primary), Source (text), Priority (text), Status (status), Est. Value (money), Created (date). Row click → `/leads/:id`. No row actions before or after. Visual parity preserved; the `STATUS_BADGE` map and `safeFormatDate` helper unchanged.
+
+2. **`pages/Quotes.tsx`** — replaced shadcn `<Table>` with `EntityListTable<EnrichedQuote>`. Seven columns: Client/Location (primary, two-line), Quote # (badge → EntityNumber), Title (text), Status (status — Badge + assessment-status sub-badges via flex-wrap), Owner (text), Total (money), Updated (date). Row click → `/quotes/:id`. Multi-badge status now wraps inside the cell rather than expanding the column.
+
+3. **`pages/InvoicesListPage.tsx`** — replaced the hand-rolled CSS-Grid div table with `EntityListTable<EnrichedInvoice>`. Eight columns: select (bulk-checkbox), Client (primary, two-line), Description (text), Invoice # (badge → EntityNumber), Due Date (date), Status (status — Badge + QboSyncBadge), Total (money), Balance (money).
+   - **Removed:** the per-row kebab menu (`MoreHorizontal` trigger + 5 items: View / Edit / Send / Collect Payment / Download PDF). All five mirrored on the detail page; row click already lands there. Imports for `DropdownMenu*`, `MoreHorizontal`, `cn`, `tableRowClass`, `listPrimaryClass`, `listSecondaryClass` were removed alongside.
+   - **Removed:** the `INVOICES_GRID_COLS` constant. Column sizing is now owned by EntityListTable's per-kind defaults; the explicit `minmax()` floors that fixed the "Awaiting Payment" bug are still in force, but expressed via `kind` + optional `minWidthPx` overrides.
+   - **Preserved:** the bulk-action bar (Clear / Send reminders / Send invoices) — moved to a SIBLING above the table (not a row in the table). Selection state, selection-aware filtering, and `BatchSendInvoicesModal` integration unchanged.
+
+**Files added:**
+- `client/src/components/lists/EntityListTable.tsx` (new directory, new file).
+
+**Files changed:**
+- `client/src/pages/LeadsPage.tsx`
+- `client/src/pages/Quotes.tsx`
+- `client/src/pages/InvoicesListPage.tsx`
+
+**Constraints honored:**
+- Jobs / Clients / Suppliers / Locations untouched.
+- `Badge` primitive untouched.
+- `queryClient`, server, routing untouched.
+- Visual parity preserved on Leads + Quotes; Invoices visually identical except (a) status badge can no longer push columns at any width and (b) per-row kebab is gone (replaced functionally by row-click navigation).
+
+**Type-check:** `npm run check` clean — no new TypeScript errors.
+
+**Migration sequence forward (deferred):** Jobs (heaviest — keyboard nav + infinite scroll opt-ins) → Suppliers (smallest of Group B) → Locations → Clients (resolve `groupBy` API design first). Tracking note in audit doc.
+
+### Fixed
+
+#### Invoice detail page no longer shows "This invoice no longer exists" on transient fetch failures (2026-05-03)
+
+The not-found render at `InvoiceDetailPage.tsx:1263` previously fired on EVERY non-success state of the `/api/invoices/:id/details` query — actual 404 (invoice deleted), auth-expiry 401, network blip, AND the dev-environment edge case where a stale browser bundle re-renders against a freshly-restarted server. All of these surfaced the same misleading copy: "This invoice no longer exists. It may have been deleted."
+
+A regression report flagged this for invoices #1180 and #1181 after the same-day reminder-simplification pass: clicking either invoice from the list opened detail and showed the deleted-message even though the invoices were healthy and in-tenant.
+
+**Audit performed (no backend bug found)**
+- `storage.getInvoice(companyId, invoiceId)` for #1180 + #1181 returns valid rows post-rename. Verified via direct probe.
+- Full composite read (mocking the route handler end-to-end: `getInvoice` + `getInvoiceLines` + `getClient` + `getJob` + `getCustomerCompany` + address builders + `JSON.stringify`/`JSON.parse` round-trip) succeeds for both invoices. 58 keys on `invoice`, all expected nested objects present.
+- Schema rename (`last_reminder_at`/`reminder_count` → `last_emailed_at`/`email_send_count`) verified via probe (`lastEmailedAt: null`, `emailSendCount: 0` round-trip cleanly).
+- Frontend `tsc --noEmit` clean. No live references to the deleted `<InvoiceRemindersButton>` or to the renamed-out columns. Only dated comment markers remain.
+- Dev server boot logs `[Schema Guard] All required columns verified ✓` and `serving on port 5000`.
+
+The dev-environment trigger today: during the reminder-simplification edit chain, the server cycled through three `EADDRINUSE` failures before settling on a clean instance. Browser tabs left open during the cycling can carry a stale Vite module map that imports the now-deleted `InvoiceRemindersButton`, which throws on module load → React error → `useQuery.data` undefined → not-found branch.
+
+**Fix — `client/src/pages/InvoiceDetailPage.tsx`**
+- `useQuery` now destructures `isError`, `error`, and `refetch` in addition to `data` and `isLoading`.
+- The `queryFn` propagates the HTTP status onto the thrown `Error` (`err.status = res.status`) when the response is non-OK. Prior implementation threw a flat "Failed to fetch invoice details" with no status.
+- The not-found render branches on `(isError && httpStatus === 404)`:
+  - Confirmed 404 → "This invoice no longer exists. It may have been deleted." + "Back to invoices" button. `data-testid="invoice-not-found"` preserved.
+  - Any other failure (4xx that isn't 404, 5xx, network, JSON parse) → "Couldn't load this invoice. Please try again." + "Retry" button (calls `refetch()`) + "Back to invoices". `data-testid="invoice-load-error"`. New `data-testid="button-invoice-retry"`.
+
+**Acceptance criteria — verified**
+- Clicking invoice #1181 opens invoice detail with full data. ✓
+- Clicking invoice #1180 opens invoice detail with full data. ✓
+- `GET /api/invoices/:id/details` returns valid invoice data for both. ✓
+- No "deleted" message for existing invoices on a fresh page load. ✓
+- "Email invoice" button still opens the send modal (unchanged behavior). ✓
+- `npx tsc --noEmit` — clean.
+- `npm run build` — clean.
+
+**Note on dev-environment recovery**
+If a browser still shows the old "no longer exists" copy after this fix lands, hard-refresh the tab (Ctrl-Shift-R / Cmd-Shift-R) to drop the stale Vite module map. The tsx-watch race condition that caused the cycling is a known limitation of the dev runner; it doesn't affect production builds.
+
+### Changed
+
+#### Manual invoice emails now advance the email-send cadence (2026-05-03)
+
+Closes the follow-up flagged in the same-day "Unified invoice email-send model" entry below: the canonical manual send path (`emailDispatchService.sendInvoiceEmail`) now records `last_emailed_at` + `email_send_count` on every successful send. Prior to this change only the automated reminder path bumped these columns, which meant a user manually emailing an invoice did not advance the cadence — the next automated reminder could fire shortly after a manual send.
+
+**Where the bump lives**
+- `server/services/emailDispatchService.ts::sendInvoiceEmail` — single canonical record point. Runs AFTER:
+  1. The Resend send call returns without error.
+  2. `emailDeliveryTrackingService.markSent` flips the queued delivery row to `sent` (including the optional `afterMarkSent` atomicity callback).
+
+  All failure paths above the call (PDF generation, queued-conflict pre-check, Resend transport error, Resend body error, missing recipients) throw before reaching the bump — failed sends do NOT update the columns.
+
+  The bump is wrapped in a `.catch(...)` with structured-log fallback. The send already succeeded; a post-send counter-update failure is logged + swallowed rather than surfaced as a 500. This matches the canonical "communication-event side effects shouldn't fail user-facing operations" pattern used elsewhere.
+
+**Single source of truth**
+- `server/services/invoiceReminderService.ts::sendOne` no longer calls `invoiceRepository.recordEmailSent` directly. The reminder path goes through `sendInvoiceEmail`, which now owns the bump. This eliminates the prior duplication where the reminder service would have double-bumped if any future caller also recorded explicitly.
+- `sendOne` still returns `emailSendCount: (invoice?.emailSendCount ?? 0) + 1` in its `SendOneResult` — that's the optimistic post-send value the worker telemetry uses, not a write.
+
+**Acceptance criteria — verified**
+- Manual Email invoice send increments `email_send_count`. ✓ (every successful `sendInvoiceEmail` calls `recordEmailSent` once)
+- Manual Email invoice send updates `last_emailed_at`. ✓ (same record path)
+- Failed sends do not update either field. ✓ (recordEmailSent is unreachable on failure paths)
+- Automated reminders still use the same cadence fields. ✓ (`getInvoicesDueForReminder` query unchanged; cadence reads `lastEmailedAt` + `emailSendCount` from the same write)
+- Email templates / Resend / webhook tracking / delivery rows untouched. ✓
+- `npx tsc --noEmit` — clean.
+- `npm run build` — clean.
+
+**Behavior shift worth noting**
+- A manual "Email invoice" send now counts toward the automated reminder cadence. The first manual send sets `email_send_count = 1` and `last_emailed_at = now()`. The sweep worker's "first reminder" branch (which only fires when `email_send_count = 0` AND due-date elapsed) is now skipped after a manual send; the worker's "subsequent reminders" branch takes over (`last_emailed_at < NOW() - repeatEveryDays`). This is the intended product behavior — manual sends are emails too, and the cadence treats them uniformly.
+
+#### Unified invoice email-send model — manual reminder UI retired, columns generalized (2026-05-03)
+
+Manual invoice reminders no longer have their own UI surface. The dropdown of reminder actions on the invoice detail page (Send reminder now / Pause / Snooze 3d / Snooze 7d / "No reminders sent yet") is gone. The single canonical primary action — "Email invoice" — now opens the same `<SendCommunicationModal>` used by Send Quote / Send Job and works regardless of past-due state. The automated reminder sweep worker is preserved unchanged and continues to ride the same `invoiceReminderService.sendOne` path.
+
+**Schema rename (migration `2026_05_03_rename_invoice_email_columns.sql`):**
+- `invoices.last_reminder_at` → `invoices.last_emailed_at`
+- `invoices.reminder_count` → `invoices.email_send_count`
+- `invoices.reminders_paused` and `invoices.reminder_snooze_until` keep their names — they remain reminder-specific (suppress the automated sweep only). Migration is idempotent (`DO $$ ... END $$` guard) and reversible (RENAME COLUMN both ways).
+
+**Backend changes**
+- `shared/schema.ts`: `lastEmailedAt` / `emailSendCount` Drizzle bindings replace the prior names.
+- `server/storage/invoices.ts`:
+  - `getInvoice` SELECT returns `lastEmailedAt` / `emailSendCount`.
+  - `recordReminderSent` renamed to `recordEmailSent`. Same atomic UPDATE; column targets are the renamed columns.
+- `server/storage/invoicesFeed.ts`: `getInvoicesDueForReminder` query + `ReminderCandidate` shape use the renamed fields. Cadence semantics unchanged: every send (manual or automated) advances the cadence.
+- `server/services/invoiceReminderService.ts`:
+  - Removed the `not_overdue` gate from `eligibility(...)`. Worker query already gates by past-due in SQL, so worker behavior is unchanged; the bulk endpoint now succeeds for non-overdue invoices that have a balance.
+  - `recordReminderSent` call site → `recordEmailSent`.
+  - `SendOneResult.reminderCount` → `emailSendCount`.
+- `server/routes/invoices.ts`:
+  - **Deleted** `POST /api/invoices/:id/send-reminder` and `PATCH /api/invoices/:id/reminders` (orphaned — no UI consumer remained).
+  - Bulk `POST /api/invoices/bulk-send-reminders` and the automated `invoiceReminderWorker` are unchanged; both still use `invoiceReminderService.sendOne`.
+
+**Frontend changes**
+- `client/src/components/invoice/InvoiceRemindersButton.tsx` deleted.
+- `client/src/pages/InvoiceDetailPage.tsx`:
+  - `<InvoiceRemindersButton>` import + render removed.
+  - `remindersSlot` derived value removed; the canonical detail header's actions cluster no longer renders a Reminders dropdown.
+  - `primaryAction` simplified: past-due is no longer a special "no primary" branch. Sent / awaiting_payment / partial_paid → `Email invoice` (opens existing `setShowSendConfirm` flow). Draft → `Send invoice`. Paid → disabled `Send receipt` placeholder. Voided → disabled `Duplicate as new` placeholder. Same `<SendCommunicationModal>` mount as before.
+  - All "Reminder not sent" / "No reminders sent yet" / "Pause" / "Snooze" toast + label strings retired alongside the deleted component.
+
+**Acceptance criteria — verified**
+- "Email invoice" works regardless of due status (canonical email send path has never had an overdue gate; the path through `invoiceReminderService` no longer has one either). ✓
+- No reminder-related UI on the invoice detail page. ✓
+- No backend errors referencing overdue state. ✓
+- Automated reminder sweep (`invoiceReminderWorker` → `invoiceReminderService.sweepTenant` → `sendOne`) runs independently and produces the same per-invoice candidate set as before (the SQL predicate in `getInvoicesDueForReminder` is the only past-due gate, and it's preserved). ✓
+- Email templates / resend / webhook tracking / delivery rows / PDF attachment — none touched. ✓
+- `npx tsc --noEmit` — clean. ✓
+- `npm run build` — clean. ✓
+
+**Follow-ups (not in scope this pass)**
+- The bulk reminder workflow on `/invoices` retains its existing copy ("Reminders sent / partial / failed" toast) and endpoint name (`/bulk-send-reminders`). Renaming that surface to "Email invoices" is a separate UX pass — the underlying behavior is now correct (no overdue gate).
+- The canonical email send path (`emailDispatchService.sendInvoiceEmail`) does not yet call `recordEmailSent` for manual sends. Today only the reminder service bumps `lastEmailedAt` / `emailSendCount`. Wiring the manual path to also record into these columns would let the cadence treat manual sends as cadence-advancing — useful but not required to satisfy this change. Will be a one-line addition in a follow-up.
+
+#### Compact internal-label modal form fields (2026-05-03)
+
+Polish pass on the Send Invoice / Send Quote / Send Job email modal and the Edit Visit modal so they read like the Jobber-style compact email modal — labels live INSIDE the bordered field instead of stacked above it. One reusable primitive, two modal call sites updated, no business logic touched.
+
+**Files added**
+- `client/src/components/ui/compact-field.tsx` — new `<CompactField label="…" htmlFor=… helperText=… error=… rightSlot=…>` wrapper. Renders a single bordered box with a small uppercase muted label in the top-left and the control beneath. `focus-within` ring tracks the inner control's focus state. The wrapper preserves `htmlFor` / native `<label>` association for accessibility; widgets that can't take an `id` (composite popovers, multi-selects) rely on their own `aria-label`.
+
+**Files changed**
+- `client/src/components/communication/SendCommunicationModal.tsx`:
+  - `To`, `CC`, `Subject`, `Message` rows replaced with `<CompactField>` wrappers. Inner Inputs / Textarea / chip rows render borderless / paddingless / shadowless so the wrapper owns the chrome.
+  - The visible "Review the message and click Send. Changes apply to this send only." blurb removed. `<DialogDescription>` kept as `sr-only` for screen readers / `aria-describedby`. Loading state surfaces inline as a small muted hint under the title.
+  - Modal width tightened from `sm:max-w-[820px]` → `sm:max-w-[720px]`.
+  - Send/Cancel footer + attachment block + image picker + ContactPickerPopover all unchanged.
+- `client/src/pages/InvoiceDetailPage.tsx`:
+  - Send Invoice call site composes a specific title from `invoice.invoiceNumber` and `clientName`: `Email invoice #1181 to Samcor Mechanical Inc.` Falls back to canonical short titles when either piece is missing.
+- `client/src/pages/QuoteDetailPage.tsx`:
+  - Send Quote call site composes `Email quote QTE-… to <client>` with the same fallback chain.
+- `client/src/pages/JobDetailPage.tsx`:
+  - Send Job email call site composes `Email job #… to <client>` with the same fallback chain.
+- `client/src/components/visits/EditVisitModal.tsx`:
+  - Schedule grid (`Date` / `Start` / `Duration` / `Assigned to`) cells refactored: each cell now wraps its control in a `<CompactField>` and the inner Popover button / `<Input type="time">` / `<Select>` / `<TechnicianSelector>` all render borderless. The outer "Schedule" section header is preserved (groups multiple fields). Inner duplicate per-cell `<Label>` rows removed. `data-testid` ids on the controls preserved.
+
+**Accessibility**
+- `<CompactField htmlFor={…}>` renders a real `<label>` whose target receives `id`; the click region works the same as a stacked label.
+- The Duration `<SelectTrigger>` got an explicit `aria-label="Duration"` since the Select element doesn't accept an `id`-driven label association.
+- Screen-reader users still receive the modal description through the sr-only `<DialogDescription>`.
+
+**No behavior change**
+- Send modal: same `useSendCommunicationModal` hook, same recipients / cc / attachments / send / error contracts. Subject and message text round-trip unchanged. Attachment block (PDF toggle + image picker + 25 MB total guard) untouched.
+- Edit Visit modal: same `schedule` state shape, same start/end derivation, same `manuallyEditedDuration` flag, same TechnicianSelector contract. Save / Complete / Follow-up / Unschedule paths untouched.
+
+**Verification**
+- `npx tsc --noEmit` — clean.
+- `npm run build` — clean.
+
+### Added
+
+#### Canonical `invoices.summary` column + invoice-native notes for no-job invoices (2026-05-03, Audit #2 invoice-flow follow-up)
+
+Adds a dedicated short-title field to invoices and fixes the dead-Notes-card UX on invoices created without a linked job.
+
+**Schema / API**
+- New `migrations/2026_05_03_invoice_summary.sql`: `ALTER TABLE invoices ADD COLUMN IF NOT EXISTS summary text;`. Idempotent, reversible (`DROP COLUMN summary`), no backfill.
+- `shared/schema.ts`: added `summary: text("summary")` to the `invoices` Drizzle table; added `summary: z.string().max(255).nullable().optional()` to `updateInvoiceSchema`.
+- `server/routes/invoices.ts`:
+  - `createAtomicSchema` and `createStandaloneInvoiceSchema` now accept `summary: z.string().max(255).optional()`.
+  - Atomic POST forwards `validated.summary` to the service.
+  - Standalone POST forwards `validated.summary` to storage.
+- `server/services/invoiceCreationService.ts`:
+  - `CreateAtomicPayload` carries `summary?: string | null`.
+  - When the caller doesn't supply a summary, the service adopts the **first selected job's** `summary` so atomic invoices created from a job inherit a sensible header label by default. Atomic invoices with no job and no summary store `null`.
+  - Added `summary` to the per-job working set populated during job validation.
+- `server/storage/invoices.ts`:
+  - `createInvoiceShell` accepts `summary?: string | null` and writes it on the canonical INSERT.
+  - `createInvoiceAtomic` threads `params.summary` into the shell call.
+  - `createInvoiceFromJob` now sets `summary: job.summary` (canonical title) AND `workDescription: job.description || job.summary || null` (long body) — splitting the previously overloaded copy.
+  - `createInvoiceFromBillingEvent` sets `summary: params.billingLabel` (the canonical short label) alongside the existing `workDescription` body.
+  - `createStandaloneInvoice` accepts and forwards `summary`.
+  - `getInvoice` SELECT explicitly returns the `summary` column.
+
+**Frontend — Summary**
+- `client/src/components/invoice/InvoiceMetaCard.tsx`:
+  - New optional `summary?: string | null` prop (read-mode display value).
+  - `draft` shape extended with `summary?: string`; `onDraftChange` accepts `{ summary }` patches.
+  - New compact `Summary` row at the top of the right column. Read-mode: plain text (or em-dash). Edit-mode: 224px-wide single-line `<Input maxLength={255}>`.
+- `client/src/pages/NewInvoicePage.tsx`:
+  - `metaDraft.summary` initialized to `""`.
+  - Header `title` resolves to `metaDraft.summary.trim() || "New Invoice"`. **Customer/company name is no longer in the fallback chain.**
+  - Billable-preview hydration also adopts the candidate (`workDescriptionCandidate` = `job.summary`) into `metaDraft.summary` when the user hasn't typed one — same precedence rule as `workDescDraft`.
+  - Atomic POST payload now includes `summary` when non-empty.
+- `client/src/pages/InvoiceDetailPage.tsx`:
+  - `MetaDraft` type extended with `summary: string`. Seeded from `invoice.summary` on `enterMetaEdit`.
+  - Header `title` chain: `invoice.summary || job?.summary || (invoice.invoiceNumber ? \`Invoice ${num}\` : "Invoice")`. **Drops the prior `clientName` fallback.**
+  - Save-meta delta now includes `summary` when dirty (empty string normalizes to `null` on the wire).
+  - `<InvoiceMetaCard summary={…}>` mounted with the persisted value.
+
+**Frontend — Notes (no-job invoice fix)**
+- `client/src/components/invoice/DraftNotesCard.tsx`:
+  - `onChange` now accepts a sync OR async (`Promise<void>`) handler — the same pattern `EditableMessageCard` uses. Async handlers route through an internal "Saving…" state.
+  - New optional `isSaving?: boolean` external signal. Save button disables + shows the saving label while either internal or external saving is true.
+  - Cancel button disables during save.
+- `client/src/pages/InvoiceDetailPage.tsx`:
+  - Right-rail Notes card branches on `jobId`:
+    - With job: existing `<EntityNotesSection embedded …>` (canonical threaded notes; unchanged behavior). Dropped the `hideAddButton={!jobId}` prop since the branch is gated.
+    - Without job: `<DraftNotesCard value={invoice.notesInternal ?? ""} onChange={mutateAsync({ notesInternal })} isSaving={…}>`. Same chrome (verbatim copy of `EntityNotesSection.embedded` styling), so the rail looks identical regardless of branch. Writes the canonical `invoices.notes_internal` column via the existing `updateInvoiceFieldsMutation`. No new endpoint, no `invoice_notes` table, no shadow job.
+
+**Acceptance criteria — verified**
+- Selecting a client on `/invoices/new` does **not** change the header title to the company name. ✓
+- The Summary input is editable in `InvoiceMetaCard` (visible top of right column).
+- Saved invoice's header reads `invoice.summary` first, then `job.summary`, then `Invoice <number>`.
+- Invoice created from a job defaults `invoice.summary = job.summary` (canonical write at `createInvoiceFromJob`).
+- No-job invoice can still be saved (atomic POST unchanged).
+- Saved no-job invoice shows a usable `DraftNotesCard` with add/edit/save → writes through to `invoices.notes_internal`.
+- Saved job-linked invoice continues to render the canonical threaded `EntityNotesSection`.
+- `workDescription` remains a separate column and continues to render in the InvoiceMetaCard's job-description block + the PDF service (`server/services/invoicePdfService.ts:218`) + the invoices feed.
+- No new routes, no duplicate detail surfaces. `/invoices/:id` continues to be the canonical detail page after save.
+- `npx tsc --noEmit` — exit 0, zero errors.
+- `npm run build` — clean.
+
+**Audit notes (Part 4 findings)**
+- Header-title computation existed in two places before this pass — `InvoiceDetailPage.tsx:1492` and `NewInvoicePage.tsx:778`. Both updated to the new chain.
+- `workDescription` was overloaded as both a body field AND a title surrogate in `createInvoiceFromJob` (`workDescription: job.description || job.summary || null`). The from-job path now sets `summary` and `workDescription` independently — `summary = job.summary`, `workDescription = job.description || job.summary || null` (the latter still falls back to summary as a body when no description, preserving existing PDF behavior).
+- Invoice creation paths inventoried: `/api/invoices/atomic`, `/api/invoices/from-job/:jobId`, `/api/invoices` (standalone), PM billing, import. All paths except import now persist `summary`. Import is left unchanged — historical invoices keep `summary = null` and resolve their header title via `\`Invoice ${invoiceNumber}\``.
+- Invoice list page (`InvoicesListPage.tsx:530`) still displays `workDescription` as the description label. Surfacing `summary` there is a natural follow-up but out of scope for this pass.
+
 ### Fixed
 
 #### First-login race — stale `/api/auth/me` no longer wipes the seeded user (2026-05-03)
@@ -2500,6 +6222,388 @@ visible UI change.
    `InvoiceDetailPage`).
 
 ### Fixed
+
+#### Customer portal — modern `awaiting_payment` invoices now visible on the dashboard (2026-05-03)
+
+Bug: customers logging into the portal via the invoice email's "Pay
+Invoice" button saw `Balance due: $0.00`, `Open invoices: 0`, and
+"No invoices yet" — even though the invoice that generated the
+email existed and the portal session was correctly scoped to the
+right `companyId + customerCompanyId`.
+
+**Root cause:** `server/routes/portal.ts` had **two** sites with
+hardcoded status lists that omitted the modern canonical
+`awaiting_payment` status:
+
+- Line 457 (visible-list filter):
+  `const visibleStatuses = ["sent", "partial_paid", "paid"];`
+- Line 486 (open-invoices derivation):
+  `rows.filter(r => r.status === "sent" || r.status === "partial_paid")`
+
+The staff send pipeline writes `status = "awaiting_payment"` (per
+`shared/schema.ts:1528-1532`; `sent` is a documented legacy alias),
+so every modern invoice the customer would actually have was
+filtered out by the WHERE clause and absent from the dashboard.
+
+**Fix:** route both sites through the existing canonical
+`UNPAID_INVOICE_STATUSES` constant
+(`shared/invoiceStatus.ts:11-15` —
+`["awaiting_payment", "sent", "partial_paid"]`):
+
+```diff
+- const visibleStatuses = ["sent", "partial_paid", "paid"];
++ const visibleStatuses = [...UNPAID_INVOICE_STATUSES, "paid"];
+
+- const openInvoices = rows.filter(r => r.status === "sent" || r.status === "partial_paid");
++ const openInvoices = rows.filter(r => UNPAID_INVOICE_STATUSES.includes(r.status));
+```
+
+Both sites now share the **same** constant — drift between the
+filter and the derivation is no longer possible. Future lifecycle
+additions (e.g. an `overdue_locked` someday) only need to land in
+the shared constant once.
+
+**What stays hidden:** `draft` and `voided` invoices — same as
+before. The fix only adds the modern canonical status the customer
+already had a right to see; it does NOT loosen security or expose
+new categories of invoice.
+
+**Tenant scoping unchanged:** the SQL still filters by
+`eq(invoices.companyId, session.companyId)` AND
+`eq(invoices.customerCompanyId, session.customerCompanyId)`.
+Cross-tenant exposure is structurally impossible. The fix only
+widens the *status* axis of the filter.
+
+**Files changed:**
+- `server/routes/portal.ts` — added `UNPAID_INVOICE_STATUSES`
+  import; swapped the two hardcoded status lists.
+- `tests/portal-invoice-visibility.test.ts` — **new file**, 16
+  tests:
+  - 8 task-spec scenarios (awaiting_payment shows + counts; sent /
+    partial_paid same; paid visible-but-not-open; draft + voided
+    hidden; tenant + customer scoping preserved).
+  - 4 additional behavioural cases (explicit `?status=` query
+    param, realistic mixed-status fixture, etc.).
+  - 4 source-level regression guards: route imports
+    `UNPAID_INVOICE_STATUSES`; route does NOT contain the legacy
+    hardcoded list; route does NOT contain the legacy `||` open
+    derivation; route DOES use `UNPAID_INVOICE_STATUSES.includes(...)`.
+- `server/scripts/verifyPortalVisibility.ts` — read-only
+  diagnostic, mirrors the existing `verifyItemDedup.ts` /
+  `auditPaymentEntitlement.ts` pattern. Replays the dashboard SQL
+  before/after the fix.
+
+**Untouched (per guardrails):**
+- Portal auth / OTP / session model.
+- Stripe / portal-token flow (`buildPortalInvoiceUrl`,
+  `stripeAdapter`, webhook).
+- Invoice lifecycle / status enum.
+- Schema (no migration).
+- Multi-tenant isolation (`companyId + customerCompanyId` filter
+  preserved verbatim).
+
+**Verification (live, against the dev DB):**
+- `npm run check` clean.
+- `npx vitest run tests/portal-invoice-visibility.test.ts` —
+  **16/16 passing**.
+- `npx vitest run tests/portal-invoice-visibility.test.ts
+  tests/email-sender-and-total.test.ts` — **39/39 passing**
+  combined.
+- The read-only diagnostic replayed the dashboard SQL for a real
+  `awaiting_payment` invoice on the dev DB:
+  - **BEFORE FIX** filter `['sent','partial_paid','paid']`:
+    0 invoices returned, $0.00 balance, witness #1181 absent.
+  - **AFTER FIX** filter `[...UNPAID_INVOICE_STATUSES, 'paid']`:
+    1 invoice returned, $226.00 balance, witness #1181 present.
+
+### Changed
+
+#### Invoice email — styled "Pay Invoice" button replaces raw URL (2026-05-03)
+
+UI/template-only upgrade. The invoice and invoice-reminder default
+emails now show a proper styled button + fallback link instead of
+a plain `Pay securely online: http://…` text line.
+
+**Before:**
+```
+Total amount: $226.00
+Due date: June 2, 2026
+
+Pay securely online: http://localhost:5000/portal/invoices/abc-123
+
+If you have any questions, please contact us.
+```
+
+**After:**
+```
+Total amount: $226.00
+Due date: June 2, 2026
+
+[ Pay Invoice ]   ← styled <a>/<table> button (Outlook-safe)
+
+If the button doesn't work, copy and paste this link into your browser:
+http://localhost:5000/portal/invoices/abc-123
+
+If you have any questions, please contact us.
+```
+
+**Architecture (no payment-flow / entitlement / Stripe changes):**
+- The default invoice templates in
+  `server/services/communicationTemplatesService.ts` swap the
+  `{{PAY_NOW_CTA}}` template variable for a literal string sentinel
+  `__PAY_INVOICE_BUTTON__`. The sentinel is **not** a `{{VAR}}` —
+  the renderer leaves it alone — so `templateDataBuilder` is
+  **untouched** per the spec.
+- `bodyToHtml` in `server/services/emailDispatchService.ts` is
+  extended with an optional `{ paymentUrl }` argument. After
+  htmlEscape + linkify, it swaps the sentinel for the styled HTML
+  block when `paymentUrl` is non-empty, and strips the sentinel
+  otherwise (preserving the previous "no orphan line" semantic).
+- Only the invoice send path passes `paymentUrl: data.PAYMENT_URL`
+  through. Quote / Job / payment-receipt templates do NOT contain
+  the sentinel and call `bodyToHtml(body)` with no opts — exact
+  same behaviour as before.
+
+**Email-client compatibility:**
+- Inline styles only (no `<style>` block, no external CSS, no JS).
+- Wrapping `<table role="presentation" cellspacing="0">` so Outlook
+  Word-renders the click-area correctly.
+- `mso-padding-alt` set on the `<a>` for Outlook desktop padding
+  parity.
+- `<a>` carries its own `background-color`, `padding`,
+  `border-radius`, `font-family`, `font-size`, `font-weight`,
+  `color` — all inline so Gmail's CSS-stripper preserves them.
+- Fallback paragraph (`<p>` with secondary-text colour `#6b7280`)
+  beneath the button, also inline-styled.
+- Defence-in-depth: the URL is HTML-escaped before being inserted
+  into both `href` attributes and the visible fallback text.
+
+**Conditional rendering — the gate is the same as before:**
+- `templateDataBuilder.ts:230-240` still produces `PAYMENT_URL`
+  only when `canAcceptInvoicePayment(invoice.status)` AND
+  `balance > 0` AND the `customer_portal_payments` entitlement is
+  enabled.
+- When PAYMENT_URL is empty, `bodyToHtml` strips the sentinel and
+  no button or fallback paragraph renders. The surrounding
+  paragraphs are unchanged.
+
+**Tenant overrides preserved:**
+- Tenants with a saved row in `communication_templates` that still
+  reference `{{PAY_NOW_CTA}}` keep their existing text-link
+  behaviour — `templateDataBuilder` continues to emit the
+  `PAY_NOW_CTA` value. Only the **default** (system-fallback)
+  templates moved to the sentinel-driven button. Tenants who want
+  the new button can clear their override (defaults take over) or
+  paste `__PAY_INVOICE_BUTTON__` into their custom template.
+
+**Files changed:**
+- `server/services/communicationTemplatesService.ts` — swapped
+  `{{PAY_NOW_CTA}}` → `__PAY_INVOICE_BUTTON__` in two default
+  templates (`invoice:email`, `invoice_reminder:email`).
+- `server/services/emailDispatchService.ts` — added
+  `PAY_INVOICE_BUTTON_SENTINEL`, new `buildPayInvoiceButtonHtml(url)`
+  helper (Outlook-safe HTML), extended `bodyToHtml(body, opts?)`
+  to accept `paymentUrl`. `bodyToHtml` is now exported for
+  testability. Invoice send call site passes
+  `paymentUrl: data.PAYMENT_URL`; the other three send sites are
+  unchanged.
+- `tests/email-sender-and-total.test.ts` — added 8 tests for the
+  button render path.
+
+**Untouched (per guardrails):**
+- `templateDataBuilder.ts` — not modified. PAYMENT_URL still gated
+  by entitlement + status + balance exactly as before.
+- `entitlementService.ts` — untouched.
+- `stripeAdapter` / Stripe flow — untouched. The button still
+  links to the portal URL, which still creates the Stripe
+  checkout session at portal entry, not at email send.
+- Portal token / access model — untouched.
+- Sender headers (From / Reply-To) — untouched (separate fix
+  earlier today).
+- Other default templates (`quote:email`, `job:email`,
+  `payment_receipt:email`) — untouched; no sentinel, no button.
+
+**Verification:**
+- `npm run check` clean.
+- `npx vitest run tests/email-sender-and-total.test.ts` —
+  **23/23 passing** (8 new tests for the button + 15 from prior
+  tasks).
+
+### Fixed
+
+#### Enable `customer_portal` + `customer_portal_payments` on every plan (dev/test) (2026-05-03)
+
+The earlier audit confirmed Stripe + portal were fully wired but the
+payment-link CTA was suppressed because both feature flags were
+`enabled=false` on every subscription plan
+(`trial`/`pro`/`starter`/`enterprise`) and no tenant overrides
+existed. This change flips the canonical plan-feature flag through
+the entitlement system, without touching any code, hard-coding any
+tenant id, or weakening the gate.
+
+**What changed:**
+- `migrations/2026_05_03_enable_customer_portal_payments.sql` — new
+  idempotent migration that upserts every (plan, feature) pair where
+  `feature_key IN ('customer_portal','customer_portal_payments')`
+  with `enabled = true`. Uses the existing
+  `subscription_plan_features_plan_feature_unique` constraint
+  `(plan_id, feature_id)` for `ON CONFLICT DO UPDATE`. Plans + features
+  are joined via `feature_key` so no UUIDs are hardcoded — the migration
+  works against any DB that has the canonical catalog seeded.
+- `migrations/dev_reset_full.sql` — extended the truncate-exclusion
+  list to preserve `subscription_features` and `subscription_plan_features`
+  alongside the already-excluded `subscription_plans`. The entitlement
+  catalog is platform-config (not tenant data), same category as the
+  plan catalog. Without this, a full reset wiped the plan-feature rows
+  and `schema_migrations` blocked re-application of the seed migrations,
+  silently disabling every feature gate. Tenant-specific
+  `tenant_feature_overrides` are still cleared by reset (they're tenant
+  data).
+
+**What was NOT changed:**
+- Code: nothing. Entitlement gate at
+  `templateDataBuilder.ts:230-240` is untouched. `recipientResolverStrategies.ts`
+  is untouched. The portal token model and Stripe checkout flow are
+  untouched.
+- No tenant ids hardcoded.
+- No tenant overrides created.
+- Production: this migration is safe to run anywhere — it merely
+  flips the feature flag at the plan level, which is the canonical
+  way the entitlement system models "this feature is on for plan X".
+  If production wants `customer_portal_payments` off for a specific
+  plan, run the rollback SQL in the migration's header comment.
+
+**Verification (live, against the dev DB):**
+
+```
+$ npm run db:migrate:one -- migrations/2026_05_03_enable_customer_portal_payments.sql
+DONE: 2026_05_03_enable_customer_portal_payments.sql
+$ npm run db:migrate:one -- migrations/2026_05_03_enable_customer_portal_payments.sql
+SKIP: 2026_05_03_enable_customer_portal_payments.sql (already applied)   ← idempotent
+
+$ npx tsx server/scripts/auditPaymentEntitlement.ts
+plan=pro/trial/starter/enterprise customer_portal=true
+plan=pro/trial/starter/enterprise customer_portal_payments=true
+Samcor Mechanical Inc.   customer_portal_payments → enabled=true  source=plan_feature
+Charbel                  customer_portal_payments → enabled=true  source=plan_feature
+
+$ npx tsx server/scripts/verifyPayLinkRender.ts
+Invoice #1181 (0abaf3b0-4ada-40e1-b323-7b8a37eb3dc2)
+  tenant=Samcor Mechanical Inc.  status=awaiting_payment  total=226.00  balance=226.00
+  entitlement.customer_portal_payments → enabled=true  source=plan
+  INVOICE_TOTAL    = "$226.00"                ← was blank pre-fix
+  INVOICE_DUE_DATE = "June 2, 2026"
+  PAYMENT_URL      = "http://localhost:5000/portal/invoices/0abaf3b0-…"   ← was empty
+  PAY_NOW_CTA      = "Pay securely online: http://localhost:5000/portal/…"  ← was empty
+```
+
+Resending invoice #1181 (or any awaiting/sent/partial-paid invoice
+with balance > 0) now produces an email body that includes the
+"Pay securely online" CTA pointing at the portal token URL. Stripe
+checkout still happens at portal entry (NOT at email send), so the
+provider-neutral architecture stays intact.
+
+**Diagnostic scripts** (read-only, safe to delete or keep — same
+precedent as the existing `verifyItemDedup.ts`):
+- `server/scripts/auditPaymentEntitlement.ts` — prints the resolver
+  state per tenant.
+- `server/scripts/verifyPayLinkRender.ts` — calls the canonical
+  `templateDataBuilder.buildInvoiceTemplateData` against real
+  invoice rows and prints what the email template would render.
+
+#### Invoice email — total renders + per-tenant From / Reply-To (2026-05-03)
+
+Two surgical fixes that emerged from a real test send. Both ship
+together; both are scoped to the email pipeline only — no schema,
+no provider changes, no payment-system redesign.
+
+**1. Blank `Total amount:` in invoice email body — confirmed bug.**
+- `server/services/templateDataBuilder.ts:246` was reading
+  `(invoice as any).totalAmount` while the canonical schema column is
+  `total` (`shared/schema.ts:1560`; storage select at
+  `server/storage/invoices.ts:243`). The `as any` cast hid the typo
+  from `tsc`; the renderer at `templateRenderer.ts:63-65` then
+  silently substituted `{{INVOICE_TOTAL}}` with `""` because
+  `formatMoney(undefined)` returns `""`.
+- Fixed: now reads `invoice.total` (no cast). Also corrected the
+  fallback at line 212 — was `invoice.balance ?? totalAmount ?? "0"`,
+  the middle term was unreachable noise; replaced with
+  `invoice.balance ?? invoice.total ?? "0"`.
+- Result: `Total amount: $475.00` renders correctly.
+
+**2. Per-tenant From display name + Reply-To — new capability.**
+The `from` and `replyTo` headers were entirely env-driven (single
+global value) — every tenant's email arrived as
+`Notifications <notifications@mail.syntraro.com>`, hiding the
+tenant identity from the recipient.
+
+- `server/resendClient.ts` refactored to expose the verified
+  `fromEmail` separately from any composed display string, plus
+  three new pure helpers: `getDefaultFromName()`,
+  `formatFromHeader(name, email)`, `isPlausibleEmail(value)`. The
+  existing `getResendClient()` return shape is extended (not
+  broken) — old `defaultFromHeader` callers still work.
+- `server/services/emailDispatchService.ts` gains
+  `buildSenderHeaders(tenantId)` (exported). It looks up
+  `companies.{name, email}` once per send and returns
+  `{ from, replyTo? }`:
+  - `from` = `${companies.name} <${RESEND_FROM_EMAIL}>` —
+    display-name only varies; the verified Resend domain stays
+    fixed at `RESEND_FROM_EMAIL`. **No tenant-owned domains are
+    sent from** (Option A from the audit; safe under Resend's
+    domain-verification constraint).
+  - `replyTo` = `companies.email` when present and
+    shape-validated; else falls back to optional
+    `RESEND_REPLY_TO` env; else omitted.
+- All four send call sites updated:
+  `sendInvoiceEmail`, `sendPaymentReceiptEmail`,
+  `sendQuoteEmail`, `sendJobEmail`. Each now does
+  `const senderHeaders = await buildSenderHeaders(tenantId)` and
+  passes `from: senderHeaders.from, replyTo: senderHeaders.replyTo`
+  through to `client.emails.send(...)`.
+- Failure modes are non-fatal: if storage / tenant lookup throws,
+  the helper degrades to the platform default. Outbound mail must
+  not be blocked by branding lookups.
+- Display-name sanitisation strips `< > " \r \n` from
+  tenant-supplied names so a malicious or malformed
+  `companies.name` cannot inject Resend headers.
+
+**Files changed:**
+- `server/services/templateDataBuilder.ts` — `totalAmount` →
+  `total`; drop the `as any` cast.
+- `server/resendClient.ts` — separate verified `fromEmail` from
+  composed strings; new pure helpers exported.
+- `server/services/emailDispatchService.ts` — new
+  `buildSenderHeaders` helper + `SenderHeaders` type; all 4
+  send call sites updated.
+- `tests/email-sender-and-total.test.ts` — new file, 15 tests
+  covering the regression + the new helper across happy path,
+  missing fields, malformed input, storage failure, and
+  header-injection inputs.
+
+**Entitlement audit (advisory finding, no code change):**
+The `customer_portal_payments` entitlement is `enabled=false` on
+**every** subscription plan in the dev DB (trial, pro, starter,
+enterprise) and there are no tenant overrides. The payment-link
+suppression observed during the test send is therefore by design
+under the current entitlement config, NOT a bug. A read-only
+diagnostic at `server/scripts/auditPaymentEntitlement.ts` (modeled
+on `verifyItemDedup.ts`) prints the resolver state per tenant and
+emits the safe SQL needed to flip the override on for a specific
+test tenant. Operator decision — not implemented.
+
+**Untouched (per guardrails):**
+- Payment provider abstraction; portal token model; Stripe
+  checkout-session flow.
+- Entitlement gate at `templateDataBuilder.ts:230-240`.
+- No new branding columns added (`companies` schema unchanged).
+- No tenant-owned email domains sent from.
+- No duplicate email pipeline introduced.
+
+**Verification:**
+- `npm run check` clean.
+- `npx vitest run tests/email-sender-and-total.test.ts` —
+  **15/15 passing**.
 
 #### Line-items header / body alignment via shared column template (2026-05-03)
 

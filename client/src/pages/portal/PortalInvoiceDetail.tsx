@@ -88,11 +88,29 @@ interface InvoiceDetail {
   showBalance: boolean;
 }
 
+/**
+ * 2026-05-03 PR 5: payment history row on the portal invoice detail.
+ * Both legacy 1:1 payments and modern multi-invoice allocations
+ * contribute via the same shape — the source field lets the UI
+ * distinguish if needed (today both render with a generic "Payment"
+ * label and the per-row method / amount).
+ */
+interface PaymentHistoryRow {
+  id: string;
+  amount: string;
+  method: string;
+  receivedAt: string | null;
+  providerSource: string | null;
+  source: "direct" | "allocation";
+}
+
 interface InvoiceDetailResponse {
   invoice: InvoiceDetail;
   lines: InvoiceLine[];
   taxLines: TaxLine[];
   paymentsEnabled: boolean;
+  /** 2026-05-03 PR 5 — additive; missing on pre-PR-5 server responses. */
+  payments?: PaymentHistoryRow[];
 }
 
 // 2026-04-21 provider-neutral response from the canonical checkout route.
@@ -126,6 +144,15 @@ export default function PortalInvoiceDetail() {
   const [intentError, setIntentError] = useState<string | null>(null);
   const [justPaid, setJustPaid] = useState(false);
   const queryClient = useQueryClient();
+
+  // 2026-05-03 PR 3: support `?pay=1` deep-link from the list page's
+  // per-row Pay Now button. We auto-open the pay modal once the
+  // invoice loads (and is payable). One-shot — clearing the query
+  // string isn't necessary because wouter doesn't re-fire the effect
+  // on identical-state renders.
+  const autoOpenPay =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("pay") === "1";
 
   const invoiceQueryKey = [`/api/portal/invoices/${invoiceId}`];
   const { data, isLoading, isError } = useQuery<InvoiceDetailResponse>({
@@ -186,6 +213,31 @@ export default function PortalInvoiceDetail() {
     return () => timers.forEach((t) => clearTimeout(t));
   }, [justPaid, queryClient, invoiceId]);
 
+  // Auto-open pay modal when the page lands with `?pay=1` AND the
+  // invoice has loaded into a payable state. We trigger via the same
+  // openPayModal path as the manual button so every guard stays in
+  // one place. Re-runs only when the underlying invoice id or
+  // payments-enabled flag changes (the boolean dep keeps it idempotent
+  // on the same load).
+  const dataInvoiceStatus = data?.invoice.status;
+  const dataPaymentsEnabled = data?.paymentsEnabled;
+  const dataBalance = data?.invoice.balance;
+  useEffect(() => {
+    if (!autoOpenPay) return;
+    if (!dataInvoiceStatus) return;
+    if (!dataPaymentsEnabled) return;
+    const hasBalance = parseFloat(dataBalance ?? "0") > 0;
+    const isPayable =
+      dataInvoiceStatus === "awaiting_payment" ||
+      dataInvoiceStatus === "sent" ||
+      dataInvoiceStatus === "partial_paid";
+    if (hasBalance && isPayable && !payModalOpen) {
+      openPayModal();
+    }
+    // openPayModal closes over stable state setters; safe to omit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenPay, dataInvoiceStatus, dataPaymentsEnabled, dataBalance]);
+
   const stripePromise = useMemo(
     () => (intent?.publishableKey ? getStripePromise(intent.publishableKey) : null),
     [intent?.publishableKey],
@@ -237,7 +289,8 @@ export default function PortalInvoiceDetail() {
     );
   }
 
-  const { invoice, lines, taxLines, paymentsEnabled } = data;
+  const { invoice, lines, taxLines, paymentsEnabled, payments } = data;
+  const paymentHistory = payments ?? [];
   const hasBalance = parseFloat(invoice.balance || "0") > 0;
   const isPayable =
     invoice.status === "awaiting_payment" ||
@@ -315,7 +368,7 @@ export default function PortalInvoiceDetail() {
                     kind === "past_due"
                       ? "text-red-700"
                       : kind === "due_soon"
-                        ? "text-amber-700"
+                        ? "text-orange-700"
                         : "text-slate-900"
                   }`}
                   data-testid="portal-balance-due"
@@ -355,7 +408,7 @@ export default function PortalInvoiceDetail() {
       )}
       {kind === "partial_paid" && (
         <StatusBanner
-          tone="sky"
+          tone="yellow"
           icon={CheckCircle2}
           title="Partial payment received"
           body={`Remaining balance: ${formatCurrency(invoice.balance, invoice.currency)}.`}
@@ -373,7 +426,7 @@ export default function PortalInvoiceDetail() {
       )}
       {kind === "due_soon" && (
         <StatusBanner
-          tone="amber"
+          tone="orange"
           icon={Clock}
           title="Due soon"
           body={`Balance of ${formatCurrency(invoice.balance, invoice.currency)} is due ${formatDate(invoice.dueDate)}.`}
@@ -451,6 +504,81 @@ export default function PortalInvoiceDetail() {
           )}
         </CardContent>
       </Card>
+
+      {/* ── Payment history (2026-05-03 PR 5) ────────────────────────
+          Shows every "money in" event applied to this invoice — both
+          legacy 1:1 payments and multi-invoice payment allocations.
+          Renders only when there's history to show; pre-PR-5 server
+          responses omit the field entirely (paymentHistory == []). */}
+      {paymentHistory.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Payment history</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="divide-y divide-slate-100">
+              {paymentHistory.map((p) => {
+                const label =
+                  p.providerSource === "stripe"
+                    ? "Online payment"
+                    : p.providerSource === "qbo"
+                      ? "Payment (QuickBooks)"
+                      : "Payment";
+                const methodSuffix =
+                  p.method && p.method !== "credit" && p.method !== "other"
+                    ? ` · ${p.method}`
+                    : "";
+                return (
+                  <div
+                    key={p.id}
+                    className="px-4 py-3 flex items-center justify-between gap-3"
+                    data-testid={`portal-payment-row-${p.id}`}
+                  >
+                    <div className="min-w-0">
+                      <p className="font-medium text-slate-900 text-sm">
+                        {label}
+                        {methodSuffix}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        {p.receivedAt ? formatDate(p.receivedAt) : "—"}
+                      </p>
+                    </div>
+                    <p
+                      className="font-semibold text-sm tabular-nums text-emerald-700 shrink-0"
+                      data-testid={`portal-payment-amount-${p.id}`}
+                    >
+                      {formatCurrency(p.amount, invoice.currency)}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+            {/* Footer rolls up the totals — gives the customer a clear
+                "Total paid" + "Remaining" view that matches the
+                Hero Balance Due number above. */}
+            <div className="border-t border-slate-100 px-4 py-3 space-y-1">
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-500">Total paid</span>
+                <span className="font-semibold tabular-nums text-emerald-700">
+                  {formatCurrency(invoice.amountPaid, invoice.currency)}
+                </span>
+              </div>
+              {invoice.showBalance && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Remaining balance</span>
+                  <span
+                    className={`font-semibold tabular-nums ${
+                      hasBalance ? "text-slate-900" : "text-emerald-700"
+                    }`}
+                  >
+                    {formatCurrency(invoice.balance, invoice.currency)}
+                  </span>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── Notes / Terms ───────────────────────────────────────── */}
       {(invoice.clientMessage ||
@@ -582,7 +710,11 @@ function StatusBanner({
   body,
   testId,
 }: {
-  tone: "emerald" | "sky" | "amber" | "red";
+  // 2026-05-03 PR 5: tone palette aligned with `portalStatusBadge`.
+  // `yellow` for partial-paid + `orange` for due-soon disambiguates
+  // them at a glance vs. the previous sky/amber pairing where partial
+  // could be misread as informational rather than "needs attention".
+  tone: "emerald" | "yellow" | "orange" | "red";
   icon: typeof CheckCircle2;
   title: string;
   body: string;
@@ -590,14 +722,14 @@ function StatusBanner({
 }) {
   const toneClasses = {
     emerald: "border-emerald-200 bg-emerald-50 text-emerald-900",
-    sky: "border-sky-200 bg-sky-50 text-sky-900",
-    amber: "border-amber-200 bg-amber-50 text-amber-900",
+    yellow: "border-yellow-200 bg-yellow-50 text-yellow-900",
+    orange: "border-orange-200 bg-orange-50 text-orange-900",
     red: "border-red-200 bg-red-50 text-red-900",
   }[tone];
   const iconColor = {
     emerald: "text-emerald-700",
-    sky: "text-sky-700",
-    amber: "text-amber-700",
+    yellow: "text-yellow-700",
+    orange: "text-orange-700",
     red: "text-red-700",
   }[tone];
   return (

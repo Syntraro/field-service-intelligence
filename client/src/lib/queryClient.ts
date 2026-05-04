@@ -66,8 +66,28 @@ export function resetCsrf(): void {
  */
 let sessionExpiredFired = false;
 
-/** Auth-page path prefixes — never reopen the modal while we're already here. */
-const AUTH_PAGE_PREFIXES = ["/login", "/signup", "/request-reset", "/reset-password"];
+/**
+ * Auth-page path prefixes — never reopen the modal while we're already here.
+ *
+ * 2026-05-03 platform-auth-leak fix: every `/platform/*` path is also added.
+ * The platform console runs on its own psid-cookie auth boundary
+ * (`<PlatformAuthProvider>` + `<RequirePlatformAuth>` in
+ * `lib/platformAuth.tsx`). Any 401 on a platform endpoint must NEVER open
+ * the *tenant* SessionExpiredDialog — doing so routes platform users
+ * (or pre-login visitors) to the tenant `/login` page through the
+ * dialog's "Log In" button. Platform auth failures are handled by
+ * `RequirePlatformAuth` redirecting to `/platform/login`.
+ */
+const AUTH_PAGE_PREFIXES = [
+  "/login",
+  "/signup",
+  "/request-reset",
+  "/reset-password",
+  // 2026-05-03: every platform-console path. Covers /platform/login,
+  // /platform/request-reset (Phase 3 below), /platform/reset-password,
+  // and every signed-in /platform/* tenant-list / detail / settings page.
+  "/platform",
+];
 
 /**
  * Reset the one-shot session-expired guard. Called by AuthProvider after a
@@ -94,6 +114,14 @@ function notifySessionExpired(url: string): void {
   // office /login page. Portal auth failures are handled by the
   // `<PortalProtected>` guard which redirects to `/portal/login`.
   if (url.startsWith("/api/portal/") || url === "/api/portal") return;
+  // 2026-05-03 platform-auth-leak fix: same rationale for `/api/platform/*`.
+  // The platform console runs on its own psid-cookie auth (separate
+  // `<PlatformAuthProvider>` in `lib/platformAuth.tsx`); a 401 on any
+  // platform endpoint must NEVER open the tenant SessionExpiredDialog,
+  // which would otherwise route platform users to the tenant /login.
+  // The platform UI handles its own 401s via `<RequirePlatformAuth>`
+  // redirecting to /platform/login.
+  if (url.startsWith("/api/platform/") || url === "/api/platform") return;
 
   // 2026-04-10 Phase-2 Fix B: one-shot guard. The first 401 in a session-expired
   // burst opens the modal; subsequent in-flight 401s are swallowed until login.

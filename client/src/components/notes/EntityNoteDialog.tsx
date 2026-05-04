@@ -95,12 +95,13 @@ export interface ExistingEntityNote {
 interface EntityNoteDialogProps {
   /** Discriminator for endpoint resolution + activity logging.
    *  - "job": writes to /api/jobs/:entityId/notes.
-   *  - "invoice": same write path as "job"; invoice surface uses
-   *    job-notes underneath, so entityId is still the JOB id.
+   *  - "invoice": writes to /api/invoices/:entityId/notes (2026-05-03:
+   *    invoice notes are now first-class; entityId is the INVOICE id,
+   *    NOT a borrowed jobId).
    *  - "quote": writes to /api/quotes/:entityId/notes (added in PR 3A).
    */
   entityType: EntityNoteEntityType;
-  /** jobId for "job"/"invoice"; quoteId for "quote". */
+  /** jobId for "job"; invoiceId for "invoice"; quoteId for "quote". */
   entityId: string;
   /** `null` → create mode; a note object → edit mode. */
   note: ExistingEntityNote | null;
@@ -135,6 +136,11 @@ const isImageMime = (mime: string | null): boolean =>
  * Endpoint resolver — single source of truth for the four note routes.
  * `basePath` is shared across POST / PATCH / DELETE; consumers append
  * `/${noteId}` (or `/${noteId}/attachments/${attachmentId}`) as needed.
+ *
+ * 2026-05-03: invoice now writes through /api/invoices/:invoiceId/notes
+ * (its own first-class table). Previously invoice writes were funneled
+ * through /api/jobs/:jobId/notes via a `writeEntityId` indirection,
+ * which broke for invoices without a linked job.
  */
 function resolveEndpoints(entityType: EntityNoteEntityType, entityId: string) {
   if (entityType === "quote") {
@@ -143,7 +149,12 @@ function resolveEndpoints(entityType: EntityNoteEntityType, entityId: string) {
       readQueryKey: ["/api/quotes", entityId, "notes"] as const,
     };
   }
-  // job + invoice both write through the job-notes endpoints.
+  if (entityType === "invoice") {
+    return {
+      basePath: `/api/invoices/${entityId}/notes`,
+      readQueryKey: ["/api/invoices", entityId, "notes"] as const,
+    };
+  }
   return {
     basePath: `/api/jobs/${entityId}/notes`,
     readQueryKey: ["/api/jobs", entityId, "notes"] as const,
@@ -157,34 +168,38 @@ function resolveEndpoints(entityType: EntityNoteEntityType, entityId: string) {
  *
  * 2026-05-02 (Audit #2 PR 3C): backend gained a `quote_note`
  * `FileEntityType` + adapter, so quote attachments now flow through
- * the same R2 upload pipeline as job/client notes. The PR 3B placeholder
- * that returned `null` for quote (and hid the staged-file UI) is gone.
+ * the same R2 upload pipeline as job/client notes.
+ *
+ * 2026-05-03: backend gained `invoice_note` (writes through
+ * `invoice_note_attachments`). Invoice notes no longer borrow the
+ * job-side adapter — file binds directly to the invoice-side note row.
  */
 function fileUploadEntityFor(
   entityType: EntityNoteEntityType,
-): "job_note" | "quote_note" {
+): "job_note" | "quote_note" | "invoice_note" {
   if (entityType === "quote") return "quote_note";
-  // job + invoice both use `job_note` — invoice notes are stored under
-  // jobs (entityId is the underlying jobId), so the file binds to the
-  // job-side note row exactly as it did before the extraction.
+  if (entityType === "invoice") return "invoice_note";
+  // job uses `job_note`.
   return "job_note";
 }
 
 /**
- * Activity-log entity mapping — preserves pre-existing JobNoteDialog
- * behavior: the invoice surface logs activity against the underlying
- * JOB (not the invoice).
+ * Activity-log entity mapping.
  *
- * 2026-05-02 (Audit #2 PR 3C): quote notes now log activity as
- * `entityType="quote"` with `entityId=quoteId`. This is a NEW behavior
- * — `QuoteNotesSection` did not log activity before. Documented in
- * the PR 3C CHANGELOG entry. The activity store accepts the value via
- * its existing `entityType: string` field; no enum change needed.
+ * 2026-05-02 (Audit #2 PR 3C): quote notes log against `quote`.
+ * 2026-05-03: invoice notes now log against `invoice` (first-class).
+ *   Previously the invoice surface logged against the underlying job —
+ *   correct under the prior "invoice borrows job notes" model, wrong
+ *   now that invoice notes are independent.
+ *
+ * The activity store accepts the value via its existing
+ * `entityType: string` field; no enum change needed.
  */
 function activityLogEntityFor(
   entityType: EntityNoteEntityType,
-): "job" | "quote" {
+): "job" | "quote" | "invoice" {
   if (entityType === "quote") return "quote";
+  if (entityType === "invoice") return "invoice";
   return "job";
 }
 

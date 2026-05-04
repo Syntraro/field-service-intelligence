@@ -64,7 +64,7 @@ export function UploadStep({ config, source, onSelectSource, onResetSource, onFi
       </div>
 
       <div>
-        <h2 className="text-lg font-semibold text-[#111827]">Upload CSV</h2>
+        <h2 className="text-modal-title text-[#111827]">Upload CSV</h2>
         <p className="text-sm text-[#4b5563] mt-1">{config.description}</p>
         {config.uploadBanner && (
           <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mt-3">

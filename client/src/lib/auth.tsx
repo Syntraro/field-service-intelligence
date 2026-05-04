@@ -1,6 +1,19 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import { apiRequest, queryClient, initCSRF, resetCsrf, resetSessionExpiredGuard } from "./queryClient";
+
+// ─── AUDIT INSTRUMENTATION (TEMPORARY) ──────────────────────────────────────
+const __aT0 = (): number => {
+  if (typeof window === "undefined") return Date.now();
+  if (typeof (window as any).__authAuditT0 !== "number") (window as any).__authAuditT0 = performance.now();
+  return (window as any).__authAuditT0;
+};
+const __aTs = (): string => (typeof performance === "undefined" ? String(Date.now()) : (performance.now() - __aT0()).toFixed(1) + "ms");
+function authTrace(tag: string, payload: Record<string, unknown> = {}) {
+  // eslint-disable-next-line no-console
+  console.log(`[AUTH-TRACE] ${__aTs()} ${tag}`, payload);
+}
 
 export interface User {
   id: string;
@@ -46,6 +59,17 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [userInitialized, setUserInitialized] = useState(false);
+  // 2026-05-03 cosmetic cleanup: gate the tenant `/api/auth/me` probe
+  // off `/platform/*` routes. The platform console runs on its own
+  // psid-cookie auth boundary; the tenant probe is unnecessary noise
+  // there and shows up in the network tab on the platform login
+  // surface for incognito visitors. The `enabled` flag is reactive —
+  // when the user navigates from `/platform/*` back to a tenant
+  // route, TanStack Query immediately fetches `/api/auth/me` and
+  // hydrates `user` normally. Tenant login flow is unaffected
+  // because Login.tsx itself is `/login` (not `/platform/*`).
+  const [location] = useLocation();
+  const onPlatformPage = location.startsWith("/platform");
 
   // Pre-warm CSRF token on mount so login click doesn't block on the fetch
   useEffect(() => {
@@ -64,14 +88,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // the only effective defense, and adding `enabled: !loginMutation.isPending`
   // here would either require reordering hooks (loginMutation is declared
   // ~50 lines below) or mirroring `isPending` into a redundant state slot,
-  // for zero additional protection. Keep this query unconditional.
+  // for zero additional protection.
+  //
+  // The `enabled: !onPlatformPage` flag added here is a SEPARATE concern
+  // — it pauses the probe on platform routes specifically. It does NOT
+  // weaken the first-login race protection: tenant login lives at
+  // `/login` (not `/platform/*`), so the probe is enabled when the
+  // user clicks Login and the wipe-condition logic above still applies.
   const { data, isLoading, isError } = useQuery<User>({
     queryKey: ["/api/auth/me"],
     retry: false,
+    enabled: !onPlatformPage,
   });
 
   useEffect(() => {
+    authTrace("AuthProvider effect run", {
+      data: data ? { id: (data as any).id, role: (data as any).role } : data,
+      isError,
+      isLoading,
+      currentUser: user ? { id: user.id } : user,
+    });
     if (data) {
+      authTrace("AuthProvider branch=DATA → setUser(data)", { userId: (data as any).id });
       setUser(data);
       setUserInitialized(true);
     } else if ((isError && !data) || data === null) {
@@ -88,6 +126,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // and the user was bounced back to /login on the first click. Now
       // the wipe only fires when `data` itself is falsy — so a stale 401
       // can no longer overwrite a valid login.
+      authTrace("AuthProvider branch=ERROR_OR_NULL → setUser(null)", { isError, dataIsNull: data === null });
       setUser(null);
       setUserInitialized(true);
     } else if (!isLoading && data === undefined) {
@@ -97,6 +136,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // the local user state would otherwise stay stale. This branch wipes
       // it the moment isLoading settles, so a stale user can never bounce
       // the Login page back into the protected app.
+      authTrace("AuthProvider branch=POST_CLEAR → setUser(null)", {});
       setUser(null);
       setUserInitialized(true);
     }
@@ -118,12 +158,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const loginMutation = useMutation({
-    mutationFn: async ({ email, password }: { email: string; password: string }) =>
-      apiRequest<User>("/api/auth/login", {
+    mutationFn: async ({ email, password }: { email: string; password: string }) => {
+      // 2026-05-03 first-login race fix (CSRF half): force a fresh CSRF
+      // token bound to the CURRENT browser cookie before submitting login.
+      //
+      // Why this is needed even though AuthProvider already calls
+      // `initCSRF()` on mount: that mount-time call races with the
+      // parallel `useQuery(["/api/auth/me"])` probe. Both requests start
+      // without a session cookie, the server creates a fresh session for
+      // each, and BOTH responses set a `Set-Cookie: sid=...` header. The
+      // browser keeps whichever arrives last. If `/api/auth/me`'s
+      // response arrives last, the browser ends up with a session cookie
+      // bound to a different `_csrf` secret than the cached client token.
+      // The first login POST then ships a stale token and the server
+      // returns `403 EBADCSRFTOKEN`. apiRequest auto-retries after
+      // refreshing, but the symptom (a visible 403 in the network log
+      // and an apparent first-login failure) is what we're closing here.
+      //
+      // `initCSRF()` is the right primitive: it serializes behind any
+      // in-flight fetch (by returning the existing `csrfInitPromise` if
+      // one is active) AND otherwise issues a fresh fetch using whatever
+      // cookie is currently in the browser jar. Either branch yields a
+      // token bound to the cookie that will accompany the POST below.
+      // The existing 403 retry path inside `apiRequest` is preserved as
+      // a backstop for the rare case where the cookie rotates between
+      // this `await` and the POST being sent.
+      await initCSRF();
+      return apiRequest<User>("/api/auth/login", {
         method: "POST",
         body: JSON.stringify({ email, password }),
-      }),
-    onSuccess: (userData) => {
+      });
+    },
+    onSuccess: async (userData) => {
+      authTrace("loginMutation onSuccess ENTER", { userId: (userData as any).id });
       // Security/isolation fix: wipe any cached tenant data from a prior
       // session BEFORE seeding the new identity. Without this, a user who
       // signs in after a different tenant user in the same tab inherits
@@ -145,9 +212,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       queryClient.removeQueries({
         predicate: (query) => query.queryKey?.[0] !== "/api/auth/me",
       });
+      authTrace("loginMutation BEFORE setUser", { userId: (userData as any).id });
       setUser(userData);
       setUserInitialized(true);
+      authTrace("loginMutation AFTER setUser, BEFORE setQueryData", {});
       queryClient.setQueryData(["/api/auth/me"], userData);
+      authTrace("loginMutation AFTER setQueryData", {
+        cache: (() => {
+          const s = queryClient.getQueryState(["/api/auth/me"]);
+          return s ? { status: s.status, fetchStatus: s.fetchStatus, dataId: s.data ? (s.data as any).id : null } : null;
+        })(),
+      });
+      // 2026-05-03 first-login race fix (client-delay half): give the
+      // session store a 100ms grace window to become readable before any
+      // follow-up requests fire (CSRF refresh below, then dashboard
+      // queries after Login.tsx's effect navigates). With PgStore on
+      // Neon, the cookie can be on the wire before a SELECT against
+      // `session` returns the freshly committed row, so the very next
+      // request's `deserializeUser` misses and 401s. The delay is
+      // intentionally inside `onSuccess` so `mutateAsync` (and therefore
+      // Login.tsx's `await login(...)`) waits for it before the
+      // pendingDestination effect can navigate.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      authTrace("loginMutation AFTER 100ms grace delay", {});
       // 2026-04-10 Phase-2 Fix A/B: a real successful login re-arms the
       // session-expired one-shot guard so the next genuine expiration can
       // open the modal again.
@@ -156,6 +243,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // The old token may be invalid after passport session regeneration,
       // but apiRequest auto-retries on EBADCSRFTOKEN, so this is safe.
       initCSRF().catch(() => {});
+      authTrace("loginMutation onSuccess EXIT", {});
     },
   });
 

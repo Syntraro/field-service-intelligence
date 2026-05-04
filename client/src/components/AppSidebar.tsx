@@ -3,7 +3,6 @@ import {
   ClipboardList,
   Users,
   FileText,
-  Shield,
   ShieldAlert,
   Clock,
   Package,
@@ -157,17 +156,15 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
         testId: "nav-support-console"
       });
     }
-    
-    // Owner role gets the Admin (Tenant Health Dashboard) menu
-    if (user?.role === "owner") {
-      menuItems.push({
-        title: "Admin",
-        icon: Shield,
-        href: "/admin/tenants",
-        isActive: location.startsWith("/admin/tenants"),
-        testId: "nav-admin"
-      });
-    }
+
+    // 2026-05-03 SECURITY LOCKDOWN: the legacy "Admin" sidebar entry that
+    // pointed tenant owners at /admin/tenants has been removed. That route
+    // rendered cross-tenant platform data (every tenant's name, owner
+    // email, user count, QBO state) under tenant-only auth. Platform-
+    // admin functionality now lives exclusively under /platform/* and is
+    // reached via the dedicated /platform/login flow with its own psid
+    // session — not via the tenant sidebar. Do NOT reintroduce a tenant-
+    // sidebar link to /admin/* or /platform/*.
   }
 
   // 2026-04-29 Color Phase 2: removed inline `background: '#222b36'`

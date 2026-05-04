@@ -78,6 +78,9 @@ import { Calendar } from "@/components/ui/calendar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+// 2026-05-03 modal form-field polish: internal-label wrapper for the
+// compact Schedule grid (Date / Start / Duration / Assigned To).
+import { CompactField } from "@/components/ui/compact-field";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 // 2026-04-26: canonical compact duration options (15m / 30m / 1h / 1.5h / 2h / 3h / 4h / 8h)
@@ -852,17 +855,21 @@ export function EditVisitModal({
                     keep that contract intact here. */}
                 <div>
                   <Label className="text-xs font-medium mb-1 block">Schedule</Label>
+                  {/* 2026-05-03 polish: each Schedule cell now wraps its
+                      control in a <CompactField> with the cell label
+                      rendered INSIDE the bordered chrome. The inner
+                      controls render borderless / paddingless so the
+                      wrapper owns the visual chrome and focus ring. */}
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    <div className="space-y-1 min-w-0">
-                      <Label className="text-[11px] font-medium text-muted-foreground">Date</Label>
+                    <CompactField label="Date" className="min-w-0">
                       <Popover>
                         <PopoverTrigger asChild>
                           <Button
                             type="button"
-                            variant="outline"
+                            variant="ghost"
                             size="sm"
                             className={cn(
-                              "h-9 w-full text-xs justify-start gap-1.5",
+                              "h-7 w-full justify-start gap-1.5 px-0 text-xs hover:bg-transparent",
                               !schedule.date && "text-muted-foreground",
                             )}
                             data-testid="button-select-date"
@@ -882,10 +889,10 @@ export function EditVisitModal({
                           />
                         </PopoverContent>
                       </Popover>
-                    </div>
-                    <div className="space-y-1 min-w-0">
-                      <Label className="text-[11px] font-medium text-muted-foreground">Start</Label>
+                    </CompactField>
+                    <CompactField label="Start" htmlFor="input-start-time" className="min-w-0">
                       <Input
+                        id="input-start-time"
                         type="time"
                         value={schedule.startTime}
                         placeholder="--:--"
@@ -896,18 +903,17 @@ export function EditVisitModal({
                             return { ...s, startTime: v, endTime: v ? addMinutesToTime(v, dur) : s.endTime };
                           });
                         }}
-                        className="h-9 w-full text-xs"
+                        className="h-7 w-full text-xs border-0 px-0 shadow-none focus-visible:border-0 focus-visible:shadow-none bg-transparent"
                         data-testid="input-start-time"
                       />
-                    </div>
+                    </CompactField>
                     {/* 2026-04-26: Duration replaces End. The save still
                          emits canonical startAt + endAt — `endTime` is
                          derived from `startTime + duration` on every
                          change. Manual edits flip `manuallyEditedDuration`
                          so subsequent service-adds don't override the
                          user's intent. */}
-                    <div className="space-y-1 min-w-0">
-                      <Label className="text-[11px] font-medium text-muted-foreground">Duration</Label>
+                    <CompactField label="Duration" className="min-w-0">
                       <Select
                         value={(() => {
                           if (!schedule.startTime || !schedule.endTime) return "60";
@@ -924,8 +930,9 @@ export function EditVisitModal({
                         }}
                       >
                         <SelectTrigger
-                          className="h-9 w-full text-xs"
+                          className="h-7 w-full text-xs border-0 px-0 shadow-none focus:ring-0 focus:ring-offset-0 bg-transparent"
                           data-testid="select-duration"
+                          aria-label="Duration"
                         >
                           <SelectValue placeholder="Duration" />
                         </SelectTrigger>
@@ -937,16 +944,15 @@ export function EditVisitModal({
                           ))}
                         </SelectContent>
                       </Select>
-                    </div>
-                    <div className="space-y-1 min-w-0">
-                      <Label className="text-[11px] font-medium text-muted-foreground">Assigned To</Label>
+                    </CompactField>
+                    <CompactField label="Assigned to" className="min-w-0">
                       <TechnicianSelector
                         mode="multi"
                         value={schedule.assignedTechnicianIds}
                         onChange={(ids) => setSchedule((s) => ({ ...s, assignedTechnicianIds: ids }))}
                         className="!min-w-0 !max-w-full w-full"
                       />
-                    </div>
+                    </CompactField>
                   </div>
                 </div>
 

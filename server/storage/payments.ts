@@ -6,8 +6,8 @@
  */
 
 import { db } from "../db";
-import { eq, and, sql, desc } from "drizzle-orm";
-import { payments, invoices } from "@shared/schema";
+import { eq, and, sql, desc, gte, lte } from "drizzle-orm";
+import { payments, invoices, customerCompanies } from "@shared/schema";
 import { BaseRepository } from "./base";
 import type { InvoiceStatus, PaymentType } from "@shared/schema";
 import { canAcceptInvoicePayment, isInvoiceVoided } from "../lib/invoicePredicates";
@@ -21,6 +21,23 @@ import { createError } from "../middleware/errorHandler";
  * decision memo's canonical value.
  */
 export const DELETE_WINDOW_DAYS = 30;
+
+// 2026-05-03 multi-invoice payments (PR 1): `payments.invoiceId` is now
+// nullable to support multi-invoice payment rows that rely entirely on
+// `payment_allocations`. Every legacy 1:1 path in this file still loads
+// a payment and uses its `invoiceId` directly. Until those paths are
+// teach-aware (PR 2+), narrow null-checks at the use sites keep TS
+// honest and surface a real error if a multi-invoice payment ever
+// reaches the legacy path.
+function assertLegacyInvoiceId(invoiceId: string | null, paymentId: string): string {
+  if (!invoiceId) {
+    throw new Error(
+      `Payment ${paymentId} has no invoice_id (multi-invoice payment). ` +
+        `Legacy 1:1 path invoked on a multi-invoice payment — use payment_allocations.`,
+    );
+  }
+  return invoiceId;
+}
 
 /**
  * 2026-04-14 Payments Phase 2: input shape for refund / reversal
@@ -76,6 +93,98 @@ export class PaymentRepository extends BaseRepository {
   }
 
   /**
+   * 2026-05-04 PR7 — tenant-level transactions list for the Payments
+   * dashboard. Returns ONLINE (provider-source = `'stripe'`) payment
+   * rows for the tenant, joined to customer-company display data.
+   *
+   * Why scoped to `provider_source = 'stripe'`: the dashboard's
+   * Transactions tab is "online payments only" by design (manual
+   * cash/cheque entries already surface on Invoice Detail; QBO-source
+   * rows belong to the QBO sync console). Mixing them in here would
+   * make the table noisy and the wording ambiguous.
+   *
+   * Provider-neutrality note: today Stripe is the only online
+   * provider, so filtering by `provider_source IN ('stripe')` is
+   * equivalent to "online". When a second adapter ships, this filter
+   * widens; the Transactions tab wording stays "Online payments".
+   *
+   * Both top-level payment rows and refund/reversal children are
+   * included — operators see the full ledger as it appears on a
+   * statement. Sort: most-recent receivedAt first.
+   *
+   * NOT exposed:
+   *   - provider_event_id / provider_payment_id / qbo_* columns —
+   *     the dashboard surfaces only safe, customer-facing fields per
+   *     PR7 spec.
+   */
+  async listOnlineTransactionsForCompany(
+    companyId: string,
+    filters: {
+      from?: Date;
+      to?: Date;
+      status?: InvoiceStatus;
+      limit?: number;
+      offset?: number;
+    } = {},
+  ) {
+    this.assertCompanyId(companyId);
+
+    const limit = clampTransactionsLimit(filters.limit);
+    const offset = clampTransactionsOffset(filters.offset);
+
+    const predicates = [
+      eq(payments.companyId, companyId),
+      eq(payments.providerSource, "stripe"),
+    ];
+    if (filters.from) {
+      predicates.push(gte(payments.receivedAt, filters.from));
+    }
+    if (filters.to) {
+      predicates.push(lte(payments.receivedAt, filters.to));
+    }
+
+    const rows = await db
+      .select({
+        id: payments.id,
+        receivedAt: payments.receivedAt,
+        invoiceId: payments.invoiceId,
+        invoiceNumber: invoices.invoiceNumber,
+        invoiceStatus: invoices.status,
+        customerCompanyId: customerCompanies.id,
+        customerCompanyName: customerCompanies.name,
+        method: payments.method,
+        amount: payments.amount,
+        paymentType: payments.paymentType,
+        parentPaymentId: payments.parentPaymentId,
+        paymentProviderAccountId: payments.paymentProviderAccountId,
+      })
+      .from(payments)
+      // 2026-05-04 PR7 — multi-invoice payments leave invoice_id NULL
+      // (allocations table holds the breakdown). LEFT JOIN keeps those
+      // rows in the result set with `invoiceNumber: null`; the UI
+      // renders "Multi-invoice" in that case.
+      .leftJoin(invoices, eq(invoices.id, payments.invoiceId))
+      .leftJoin(
+        customerCompanies,
+        eq(customerCompanies.id, invoices.customerCompanyId),
+      )
+      .where(and(...predicates))
+      .orderBy(desc(payments.receivedAt))
+      .limit(limit)
+      .offset(offset);
+
+    // Optional invoice-status filter is applied in JS because the
+    // join-source `invoices.status` may legitimately be null on
+    // multi-invoice rows; a SQL predicate would silently exclude
+    // those even when no status filter is set.
+    const filtered = filters.status
+      ? rows.filter((r) => r.invoiceStatus === filters.status)
+      : rows;
+
+    return filtered;
+  }
+
+  /**
    * Get all payments for an invoice
    */
   async getPayments(companyId: string, invoiceId: string) {
@@ -113,6 +222,14 @@ export class PaymentRepository extends BaseRepository {
       id?: string;
       providerSource?: "manual" | "qbo" | "stripe";
       providerEventId?: string | null;
+      // 2026-05-03 PR4: connected-account attribution. Both fields
+      // are system-managed by the webhook handler / off-session
+      // payment writer; the manual-entry route never sets them.
+      // `paymentProviderAccountId` is the local FK; `providerAccountId`
+      // mirrors the provider's opaque id (Stripe `acct_...`) so refund
+      // / cross-reference paths can avoid an extra join.
+      paymentProviderAccountId?: string | null;
+      providerAccountId?: string | null;
     }
   ) {
     this.assertCompanyId(companyId);
@@ -185,6 +302,14 @@ export class PaymentRepository extends BaseRepository {
       }
       if (paymentData.providerEventId !== undefined) {
         insertValues.providerEventId = paymentData.providerEventId;
+      }
+      // 2026-05-03 PR4: connected-account attribution. Written together
+      // — either both set or both null.
+      if (paymentData.paymentProviderAccountId !== undefined) {
+        insertValues.paymentProviderAccountId = paymentData.paymentProviderAccountId;
+      }
+      if (paymentData.providerAccountId !== undefined) {
+        insertValues.providerAccountId = paymentData.providerAccountId;
       }
       const [payment] = await tx
         .insert(payments)
@@ -264,7 +389,11 @@ export class PaymentRepository extends BaseRepository {
         .returning();
 
       // Recalculate invoice balance
-      await this.recalculateInvoiceBalance(tx, companyId, payment.invoiceId);
+      await this.recalculateInvoiceBalance(
+        tx,
+        companyId,
+        assertLegacyInvoiceId(payment.invoiceId, payment.id),
+      );
 
       return updated;
     });
@@ -345,12 +474,14 @@ export class PaymentRepository extends BaseRepository {
         );
       }
 
+      const legacyInvoiceId = assertLegacyInvoiceId(payment.invoiceId, payment.id);
+
       // Check if invoice is in a modifiable state (pre-existing guard).
       const [invoice] = await tx
         .select()
         .from(invoices)
         .where(
-          and(eq(invoices.id, payment.invoiceId), eq(invoices.companyId, companyId))
+          and(eq(invoices.id, legacyInvoiceId), eq(invoices.companyId, companyId))
         )
         .limit(1);
 
@@ -364,7 +495,7 @@ export class PaymentRepository extends BaseRepository {
         .where(and(eq(payments.id, paymentId), eq(payments.companyId, companyId)));
 
       // Recalculate invoice balance
-      await this.recalculateInvoiceBalance(tx, companyId, payment.invoiceId);
+      await this.recalculateInvoiceBalance(tx, companyId, legacyInvoiceId);
 
       return { success: true };
     });
@@ -452,6 +583,7 @@ export class PaymentRepository extends BaseRepository {
           "Refund/reversal can only attach to a parent of paymentType='payment'",
         );
       }
+      const parentInvoiceId = assertLegacyInvoiceId(parent.invoiceId, parent.id);
 
       // 2. Invoice must be in a modifiable state.
       const [invoice] = await tx
@@ -459,7 +591,7 @@ export class PaymentRepository extends BaseRepository {
         .from(invoices)
         .where(
           and(
-            eq(invoices.id, parent.invoiceId),
+            eq(invoices.id, parentInvoiceId),
             eq(invoices.companyId, companyId),
           ),
         )
@@ -489,7 +621,7 @@ export class PaymentRepository extends BaseRepository {
           .where(
             and(
               eq(payments.companyId, companyId),
-              eq(payments.invoiceId, parent.invoiceId),
+              eq(payments.invoiceId, parentInvoiceId),
               eq(payments.reference, trimmedReference),
             ),
           )
@@ -513,7 +645,7 @@ export class PaymentRepository extends BaseRepository {
       // attribution without forcing those into the manual-entry path.
       const adjustmentValues: Record<string, unknown> = {
         companyId,
-        invoiceId: parent.invoiceId,
+        invoiceId: parentInvoiceId,
         amount: (-requestedAbsAmount).toFixed(2),
         method: data.method ?? parent.method,
         reference: trimmedReference.length > 0 ? trimmedReference : null,
@@ -521,6 +653,15 @@ export class PaymentRepository extends BaseRepository {
         receivedAt: data.receivedAt ? new Date(data.receivedAt) : new Date(),
         paymentType,
         parentPaymentId,
+        // 2026-05-03 PR4: refund / reversal rows INHERIT connected-
+        // account attribution from the parent payment. The refund
+        // happens on the same connected account that took the original
+        // charge — there is no path where they could legitimately
+        // differ. This way the application service / webhook handler
+        // doesn't need to thread attribution through every refund
+        // creation site.
+        paymentProviderAccountId: parent.paymentProviderAccountId,
+        providerAccountId: parent.providerAccountId,
       };
       if (data.id) adjustmentValues.id = data.id;
       if (data.providerSource) {
@@ -537,7 +678,7 @@ export class PaymentRepository extends BaseRepository {
       // Recalculate invoice balance — uses SUM(amount) so negative rows
       // flow through naturally. amountPaid is clamped by
       // recalculateInvoiceBalance.
-      await this.recalculateInvoiceBalance(tx, companyId, parent.invoiceId);
+      await this.recalculateInvoiceBalance(tx, companyId, parentInvoiceId);
 
       return row;
     });
@@ -680,6 +821,24 @@ export class PaymentRepository extends BaseRepository {
       );
     }
   }
+}
+
+// 2026-05-04 PR7 — pagination clamps for the transactions list.
+// Larger than the per-invoice list (50/200) because the dashboard is
+// the only place that loads N payments at once, and infinite scroll /
+// load-more lives in the UI.
+function clampTransactionsLimit(raw: number | undefined): number {
+  if (raw === undefined) return 50;
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n <= 0) return 50;
+  return Math.min(n, 200);
+}
+
+function clampTransactionsOffset(raw: number | undefined): number {
+  if (raw === undefined) return 0;
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return n;
 }
 
 export const paymentRepository = new PaymentRepository();

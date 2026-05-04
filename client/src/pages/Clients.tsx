@@ -18,9 +18,6 @@ import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton
 // Removed FixedSizeList (react-window) — plain rendering eliminates double-scroll UX
 import { apiRequest } from "@/lib/queryClient";
 import {
-  ListSurface,
-  tableRowClass,
-  listHeaderRowClass,
   listPrimaryClass,
   listSecondaryClass,
   listBadgeClass,
@@ -29,6 +26,27 @@ import {
 import { TablePageShell } from "@/components/ui/table-page-shell";
 import { EmptyState } from "@/components/ui/empty-state";
 import BulkEditTagsModal from "@/components/BulkEditTagsModal";
+// 2026-05-03: migrated from a hand-rolled CSS-Grid div table (with
+// `CLIENTS_GRID_COLS = "40px 2fr 1.5fr 1fr 100px"` + fixed
+// `ROW_HEIGHT = 48`) to canonical EntityListTable. The current page
+// already aggregates per-location data into one row per parent
+// company-group via the `companyGroups` useMemo (with a "{N} properties"
+// hint when a company has multiple locations), so the visual layout
+// remains a flat list — the `groupBy` API added to EntityListTable in
+// the same change is intentionally NOT exercised here, since exposing
+// per-location rows under a per-company header would change bulk
+// tag-edit semantics from company-level to location-level. Future
+// pages or a deliberate Clients UX upgrade can opt into `groupBy`.
+import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
+import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
+import { getClientGroupStatusMeta } from "@/lib/statusBadges";
+
+// 2026-05-03 Load more pattern. Underlying fetch ceiling stays at 500
+// (server-side `/api/clients?limit=500`); this only paginates the
+// rendered set. Bulk select / bulk-edit-tags continue to operate on
+// the FULL filtered+sorted list, not the visible slice (preserving
+// prior behavior).
+const CLIENTS_PAGE_SIZE = 50;
 import type { Client, ClientTag } from "@shared/schema";
 
 /** Tag assignment row from GET /api/tags/assignments */
@@ -53,10 +71,11 @@ interface CompanyGroup {
 type SortField = "name" | "address" | "tags" | "status";
 type SortDir = "asc" | "desc";
 
-// Standardized dense row height (used for consistent row styling)
-const ROW_HEIGHT = 48;
-// 4-column layout: checkbox, Name (wider), Address, Tags, Status
-const CLIENTS_GRID_COLS = "40px 2fr 1.5fr 1fr 100px";
+// 2026-05-03: `ROW_HEIGHT` and `CLIENTS_GRID_COLS` removed — column
+// sizing is now owned by EntityListTable's per-kind defaults (with
+// per-column overrides where needed); row height varies naturally with
+// content per the convention established by Leads / Quotes / Invoices /
+// Suppliers / Locations migrations.
 
 /** Sortable column header — defined at module scope to maintain stable React identity across renders */
 function SortHeader({ field, sortField, sortDir, onSort, children }: {
@@ -98,6 +117,11 @@ export default function Clients() {
 
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
   const [bulkModalOpen, setBulkModalOpen] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(CLIENTS_PAGE_SIZE);
+  // Reset slice on search / tab / tag-filter / sort change.
+  useEffect(() => {
+    setVisibleCount(CLIENTS_PAGE_SIZE);
+  }, [search, activeTab, selectedTagIds, sortField, sortDir]);
 
   const { data: allTags = [] } = useQuery<ClientTag[]>({
     queryKey: ["/api/tags"],
@@ -270,6 +294,162 @@ export default function Clients() {
     setLocation(`/clients/${primaryLocationId}`);
   };
 
+  /**
+   * Column config for EntityListTable. Defined inside the component
+   * because four columns close over render-state:
+   *   - select: `selectedRows`, `allVisibleSelected`, `toggleSelectAll`,
+   *     `toggleRow`
+   *   - name / address / tags / status headers: `sortField`, `sortDir`,
+   *     `handleSort` (the SortHeader component is the column's `header`
+   *     ReactNode, NOT an EntityListTable feature — sort logic stays
+   *     entirely in the page)
+   *   - tags cell: `companyTagsList`
+   *
+   * Sizing approach: the original page used `40px 2fr 1.5fr 1fr 100px`.
+   * We preserve those proportions via the new ratio system:
+   *   - Name (primary) → 2.0
+   *   - Address (text) → 1.5
+   *   - Tags (badge) → 1.0
+   *   - Status (status) → 0.4 with 96 px floor (was exact 100 px before)
+   * Status uses `status` kind because the cell renders an inline
+   * badge-styled `<span>` — per the column-kind rules that's the right
+   * semantic match (the cell wraps in EntityListTable's flex-wrap
+   * container, harmless for a single-pill render).
+   */
+  const clientColumns = useMemo<EntityListColumn<CompanyGroup>[]>(() => [
+    {
+      id: "select",
+      kind: "select",
+      header: (
+        <Checkbox
+          checked={allVisibleSelected}
+          onCheckedChange={toggleSelectAll}
+          aria-label="Select all visible rows"
+        />
+      ),
+      // Center the checkbox in the 40 px track, matching the original
+      // `flex justify-center` layout.
+      cellClassName: "px-4 py-2.5 flex items-center justify-center",
+      headerClassName: "px-4 flex items-center justify-center",
+      render: (group) => (
+        <Checkbox
+          checked={selectedRows.has(group.companyId)}
+          onCheckedChange={() => toggleRow(group.companyId)}
+          aria-label={`Select ${group.companyName}`}
+        />
+      ),
+    },
+    {
+      id: "name",
+      header: (
+        <SortHeader field="name" sortField={sortField} sortDir={sortDir} onSort={handleSort}>
+          Name
+        </SortHeader>
+      ),
+      kind: "primary",
+      ratio: 2.0,
+      // Two-line cell (company + contact); override the default
+      // single-line truncate wrapper.
+      cellClassName: "px-4 py-2.5 min-w-0",
+      // SortHeader has its own `px-4` left padding; null out the
+      // default header padding so we don't double up.
+      headerClassName: "",
+      render: (group) => (
+        <div className="min-w-0">
+          <div className={listPrimaryClass}>{group.companyName}</div>
+          {group.primaryContact && (
+            <div className={listSecondaryClass + " mt-0.5"}>{group.primaryContact}</div>
+          )}
+        </div>
+      ),
+    },
+    {
+      id: "address",
+      header: (
+        <SortHeader field="address" sortField={sortField} sortDir={sortDir} onSort={handleSort}>
+          Address
+        </SortHeader>
+      ),
+      kind: "text",
+      ratio: 1.5,
+      headerClassName: "",
+      render: (group) => <span className={listSecondaryClass}>{group.address}</span>,
+    },
+    {
+      id: "tags",
+      header: (
+        <SortHeader field="tags" sortField={sortField} sortDir={sortDir} onSort={handleSort}>
+          Tags
+        </SortHeader>
+      ),
+      // `badge` kind so the cell renders RAW (no truncate wrapper) and
+      // the existing `flex flex-wrap` multi-pill block stays intact.
+      kind: "badge",
+      ratio: 1.0,
+      headerClassName: "",
+      render: (group) => (
+        <div className="flex flex-wrap gap-1">
+          {(companyTagsList.get(group.companyId) ?? []).map((t) => (
+            <span
+              key={t.tagId}
+              className={listBadgeClass + " text-white"}
+              style={{ backgroundColor: t.tagColor }}
+            >
+              {t.tagName}
+            </span>
+          ))}
+        </div>
+      ),
+    },
+    {
+      id: "status",
+      header: (
+        <SortHeader field="status" sortField={sortField} sortDir={sortDir} onSort={handleSort}>
+          Status
+        </SortHeader>
+      ),
+      // `status` kind — Clients renders an inline badge-styled span
+      // (uses `listBadgeClass` + a green/gray color pair), so per the
+      // column-kind rules `status` is the right match. The cell's
+      // built-in flex-wrap container is a no-op for the single-pill
+      // render but leaves the door open for future overlay badges.
+      kind: "status",
+      ratio: 0.4,
+      minWidthPx: 96,
+      headerClassName: "",
+      // 2026-05-03 status consolidation: label + tone come from
+      // `getClientGroupStatusMeta`. Visual rendering preserved as the
+      // existing custom badge-styled span (`listBadgeClass` + a
+      // green/gray color pair) — it does not match a shadcn Badge
+      // variant, so we don't migrate to `<StatusBadge>`. The page
+      // still maps tone → its own color choice.
+      render: (group) => {
+        const meta = getClientGroupStatusMeta(group);
+        const isActive = meta.tone === "success";
+        return (
+          <span
+            className={`${listBadgeClass} ${
+              isActive
+                ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                : "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400"
+            }`}
+          >
+            {meta.label}
+          </span>
+        );
+      },
+    },
+  ], [
+    allVisibleSelected,
+    toggleSelectAll,
+    selectedRows,
+    toggleRow,
+    sortField,
+    sortDir,
+    handleSort,
+    companyTagsList,
+  ]);
+
   return (
     <TablePageShell
       title="Clients"
@@ -372,105 +552,34 @@ export default function Clients() {
         )}
       </ListToolbar>
 
-      <ListSurface>
-        {/* Standardized header using shared listHeaderRowClass */}
-        <div
-          className={listHeaderRowClass}
-          style={{ gridTemplateColumns: CLIENTS_GRID_COLS }}
-        >
-          <div className="flex justify-center">
-            <Checkbox
-              checked={allVisibleSelected}
-              onCheckedChange={toggleSelectAll}
-              aria-label="Select all visible rows"
-            />
-          </div>
-          <SortHeader field="name" sortField={sortField} sortDir={sortDir} onSort={handleSort}>Name</SortHeader>
-          <SortHeader field="address" sortField={sortField} sortDir={sortDir} onSort={handleSort}>Address</SortHeader>
-          <SortHeader field="tags" sortField={sortField} sortDir={sortDir} onSort={handleSort}>Tags</SortHeader>
-          <SortHeader field="status" sortField={sortField} sortDir={sortDir} onSort={handleSort}>Status</SortHeader>
-        </div>
-
-        {isLoading ? (
-          <div className="flex items-center justify-center h-48">
-            <div className="text-muted-foreground">Loading clients...</div>
-          </div>
-        ) : sortedGroups.length === 0 ? (
+      <EntityListTable<CompanyGroup>
+        rows={sortedGroups.slice(0, visibleCount)}
+        rowKey={(group) => group.companyId}
+        onRowClick={(group) => handleRowClick(group.primaryLocationId)}
+        loadingState={
+          isLoading ? (
+            <div className="flex items-center justify-center h-48">
+              <div className="text-muted-foreground">Loading clients...</div>
+            </div>
+          ) : undefined
+        }
+        emptyState={
           <EmptyState
             icon={Users}
             message={`No ${activeTab} clients found`}
             className="py-8"
           />
-        ) : (
-          /* Fix: plain rendering instead of FixedSizeList eliminates double-scroll.
-             Page scroll handles everything; no internal scroll region. */
-          <div>
-            {sortedGroups.map((group) => {
-              const isActive = group.hasActiveLocation && !group.allInactive;
-              return (
-                <div
-                  key={group.companyId}
-                  style={{ height: ROW_HEIGHT, gridTemplateColumns: CLIENTS_GRID_COLS }}
-                  className={`grid items-center ${tableRowClass}`}
-                  onClick={() => handleRowClick(group.primaryLocationId)}
-                  data-testid={`row-client-${group.companyId}`}
-                >
-                  <div className="flex justify-center" onClick={(e) => e.stopPropagation()}>
-                    <Checkbox
-                      checked={selectedRows.has(group.companyId)}
-                      onCheckedChange={() => toggleRow(group.companyId)}
-                      aria-label={`Select ${group.companyName}`}
-                    />
-                  </div>
+        }
+        columns={clientColumns}
+      />
 
-                  {/* Name: company (primary) + contact (secondary) */}
-                  <div className="px-4 min-w-0">
-                    <div className={listPrimaryClass}>{group.companyName}</div>
-                    {group.primaryContact && (
-                      <div className={listSecondaryClass + " mt-0.5"}>{group.primaryContact}</div>
-                    )}
-                  </div>
-
-                  {/* Address */}
-                  <div className={"px-4 " + listSecondaryClass}>{group.address}</div>
-
-                  {/* Tags */}
-                  <div className="px-4">
-                    <div className="flex flex-wrap gap-1">
-                      {(companyTagsList.get(group.companyId) ?? []).map((t) => (
-                        <span
-                          key={t.tagId}
-                          className={listBadgeClass + " text-white"}
-                          style={{ backgroundColor: t.tagColor }}
-                        >
-                          {t.tagName}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Status badge */}
-                  <div className="px-4">
-                    <span
-                      className={`${listBadgeClass} ${
-                        isActive
-                          ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-                          : "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400"
-                      }`}
-                    >
-                      {isActive ? "Active" : "Inactive"}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </ListSurface>
-
-      <div className={listResultsClass}>
-        Showing {sortedGroups.length} companies
-      </div>
+      <ListLoadMoreFooter
+        visibleCount={Math.min(visibleCount, sortedGroups.length)}
+        totalCount={sortedGroups.length}
+        hasMore={visibleCount < sortedGroups.length}
+        onLoadMore={() => setVisibleCount((c) => c + CLIENTS_PAGE_SIZE)}
+        label="company"
+      />
 
       <BulkEditTagsModal
         open={bulkModalOpen}

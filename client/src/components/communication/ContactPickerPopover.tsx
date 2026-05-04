@@ -90,6 +90,14 @@ export function ContactPickerPopover({
     });
   }, [contacts, filterText, selectedSet]);
 
+  // 2026-05-03 polish: when the resolved list is empty (no contacts at all
+  // OR none match the current filter) and we're not loading or in an error
+  // state, hide the popover entirely instead of rendering an empty-state row.
+  // The empty card felt noisy in the compact modal — there's nothing to pick.
+  if (!loading && !error && filtered.length === 0) {
+    return null;
+  }
+
   return (
     <div
       className="absolute left-0 right-0 top-full mt-1 z-50 rounded-md border bg-popover shadow-md overflow-hidden"
@@ -100,12 +108,6 @@ export function ContactPickerPopover({
           <div className="px-3 py-2 text-xs text-muted-foreground">Loading contacts…</div>
         ) : error ? (
           <div className="px-3 py-2 text-xs text-destructive">{error}</div>
-        ) : filtered.length === 0 ? (
-          <div className="px-3 py-2 text-xs text-muted-foreground">
-            {contacts.length === 0
-              ? "No contacts with email addresses for this customer."
-              : "No matching contacts."}
-          </div>
         ) : (
           filtered.map((c) => {
             const isBilling = c.roles.some((r) => r.toLowerCase() === "billing");

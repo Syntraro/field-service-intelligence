@@ -169,7 +169,7 @@ export function ColumnMapper({
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold text-[#111827]">Map your columns</h2>
+        <h2 className="text-modal-title text-[#111827]">Map your columns</h2>
         <p className="text-sm text-[#4b5563] mt-1">
           For each source column pick an action: map to an existing field, create a custom field
           {customFieldsEnabled ? "" : " (not available for this import type)"}, or ignore.

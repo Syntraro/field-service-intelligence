@@ -1,5 +1,17 @@
 import { Switch, Route, useLocation, Link, Redirect } from "wouter";
 import { Suspense, lazy } from "react";
+
+// ─── AUDIT INSTRUMENTATION (TEMPORARY) ──────────────────────────────────────
+const __apT0 = (): number => {
+  if (typeof window === "undefined") return Date.now();
+  if (typeof (window as any).__authAuditT0 !== "number") (window as any).__authAuditT0 = performance.now();
+  return (window as any).__authAuditT0;
+};
+const __apTs = (): string => (typeof performance === "undefined" ? String(Date.now()) : (performance.now() - __apT0()).toFixed(1) + "ms");
+function appRouteTrace(tag: string, payload: Record<string, unknown> = {}) {
+  // eslint-disable-next-line no-console
+  console.log(`[APP-ROUTE-TRACE] ${__apTs()} ${tag}`, payload);
+}
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -36,17 +48,17 @@ import AccountsReceivablePage from "@/pages/AccountsReceivablePage";
 // The prior page (removed 2026-04-10 for zero navigation entries) has been replaced
 // by a canonical build that consumes GET /api/dashboard/financial.
 import FinancialDashboard from "@/pages/FinancialDashboard";
-import Admin from "@/pages/Admin";
-// PERF-008 (2026-04-08): Lazy-load rarely visited platform-admin / QBO / one-time
-// import pages to shrink the initial main bundle for normal users.
-const AdminTenants = lazy(() => import("@/pages/AdminTenants"));
-// AdminTenantDetail removed 2026-04-21 Phase 3: feature-toggle UI was bound to
-// the legacy tenant_features endpoints which no longer exist. Platform-admin
-// tenant management lives at /platform/tenants/:id (PlatformTenantDetail).
-const AdminQboOverview = lazy(() => import("@/pages/AdminQboOverview"));
-const AdminQboRuns = lazy(() => import("@/pages/AdminQboRuns"));
-const AdminQboRunDetail = lazy(() => import("@/pages/AdminQboRunDetail"));
-const AdminQboQueue = lazy(() => import("@/pages/AdminQboQueue"));
+// 2026-05-03 SECURITY LOCKDOWN: the legacy tenant-app `/admin/*` surface was
+// retired. The pages that lived here (`Admin`, `AdminTenants`,
+// `AdminQboOverview`, `AdminQboRuns`, `AdminQboRunDetail`, `AdminQboQueue`)
+// rendered cross-tenant platform data under tenant auth, and any tenant
+// owner could open them. Platform-admin functionality is exclusively at
+// `/platform/*` and is gated by `<PlatformAuthRoute>` (psid session +
+// capability). The page files for the QBO oversight + tenants list have
+// been deleted; `Admin.tsx` is quarantined on disk pending a follow-up
+// migration of its still-useful tenant-scoped tabs (bulk archived-job
+// cleanup, calendar start-hour, feedback) into existing tenant settings
+// surfaces. Do NOT reintroduce a `/admin/*` route in this router.
 const SupportConsole = lazy(() => import("@/pages/SupportConsole"));
 // Phase 6 (Ops Portal UI) — lazy-load platform surfaces.
 const PlatformTenantsList = lazy(() => import("@/pages/platform/PlatformTenantsList"));
@@ -60,6 +72,10 @@ const PlatformTrialsPipeline = lazy(() => import("@/pages/platform/PlatformTrial
 const PlatformBulkRuns = lazy(() => import("@/pages/platform/PlatformBulkRuns"));
 // 2026-04-22 Phase 1 Platform Auth Separation: dedicated login surface.
 const PlatformLogin = lazy(() => import("@/pages/platform/PlatformLogin"));
+// 2026-05-03: platform-only password reset (separate token surface
+// from the tenant flow). Link from PlatformLogin "Forgot password?" lands here.
+const PlatformRequestReset = lazy(() => import("@/pages/platform/PlatformRequestReset"));
+const PlatformResetPassword = lazy(() => import("@/pages/platform/PlatformResetPassword"));
 // 2026-04-19 Entitlement system — plans + features + feature-matrix surfaces.
 const PlatformPlansList = lazy(() => import("@/pages/platform/PlatformPlansList"));
 const PlatformPlanDetail = lazy(() => import("@/pages/platform/PlatformPlanDetail"));
@@ -97,6 +113,10 @@ import NotificationsPage from "@/pages/NotificationsPage";
 import TimeBillingRulesPage from "@/pages/TimeBillingRulesPage";
 // RegionalSettingsPage — now embedded inline in Company section (2026-04-04)
 import BusinessHoursSettingsPage from "@/pages/BusinessHoursSettingsPage";
+// 2026-05-03 PR3 — tenant payments onboarding UI. Surfaces the
+// PR2 backend (paymentProviderAccountService + Stripe Connect adapter
+// methods) without changing checkout / refund / webhook behaviour.
+import PaymentsSettingsPage from "@/pages/PaymentsSettingsPage";
 // Phase 11 (2026-04-12): tenant-facing communication template editor.
 import CommunicationSettingsPage from "@/pages/CommunicationSettingsPage";
 // 2026-04-22 Import Center consolidation: the three per-entity pages
@@ -120,6 +140,8 @@ import PortalLogin from "@/pages/portal/PortalLogin";
 import PortalVerify from "@/pages/portal/PortalVerify";
 import PortalDashboard from "@/pages/portal/PortalDashboard";
 import PortalInvoicesList from "@/pages/portal/PortalInvoicesList";
+// 2026-05-03 PR C — Saved payment methods management.
+import PortalPaymentMethods from "@/pages/portal/PortalPaymentMethods";
 import PortalInvoiceDetail from "@/pages/portal/PortalInvoiceDetail";
 import PortalLayout from "@/components/PortalLayout";
 import { PortalAuthProvider, usePortalAuth } from "@/lib/portalAuth";
@@ -194,6 +216,11 @@ function Router() {
       {/* 2026-04-22 Phase 1 Platform Auth Separation: dedicated login surface.
           Distinct from /login; authenticates against psid session only. */}
       <Route path="/platform/login" component={PlatformLogin} />
+      {/* 2026-05-03: platform-only password reset surfaces. Both pre-auth
+          like /platform/login — bare routes, no PlatformAuthRoute wrapping
+          (the user can't be expected to have a session while resetting). */}
+      <Route path="/platform/request-reset" component={PlatformRequestReset} />
+      <Route path="/platform/reset-password" component={PlatformResetPassword} />
       <Route path="/signup" component={Signup} />
       <Route path="/request-reset" component={RequestReset} />
       <Route path="/reset-password" component={ResetPassword} />
@@ -365,36 +392,13 @@ function Router() {
           <FinancialDashboard />
         </ProtectedRoute>
       </Route>
-      <Route path="/admin">
-        <ProtectedRoute requireAdmin>
-          <Admin />
-        </ProtectedRoute>
-      </Route>
-      <Route path="/admin/tenants">
-        <ProtectedRoute requireAdmin>
-          <AdminTenants />
-        </ProtectedRoute>
-      </Route>
-      <Route path="/admin/qbo">
-        <ProtectedRoute requireAdmin>
-          <AdminQboOverview />
-        </ProtectedRoute>
-      </Route>
-      <Route path="/admin/qbo/runs">
-        <ProtectedRoute requireAdmin>
-          <AdminQboRuns />
-        </ProtectedRoute>
-      </Route>
-      <Route path="/admin/qbo/runs/:runId">
-        <ProtectedRoute requireAdmin>
-          <AdminQboRunDetail />
-        </ProtectedRoute>
-      </Route>
-      <Route path="/admin/qbo/queue">
-        <ProtectedRoute requireAdmin>
-          <AdminQboQueue />
-        </ProtectedRoute>
-      </Route>
+      {/* 2026-05-03 SECURITY LOCKDOWN: the legacy `/admin`, `/admin/tenants`,
+          and `/admin/qbo/*` route registrations were removed. Those pages
+          rendered cross-tenant platform data under tenant auth. Platform
+          admin lives exclusively at `/platform/*` (psid session +
+          capability) — see the routes block below. Tenant admin lands in
+          /settings/* surfaces; do NOT reintroduce a tenant-app `/admin/*`
+          route here. */}
       <Route path="/support-console">
         <ProtectedRoute requirePlatformAdmin>
           <SupportConsole />
@@ -564,6 +568,12 @@ function Router() {
           <SubscriptionSettings />
         </ProtectedRoute>
       </Route>
+      {/* 2026-05-03 PR3 — Tenant payments onboarding (Stripe Connect). */}
+      <Route path="/settings/payments">
+        <ProtectedRoute requireAdmin>
+          <PaymentsSettingsPage />
+        </ProtectedRoute>
+      </Route>
       {/* Old payroll/timesheets settings routes redirect to canonical /timesheets */}
       <Route path="/settings/payroll">
         <Redirect to="/timesheets" />
@@ -680,6 +690,12 @@ function PortalRouter() {
           <PortalLayout><PortalInvoiceDetail /></PortalLayout>
         </PortalProtected>
       </Route>
+      {/* 2026-05-03 PR C — Saved payment methods management. */}
+      <Route path="/portal/payment-methods">
+        <PortalProtected>
+          <PortalLayout><PortalPaymentMethods /></PortalLayout>
+        </PortalProtected>
+      </Route>
       <Route>
         <PortalProtected>
           <PortalLayout><NotFound /></PortalLayout>
@@ -754,7 +770,19 @@ function AppContent() {
   useEffect(() => { setHelpPopoverOpen(false); }, [location]);
   // Security/isolation fix: platform users have no tenant task context.
   // Pass `enabled: false` so no /api/tasks query fires for them.
-  const activeTaskCount = useActiveTaskCount({ enabled: !isPlatformRole(user?.role) });
+  //
+  // 2026-05-03 platform-auth-leak fix: ALSO gate on `Boolean(user?.id)`.
+  // Without this gate, an unauthenticated visitor (e.g. incognito user
+  // navigating directly to /platform/login) had `user = null`,
+  // `user?.role = undefined`, `isPlatformRole(undefined) = false`, and
+  // therefore `enabled: !false = true` — so the tenant `/api/tasks`
+  // query fired with no session, returned 401, and triggered the
+  // tenant SessionExpiredDialog over the platform login page. Now the
+  // query only fires when there is BOTH an authenticated tenant user
+  // AND that user is non-platform.
+  const activeTaskCount = useActiveTaskCount({
+    enabled: Boolean(user?.id) && !isPlatformRole(user?.role),
+  });
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [newQuoteModalOpen, setNewQuoteModalOpen] = useState(false);
   // 2026-04-26: Create Maintenance Plan chooser modal. Replaces direct
@@ -766,6 +794,13 @@ function AppContent() {
   const isAuthPage = ['/login', '/signup', '/request-reset', '/reset-password'].includes(location);
   const isPortalPage = location.startsWith('/portal');
   const isTechnicianPage = location.startsWith('/tech'); // Restored 2026-04-03 for technician preview
+  appRouteTrace("AppContent RENDER", {
+    location,
+    isAuthPage,
+    isPortalPage,
+    isTechnicianPage,
+    user: user ? { id: user.id, role: user.role } : user,
+  });
   // 2026-04-24 routing fix: ALL /platform/* paths render outside the tenant
   // shell. Previously only signed-in platform users got a bare shell (via the
   // isPlatformUser branch below); unauthenticated visitors and signed-in
@@ -807,6 +842,7 @@ function AppContent() {
   // signed-in tenant users; the isPlatformUser branch below still handles
   // signed-in platform users who hit a non-platform tenant path.
   if (isPlatformPage) {
+    appRouteTrace("AppContent BRANCH=isPlatformPage → bare Router", { location });
     return <Router />;
   }
 
@@ -816,6 +852,7 @@ function AppContent() {
   // Portal. This conditional return comes AFTER all hooks above so React's
   // rules-of-hooks stay intact.
   if (isPlatformUser && !isAuthPage && !isPortalPage && !isTechnicianPage) {
+    appRouteTrace("AppContent BRANCH=isPlatformUser REDIRECT → /platform/tenants", { fromLocation: location });
     // One-time toast so the redirect isn't silent on first visit.
     toast({
       title: "Platform Ops portal",
@@ -827,6 +864,7 @@ function AppContent() {
 
   // Portal pages use a completely separate layout and auth
   if (isPortalPage) {
+    appRouteTrace("AppContent BRANCH=isPortalPage → PortalRouter", { location });
     return (
       <PortalAuthProvider>
         <PortalRouter />
@@ -838,6 +876,7 @@ function AppContent() {
   // Do not wrap TechApp in App layout.
   // All /tech routes are handled internally by TechApp.
   if (isTechnicianPage) {
+    appRouteTrace("AppContent BRANCH=isTechnicianPage → TechApp", { location });
     return <TechApp />;
   }
 
@@ -870,9 +909,11 @@ function AppContent() {
   };
 
   if (isAuthPage) {
+    appRouteTrace("AppContent BRANCH=isAuthPage → bare Router (no shell)", { location });
     return <Router />;
   }
 
+  appRouteTrace("AppContent BRANCH=tenant SHELL → SidebarProvider+Router", { location });
   return (
     // 2026-04-30 scrollbar root-cause fix: shadcn's `<SidebarProvider>`
     // applies `flex min-h-svh w-full` to its outer wrapper by default.

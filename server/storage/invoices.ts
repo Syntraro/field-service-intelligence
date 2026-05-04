@@ -250,6 +250,8 @@ export class InvoiceRepository extends BaseRepository {
         viewedAt: invoices.viewedAt,
         notesInternal: invoices.notesInternal,
         notesCustomer: invoices.notesCustomer,
+        // 2026-05-03: canonical short invoice title.
+        summary: invoices.summary,
         workDescription: invoices.workDescription,
         clientMessage: invoices.clientMessage,
         showQuantity: invoices.showQuantity,
@@ -280,10 +282,12 @@ export class InvoiceRepository extends BaseRepository {
         version: invoices.version,
         createdAt: invoices.createdAt,
         updatedAt: invoices.updatedAt,
-        // 2026-04-16 reminder state — surfaced so services and routes
-        // can gate on / read these without a second query.
-        lastReminderAt: invoices.lastReminderAt,
-        reminderCount: invoices.reminderCount,
+        // 2026-05-03 generalized email-send tracking (was reminder-specific
+        // until that pass; renamed in the same commit). The
+        // automated reminder sweep + the canonical email send path
+        // both bump these.
+        lastEmailedAt: invoices.lastEmailedAt,
+        emailSendCount: invoices.emailSendCount,
         remindersPaused: invoices.remindersPaused,
         reminderSnoozeUntil: invoices.reminderSnoozeUntil,
         // Add client data
@@ -1646,6 +1650,8 @@ export class InvoiceRepository extends BaseRepository {
       locationId: string;
       customerCompanyId: string | null;
       jobId: string | null;
+      /** 2026-05-03: canonical invoice title. Optional; nullable. */
+      summary?: string | null;
       workDescription: string | null;
       /** Override subtotal/total/balance (PM sets these to billing amount; job leaves at "0" for later recalc) */
       initialSubtotal?: string;
@@ -1709,6 +1715,7 @@ export class InvoiceRepository extends BaseRepository {
         total,
         amountPaid: "0",
         balance,
+        summary: params.summary ?? null,
         workDescription: params.workDescription,
       })
       .returning();
@@ -1824,6 +1831,10 @@ export class InvoiceRepository extends BaseRepository {
           locationId: job.locationId,
           customerCompanyId: location.parentCompanyId,
           jobId: jobId,
+          // 2026-05-03: canonical invoice title defaults to the job's
+          // own short `summary` when creating from a job. Distinct
+          // from the long-body workDescription below.
+          summary: job.summary ?? null,
           workDescription: job.description || job.summary || null,
         },
         tx,
@@ -1905,6 +1916,10 @@ export class InvoiceRepository extends BaseRepository {
           locationId: params.locationId,
           customerCompanyId: params.customerCompanyId,
           jobId: null,
+          // 2026-05-03: PM billing invoices use the billing label as the
+          // canonical short title; the period description goes on the
+          // workDescription body line.
+          summary: params.billingLabel,
           workDescription: `${params.billingLabel} — ${periodDesc}`,
           initialSubtotal: amount,
           initialTotal: amount,
@@ -1946,6 +1961,8 @@ export class InvoiceRepository extends BaseRepository {
     params: {
       locationId: string;
       customerCompanyId: string | null;
+      /** 2026-05-03: optional canonical short invoice title. */
+      summary?: string | null;
       workDescription?: string | null;
     },
     creationSource: InvoiceCreationSource
@@ -1970,6 +1987,7 @@ export class InvoiceRepository extends BaseRepository {
           locationId: params.locationId,
           customerCompanyId: params.customerCompanyId,
           jobId: null,
+          summary: params.summary ?? null,
           workDescription: params.workDescription ?? null,
         },
         tx,
@@ -2018,6 +2036,11 @@ export class InvoiceRepository extends BaseRepository {
        *  schema-supported primary pointer. Multi-job linkage is
        *  driven by `lifecycle.markInvoiced` at the service layer. */
       primaryJobId: string | null;
+      /** 2026-05-03: canonical invoice title. Resolved upstream by the
+       *  service layer (caller-supplied or derived from the first
+       *  selected job's summary). Nullable when no job is linked
+       *  AND the caller didn't supply one. */
+      summary?: string | null;
       workDescription: string | null;
       issueDate?: string;
       dueDate?: string | null;
@@ -2087,6 +2110,7 @@ export class InvoiceRepository extends BaseRepository {
           locationId: params.locationId,
           customerCompanyId: params.customerCompanyId,
           jobId: params.primaryJobId,
+          summary: params.summary ?? null,
           workDescription: params.workDescription ?? null,
         },
         tx,
@@ -2507,21 +2531,22 @@ export class InvoiceRepository extends BaseRepository {
   }
 
   // ──────────────────────────────────────────────────────────────────────
-  // Reminder tracking (2026-04-16).
+  // Email-send tracking (2026-05-03; was reminder-specific until then).
   //
   // Writes are atomic against a single invoice row. No status transition
-  // side effects — reminders are a communication event, not a lifecycle
-  // change. These helpers are the ONLY path that should touch the four
-  // new reminder columns; callers outside invoiceReminderService should
-  // not reach for `last_reminder_at` / `reminder_count` directly.
+  // side effects — sending an email is a communication event, not a
+  // lifecycle change. The canonical email send path
+  // (emailDispatchService) and the automated reminder sweep both bump
+  // these; callers outside those two paths should not touch
+  // `last_emailed_at` / `email_send_count` directly.
   // ──────────────────────────────────────────────────────────────────────
 
-  async recordReminderSent(companyId: string, invoiceId: string): Promise<void> {
+  async recordEmailSent(companyId: string, invoiceId: string): Promise<void> {
     await db
       .update(invoices)
       .set({
-        lastReminderAt: new Date(),
-        reminderCount: sql`${invoices.reminderCount} + 1`,
+        lastEmailedAt: new Date(),
+        emailSendCount: sql`${invoices.emailSendCount} + 1`,
       })
       .where(and(
         eq(invoices.id, invoiceId),

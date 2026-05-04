@@ -24,10 +24,11 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+// 2026-05-03 modal form-field polish: internal-label wrapper.
+import { CompactField } from "@/components/ui/compact-field";
 import { FileText, Loader2, Paperclip, X } from "lucide-react";
 import {
   useSendCommunicationModal,
@@ -145,52 +146,66 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
   return (
     <Dialog open={isOpen} onOpenChange={(open) => { if (!open && !sending) onClose(); }}>
       <DialogContent
-        className="sm:max-w-[820px] max-h-[85vh] flex flex-col gap-0 p-0 overflow-hidden"
+        className="sm:max-w-[640px] max-h-[85vh] flex flex-col gap-0 p-0 overflow-hidden"
         data-testid={`modal-send-${entityType}`}
       >
         <DialogHeader className="px-5 pt-4 pb-3 border-b">
           <DialogTitle className="text-base">{title ?? defaultTitle(entityType)}</DialogTitle>
-          <DialogDescription className="text-xs">
-            {loading
-              ? "Loading email preview…"
-              : "Review the message and click Send. Changes apply to this send only."}
+          {/* 2026-05-03 polish: visible blurb removed — title is now
+              specific (caller composes "Email invoice #X to Y").
+              DialogDescription kept sr-only for a11y / aria-describedby. */}
+          <DialogDescription className="sr-only">
+            {loading ? "Loading email preview." : "Compose and send."}
           </DialogDescription>
+          {loading && (
+            <p className="text-xs text-muted-foreground">Loading email preview…</p>
+          )}
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto px-5 py-3 space-y-3">
-          {/* Recipients */}
-          <div className="space-y-1 relative">
-            <Label className="text-xs">To</Label>
-            <div className="flex flex-wrap items-center gap-1 rounded-md border bg-background px-2 py-1 min-h-[32px]">
-              {recipients.map((email) => (
-                <Badge key={email} variant="secondary" className="gap-1 font-normal h-5 text-xs" data-testid={`chip-recipient-${email}`}>
-                  {email}
-                  <button
-                    type="button"
-                    className="ml-0.5 rounded-full hover:bg-slate-300/50"
-                    onClick={() => removeRecipient(email)}
-                    disabled={disabled}
-                    aria-label={`Remove ${email}`}
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </Badge>
-              ))}
-              <Input
-                value={recipientDraft}
-                onChange={(e) => setRecipientDraft(e.target.value)}
-                onKeyDown={handleRecipientKeyDown}
-                onFocus={() => setToFocused(true)}
-                onBlur={() => {
-                  setToFocused(false);
-                  tryAdd(recipientDraft, addRecipient, setRecipientDraft);
-                }}
-                placeholder={recipients.length === 0 ? "Click to pick a contact or type an email" : ""}
-                disabled={disabled}
-                className="h-6 border-0 px-1 focus-visible:ring-0 flex-1 min-w-[160px] shadow-none text-sm"
-                data-testid="input-recipient-draft"
-              />
-            </div>
+          {/* Recipients (To) — internal-label CompactField. The chip
+              row + draft input is rendered borderless inside the
+              wrapper; the wrapper owns the bordered chrome and focus
+              ring. */}
+          <div className="relative">
+            <CompactField
+              label="To"
+              htmlFor={`send-${entityType}-to`}
+              testId={`field-send-to-${entityType}`}
+              inline
+            >
+              <div className="flex flex-wrap items-center gap-1 min-h-[24px]">
+                {recipients.map((email) => (
+                  <Badge key={email} variant="secondary" className="gap-1 font-normal h-5 text-xs" data-testid={`chip-recipient-${email}`}>
+                    {email}
+                    <button
+                      type="button"
+                      className="ml-0.5 rounded-full hover:bg-slate-300/50"
+                      onClick={() => removeRecipient(email)}
+                      disabled={disabled}
+                      aria-label={`Remove ${email}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </Badge>
+                ))}
+                <Input
+                  id={`send-${entityType}-to`}
+                  value={recipientDraft}
+                  onChange={(e) => setRecipientDraft(e.target.value)}
+                  onKeyDown={handleRecipientKeyDown}
+                  onFocus={() => setToFocused(true)}
+                  onBlur={() => {
+                    setToFocused(false);
+                    tryAdd(recipientDraft, addRecipient, setRecipientDraft);
+                  }}
+                  placeholder={recipients.length === 0 ? "Click to pick a contact or type an email" : ""}
+                  disabled={disabled}
+                  className="h-6 border-0 px-0 focus-visible:border-0 focus-visible:shadow-none flex-1 min-w-[160px] shadow-none text-sm bg-transparent"
+                  data-testid="input-recipient-draft"
+                />
+              </div>
+            </CompactField>
             {showContactPicker && toFocused && (
               <ContactPickerPopover
                 invoiceId={entityId}
@@ -205,38 +220,45 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
           </div>
 
           {/* CC */}
-          <div className="space-y-1 relative">
-            <Label className="text-xs">CC</Label>
-            <div className="flex flex-wrap items-center gap-1 rounded-md border bg-background px-2 py-1 min-h-[32px]">
-              {cc.map((email) => (
-                <Badge key={email} variant="outline" className="gap-1 font-normal h-5 text-xs" data-testid={`chip-cc-${email}`}>
-                  {email}
-                  <button
-                    type="button"
-                    className="ml-0.5 rounded-full hover:bg-slate-300/50"
-                    onClick={() => removeCc(email)}
-                    disabled={disabled}
-                    aria-label={`Remove ${email}`}
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </Badge>
-              ))}
-              <Input
-                value={ccDraft}
-                onChange={(e) => setCcDraft(e.target.value)}
-                onKeyDown={handleCcKeyDown}
-                onFocus={() => setCcFocused(true)}
-                onBlur={() => {
-                  setCcFocused(false);
-                  tryAdd(ccDraft, addCc, setCcDraft);
-                }}
-                placeholder={cc.length === 0 ? "Optional — click to pick a contact" : ""}
-                disabled={disabled}
-                className="h-6 border-0 px-1 focus-visible:ring-0 flex-1 min-w-[160px] shadow-none text-sm"
-                data-testid="input-cc-draft"
-              />
-            </div>
+          <div className="relative">
+            <CompactField
+              label="CC"
+              htmlFor={`send-${entityType}-cc`}
+              testId={`field-send-cc-${entityType}`}
+              inline
+            >
+              <div className="flex flex-wrap items-center gap-1 min-h-[24px]">
+                {cc.map((email) => (
+                  <Badge key={email} variant="outline" className="gap-1 font-normal h-5 text-xs" data-testid={`chip-cc-${email}`}>
+                    {email}
+                    <button
+                      type="button"
+                      className="ml-0.5 rounded-full hover:bg-slate-300/50"
+                      onClick={() => removeCc(email)}
+                      disabled={disabled}
+                      aria-label={`Remove ${email}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </Badge>
+                ))}
+                <Input
+                  id={`send-${entityType}-cc`}
+                  value={ccDraft}
+                  onChange={(e) => setCcDraft(e.target.value)}
+                  onKeyDown={handleCcKeyDown}
+                  onFocus={() => setCcFocused(true)}
+                  onBlur={() => {
+                    setCcFocused(false);
+                    tryAdd(ccDraft, addCc, setCcDraft);
+                  }}
+                  placeholder=""
+                  disabled={disabled}
+                  className="h-6 border-0 px-0 focus-visible:border-0 focus-visible:shadow-none flex-1 min-w-[160px] shadow-none text-sm bg-transparent"
+                  data-testid="input-cc-draft"
+                />
+              </div>
+            </CompactField>
             {showContactPicker && ccFocused && (
               <ContactPickerPopover
                 invoiceId={entityId}
@@ -251,31 +273,38 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
           </div>
 
           {/* Subject */}
-          <div className="space-y-1">
-            <Label htmlFor={`send-${entityType}-subject`} className="text-xs">Subject</Label>
+          <CompactField
+            label="Subject"
+            htmlFor={`send-${entityType}-subject`}
+            testId={`field-send-subject-${entityType}`}
+            inline
+          >
             <Input
               id={`send-${entityType}-subject`}
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
               disabled={disabled}
-              className="h-8 text-sm"
+              className="h-6 border-0 px-0 focus-visible:border-0 focus-visible:shadow-none shadow-none text-sm bg-transparent"
               data-testid={`input-send-subject-${entityType}`}
             />
-          </div>
+          </CompactField>
 
           {/* Body */}
-          <div className="space-y-1">
-            <Label htmlFor={`send-${entityType}-body`} className="text-xs">Message</Label>
+          <CompactField
+            label="Message"
+            htmlFor={`send-${entityType}-body`}
+            testId={`field-send-body-${entityType}`}
+          >
             <Textarea
               id={`send-${entityType}-body`}
               value={body}
               onChange={(e) => setBody(e.target.value)}
               rows={7}
               disabled={disabled}
-              className="text-sm leading-5"
+              className="text-sm leading-5 border-0 px-0 py-0 focus-visible:border-0 focus-visible:shadow-none shadow-none resize-none min-h-[140px] bg-transparent"
               data-testid={`input-send-body-${entityType}`}
             />
-          </div>
+          </CompactField>
 
           {/* Attachments (invoice only) — compact card under message. */}
           {showInvoiceAttachments && (

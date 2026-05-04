@@ -39,9 +39,32 @@ export const INVOICE_TEMPLATE_VARIABLES = [
 // variables plus the specific payment that just posted. `PAYMENT_AMOUNT`
 // is the amount received on THIS payment; `INVOICE_BALANCE` is the
 // remaining balance after the canonical recalculation.
+//
+// 2026-05-03 PR 4 (multi-invoice payments) additions:
+//   - PAYMENT_DATE        formatted "Month D, YYYY" of payment.received_at
+//   - INVOICE_NUMBERS     comma-separated list of invoice numbers covered
+//                          by this payment (e.g. "1181, 1182, 1183").
+//                          For single-invoice payments this is identical
+//                          to INVOICE_NUMBER; multi-invoice splits cleanly
+//                          across all rows the payment allocated to.
+//
+// 2026-05-03 PR 5 polish:
+//   - PORTAL_INVOICE_URL  canonical portal URL for the FIRST covered
+//                          invoice. Lets receipts include a "View in
+//                          portal" link without forcing tenants to
+//                          remember the URL pattern. Empty when the
+//                          customer-portal entitlement isn't enabled.
+//
+// The HTML allocations TABLE is rendered via the `__PAYMENT_ALLOCATIONS_TABLE__`
+// sentinel in the body template (not a `{{VAR}}`) — see emailDispatchService
+// `bodyToHtml` for the substitution. The sentinel is intentionally NOT in
+// this catalog because it is not a renderer-substituted variable.
 export const PAYMENT_RECEIPT_TEMPLATE_VARIABLES = [
   ...INVOICE_TEMPLATE_VARIABLES,
   "PAYMENT_AMOUNT",
+  "PAYMENT_DATE",
+  "INVOICE_NUMBERS",
+  "PORTAL_INVOICE_URL",
 ] as const;
 
 export const QUOTE_TEMPLATE_VARIABLES = [

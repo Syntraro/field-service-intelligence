@@ -23,6 +23,8 @@ import { db } from "../db";
 import {
   files,
   invoices,
+  invoiceNotes,
+  invoiceNoteAttachments,
   jobNotes,
   jobs,
   jobExpenses,
@@ -84,6 +86,7 @@ function resolveCategory(entityType: FileEntityType, mimeType: string): FileCate
   switch (entityType) {
     case "job_note":
     case "quote_note":
+    case "invoice_note":
     case "client_note":
       if (IMAGE_MIME_TYPES.has(mimeType)) return "note_image";
       if (PDF_MIME_TYPES.has(mimeType)) return "note_pdf";
@@ -176,6 +179,11 @@ export type FileEntityType =
   // canonical pipeline as job notes. Adapter writes through to
   // `quote_note_attachments` (table added in PR 3A).
   | "quote_note"
+  // 2026-05-03: invoice-note attachments — same pattern as job/quote.
+  // Adapter writes through to `invoice_note_attachments`. Required for
+  // invoice notes to support attachments without borrowing the linked
+  // job's note plumbing.
+  | "invoice_note"
   | "client_note"
   | "client_document"
   | "contract_document"
@@ -232,6 +240,27 @@ async function resolveJobNote(companyId: string, noteId: string): Promise<Entity
     .limit(1);
   if (!job) throw createError(404, "Job not found");
   return { tenantId: companyId, jobId: note.jobId, noteId: note.id };
+}
+
+// 2026-05-03: one-for-one mirror of `resolveJobNote`, walking
+// `invoice_notes → invoices` instead of `job_notes → jobs`. Same
+// defensive tenant check on the parent invoice so a stale-noteId
+// can't punch through to another tenant's data.
+async function resolveInvoiceNote(companyId: string, noteId: string): Promise<EntityContext> {
+  const [note] = await db
+    .select({ id: invoiceNotes.id, invoiceId: invoiceNotes.invoiceId })
+    .from(invoiceNotes)
+    .where(and(eq(invoiceNotes.id, noteId), eq(invoiceNotes.companyId, companyId)))
+    .limit(1);
+  if (!note) throw createError(404, "Invoice note not found");
+  // Defensive tenant check on the parent invoice.
+  const [invoice] = await db
+    .select({ id: invoices.id })
+    .from(invoices)
+    .where(and(eq(invoices.id, note.invoiceId), eq(invoices.companyId, companyId)))
+    .limit(1);
+  if (!invoice) throw createError(404, "Invoice not found");
+  return { tenantId: companyId, invoiceId: note.invoiceId, noteId: note.id };
 }
 
 // 2026-05-02 (Audit #2 PR 3C): one-for-one mirror of `resolveJobNote`,
@@ -367,6 +396,38 @@ const ENTITY_ADAPTERS: Record<FileEntityType, EntityAdapter> = {
         .delete(jobNoteAttachments)
         .where(
           and(eq(jobNoteAttachments.companyId, companyId), eq(jobNoteAttachments.fileId, fileId)),
+        );
+    },
+  },
+  // 2026-05-03: invoice_note adapter — direct port of `job_note`
+  // adapter. Object-key format places attachments under
+  // `tenants/{tenantId}/invoices/{invoiceId}/notes/{noteId}/{fileId}/...`
+  // so the R2 layout matches the job/quote convention. Writes through
+  // to `invoice_note_attachments` (table added 2026-05-03).
+  invoice_note: {
+    resolve: resolveInvoiceNote,
+    buildObjectKey: (ctx, fileId, filename) =>
+      `tenants/${ctx.tenantId}/invoices/${ctx.invoiceId}/notes/${ctx.noteId}/${fileId}/${sanitizeFilename(filename)}`,
+    ensureAttachment: async (companyId, userId, noteId, fileId) => {
+      const [existing] = await db
+        .select({ id: invoiceNoteAttachments.id })
+        .from(invoiceNoteAttachments)
+        .where(
+          and(
+            eq(invoiceNoteAttachments.companyId, companyId),
+            eq(invoiceNoteAttachments.noteId, noteId),
+            eq(invoiceNoteAttachments.fileId, fileId),
+          ),
+        )
+        .limit(1);
+      if (existing) return;
+      await db.insert(invoiceNoteAttachments).values({ companyId, noteId, fileId, createdBy: userId });
+    },
+    detachByFileId: async (companyId, fileId) => {
+      await db
+        .delete(invoiceNoteAttachments)
+        .where(
+          and(eq(invoiceNoteAttachments.companyId, companyId), eq(invoiceNoteAttachments.fileId, fileId)),
         );
     },
   },

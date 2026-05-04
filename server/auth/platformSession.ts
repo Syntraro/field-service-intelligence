@@ -32,14 +32,20 @@ import session from "express-session";
 import ConnectPgSimple from "connect-pg-simple";
 import { Pool } from "pg";
 import type { Request, Response, NextFunction } from "express";
-import { storage } from "../storage/index";
-import { isPlatformRole } from "./roles";
+// 2026-05-04 Phase 5: removed `storage` and `isPlatformRole` imports.
+// The legacy-fallback branch (the only consumer of either) is gone;
+// `requirePlatformSession` resolves identity exclusively through
+// `platformIdentityRepository`.
 // 2026-04-22 Revised Phase 1: canonical capability registry. One file, one
 // map, shared server + client.
 import {
   capabilitiesForRoles,
   type PlatformCapability,
 } from "@shared/platformCapabilities";
+// Phase 2-A: read identity from the dedicated platform tables. Phase 5
+// (this commit) removed the deployment-window legacy `users` fallback —
+// `platform_users` is the sole identity surface.
+import { platformIdentityRepository } from "../storage/platformIdentity";
 
 const IS_PROD = process.env.NODE_ENV === "production";
 const PgStore = ConnectPgSimple(session);
@@ -182,30 +188,47 @@ export async function requirePlatformSession(
   }
 
   try {
-    const user = await storage.getUser(ps.platformUserId);
-    if (!user) {
+    // 2026-05-04 Phase 5: identity comes EXCLUSIVELY from the dedicated
+    // platform tables. The Phase 3.5 legacy `users` fallback was
+    // removed in this commit alongside the destructive cleanup
+    // migration. Any psid session whose `platformUserId` does not
+    // resolve in `platform_users` is treated as missing → 401, which
+    // forces a fresh login through the canonical surface.
+    const fromNew = await platformIdentityRepository.getPlatformUserById(ps.platformUserId);
+    const resolved = fromNew
+      ? {
+          id: fromNew.user.id,
+          email: fromNew.user.email,
+          fullName: fromNew.user.fullName ?? null,
+          tokenVersion: fromNew.user.tokenVersion ?? 0,
+          disabled: fromNew.user.disabled,
+          status: fromNew.user.status,
+          roles: fromNew.roles,
+        }
+      : null;
+
+    if (!resolved) {
       return res.status(401).json({ error: "Not authenticated", code: "PLATFORM_USER_MISSING" });
     }
-    if (!isPlatformRole(user.role)) {
-      return res.status(403).json({ error: "Forbidden", code: "PLATFORM_ROLE_REQUIRED" });
-    }
-    if ((user.tokenVersion ?? 0) !== (ps.platformTokenVersion ?? 0)) {
+    if (resolved.tokenVersion !== (ps.platformTokenVersion ?? 0)) {
       return res.status(401).json({ error: "Session expired", code: "PLATFORM_TOKEN_VERSION_STALE" });
     }
-    if ((user as any).disabled || user.status === "deactivated") {
+    if (resolved.disabled || resolved.status === "deactivated") {
       return res.status(403).json({ error: "Account disabled", code: "PLATFORM_ACCOUNT_DISABLED" });
     }
 
     // 2026-04-22 Revised Phase 1: derive the capability set from the user's
-    // role(s). Single-role today, UNION across multi-role in Phase 2.
-    const roles: readonly string[] = [user.role];
+    // role(s). Single-role today; multi-role-ready (the new platform_user_roles
+    // join table can return >1 role).
+    const roles = resolved.roles;
     const capabilities = Array.from(capabilitiesForRoles(roles));
 
     req.platformUser = {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      fullName: user.fullName ?? null,
+      id: resolved.id,
+      email: resolved.email,
+      // Backward-compat: clients still read `.role` (singular).
+      role: roles[0],
+      fullName: resolved.fullName,
       roles,
       capabilities,
     };

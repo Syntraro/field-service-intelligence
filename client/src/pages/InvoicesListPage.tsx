@@ -13,7 +13,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { format, isValid, parseISO } from "date-fns";
 import { useLocation, useSearch, Link } from "wouter";
 import {
-  Plus, FileText, DollarSign, AlertTriangle, MoreHorizontal, RefreshCw, Search, Send,
+  Plus, FileText, DollarSign, AlertTriangle, RefreshCw, Search, Send,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 // Phase 14 (2026-04-12): bulk send for multiple invoices.
@@ -25,18 +25,27 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
-import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/formatters";
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { EmptyState } from "@/components/ui/empty-state";
-import { tableRowClass, listPrimaryClass, listSecondaryClass } from "@/components/ui/list-surface";
 // 2026-05-02 entity-number visual language: blue pill for current entity row.
 import { EntityNumber } from "@/components/common/EntityNumber";
+// 2026-05-03: migrated to canonical EntityListTable. The hand-rolled
+// `INVOICES_GRID_COLS` template is gone — column sizing is now derived
+// from per-column `kind` defaults inside the shared component, with
+// `minmax(<floor>, fr)` floors that make the original "Awaiting Payment"
+// column-compression bug structurally impossible. The per-row kebab
+// menu (View / Edit / Send / Collect Payment / Download PDF) was
+// removed: per the canonical-list product direction, core entity lists
+// are navigational and detail pages own row-level actions. Every
+// removed kebab item is mirrored on `/invoices/:id`. The bulk-action
+// bar (Send reminders, Send invoices, Clear selection) lives ABOVE the
+// table and is unaffected.
+import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
+import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
 import type { Invoice } from "@shared/schema";
 import { UNPAID_INVOICE_STATUSES } from "@shared/invoiceStatus";
-import { getInvoiceStatusBadge } from "@/lib/statusBadges";
+import { StatusBadge } from "@/components/StatusBadge";
+import { getInvoiceStatusMeta } from "@/lib/statusBadges";
 
 interface EnrichedInvoice extends Invoice {
   locationName?: string;
@@ -65,8 +74,15 @@ interface InvoiceStats {
  */
 type InvoiceStatusFilter = "all" | "draft" | "awaiting_payment" | "partial_paid" | "paid" | "voided" | "overdue" | "qbo_synced" | "qbo_out_of_sync";
 
-// Phase 14 (2026-04-12): added 40px column at start for selection checkbox.
-const INVOICES_GRID_COLS = "40px minmax(260px, 1.8fr) 1.2fr 0.8fr 0.8fr 0.9fr 0.7fr 0.7fr 50px";
+// 2026-05-03 Load more pattern. Underlying fetch ceiling stays at 200
+// (server-side limit on `/api/invoices/list`); this only paginates the
+// client-side render. Bulk select / reconciliation banner / batch send
+// are unaffected — they operate on the FILTERED set, not the visible
+// slice (preserving the prior behavior).
+const INVOICES_PAGE_SIZE = 50;
+
+// 2026-05-03: `INVOICES_GRID_COLS` removed — column sizing is now owned
+// by EntityListTable's per-kind track defaults (with explicit floors).
 
 // Summary card with optional small icon accent — matches Jobs page hierarchy
 function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg }: {
@@ -92,6 +108,9 @@ export default function InvoicesListPage() {
   const search = useSearch();
   const [activeFilter, setActiveFilter] = useState<InvoiceStatusFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [visibleCount, setVisibleCount] = useState(INVOICES_PAGE_SIZE);
+  // Reset visible slice on filter / search change.
+  useEffect(() => { setVisibleCount(INVOICES_PAGE_SIZE); }, [activeFilter, searchQuery]);
   // Phase 14 (2026-04-12): bulk selection + send.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [batchOpen, setBatchOpen] = useState(false);
@@ -209,7 +228,7 @@ export default function InvoicesListPage() {
       ...inv,
       // 2026-04-18 Phase 9: pass dueDate so awaiting-payment invoices
       // within the Due Soon window render the "Due Soon" badge.
-      statusInfo: getInvoiceStatusBadge(inv.status, inv.isPastDue ?? false, inv.dueDate),
+      statusMeta: getInvoiceStatusMeta(inv.status, inv.isPastDue ?? false, inv.dueDate),
     }));
   }, [invoices]);
 
@@ -217,7 +236,7 @@ export default function InvoicesListPage() {
     let result = enrichedInvoices.slice();
     if (activeFilter !== "all") {
       result = result.filter(inv => {
-        if (activeFilter === "overdue") return inv.statusInfo.isOverdue;
+        if (activeFilter === "overdue") return inv.isPastDue ?? false;
         if (activeFilter === "qbo_synced") return isQboSynced(inv) && !inv.qboOutOfSync;
         if (activeFilter === "qbo_out_of_sync") return inv.qboOutOfSync === true;
         if (activeFilter === "awaiting_payment") return inv.status === "awaiting_payment" || inv.status === "sent";
@@ -246,7 +265,7 @@ export default function InvoicesListPage() {
       if (inv.status === "awaiting_payment" || inv.status === "sent") {
         counts["awaiting_payment"] = (counts["awaiting_payment"] || 0) + 1;
       }
-      if (inv.statusInfo.isOverdue) counts["overdue"] = (counts["overdue"] || 0) + 1;
+      if (inv.isPastDue) counts["overdue"] = (counts["overdue"] || 0) + 1;
       if (isQboSynced(inv)) {
         if (inv.qboOutOfSync) counts["qbo_out_of_sync"] = (counts["qbo_out_of_sync"] || 0) + 1;
         else counts["qbo_synced"] = (counts["qbo_synced"] || 0) + 1;
@@ -254,6 +273,139 @@ export default function InvoicesListPage() {
     }
     return counts;
   }, [enrichedInvoices]);
+
+  /**
+   * Column config for EntityListTable. Defined inside the component
+   * because the select column closes over the bulk-selection state
+   * (`selectedIds` / `setSelectedIds`) and the select-all checkbox
+   * derives its `checked` from `filteredInvoices`. The other columns
+   * are pure render functions over the row.
+   *
+   * Status cell composes the canonical badge with QboSyncBadge —
+   * EntityListTable's `status` kind wraps multi-badge children in a
+   * flex-wrap container so they wrap inside the cell instead of
+   * pushing Total / Balance.
+   */
+  type InvoiceRow = typeof filteredInvoices[number];
+  const allChecked = filteredInvoices.length > 0 && filteredInvoices.every((inv) => selectedIds.has(inv.id));
+  const invoiceColumns = useMemo<EntityListColumn<InvoiceRow>[]>(() => [
+    {
+      id: "select",
+      kind: "select",
+      header: (
+        <Checkbox
+          checked={allChecked}
+          onCheckedChange={(v) => {
+            if (v) setSelectedIds(new Set(filteredInvoices.map((inv) => inv.id)));
+            else setSelectedIds(new Set());
+          }}
+          aria-label="Select all invoices"
+          data-testid="checkbox-invoice-select-all"
+        />
+      ),
+      render: (invoice) => (
+        <Checkbox
+          checked={selectedIds.has(invoice.id)}
+          onCheckedChange={(v) => {
+            setSelectedIds((prev) => {
+              const next = new Set(prev);
+              if (v) next.add(invoice.id);
+              else next.delete(invoice.id);
+              return next;
+            });
+          }}
+          aria-label={`Select invoice ${invoice.invoiceNumber ?? invoice.id}`}
+          data-testid={`checkbox-invoice-${invoice.id}`}
+        />
+      ),
+    },
+    {
+      id: "client",
+      header: "Client",
+      kind: "primary",
+      ratio: 1.8,
+      minWidthPx: 260,
+      render: (invoice) => (
+        <div className="min-w-0">
+          <p className="truncate" data-testid={`text-invoice-client-${invoice.id}`}>
+            {invoice.locationDisplayName || invoice.locationName || "Unknown"}
+          </p>
+          {invoice.locationName && invoice.locationDisplayName && (
+            <p className="text-caption text-slate-500 font-normal truncate">{invoice.locationName}</p>
+          )}
+        </div>
+      ),
+      cellClassName: "px-4 py-2.5 min-w-0",
+    },
+    {
+      id: "description",
+      header: "Description",
+      kind: "text",
+      ratio: 1.2,
+      // Description is intentionally muted (text-caption text-slate-500)
+      // — smaller than the row's `text-row` body and lighter than
+      // text-slate-700, to give the Client primary line visual priority.
+      render: (invoice) => (
+        <p className="text-caption text-slate-500 truncate">{invoice.workDescription || "-"}</p>
+      ),
+    },
+    {
+      id: "invoiceNumber",
+      header: "Invoice #",
+      kind: "badge",
+      ratio: 0.8,
+      minWidthPx: 88,
+      render: (invoice) => (
+        // 2026-05-02 entity-number system: row IS an invoice → primary
+        // blue pill. Empty fallback (`INV-{id.slice}`) preserved for
+        // invoices that haven't been assigned a number yet.
+        <EntityNumber variant="primary" data-testid={`text-invoice-number-${invoice.id}`}>
+          {invoice.invoiceNumber || `INV-${invoice.id.slice(0, 8)}`}
+        </EntityNumber>
+      ),
+    },
+    {
+      id: "dueDate",
+      header: "Due Date",
+      kind: "date",
+      // Date kind provides text-row text-slate-700 + nowrap.
+      render: (invoice) => safeFormatDate(invoice.dueDate),
+    },
+    {
+      id: "status",
+      header: "Status",
+      kind: "status",
+      // Canonical lifecycle Badge + QboSyncBadge. EntityListTable wraps
+      // these in a flex-wrap container at the cell level — no need to
+      // add it here.
+      render: (invoice) => (
+        <>
+          <StatusBadge meta={invoice.statusMeta} />
+          <QboSyncBadge invoice={invoice} />
+        </>
+      ),
+    },
+    {
+      id: "total",
+      header: "Total",
+      kind: "money",
+      // Money kind provides text-row text-slate-700 + right + tabular + nowrap.
+      render: (invoice) => formatCurrency(invoice.total),
+    },
+    {
+      id: "balance",
+      header: "Balance",
+      kind: "money",
+      // Override base color: positive balance gets font-medium + slate-900,
+      // zero balance gets slate-400. The kind's `text-row` baseline is
+      // inherited (no need to restate).
+      render: (invoice) => (
+        <span className={parseFloat(invoice.balance) > 0 ? "font-medium text-slate-900" : "text-slate-400"}>
+          {formatCurrency(invoice.balance)}
+        </span>
+      ),
+    },
+  ], [filteredInvoices, selectedIds, allChecked]);
 
   // List stability: single return path — loading state renders inside content area only
   return (
@@ -400,184 +552,86 @@ export default function InvoicesListPage() {
           </FiltersButton>
         </div>
 
-        {/* ── 4. Main Table ── */}
-        <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="table-invoices">
-          {isLoading ? (
-            <div className="text-center py-8 text-slate-500" data-testid="invoices-loading">Loading invoices...</div>
-          ) : filteredInvoices.length === 0 ? (
+        {/* ── 4. Bulk-action bar (sibling, above the table) ── */}
+        {selectedIds.size > 0 && filteredInvoices.length > 0 && (
+          <div
+            className="flex items-center justify-between gap-3 px-4 py-2 border border-slate-200 bg-blue-50 rounded-md"
+            data-testid="bulk-action-bar"
+          >
+            <div className="text-row text-slate-700">
+              <span className="font-medium">{selectedIds.size}</span> selected
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setSelectedIds(new Set())}
+                data-testid="button-bulk-clear"
+              >
+                Clear
+              </Button>
+              {/* 2026-04-18 Phase 9: bulk reminder action. Shown
+                  only when every selected row is an unpaid invoice
+                  (awaiting_payment / sent / partial_paid) — the
+                  same set that `invoiceReminderService` gates
+                  server-side. */}
+              {(() => {
+                const remindable = filteredInvoices.filter(
+                  (inv) => selectedIds.has(inv.id) && UNPAID_STATUSES.has(inv.status),
+                );
+                if (remindable.length === 0 || remindable.length !== selectedIds.size) return null;
+                return (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => bulkRemindersMutation.mutate(remindable.map((r) => r.id))}
+                    disabled={bulkRemindersMutation.isPending}
+                    data-testid="button-bulk-send-reminders"
+                  >
+                    <Send className="h-3.5 w-3.5 mr-2" />
+                    Send {remindable.length} reminder{remindable.length === 1 ? "" : "s"}
+                  </Button>
+                );
+              })()}
+              <Button
+                size="sm"
+                onClick={() => setBatchOpen(true)}
+                data-testid="button-bulk-send"
+              >
+                <Send className="h-3.5 w-3.5 mr-2" />
+                Send {selectedIds.size} invoice{selectedIds.size === 1 ? "" : "s"}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* ── 5. Main Table ── */}
+        <EntityListTable<typeof filteredInvoices[number]>
+          rows={filteredInvoices.slice(0, visibleCount)}
+          rowKey={(invoice) => invoice.id}
+          onRowClick={(invoice) => setLocation(`/invoices/${invoice.id}`)}
+          loadingState={
+            isLoading ? (
+              <div className="text-center py-8 text-slate-500" data-testid="invoices-loading">Loading invoices...</div>
+            ) : undefined
+          }
+          emptyState={
             <EmptyState
               icon={FileText}
               message={searchQuery || activeFilter !== "all" ? "No invoices match your filters" : "No invoices found"}
               description={!searchQuery && activeFilter === "all" ? "Create your first invoice to get started." : undefined}
             />
-          ) : (
-            <>
-              {/* Phase 14 bulk-action bar — visible only when invoices are selected. */}
-              {selectedIds.size > 0 && (
-                <div
-                  className="flex items-center justify-between gap-3 px-4 py-2 border-b border-slate-200 bg-blue-50"
-                  data-testid="bulk-action-bar"
-                >
-                  <div className="text-row text-slate-700">
-                    <span className="font-medium">{selectedIds.size}</span> selected
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setSelectedIds(new Set())}
-                      data-testid="button-bulk-clear"
-                    >
-                      Clear
-                    </Button>
-                    {/* 2026-04-18 Phase 9: bulk reminder action. Shown
-                        only when every selected row is an unpaid invoice
-                        (awaiting_payment / sent / partial_paid) — the
-                        same set that `invoiceReminderService` gates
-                        server-side. Keeps the button out of the way
-                        when the selection contains drafts or paid
-                        invoices, which can't legitimately receive a
-                        reminder. */}
-                    {(() => {
-                      const remindable = filteredInvoices.filter(
-                        (inv) => selectedIds.has(inv.id) && UNPAID_STATUSES.has(inv.status),
-                      );
-                      if (remindable.length === 0 || remindable.length !== selectedIds.size) return null;
-                      return (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => bulkRemindersMutation.mutate(remindable.map((r) => r.id))}
-                          disabled={bulkRemindersMutation.isPending}
-                          data-testid="button-bulk-send-reminders"
-                        >
-                          <Send className="h-3.5 w-3.5 mr-2" />
-                          Send {remindable.length} reminder{remindable.length === 1 ? "" : "s"}
-                        </Button>
-                      );
-                    })()}
-                    <Button
-                      size="sm"
-                      onClick={() => setBatchOpen(true)}
-                      data-testid="button-bulk-send"
-                    >
-                      <Send className="h-3.5 w-3.5 mr-2" />
-                      Send {selectedIds.size} invoice{selectedIds.size === 1 ? "" : "s"}
-                    </Button>
-                  </div>
-                </div>
-              )}
-              <div
-                className="grid items-center border-b border-[#e5e7eb] py-2 text-caption font-medium text-slate-600 bg-slate-50"
-                style={{ gridTemplateColumns: INVOICES_GRID_COLS }}
-              >
-                <div className="px-4 flex items-center">
-                  {/* Select-all — toggles all filtered rows. */}
-                  <Checkbox
-                    checked={filteredInvoices.length > 0 && filteredInvoices.every((inv) => selectedIds.has(inv.id))}
-                    onCheckedChange={(v) => {
-                      if (v) {
-                        setSelectedIds(new Set(filteredInvoices.map((inv) => inv.id)));
-                      } else {
-                        setSelectedIds(new Set());
-                      }
-                    }}
-                    aria-label="Select all invoices"
-                    data-testid="checkbox-invoice-select-all"
-                  />
-                </div>
-                <div className="px-4">Client</div>
-                <div className="px-4">Description</div>
-                <div className="px-4">Invoice #</div>
-                <div className="px-4">Due Date</div>
-                <div className="px-4">Status</div>
-                <div className="px-4 text-right">Total</div>
-                <div className="px-4 text-right">Balance</div>
-                <div className="w-[50px]"></div>
-              </div>
-              {filteredInvoices.map((invoice) => (
-                <div
-                  key={invoice.id}
-                  className={cn("grid items-center", tableRowClass)}
-                  style={{ gridTemplateColumns: INVOICES_GRID_COLS }}
-                  onClick={() => setLocation(`/invoices/${invoice.id}`)}
-                  data-testid={`row-invoice-${invoice.id}`}
-                >
-                  <div className="px-4 flex items-center" onClick={(e) => e.stopPropagation()}>
-                    <Checkbox
-                      checked={selectedIds.has(invoice.id)}
-                      onCheckedChange={(v) => {
-                        setSelectedIds((prev) => {
-                          const next = new Set(prev);
-                          if (v) next.add(invoice.id);
-                          else next.delete(invoice.id);
-                          return next;
-                        });
-                      }}
-                      aria-label={`Select invoice ${invoice.invoiceNumber ?? invoice.id}`}
-                      data-testid={`checkbox-invoice-${invoice.id}`}
-                    />
-                  </div>
-                  <div className="px-4 min-w-0 py-2.5">
-                    <p className="text-row font-medium text-slate-800 truncate" data-testid={`text-invoice-client-${invoice.id}`}>
-                      {invoice.locationDisplayName || invoice.locationName || "Unknown"}
-                    </p>
-                    {invoice.locationName && invoice.locationDisplayName && (
-                      <p className="text-caption text-slate-500 truncate">{invoice.locationName}</p>
-                    )}
-                  </div>
-                  <div className="px-4 min-w-0 py-2.5">
-                    <p className="text-caption text-slate-500 truncate">{invoice.workDescription || "-"}</p>
-                  </div>
-                  <div className="px-4 py-2.5">
-                    {/* 2026-05-02 entity-number system: row IS an
-                        invoice → primary blue pill. Empty fallback
-                        (`INV-{id.slice}`) preserved for invoices that
-                        haven't been assigned a number yet. */}
-                    <EntityNumber variant="primary" data-testid={`text-invoice-number-${invoice.id}`}>
-                      {invoice.invoiceNumber || `INV-${invoice.id.slice(0, 8)}`}
-                    </EntityNumber>
-                  </div>
-                  <div className="px-4 text-row text-slate-700 py-2.5">{safeFormatDate(invoice.dueDate)}</div>
-                  <div className="px-4 py-2.5">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <Badge variant={invoice.statusInfo.variant}>{invoice.statusInfo.label}</Badge>
-                      <QboSyncBadge invoice={invoice} />
-                    </div>
-                  </div>
-                  <div className="px-4 text-right whitespace-nowrap tabular-nums text-row text-slate-700 py-2.5">{formatCurrency(invoice.total)}</div>
-                  <div className="px-4 text-right whitespace-nowrap tabular-nums text-row py-2.5">
-                    <span className={parseFloat(invoice.balance) > 0 ? "font-medium text-slate-900" : "text-slate-400"}>
-                      {formatCurrency(invoice.balance)}
-                    </span>
-                  </div>
-                  <div className="py-2.5" onClick={(e) => e.stopPropagation()}>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" data-testid={`button-invoice-menu-${invoice.id}`}>
-                          <MoreHorizontal className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={() => setLocation(`/invoices/${invoice.id}`)}>View</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setLocation(`/invoices/${invoice.id}?edit=true`)}>Edit</DropdownMenuItem>
-                        <DropdownMenuItem>Send</DropdownMenuItem>
-                        <DropdownMenuItem>Collect Payment</DropdownMenuItem>
-                        <DropdownMenuItem>Download PDF</DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                </div>
-              ))}
-            </>
-          )}
-        </div>
+          }
+          columns={invoiceColumns}
+        />
 
-        {filteredInvoices.length > 0 && (
-          <div className="text-caption text-slate-500 mt-2" data-testid="text-invoice-count">
-            Showing {filteredInvoices.length} invoice{filteredInvoices.length !== 1 ? "s" : ""}
-          </div>
-        )}
+        <ListLoadMoreFooter
+          visibleCount={Math.min(visibleCount, filteredInvoices.length)}
+          totalCount={filteredInvoices.length}
+          hasMore={visibleCount < filteredInvoices.length}
+          onLoadMore={() => setVisibleCount((c) => c + INVOICES_PAGE_SIZE)}
+          label="invoice"
+        />
       </div>
 
       {/* Phase 14 (2026-04-12): batch send modal. */}

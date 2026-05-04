@@ -95,7 +95,10 @@ import {
 // `InvoiceMetaCard` (status pill + action cluster in the chrome).
 // 2026-04-19 Reminders UI refactor — replaced the full-width
 // InvoiceRemindersCard with a compact header dropdown.
-import { InvoiceRemindersButton } from "@/components/invoice/InvoiceRemindersButton";
+// 2026-05-03: InvoiceRemindersButton retired. Manual invoice email
+// sends now route through <SendCommunicationModal> via the canonical
+// "Email invoice" primary action below; pause/snooze + per-invoice
+// "Send reminder now" are gone. Automated reminder sweep is unchanged.
 // Phase 12 (2026-04-12): Jobber-style send modal with recipients + subject + body.
 // Legacy ConfirmSendModal import removed in Phase 13.
 // 2026-05-02 (Audit #2 PR 2): SendInvoiceModal wrapper deleted — it was
@@ -462,6 +465,8 @@ export default function InvoiceDetailPage() {
     issueDate: string;
     dueDate: string;
     paymentTermsDays: string;
+    // 2026-05-03: canonical short invoice title.
+    summary: string;
   };
   const [metaDraft, setMetaDraft] = useState<MetaDraft | null>(null);
   // 2026-04-28: Reference-field draft, keyed by definitionId. Seeded from
@@ -513,12 +518,22 @@ export default function InvoiceDetailPage() {
   const [pdfPending, setPdfPending] = useState(false);
   const [toggleSentPending, setToggleSentPending] = useState(false);
 
-  const { data: details, isLoading } = useQuery<InvoiceDetails>({
+  const { data: details, isLoading, isError, error, refetch } = useQuery<InvoiceDetails>({
     // Canonical namespace: ["invoices", "detail", id] — invalidating ["invoices"] refreshes all invoice views
     queryKey: ["invoices", "detail", invoiceId],
     queryFn: async () => {
       const res = await fetch(`/api/invoices/${invoiceId}/details`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch invoice details");
+      if (!res.ok) {
+        // 2026-05-03: propagate the HTTP status so the not-found
+        // render below can distinguish a real 404 (invoice deleted)
+        // from any other failure (auth expiry, network blip, stale
+        // dev bundle). Prior implementation threw a flat
+        // "Failed to fetch" Error, which made the page show
+        // "This invoice no longer exists" for every failure mode.
+        const err: any = new Error(`Failed to fetch invoice details (HTTP ${res.status})`);
+        err.status = res.status;
+        throw err;
+      }
       return res.json();
     },
     enabled: !!invoiceId,
@@ -1249,14 +1264,35 @@ export default function InvoiceDetailPage() {
   }
 
   if (!details) {
-    // 2026-04-09: invoice may have been permanently deleted from another tab
-    // or via the canonical DELETE /api/invoices/:id route. Provide a way out.
+    // 2026-05-03: distinguish a confirmed 404 (invoice was actually
+    // deleted in another tab / via DELETE /api/invoices/:id) from any
+    // other transient failure (auth expiry, network blip, dev-server
+    // hot-reload race, stale browser bundle). The prior catch-all
+    // copy ("This invoice no longer exists") was misleading users
+    // into thinking healthy invoices had been deleted whenever the
+    // detail fetch threw for any reason.
+    const httpStatus = (error as any)?.status as number | undefined;
+    const isConfirmed404 = isError && httpStatus === 404;
     return (
-      <div className="p-6 space-y-3" data-testid="invoice-not-found">
+      <div className="p-6 space-y-3" data-testid={isConfirmed404 ? "invoice-not-found" : "invoice-load-error"}>
         <p className="text-sm text-muted-foreground">
-          This invoice no longer exists. It may have been deleted.
+          {isConfirmed404
+            ? "This invoice no longer exists. It may have been deleted."
+            : "Couldn't load this invoice. Please try again."}
         </p>
-        <Button variant="outline" size="sm" onClick={() => setLocation("/invoices")}>Back to invoices</Button>
+        <div className="flex gap-2">
+          {!isConfirmed404 && (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => void refetch()}
+              data-testid="button-invoice-retry"
+            >
+              Retry
+            </Button>
+          )}
+          <Button variant="outline" size="sm" onClick={() => setLocation("/invoices")}>Back to invoices</Button>
+        </div>
       </div>
     );
   }
@@ -1309,17 +1345,19 @@ export default function InvoiceDetailPage() {
     });
   };
 
-  // Primary action — state-driven. `null` for paid/voided "Send receipt"
-  // and "Duplicate as new" because we don't have those flows yet.
+  // 2026-05-03: unified email-send primary action. Replaces the prior
+  // status-branching logic that returned `null` for past-due invoices
+  // (handled separately by the now-deleted reminder dropdown). The
+  // canonical `<SendCommunicationModal>` works regardless of past-due
+  // state — it has no overdue gate — so a single "Email invoice"
+  // primary always makes sense for any non-draft, non-paid, non-voided
+  // invoice. Draft still kicks the send modal but reads as "Send
+  // invoice" (the first send). Paid → "Send receipt" + voided →
+  // "Duplicate as new" remain disabled placeholders for future flows.
   const primaryAction = (() => {
-    if (isPastDue) {
-      // Reminders surface lives in the command bar's `remindersSlot`. No
-      // separate primary "Send reminder" until we have a one-click variant.
-      return null;
-    }
     if (invoice.status === "draft") return { label: "Send invoice", onClick: () => setShowSendConfirm(true) };
     if (invoice.status === "sent" || invoice.status === "awaiting_payment" || invoice.status === "partial_paid") {
-      return { label: "Record payment", onClick: () => setShowPaymentDialog(true) };
+      return { label: "Email invoice", onClick: () => setShowSendConfirm(true) };
     }
     if (invoice.status === "paid") {
       // TODO: wire a dedicated "Send receipt" flow. The canonical
@@ -1342,10 +1380,9 @@ export default function InvoiceDetailPage() {
       : invoice.status === "voided" ? "Duplicate-as-new flow is not yet wired."
       : undefined;
 
-  // Reminder dropdown lives only on collectable invoices.
-  const remindersSlot = invoice.status !== "draft" && invoice.status !== "paid" && invoice.status !== "voided"
-    ? <InvoiceRemindersButton invoice={invoice as any} />
-    : undefined;
+  // 2026-05-03: `remindersSlot` retired. Past `<InvoiceRemindersButton>`
+  // dropdown is gone; manual emails now ride the canonical primary
+  // action above and route through `<SendCommunicationModal>`.
 
   // 2026-04-29: Action cluster split into two surfaces.
   //   • `headerActions` — the section-scoped edit pencil that lives on the
@@ -1365,6 +1402,8 @@ export default function InvoiceDetailPage() {
       issueDate: toDateInputValue(invoice.issueDate),
       dueDate: toDateInputValue(invoice.dueDate),
       paymentTermsDays: invoice.paymentTermsDays != null ? String(invoice.paymentTermsDays) : "",
+      // 2026-05-03: canonical short invoice title.
+      summary: (invoice as any).summary ?? "",
     });
     const seed: Record<string, string> = {};
     referenceFields.forEach((f) => { seed[f.definitionId] = f.textValue ?? ""; });
@@ -1489,7 +1528,18 @@ export default function InvoiceDetailPage() {
         header={
           <CanonicalDetailHeader
           testId="invoice-detail-header"
-          title={job?.summary || `Invoice ${invoice.invoiceNumber || ""}`.trim() || clientName || "Invoice"}
+          // 2026-05-03: canonical title fallback chain. Prefers the
+          // invoice's own `summary` (the new dedicated short-title
+          // column), then the linked job's summary (legacy invoices
+          // before the column existed), then the literal "Invoice
+          // <number>" / "Invoice" string. Never falls back to
+          // `clientName` — customer/company is an identity field, not
+          // an invoice title.
+          title={
+            ((invoice as any).summary ?? "").trim() ||
+            job?.summary ||
+            (invoice.invoiceNumber ? `Invoice ${invoice.invoiceNumber}` : "Invoice")
+          }
           isEditing={editingHeader}
           statusBadge={<StatusPill status={invoice.status} isPastDue={isPastDue} />}
           items={[
@@ -1565,7 +1615,6 @@ export default function InvoiceDetailPage() {
           // Both pencils dispatch the same `enterMetaEdit` flow.
           actions={(
             <>
-              {remindersSlot}
               {showSendInvoiceButton && primaryAction && (
                 <Button
                   size="sm"
@@ -1605,6 +1654,7 @@ export default function InvoiceDetailPage() {
                 mode="live"
                 customerName={clientName || ""}
                 customerCompanyId={customerCompany?.id ?? null}
+                summary={(invoice as any).summary ?? null}
                 billLine1={billLine1}
                 billLine2={billLine2}
                 serviceAddress={serviceAddress ?? null}
@@ -1656,6 +1706,14 @@ export default function InvoiceDetailPage() {
                   const currentTerms = invoice.paymentTermsDays ?? null;
                   if (termsNum !== currentTerms && (termsRaw === "" || Number.isFinite(termsNum))) {
                     payload.paymentTermsDays = termsNum;
+                  }
+                  // 2026-05-03: canonical short invoice title delta.
+                  // Empty string normalizes to null on the wire so the
+                  // server clears the column rather than storing "".
+                  const draftSummary = (metaDraft.summary ?? "").trim();
+                  const serverSummary = ((invoice as any).summary ?? "").trim();
+                  if (draftSummary !== serverSummary) {
+                    payload.summary = draftSummary || null;
                   }
 
                   // 2026-04-29 (header cleanup): job description is now
@@ -1882,21 +1940,26 @@ export default function InvoiceDetailPage() {
                 isSaving={updateInvoiceFieldsMutation.isPending}
               />
 
-              {/* ─── Notes (canonical EntityNotesSection). Order per user spec:
-                  immediately below Client visibility. The `notes_internal`
+              {/* ─── Canonical invoice notes.
+                  2026-05-03 rewrite: invoice notes are now first-class
+                  (`/api/invoices/:id/notes`) and no longer require a
+                  linked job. Every saved invoice — job-linked or
+                  standalone — mounts the same EntityNotesSection with
+                  `entityType="invoice"`. The previous `writeEntityId
+                  ={jobId}` indirection and the `DraftNotesCard` fallback
+                  for no-job invoices are gone. The `notes_internal`
                   schema column continues to round-trip via
-                  `updateInvoiceFieldsMutation` for non-UI consumers (QBO
-                  PrivateNote mapper, import pipeline snapshot) but no longer
-                  has a competing UI surface here. */}
+                  `updateInvoiceFieldsMutation` for non-UI consumers
+                  (QBO PrivateNote mapper, import-pipeline snapshots)
+                  but is no longer surfaced as a user-facing notes
+                  editor. */}
               <div className="overflow-hidden rounded-lg border border-card-border bg-card shadow-card" data-testid="card-invoice-notes">
                 <EntityNotesSection
                   entityType="invoice"
                   entityId={invoiceId}
-                  writeEntityId={jobId ?? ""}
                   embedded
                   hideHeader={false}
                   showCount={false}
-                  hideAddButton={!jobId}
                 />
               </div>
 
@@ -2030,7 +2093,17 @@ export default function InvoiceDetailPage() {
         entityId={invoiceId}
         isOpen={showSendConfirm}
         onClose={() => setShowSendConfirm(false)}
-        title="Send Invoice"
+        // 2026-05-03: specific compact title — composes invoice number
+        // and customer name from in-scope state. Falls back to a
+        // canonical short title if either piece is missing so the
+        // header is never empty.
+        title={
+          invoice.invoiceNumber && clientName
+            ? `Email invoice #${invoice.invoiceNumber} to ${clientName}`
+            : invoice.invoiceNumber
+              ? `Email invoice #${invoice.invoiceNumber}`
+              : "Send Invoice"
+        }
         onSuccess={() => {
           queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
           queryClient.invalidateQueries({ queryKey: ["invoices"] });

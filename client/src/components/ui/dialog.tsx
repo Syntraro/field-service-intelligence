@@ -101,10 +101,16 @@ const DialogTitle = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Title>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title>
 >(({ className, ...props }, ref) => (
+  // 2026-05-03 Phase E typography standardization: migrated from raw
+  // `text-lg font-semibold` (21.4px / 600) to the canonical
+  // `text-modal-title` semantic token. The token's tuple values
+  // pixel-match the prior raw classes so rendered output is unchanged;
+  // every modal title across the app now reads from a single semantic
+  // source rather than a per-primitive raw-class combo.
   <DialogPrimitive.Title
     ref={ref}
     className={cn(
-      "text-lg font-semibold leading-none tracking-tight text-[#0F172A]",
+      "text-modal-title leading-none tracking-tight text-[#0F172A]",
       className
     )}
     {...props}

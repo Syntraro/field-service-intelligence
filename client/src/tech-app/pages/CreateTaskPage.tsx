@@ -20,6 +20,7 @@ import { useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Loader2, CheckSquare, Truck, Clock, Search, ChevronDown } from "lucide-react";
 import { MobileShell } from "../components/MobileShell";
+import { Input } from "@/components/ui/input";
 import { apiRequest } from "@/lib/queryClient";
 import type { TaskType, Supplier, SupplierLocation } from "@shared/schema";
 import { TECH_ALLOWED_TASK_TYPES } from "@shared/taskConstants";
@@ -407,8 +408,12 @@ export function CreateTaskPage() {
                       className="w-full h-10 text-sm"
                     />
                   </div>
-                  <input type="time" value={schedTime} onChange={(e) => setSchedTime(e.target.value)}
-                    className="w-28 h-10 px-3 text-sm border border-slate-200 rounded-md" />
+                  {/* 2026-05-04 form-canonicalization: migrated to <Input>.
+                      Layout (w-28 h-10) preserved via className override —
+                      the surrounding date picker uses h-10 not the default
+                      h-9, so we keep the height match. */}
+                  <Input type="time" value={schedTime} onChange={(e) => setSchedTime(e.target.value)}
+                    className="w-28 h-10" />
                 </div>
               )}
             </div>

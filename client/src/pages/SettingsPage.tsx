@@ -128,6 +128,9 @@ const SECTIONS: SettingsSection[] = [
     cards: [
       { title: "Tax & Billing", description: "Configure tax rates and billing rules", href: "/settings/tax-billing", icon: Receipt },
       { title: "Time Billing", description: "Labour rate and billing configuration", href: "/settings/time-billing", icon: Timer },
+      // 2026-05-03 PR3 — tenant payments onboarding. Distinct from
+      // Subscription (which is platform-billing for the SaaS itself).
+      { title: "Payments", description: "Accept online card payments and connect a bank account", href: "/settings/payments", icon: CreditCard },
       { title: "Subscription", description: "Manage billing and subscription", href: "/settings/subscription", icon: CreditCard },
     ],
   },

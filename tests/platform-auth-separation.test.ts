@@ -83,16 +83,27 @@ describe("requirePlatformSession", () => {
   });
 
   it("passes for a valid platform role with matching tokenVersion", async () => {
+    // 2026-05-04 Phase 2-A: the new repo answers canonically with
+    // user + roles[]. Legacy storage mock kept around as a safety
+    // net but should not be consulted on the canonical path.
+    vi.doMock("../server/storage/platformIdentity", () => ({
+      platformIdentityRepository: {
+        getPlatformUserById: vi.fn().mockResolvedValue({
+          user: {
+            id: "u_platform_1",
+            email: "ops@example.com",
+            fullName: "Ops Admin",
+            status: "active",
+            disabled: false,
+            tokenVersion: 2,
+          },
+          roles: ["platform_admin"],
+        }),
+      },
+    }));
     vi.doMock("../server/storage/index", () => ({
       storage: {
-        getUser: vi.fn().mockResolvedValue({
-          id: "u_platform_1",
-          email: "ops@example.com",
-          role: "platform_admin",
-          fullName: "Ops Admin",
-          status: "active",
-          tokenVersion: 2,
-        }),
+        getUser: vi.fn().mockResolvedValue(null),
       },
     }));
     const { requirePlatformSession } = await import("../server/auth/platformSession");
@@ -114,7 +125,18 @@ describe("requirePlatformSession", () => {
     });
   });
 
-  it("403s when session user's role is no longer a platform role", async () => {
+  it("401s when session user's role is no longer a platform role (legacy fallback path)", async () => {
+    // 2026-05-04 Phase 2-A: the new repo returns null for a tenant
+    // user (it only returns rows with a platform role). The legacy
+    // fallback finds them but `isPlatformRole(role)` is false, so
+    // the resolution returns null overall → PLATFORM_USER_MISSING (401).
+    // Status changed from 403 → 401 because the legacy-row gate now
+    // fails identity resolution rather than role-check.
+    vi.doMock("../server/storage/platformIdentity", () => ({
+      platformIdentityRepository: {
+        getPlatformUserById: vi.fn().mockResolvedValue(null),
+      },
+    }));
     vi.doMock("../server/storage/index", () => ({
       storage: {
         getUser: vi.fn().mockResolvedValue({
@@ -137,11 +159,19 @@ describe("requirePlatformSession", () => {
 
     await requirePlatformSession(req, res, next as unknown as NextFunction);
 
-    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.status).toHaveBeenCalledWith(401);
     expect(next).not.toHaveBeenCalled();
   });
 
   it("401s when tokenVersion has been incremented since the session was created", async () => {
+    // 2026-05-04 Phase 2-A: same legacy-fallback shape as above —
+    // the new repo returns null, legacy `getUser` answers with the
+    // canonical platform_admin row whose tokenVersion has advanced.
+    vi.doMock("../server/storage/platformIdentity", () => ({
+      platformIdentityRepository: {
+        getPlatformUserById: vi.fn().mockResolvedValue(null),
+      },
+    }));
     vi.doMock("../server/storage/index", () => ({
       storage: {
         getUser: vi.fn().mockResolvedValue({
@@ -268,6 +298,14 @@ describe("platformAuthRouter login", () => {
     mockIdentity?: { passwordHash: string };
     bcryptValid: boolean;
     platformSession: any;
+    /**
+     * Optional pre-existing tenant `req.session` — included as a separate
+     * key from `platformSession` so tests can prove the platform login
+     * handler does NOT mutate the tenant cookie. The handler's runtime
+     * input shape (`req.session` vs `req.platformSession`) is set up in
+     * production by `platformSessionMiddleware`; we mirror that split here.
+     */
+    tenantSession?: any;
   }) {
     // Mock dependencies BEFORE importing the module.
     vi.doMock("../server/storage/index", () => ({
@@ -277,6 +315,17 @@ describe("platformAuthRouter login", () => {
             ? { user: opts.mockUser, identity: opts.mockIdentity }
             : null,
         ),
+      },
+    }));
+    // 2026-05-04 Phase 2-A: platform login first consults the new
+    // platformIdentityRepository, then falls back to the legacy storage
+    // path. These tests pin the LEGACY-fallback behavior, so the new
+    // repo is mocked to return null — this routes through to the
+    // existing storage mock above unchanged.
+    vi.doMock("../server/storage/platformIdentity", () => ({
+      platformIdentityRepository: {
+        findPlatformUserByEmail: vi.fn().mockResolvedValue(null),
+        recordPlatformLogin: vi.fn().mockResolvedValue(undefined),
       },
     }));
     vi.doMock("bcryptjs", () => ({
@@ -301,28 +350,68 @@ describe("platformAuthRouter login", () => {
     const req: any = {
       body: { email: opts.email, password: opts.password },
       platformSession: opts.platformSession,
+      session: opts.tenantSession,
       headers: {},
       ip: "127.0.0.1",
       path: "/login",
       originalUrl: "/api/platform/auth/login",
     };
     const res = mkRes();
-    const next = vi.fn((err?: any) => {
-      if (err) throw err;
-    });
 
-    try {
-      await handler(req, res, next);
-    } catch (err) {
-      return { req, res, thrown: err };
-    }
-    return { req, res, thrown: null };
+    // 2026-05-03 harness fix: previously this `next` mock did
+    //   `if (err) throw err`
+    // which RE-RAISED inside vi.fn's body. Combined with the bug below,
+    // those re-raised errors became "unhandled rejections" that leaked
+    // out after the test had already returned, and the failing tests'
+    // assertions ran against an empty res mock.
+    //
+    // Now: `next` simply records its arguments. Errors are read back via
+    // `next.mock.calls`. No mid-test throw, so no detached rejection.
+    const next = vi.fn();
+
+    // 2026-05-03 harness fix: `asyncHandler` returns `undefined` (it does
+    //   `Promise.resolve(fn(...)).catch(next)`
+    // and intentionally swallows the promise so Express middleware chains
+    // see a synchronous return). Awaiting the wrapper resolves on the
+    // current tick — BEFORE the inner async body has reached its first
+    // await boundary. That is the production-correct shape, but the test
+    // must wait for the inner work explicitly.
+    //
+    // Two `setImmediate` flushes are sufficient to drain:
+    //   1. bcrypt.compare's resolved promise
+    //   2. either the audit log promise (success path) OR the error's
+    //      `.catch(next)` propagation (failure paths)
+    // and the success path's `await new Promise(...) for ps.save`. If a
+    // future change adds another `await` to the handler, add another
+    // flush below — this is intentionally explicit rather than a
+    // `setTimeout(0)` race.
+    handler(req, res, next);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await new Promise<void>(resolve => setImmediate(resolve));
+
+    // Capture any error that the handler rejected with — `asyncHandler`
+    // routes rejections through `next(err)`. The first call with a
+    // truthy first arg is the thrown error.
+    const thrown =
+      (next.mock.calls.find((call: unknown[]) => call[0]) as unknown[] | undefined)?.[0] ?? null;
+
+    return { req, res, next, thrown };
   }
 
   it("writes platformUserId to the session on a valid platform-admin login", async () => {
     const saveMock = vi.fn((cb?: (err: any) => void) => cb?.(null));
     const session = { save: saveMock };
-    const { req, res } = await invokeLoginHandler({
+    // 2026-05-03 boundary assertion: a pre-existing tenant `req.session`
+    // is passed in so we can prove platform login does NOT mutate it.
+    // `passport.user` shape mirrors the tenant Passport session.
+    const tenantSession = {
+      passport: { user: "tenant-user-id" },
+      cookie: { originalMaxAge: 60_000 },
+    };
+    const tenantSessionSnapshot = JSON.parse(JSON.stringify(tenantSession));
+
+    const { req, res, thrown } = await invokeLoginHandler({
       email: "ops@example.com",
       password: "correct",
       mockUser: {
@@ -336,8 +425,10 @@ describe("platformAuthRouter login", () => {
       mockIdentity: { passwordHash: "$2a$hashed$" },
       bcryptValid: true,
       platformSession: session,
+      tenantSession,
     });
 
+    expect(thrown).toBeNull();
     expect(session).toMatchObject({
       platformUserId: "p_1",
       platformTokenVersion: 3,
@@ -351,11 +442,38 @@ describe("platformAuthRouter login", () => {
         }),
       }),
     );
+
+    // Boundary contract: the handler must write into `req.platformSession`
+    // and must NOT touch `req.session`. If a future refactor accidentally
+    // promotes a platform login into the tenant cookie, this assertion
+    // fails — that would let a tenant cookie carry platform-admin state.
+    expect(req.session).toEqual(tenantSessionSnapshot);
+    // And `req.session.passport.user` is unchanged — the platform login
+    // never re-binds Passport to the platform user.
+    expect(req.session?.passport?.user).toBe("tenant-user-id");
   });
 
-  it("rejects a tenant-role account with 403 PLATFORM_ACCOUNT even with a valid password", async () => {
+  it("rejects a tenant-role account with 401 (Phase 2-A anti-enumeration)", async () => {
+    // 2026-05-04 Phase 2-A behavior change: a tenant account that
+    // accidentally hits /api/platform/auth/login now collapses to a
+    // generic 401 "Invalid email or password" instead of 403
+    // "not a platform admin". Reason:
+    //   • The new resolver (`platformIdentityRepository`) only knows
+    //     about platform-role rows, so it returns null for a tenant
+    //     account.
+    //   • The legacy fallback ALSO gates on `isPlatformRole(role)`
+    //     before returning, so a tenant account never produces a
+    //     `resolved` value.
+    //   • The login handler hits the `!resolved` branch and emits
+    //     401 with `reason: "no_account"`.
+    //
+    // This is STRICTLY MORE secure than the prior 403 path — a 403
+    // "not a platform admin" message implicitly confirmed the email
+    // exists in the user table. The new 401 does not leak that.
+    // Refusing the session is what matters; the status code is the
+    // anti-enumeration improvement that came with Phase 2-A.
     const session: any = { save: vi.fn((cb: any) => cb?.(null)) };
-    const { res, thrown } = await invokeLoginHandler({
+    const { thrown } = await invokeLoginHandler({
       email: "tenant@example.com",
       password: "correct",
       mockUser: {
@@ -370,23 +488,28 @@ describe("platformAuthRouter login", () => {
       platformSession: session,
     });
 
-    // Handler throws createError(403, ...); asyncHandler surfaces it. Either
-    // the error is thrown or res.status(403).json(...) was called.
-    const looksLike403 =
-      (thrown as any)?.status === 403 ||
-      res.status.mock.calls.some((c: any) => c[0] === 403);
-    expect(looksLike403).toBe(true);
+    expect(thrown).not.toBeNull();
+    expect((thrown as any)?.status).toBe(401);
+    expect((thrown as any)?.message).toMatch(/invalid email or password/i);
+    // Critical contract preserved: a tenant account never gets a
+    // platform session, regardless of the response code.
     expect(session.platformUserId).toBeUndefined();
   });
 
   it("rejects a bad password with 401 before checking role", async () => {
     const session: any = { save: vi.fn((cb: any) => cb?.(null)) };
-    const { res, thrown } = await invokeLoginHandler({
+    const { thrown } = await invokeLoginHandler({
       email: "ops@example.com",
       password: "WRONG",
       mockUser: {
         id: "p_1",
         email: "ops@example.com",
+        // Even though this account has a platform role, a bad password
+        // must short-circuit BEFORE the role check at platformAuth.ts:112.
+        // The role is irrelevant to the assertion — the test is locking
+        // the order-of-checks (bcrypt → role), so a tenant attacker can't
+        // tell from the response shape whether a given email belongs to
+        // a platform or tenant account.
         role: "platform_admin",
         status: "active",
         tokenVersion: 0,
@@ -396,10 +519,9 @@ describe("platformAuthRouter login", () => {
       platformSession: session,
     });
 
-    const looksLike401 =
-      (thrown as any)?.status === 401 ||
-      res.status.mock.calls.some((c: any) => c[0] === 401);
-    expect(looksLike401).toBe(true);
+    expect(thrown).not.toBeNull();
+    expect((thrown as any)?.status).toBe(401);
+    expect((thrown as any)?.message).toMatch(/invalid email or password/i);
     expect(session.platformUserId).toBeUndefined();
   });
 });

@@ -135,7 +135,13 @@ const FormDescription = React.forwardRef<
     <p
       ref={ref}
       id={formDescriptionId}
-      className={cn("text-sm text-muted-foreground", className)}
+      // 2026-05-03 Phase F: migrated from raw `text-xs` to the
+      // canonical `text-form-helper` semantic token. Pixel-identical
+      // (15.2px / 22.8px). Muted color preserved via the utility
+      // class — fontSize tuples can't carry color, and form helper
+      // text shares its size with form-error / form-empty-state but
+      // is the only one that's muted.
+      className={cn("text-form-helper text-muted-foreground", className)}
       {...props}
     />
   )
@@ -157,7 +163,12 @@ const FormMessage = React.forwardRef<
     <p
       ref={ref}
       id={formMessageId}
-      className={cn("text-sm font-medium text-destructive", className)}
+      // 2026-05-03 Phase E: validation error text now reads from the
+      // canonical `text-error` semantic token. Pixel-identical to the
+      // prior `text-xs font-medium` (15.2px / 500). Color comes from
+      // the `text-destructive` utility — `text-error` is a fontSize
+      // tuple and Tailwind doesn't allow color inside fontSize tuples.
+      className={cn("text-error text-destructive", className)}
       {...props}
     >
       {body}

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useLocation } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -19,23 +19,33 @@ const loginSchema = z.object({
 
 type LoginFormData = z.infer<typeof loginSchema>;
 
+/**
+ * Auth-page prefixes that must NEVER be honored as a `returnTo` target —
+ * sending the user back to /login (or any other auth surface) right after
+ * a successful login produces an immediate bounce/loop. The sanitiser
+ * below treats any such `returnTo` the same as "no returnTo provided".
+ */
+const AUTH_PAGE_PREFIXES = ["/login", "/signup", "/request-reset", "/reset-password"];
+
+function isSafeOfficeReturnTo(raw: string | null): raw is string {
+  if (!raw) return false;
+  if (!raw.startsWith("/")) return false;
+  if (raw.startsWith("//")) return false; // protocol-relative URL — never trust
+  for (const p of AUTH_PAGE_PREFIXES) {
+    if (raw === p || raw.startsWith(p + "/") || raw.startsWith(p + "?")) return false;
+  }
+  return true;
+}
+
+function isSafeTechReturnTo(raw: string | null): raw is string {
+  return !!raw && raw.startsWith("/tech/");
+}
+
 export default function Login() {
   const [, setLocation] = useLocation();
-  const { login, user } = useAuth();
+  const { login } = useAuth();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
-  // 2026-05-03 first-login race fix (client-navigation half): instead of
-  // calling `setLocation(...)` synchronously after `await login(...)`, we
-  // stash the role-aware destination here and let the effect below
-  // navigate ONLY once the AuthProvider's `user` context value reflects
-  // the freshly-logged-in identity. This guarantees ProtectedRoute mounts
-  // on the new route with a non-null `user` already visible — no stale-
-  // null-then-bounce-back-to-/login race. `pendingDestination` is null
-  // by default and only set by a successful submit, so we preserve the
-  // 2026-04-10 Phase-2 Fix D invariant: this Login page never bounces a
-  // mounting user into the protected app on the strength of a stale
-  // truthy `user` alone. Both gates (intent + committed user) must hold.
-  const [pendingDestination, setPendingDestination] = useState<string | null>(null);
 
   const form = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
@@ -45,44 +55,62 @@ export default function Login() {
     },
   });
 
-  useEffect(() => {
-    // Wait for BOTH: (a) the user explicitly submitted login this session
-    // (pendingDestination set by onSubmit on success) AND (b) AuthProvider
-    // has committed the new user identity into context. Only then navigate.
-    // Clearing `pendingDestination` immediately after the call prevents
-    // double-navigation if React fires the effect again (e.g., StrictMode
-    // dev double-mount or a follow-up data refresh re-rendering AuthProvider).
-    if (!pendingDestination || !user) return;
-    const dest = pendingDestination;
-    setPendingDestination(null);
-    setLocation(dest);
-  }, [user, pendingDestination, setLocation]);
-
+  /**
+   * 2026-05-03 first-login race fix (final form): navigation now depends
+   * ONLY on the `userData` returned by `await login(...)` — NOT on
+   * `useAuth().user` or any AuthProvider context state.
+   *
+   * Why: the previous `pendingDestination` + `useEffect([user, ...])`
+   * approach gated `setLocation` on the React-context `user` becoming
+   * truthy. AuthProvider's `user` state is a `useState` that mirrors
+   * either the TanStack cache or `setUser(userData)` from the login
+   * mutation's `onSuccess`. Both updates are asynchronous from this
+   * component's perspective: the effect can't fire until React commits
+   * AuthProvider's render. On a clean first login, the navigation
+   * effect ran with `user === null` and short-circuited; the state
+   * never re-flipped on this Login page (we already setLocation away
+   * by then in the second-click path), so the user appeared to be
+   * stuck on /login.
+   *
+   * `await login(...)` resolves with the canonical `User` object the
+   * server returned. That value is sufficient for the role-aware
+   * destination calculation below — there is no need to wait for any
+   * client-side state to update. AuthProvider has already called
+   * `setUser(userData)` and `setQueryData(["/api/auth/me"], userData)`
+   * inside the mutation's `onSuccess` BEFORE this `await` resolves, so
+   * by the time we call `setLocation(destination)`, ProtectedRoute
+   * mounts on the new route with a context `user` that has been
+   * committed (or is committing in the same render flush as our
+   * navigation). The new ProtectedRoute's wipe-condition fix (closed
+   * earlier) keeps `user` from being nulled by a stale `/api/auth/me`
+   * 401, so even if its initial render happened to read a not-yet-
+   * committed `user`, the next render's auth-check would settle it.
+   */
   const onSubmit = async (data: LoginFormData) => {
     setIsLoading(true);
     try {
       const userData = await login(data.email, data.password);
       const params = new URLSearchParams(window.location.search);
       const returnTo = params.get("returnTo");
-      // Role-aware destination, computed at the moment of success. The
-      // value flows through `pendingDestination` so the effect above can
-      // navigate AFTER AuthProvider commits `user`. Behavior preserved
-      // from the prior synchronous implementation — only the dispatch
-      // mechanism changed.
+
+      // Role-aware destination, computed synchronously from the response.
       let destination: string;
       if (userData.role === "technician") {
         // Honor returnTo only when it's a /tech/* path — prevents a tech
-        // session-expiry from the tech app losing context (e.g., an open
-        // visit detail) on re-auth. Office returnTo values are ignored so
-        // techs don't land in pages they have no permission to view.
-        destination = (returnTo && returnTo.startsWith("/tech/")) ? returnTo : "/tech/today";
+        // session-expiry from the tech app losing context on re-auth.
+        // Office returnTo values are ignored so techs don't land in pages
+        // they have no permission to view.
+        destination = isSafeTechReturnTo(returnTo) ? returnTo : "/tech/today";
       } else if (isPlatformRole(userData.role)) {
         // Platform roles land in the Ops Portal — never the tenant shell.
         destination = "/platform/tenants";
       } else {
-        destination = (returnTo && returnTo.startsWith("/")) ? returnTo : "/";
+        // Office roles: honor any sane non-auth returnTo, else go to root.
+        destination = isSafeOfficeReturnTo(returnTo) ? returnTo : "/";
       }
-      setPendingDestination(destination);
+
+      // Synchronous, immediate. No effect, no React-state gate.
+      setLocation(destination);
     } catch (error: any) {
       toast({
         variant: "destructive",
@@ -111,11 +139,11 @@ export default function Login() {
                   <FormItem>
                     <FormLabel>Email</FormLabel>
                     <FormControl>
-                      <Input 
+                      <Input
                         data-testid="input-email"
                         type="email"
-                        placeholder="Enter your email" 
-                        {...field} 
+                        placeholder="Enter your email"
+                        {...field}
                       />
                     </FormControl>
                     <FormMessage />
