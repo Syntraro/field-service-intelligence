@@ -427,9 +427,15 @@ export class ClientRepository extends BaseRepository {
     userId: string,
     clientData: InsertClient,
     parts: Array<{ partId: string; quantity: number }>
-  ): Promise<Client> {
+  ): Promise<{ location: Client; created: boolean }> {
+    // 2026-05-04 event-log parity: surface the `created` flag from the
+    // underlying createOrGetLocationTx so the route can gate its
+    // `client.created` event emission on actual inserts (not idempotent
+    // re-submits that hit the dedupe path). Parts append still runs on
+    // both paths — clientParts is a quantity-tracked line-item table
+    // and the no-parts vs with-parts re-submit semantics are unchanged.
     return await db.transaction(async (tx) => {
-      const { location: client } = await this.createOrGetLocationTx(tx, companyId, userId, clientData);
+      const { location: client, created } = await this.createOrGetLocationTx(tx, companyId, userId, clientData);
 
       if (parts.length > 0) {
         await tx.insert(clientParts).values(
@@ -443,7 +449,7 @@ export class ClientRepository extends BaseRepository {
         );
       }
 
-      return client;
+      return { location: client, created };
     });
   }
 

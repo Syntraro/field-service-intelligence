@@ -1448,9 +1448,18 @@ router.post(
     // re-submitting the same customer (rare but possible on flaky network)
     // now gets the existing primary location back instead of twinning.
     const sentinelNextDue = new Date("9999-12-31").toISOString();
-    const { location } = await storage.createOrGetLocation(companyId, userId, {
+    // 2026-05-04: pass `location: displayName` so the canonical dedupe key
+    // `(companyId, parentCompanyId, lower(location))` actually matches on
+    // re-submit. Pre-fix the tech route only set `companyName`, which the
+    // dedupe predicate ignores for child rows — so twin location rows were
+    // produced on every retry despite the existing "now gets the existing
+    // primary location back" comment claiming otherwise. Office full-create
+    // already follows the same pattern (primaryLocationName falls back to
+    // company / person name).
+    const { location, created } = await storage.createOrGetLocation(companyId, userId, {
       parentCompanyId: customerCompany.id,
       companyName: displayName,
+      location: displayName,
       contactName,
       email: data.email?.trim() || null,
       phone: data.phone?.trim() || null,
@@ -1465,13 +1474,20 @@ router.post(
       nextDue: sentinelNextDue,
     } as any);
 
-    logEventAsync(getQueryCtx(req), {
-      eventType: "client.created",
-      entityType: "client",
-      entityId: location.id,
-      summary: `Created client "${displayName}" (tech field)`,
-      meta: { customerCompanyId: customerCompany.id },
-    });
+    // 2026-05-04 event-log parity: gate `client.created` emission on actual
+    // insert (not the createOrGetLocation dedupe path returning the existing
+    // row). Pre-fix this emitter fired unconditionally and re-submits over a
+    // flaky tech connection produced phantom duplicate events. Tenant +
+    // actor attribution come from getQueryCtx(req) (companyId + user.id).
+    if (created) {
+      logEventAsync(getQueryCtx(req), {
+        eventType: "client.created",
+        entityType: "client",
+        entityId: location.id,
+        summary: `Created client "${displayName}" (tech field)`,
+        meta: { customerCompanyId: customerCompany.id, primaryLocationId: location.id },
+      });
+    }
 
     res.status(201).json({
       locationId: location.id,

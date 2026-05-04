@@ -15,6 +15,7 @@ import { storage } from "../storage/index";
 // 2026-04-18 Client-billing workstream: per-company aggregates reuse the
 // canonical invoices-feed storage methods (no direct table access here).
 import { getQueryCtx } from "../lib/queryCtx";
+import { logEventAsync } from "../lib/events";
 import { getClientBillingSummary, getClientBillingHistory } from "../storage/invoicesFeed";
 import { db } from "../db";
 import { clientLocations } from "@shared/schema";
@@ -131,12 +132,12 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
     const firstName = nameParts[0] || "";
     const lastName = nameParts.slice(1).join(" ") || "";
 
-    const newLocation = await db.transaction(async (tx) => {
+    const txResult = await db.transaction(async (tx) => {
       // Step 1: Create-or-get the location within the transaction.
       // 2026-04-19: routes through canonical createOrGetLocationTx —
       // (companyId, parentCompanyId, lower(location)) dedupe inside the
       // same transaction as the inline-contact upsert.
-      const { location } = await clientRepository.createOrGetLocationTx(tx, tenantCompanyId, user.id, {
+      const { location, created } = await clientRepository.createOrGetLocationTx(tx, tenantCompanyId, user.id, {
         parentCompanyId: companyId,
         companyName: null,
         location: req.body.location || null,
@@ -185,15 +186,39 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
         roles: [],
       });
 
-      return location;
+      return { location, created };
     });
+    const newLocation = txResult.location;
+
+    // 2026-05-04 event-log parity: add-location-under-existing-customer-company
+    // emits `client.created` (entityType "client") to match the existing
+    // POST /api/clients and POST /api/clients/full-create emitters. The
+    // `location.*` event taxonomy does not exist in this codebase; the
+    // canonical "client_locations row was created" semantic is already
+    // expressed by `client.created`. Gated on `txResult.created === true`
+    // so an idempotent re-submit (createOrGetLocationTx dedupe path) does
+    // NOT duplicate the event.
+    if (txResult.created) {
+      logEventAsync(getQueryCtx(req), {
+        eventType: "client.created",
+        entityType: "client",
+        entityId: newLocation.id,
+        summary: `Created client ${newLocation.companyName ?? newLocation.location ?? "location"}`,
+        meta: {
+          companyName: newLocation.companyName,
+          location: newLocation.location,
+          customerCompanyId: companyId,
+          primaryLocationId: newLocation.id,
+        },
+      });
+    }
 
     res.status(201).json(newLocation);
   } else {
     // 2026-04-19: routes through canonical createOrGetLocation. Same
     // (companyId, parentCompanyId, lower(location)) dedupe — repeat
     // submissions for the same location return the existing row.
-    const { location: newLocation } = await storage.createOrGetLocation(tenantCompanyId, user.id, {
+    const { location: newLocation, created } = await storage.createOrGetLocation(tenantCompanyId, user.id, {
       parentCompanyId: companyId,
       companyName: null,
       location: req.body.location || null,
@@ -211,6 +236,23 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
       isPrimary: false,
       needsDetails: false,
     });
+
+    // 2026-05-04 event-log parity (no-contact branch): same emission as the
+    // inline-contact branch above. Gated on `created === true`.
+    if (created) {
+      logEventAsync(getQueryCtx(req), {
+        eventType: "client.created",
+        entityType: "client",
+        entityId: newLocation.id,
+        summary: `Created client ${newLocation.companyName ?? newLocation.location ?? "location"}`,
+        meta: {
+          companyName: newLocation.companyName,
+          location: newLocation.location,
+          customerCompanyId: companyId,
+          primaryLocationId: newLocation.id,
+        },
+      });
+    }
 
     res.status(201).json(newLocation);
   }

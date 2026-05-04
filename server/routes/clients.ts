@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Request, Response, NextFunction } from "express";
 import { storage, customerCompanyRepository, clientContactRepository } from "../storage/index";
-import { insertClientSchema, insertLocationEquipmentSchema, updateLocationEquipmentSchema, postalCodeSchema } from "@shared/schema";
+import { insertClientSchema, insertLocationEquipmentSchema, updateLocationEquipmentSchema } from "@shared/schema";
 import { z } from "zod";
 import type { Client } from "@shared/schema";
 import { requireRole } from "../auth/requireRole";
@@ -340,6 +340,7 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
   const validated = validateSchema(insertClientSchema, clientData);
 
   let client: Client;
+  let created: boolean;
 
   // If parts are provided, use transactional method
   if (parts && Array.isArray(parts) && parts.length > 0) {
@@ -349,12 +350,14 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
     }).strict());
 
     const validatedParts = validateSchema(partsSchema, parts);
-    client = await storage.createClientWithParts(
+    const result = await storage.createClientWithParts(
       req.companyId,
       req.user.id,
       validated,
       validatedParts
     );
+    client = result.location;
+    created = result.created;
   } else {
     // 2026-04-19: routes through canonical createOrGetLocation so concurrent
     // tabs / repeat submits don't produce twin location rows. Returns the
@@ -362,16 +365,23 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
     // (companyId, lower(companyName)) for orphans — already matches.
     const result = await storage.createOrGetLocation(req.companyId, req.user.id, validated);
     client = result.location;
+    created = result.created;
   }
 
-  // Phase 1: Log client creation event
-  logEventAsync(getQueryCtx(req), {
-    eventType: "client.created",
-    entityType: "client",
-    entityId: client.id,
-    summary: `Created client ${client.companyName}`,
-    meta: { companyName: client.companyName, location: client.location },
-  });
+  // Phase 1: Log client creation event.
+  // 2026-05-04 event-log parity: gate on `created === true` so an idempotent
+  // re-submit (the createOrGetLocation dedupe path returning the existing row)
+  // does NOT double-emit `client.created`. Pre-fix this emitter fired
+  // unconditionally; the new behavior matches POST /api/clients/full-create.
+  if (created) {
+    logEventAsync(getQueryCtx(req), {
+      eventType: "client.created",
+      entityType: "client",
+      entityId: client.id,
+      summary: `Created client ${client.companyName}`,
+      meta: { companyName: client.companyName, location: client.location },
+    });
+  }
 
   res.json(client);
 }));
@@ -597,6 +607,33 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
     }
   }
 
+  // 2026-05-04 event-log parity: emit `client.created` so this canonical
+  // office-create surface shows up in Recent Activity / attention-queue
+  // analytics on parity with `POST /api/clients` and `POST /api/tech/clients`.
+  // Guarded on `primaryResult.created === true` so an idempotent re-submit
+  // (the createOrGetLocation dedupe path) does NOT duplicate the event.
+  // entityId is the primary location id — same shape as the other emitters.
+  // tenantId + actorUserId come from getQueryCtx(req) (companyId + user.id).
+  if (primaryResult.created) {
+    const eventClientName =
+      primaryClient.companyName?.trim() ||
+      customerCompany.name?.trim() ||
+      [customerCompany.firstName, customerCompany.lastName].filter(Boolean).join(" ").trim() ||
+      "client";
+    logEventAsync(getQueryCtx(req), {
+      eventType: "client.created",
+      entityType: "client",
+      entityId: primaryClient.id,
+      summary: `Created client ${eventClientName}`,
+      meta: {
+        companyName: primaryClient.companyName,
+        location: primaryClient.location,
+        customerCompanyId: customerCompany.id,
+        primaryLocationId: primaryClient.id,
+      },
+    });
+  }
+
   res.json({
     customerCompany,
     client: primaryClient,
@@ -606,88 +643,28 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
 }));
 
 /**
- * POST /api/clients/quick-create
- * Quick create with minimal info (sets needsDetails=true)
+ * POST /api/clients/quick-create — REMOVED 2026-05-04
  *
- * NOTE: This creates a STANDALONE location (parentCompanyId = null).
+ * Tombstone (do not restore). Audit confirmed zero callers across:
+ * frontend (client/), server-internal, tests, tech-app, portal, and the
+ * import pipeline. Last caller — `QuickAddJobDialog`'s inline
+ * `quickCreateClientMutation` — was rewired to the canonical
+ * `CreateClientModal` flow (which uses `POST /api/clients/full-create`)
+ * earlier the same day. The removed route was a thin gateway over the
+ * shared storage helper `createOrGetLocation`; that helper remains in
+ * place and is still used by every other client-create surface.
+ *
+ * Below remains an unrelated route docstring to preserve file order.
+ *
+ * NOTE: Standalone-location creates now go through
+ *   POST /api/clients/full-create
  * To create a location under an existing customer company, use:
  *   POST /api/customer-companies/:companyId/locations
  *
  * Orphan locations can later be linked using:
  *   POST /api/customer-companies/:companyId/link-location
  */
-router.post("/quick-create", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const companyId = req.companyId;
-  const userId = req.user.id;
-
-  // Phase 1 geocoding: Zod validation for quick-create (was previously unvalidated)
-  // Phase 3: postalCodeSchema validates CA/US format and normalizes Canadian codes
-  // 2026-04-16 hardening: address is required; location name is optional.
-  const quickCreateSchema = z.object({
-    companyName: z.string().min(1, "Company name is required"),
-    contactName: z.string().nullable().optional(),
-    address: z.string().nullable().optional(),
-    city: z.string().nullable().optional(),
-    province: z.string().nullable().optional(),
-    postalCode: postalCodeSchema,
-    country: z.string().nullable().optional(),
-    lat: z.string().nullable().optional(),
-    lng: z.string().nullable().optional(),
-    placeId: z.string().nullable().optional(),
-  });
-  const validated = validateSchema(quickCreateSchema, req.body);
-
-  // Check subscription limits
-  const limitCheck = await storage.canAddLocation(companyId!);
-  if (!limitCheck.allowed) {
-    throw createError(403, limitCheck.reason || "Subscription limit reached");
-  }
-
-  // Determine if address fields were provided (reduces needsDetails flag)
-  const hasAddress = !!(validated.address?.trim() || validated.city?.trim());
-
-  // Create client — sets needsDetails=true only when address is missing
-  const clientData = {
-    parentCompanyId: null,
-    companyName: validated.companyName.trim(),
-    location: validated.companyName.trim(),
-    address: validated.address?.trim() || null,
-    city: validated.city?.trim() || null,
-    province: validated.province?.trim() || null,
-    postalCode: validated.postalCode?.trim() || null,
-    country: validated.country?.trim() || null,
-    lat: validated.lat || null,
-    lng: validated.lng || null,
-    placeId: validated.placeId?.trim() || null,
-    contactName: validated.contactName?.trim() || null,
-    email: null,
-    phone: null,
-    roofLadderCode: null,
-    notes: null,
-    selectedMonths: [],
-    inactive: false,
-    nextDue: new Date("9999-12-31").toISOString(),
-    billWithParent: true,
-    needsDetails: !hasAddress,
-  };
-
-  // 2026-04-19: orphan locations dedupe by (companyId, lower(companyName)).
-  // Quick-create with the same company name as an existing orphan returns
-  // the existing row instead of producing a sibling.
-  const result = await storage.createOrGetLocation(companyId, userId, clientData);
-  const client = result.location;
-
-  // Phase 1: Log quick-create client event
-  logEventAsync(getQueryCtx(req), {
-    eventType: "client.created",
-    entityType: "client",
-    entityId: client.id,
-    summary: `Created client ${client.companyName} (quick)`,
-    meta: { companyName: client.companyName },
-  });
-
-  res.json({ client });
-}));
+// Route body removed 2026-05-04 — see tombstone docstring above.
 
 /**
  * GET /api/clients/:clientId/contacts

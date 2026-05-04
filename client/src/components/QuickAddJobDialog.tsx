@@ -11,6 +11,13 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+// 2026-05-04 client-create flow rewire: the dropdown's "Add new client /
+// location" affordance now opens the canonical CreateClientModal instead
+// of the prior inline one-shot create call. The modal owns the full
+// create payload + atomic full-create mutation; QuickAddJob just opens
+// it with prefill and auto-selects the new location on success. No
+// duplicate client-creation API call here.
+import { CreateClientModal } from "@/components/CreateClientModal";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Calendar } from "@/components/ui/calendar";
@@ -886,6 +893,34 @@ interface QuickAddJobDialogProps {
   compact?: boolean;
 }
 
+/**
+ * 2026-05-04 client-create rewire: heuristic prefill for the canonical
+ * CreateClientModal when invoked from the Quick Create Job location dropdown.
+ * Rules (intentionally conservative — we never guess address fields):
+ *   - text containing digits, "&", or business suffix words → companyName
+ *   - exactly two all-alpha tokens → firstName / lastName
+ *   - everything else → companyName
+ * Whitespace is collapsed; an empty input returns no prefill at all.
+ */
+function deriveClientInitialValues(searchTerm: string): {
+  companyName?: string;
+  firstName?: string;
+  lastName?: string;
+} {
+  const trimmed = (searchTerm ?? "").trim().replace(/\s+/g, " ");
+  if (!trimmed) return {};
+  const businessHints = /\b(inc|llc|ltd|co|corp|corporation|company|services?|hvac|plumbing|electric|enterprises?)\b/i;
+  if (/[0-9&]/.test(trimmed) || businessHints.test(trimmed)) {
+    return { companyName: trimmed };
+  }
+  const tokens = trimmed.split(" ");
+  const allAlpha = tokens.every((t) => /^[A-Za-zÀ-ÿ'’\-]+$/.test(t));
+  if (tokens.length === 2 && allAlpha) {
+    return { firstName: tokens[0], lastName: tokens[1] };
+  }
+  return { companyName: trimmed };
+}
+
 export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, editJob, onSuccess, initialSchedule, cloneFromJobId, mode = "standard", embedded = false, compact = false }: QuickAddJobDialogProps) {
   // 2026-04-30 (compact pass): the `compact` prop was previously
   // destructured as `_compact` and ignored. It is now honored: when
@@ -905,6 +940,21 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
   // Location selector state (canonical)
   const [locationSearch, setLocationSearchText] = useState("");
   const [selectedLocationOption, setSelectedLocationOption] = useState<LocationOption | null>(null);
+
+  // 2026-05-04 client-create rewire: when the user clicks the dropdown's
+  // "Add new client / location: <typed>" affordance, we open the canonical
+  // CreateClientModal with prefilled identity values derived from the
+  // search text. NO record is created until the user submits the modal.
+  // On success the new primaryLocationId auto-selects in this form;
+  // existing job form state (date / start / duration / tech / service /
+  // equipment / recurrence / job-vs-task toggle) is untouched because
+  // it lives in component state that the nested modal doesn't reach.
+  const [clientCreateModalOpen, setClientCreateModalOpen] = useState(false);
+  const [clientCreateInitialValues, setClientCreateInitialValues] = useState<{
+    companyName?: string;
+    firstName?: string;
+    lastName?: string;
+  } | null>(null);
   const isEditMode = !!editJob;
 
   // 2026-04-30 (embedded compact pass): per-section collapse flags.
@@ -1575,16 +1625,10 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
           ? "Job has been added to the backlog."
           : "Job has been created and scheduled.",
       });
-      if (quickCreateClientMutation.isSuccess) {
-        // Reminder for quick-created clients that may need details completed
-        const name = selectedLocation?.companyName;
-        surface.timeout("needs-details-reminder", () => {
-          toast({
-            title: "Reminder",
-            description: `Don't forget to complete the details for "${name}"!`,
-          });
-        }, 1500);
-      }
+      // 2026-05-04 client-create rewire: the legacy reminder toast for
+      // newly quick-created clients is gone — the canonical CreateClientModal
+      // now collects full client details up front, so the
+      // "remember to complete the details" nudge is obsolete.
 
       if (result.hasConflict) {
         // Show conflict alert — defer modal close until user acknowledges
@@ -1623,29 +1667,13 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     },
   });
 
-  const quickCreateClientMutation = useMutation({
-    mutationFn: async (companyName: string) => {
-      return await apiRequest<{ client: { id: string; companyName?: string } }>("/api/clients/quick-create", {
-        method: "POST",
-        body: JSON.stringify({ companyName }),
-      });
-    },
-    onSuccess: (result, companyName) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/clients/search-locations"] });
-      if (result.client?.id) {
-        const loc: LocationOption = { id: result.client.id, companyName: result.client.companyName ?? companyName };
-        setFormData(prev => ({ ...prev, locationId: result.client.id }));
-        setSelectedLocationOption(loc);
-        setSelectedEquipmentIds([]);
-        logActivity({ type: "created", entityType: "client", entityId: result.client.id, label: "Created Client", meta: companyName });
-      }
-      toast({ title: "Client Created", description: "Client has been quick-created. Remember to fill in details later!" });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message || "Failed to create client", variant: "destructive" });
-    },
-  });
+  // 2026-05-04 client-create rewire: the inline one-shot client-create
+  // mutation that used to live here was removed. The Quick Create Job
+  // dropdown's "Add new client / location" affordance now opens the
+  // canonical CreateClientModal instead, which uses the atomic
+  // full-create endpoint. Auto-selection of the new location is handled
+  // in the CreateClientModal's onCreated callback mounted near the
+  // bottom of this component's return.
 
   // Apply recurrence preset — auto-configures kind/interval from preset selection
   const handlePresetChange = useCallback((preset: RecurrencePreset) => {
@@ -1785,7 +1813,13 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                 setFormData(prev => ({ ...prev, locationId: loc?.id ?? "" }));
                 setSelectedEquipmentIds([]); // Reset equipment on location change
               }}
-              onCreateNew={(text) => quickCreateClientMutation.mutate(text)}
+              onCreateNew={(text) => {
+                // 2026-05-04 client-create rewire: open canonical CreateClientModal
+                // (NO record created here). Job form state stays intact because
+                // it's all in component-scoped useState that this modal doesn't touch.
+                setClientCreateInitialValues(deriveClientInitialValues(text));
+                setClientCreateModalOpen(true);
+              }}
               disabled={isPending}
               compact={isCompact}
             />
@@ -2959,6 +2993,49 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
         </DialogContent>
       </Dialog>
     )}
+
+    {/* 2026-05-04 client-create rewire: canonical CreateClientModal mount.
+         Triggered from the location dropdown's "Add new client / location"
+         affordance. On success: auto-select the new primaryLocationId, log
+         activity, and let TanStack Query's invalidations refresh the
+         location-search results so the chip's full details (parent / address)
+         flow in. On cancel (onOpenChange(false) without onCreated): nothing
+         happens — search term + job form state are already preserved in
+         this component's existing state. */}
+    <CreateClientModal
+      open={clientCreateModalOpen}
+      onOpenChange={(next) => {
+        setClientCreateModalOpen(next);
+        if (!next) setClientCreateInitialValues(null);
+      }}
+      initialValues={clientCreateInitialValues ?? undefined}
+      onCreated={(customerCompanyId, primaryLocationId) => {
+        const optimisticName =
+          clientCreateInitialValues?.companyName?.trim() ||
+          [clientCreateInitialValues?.firstName, clientCreateInitialValues?.lastName]
+            .filter(Boolean)
+            .join(" ")
+            .trim() ||
+          "New Client";
+        const optimisticLocation: LocationOption = {
+          id: primaryLocationId,
+          companyName: optimisticName,
+        };
+        setFormData((prev) => ({ ...prev, locationId: primaryLocationId }));
+        setSelectedLocationOption(optimisticLocation);
+        setSelectedEquipmentIds([]);
+        logActivity({
+          type: "created",
+          entityType: "client",
+          entityId: customerCompanyId,
+          label: "Created Client",
+          meta: optimisticName,
+        });
+        // Refresh search/list caches so subsequent typing surfaces the new entry.
+        queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/clients/search-locations"] });
+      }}
+    />
 
     <AlertDialog open={showConflictAlert} onOpenChange={setShowConflictAlert}>
       <AlertDialogContent>

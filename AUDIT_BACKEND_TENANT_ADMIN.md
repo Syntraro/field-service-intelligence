@@ -114,12 +114,12 @@ Backend pre-check:
         → subscriptionRepository.getSubscriptionUsage(companyId)
           → server/storage/subscriptions.ts:77-168
 
-Backend enforcement (4 endpoints):
-  POST /api/clients                      → server/routes/clients.ts:182-185
-  POST /api/clients/full-create          → server/routes/clients.ts:234-237
-  POST /api/clients/quick-create         → server/routes/clients.ts:414-417
-  POST /api/clients/:companyId/location  → server/routes/clients.ts:800-807
+Backend enforcement (3 endpoints):
+  POST /api/clients                      → server/routes/clients.ts (single-location create)
+  POST /api/clients/full-create          → server/routes/clients.ts (canonical company + location)
+  POST /api/clients/:companyId/location  → server/routes/clients.ts (add-location-under-company)
   All call: storage.canAddLocation(companyId) → 403 if !allowed
+  (Removed 2026-05-04: POST /api/clients/quick-create — unified onto full-create flow.)
 ```
 
 ### Tables Used in Limit Check

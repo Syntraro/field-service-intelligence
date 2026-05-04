@@ -15,7 +15,7 @@
  * - optional client_contacts row (if contact fields provided)
  */
 
-import { useState, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
@@ -47,6 +47,15 @@ export interface CreateClientModalProps {
   /** Optional callback after successful creation (receives customer company ID).
    *  If not provided, modal navigates to /clients/{companyId} by default. */
   onCreated?: (customerCompanyId: string, primaryLocationId: string) => void;
+  /** 2026-05-04: optional prefill applied on each open transition. Address
+   *  fields are intentionally NOT prefilled — callers (e.g. QuickAddJobDialog
+   *  deriving from a typed search term) only know identity fields, not
+   *  service or billing address. */
+  initialValues?: {
+    companyName?: string;
+    firstName?: string;
+    lastName?: string;
+  };
 }
 
 // ============================================================================
@@ -57,6 +66,7 @@ export function CreateClientModal({
   open,
   onOpenChange,
   onCreated,
+  initialValues,
 }: CreateClientModalProps) {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
@@ -99,6 +109,26 @@ export function CreateClientModal({
 
   // ── Server error display ──
   const [serverError, setServerError] = useState<string | null>(null);
+
+  // 2026-05-04: apply optional prefill on every open transition.
+  // Callers (e.g. QuickAddJobDialog) derive identity values from a typed
+  // search term and pass them in. Address fields are deliberately not
+  // prefilled — the caller doesn't know address info. We only react to
+  // `open` going truthy so the user's edits in an open modal are not
+  // overwritten if the parent re-renders with a new initialValues object.
+  useEffect(() => {
+    if (!open) return;
+    if (initialValues?.companyName !== undefined) {
+      setCompanyName(initialValues.companyName);
+    }
+    if (initialValues?.firstName !== undefined) {
+      setClientFirstName(initialValues.firstName);
+    }
+    if (initialValues?.lastName !== undefined) {
+      setClientLastName(initialValues.lastName);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const resetForm = useCallback(() => {
     setCompanyName("");

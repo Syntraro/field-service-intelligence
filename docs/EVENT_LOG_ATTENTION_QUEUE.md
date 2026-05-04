@@ -64,7 +64,7 @@ Canonical tenant-scoped append-only event log.
 | `job.unscheduled` | `calendar.ts` | `POST /api/calendar/unschedule/:jobId` |
 | `invoice.created` | `invoices.ts` | `POST /api/invoices/from-job/:jobId` |
 | `invoice.sent` | `invoices.ts` | `POST /api/invoices/:id/send` |
-| `client.created` | `clients.ts` | `POST /api/clients`, `POST /api/clients/quick-create` |
+| `client.created` | `clients.ts`, `customer-companies.ts`, `techField.ts` | `POST /api/clients`, `POST /api/clients/full-create`, `POST /api/customer-companies/:id/locations`, `POST /api/tech/clients` (all dedupe-gated; emit only when a new client_locations row was actually inserted) |
 | `quote.created` | `quotes.ts` | `POST /api/quotes` |
 
 ### 2. Attention Items Table (`attention_items`)
