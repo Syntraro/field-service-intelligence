@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
@@ -305,7 +306,7 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
           <div className="space-y-4 py-4">
             {availableEquipment.length > 0 ? (
               <div className="space-y-2">
-                <label className="text-sm font-medium">Select Existing Equipment</label>
+                <Label>Select Existing Equipment</Label>
                 <Select
                   value={selectedEquipmentId}
                   onValueChange={setSelectedEquipmentId}
@@ -331,7 +332,7 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
             )}
             {availableEquipment.length > 0 && (
               <div className="space-y-2">
-                <label className="text-sm font-medium">Notes (optional)</label>
+                <Label>Notes (optional)</Label>
                 <Textarea
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}

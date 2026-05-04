@@ -283,6 +283,20 @@ describe("requirePlatformRole", () => {
 describe("platformAuthRouter login", () => {
   beforeEach(() => vi.resetModules());
 
+  // 2026-05-04 Phase 5 helper: classify a test-input role string as
+  // platform-or-not. Tenant-role test cases (`role: "admin"`) drive
+  // the harness toward an empty platform-repo resolution, which is
+  // the exact production-correct behavior post-cleanup — there is
+  // no path where a tenant-role account is found in `platform_users`.
+  function isPlatformRoleString(r: string): boolean {
+    return [
+      "platform_admin",
+      "platform_support",
+      "platform_billing",
+      "platform_readonly_audit",
+    ].includes(r);
+  }
+
   async function invokeLoginHandler(opts: {
     email: string;
     password: string;
@@ -307,24 +321,44 @@ describe("platformAuthRouter login", () => {
      */
     tenantSession?: any;
   }) {
-    // Mock dependencies BEFORE importing the module.
-    vi.doMock("../server/storage/index", () => ({
-      storage: {
-        findUserByEmailGlobal: vi.fn().mockResolvedValue(
-          opts.mockUser && opts.mockIdentity
-            ? { user: opts.mockUser, identity: opts.mockIdentity }
-            : null,
-        ),
-      },
-    }));
-    // 2026-05-04 Phase 2-A: platform login first consults the new
-    // platformIdentityRepository, then falls back to the legacy storage
-    // path. These tests pin the LEGACY-fallback behavior, so the new
-    // repo is mocked to return null — this routes through to the
-    // existing storage mock above unchanged.
+    // 2026-05-04 Phase 5: platform login resolves identity EXCLUSIVELY
+    // through `platformIdentityRepository`. The legacy
+    // `storage.findUserByEmailGlobal` fallback is gone. The harness
+    // now drives the canonical path via `findPlatformUserByEmail`,
+    // which returns the Phase 5 `{ user, identity, roles }` shape.
+    // Map the harness's flat `mockUser` / `mockIdentity` /
+    // `mockRoles` inputs onto that shape.
+    const platformLookupResult = opts.mockUser && opts.mockIdentity
+      ? {
+          user: {
+            id: opts.mockUser.id,
+            email: opts.mockUser.email,
+            fullName: opts.mockUser.fullName ?? null,
+            status: opts.mockUser.status,
+            disabled: opts.mockUser.disabled === true,
+            tokenVersion: opts.mockUser.tokenVersion,
+          },
+          identity: { passwordHash: opts.mockIdentity.passwordHash },
+          roles: isPlatformRoleString(opts.mockUser.role)
+            ? [opts.mockUser.role]
+            : [], // tenant-role accounts: no platform_users row exists,
+                  // so the test mocks an empty resolution.
+        }
+      : null;
+
+    // The repo now mirrors what the production code calls. When the
+    // test simulates a tenant-role account, the new repo correctly
+    // returns null — no fallback exists, so the handler hits the
+    // `!resolved → 401` branch (the Phase 2-A anti-enumeration
+    // improvement preserved in Phase 5).
+    const newRepoResolves =
+      platformLookupResult && platformLookupResult.roles.length > 0
+        ? platformLookupResult
+        : null;
+
     vi.doMock("../server/storage/platformIdentity", () => ({
       platformIdentityRepository: {
-        findPlatformUserByEmail: vi.fn().mockResolvedValue(null),
+        findPlatformUserByEmail: vi.fn().mockResolvedValue(newRepoResolves),
         recordPlatformLogin: vi.fn().mockResolvedValue(undefined),
       },
     }));

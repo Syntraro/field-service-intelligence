@@ -578,23 +578,37 @@ export default function PaymentsSettingsPage() {
 
 function PageHeader() {
   return (
-    <div className="flex items-center gap-3">
-      <Link href="/settings">
-        <Button variant="ghost" size="icon" data-testid="button-back-settings">
-          <ArrowLeft className="h-4 w-4" />
+    <div className="flex items-center justify-between gap-3 flex-wrap">
+      <div className="flex items-center gap-3">
+        <Link href="/settings">
+          <Button variant="ghost" size="icon" data-testid="button-back-settings">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        </Link>
+        <div>
+          <h1
+            className="text-xl font-semibold"
+            data-testid="text-payments-settings-title"
+          >
+            Payments
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Set up online card payments and bank-account payouts.
+          </p>
+        </div>
+      </div>
+      {/* 2026-05-04 PR7 — back-link from settings to the lifecycle
+          dashboard. Operators flip between the two surfaces all the
+          time once they're past initial onboarding. */}
+      <Link href="/payments">
+        <Button
+          variant="outline"
+          size="sm"
+          data-testid="button-go-to-payments-dashboard"
+        >
+          View payments dashboard →
         </Button>
       </Link>
-      <div>
-        <h1
-          className="text-xl font-semibold"
-          data-testid="text-payments-settings-title"
-        >
-          Payments
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Set up online card payments and bank-account payouts.
-        </p>
-      </div>
     </div>
   );
 }

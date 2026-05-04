@@ -275,15 +275,23 @@ describe("impersonationMiddleware — Phase 2-lite bootstrap", () => {
 // 4. Tenant /login default rejects platform-role accounts
 // ============================================================================
 
-describe("tenant /login — Phase 2-lite default rejection", () => {
-  it("env-var default is 'false' (reject platform roles by default)", async () => {
+describe("tenant /login — platform-role rejection (Phase 7: branch removed)", () => {
+  it("the entire ALLOW_PLATFORM_IN_TENANT_LOGIN branch is gone from auth.ts", async () => {
+    // 2026-05-04 Phase 7: the `ALLOW_PLATFORM_IN_TENANT_LOGIN` env-var
+    // escape hatch + the `isPlatformRole((user as any).role)` rejection
+    // branch were both removed from `server/routes/auth.ts`. After
+    // Phase 6's DB CHECK constraint on `users.role`, no row in `users`
+    // can hold a platform string — the rejection branch was dead
+    // code. The structural guarantee replaces the runtime check.
     const src = await import("fs").then((fs) =>
       fs.readFileSync("C:/dev/Syntraro/server/routes/auth.ts", "utf-8"),
     );
-    // Assert the default value in the nullish-coalesce fell from "true" to "false"
-    // AND the semantic check flipped from `!== "false"` to `=== "true"`.
-    expect(src).toMatch(/ALLOW_PLATFORM_IN_TENANT_LOGIN\s*\?\?\s*"false"/);
-    expect(src).toMatch(/\.toLowerCase\(\)\s*===\s*"true"/);
+    expect(src).not.toMatch(/ALLOW_PLATFORM_IN_TENANT_LOGIN/);
+    expect(src).not.toMatch(/isPlatformRole\(\(user as any\)\.role\)/);
+    // Defense-in-depth: no PLATFORM_ACCOUNT_REJECTED error code
+    // remains either (it was the response shape for the removed
+    // branch).
+    expect(src).not.toMatch(/PLATFORM_ACCOUNT_REJECTED/);
   });
 });
 

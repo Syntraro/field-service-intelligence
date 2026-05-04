@@ -61,6 +61,8 @@ import {
 import { paymentDisputesRepository } from "../storage/paymentDisputes";
 // 2026-05-04 PR7 — tenant-level transactions list for Payments dashboard.
 import { paymentRepository } from "../storage/payments";
+// 2026-05-04 PR8 — ops anomaly summary (counts-only, tenant-scoped).
+import { getTenantWebhookAnomalySummary } from "../storage/paymentWebhookEvents";
 
 const router = Router();
 
@@ -390,6 +392,28 @@ router.get(
         },
       );
     res.json({ transactions });
+  }),
+);
+
+// ============================================================================
+// 2026-05-04 PR8 — Webhook anomaly summary.
+//
+// Powers the Payments dashboard's "events requiring attention" banner.
+// Counts-only — never returns row contents. Returns two windows so the
+// dashboard can show "X in 7 days · Y in 30 days" without two
+// round-trips. Tenant-scoped (companyId from session). The same gate
+// pattern as the rest of the dashboard read APIs.
+// ============================================================================
+
+router.get(
+  "/payments/anomalies/summary",
+  requireRole(RESTRICTED_MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const [last7Days, last30Days] = await Promise.all([
+      getTenantWebhookAnomalySummary(req.companyId!, 7),
+      getTenantWebhookAnomalySummary(req.companyId!, 30),
+    ]);
+    res.json({ last7Days, last30Days });
   }),
 );
 

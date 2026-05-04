@@ -23,8 +23,8 @@
  * the client or loosen the server; for now the page handles the
  * mismatch by rendering inline error states gracefully.
  */
-import { useMemo, useState } from "react";
-import { Link } from "wouter";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useLocation } from "wouter";
 import {
   AlertTriangle,
   ArrowDownToLine,
@@ -61,15 +61,29 @@ import {
 } from "@/components/ui/table";
 import { StatusPill, type PillVariant } from "@/components/ui/status-pill";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { formatCurrency } from "@/lib/formatters";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
+import { Label } from "@/components/ui/label";
+import { formatCurrency, formatDate, formatDateTime } from "@/lib/formatters";
 import {
   useTenantPaymentAccount,
+  useTenantPaymentAnomalySummary,
   useTenantPaymentPayouts,
   useTenantPaymentPayoutSummary,
   useTenantPaymentDisputes,
   useTenantPaymentDisputeSummary,
   useTenantPaymentTransactions,
   type DisputeStatus,
+  type ListDisputesFilters,
+  type ListPayoutsFilters,
+  type ListTransactionsFilters,
   type PayoutStatus,
   type TenantDispute,
   type TenantPayout,
@@ -135,30 +149,6 @@ const ACCOUNT_STATUS_VARIANTS: Record<string, PillVariant> = {
 // Helpers
 // ============================================================================
 
-function formatDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString("en-CA", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
-
-function formatDateTime(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("en-CA", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
 /**
  * Format a Stripe-style destination summary. Spec rule: never show
  * full bank data. We render last4 only when the webhook captured it
@@ -179,10 +169,55 @@ function isUrgentDispute(status: DisputeStatus): boolean {
 // Page
 // ============================================================================
 
+// 2026-05-04 PR8 — tab id literal type. Single source of truth so the
+// URL parser, state setter, and TabsTrigger values all stay in sync.
+const TAB_IDS = ["overview", "transactions", "payouts", "disputes"] as const;
+type TabId = (typeof TAB_IDS)[number];
+
+function readTabFromUrl(): TabId {
+  if (typeof window === "undefined") return "overview";
+  const params = new URLSearchParams(window.location.search);
+  const t = params.get("tab");
+  return (TAB_IDS as readonly string[]).includes(t ?? "")
+    ? (t as TabId)
+    : "overview";
+}
+
 export default function PaymentsDashboardPage() {
-  const [tab, setTab] = useState<"overview" | "transactions" | "payouts" | "disputes">(
-    "overview",
-  );
+  const [, setLocation] = useLocation();
+
+  // 2026-05-04 PR8 — tab state synced with `?tab=` URL param. Default
+  // overview; back/forward + direct links work because we read the
+  // URL on every navigation event (popstate + wouter location change).
+  const [tab, setTabState] = useState<TabId>(() => readTabFromUrl());
+
+  // Re-sync tab state when the URL changes via back/forward or any
+  // external setLocation call. wouter's useLocation re-renders on
+  // pathname change but NOT on query-string change, so we listen to
+  // popstate directly.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handler = () => setTabState(readTabFromUrl());
+    window.addEventListener("popstate", handler);
+    return () => window.removeEventListener("popstate", handler);
+  }, []);
+
+  const setTab = (next: TabId) => {
+    setTabState(next);
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (next === "overview") {
+        // Keep the URL minimal for the default tab.
+        params.delete("tab");
+      } else {
+        params.set("tab", next);
+      }
+      const qs = params.toString();
+      // Use replace so back-button history isn't polluted with a tab
+      // change per click — direct links / forward nav still work.
+      setLocation(qs ? `/payments?${qs}` : "/payments", { replace: true });
+    }
+  };
 
   const accountQuery = useTenantPaymentAccount();
   const account = accountQuery.data?.account ?? null;
@@ -248,7 +283,7 @@ export default function PaymentsDashboardPage() {
       ) : (
         <Tabs
           value={tab}
-          onValueChange={(v) => setTab(v as typeof tab)}
+          onValueChange={(v) => setTab(v as TabId)}
           data-testid="tabs-payments-dashboard"
         >
           <TabsList>
@@ -306,6 +341,7 @@ function OverviewTab(props: {
 }) {
   const payoutSummary = useTenantPaymentPayoutSummary();
   const disputeSummary = useTenantPaymentDisputeSummary();
+  const anomalySummary = useTenantPaymentAnomalySummary();
 
   const accountLabel =
     ACCOUNT_STATUS_LABELS[props.accountStatus] ?? "Not set up";
@@ -313,7 +349,9 @@ function OverviewTab(props: {
     ACCOUNT_STATUS_VARIANTS[props.accountStatus] ?? "neutral";
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+    <div className="space-y-4">
+      <AnomalyBanner summary={anomalySummary.data} />
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
       {/* Account status */}
       <Card data-testid="card-overview-account">
         <CardHeader className="pb-2">
@@ -338,15 +376,12 @@ function OverviewTab(props: {
                 label="Payouts enabled"
                 enabled={props.payoutsEnabled}
               />
-              <Link href="/settings/payments">
-                <Button
-                  variant="link"
-                  size="sm"
-                  className="h-auto p-0 text-xs"
-                  data-testid="button-overview-manage-account"
-                >
-                  Manage →
-                </Button>
+              <Link
+                href="/settings/payments"
+                className="inline-block text-xs text-primary hover:underline"
+                data-testid="button-overview-manage-account"
+              >
+                Manage →
               </Link>
             </>
           )}
@@ -447,7 +482,43 @@ function OverviewTab(props: {
           )}
         </CardContent>
       </Card>
+      </div>
     </div>
+  );
+}
+
+function AnomalyBanner({
+  summary,
+}: {
+  summary:
+    | {
+        last7Days: { total: number; byKind: Record<string, number> };
+        last30Days: { total: number; byKind: Record<string, number> };
+      }
+    | undefined;
+}) {
+  // Show only when at least one anomaly hit in the last 7 days. The
+  // 30-day window is rendered as supporting detail; we don't bother
+  // surfacing 30d-only deltas (which are noisier and less actionable).
+  if (!summary || summary.last7Days.total === 0) return null;
+  return (
+    <Alert
+      variant="destructive"
+      data-testid="alert-payments-anomalies"
+      className="border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+    >
+      <AlertTriangle className="h-4 w-4" />
+      <AlertTitle>Some payment events require attention</AlertTitle>
+      <AlertDescription>
+        {summary.last7Days.total} webhook event
+        {summary.last7Days.total === 1 ? " has" : "s have"} been flagged in
+        the last 7 days ({summary.last30Days.total} in the last 30). These
+        are deliveries we couldn&apos;t fully process — usually a missing
+        connected-account row or a transient retry. Operators can
+        investigate via the application logs (see the{" "}
+        <code className="text-xs">[payments-webhook]</code> log channel).
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -469,8 +540,25 @@ function CapabilityFlag(props: { label: string; enabled: boolean }) {
 // ============================================================================
 
 function TransactionsTab() {
-  const txQuery = useTenantPaymentTransactions();
-  const rows = txQuery.data?.transactions ?? [];
+  // Local-only filter state (per-tab; no global store). Date / range
+  // hit the backend; type is frontend-only because the backend
+  // surface in PR7 doesn't accept it (every row is provider_source =
+  // 'stripe' anyway, and type filtering is purely a display concern
+  // — payment vs refund vs reversal).
+  const [filters, setFilters] = useState<ListTransactionsFilters>({});
+  const [typeFilter, setTypeFilter] = useState<
+    "all" | "payment" | "refund" | "reversal"
+  >("all");
+
+  const txQuery = useTenantPaymentTransactions(filters);
+  const allRows = txQuery.data?.transactions ?? [];
+  const rows = useMemo(
+    () =>
+      typeFilter === "all"
+        ? allRows
+        : allRows.filter((r) => r.paymentType === typeFilter),
+    [allRows, typeFilter],
+  );
 
   return (
     <Card>
@@ -481,9 +569,40 @@ function TransactionsTab() {
           Manual cash / cheque payments appear on the invoice itself.
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        <FilterBar
+          fromValue={filters.from}
+          toValue={filters.to}
+          onFromChange={(v) => setFilters((p) => ({ ...p, from: v }))}
+          onToChange={(v) => setFilters((p) => ({ ...p, to: v }))}
+          onPreset={(days) =>
+            setFilters((p) => ({ ...p, from: presetFrom(days), to: undefined }))
+          }
+          onReset={() => {
+            setFilters({});
+            setTypeFilter("all");
+          }}
+          extra={
+            <FilterField label="Type" htmlFor="filter-tx-type">
+              <Select
+                value={typeFilter}
+                onValueChange={(v) => setTypeFilter(v as typeof typeFilter)}
+              >
+                <SelectTrigger id="filter-tx-type" className="w-[160px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All types</SelectItem>
+                  <SelectItem value="payment">Payment</SelectItem>
+                  <SelectItem value="refund">Refund</SelectItem>
+                  <SelectItem value="reversal">Reversal</SelectItem>
+                </SelectContent>
+              </Select>
+            </FilterField>
+          }
+        />
         {txQuery.isLoading ? (
-          <LoadingRow label="Loading transactions…" />
+          <TableSkeleton rows={6} cols={6} />
         ) : txQuery.isError ? (
           <ErrorRow error={txQuery.error} />
         ) : rows.length === 0 ? (
@@ -569,8 +688,9 @@ function TransactionRow({ row }: { row: TenantTransaction }) {
 // ============================================================================
 
 function PayoutsTab() {
+  const [filters, setFilters] = useState<ListPayoutsFilters>({});
   const summary = useTenantPaymentPayoutSummary();
-  const list = useTenantPaymentPayouts();
+  const list = useTenantPaymentPayouts(filters);
   const rows = list.data?.payouts ?? [];
 
   return (
@@ -611,11 +731,52 @@ function PayoutsTab() {
           <CardTitle>Payouts</CardTitle>
           <CardDescription>
             Funds transferred from your provider account to your bank.
+            Sorted by arrival date, most recent first.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          <FilterBar
+            fromValue={filters.from}
+            toValue={filters.to}
+            onFromChange={(v) => setFilters((p) => ({ ...p, from: v }))}
+            onToChange={(v) => setFilters((p) => ({ ...p, to: v }))}
+            onPreset={(days) =>
+              setFilters((p) => ({ ...p, from: presetFrom(days), to: undefined }))
+            }
+            onReset={() => setFilters({})}
+            extra={
+              <FilterField label="Status" htmlFor="filter-payout-status">
+                <Select
+                  value={filters.status ?? "__all"}
+                  onValueChange={(v) =>
+                    setFilters((p) => ({
+                      ...p,
+                      status: v === "__all" ? undefined : (v as PayoutStatus),
+                    }))
+                  }
+                >
+                  <SelectTrigger
+                    id="filter-payout-status"
+                    className="w-[160px]"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__all">All statuses</SelectItem>
+                    {(Object.keys(PAYOUT_STATUS_LABELS) as PayoutStatus[]).map(
+                      (s) => (
+                        <SelectItem key={s} value={s}>
+                          {PAYOUT_STATUS_LABELS[s]}
+                        </SelectItem>
+                      ),
+                    )}
+                  </SelectContent>
+                </Select>
+              </FilterField>
+            }
+          />
           {list.isLoading ? (
-            <LoadingRow label="Loading payouts…" />
+            <TableSkeleton rows={6} cols={6} />
           ) : list.isError ? (
             <ErrorRow error={list.error} />
           ) : rows.length === 0 ? (
@@ -681,8 +842,9 @@ function PayoutRow({ row }: { row: TenantPayout }) {
 // ============================================================================
 
 function DisputesTab() {
+  const [filters, setFilters] = useState<ListDisputesFilters>({});
   const summary = useTenantPaymentDisputeSummary();
-  const list = useTenantPaymentDisputes();
+  const list = useTenantPaymentDisputes(filters);
   const rows = list.data?.disputes ?? [];
 
   return (
@@ -742,9 +904,49 @@ function DisputesTab() {
             submitted through your provider&apos;s hosted dashboard.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          <FilterBar
+            fromValue={filters.from}
+            toValue={filters.to}
+            onFromChange={(v) => setFilters((p) => ({ ...p, from: v }))}
+            onToChange={(v) => setFilters((p) => ({ ...p, to: v }))}
+            onPreset={(days) =>
+              setFilters((p) => ({ ...p, from: presetFrom(days), to: undefined }))
+            }
+            onReset={() => setFilters({})}
+            extra={
+              <FilterField label="Status" htmlFor="filter-dispute-status">
+                <Select
+                  value={filters.status ?? "__all"}
+                  onValueChange={(v) =>
+                    setFilters((p) => ({
+                      ...p,
+                      status: v === "__all" ? undefined : (v as DisputeStatus),
+                    }))
+                  }
+                >
+                  <SelectTrigger
+                    id="filter-dispute-status"
+                    className="w-[200px]"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__all">All statuses</SelectItem>
+                    {(
+                      Object.keys(DISPUTE_STATUS_LABELS) as DisputeStatus[]
+                    ).map((s) => (
+                      <SelectItem key={s} value={s}>
+                        {DISPUTE_STATUS_LABELS[s]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </FilterField>
+            }
+          />
           {list.isLoading ? (
-            <LoadingRow label="Loading disputes…" />
+            <TableSkeleton rows={6} cols={7} />
           ) : list.isError ? (
             <ErrorRow error={list.error} />
           ) : rows.length === 0 ? (
@@ -799,6 +1001,7 @@ function UrgentDisputesAlert({ disputes }: { disputes: TenantDispute[] }) {
 function DisputeRow({ row }: { row: TenantDispute }) {
   const label = DISPUTE_STATUS_LABELS[row.status] ?? row.status;
   const variant = DISPUTE_STATUS_VARIANTS[row.status] ?? "neutral";
+  const dueSoon = isEvidenceDueSoon(row.evidenceDueBy, row.status);
   return (
     <TableRow
       data-testid={`row-dispute-${row.id}`}
@@ -827,16 +1030,29 @@ function DisputeRow({ row }: { row: TenantDispute }) {
       </TableCell>
       <TableCell className="text-sm">
         {row.evidenceDueBy ? (
-          formatDate(row.evidenceDueBy)
+          <span
+            className={dueSoon ? "text-destructive font-medium" : undefined}
+          >
+            {formatDate(row.evidenceDueBy)}
+            {dueSoon ? (
+              <span
+                className="ml-2 text-xs"
+                data-testid="indicator-evidence-due-soon"
+              >
+                · Due soon
+              </span>
+            ) : null}
+          </span>
         ) : (
           <span className="text-muted-foreground">—</span>
         )}
       </TableCell>
       <TableCell className="text-sm">
-        <Link href="/settings/payments">
-          <Button variant="link" size="sm" className="h-auto p-0">
-            Manage at provider →
-          </Button>
+        <Link
+          href="/settings/payments"
+          className="text-primary hover:underline"
+        >
+          Manage at provider →
         </Link>
       </TableCell>
     </TableRow>
@@ -874,15 +1090,6 @@ function SummaryCard(props: {
   );
 }
 
-function LoadingRow({ label }: { label: string }) {
-  return (
-    <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
-      <Loader2 className="h-4 w-4 animate-spin" />
-      <span>{label}</span>
-    </div>
-  );
-}
-
 function EmptyRow({ message }: { message: string }) {
   return (
     <div className="py-6 text-sm text-muted-foreground text-center">
@@ -899,5 +1106,156 @@ function ErrorRow({ error }: { error: unknown }) {
       <AlertTitle>Couldn&apos;t load</AlertTitle>
       <AlertDescription>{message}</AlertDescription>
     </Alert>
+  );
+}
+
+// ============================================================================
+// 2026-05-04 PR8 — Filter primitives.
+// ============================================================================
+
+/**
+ * Shared filter bar used by the three list tabs. Two date pickers
+ * (from / to) + preset chips ("Last 7 days" / "Last 30 days") + an
+ * arbitrary `extra` slot for status / type selects + Reset button.
+ *
+ * Filter state is local to each tab; we deliberately do NOT lift it
+ * to a global store. Per-tab state matches the canonical settings-
+ * page pattern in this codebase (Reports, Tax & Billing, Time Billing
+ * each own their own filter state).
+ */
+function FilterBar(props: {
+  fromValue: string | undefined;
+  toValue: string | undefined;
+  onFromChange: (next: string | undefined) => void;
+  onToChange: (next: string | undefined) => void;
+  onPreset: (days: number) => void;
+  onReset: () => void;
+  extra?: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-end flex-wrap gap-3 pb-2 border-b">
+      <FilterField label="From" htmlFor="filter-from">
+        <CanonicalDatePicker
+          value={props.fromValue ?? null}
+          onChange={(v) => props.onFromChange(v ?? undefined)}
+          placeholder="Any time"
+          clearable
+          data-testid="filter-from"
+          id="filter-from"
+        />
+      </FilterField>
+      <FilterField label="To" htmlFor="filter-to">
+        <CanonicalDatePicker
+          value={props.toValue ?? null}
+          onChange={(v) => props.onToChange(v ?? undefined)}
+          placeholder="Any time"
+          clearable
+          data-testid="filter-to"
+          id="filter-to"
+        />
+      </FilterField>
+      {props.extra}
+      <div className="flex items-center gap-2 ml-auto">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => props.onPreset(7)}
+          data-testid="filter-preset-7d"
+        >
+          Last 7 days
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => props.onPreset(30)}
+          data-testid="filter-preset-30d"
+        >
+          Last 30 days
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={props.onReset}
+          data-testid="filter-reset"
+        >
+          Reset
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function FilterField(props: {
+  label: string;
+  htmlFor: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <Label
+        htmlFor={props.htmlFor}
+        className="text-xs text-muted-foreground"
+      >
+        {props.label}
+      </Label>
+      {props.children}
+    </div>
+  );
+}
+
+/**
+ * Build an ISO date string for "N days ago" — the value the
+ * `?from=` query string accepts. We strip the time component so the
+ * preset is a calendar-day boundary (the user thinks "last 7 days",
+ * not "last 7 × 24-hour periods from this exact instant").
+ */
+function presetFrom(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
+/**
+ * 2026-05-04 PR8 — "Due soon" indicator. Disputes are surfaced as
+ * urgent when the operator must act AND the deadline is within 48
+ * hours. Closed / won / lost / warning_closed disputes never get
+ * the indicator (no action possible / no deadline).
+ */
+function isEvidenceDueSoon(
+  evidenceDueBy: string | null,
+  status: DisputeStatus,
+): boolean {
+  if (!evidenceDueBy) return false;
+  if (status !== "needs_response" && status !== "warning_needs_response") {
+    return false;
+  }
+  const due = new Date(evidenceDueBy).getTime();
+  if (Number.isNaN(due)) return false;
+  const hoursRemaining = (due - Date.now()) / (1000 * 60 * 60);
+  return hoursRemaining > 0 && hoursRemaining <= 48;
+}
+
+/**
+ * 2026-05-04 PR8 — Skeleton block sized for an N-row × M-column
+ * table. Replaces the earlier plain "Loading…" text.
+ */
+function TableSkeleton({ rows, cols }: { rows: number; cols: number }) {
+  return (
+    <div className="space-y-2 py-1" data-testid="table-skeleton">
+      {Array.from({ length: rows }).map((_, r) => (
+        <div key={r} className="flex gap-3 items-center">
+          {Array.from({ length: cols }).map((__, c) => (
+            <Skeleton
+              key={c}
+              className={`h-4 ${c === 0 ? "w-32" : c === cols - 1 ? "w-20 ml-auto" : "w-24"}`}
+            />
+          ))}
+        </div>
+      ))}
+    </div>
   );
 }

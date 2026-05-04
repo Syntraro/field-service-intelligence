@@ -11,6 +11,7 @@ import {
   FileCheck,
   LayoutGrid,
   Wrench,
+  CreditCard,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
@@ -97,6 +98,27 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
     // is now reachable exclusively through the Dashboard view toggle
     // (Operations ↔ Financial). The `/financials` route is still live and
     // used by the toggle; only the redundant sidebar entry was retired.
+    //
+    // 2026-05-04 PR7 — Payments dashboard (online payments / payouts /
+    // disputes). Distinct from Financial Dashboard (which is the
+    // operations / financial view toggle). Tenant-facing surface for
+    // the Stripe Connect lifecycle data captured by PR2/PR4/PR5/PR6.
+    //
+    // 2026-05-04 PR8 — RBAC alignment: dispatcher is excluded from the
+    // /payments route gate (`requireRestrictedManager`) so we hide the
+    // nav entry for them too. Owner/admin/manager (and platform-role
+    // support sessions) keep it.
+    if (user?.role !== "dispatcher") {
+      menuItems.push({
+        title: "Payments",
+        icon: CreditCard,
+        href: "/payments",
+        isActive:
+          location === "/payments" || location.startsWith("/payments/"),
+        testId: "nav-payments",
+        hoverText: "Online payments, payouts, and disputes"
+      });
+    }
     menuItems.push({
       title: "Quotes",
       icon: FileCheck,

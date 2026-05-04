@@ -185,3 +185,82 @@ export async function safeRecordPaymentWebhookEvent(
 // log — operators query it directly via psql / BI tools when they
 // need to look at historical webhook errors. If an in-app read
 // surface returns later, reintroduce list/get then.
+
+// ============================================================================
+// 2026-05-04 PR8 — Tenant-scoped anomaly summary.
+// ============================================================================
+//
+// Single read helper that powers the Payments dashboard's "events
+// requiring attention" banner. NOT a full ops drilldown — that would
+// surface the row contents (potentially sensitive) and is deferred to
+// a platform-side console. This helper returns COUNTS ONLY:
+//   - total anomalies in the window
+//   - per-event-kind breakdown
+//
+// "Anomaly" = `outcome IN ('config_error', 'transient_failure')`. Both
+// surface ops attention items: config_error means the webhook landed
+// but our local state was inconsistent (e.g. unknown connected
+// account); transient_failure means we 500'd back to Stripe and
+// they're retrying. Replays / accepted / ignored are NOT anomalies.
+//
+// Tenant scoping: required `companyId` filter. Cross-tenant counts
+// would leak operational signal (volume of disputes, payout failures,
+// etc.) so the helper refuses to run without one.
+
+export interface TenantWebhookAnomalySummary {
+  /** Window width — typically 7 or 30 days. */
+  windowDays: number;
+  /** Total anomaly count across all event kinds. */
+  total: number;
+  /** Per-event-kind breakdown. Keys are stable enum values (e.g.
+   *  `payment_succeeded`, `payout_created`, `dispute_updated`). Only
+   *  kinds with > 0 hits in the window appear. */
+  byKind: Record<string, number>;
+}
+
+/**
+ * Count config-error + transient-failure rows in `paymentWebhookEvents`
+ * for a tenant within the given window. Designed to be cheap — single
+ * GROUP BY on `(eventKind)` filtered by `(companyId, outcome,
+ * receivedAt >= now() - INTERVAL)`. Indexes
+ * `payment_webhook_events_company_received_idx` (PR1) +
+ * `payment_webhook_events_outcome_received_idx` (PR1) cover the
+ * predicate.
+ *
+ * Returns zero counts (`total: 0`, `byKind: {}`) when the tenant has
+ * no anomalies — the dashboard hides the banner in that case.
+ */
+export async function getTenantWebhookAnomalySummary(
+  companyId: string,
+  windowDays: number,
+): Promise<TenantWebhookAnomalySummary> {
+  if (!companyId) {
+    throw new Error("companyId is required for tenant anomaly summary");
+  }
+  if (
+    !Number.isFinite(windowDays) ||
+    windowDays <= 0 ||
+    windowDays > 365
+  ) {
+    throw new Error("windowDays must be a positive integer ≤ 365");
+  }
+  const rows = await db.execute<{ event_kind: string; count: number }>(sql`
+    SELECT
+      ${paymentWebhookEvents.eventKind} AS event_kind,
+      COUNT(*)::int AS count
+    FROM ${paymentWebhookEvents}
+    WHERE
+      ${paymentWebhookEvents.companyId} = ${companyId}
+      AND ${paymentWebhookEvents.outcome} IN ('config_error', 'transient_failure')
+      AND ${paymentWebhookEvents.receivedAt} >= NOW() - (${windowDays} || ' days')::interval
+    GROUP BY ${paymentWebhookEvents.eventKind}
+  `);
+
+  const byKind: Record<string, number> = {};
+  let total = 0;
+  for (const row of rows.rows as { event_kind: string; count: number }[]) {
+    byKind[row.event_kind] = row.count;
+    total += row.count;
+  }
+  return { windowDays, total, byKind };
+}

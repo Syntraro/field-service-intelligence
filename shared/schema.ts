@@ -230,7 +230,17 @@ export const users = pgTable("users", {
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   email: text("email").notNull().unique(),
   password: text("password").notNull(),
-  role: text("role").notNull().default("technician"), // Legacy field: "platform_admin", "owner", "admin", "technician"
+  // 2026-05-04 Phase 6: enforced at the DB level by a CHECK constraint
+  // (`users_role_tenant_only_chk`, see
+  // `migrations/2026_05_04_users_role_restrict_to_tenant.sql`). Allowed
+  // values are EXACTLY the canonical tenant role list:
+  //   "owner" | "admin" | "manager" | "dispatcher" | "technician"
+  // Platform roles (`platform_admin`, `platform_support`, `platform_billing`,
+  // `platform_readonly_audit`) are NEVER allowed here — they live on the
+  // `platform_user_roles` join table only. Any INSERT or UPDATE that
+  // tries to put a platform role string into this column is rejected
+  // by the database with a CHECK violation.
+  role: text("role").notNull().default("technician"),
   roleId: varchar("role_id"), // FK to roles table (will be populated by migration)
   fullName: text("full_name"),
   firstName: text("first_name"),
@@ -487,6 +497,85 @@ export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({
 
 export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
 export type AuditLog = typeof auditLogs.$inferSelect;
+
+// ============================================================================
+// 2026-05-04 — Tenant deletion requests (4-phase secure teardown).
+//
+// State machine (terminals: completed | cancelled | expired | failed):
+//
+//   pending ──approve──▶ approved ──worker──▶ executing ──ok──▶ completed
+//      │                     │                     │
+//      │ cancel/expire       │ cancel              │ fail
+//      ▼                     ▼                     ▼
+//   cancelled / expired   cancelled              failed
+//
+// Tenant teardown service is invoked by the executor with confirm=true
+// only after the live preview hash matches the snapshot stored on the
+// row. See `tenantDeletionRequestService` for the full orchestrator.
+//
+// `companyId` is intentionally a plain varchar — NO FK. The cascade
+// delete of the company at execution time would otherwise destroy this
+// audit row.
+// ============================================================================
+export const tenantDeletionRequestStatusEnum = [
+  "pending",
+  "approved",
+  "executing",
+  "completed",
+  "cancelled",
+  "expired",
+  "failed",
+] as const;
+export type TenantDeletionRequestStatus =
+  (typeof tenantDeletionRequestStatusEnum)[number];
+
+export const tenantDeletionRequests = pgTable(
+  "tenant_deletion_requests",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id").notNull(),
+    companyNameSnapshot: text("company_name_snapshot").notNull(),
+    companyEmailSnapshot: text("company_email_snapshot"),
+    previewHash: text("preview_hash").notNull(),
+    previewPayloadJson: jsonb("preview_payload_json").notNull(),
+    initiatedByUserId: varchar("initiated_by_user_id").notNull(),
+    initiatedByEmail: text("initiated_by_email").notNull(),
+    approvedByUserId: varchar("approved_by_user_id"),
+    approvedByEmail: text("approved_by_email"),
+    reason: text("reason").notNull(),
+    status: text("status").notNull().default("pending"),
+    failureReason: text("failure_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`now()`),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    executionScheduledAt: timestamp("execution_scheduled_at", { withTimezone: true }),
+    // 2026-05-04 F2 hardening: explicit anchor for the stale-executing
+    // reaper. Set atomically by `transitionToExecuting`; never updated
+    // afterwards. NULL means "row never entered executing".
+    executionStartedAt: timestamp("execution_started_at", { withTimezone: true }),
+    executedAt: timestamp("executed_at", { withTimezone: true }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    cancelledByUserId: varchar("cancelled_by_user_id"),
+    cancelledByEmail: text("cancelled_by_email"),
+    environmentSnapshot: jsonb("environment_snapshot"),
+    requestIp: text("request_ip"),
+    requestUserAgent: text("request_user_agent"),
+  },
+  (table) => ({
+    companyIdx: index("tenant_deletion_requests_company_id_idx").on(table.companyId),
+    statusIdx: index("tenant_deletion_requests_status_idx").on(table.status),
+  }),
+);
+
+export const insertTenantDeletionRequestSchema = createInsertSchema(
+  tenantDeletionRequests,
+).omit({ id: true, createdAt: true });
+export type InsertTenantDeletionRequest = z.infer<
+  typeof insertTenantDeletionRequestSchema
+>;
+export type TenantDeletionRequest = typeof tenantDeletionRequests.$inferSelect;
 
 // Impersonation sessions - Persistent storage for support mode sessions
 export const impersonationSessions = pgTable("impersonation_sessions", {

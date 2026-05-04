@@ -23,6 +23,8 @@ import platformTrialsRouter from "./platformTrials";
 import platformKpisRouter from "./platformKpis";
 // 2026-04-22 Admin Phase A6.3: bulk-run history + retry.
 import platformBulkRunsRouter from "./platformBulkRuns";
+// 2026-05-04 Secure tenant teardown — 4-phase deletion workflow.
+import platformTenantTeardownRouter from "./platformTenantTeardown";
 
 const platformRouter = Router();
 
@@ -54,6 +56,16 @@ platformRouter.use("/kpis", platformKpisRouter);
 // 2026-04-22 Admin Phase A6.3 — bulk-run history over audit_logs.
 // Mounts GET /bulk-runs and GET /bulk-runs/:runId.
 platformRouter.use("/bulk-runs", platformBulkRunsRouter);
+
+// 2026-05-04 Secure tenant teardown — mounts GET /preview, POST /request,
+// POST /approve/:requestId, POST /cancel/:requestId, GET /requests,
+// GET /requests/:requestId under /tenants/:companyId/teardown/*.
+// Each route is gated by its own capability behind the parent
+// requirePlatformRole().
+platformRouter.use(
+  "/tenants/:companyId/teardown",
+  platformTenantTeardownRouter,
+);
 
 // 2026-04-19 Entitlement system — plans, features, plan-feature matrix,
 // tenant subscription assignment, tenant overrides, entitlements + usage.

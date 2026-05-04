@@ -16,6 +16,7 @@ import { useLocationSearch, type LocationResult } from "@/hooks/useLocationSearc
 // the primitive defaults; raw `text-sm border-slate-200` styling
 // replaced by canonical `text-input` typography.
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 
 function getQueryParam(key: string): string {
@@ -149,7 +150,7 @@ export function CreateLeadPage() {
 
         {/* Location — locked if prefilled */}
         <div>
-          <label className="text-xs font-semibold text-slate-500 mb-1 block">Client / Location *</label>
+          <Label className="block mb-1">Client / Location *</Label>
           {locationId ? (
             <div className="rounded-md border border-emerald-200 bg-emerald-50/50 p-3 flex items-center justify-between">
               <p className="text-sm font-medium text-slate-800">{locationLabel || "Loading..."}</p>
@@ -179,14 +180,14 @@ export function CreateLeadPage() {
 
         {/* Title */}
         <div>
-          <label className="text-xs font-semibold text-slate-500 mb-1 block">What did you find? *</label>
+          <Label className="block mb-1">What did you find? *</Label>
           <Input value={title} onChange={e => setTitle(e.target.value)}
             placeholder="e.g. Compressor needs replacement, water heater leaking..." />
         </div>
 
         {/* Description */}
         <div>
-          <label className="text-xs font-semibold text-slate-500 mb-1 block">Details</label>
+          <Label className="block mb-1">Details</Label>
           <Textarea ref={descRef} value={description} onChange={e => setDescription(e.target.value)}
             placeholder="Additional details for the office..."
             className="resize-none h-24" />

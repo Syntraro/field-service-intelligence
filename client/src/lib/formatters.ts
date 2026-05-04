@@ -58,3 +58,48 @@ export function formatCurrency(
     currency,
   }).format(num);
 }
+
+/**
+ * 2026-05-04 PR8 — Format an ISO timestamp as a calendar date.
+ *
+ * Default: en-CA, `MMM d, yyyy` (e.g. `May 4, 2026`). Returns `"—"`
+ * for null / undefined / unparseable input — matches the `formatCurrency`
+ * convention of coercing bad input to a stable rendered fallback.
+ *
+ * Use this for dates that don't need time-of-day precision (arrival
+ * dates, evidence due-by, created-at on lifecycle tables). For events
+ * that need wall-clock specificity (transaction received-at), use
+ * `formatDateTime` instead.
+ *
+ * Lifted out of `PaymentsDashboardPage` in PR8; previously a
+ * page-local helper. No canonical client-side date helper existed
+ * before this — every page rendered dates ad-hoc.
+ */
+export function formatDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("en-CA", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+/**
+ * 2026-05-04 PR8 — Format an ISO timestamp as a calendar date + wall
+ * clock. Default: en-CA, `MMM d, yyyy h:mm AM/PM`. Returns `"—"` on
+ * null / unparseable.
+ */
+export function formatDateTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("en-CA", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}

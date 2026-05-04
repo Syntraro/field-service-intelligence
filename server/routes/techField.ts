@@ -33,7 +33,9 @@ import { getVisitsForUserInRange, getVisitsForTenantInRange } from "../storage/v
 import { locationDisplayNameExpr } from "../lib/queryHelpers";
 import type { TenantVisitRangeOptions } from "../storage/visits";
 import { userHasPermission } from "../permissions";
-import { isPlatformRole } from "../auth/roles";
+// 2026-05-04 Phase 7: removed `isPlatformRole` import — its only
+// consumer (the platform-role bypass for the tech non-self
+// permission gate) was dead code after Phase 6.
 import { filterSchedulableTechnicians } from "../domain/scheduling";
 import { storage } from "../storage/index";
 import * as lifecycle from "../services/jobLifecycleOrchestrator";
@@ -179,8 +181,11 @@ router.get(
       return res.json({ visits, count: visits.length, scope: "self" });
     }
 
-    // Non-self path — permission gate. Platform roles (impersonation) bypass.
-    if (!isPlatformRole(user.role)) {
+    // 2026-05-04 Phase 7: removed the `!isPlatformRole(user.role)`
+    // bypass wrapper. After Phase 6's DB CHECK constraint, `user.role`
+    // (always a tenant role) made the bypass branch unreachable.
+    // Every caller now goes through the permission check.
+    {
       const allowed = await userHasPermission(userId, SCOPE_ALL_VIEW_PERMISSION);
       if (!allowed) {
         throw createError(403, "You do not have permission to view other technicians' schedules");

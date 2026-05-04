@@ -13,6 +13,8 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 // 2026-04-22 Admin Phase A1: canonical per-tenant timeline.
 import { TenantTimeline } from "./TenantTimeline";
+// 2026-05-04: secure 4-phase tenant teardown danger zone.
+import { TenantDangerZone } from "./TenantDangerZone";
 // 2026-04-22 Revised Phase 1: capability-gate mutation controls. Tenant detail
 // is reachable with `tenant:read` (support + billing + audit all qualify) but
 // writes require narrower capabilities the reader may not hold.
@@ -109,6 +111,11 @@ export default function PlatformTenantDetail() {
           (subscription state, support sessions, entitlement overrides,
           audit log, feedback, issues) backed by /timeline. */}
       <TenantTimeline tenantId={tenantId} />
+
+      {/* 2026-05-04: secure 4-phase tenant teardown surface. Self-gated
+          on `platform:tenant_teardown_preview` — renders nothing for
+          users without the preview capability. */}
+      <TenantDangerZone tenantId={tenantId} />
 
       <NewSupportSessionDialog
         tenantId={tenantId}

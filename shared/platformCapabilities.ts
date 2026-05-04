@@ -53,6 +53,30 @@ export const PLATFORM_CAPABILITIES = [
   "platform:user:manage",
   /** Read platform-wide KPIs. */
   "kpi:read",
+
+  // ──────────────────────────────────────────────────────────────────
+  // 2026-05-04 — Tenant teardown / hard-delete (HIGH RISK).
+  //
+  // Four-phase deletion flow (preview → request → approve → execute).
+  // Capabilities are deliberately split so a SINGLE role cannot drive
+  // the full flow end-to-end — separation of duties is structural,
+  // not just policy.
+  //
+  // Mapping summary:
+  //   • preview  — platform_support (read-only feasibility check),
+  //                platform_admin, platform_super_admin
+  //   • request  — platform_admin, platform_super_admin (initiator)
+  //   • approve  — platform_super_admin ONLY (must be a different
+  //                user than the initiator; enforced in the route)
+  //   • execute  — NEVER granted to a human role. The background
+  //                worker checks this capability against a synthetic
+  //                "system" actor; any human attempting to execute is
+  //                denied at the capability gate.
+  // ──────────────────────────────────────────────────────────────────
+  "platform:tenant_teardown_preview",
+  "platform:tenant_teardown_request",
+  "platform:tenant_teardown_approve",
+  "platform:tenant_teardown_execute",
 ] as const;
 
 export type PlatformCapability = (typeof PLATFORM_CAPABILITIES)[number];
@@ -62,7 +86,14 @@ export type PlatformCapability = (typeof PLATFORM_CAPABILITIES)[number];
 // ============================================================================
 
 /**
- * Admin is the full set. Everything else is a strict subset.
+ * 2026-05-04 — `platform_super_admin` is the new privileged role for
+ * tenant teardown approval. It holds every capability INCLUDING
+ * `platform:tenant_teardown_approve` (which `platform_admin` does not
+ * hold). Everything else is a strict subset.
+ *
+ * `platform:tenant_teardown_execute` is intentionally NOT in any role's
+ * cap set — the background worker passes it as a synthetic system
+ * actor; a human cannot execute regardless of role.
  *
  * Delta vs. the pre-Revised-Phase-1 scattered role whitelists:
  *   - `platform_support` LOSES: bulk:write, tenant:lifecycle:write,
@@ -74,10 +105,25 @@ export type PlatformCapability = (typeof PLATFORM_CAPABILITIES)[number];
  *     wiring.
  *   - `platform_readonly_audit` stays read-only everywhere.
  */
-const ADMIN_ALL: readonly PlatformCapability[] = PLATFORM_CAPABILITIES;
+
+// 2026-05-04 — split the canonical cap list so neither role auto-grants
+// teardown:execute, and only platform_super_admin auto-grants approve.
+const HUMAN_NEVER_EXECUTES: readonly PlatformCapability[] =
+  PLATFORM_CAPABILITIES.filter(
+    (c) => c !== "platform:tenant_teardown_execute",
+  );
+const ADMIN_NEVER_APPROVES: readonly PlatformCapability[] =
+  HUMAN_NEVER_EXECUTES.filter((c) => c !== "platform:tenant_teardown_approve");
 
 export const PLATFORM_ROLE_CAPS: Record<string, readonly PlatformCapability[]> = {
-  platform_admin: ADMIN_ALL,
+  // Super admin: every human-grantable capability INCLUDING approve.
+  platform_super_admin: HUMAN_NEVER_EXECUTES,
+  // Admin: every cap EXCEPT approve. Can preview + request, cannot
+  // sign off on the second-actor approval. The teardown workflow's
+  // structural defense is not just "different user" — it's "different
+  // role" too, so an attacker who compromises a single platform-admin
+  // account still cannot complete a deletion alone.
+  platform_admin: ADMIN_NEVER_APPROVES,
 
   platform_billing: [
     "tenant:read",
@@ -99,6 +145,11 @@ export const PLATFORM_ROLE_CAPS: Record<string, readonly PlatformCapability[]> =
     "bulk:history:read",
     "audit:read",
     "kpi:read",
+    // 2026-05-04 — Support can run a teardown PREVIEW (read-only
+    // feasibility check) but cannot create a request, approve, or
+    // execute. Useful for triaging "can we delete this tenant?"
+    // without escalating to admin.
+    "platform:tenant_teardown_preview",
   ],
 
   platform_readonly_audit: [

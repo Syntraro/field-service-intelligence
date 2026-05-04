@@ -68,7 +68,23 @@ export type AuditAction =
   // 2026-05-03 Platform-only password reset flow — request + completion
   // audit events emitted by the new platform reset endpoints.
   | "platform_password_reset_requested"
-  | "platform_password_reset_completed";
+  | "platform_password_reset_completed"
+  // 2026-05-04 Tenant teardown / hard-delete — every phase of the secure
+  // 4-phase deletion workflow leaves an immutable audit row. Read by ops
+  // forensics + the future "tenant audit timeline" surface.
+  | "platform_tenant_teardown_preview"
+  | "platform_tenant_teardown_request_created"
+  | "platform_tenant_teardown_request_failed"
+  | "platform_tenant_teardown_approved"
+  | "platform_tenant_teardown_approve_reauth_failed"
+  | "platform_tenant_teardown_cancelled"
+  // 2026-05-04 F1 hardening — worker transitions previously emitted only
+  // alerts; these audit rows close the gap so audit_logs reflects the
+  // entire lifecycle.
+  | "platform_tenant_teardown_execute_started"
+  | "platform_tenant_teardown_executed"
+  | "platform_tenant_teardown_execute_failed"
+  | "platform_tenant_teardown_expired";
 
 interface AuditLogParams {
   platformAdminId: string;

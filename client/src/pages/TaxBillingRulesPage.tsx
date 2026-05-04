@@ -816,7 +816,7 @@ export default function TaxBillingRulesPage() {
                         onCheckedChange={() => toggleRateSelection(rate.id)}
                         data-testid={`checkbox-rate-${rate.id}`}
                       />
-                      <label htmlFor={`rate-${rate.id}`} className="text-sm flex-1 cursor-pointer">
+                      <label htmlFor={`rate-${rate.id}`} className="text-form-label flex-1 cursor-pointer">
                         {rate.name} — {parseFloat(rate.rate).toFixed(2)}%
                       </label>
                     </div>

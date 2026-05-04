@@ -1,5 +1,4 @@
 import { Request, Response, NextFunction } from "express";
-import { isPlatformRole } from "./roles";
 import { entitlementService } from "../services/entitlementService";
 
 /**
@@ -12,7 +11,18 @@ import { entitlementService } from "../services/entitlementService";
  *     `"quickbooks_online"`, `"multi_tech_scheduling"`, etc.).
  *   - FAIL-CLOSED: if the resolver throws, the request is denied with a
  *     structured 500. Silent bypass on transient errors is closed.
- *   - Platform-role bypass is preserved (support / debugging).
+ *
+ * 2026-05-04 Phase 7: removed the platform-role bypass. The bypass was
+ * legacy plumbing for the era when platform admins authenticated via
+ * tenant login (and therefore had `users` rows with platform roles).
+ * Post-Phase-6 the DB CHECK constraint makes that impossible, and
+ * Phase 2-A's impersonation flow runs WITH `req.user` set to the
+ * tenant target user (always a tenant role) — so neither
+ * `effectiveUser.role` nor the impersonator's `realUser.role` is ever
+ * a platform string. The bypass was dead code. If a platform admin
+ * needs feature-gate-bypassed access for support purposes, they
+ * impersonate; impersonation already carries its own read-only /
+ * support-session contracts.
  *
  * Usage:
  *   router.use(requireFeature("invoices"));
@@ -21,13 +31,6 @@ import { entitlementService } from "../services/entitlementService";
 
 export function requireFeature(featureKey: string) {
   return async (req: Request, res: Response, next: NextFunction) => {
-    // Platform roles bypass feature gates (for support / debugging). Uses the
-    // REAL actor during impersonation to match requireRole / requirePlatformRole.
-    const effectiveUser = (req as any).isImpersonating ? (req as any).realUser : req.user;
-    if (isPlatformRole(effectiveUser?.role)) {
-      return next();
-    }
-
     const companyId = req.companyId;
     if (!companyId) {
       return res.status(401).json({ error: "Unauthorized" });

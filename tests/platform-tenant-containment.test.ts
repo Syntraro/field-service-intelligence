@@ -168,23 +168,25 @@ describe("Other tenant user surfaces wire the predicate", () => {
 // Frontend defensive filter
 // ============================================================================
 
-describe("TeamHubPage drops platform rows defensively", () => {
+describe("TeamHubPage frontend filter removed in Phase 6 (DB constraint covers it)", () => {
   const pageSrc = readFileSync(
     resolve(__dirname, "../client/src/pages/TeamHubPage.tsx"),
     "utf-8",
   );
 
-  it("imports isPlatformRole from the canonical client helper", () => {
-    expect(pageSrc).toMatch(
+  it("no longer imports isPlatformRole (filter was removed)", () => {
+    // Phase 6 removed the defensive frontend filter — `users.role` is
+    // now DB-constrained to tenant roles only, so the `/api/team`
+    // payload structurally cannot contain a platform-role row.
+    expect(pageSrc).not.toMatch(
       /import\s+\{\s*isPlatformRole\s*\}\s+from\s+["']@\/lib\/platformRoles["']/,
     );
   });
 
-  it("filters rawMembers through isPlatformRole before rendering", () => {
-    // Multiline-tolerant: matches `rawMembers.filter(...)` whose body
-    // contains `!isPlatformRole(m.role)`. The page-level filter is
-    // the defensive layer that drops platform rows even if the
-    // backend regresses.
-    expect(pageSrc).toMatch(/rawMembers\.filter\([\s\S]+?!isPlatformRole\(m\.role\)/);
+  it("does not run rawMembers.filter against isPlatformRole", () => {
+    // Phase 6 contract: the filter is gone. If a regression
+    // re-introduces it (because someone forgot the DB constraint
+    // makes it dead code), this test fails loudly.
+    expect(pageSrc).not.toMatch(/!isPlatformRole\(m\.role\)/);
   });
 });

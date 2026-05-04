@@ -19,6 +19,7 @@ import { MobileShell } from "../components/MobileShell";
 // canonical primitives. Validation-error border (`border-red-300`)
 // preserved via className override since it's an error-state cue.
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useTimesheetState, type EntryEditPayload } from "../hooks/useTimesheetState";
 import { useElapsedTimer } from "../hooks/useElapsedTimer";
@@ -405,7 +406,7 @@ function EntryEditSheet({
           {/* Job (always read-only) */}
           {entry.jobNumber && (
             <div>
-              <label className="text-xs font-medium text-slate-500 block mb-1">Job</label>
+              <Label className="block mb-1">Job</Label>
               <div className="text-sm text-slate-800 bg-slate-100 rounded-md px-3 py-2">
                 #{entry.jobNumber}{entry.jobSummary ? ` — ${entry.jobSummary}` : ""}
               </div>
@@ -415,7 +416,7 @@ function EntryEditSheet({
 
           {/* Start time */}
           <div>
-            <label className="text-xs font-medium text-slate-500 block mb-1">Start</label>
+            <Label className="block mb-1">Start</Label>
             <Input type="time" value={startInput} onChange={(e) => setStartInput(e.target.value)}
               disabled={!access.fields.startTime || isSaving}
               className={validation?.errors.startTime ? "border-red-300" : ""} />
@@ -424,7 +425,7 @@ function EntryEditSheet({
 
           {/* End time */}
           <div>
-            <label className="text-xs font-medium text-slate-500 block mb-1">End</label>
+            <Label className="block mb-1">End</Label>
             <Input type="time" value={endInput} onChange={(e) => setEndInput(e.target.value)}
               disabled={!access.fields.endTime || isSaving}
               className={validation?.errors.endTime ? "border-red-300" : ""} />
@@ -434,14 +435,14 @@ function EntryEditSheet({
           {/* Duration (derived) */}
           {durationDisplay && (
             <div>
-              <label className="text-xs font-medium text-slate-500 block mb-1">Duration</label>
+              <Label className="block mb-1">Duration</Label>
               <div className="text-sm text-slate-700 bg-slate-50 rounded-md px-3 py-2">{durationDisplay}</div>
             </div>
           )}
 
           {/* Notes */}
           <div>
-            <label className="text-xs font-medium text-slate-500 block mb-1">Notes</label>
+            <Label className="block mb-1">Notes</Label>
             <Textarea value={noteInput} onChange={(e) => setNoteInput(e.target.value)}
               disabled={!access.fields.notes || isSaving} rows={2}
               className="resize-none"

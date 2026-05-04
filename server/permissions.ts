@@ -1,6 +1,10 @@
 import { Request, Response, NextFunction } from "express";
 import { permissionRepository, clearPermissionCache } from "./storage/permissions";
-import { isPlatformRole } from "./auth/roles";
+// 2026-05-04 Phase 7: removed `isPlatformRole` import. The
+// platform-role bypass below was structurally impossible after the
+// Phase 6 DB CHECK constraint on `users.role` — `req.user.role`
+// (and during impersonation, the impersonated tenant user's role)
+// is always a tenant role.
 
 // Re-export cache clearing function
 export { clearPermissionCache };
@@ -27,13 +31,11 @@ export function requirePermission(permissionKey: string) {
       });
     }
 
-    // Platform roles bypass tenant permission checks (canonical helper).
-    // Tenant access itself is gated upstream in ensureTenantContext, so this
-    // bypass only fires during an active support/impersonation session.
-    if (isPlatformRole(user.role)) {
-      return next();
-    }
-
+    // 2026-05-04 Phase 7: removed the `isPlatformRole(user.role)`
+    // bypass. After the DB constraint on `users.role`, `req.user.role`
+    // can never be a platform string. During impersonation, `req.user`
+    // is the impersonated tenant user (also a tenant role). The
+    // bypass was dead code.
     const hasPermission = await userHasPermission(user.id, permissionKey);
 
     if (!hasPermission) {

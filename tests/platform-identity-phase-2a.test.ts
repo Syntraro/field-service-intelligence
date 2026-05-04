@@ -335,3 +335,49 @@ describe("Phase 2-A keeps the 2026-05-04 containment predicate as defense-in-dep
     expect(teamSrc).toContain("nonPlatformUserPredicate");
   });
 });
+
+// ============================================================================
+// Phase 5 destructive-cleanup invariants (live DB)
+// ============================================================================
+
+describe("Phase 5: legacy users table contains zero platform-role rows", () => {
+  it("DELETE FROM users WHERE role IN PLATFORM_ROLES has been applied", async () => {
+    // Hits the real DB. The `db:migrate:one` for
+    // `2026_05_04_platform_users_users_table_cleanup.sql` has already
+    // run (see CHANGELOG); this assertion guarantees the post-cleanup
+    // invariant is durable: no platform-role row exists in the tenant
+    // `users` table. If a future bug or backup-restore drift puts one
+    // back, the test fails loudly.
+    const { db } = await import("../server/db");
+    const { users } = await import("@shared/schema");
+    const { inArray } = await import("drizzle-orm");
+    const PLATFORM_ROLES = [
+      "platform_admin",
+      "platform_support",
+      "platform_billing",
+      "platform_readonly_audit",
+    ];
+
+    const rows = await db
+      .select({ id: users.id, role: users.role })
+      .from(users)
+      .where(inArray(users.role, PLATFORM_ROLES));
+
+    expect(rows).toEqual([]);
+  });
+
+  it("Phase 5 cleanup migration source is checked into the repo", () => {
+    const cleanup = readFileSync(
+      resolve(
+        __dirname,
+        "../migrations/2026_05_04_platform_users_users_table_cleanup.sql",
+      ),
+      "utf-8",
+    );
+    // Pin the destructive shape: DELETE scoped to PLATFORM_ROLES, with
+    // a pre-flight subset check, with a post-flight zero-count check.
+    expect(cleanup).toMatch(/DELETE FROM\s+"users"/i);
+    expect(cleanup).toContain("Phase 5 cleanup aborted");
+    expect(cleanup).toContain("Phase 5 cleanup post-check failed");
+  });
+});

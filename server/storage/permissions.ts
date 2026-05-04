@@ -5,7 +5,9 @@ import { roles, permissions, rolePermissions, userPermissionOverrides, users } f
 // permission resolution entirely (they don't operate within a tenant's
 // RBAC). Imported here so the resolver can short-circuit for them
 // before requiring a tenant `role_id`.
-import { isPlatformRole } from "../auth/roles";
+// 2026-05-04 Phase 7: removed `isPlatformRole` import — the resolver
+// short-circuit below was structurally impossible after Phase 6's
+// DB CHECK constraint on `users.role`.
 
 /**
  * Permission Repository
@@ -125,18 +127,15 @@ export class PermissionRepository {
       return new Set();
     }
 
-    // (1) Platform roles bypass tenant RBAC entirely. Caller-side
-    // middleware (`requirePermission` in `server/permissions.ts`)
-    // short-circuits for these via `isPlatformRole`, but the
-    // /api/me/permissions feed still calls this resolver — return an
-    // empty set so it does not falsely advertise tenant capabilities.
-    if (isPlatformRole(user.role)) {
-      const empty = new Set<string>();
-      permissionCache.set(userId, empty);
-      return empty;
-    }
+    // 2026-05-04 Phase 7: removed the `isPlatformRole(user.role)`
+    // short-circuit. After the DB CHECK constraint on `users.role`,
+    // every row in `users` has a tenant role by construction —
+    // dropping the empty-set early-return here doesn't change
+    // observable behavior for any existing user, and the resolver
+    // is no longer authoritative for "platform identity" anyway
+    // (that lives on `platform_user_roles`).
 
-    // (2) Non-platform users MUST have a tenant `role_id`. Throw
+    // Tenant users MUST have a tenant `role_id`. Throw
     // loudly instead of silently degrading — the prior behavior
     // returned an empty set, which masked the bug for months.
     if (!user.roleId) {

@@ -1,6 +1,10 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
-import { isPlatformRole } from "./roles";
-import { platformAuditService } from "../services/platformAuditService";
+// 2026-05-04 Phase 7: removed `isPlatformRole` import (and the
+// `platformAuditService` audit call that fired alongside it). The
+// runtime `req.user.role` check was structurally impossible after
+// Phase 6 added the DB CHECK constraint to `users.role` — every
+// value is now a canonical tenant role string by definition, so
+// the audit could never fire.
 
 /**
  * CRITICAL SECURITY MIDDLEWARE
@@ -90,27 +94,15 @@ export const ensureTenantContext: RequestHandler = (req: Request, res: Response,
 
   const companyId = user?.companyId;
 
-  // Phase 1 (Platform Admin Foundation): platform-role users are NOT
-  // permitted on tenant-scoped routes unless a support session is active
-  // (impersonation = req.isImpersonating, read-only = req.isReadOnlySupport,
-  // handled above). This is the canonical enforcement point. UI /
-  // route-layer checks are not a substitute.
-  if (!req.isImpersonating && !req.isReadOnlySupport && isPlatformRole(user?.role)) {
-    platformAuditService
-      .logPlatformTenantAccessDenied(
-        user?.id ?? "unknown",
-        user?.email ?? "unknown",
-        req.originalUrl || req.path,
-        req,
-      )
-      .catch((err) => {
-        console.error("[tenant-isolation] audit write failed:", err);
-      });
-    return res.status(403).json({
-      error: "Forbidden",
-      message: "Platform users cannot access tenant data without an active support session",
-    });
-  }
+  // 2026-05-04 Phase 7: removed the `isPlatformRole(user?.role)` gate.
+  // After Phase 6 added the DB CHECK constraint on `users.role`, no
+  // tenant `req.user` can hold a platform role string — the column
+  // physically rejects platform values. The check was dead code.
+  // Platform admins reach tenant routes EXCLUSIVELY via the
+  // impersonation flow (`req.isImpersonating === true`, where
+  // `req.user` is the impersonated TENANT target, not the platform
+  // admin themselves). The platform admin's own identity stays
+  // psid-bound on `req.platformUser`.
 
   if (!companyId || typeof companyId !== "string") {
     return res.status(401).json({ error: "Unauthorized" });

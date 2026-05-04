@@ -206,30 +206,27 @@ describe("requestPlatformPasswordReset", () => {
     expect(storage.findUserByEmailGlobal).not.toHaveBeenCalled();
   });
 
-  it("falls back to legacy users table when new repo returns null (Phase 3.5)", async () => {
-    // Mirrors a deployment-window scenario where a previously-seeded
-    // platform admin still lives in `users` and has not yet been
-    // backfilled into `platform_users`. The reset flow must still
-    // function — emit a token, send an email — until cleanup runs.
+  it("Phase 5: legacy fallback is GONE — even a still-legacy admin gets silent noop", async () => {
+    // Phase 5 (this commit) removed the deployment-window fallback to
+    // `storage.findUserByEmailGlobal`. After the destructive cleanup
+    // migration, no platform admin can exist in the legacy `users`
+    // table — but even if a row somehow appeared (backup-restore drift,
+    // hand-edit), the request handler no longer reaches it. The
+    // response shape is the same anti-enumeration silent-noop a tenant
+    // / unknown email gets.
     (platformIdentityRepository.findPlatformUserByEmail as any).mockResolvedValueOnce(null);
-    (storage.findUserByEmailGlobal as any).mockResolvedValueOnce({
-      user: {
-        id: "legacy-platform-user",
-        email: "legacy@example.com",
-        role: "platform_admin",
-        firstName: "Legacy",
-      },
-      identity: {},
-    });
 
     const result = await requestPlatformPasswordReset({
-      email: "legacy@example.com",
+      email: "ghost-or-legacy@example.com",
       requestIp: null,
       requestOrigin: null,
     });
 
-    expect(result.userId).toBe("legacy-platform-user");
-    expect(insertedTokens).toHaveLength(1);
+    expect(result.delivered).toBe(false);
+    expect(result.userId).toBeNull();
+    expect(insertedTokens).toHaveLength(0);
+    // The reset service no longer calls the legacy storage at all.
+    expect(storage.findUserByEmailGlobal).not.toHaveBeenCalled();
   });
 });
 
@@ -296,28 +293,29 @@ describe("confirmPlatformPasswordReset", () => {
     expect(result.error).toBe("invalid_token");
   });
 
-  it("rejects when user has been demoted to a non-platform role", async () => {
-    // Phase 2-A: new repo doesn't find them (platform_users row was
-    // never created OR was deleted post-demotion); legacy fallback
-    // finds a tenant-role user. Same `non_platform_role` rejection.
+  it("rejects when user has no row in platform_users (Phase 5: invalid_token)", async () => {
+    // Phase 5: the legacy fallback that produced `non_platform_role`
+    // is GONE. A token whose user_id no longer resolves in
+    // `platform_users` (deleted, demoted, never existed) collapses
+    // to the canonical `invalid_token` error — single anti-enumeration
+    // shape, no leaking of "this token used to be valid for a user
+    // who has since been demoted."
     stubTokenRow = {
       id: "tok-1",
-      userId: "demoted-user",
+      userId: "missing-user",
       expiresAt: new Date(Date.now() + 60_000),
       usedAt: null,
     };
     (platformIdentityRepository.getPlatformUserById as any).mockResolvedValueOnce(null);
-    (storage.getUser as any).mockResolvedValueOnce({
-      id: "demoted-user",
-      role: "owner", // tenant role — was platform_admin at request time
-    });
 
     const result = await confirmPlatformPasswordReset({
       rawToken: "anyvalue",
       newPassword: "longenoughpw",
     });
     expect(result.ok).toBe(false);
-    expect(result.error).toBe("non_platform_role");
+    expect(result.error).toBe("invalid_token");
+    // The legacy fallback was NOT consulted.
+    expect(storage.getUser).not.toHaveBeenCalled();
   });
 
   it("succeeds for a valid platform-role token (Phase 2-A canonical path)", async () => {
@@ -359,18 +357,22 @@ describe("confirmPlatformPasswordReset", () => {
     expect(storage.incrementTokenVersion).not.toHaveBeenCalled();
   });
 
-  it("succeeds via legacy fallback when no platform_users row exists yet (Phase 3.5)", async () => {
+  it("Phase 5: confirm never writes to legacy user_identities, never bumps legacy tokenVersion", async () => {
+    // Replaces the Phase 3.5 "succeeds via legacy fallback" test.
+    // After cleanup there is no legacy write surface — every
+    // successful confirm targets `platform_user_identities` and
+    // bumps the platform-side `tokenVersion`. Legacy capture buckets
+    // (`updatedIdentities`, `storage.incrementTokenVersion`) must
+    // remain empty/unused.
     stubTokenRow = {
-      id: "tok-2",
-      userId: "legacy-platform-user",
+      id: "tok-3",
+      userId: "platform-user-1",
       expiresAt: new Date(Date.now() + 60_000),
       usedAt: null,
     };
-    // New repo returns null → legacy fallback runs.
-    (platformIdentityRepository.getPlatformUserById as any).mockResolvedValueOnce(null);
-    (storage.getUser as any).mockResolvedValueOnce({
-      id: "legacy-platform-user",
-      role: "platform_admin",
+    (platformIdentityRepository.getPlatformUserById as any).mockResolvedValueOnce({
+      user: { id: "platform-user-1", email: "ops@example.com" },
+      roles: ["platform_admin"],
     });
 
     const result = await confirmPlatformPasswordReset({
@@ -379,13 +381,15 @@ describe("confirmPlatformPasswordReset", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(result.userId).toBe("legacy-platform-user");
-    // Legacy fallback wrote to user_identities (captured by the db mock).
-    expect(updatedIdentities.length).toBeGreaterThan(0);
-    // Legacy tokenVersion bump.
-    expect(storage.incrementTokenVersion).toHaveBeenCalledWith(
-      "legacy-platform-user",
-    );
+    // Tenant write surfaces never fired:
+    expect(updatedIdentities.length).toBe(0);
+    expect(updatedUsers.length).toBe(0);
+    expect(storage.incrementTokenVersion).not.toHaveBeenCalled();
+    // Platform write surface DID fire:
+    expect(platformIdentityRepository.setPlatformPasswordHash).toHaveBeenCalled();
+    expect(
+      platformIdentityRepository.incrementPlatformTokenVersion,
+    ).toHaveBeenCalledWith("platform-user-1");
   });
 });
 

@@ -20,7 +20,13 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider, useAuth } from "@/lib/auth";
 // 2026-04-22 Phase 1 Platform Auth Separation: psid-backed platform auth.
 import { PlatformAuthRoute } from "@/lib/platformAuth";
-import { isPlatformRole } from "@/lib/platformRoles";
+// 2026-05-04 Phase 7: dropped `isPlatformRole` import. Every tenant-side
+// `isPlatformRole(user?.role)` callsite was dead code after Phase 6's
+// DB CHECK constraint on `users.role` — the tenant `useAuth()` user
+// can never carry a platform role. The function still lives at
+// `@/lib/platformRoles` for non-tenant-user contexts (validating
+// arbitrary role-string input, etc.); it's just no longer needed
+// in the app shell.
 import { useToast } from "@/hooks/use-toast";
 import { useDispatchStream } from "@/hooks/useDispatchStream";
 import { useServiceWorkerNavigator } from "@/hooks/useServiceWorkerNavigator";
@@ -59,7 +65,9 @@ import FinancialDashboard from "@/pages/FinancialDashboard";
 // migration of its still-useful tenant-scoped tabs (bulk archived-job
 // cleanup, calendar start-hour, feedback) into existing tenant settings
 // surfaces. Do NOT reintroduce a `/admin/*` route in this router.
-const SupportConsole = lazy(() => import("@/pages/SupportConsole"));
+// 2026-05-04 Phase 7: dropped the lazy `SupportConsole` import — its
+// only consumer route (`/support-console`) was removed once the
+// `requirePlatformAdmin` ProtectedRoute flag became dead code.
 // Phase 6 (Ops Portal UI) — lazy-load platform surfaces.
 const PlatformTenantsList = lazy(() => import("@/pages/platform/PlatformTenantsList"));
 const PlatformTenantDetail = lazy(() => import("@/pages/platform/PlatformTenantDetail"));
@@ -117,6 +125,11 @@ import BusinessHoursSettingsPage from "@/pages/BusinessHoursSettingsPage";
 // PR2 backend (paymentProviderAccountService + Stripe Connect adapter
 // methods) without changing checkout / refund / webhook behaviour.
 import PaymentsSettingsPage from "@/pages/PaymentsSettingsPage";
+// 2026-05-04 PR7 — tenant-facing Payments dashboard. Surfaces the
+// PR2/PR4/PR5/PR6 backend (account / transactions / payouts /
+// disputes) without duplicating onboarding (handled by
+// PaymentsSettingsPage above).
+import PaymentsDashboardPage from "@/pages/PaymentsDashboardPage";
 // Phase 11 (2026-04-12): tenant-facing communication template editor.
 import CommunicationSettingsPage from "@/pages/CommunicationSettingsPage";
 // 2026-04-22 Import Center consolidation: the three per-entity pages
@@ -339,6 +352,17 @@ function Router() {
           <Reports />
         </ProtectedRoute>
       </Route>
+      {/* 2026-05-04 PR7 — Payments dashboard. PR8 RBAC alignment:
+          `requireRestrictedManager` (owner/admin/manager) exactly
+          mirrors the server's RESTRICTED_MANAGER_ROLES. Dispatcher
+          intentionally excluded — the dashboard surfaces tenant
+          financial state (payouts, disputes), which is owner/admin/
+          manager-scope only by product policy. */}
+      <Route path="/payments">
+        <ProtectedRoute requireRestrictedManager>
+          <PaymentsDashboardPage />
+        </ProtectedRoute>
+      </Route>
       <Route path="/reports/library">
         <ProtectedRoute requireManager>
           <ReportsLibrary />
@@ -399,11 +423,17 @@ function Router() {
           capability) — see the routes block below. Tenant admin lands in
           /settings/* surfaces; do NOT reintroduce a tenant-app `/admin/*`
           route here. */}
-      <Route path="/support-console">
-        <ProtectedRoute requirePlatformAdmin>
-          <SupportConsole />
-        </ProtectedRoute>
-      </Route>
+      {/* 2026-05-04 Phase 7: removed `/support-console` route registration.
+          The route was wrapped in `<ProtectedRoute requirePlatformAdmin>`,
+          which compared the tenant `useAuth()` user's role against the
+          platform string. After Phase 6's DB CHECK constraint, no
+          tenant user can hold a platform role — the gate was
+          structurally unreachable, so the route was dead. Platform
+          ops now lives exclusively at `/platform/*` under
+          `<PlatformAuthRoute>` (psid cookie, separate identity
+          surface). The `SupportConsole` page file remains on disk
+          for reference if any of its UI is migrated to a /platform
+          surface in a future PR. */}
 
       {/* Phase 6: Platform Ops Portal (any platform role). */}
       <Route path="/platform">
@@ -768,20 +798,15 @@ function AppContent() {
   // do not interfere with one another. No backend/query dependency.
   const [helpPopoverOpen, setHelpPopoverOpen] = useState(false);
   useEffect(() => { setHelpPopoverOpen(false); }, [location]);
-  // Security/isolation fix: platform users have no tenant task context.
-  // Pass `enabled: false` so no /api/tasks query fires for them.
-  //
-  // 2026-05-03 platform-auth-leak fix: ALSO gate on `Boolean(user?.id)`.
-  // Without this gate, an unauthenticated visitor (e.g. incognito user
-  // navigating directly to /platform/login) had `user = null`,
-  // `user?.role = undefined`, `isPlatformRole(undefined) = false`, and
-  // therefore `enabled: !false = true` — so the tenant `/api/tasks`
-  // query fired with no session, returned 401, and triggered the
-  // tenant SessionExpiredDialog over the platform login page. Now the
-  // query only fires when there is BOTH an authenticated tenant user
-  // AND that user is non-platform.
+  // 2026-05-03 platform-auth-leak fix: gate `/api/tasks` query on
+  // `Boolean(user?.id)` so the request never fires for unauthenticated
+  // visitors (e.g. an incognito user direct-navigating to
+  // `/platform/login`). The previous additional `!isPlatformRole(...)`
+  // clause is dropped in Phase 7 — tenant `useAuth()` users cannot
+  // hold a platform role after the DB CHECK constraint, so the
+  // clause was always-true.
   const activeTaskCount = useActiveTaskCount({
-    enabled: Boolean(user?.id) && !isPlatformRole(user?.role),
+    enabled: Boolean(user?.id),
   });
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [newQuoteModalOpen, setNewQuoteModalOpen] = useState(false);
@@ -802,13 +827,20 @@ function AppContent() {
     user: user ? { id: user.id, role: user.role } : user,
   });
   // 2026-04-24 routing fix: ALL /platform/* paths render outside the tenant
-  // shell. Previously only signed-in platform users got a bare shell (via the
-  // isPlatformUser branch below); unauthenticated visitors and signed-in
-  // tenant users hitting /platform/login were wrapped in the tenant header +
-  // sidebar. The platform console owns its own shell (PlatformLayout) and
-  // must never be composed inside the tenant office shell.
+  // shell. Platform console owns its own shell (PlatformLayout) and must
+  // never be composed inside the tenant office shell.
   const isPlatformPage = location.startsWith('/platform');
-  const isPlatformUser = isPlatformRole(user?.role);
+  // 2026-05-04 Phase 7: `isPlatformUser` (was `isPlatformRole(user?.role)`)
+  // is GONE. Tenant `useAuth()` users cannot hold a platform role
+  // after the DB CHECK constraint. The redirect-to-/platform-tenants
+  // branch that fired on `isPlatformUser` is also gone — it was
+  // unreachable. Two consequences for downstream code in this file:
+  //   1. The `enabled: !isPlatformUser` flag on the company-settings
+  //      query becomes redundant — drop it.
+  //   2. The "platform user landed on a tenant path → redirect to
+  //      /platform/tenants" defensive branch is removed entirely.
+  // Path-based separation is still enforced: any /platform/* URL
+  // routes through the bare Router via `isPlatformPage` below.
 
   // Realtime: single SSE subscription for the entire authenticated office app.
   // Internally guarded on user state — won't connect on portal/auth/tech routes.
@@ -824,13 +856,13 @@ function AppContent() {
   // and this hook is simply not involved — no duplicate-navigation risk.
   useServiceWorkerNavigator();
 
-  // Company settings for header display — shared query key, TanStack deduplicates
+  // Company settings for header display — shared query key, TanStack deduplicates.
   // Architecture rule: app shell must NOT fetch dispatch/calendar/scheduling data.
-  // Security/isolation fix: gated off for platform-role users so no
-  // tenant-scoped shell query fires for them.
+  // 2026-05-04 Phase 7: dropped the `!isPlatformUser` clause — see the
+  // block above; tenant users cannot be platform-role anymore.
   const { data: companySettings } = useQuery<{ companyName?: string }>({
     queryKey: ["/api/company-settings"],
-    enabled: Boolean(user?.id) && !isPlatformUser,
+    enabled: Boolean(user?.id),
     staleTime: 5 * 60 * 1000,
   });
   const companyDisplayName = companySettings?.companyName || "";
@@ -846,21 +878,12 @@ function AppContent() {
     return <Router />;
   }
 
-  // Security/isolation fix: platform-role users must NEVER mount the tenant
-  // shell (tenant header, AppSidebar, Tasks badge, UniversalSearch). When
-  // they land on a non-platform path we redirect into the canonical Ops
-  // Portal. This conditional return comes AFTER all hooks above so React's
-  // rules-of-hooks stay intact.
-  if (isPlatformUser && !isAuthPage && !isPortalPage && !isTechnicianPage) {
-    appRouteTrace("AppContent BRANCH=isPlatformUser REDIRECT → /platform/tenants", { fromLocation: location });
-    // One-time toast so the redirect isn't silent on first visit.
-    toast({
-      title: "Platform Ops portal",
-      description: "Tenant views are not available here.",
-    });
-    setLocation("/platform/tenants");
-    return null;
-  }
+  // 2026-05-04 Phase 7: removed the "platform-role user landed on a
+  // tenant path → redirect to /platform/tenants" branch. After the
+  // DB CHECK constraint, the tenant `useAuth()` user can never have
+  // a platform role, so the redirect was unreachable. Path-based
+  // separation (`/platform/*` → bare Router via `isPlatformPage`
+  // above) is the canonical and now sole enforcement.
 
   // Portal pages use a completely separate layout and auth
   if (isPortalPage) {

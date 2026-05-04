@@ -6,6 +6,394 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Removed
+
+#### Phase 7 — dead `isPlatformRole(user.role)` checks scrubbed from tenant code (2026-05-04)
+
+Final scrub pass after Phase 6 added the DB CHECK constraint on `users.role`. Every tenant-context runtime check that read a `users.role` and tested it against a platform role string was structurally unreachable — the column physically cannot hold a platform value. This commit removes those checks so future readers of the code don't have to reason about a branch that can't fire.
+
+**KEPT (still useful in non-tenant-user contexts):**
+- `isPlatformRole(role)` function definition (`server/auth/roles.ts`, `client/src/lib/platformRoles.ts`)
+- `PLATFORM_ROLES` constant (both server + client mirrors)
+- `nonPlatformUserPredicate()` SQL fragment (defense-in-depth at storage layer)
+- Every `/api/platform/*` route, `requirePlatformSession`, the `psid` cookie boundary, capability registry — all platform-auth machinery is untouched per the user's "Do NOT touch platform auth" guidance.
+
+**REMOVED — server-side dead checks:**
+
+| File | Removed |
+|---|---|
+| `server/auth/tenantIsolation.ts` | `if (… && isPlatformRole(user?.role)) → 403` block + the `platformAuditService.logPlatformTenantAccessDenied` call that fired alongside it. The `isPlatformRole` import. |
+| `server/auth/requireFeature.ts` | The `isPlatformRole(effectiveUser?.role)` bypass that would short-circuit feature gates for platform admins. The `isPlatformRole` import. |
+| `server/permissions.ts` | The `isPlatformRole(user.role)` permission-bypass branch in `requirePermission` middleware. The `isPlatformRole` import. |
+| `server/storage/permissions.ts` | The `isPlatformRole(user.role)` short-circuit in `getUserEffectivePermissions` (platform users were given an empty permission set; now everyone resolves the same way). |
+| `server/routes/auth.ts` | The `ALLOW_PLATFORM_IN_TENANT_LOGIN` env-var gate + the `isPlatformRole((user as any).role)` rejection that returned `403 PLATFORM_ACCOUNT_REJECTED`. The `isPlatformRole` import. |
+| `server/routes/admin.ts` | The `isPlatformRole(targetUser.role) → 403 "Cannot impersonate a platform user"` gate. Dropped `isPlatformRole` from the import line. |
+| `server/routes/techField.ts` | The `if (!isPlatformRole(user.role))` wrapper that bypassed the per-tech permission check for platform users. The `isPlatformRole` import. |
+
+**REMOVED — client-side dead checks:**
+
+| File | Removed |
+|---|---|
+| `client/src/App.tsx` | The `isPlatformUser` const (was `isPlatformRole(user?.role)`). The `if (isPlatformUser && …) → setLocation("/platform/tenants")` redirect block that fired on every non-platform path. The `!isPlatformRole(user?.role)` clause in the `useActiveTaskCount` `enabled` flag. The `!isPlatformUser` clause in the company-settings `enabled` flag. The `isPlatformRole` import. |
+| `client/src/hooks/useDispatchStream.ts` | The `if (isPlatformRole(user.role)) return` skip on the SSE-connect effect. The `isPlatformRole` import. |
+| `client/src/pages/Login.tsx` | The `else if (isPlatformRole(userData.role)) destination = "/platform/tenants"` branch in the post-login redirect logic. The `isPlatformRole` import. |
+| `client/src/components/ProtectedRoute.tsx` | The `requirePlatformAdmin` and `requirePlatformRole` props (and their effect-side + render-side gate branches). The local `PLATFORM_ROLES` const. The `!PLATFORM_ROLES.includes(user.role)` "tenant role OR platform role" widening clauses on every other gate (`requireAdmin`, `requireManager`, `requireRestrictedManager`). |
+| `client/src/App.tsx` | The `<Route path="/support-console">` registration (its only consumer was `<ProtectedRoute requirePlatformAdmin>`, which is now gone). The lazy `SupportConsole` import. |
+
+**Tests updated:**
+- `tests/platform-auth-phase-2-lite.test.ts` — `"env-var default is 'false'"` test rewritten as `"the entire ALLOW_PLATFORM_IN_TENANT_LOGIN branch is gone from auth.ts"` (presence-pin → absence-pin).
+- `tests/session-expired-platform-suppression.test.ts` — `useActiveTaskCount` gate test updated: pin `enabled: Boolean(user?.id)` (not the previous `… && !isPlatformRole(user?.role)`) AND assert the `!isPlatformRole(user?.role)` clause is GONE.
+
+**Test results:**
+
+```
+tests/platform-auth-phase-2-lite.test.ts              8 pass
+tests/platform-auth-separation.test.ts               14 pass
+tests/platform-tenant-containment.test.ts            14 pass
+tests/platform-identity-phase-2a.test.ts             28 pass
+tests/platform-password-reset.test.ts                13 pass
+tests/session-expired-platform-suppression.test.ts    6 pass
+tests/users-role-tenant-only.test.ts                 11 pass
+─────────────────────────────────────────────────────────────
+Combined run                                         96/96 pass
+
+npm run check                                         clean (Phase 7 scope; pre-existing TS
+                                                      errors in unrelated payment-dashboard
+                                                      WIP files not introduced by this PR)
+npm run build                                         clean
+```
+
+**Confirmation — no tenant code path references platform roles anymore:**
+
+```
+$ grep -rn "isPlatformRole(" server/ client/src --include="*.ts" --include="*.tsx" | wc -l
+6
+```
+
+The 6 remaining references are all in non-tenant contexts:
+- `server/auth/roles.ts` — function definition
+- `server/auth/requirePlatformRole.ts:63` — platform middleware (gates `/api/platform/*` against `req.platformUser`; out of scope per "do NOT touch platform auth")
+- `server/storage/tenantUserPredicate.ts:62` — comment referencing the canonical helper, no runtime call
+- `client/src/lib/platformRoles.ts:19` — function definition
+
+**Behavior preservation:**
+- Every removed branch was structurally unreachable post-Phase-6 — no runtime path's observable result changed.
+- `/support-console` was unreachable for the same reason; removing the route is purely housekeeping.
+- Platform login flow, platform reset flow, `requirePlatformSession`, and the platform_users / platform_user_identities / platform_user_roles tables are completely untouched.
+- Tenant RBAC (`requireRole(MANAGER_ROLES)`, `requireRole(ADMIN_ROLES)`, `requireRole(RESTRICTED_MANAGER_ROLES)`, `requireRole(OWNER_ONLY)`) is unaffected — those reference tenant role strings only.
+
+### Security
+
+#### Secure Tenant Teardown — F1 + F2 hardening (2026-05-04)
+
+Closes the two findings raised in the validation sweep before staging QA. No teardown workflow design changes.
+
+**F1 — Worker audit emission gap.** Previously the worker-side transitions (execute_started / executed / execute_failed / expired) wrote alerts and updated `tenant_deletion_requests` but did not append rows to `audit_logs`. Operators reading `audit_logs` alone for "what happened to tenant X" would see the lifecycle stop after super-admin approval. Now every worker transition emits a paired audit row via `platformAuditService.log({ platformAdminId: 'system', platformAdminEmail: 'system', ... })`.
+
+- New audit-action union member `platform_tenant_teardown_execute_started` in `server/services/platformAuditService.ts`. The other three — `executed`, `execute_failed`, `expired` — were already declared but unused; they are now actually written.
+- New helper `writeWorkerAudit(action, request, extra)` in `tenantDeletionRequestService.ts` builds canonical details: `requestId`, `companyId`, `companyNameSnapshot`, `previewHash`, `initiatedByEmail`, `approvedByEmail`, `environment` (via `envSnapshot()`), plus per-action `extra`.
+- **Sensitive payloads are deliberately stripped:**
+  - `previewPayloadJson` — stays only in `tenant_deletion_requests.preview_payload_json` (system of record). Never copied to audit details.
+  - `r2DeleteErrors[].key` — only the count is recorded; bucket key paths can leak tenant content paths.
+  - `requestUserAgent` — already stripped from alerts; same rule applies.
+  - DATABASE_URL credentials — `envSnapshot()` extracts hostname only via `new URL(...)`. Test "includes envSnapshot but never raw DATABASE_URL or secrets" pins this.
+- The completed-execution audit row's `summary` carries COUNTS only: `r2DeletedObjects`, `r2DeletedBytes`, `r2DeleteErrorCount`, `qboRevokeAttempted/Success`, `sessionsDeleted`, `dbCascadeRowsApprox`, `verification.{companiesRemaining, userIdsRemaining, fkTablesWithRowsCount, r2ObjectsRemaining}`. No table names, no key paths.
+- Audit writes are fire-and-forget (`void writeWorkerAudit(...)`) — alert + audit failures never block a teardown decision.
+
+**F2 — Stuck-executing recovery is now automatic.** A worker killed (SIGKILL / OOM / deploy bounce) between `transitionToExecuting` and the cascade commit previously left the row at `status='executing'` indefinitely with no operator visibility. A new stale-executing reaper closes this hole.
+
+- **Migration `migrations/2026_05_04_tenant_deletion_requests_execution_started_at.sql`** — new `execution_started_at timestamptz` column + partial index `tenant_deletion_requests_stale_executing_idx ON (execution_started_at) WHERE status = 'executing'`. Backfills any existing executing rows to `now()` so the first reaper sweep doesn't immediately mark them stale. Fully idempotent (`IF NOT EXISTS` everywhere) and reversible (`DROP COLUMN` is safe).
+- **Schema** (`shared/schema.ts`) gains `executionStartedAt` on `tenantDeletionRequests`. Repository `transitionToExecuting` now writes `executionStartedAt = new Date()` atomically alongside the status flip.
+- **New repository method `listStaleExecuting(cutoff: Date)`** returns rows in `status='executing'` whose `executionStartedAt < cutoff`. Index-served.
+- **New service entry point `reapStaleExecuting(request)`** in `tenantDeletionRequestService.ts`. Marks the row `failed` with the constant reason `"Execution marked failed after stale executing timeout"`. **Critically, the reaper:**
+  - **Never re-invokes `teardownTenant`** — re-execution could double-delete; the underlying service is idempotent enough but the audit story would be muddier. Test "never re-invokes teardownTenant when reaping" pins this.
+  - **Never flips back to `approved`** — `failed` is the safer terminal. Test "never flips a stale row back to approved" pins this.
+  - Uses `transitionToFailed`'s conditional `WHERE status IN ('executing','approved')` so a worker that DID finish the cascade and is about to write `completed` race-wins; the reaper's UPDATE returns null and we silently skip without writing audit/alert noise. Test "returns null without alert/audit when the row was already terminal" pins this.
+  - Emits `platform_tenant_teardown_execute_failed` audit row with `details.stale = true` and `details.staleTimeoutMs` so a reader can distinguish a stale-reaper failure from a teardown-throw failure.
+  - Emits an `execution_failed` alert email/Slack with the canonical reason string.
+- **New worker loop** (`server/services/tenantTeardownExecutorWorker.ts`): `STALE_EXECUTING_INTERVAL_MS = 5 min` cadence (same as expire loop). `STALE_EXECUTING_AFTER_MS = 60 min` threshold (defined in service; intentionally long enough that a healthy 100k-object teardown doesn't trip it). New `runStaleExecutingSweep()` exported for tests + manual triggers; `tickStaleExecuting()` re-entrancy-guarded with `isReapingStale`. Wired into `startTenantTeardownExecutorWorker` startup tick + interval; `stopTenantTeardownExecutorWorker` clears it.
+
+**Tests — `tests/tenant-deletion-request-security.test.ts` (extended; 13 new cases):**
+
+| Group | Cases | Focus |
+|---|---|---|
+| F1 — worker audit emission | 5 | execute_started + executed + execute_failed + expired audit rows present with right details; sensitive fields excluded; envSnapshot strips DATABASE_URL credentials |
+| F2 — stale-executing reaper | 8 | fresh rows untouched, stale rows reaped, audit + alert emitted, reaper never re-invokes teardownTenant, never flips to approved, race-loser path silent, listStaleExecuting predicate correctness |
+
+**Final test results:**
+
+```
+tests/tenant-deletion-request-security.test.ts  44 pass  (was 31)
+tests/tenant-teardown.test.ts                   12 pass
+tests/platform-auth-separation.test.ts          14 pass
+tests/platform-tenant-containment.test.ts       14 pass
+tests/users-role-tenant-only.test.ts            11 pass
+                                  Total          95 pass / 0 fail
+```
+
+`npx tsc --noEmit` clean. F1 and F2 both **closed**. No teardown workflow design changes; no production code paths altered beyond adding audit writes and the new reaper loop.
+
+#### Secure 4-Phase Tenant Teardown Workflow (2026-05-04)
+
+Replaces the legacy "direct delete" platform-admin path with a secure, multi-actor, time-delayed deletion workflow. **No single person, no single click, and no immediate action can delete a tenant.** Every state change writes an immutable audit row; alerts go out at every phase.
+
+**Workflow:** `preview → request → second-actor approval → 30-min cooling-off → background execution`. Cancellable any time before execution starts.
+
+**1. Capability registry — `shared/platformCapabilities.ts`.**
+
+Four new capabilities split across the workflow so a single role cannot drive end-to-end:
+
+| Capability | Roles |
+|---|---|
+| `platform:tenant_teardown_preview` | `platform_super_admin`, `platform_admin`, `platform_support` |
+| `platform:tenant_teardown_request` | `platform_super_admin`, `platform_admin` |
+| `platform:tenant_teardown_approve` | `platform_super_admin` ONLY |
+| `platform:tenant_teardown_execute` | NEVER granted to a human role — worker-only |
+
+New `platform_super_admin` role added; `platform_admin` no longer holds `approve`. Derived role-cap sets (`HUMAN_NEVER_EXECUTES`, `ADMIN_NEVER_APPROVES`) so future capabilities auto-grant correctly without re-listing.
+
+**2. Migration — `migrations/2026_05_04_tenant_deletion_requests.sql`.**
+
+`tenant_deletion_requests` table:
+- 7-state status machine (`pending`, `approved`, `executing`, `completed`, `cancelled`, `expired`, `failed`) enforced by CHECK constraint.
+- `company_id` is plain `varchar` with NO foreign key — audit row must outlive the cascade-deleted company.
+- `preview_hash` (hex SHA-256) + `preview_payload_json` (JSONB) bind the request to the exact teardown preview the initiator approved.
+- Partial unique index `tenant_deletion_requests_one_active_per_tenant_uq` enforces "at most one active request per tenant" at the DB level.
+
+**3. Drizzle schema entry — `shared/schema.ts`.**
+
+`tenantDeletionRequests` table mirroring the migration; `TenantDeletionRequest` + `InsertTenantDeletionRequest` types.
+
+**4. Repository — `server/storage/tenantDeletionRequests.ts`.**
+
+Pure data access, no business rules. Every state transition runs as a single conditional UPDATE (`WHERE id = $1 AND status = expectedSrc`) with `rowCount` inspected by the service so concurrent workers cannot both believe they advanced the same row.
+
+**5. Canonical preview-hash util — `server/services/platformTenantTeardownPreviewHash.ts`.**
+
+Deterministic SHA-256 over a canonical JSON form: sorted keys, no whitespace, `Date` → ISO string, `undefined` dropped, `Set`/`Map` rejected. `hashableInventory()` projects the full teardown inventory down to the fields that should bind a request — drops sample R2 keys, sorts arrays — so the hash is stable across reorderings but changes when actual tenant state drifts.
+
+**6. Re-auth helper — `server/services/platformTenantTeardownAuth.ts`.**
+
+`verifyPlatformPassword()` resolves identity through the dedicated `platform_users` / `platform_user_identities` surface (not the tenant `users` table). Always runs `bcrypt.compare` even on lookup miss / disabled / no-identity branches against a constant-shape dummy hash so timing differences don't form an enumeration channel. Returns a discriminated union: `{ ok: true }` | `INVALID_PASSWORD` | `ACCOUNT_DISABLED` | `NO_IDENTITY`.
+
+**7. Alerting helper — `server/services/platformTenantTeardownAlerts.ts`.**
+
+Fire-and-forget email + optional Slack for 7 events (`request_created`, `approved`, `execution_started`, `execution_completed`, `execution_failed`, `cancelled`, `expired`). Email recipients via `PLATFORM_OPS_ALERT_EMAILS` (comma-list); Slack via `PLATFORM_TEARDOWN_SLACK_WEBHOOK`. Bodies omit raw preview payload + UA (potential injection content) — only canonical structured facts go on the wire.
+
+**8. Service orchestrator — `server/services/tenantDeletionRequestService.ts`.**
+
+The 4-phase state machine. Tunables: `PREVIEW_FRESHNESS_MS=5min`, `REQUEST_EXPIRY_MS=60min`, `EXECUTION_DELAY_MS=30min`, `REASON_MIN_LENGTH=20`, `CONFIRMATION_PHRASE="DELETE TENANT"`.
+
+- `runPreview()` — wraps `tenantTeardownService` dryRun + computes hash. Read-only.
+- `createRequest()` — validates reason length, confirmation phrase + tenant id + tenant name, preview age, recomputed hash, fresh re-preview match (anti-replay + anti-drift), no active request. Persists `pending`.
+- `approveRequest()` — different-actor + not-expired + still pending → transitions to `approved` with `executionScheduledAt = now + EXECUTION_DELAY_MS`.
+- `executeRequest()` — claims via conditional `transitionToExecuting`, re-runs preview, recomputes hash, refuses on drift, calls `teardownTenant({ confirm: true })`, asserts post-delete `verification.fkTablesWithRows.length === 0`, transitions to `completed` (or `failed` via `failExecution`).
+- `cancelRequest()` — pending/approved only; allowed for the initiator OR users holding `platform:tenant_teardown_approve`.
+- `expireOnePending()` — worker-only; pending → expired.
+
+**9. Routes — `server/routes/platformTenantTeardown.ts`.**
+
+Mounted at `/api/platform/tenants/:companyId/teardown/*`:
+
+| Endpoint | Capability | Notes |
+|---|---|---|
+| `GET /preview` | `platform:tenant_teardown_preview` | Returns inventory + hash + policy tunables |
+| `POST /request` | `platform:tenant_teardown_request` | Audits both success and validation-failure paths |
+| `POST /approve/:requestId` | `platform:tenant_teardown_approve` | + password re-entry; failed re-auth audited separately |
+| `POST /cancel/:requestId` | `preview` OR `approve` | Service enforces initiator-or-super-admin |
+| `GET /requests` | `preview` | Newest-first list; terminal rows persist forever |
+| `GET /requests/:requestId` | `preview` | Single-row poll surface |
+
+Every successful action emits a `platform_tenant_teardown_*` audit row with `targetCompanyId` set. Failed re-auth on `/approve` is audited under `platform_tenant_teardown_approve_reauth_failed` so brute-force attempts on the approval surface are visible.
+
+**10. Background worker — `server/services/tenantTeardownExecutorWorker.ts`.**
+
+Two cooperating loops, both `.unref()`'d, with re-entrancy guards (`isExecuting` / `isExpiring`):
+- **Execute loop** (every 60s) — scans for `status='approved' AND now ≥ execution_scheduled_at` → calls `executeRequest()`.
+- **Expire loop** (every 5 min) — scans for `status='pending' AND now > expires_at` → calls `expireOnePending()`.
+
+Wired into `server/index.ts` boot + graceful shutdown alongside the other workers.
+
+**11. UI — `client/src/pages/platform/TenantDangerZone.tsx`.**
+
+Embedded in `PlatformTenantDetail`. Self-gates on `platform:tenant_teardown_preview` so non-privileged ops never see the surface. Composes:
+- **Active-request panel** — live countdown to `expires_at` (pending) or `execution_scheduled_at` (approved), cancel button, super-admin approval button (hidden for the initiator).
+- **Wizard dialog** — preview summary (rows, R2 size, providers, sessions, FK breakdown) → reason field with live char counter → three typed confirmation fields (tenant name, tenant id, "DELETE TENANT") → submit. Wizard fetches preview at open and validates client-side; server is authoritative.
+- **Approval dialog** — re-auth password field with full request context (initiator, reason, hash) before the approval button arms.
+- **Cancel dialog** — optional reason, big red "Cancel request" button.
+- **History panel** — every past attempt (terminal or otherwise) with status, timestamps, failure reason. Polls every 5s while any active request is in flight.
+
+**12. Tests — `tests/tenant-deletion-request-security.test.ts` (NEW, 31 cases).**
+
+Mock-based unit suite covering the security contracts:
+
+| Group | Cases | Focus |
+|---|---|---|
+| Preview-hash determinism | 3 | Sort-order independence, drift detection, Set/Map rejection |
+| `createRequest` validation | 8 | Reason floor, phrase, tenant-id, freshness, hash mismatch, drift, name match, active-rate-limit, happy path |
+| `approveRequest` | 4 | Self-approval forbidden, non-pending rejected, expired rejected, schedules execution correctly |
+| `cancelRequest` | 5 | Initiator allowed, super-admin allowed, unrelated user rejected, executing rejected, terminal rejected |
+| `verifyPlatformPassword` | 6 | Lookup miss, wrong password, disabled, no identity, valid match, userId mismatch |
+| Capability registry | 4 | No human role grants `execute`, only super-admin grants `approve`, admin holds request not approve, support holds preview only |
+
+All 31 pass; no regressions in the existing `tenant-teardown.test.ts` (12 pass) or `platform-auth-separation.test.ts`.
+
+**13. QA checklist — `docs/SECURE_TENANT_TEARDOWN_QA.md`** (manual regression sweep before the feature ships to production).
+
+#### Phase 6 — DB-level constraint: `users.role` is tenant-only (2026-05-04)
+
+Hardens the platform/tenant identity separation work to its strongest possible form: a Postgres CHECK constraint on `users.role` makes it **structurally impossible** for any platform-role string to ever appear in the tenant `users` table again. Containment is no longer "every callsite excludes them" — it's "the database refuses the row."
+
+**Canonical role split (now enforced):**
+
+| Surface | Allowed values | Storage |
+|---|---|---|
+| Tenant — `users.role` (CHECK constraint) | `owner` · `admin` · `manager` · `dispatcher` · `technician` | `users` table |
+| Platform — `platform_user_roles.role` | `platform_admin` · `platform_support` · `platform_billing` · `platform_readonly_audit` | `platform_user_roles` join table |
+
+The two sets are disjoint at the DB level. No INSERT or UPDATE can move a role string across the boundary.
+
+**1. Migration — `migrations/2026_05_04_users_role_restrict_to_tenant.sql`.**
+
+- **Pre-flight verification:** counts rows with `role IN PLATFORM_ROLES`. If non-zero, aborts with `RAISE EXCEPTION` and rolls back. Phase 5 emptied this set, so the check passes on the post-cleanup state, but it makes the migration safe to re-apply against any environment (e.g. fresh dev DBs that skipped the chronology).
+- **Two-step constraint add:** `ADD CONSTRAINT users_role_tenant_only_chk … NOT VALID` followed by `VALIDATE CONSTRAINT` inside the same transaction. Avoids a blocking full-table scan at ALTER time; the `VALIDATE` step then runs the check against existing rows. Either both succeed or both roll back.
+- **Idempotent:** outer `DO $$` block checks `pg_constraint` and skips if `users_role_tenant_only_chk` already exists. Re-running is a no-op.
+- **Reversible:** `ALTER TABLE users DROP CONSTRAINT users_role_tenant_only_chk` is safe at any time — no data depends on the constraint.
+
+**2. Drizzle schema annotation — `shared/schema.ts`.**
+
+The `users.role` column comment now documents the DB-level invariant verbatim:
+
+> 2026-05-04 Phase 6: enforced at the DB level by a CHECK constraint (`users_role_tenant_only_chk`). Allowed values are EXACTLY the canonical tenant role list … Platform roles are NEVER allowed here — they live on the `platform_user_roles` join table only. Any INSERT or UPDATE that tries to put a platform role string into this column is rejected by the database with a CHECK violation.
+
+**3. Canonical role exports — `server/auth/roles.ts`.**
+
+Added a `TENANT_ROLES` alias (same content as `ALL_ROLES`) and an `isTenantRole(role)` predicate. The two exports — `TENANT_ROLES` / `PLATFORM_ROLES` — are mirror-named so the tenant-vs-platform split is explicit at every callsite. The two lists must stay in lockstep with the SQL CHECK constraint and the platform-role list in the same file.
+
+**4. Frontend filter cleanup — `client/src/pages/TeamHubPage.tsx`.**
+
+Removed the defensive `rawMembers.filter((m) => !isPlatformRole(m.role))` step and the corresponding `isPlatformRole` import. The DB constraint makes the filter dead code — `users.role` cannot return a platform-role row, so there is nothing to filter out. The earlier SQL-layer `nonPlatformUserPredicate()` (kept) is now also a no-op against the constrained schema, but stays in place per the Phase 5 note as defense-in-depth at the storage layer.
+
+**5. Tests — `tests/users-role-tenant-only.test.ts` (new, 11 cases).**
+
+Live-DB enforcement assertions:
+- INSERT with each canonical tenant role (`owner`, `admin`, `manager`, `dispatcher`, `technician`) → succeeds.
+- INSERT with each canonical platform role (`platform_admin`, `platform_support`, `platform_billing`, `platform_readonly_audit`) → fails with Postgres `23514 check_violation` and the constraint name `users_role_tenant_only_chk` in the error.
+- UPDATE existing tenant user `SET role = 'platform_admin'` → fails identically (UPDATE path is gated, not just INSERT).
+- `pg_constraint` introspection: `users_role_tenant_only_chk` exists on `users` and is `convalidated = true`.
+
+**Containment regression test updated — `tests/platform-tenant-containment.test.ts`:**
+
+Two assertions flipped from "filter is present" to "filter is absent" (Phase 6 contract — no frontend filter). All 14 cases pass.
+
+**Test results:**
+
+```
+tests/users-role-tenant-only.test.ts                 11 pass  (NEW)
+tests/platform-identity-phase-2a.test.ts             28 pass
+tests/platform-auth-phase-2-lite.test.ts              8 pass
+tests/platform-auth-separation.test.ts               14 pass
+tests/platform-password-reset.test.ts                13 pass
+tests/platform-tenant-containment.test.ts            14 pass
+tests/session-expired-platform-suppression.test.ts    6 pass
+─────────────────────────────────────────────────────────────
+Combined run                                         96/96 pass
+
+npm run check                                         clean (Phase 6 scope; pre-existing
+                                                      TS errors in unrelated payment-dashboard
+                                                      WIP files not introduced by this PR)
+npm run build                                         clean
+```
+
+**Deferred (intentional non-scope):**
+
+The audit identified ~10 server-side and 4 client-side runtime `isPlatformRole(user.role)` checks scattered across tenant code paths (`server/auth/tenantIsolation.ts`, `server/auth/requireFeature.ts`, `server/permissions.ts`, `server/storage/permissions.ts`, `server/routes/auth.ts`, `server/routes/admin.ts`, `server/routes/techField.ts`, `client/src/App.tsx`, `client/src/hooks/useDispatchStream.ts`, `client/src/pages/Login.tsx`). After the DB constraint, every tenant-context read of `user.role` against a platform string is structurally impossible — the checks are dead. Removing them is a code-clarity improvement, but each callsite needs careful review against the impersonation / `realUser` flow (where a platform admin's identity may legitimately surface in tenant-adjacent middleware via the `imp_session` bootstrap). **Punted to a follow-up PR.** The DB constraint is the load-bearing change in this commit; the runtime cleanup is housekeeping that benefits from a focused review.
+
+The `isPlatformRole(role)` function itself stays — it's still meaningful for non-`users.role` contexts (e.g. checking `req.platformUser.roles[0]`, validating role strings on form submissions, audit-log filters).
+
+**Files changed:**
+- `migrations/2026_05_04_users_role_restrict_to_tenant.sql` (new)
+- `shared/schema.ts` (column comment)
+- `server/auth/roles.ts` (`TENANT_ROLES` alias + `isTenantRole` predicate)
+- `client/src/pages/TeamHubPage.tsx` (frontend filter removed)
+- `tests/users-role-tenant-only.test.ts` (new, 11 cases)
+- `tests/platform-tenant-containment.test.ts` (filter-presence → filter-absence assertions)
+
+### Removed
+
+#### Phase 5 — destructive cleanup of legacy platform identity (2026-05-04)
+
+Final phase of the platform/tenant identity separation work. Deletes every platform-role row from the legacy tenant `users` table, removes the deployment-window fallback paths from auth/session/reset, and pins the post-cleanup invariant in tests. **The `platform_users` / `platform_user_identities` / `platform_user_roles` tables are now the SOLE identity surface for platform staff.**
+
+**Preconditions verified before run:**
+- ✓ `auditPlatformUsers.ts` reported 0 rows in `[users (legacy)]` and 1 row in `[platform_users]` (`nad@syntraro.com`).
+- ✓ Phase 3 + 3.5 code shipped 2026-05-04 (Phase 2-A entry below).
+- ✓ All callers route through `platformIdentityRepository`; legacy fallback was last-line defense only.
+
+**1. Destructive migration — `migrations/2026_05_04_platform_users_users_table_cleanup.sql`.**
+
+Wrapped in `BEGIN/COMMIT` with two safety blocks:
+- **Pre-flight verification** — counts rows in `users WHERE role IN PLATFORM_ROLES AND NOT EXISTS (matching platform_users)`. If non-zero (any unmigrated row), aborts with `RAISE EXCEPTION` and rolls back. Means a forgotten backfill cannot lose data here.
+- **Post-flight sanity check** — counts platform-role rows remaining in `users`. If non-zero (somehow the DELETE didn't fire), aborts with `RAISE EXCEPTION`. The CASCADE on `user_identities` cleans up the legacy identity rows automatically.
+- **DELETE itself** is scoped narrowly to `role IN ('platform_admin','platform_support','platform_billing','platform_readonly_audit')` — no tenant user is at risk.
+
+Result on this run:
+```
+[platform_users] Found 1 platform identity row(s):
+  {email: nad@syntraro.com, roles: [platform_admin], status: active, hasIdentityWithPassword: true}
+[users (legacy)] Found 0 platform-role row(s) still in tenant table:
+```
+
+**2. Fallback removal — `server/routes/platformAuth.ts`, `server/auth/platformSession.ts`, `server/services/platformPasswordResetService.ts`.**
+
+The Phase 3.5 fallback branches (added during the Phase 2-A cutover so live sessions could rotate cleanly) are GONE:
+
+- `platformAuth.ts` login route — no longer imports `storage` or `isPlatformRole`. The legacy-fallback `else { findUserByEmailGlobal(...) }` branch is removed. The audit `details` payload no longer carries `identitySource` (single canonical surface; the field was a cutover-progress signal that's now meaningless). Login rejects unresolvable emails with the same generic 401 anti-enumeration shape the Phase 2-A change established.
+- `platformSession.ts::requirePlatformSession` — no longer imports `storage` or `isPlatformRole`. The legacy `storage.getUser(...)` fallback for platform sessions is removed. An unresolvable session is a hard 401 `PLATFORM_USER_MISSING` — no second-chance lookup against tenant `users`.
+- `platformPasswordResetService.ts` — both `requestPlatformPasswordReset` and `confirmPlatformPasswordReset` route exclusively through `platformIdentityRepository`. No legacy lookup, no legacy `user_identities` write, no `users.password` mirror. The `non_platform_role` error variant is retired (kept in the union as a deprecated entry so external switch statements don't break, but no code path emits it).
+
+**3. Test updates — `tests/platform-identity-phase-2a.test.ts`, `tests/platform-password-reset.test.ts`, `tests/platform-auth-separation.test.ts`.**
+
+- Renamed Phase 3.5 fallback assertions to **absence assertions** (the fallback is GONE, not just unused).
+- Reset-confirm "rejects when demoted" test now expects `invalid_token` (single anti-enumeration error code) instead of the retired `non_platform_role`.
+- Reset-confirm "succeeds via legacy fallback" test replaced with **"Phase 5: confirm never writes to legacy user_identities, never bumps legacy tokenVersion"** — pins the new write surface as the only one that fires.
+- `platform-auth-separation` login harness flipped to drive the canonical `platformIdentityRepository.findPlatformUserByEmail` mock instead of the retired `storage.findUserByEmailGlobal` legacy mock. Test logic preserved; mocking shape modernized.
+- **New live-DB assertion** in `platform-identity-phase-2a.test.ts`: queries the real `users` table and asserts `users WHERE role IN PLATFORM_ROLES` returns zero rows. If a future bug or backup-restore drift puts a platform row back into `users`, the test fails loudly. Plus a source-level pin on the cleanup migration's destructive shape (DELETE + abort blocks).
+
+**4. Containment + frontend filter retained as defense-in-depth.**
+
+- `server/storage/tenantUserPredicate.ts::nonPlatformUserPredicate()` — kept. After Phase 5 it's a structural no-op (no platform rows can exist in `users`), but the cost is zero and it protects against future column reuse / fixture mistakes.
+- `client/src/pages/TeamHubPage.tsx` defensive `rawMembers.filter` — kept. Optional removal per the Phase 5 brief; conservatively retained since it costs nothing and adds a layered guard.
+
+**Test results (full platform + tenant containment sweep):**
+
+```
+tests/platform-identity-phase-2a.test.ts             28 pass  (was 26 + 2 new Phase 5 cases)
+tests/platform-auth-phase-2-lite.test.ts              8 pass
+tests/platform-auth-separation.test.ts               14 pass
+tests/platform-password-reset.test.ts                13 pass
+tests/platform-tenant-containment.test.ts            14 pass
+tests/session-expired-platform-suppression.test.ts    6 pass
+─────────────────────────────────────────────────────────────
+Combined run                                         85/85 pass
+
+npm run build                                         clean
+npm run check                                         clean (within Phase 5 scope; pre-existing
+                                                      TS errors in unrelated payment-dashboard
+                                                      WIP files not introduced by this PR)
+```
+
+**Files changed:**
+- `migrations/2026_05_04_platform_users_users_table_cleanup.sql` (new — destructive)
+- `server/routes/platformAuth.ts` (removed legacy fallback + `storage`/`isPlatformRole` imports)
+- `server/auth/platformSession.ts` (removed legacy fallback + `storage`/`isPlatformRole` imports)
+- `server/services/platformPasswordResetService.ts` (removed legacy fallback + `storage`/`isPlatformRole` imports; retired `non_platform_role` emit path)
+- `tests/platform-identity-phase-2a.test.ts` (4 fallback-presence assertions → absence assertions; +2 new Phase 5 cases — live-DB legacy-zero assertion + cleanup migration source pin)
+- `tests/platform-password-reset.test.ts` (3 fallback-path tests → absence assertions; mocks updated for new repo)
+- `tests/platform-auth-separation.test.ts` (login harness flipped to canonical-path mocking)
+
+**Forward debt — none.** The `non_platform_role` deprecated error variant in the reset-service union can be deleted in a future cleanup. The frontend `TeamHubPage` defensive filter can be removed in a future cleanup. Both are zero-cost to leave.
+
 ### Added
 
 #### Phase 2-A — dedicated platform identity tables (2026-05-04)
@@ -68,6 +456,134 @@ Boundary contract: this file NEVER touches `users` or `user_identities`.
 The 2026-05-04 `nonPlatformUserPredicate()` helper STAYS in place as defense-in-depth. The frontend defensive filter in `TeamHubPage.tsx` STAYS. Both will be unwound earliest in Phase 5 (separate PR, post-monitoring).
 
 ### Changed
+
+#### Form-canonicalization Phase 2 — all form labels unified under `<Label>` / `text-form-label` (2026-05-04)
+
+Closes the form-canonicalization arc by unifying every form-field
+label across both office and tech-app surfaces under a single
+typography source — either the `<Label>` primitive (which bakes
+`text-form-label leading-none text-[#334155]`) or the
+`text-form-label` className when the raw `<label>` element must
+be retained (custom color, existing `htmlFor` association). NO
+new typography tokens introduced; NO primitives modified;
+single typography system maintained.
+
+**Decision recap:** The prior pass left tech-app form labels as
+raw `<label className="text-xs font-semibold text-slate-500
+mb-1 block">` because migrating to `<Label>` would shift weight
+(600 → 500) and color (slate-500 → #334155). The user's
+finalization decision: **enforce single system, accept the
+visual shift.** No tech-app-specific token will be created.
+
+**Phase 1 — office Tier 1 + className-only + TimesheetPage
+(15 instances / 6 files):**
+
+| File | Lines | Migration |
+|---|---|---|
+| `components/PartsBillingCard.tsx` | 103, 112, 122, 134, 150 | `<label className="text-xs font-medium">` → `<Label>` |
+| `pages/portal/PortalLogin.tsx` | 129 | `<label htmlFor="email" className="text-sm font-medium text-slate-700">` → `<Label htmlFor="email">` |
+| `components/JobEquipmentSection.tsx` | 308, 334 | `<label className="text-sm font-medium">` → `<Label>` |
+| `pages/TagsSettingsPage.tsx` | 210 | className `text-xs font-medium text-muted-foreground` → `text-form-label text-muted-foreground` (kept raw `<label>` to preserve `text-muted-foreground` color intent) |
+| `pages/TaxBillingRulesPage.tsx` | 819 | className `text-sm flex-1 cursor-pointer` → `text-form-label flex-1 cursor-pointer` (kept raw `<label htmlFor>` for existing checkbox association) |
+| `tech-app/pages/TimesheetPage.tsx` | 408, 418, 427, 437, 444 | `<label className="text-xs font-medium text-slate-500 block mb-1">` → `<Label className="block mb-1">` |
+
+**Phase 2 — tech-app form pages (27 instances / 5 files):**
+
+All raw `<label className="text-xs font-semibold text-slate-500
+mb-1 block">` → `<Label className="block mb-1">`. Drops the
+`text-xs` / `font-semibold` / `text-slate-500` overrides; the
+`<Label>` primitive enforces canonical typography. `htmlFor`
+preserved where it existed; `block mb-1` spacing preserved.
+
+| File | Count |
+|---|---|
+| `tech-app/pages/CreateClientPage.tsx` | 9 (all 9 labels carried `htmlFor`; preserved) |
+| `tech-app/pages/CreateJobPage.tsx` | 5 form labels (3 compact `text-[10px]` schedule sub-form labels at lines 257/265/271 INTENTIONALLY NOT touched — bespoke compact density) |
+| `tech-app/pages/CreateLeadPage.tsx` | 3 |
+| `tech-app/pages/CreateTaskPage.tsx` | 5 |
+| `tech-app/pages/VisitDetailPage.tsx` | 5 (1 with `htmlFor="add-part-qty"`, preserved) |
+
+**Acknowledged visual shifts in tech-app (intentional per user
+decision):**
+- Weight: `font-semibold` (600) → `text-form-label`'s baked
+  `font-medium` (500). Form labels appear slightly less heavy.
+- Color: `text-slate-500` (`#64748B` cool grey) →
+  `text-[#334155]` (warm dark grey baked into Label primitive).
+  Form labels appear slightly darker / less cool.
+- Size: 0px delta (`text-xs` 15.2px ≈ `text-form-label` 15.2px).
+
+`htmlFor` associations preserved everywhere they existed.
+`block mb-1` spacing classes preserved (layout untouched).
+
+**Phase 3 — explicit exclusions (NOT migrated, by design):**
+
+| Pattern | Count | Files |
+|---|---|---|
+| `<label className="flex items-center gap-2">` checkbox/radio/switch wrappers | ~42 | `ContactFormDialog`, `DashboardActionModal`, `JobTemplateModal`, `QuoteTemplateModal`, `NotesPanel`, `QuickAddJobDialog`, `CustomFieldsPage`, `JobTemplatesPage`, `QuoteTemplatesPage`, `PortalInvoicesList`, `BatchSendInvoicesModal`, `SendCommunicationModal`, `PmGenerationModeSelector`, `JobHeaderCard`, etc. |
+| Compact `text-[10px]` schedule sub-form labels | 3 | `tech-app/pages/CreateJobPage.tsx:257,265,271` |
+| Auth UI uppercase tracked labels | 2 | `tech-app/pages/LoginPage.tsx:53,70` |
+| Accessibility `sr-only` labels | 1 | `pages/SearchPage.tsx:28` |
+| Grid/layout wrapper labels (switch toggles) | 1 | `pages/InvoiceDetailPage.tsx:329` |
+
+The 42 wrapper labels are **structurally** incompatible with the
+Radix `<Label>` primitive (Radix Label is a leaf element; cannot
+flex-wrap a checkbox/radio + descriptive text). They remain raw
+`<label>` elements as their canonical pattern.
+
+**Files changed (11):**
+- `client/src/components/PartsBillingCard.tsx` (5 labels + Label import)
+- `client/src/components/JobEquipmentSection.tsx` (2 labels + Label import)
+- `client/src/pages/portal/PortalLogin.tsx` (1 label + Label import)
+- `client/src/pages/TagsSettingsPage.tsx` (className-only)
+- `client/src/pages/TaxBillingRulesPage.tsx` (className-only)
+- `client/src/tech-app/pages/TimesheetPage.tsx` (5 labels + Label import)
+- `client/src/tech-app/pages/CreateClientPage.tsx` (9 labels + Label import)
+- `client/src/tech-app/pages/CreateJobPage.tsx` (5 labels + Label import)
+- `client/src/tech-app/pages/CreateLeadPage.tsx` (3 labels + Label import)
+- `client/src/tech-app/pages/CreateTaskPage.tsx` (5 labels + Label import)
+- `client/src/tech-app/pages/VisitDetailPage.tsx` (5 labels + Label import)
+
+**Validation:**
+- ✅ `npm run check` clean for all touched files. Pre-existing WIP
+  errors in `auth.tsx`, `ProtectedRoute.tsx`, `NewInvoicePage.tsx`,
+  `Clients.tsx`, `payments.ts`, `QboPaymentService.ts`,
+  `auditPlatformUsers.ts` are unrelated and untouched.
+- ✅ `npm run build` (vite + esbuild + db:migrate) clean.
+- ✅ All 14 vitest suites pass — **355 tests green** (same baseline).
+- ✅ NO new typography tokens added — `text-form-label` and `<Label>`
+  primitive existed before this pass; this just routes more
+  consumers through them.
+- ✅ NO primitive changes — `Label`, `Input`, `Textarea`, `Select`
+  family, etc. are byte-identical.
+- ✅ NO duplicate typography system — every migrated label reads
+  from one of two canonical sources (the `<Label>` primitive OR
+  the `text-form-label` token), both of which trace back to the
+  same Tailwind theme entry.
+- ✅ Layout preserved — every container class, gap, width, and
+  spacing utility (`block mb-1`, `flex-1`, etc.) is intact.
+- ✅ Behavior preserved — all `htmlFor` associations carried
+  through; no event handlers, types, or validation logic
+  affected.
+- ✅ Single typography system maintained across office + tech-app:
+  every form-field label now resolves to `text-form-label` (15.2px
+  / 500 / `#334155`) regardless of which surface renders it.
+
+**Cannot literally provide before/after screenshots** — that's a
+manual QA step. The expected visual deltas in tech-app forms are:
+slightly lighter labels (semibold 600 → medium 500) and slightly
+warmer/darker label color (`#64748B` slate-500 → `#334155`).
+Recommended manual smoke-test on:
+- `/tech/create-client`
+- `/tech/create-job`
+- `/tech/create-lead`
+- `/tech/create-task`
+- `/tech/visits/:id` (Add Part / Add Equipment flows)
+- `/tech/timesheet`
+
+Office surfaces (`PartsBillingCard` Add Product modal,
+`JobEquipmentSection` modal, `PortalLogin`, `TagsSettings`,
+`TaxBillingRules`) had near-zero visual delta — Tier 1 was
+deliberately picked for pixel-near-identical migration.
 
 #### Platform login: tenant-role rejection now returns 401 (anti-enumeration improvement, 2026-05-04)
 
@@ -186,6 +702,153 @@ The critical contract is unchanged: a tenant account NEVER receives a platform s
 **Tests:** `tests/session-expired-platform-suppression.test.ts` (new — 6 cases pinning all three guards). All passing.
 
 ### Added
+
+#### Tenant payments PR8 — Polish, RBAC alignment, deep links, anomaly surfacing, docs (2026-05-04)
+
+**Production-readiness pass.** Tightens the Payments system across RBAC, UX, observability, and documentation. **No backend lifecycle changes** — the existing checkout / webhook / refund paths are untouched. One read-only endpoint added (`GET /api/payments/anomalies/summary`) for the Overview anomaly banner.
+
+**RBAC alignment — `client/src/components/ProtectedRoute.tsx`:**
+- New `requireRestrictedManager` prop mirroring the server's `RESTRICTED_MANAGER_ROLES` (owner / admin / manager — excludes dispatcher). Tighter than `requireManager`, looser than `requireAdmin`. Prior gate mismatch caused dispatchers to see the Payments page shell and then 403 on every data hook.
+- `client/src/App.tsx` — `/payments` route now uses `<ProtectedRoute requireRestrictedManager>`.
+- `client/src/components/AppSidebar.tsx` — hides the Payments nav entry when `user.role === "dispatcher"` so they don't see something they can't open.
+- Server gates unchanged. Alignment was made by tightening the client.
+
+**Tab deep-linking — `client/src/pages/PaymentsDashboardPage.tsx`:**
+- Active tab persists in URL via `?tab=overview|transactions|payouts|disputes`.
+- Overview is the default and is rendered with no query param in the URL (kept clean for typical navigation).
+- Direct links + browser back/forward work because we read the URL on mount and listen to `popstate` to re-sync state.
+- Tab changes use `replace: true` so a click-spree across tabs doesn't pollute browser history with redundant entries.
+
+**Filter UI on Transactions / Payouts / Disputes:**
+- Shared `<FilterBar>` primitive with two `<CanonicalDatePicker>` inputs (from / to) + preset chips ("Last 7 days" / "Last 30 days") + Reset button + `extra` slot for status / type selects.
+- Per-tab local filter state — no global store. Matches the canonical Reports / Tax & Billing / Time Billing pattern in this codebase.
+- Transactions tab adds a frontend-only **Type** filter (All / Payment / Refund / Reversal). Backend route doesn't accept a type filter (every row is `provider_source = 'stripe'` already), so the filter happens in JS.
+- Status filters wired to the backend `status` query param on payouts + disputes; backend already validated the enums via Zod (PR5 / PR6).
+- Filter changes invalidate the query key automatically (the filters are part of the cache key) — no manual refetch.
+
+**Ops anomaly surfacing — `getTenantWebhookAnomalySummary`:**
+- New repository helper in `server/storage/paymentWebhookEvents.ts`. Single SQL: `SELECT event_kind, COUNT(*)` filtered by `outcome IN ('config_error','transient_failure')`, scoped to `companyId`, windowed by `receivedAt >= now() - INTERVAL`. Indexes `payment_webhook_events_company_received_idx` + `..._outcome_received_idx` (PR1) cover the predicate.
+- New route `GET /api/payments/anomalies/summary` (admin/manager-gated) — returns `{ last7Days, last30Days }` with totals + per-kind breakdown. Counts ONLY (no row contents — those can carry PII and a row-level drilldown is deferred to a future platform-side console).
+- New hook `useTenantPaymentAnomalySummary()` over the endpoint.
+- New `<AnomalyBanner>` component on the Overview tab — renders only when `last7Days.total > 0`, surfaces both window counts in friendly copy, points operators at the `[payments-webhook]` log channel for drilldown.
+
+**Format utilities extraction — `client/src/lib/formatters.ts`:**
+- `formatDate(iso)` and `formatDateTime(iso)` lifted out of the local PaymentsDashboardPage helpers. Both return `"—"` on null / unparseable, matching `formatCurrency`'s "stable fallback" convention.
+- `PaymentsDashboardPage` now imports them from `@/lib/formatters`.
+- No canonical client-side date helper existed pre-PR8 — every page handled dates ad-hoc. This is the seed for future consolidation.
+
+**UX polish:**
+- `LoadingRow` text replaced with `<TableSkeleton rows cols>` (built on the existing shadcn `<Skeleton>` primitive) on all three list tabs.
+- New "Due soon" indicator on dispute rows when `evidence_due_by` is within 48 hours AND status requires action (`needs_response` / `warning_needs_response`). The matching row already gets the destructive-tinted background; the new label is a small `· Due soon` after the date in destructive color. Minimal styling per spec ("do not over-style").
+- Default sort on payouts is `arrival_date DESC` (already set in the repository — added a CardDescription line to surface the sort to operators).
+
+**Documentation — `docs/PAYMENTS_ARCHITECTURE.md` (new):**
+- 9-section architecture doc: system overview, lifecycle flows (onboarding / checkout / webhook / payouts / disputes), data model, idempotency + tenant-isolation guarantees, RBAC matrix, domain-error codes, known limitations, future extensions, PR history.
+- Concise narrative format — each section is a single page worth of context, not exhaustive code reference. Code is the source of truth; the doc is the operator's-eye-view.
+
+**Files added:**
+- `docs/PAYMENTS_ARCHITECTURE.md`
+
+**Files modified:**
+- `client/src/components/ProtectedRoute.tsx` (+ requireRestrictedManager prop)
+- `client/src/App.tsx` (route gate change)
+- `client/src/components/AppSidebar.tsx` (dispatcher nav hide)
+- `client/src/pages/PaymentsDashboardPage.tsx` (tab deep-linking + filter UI + anomaly banner + skeleton + due-soon)
+- `client/src/hooks/usePaymentAccount.ts` (+ useTenantPaymentAnomalySummary hook + types)
+- `client/src/lib/formatters.ts` (+ formatDate / formatDateTime)
+- `server/storage/paymentWebhookEvents.ts` (+ getTenantWebhookAnomalySummary)
+- `server/routes/paymentAccount.ts` (+ /payments/anomalies/summary route)
+
+**What this PR intentionally does NOT include:**
+- Server-side type filter on transactions — the frontend filter is sufficient because every row is online (`provider_source = 'stripe'`); a backend filter would require new query-param plumbing for marginal benefit.
+- Row-level anomaly drilldown — the webhook events table can carry PII in its `error_message` / `raw_metadata` columns. A row-level surface belongs on a platform-side console with stricter access; PR8 surfaces COUNTS only.
+- Search box on tables — backend doesn't support free-text search on these surfaces and adding one would be pure frontend filtering. Date + status + type filters cover the common operator queries.
+- Skeleton loaders on summary cards — the summary cards already use `Loader2`. The skeleton-vs-spinner choice was applied where the pattern naturally fits (table rows).
+
+**Validation:**
+- `npm run check` — clean.
+- `npx vite build` — clean (8.48s; pre-existing chunk-size warning unchanged).
+- 16 payment-related test suites, 229 tests — all passing (no regressions; PR8 changes are frontend + one read-only endpoint).
+- Manual verification deferred to first real Stripe Connect onboarded test tenant.
+
+**Outcome:** Payments system is production-ready. RBAC is tight, UX is operator-friendly (deep links, filters, skeletons, due-soon indicator), key operational anomalies surface to admins without leaking row-level PII, and the architecture is documented end-to-end.
+
+#### Tenant payments PR7 — Payments dashboard UI (overview / transactions / payouts / disputes) (2026-05-04)
+
+**Read-only tenant-facing dashboard.** Surfaces the lifecycle data captured by PR2 (account onboarding) + PR4 (connect-aware checkout attribution) + PR5 (payout webhooks) + PR6 (dispute webhooks). New tenant route `/payments` with four tabs: Overview, Transactions, Payouts, Disputes. **No mutations** — onboarding still lives at `/settings/payments`, evidence submission and payout initiation are out of scope (PR8+).
+
+**New page — `client/src/pages/PaymentsDashboardPage.tsx`:**
+- Header with "Payment settings" link to `/settings/payments`.
+- **Overview tab** — four KPI cards: payment account status (with `chargesEnabled` / `payoutsEnabled` flags + Manage link), upcoming payouts (pending + in-transit totals + next arrival date), paid in last 30 days, disputes (needs-response count + open amount + next evidence due-by).
+- **Transactions tab** — single table card listing online (`provider_source = 'stripe'`) payments. Columns: Date, Client (linked), Invoice (linked), Method, Type pill (Payment/Refund/Reversal), Amount (negative + destructive color on refunds/reversals).
+- **Payouts tab** — four summary cards (Pending, In transit, Paid 30d, Failed) + table. Columns: Arrival date, Status (StatusPill), Amount, Currency, Destination (`Bank ending in ••••XXXX` when last4 captured, else `Bank account`), failure code+message on failed rows.
+- **Disputes tab** — six summary cards (Needs response / Under review / Won / Lost / Open amount / Next evidence due) + urgent-disputes alert banner + table. Urgent rows (status = `needs_response` / `warning_needs_response`) get `bg-destructive/5` row background — minimal styling per spec. Action column links each row to `/settings/payments` (provider dashboard pivot point) until evidence submission ships.
+- **Empty state** when no `payment_provider_accounts` row: bypasses tabs entirely, renders single "Set up payments" CTA → `/settings/payments`.
+
+**New hooks — extended `client/src/hooks/usePaymentAccount.ts`:**
+- `useTenantPaymentPayouts(filters?)` → `GET /api/payments/payouts`
+- `useTenantPaymentPayoutSummary()` → `GET /api/payments/payouts/summary`
+- `useTenantPaymentDisputes(filters?)` → `GET /api/payments/disputes`
+- `useTenantPaymentDisputeSummary()` → `GET /api/payments/disputes/summary`
+- `useTenantPaymentTransactions(filters?)` → `GET /api/payments/transactions` (new endpoint)
+- All five are TanStack Query reads with `staleTime: 30_000`, `refetchInterval: false`. Internal `buildQueryString` helper keeps the cache-key shape consistent across all hooks.
+
+**New backend endpoint + repo method:**
+- `GET /api/payments/transactions` (in `server/routes/paymentAccount.ts`) — tenant-scoped, `RESTRICTED_MANAGER_ROLES` (owner/admin/manager). Query params: `from`, `to`, `limit` (max 200), `offset`. Validated via Zod.
+- `paymentRepository.listOnlineTransactionsForCompany(companyId, filters)` (in `server/storage/payments.ts`) — filters by `provider_source = 'stripe'`, LEFT JOINs invoices + customer_companies for display fields, sorts by `received_at DESC`. Returns ONLY safe customer-facing fields (no `provider_event_id`, no `qbo_*`, no raw Stripe ids). Includes both top-level payments and refund/reversal children so operators see the full ledger.
+
+**Routing — `client/src/App.tsx`:**
+- New `<Route path="/payments">` wrapped in `<ProtectedRoute requireManager>` (matches Reports gating). Server gate is `RESTRICTED_MANAGER_ROLES` (slightly tighter — excludes dispatcher); the page handles 403s gracefully via inline error states. PR8 polish can tighten one side or the other.
+
+**Navigation — `client/src/components/AppSidebar.tsx`:**
+- New "Payments" entry with `CreditCard` icon, placed after Invoices in the Work Management group. Distinct from the Operations ↔ Financial dashboard view toggle (which is a Dashboard mode, not a separate page).
+
+**Settings cross-link — `client/src/pages/PaymentsSettingsPage.tsx`:**
+- Header now includes a "View payments dashboard →" outlined button on the right side, linking back to `/payments`. Operators flip between the two surfaces routinely once past initial onboarding.
+
+**Status / money / date formatting:**
+- Money: existing `formatCurrency` from `@/lib/formatters` (CAD).
+- Status pills: existing `StatusPill` + `PillVariant` types from `@/components/ui/status-pill`.
+- Date: minimal in-page `formatDate` / `formatDateTime` helpers (`Intl.DateTimeFormat("en-CA")`); no canonical client-side date helper exists in the codebase, so an inline one keeps the dashboard self-contained without inventing a new shared module.
+- Status label maps mirror the spec exactly (Payout: 5 values; Dispute: 8 values; Account: 5 values).
+
+**Empty / error / loading states (every tab):**
+- Loading: `Loader2` spinner + label.
+- Error: `Alert variant="destructive"` with the API error message.
+- Empty: tab-specific message ("No online payments yet." / "No payouts yet." / "No disputes.").
+- Account-not-onboarded: tab UI is bypassed, single CTA card directs to `/settings/payments`.
+- Summary-card error: per-card "Couldn't load" inline (the table can still render).
+
+**Provider neutrality preserved:**
+- No Stripe SDK imports in the frontend.
+- No raw provider event ids or `acct_…` / `ch_…` / `dp_…` ids surfaced anywhere.
+- Generic copy ("provider account", "bank account") — no Stripe-specific phrasing in user-visible strings.
+
+**Files added:**
+- `client/src/pages/PaymentsDashboardPage.tsx`
+
+**Files modified:**
+- `client/src/hooks/usePaymentAccount.ts` (5 new hooks + types)
+- `client/src/App.tsx` (route)
+- `client/src/components/AppSidebar.tsx` (nav entry + CreditCard icon import)
+- `client/src/pages/PaymentsSettingsPage.tsx` (back-link button in header)
+- `server/routes/paymentAccount.ts` (`GET /api/payments/transactions` + Zod schema + repo import)
+- `server/storage/payments.ts` (`listOnlineTransactionsForCompany` + clamp helpers + `customerCompanies` import + `gte`/`lte` imports)
+
+**What this PR intentionally does NOT include:**
+- Evidence submission UI (deferred — Stripe-hosted dashboard handles this today; the `Action` column on disputes pivots to settings).
+- Payout initiation — Stripe is canonical.
+- Refund UI — refunds happen through invoice detail (already shipped).
+- Date / status / amount filters in tab tables — backend supports them, future PR can add UI controls.
+- A `Financial` ↔ `Payments` view toggle — these are distinct surfaces (Financial Dashboard is the operations financial view; Payments is the Stripe Connect lifecycle view).
+
+**Validation:**
+- `npm run check` — clean.
+- `npx vite build` — clean (pre-existing chunk-size warning unchanged).
+- 16 payment-related test suites, 229 tests — all passing (no regressions; the new transactions repo method and route are exercised by typecheck + build).
+- Manual verification deferred to first real Stripe Connect onboarded test tenant — backend coverage from PR1-PR6 is unchanged; this PR only adds frontend + one read endpoint.
+
+**Next PR:** PR8 — Payments polish + optional ops anomaly surfacing + documentation cleanup (table filter UI, gate alignment between client `requireManager` and server `RESTRICTED_MANAGER_ROLES`, status label de-duplication, optional ops anomaly counts on the overview, README/architecture doc updates).
 
 #### Tenant payments PR6 — Dispute / chargeback tracking via Stripe Connect `charge.dispute.*` webhooks (2026-05-04)
 

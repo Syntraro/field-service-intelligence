@@ -22,6 +22,7 @@ import { useLocationSearch, useLocationById, type LocationResult } from "@/hooks
 // a separate, more invasive concern (dropdown positioning + mobile
 // portal integration on a tech-app surface).
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { CanonicalDatePicker } from "@/components/ui/canonical-date-picker";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
@@ -174,7 +175,7 @@ export function CreateJobPage() {
 
         {/* Location */}
         <div>
-          <label className="text-xs font-semibold text-slate-500 mb-1 block">Location *</label>
+          <Label className="block mb-1">Location *</Label>
           {selectedLocation && locationId ? (
             <div className="rounded-md border border-emerald-200 bg-emerald-50/50 p-3 flex items-center justify-between">
               <div>
@@ -214,14 +215,14 @@ export function CreateJobPage() {
 
         {/* Summary */}
         <div>
-          <label className="text-xs font-semibold text-slate-500 mb-1 block">Summary *</label>
+          <Label className="block mb-1">Summary *</Label>
           <Input value={summary} onChange={e => setSummary(e.target.value)}
             placeholder="Brief job summary..." />
         </div>
 
         {/* Assigned Technician */}
         <div>
-          <label className="text-xs font-semibold text-slate-500 mb-1 block">Assigned To</label>
+          <Label className="block mb-1">Assigned To</Label>
           <select value={techId} onChange={e => setTechId(e.target.value)}
             className="w-full h-9 px-3 text-sm border border-slate-200 rounded-md bg-white">
             {techMembers.map(t => (
@@ -232,7 +233,7 @@ export function CreateJobPage() {
 
         {/* Scheduling Mode */}
         <div>
-          <label className="text-xs font-semibold text-slate-500 mb-1 block">Scheduling</label>
+          <Label className="block mb-1">Scheduling</Label>
           <div className="flex gap-1.5">
             <button onClick={() => handleScheduleMode("later")}
               className={`flex-1 h-9 rounded-md text-xs font-semibold border flex items-center justify-center gap-1.5 transition-colors ${
@@ -277,7 +278,7 @@ export function CreateJobPage() {
 
         {/* Description */}
         <div>
-          <label className="text-xs font-semibold text-slate-500 mb-1 block">Description</label>
+          <Label className="block mb-1">Description</Label>
           <Textarea value={description} onChange={e => setDescription(e.target.value)}
             placeholder="Additional details..." className="resize-none h-20" />
         </div>

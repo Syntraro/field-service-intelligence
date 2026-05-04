@@ -75,12 +75,22 @@ describe("SessionExpiredDialog AUTH_PAGE_PREFIXES", () => {
 
 describe("AppContent useActiveTaskCount gate (App.tsx)", () => {
   it("only fires the tenant /api/tasks query when there is an authenticated tenant user", () => {
-    // The fix replaced `enabled: !isPlatformRole(user?.role)` with
-    // `enabled: Boolean(user?.id) && !isPlatformRole(user?.role)` —
-    // pin the new shape so a regression that drops the user-id gate
-    // (and thus restores the unauthenticated 401 leak) fails this test.
+    // 2026-05-04 Phase 7: simplified from
+    //   `enabled: Boolean(user?.id) && !isPlatformRole(user?.role)`
+    // to
+    //   `enabled: Boolean(user?.id)`
+    // because tenant `useAuth()` users cannot be platform-role after
+    // Phase 6's DB CHECK constraint. The `Boolean(user?.id)` half is
+    // the load-bearing piece that stops the unauthenticated 401 leak
+    // documented in this file's other tests; pin its presence here.
     expect(appSrc).toMatch(
-      /useActiveTaskCount\(\{\s*enabled:\s*Boolean\(user\?\.id\)\s*&&\s*!isPlatformRole\(user\?\.role\)/,
+      /useActiveTaskCount\(\{\s*enabled:\s*Boolean\(user\?\.id\)\s*,/,
     );
+    // Confirm the dropped clause is GONE — a regression that
+    // re-introduces it would mean either (a) a stale platform-role
+    // check that's now structurally impossible, or (b) someone
+    // inadvertently wiring tenant code to the legacy contamination
+    // model again.
+    expect(appSrc).not.toMatch(/!isPlatformRole\(user\?\.role\)/);
   });
 });

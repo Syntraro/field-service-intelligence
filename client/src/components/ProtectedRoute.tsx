@@ -21,26 +21,44 @@ interface ProtectedRouteProps {
   /** 2026-05-03 launch-readiness fix: allows owner / admin / manager /
    *  dispatcher (mirrors the server's `MANAGER_ROLES`). Used by the
    *  Reports surface so manager-level roles whose API access is already
-   *  permitted server-side can also reach the corresponding UI. Looser
-   *  than `requireAdmin`; both flags accept platform roles for support
-   *  impersonation. Technicians are hard-redirected to `/tech/today`
-   *  before this check ever runs. */
+   *  permitted server-side can also reach the corresponding UI.
+   *  Technicians are hard-redirected to `/tech/today` before this check
+   *  ever runs. */
   requireManager?: boolean;
-  requirePlatformAdmin?: boolean;
-  /** Phase 6: allows any platform role (admin, support, billing, readonly_audit). */
-  requirePlatformRole?: boolean;
+  /** 2026-05-04 PR8 — allows owner / admin / manager only (mirrors the
+   *  server's `RESTRICTED_MANAGER_ROLES`). Tighter than `requireManager`
+   *  (excludes dispatcher) and looser than `requireAdmin` (includes
+   *  manager). Used by the Payments dashboard surface so the client
+   *  gate matches the server's RESTRICTED_MANAGER_ROLES exactly. */
+  requireRestrictedManager?: boolean;
+  // 2026-05-04 Phase 7: removed `requirePlatformAdmin` and
+  // `requirePlatformRole` props. After Phase 6's DB CHECK constraint
+  // on `users.role`, the tenant `useAuth()` user can never hold a
+  // platform role string — the gates were structurally unreachable.
+  // Platform-only pages now live exclusively under `/platform/*` and
+  // are wrapped by `<PlatformAuthRoute>` (psid cookie, capability
+  // gate). The `/support-console` route, which was the lone consumer
+  // of `requirePlatformAdmin`, is also removed (App.tsx).
 }
 
-const PLATFORM_ROLES = [
-  "platform_admin",
-  "platform_support",
-  "platform_billing",
-  "platform_readonly_audit",
-];
-
 const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
+// 2026-05-04 PR8 — mirrors server `RESTRICTED_MANAGER_ROLES`.
+const RESTRICTED_MANAGER_ROLES = ["owner", "admin", "manager"];
 
-export default function ProtectedRoute({ children, requireAdmin = false, requireManager = false, requirePlatformAdmin = false, requirePlatformRole = false }: ProtectedRouteProps) {
+// 2026-05-04 Phase 7: removed the local `PLATFORM_ROLES` const and the
+// `!PLATFORM_ROLES.includes(user.role)` clauses inside the role gates
+// below. Those clauses widened each gate to "tenant role OR platform
+// role" so a platform-role tenant user (legacy era) could still
+// access tenant routes. Post-Phase-6 the constraint makes that
+// impossible — a tenant `user.role` is always a tenant role. The
+// gates now check ONLY against the canonical tenant role lists.
+
+export default function ProtectedRoute({
+  children,
+  requireAdmin = false,
+  requireManager = false,
+  requireRestrictedManager = false,
+}: ProtectedRouteProps) {
   const { user, isLoading } = useAuth();
   const [currentPath, setLocation] = useLocation();
   const mountIdRef = useRef<number | null>(null);
@@ -62,8 +80,7 @@ export default function ProtectedRoute({ children, requireAdmin = false, require
     isLoading,
     requireAdmin,
     requireManager,
-    requirePlatformAdmin,
-    requirePlatformRole,
+    requireRestrictedManager,
   });
 
   // 2026-05-03 first-login race fix: previously this effect used a
@@ -112,37 +129,34 @@ export default function ProtectedRoute({ children, requireAdmin = false, require
     // "America/Toronto" in the company_settings schema. Owners who want
     // to set their own timezone do so in Settings, not as a login gate.
 
-    // Platform admin check (most restrictive)
-    if (requirePlatformAdmin && user.role !== "platform_admin") {
-      routeTrace("ProtectedRoute REDIRECT → /login (platformAdmin gate)", { mountId, role: user.role });
-      setLocation("/login");
-      return;
-    }
-
-    // Phase 6: any platform role
-    if (requirePlatformRole && !PLATFORM_ROLES.includes(user.role as string)) {
-      routeTrace("ProtectedRoute REDIRECT → /login (platformRole gate)", { mountId, role: user.role });
-      setLocation("/login");
-      return;
-    }
-
     // Regular admin check
-    if (requireAdmin && user.role !== "owner" && user.role !== "admin" && !PLATFORM_ROLES.includes(user.role as string)) {
+    if (requireAdmin && user.role !== "owner" && user.role !== "admin") {
       routeTrace("ProtectedRoute REDIRECT → /login (admin gate)", { mountId, role: user.role });
       setLocation("/login");
       return;
     }
 
     // Manager-level check — looser than `requireAdmin`. Allows owner,
-    // admin, manager, dispatcher (matches the server's MANAGER_ROLES);
-    // platform roles also pass for support sessions.
-    if (requireManager && !MANAGER_ROLES.includes(user.role as string) && !PLATFORM_ROLES.includes(user.role as string)) {
+    // admin, manager, dispatcher (matches the server's MANAGER_ROLES).
+    if (requireManager && !MANAGER_ROLES.includes(user.role as string)) {
       routeTrace("ProtectedRoute REDIRECT → /login (manager gate)", { mountId, role: user.role });
       setLocation("/login");
       return;
     }
+
+    // 2026-05-04 PR8 — Restricted manager gate (owner / admin /
+    // manager only — excludes dispatcher). Mirrors the server's
+    // RESTRICTED_MANAGER_ROLES used by the Payments dashboard surface.
+    if (
+      requireRestrictedManager &&
+      !RESTRICTED_MANAGER_ROLES.includes(user.role as string)
+    ) {
+      routeTrace("ProtectedRoute REDIRECT → /login (restricted-manager gate)", { mountId, role: user.role });
+      setLocation("/login");
+      return;
+    }
     routeTrace("ProtectedRoute auth-check PASSED, render children", { mountId, userId: user.id, role: user.role });
-  }, [user, isLoading, requireAdmin, requireManager, requirePlatformAdmin, requirePlatformRole, setLocation]);
+  }, [user, isLoading, requireAdmin, requireManager, requireRestrictedManager, setLocation]);
 
   if (isLoading) {
     routeTrace("ProtectedRoute RENDER → Loading…", { mountId });
@@ -158,23 +172,21 @@ export default function ProtectedRoute({ children, requireAdmin = false, require
     return null;
   }
 
-  // Platform admin check
-  if (requirePlatformAdmin && user.role !== "platform_admin") {
+  // Regular admin check
+  if (requireAdmin && user.role !== "owner" && user.role !== "admin") {
     return null;
   }
 
-  // Phase 6: any platform role
-  if (requirePlatformRole && !PLATFORM_ROLES.includes(user.role as string)) {
+  // Manager-level check
+  if (requireManager && !MANAGER_ROLES.includes(user.role as string)) {
     return null;
   }
 
-  // Regular admin check (platform roles also pass this check)
-  if (requireAdmin && user.role !== "owner" && user.role !== "admin" && !PLATFORM_ROLES.includes(user.role as string)) {
-    return null;
-  }
-
-  // Manager-level check (platform roles also pass)
-  if (requireManager && !MANAGER_ROLES.includes(user.role as string) && !PLATFORM_ROLES.includes(user.role as string)) {
+  // Restricted manager-level check — owner/admin/manager only (excludes dispatcher).
+  if (
+    requireRestrictedManager &&
+    !RESTRICTED_MANAGER_ROLES.includes(user.role as string)
+  ) {
     return null;
   }
 

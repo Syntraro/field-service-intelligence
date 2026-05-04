@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
@@ -100,7 +101,7 @@ export function AddProductModal({
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div>
-              <label className="text-xs font-medium">Name</label>
+              <Label>Name</Label>
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -109,7 +110,7 @@ export function AddProductModal({
               />
             </div>
             <div>
-              <label className="text-xs font-medium">Description (optional)</label>
+              <Label>Description (optional)</Label>
               <Textarea
                 rows={2}
                 value={description}
@@ -119,7 +120,7 @@ export function AddProductModal({
             </div>
             <div className="grid grid-cols-3 gap-3">
               <div>
-                <label className="text-xs font-medium">Type</label>
+                <Label>Type</Label>
                 <Select value={type} onValueChange={setType}>
                   <SelectTrigger data-testid="select-product-type">
                     <SelectValue />
@@ -131,7 +132,7 @@ export function AddProductModal({
                 </Select>
               </div>
               <div>
-                <label className="text-xs font-medium">Unit Cost</label>
+                <Label>Unit Cost</Label>
                 <div className="relative">
                   <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">$</span>
                   <Input
@@ -147,7 +148,7 @@ export function AddProductModal({
                 </div>
               </div>
               <div>
-                <label className="text-xs font-medium">Unit Price</label>
+                <Label>Unit Price</Label>
                 <div className="relative">
                   <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">$</span>
                   <Input

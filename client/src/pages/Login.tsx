@@ -4,7 +4,8 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useAuth } from "@/lib/auth";
-import { isPlatformRole } from "@/lib/platformRoles";
+// 2026-05-04 Phase 7: dropped `isPlatformRole` import — the platform-role
+// post-login redirect branch was dead code after Phase 6.
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
@@ -94,6 +95,12 @@ export default function Login() {
       const returnTo = params.get("returnTo");
 
       // Role-aware destination, computed synchronously from the response.
+      // 2026-05-04 Phase 7: removed the `isPlatformRole(userData.role)`
+      // → /platform/tenants branch. The tenant `/api/auth/login`
+      // response carries a `users` row, and after Phase 6's DB CHECK
+      // constraint that row cannot hold a platform role — the branch
+      // was unreachable. Platform admins sign in exclusively at
+      // `/platform/login` (separate page, separate cookie).
       let destination: string;
       if (userData.role === "technician") {
         // Honor returnTo only when it's a /tech/* path — prevents a tech
@@ -101,9 +108,6 @@ export default function Login() {
         // Office returnTo values are ignored so techs don't land in pages
         // they have no permission to view.
         destination = isSafeTechReturnTo(returnTo) ? returnTo : "/tech/today";
-      } else if (isPlatformRole(userData.role)) {
-        // Platform roles land in the Ops Portal — never the tenant shell.
-        destination = "/platform/tenants";
       } else {
         // Office roles: honor any sane non-auth returnTo, else go to root.
         destination = isSafeOfficeReturnTo(returnTo) ? returnTo : "/";

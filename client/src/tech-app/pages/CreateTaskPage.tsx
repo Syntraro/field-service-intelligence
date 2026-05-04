@@ -21,6 +21,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Loader2, CheckSquare, Truck, Clock, Search, ChevronDown } from "lucide-react";
 import { MobileShell } from "../components/MobileShell";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { apiRequest } from "@/lib/queryClient";
 import type { TaskType, Supplier, SupplierLocation } from "@shared/schema";
 import { TECH_ALLOWED_TASK_TYPES } from "@shared/taskConstants";
@@ -258,7 +259,7 @@ export function CreateTaskPage() {
           <div className="space-y-4">
             {/* Title */}
             <div>
-              <label className="text-xs font-semibold text-slate-500 mb-1 block">Title *</label>
+              <Label className="block mb-1">Title *</Label>
               <input
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
@@ -273,7 +274,7 @@ export function CreateTaskPage() {
               <>
                 {/* Supplier picker */}
                 <div>
-                  <label className="text-xs font-semibold text-slate-500 mb-1 block">Supplier *</label>
+                  <Label className="block mb-1">Supplier *</Label>
                   {selectedSupplier ? (
                     <div className="flex items-center justify-between px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-md">
                       <span className="text-sm font-medium text-slate-800">{selectedSupplier.name}</span>
@@ -316,7 +317,7 @@ export function CreateTaskPage() {
                 {/* Supplier location picker / freehand fallback */}
                 {supplierId && (
                   <div>
-                    <label className="text-xs font-semibold text-slate-500 mb-1 block">Location</label>
+                    <Label className="block mb-1">Location</Label>
                     {locations.length > 0 ? (
                       <div className="space-y-1">
                         <select
@@ -358,7 +359,7 @@ export function CreateTaskPage() {
                 {/* PO Number */}
                 {supplierId && (
                   <div>
-                    <label className="text-xs font-semibold text-slate-500 mb-1 block">PO Number</label>
+                    <Label className="block mb-1">PO Number</Label>
                     <input
                       value={poNumber}
                       onChange={(e) => setPoNumber(e.target.value)}
@@ -372,7 +373,7 @@ export function CreateTaskPage() {
 
             {/* Notes */}
             <div>
-              <label className="text-xs font-semibold text-slate-500 mb-1 block">Notes</label>
+              <Label className="block mb-1">Notes</Label>
               <textarea
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}

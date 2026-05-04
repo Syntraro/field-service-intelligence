@@ -17,6 +17,7 @@ import { apiRequest } from "@/lib/queryClient";
 // raw `text-sm border-slate-200` styling is replaced by the
 // primitive's canonical `text-input` typography + border.
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 // Navigation uses query params (no sessionStorage)
 
@@ -115,7 +116,7 @@ export function CreateClientPage() {
 
         {/* Company Name */}
         <div>
-          <label htmlFor="tech-cc-company" className="text-xs font-semibold text-slate-500 mb-1 block">Company Name</label>
+          <Label htmlFor="tech-cc-company" className="block mb-1">Company Name</Label>
           <Input id="tech-cc-company" value={companyName} onChange={e => setCompanyName(e.target.value)}
             placeholder="Business name (or leave blank for personal)"
             autoComplete="organization" />
@@ -124,13 +125,13 @@ export function CreateClientPage() {
         {/* Name */}
         <div className="flex gap-2">
           <div className="flex-1">
-            <label htmlFor="tech-cc-first" className="text-xs font-semibold text-slate-500 mb-1 block">First Name</label>
+            <Label htmlFor="tech-cc-first" className="block mb-1">First Name</Label>
             <Input id="tech-cc-first" value={firstName} onChange={e => setFirstName(e.target.value)}
               placeholder="First"
               autoComplete="given-name" />
           </div>
           <div className="flex-1">
-            <label htmlFor="tech-cc-last" className="text-xs font-semibold text-slate-500 mb-1 block">Last Name</label>
+            <Label htmlFor="tech-cc-last" className="block mb-1">Last Name</Label>
             <Input id="tech-cc-last" value={lastName} onChange={e => setLastName(e.target.value)}
               placeholder="Last"
               autoComplete="family-name" />
@@ -139,13 +140,13 @@ export function CreateClientPage() {
 
         {/* Contact */}
         <div>
-          <label htmlFor="tech-cc-phone" className="text-xs font-semibold text-slate-500 mb-1 block">Phone</label>
+          <Label htmlFor="tech-cc-phone" className="block mb-1">Phone</Label>
           <Input id="tech-cc-phone" value={phone} onChange={e => setPhone(e.target.value)}
             type="tel" placeholder="(555) 123-4567"
             inputMode="tel" autoComplete="tel" />
         </div>
         <div>
-          <label htmlFor="tech-cc-email" className="text-xs font-semibold text-slate-500 mb-1 block">Email</label>
+          <Label htmlFor="tech-cc-email" className="block mb-1">Email</Label>
           <Input id="tech-cc-email" value={email} onChange={e => setEmail(e.target.value)}
             type="email" placeholder="contact@example.com"
             inputMode="email" autoComplete="email" autoCapitalize="off" spellCheck={false} />
@@ -153,27 +154,27 @@ export function CreateClientPage() {
 
         {/* Address */}
         <div>
-          <label htmlFor="tech-cc-address" className="text-xs font-semibold text-slate-500 mb-1 block">Address</label>
+          <Label htmlFor="tech-cc-address" className="block mb-1">Address</Label>
           <Input id="tech-cc-address" value={address} onChange={e => setAddress(e.target.value)}
             placeholder="Street address"
             autoComplete="street-address" />
         </div>
         <div className="flex gap-2">
           <div className="flex-1">
-            <label htmlFor="tech-cc-city" className="text-xs font-semibold text-slate-500 mb-1 block">City</label>
+            <Label htmlFor="tech-cc-city" className="block mb-1">City</Label>
             <Input id="tech-cc-city" value={city} onChange={e => setCity(e.target.value)}
               placeholder="City"
               autoComplete="address-level2" />
           </div>
           <div className="w-24">
-            <label htmlFor="tech-cc-province" className="text-xs font-semibold text-slate-500 mb-1 block">Province</label>
+            <Label htmlFor="tech-cc-province" className="block mb-1">Province</Label>
             <Input id="tech-cc-province" value={province} onChange={e => setProvince(e.target.value)}
               placeholder="ON"
               autoComplete="address-level1" />
           </div>
         </div>
         <div className="w-32">
-          <label htmlFor="tech-cc-postal" className="text-xs font-semibold text-slate-500 mb-1 block">Postal Code</label>
+          <Label htmlFor="tech-cc-postal" className="block mb-1">Postal Code</Label>
           <Input id="tech-cc-postal" value={postalCode} onChange={e => setPostalCode(e.target.value)}
             placeholder="A1A 1A1"
             autoComplete="postal-code" autoCapitalize="characters" />

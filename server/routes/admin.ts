@@ -47,7 +47,10 @@
 import { Router, Response } from "express";
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
-import { OWNER_ONLY, isPlatformRole } from "../auth/roles";
+// 2026-05-04 Phase 7: dropped `isPlatformRole` from this import — the
+// only consumer (the impersonation gate ~line 269) was removed once
+// Phase 6's CHECK constraint made the check structurally impossible.
+import { OWNER_ONLY } from "../auth/roles";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { adminRepository } from "../storage/admin";
@@ -261,14 +264,12 @@ router.post(
       throw createError(404, "Target user not found");
     }
 
-    // Platform-role accounts are never tenant-impersonatable, even if they
-    // share a companyId row in the DB. 403 here is intentional — the role
-    // string is already known to the caller (the user is in their tenant
-    // listing), so the existence isn't a secret; only the operation is
-    // refused.
-    if (isPlatformRole(targetUser.role)) {
-      throw createError(403, "Cannot impersonate a platform user");
-    }
+    // 2026-05-04 Phase 7: removed the `isPlatformRole(targetUser.role)`
+    // gate. `targetUser` is fetched from `users`; after Phase 6's DB
+    // CHECK constraint, `users.role` cannot hold a platform string,
+    // so the gate was dead code. Platform admins exist exclusively
+    // in `platform_users` and were never reachable via this endpoint
+    // even before Phase 6 in normal operation.
 
     if (targetUser.role === "owner") {
       throw createError(403, "Cannot impersonate another owner");

@@ -11,9 +11,9 @@ import {
   confirmPasswordReset,
 } from "../services/passwordResetService";
 import { createCompanyWithOwner } from "../services/onboardingService";
-// 2026-04-22 Phase 1 Platform Auth Separation: gate tenant login against
-// platform-role accounts once operator verification is complete.
-import { isPlatformRole } from "../auth/roles";
+// 2026-05-04 Phase 7: removed `isPlatformRole` import. The tenant-login
+// platform-role rejection branch was dead code after Phase 6's DB
+// CHECK constraint made platform values impossible in `users.role`.
 
 declare module "express-serve-static-core" {
   interface Request {
@@ -113,25 +113,14 @@ router.post(
         return res.status(401).json({ error: "Invalid email or password" });
       }
 
-      // 2026-04-22 Phase 2-lite Platform Auth Separation: DEFAULT FLIPPED.
-      //   Tenant login now rejects platform-role accounts by default. Phase
-      //   2-lite taught impersonationMiddleware to bootstrap req.user from
-      //   a valid imp_session cookie alone, so platform admins no longer
-      //   need a tenant session to use the canonical impersonation flow.
-      //   `ALLOW_PLATFORM_IN_TENANT_LOGIN=true` can still re-enable the
-      //   legacy fallback as an emergency break-glass, but is no longer
-      //   the default.
-      const allowPlatformInTenant =
-        (process.env.ALLOW_PLATFORM_IN_TENANT_LOGIN ?? "false").toLowerCase() === "true";
-      if (!allowPlatformInTenant && isPlatformRole((user as any).role)) {
-        console.warn(
-          `[AUTH] Rejecting tenant login for platform-role account: ${(user as any).email}`,
-        );
-        return res.status(403).json({
-          error: "This account is a platform admin. Use /platform/login.",
-          code: "PLATFORM_ACCOUNT_REJECTED",
-        });
-      }
+      // 2026-05-04 Phase 7: the previous platform-role rejection
+      // branch (and its env-var escape hatch) was removed. After
+      // the Phase 6 DB CHECK constraint on `users.role`, no row in
+      // `users` can hold a platform role string — that branch was
+      // dead code. Platform admins sign in exclusively at the
+      // `/platform/login` page (psid cookie); the canonical
+      // impersonation flow under `imp_session` does not require a
+      // tenant `users` row for them.
 
       req.logIn(user, async (loginErr) => {
         if (loginErr) {

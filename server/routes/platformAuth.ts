@@ -188,10 +188,11 @@ router.post(
     await logAudit("platform_login", req, {
       userId: resolved.userId,
       email: resolved.email,
-      // 2026-05-04 Phase 5: `identitySource` is no longer emitted —
-      // there is only one source now. Audit log readers that filtered
-      // on `identitySource: "legacy_users"` can stop checking; the
-      // expected value is always implicitly "platform_users".
+      // 2026-05-04 Phase 5: the previous Phase 2-A `identitySource`
+      // field is no longer emitted in this payload — there is only
+      // one source now. Audit log readers that previously filtered
+      // on the value "legacy_users" can stop checking; the expected
+      // value is always implicitly "platform_users".
       details: { roles: resolved.roles },
     });
 

@@ -30,6 +30,11 @@ import { startOrphanSweeper } from "./services/fileUploadService";
 import { startQueuedEmailSweeper } from "./services/emailDeliveryTrackingService";
 import { startSubscriptionWorker, stopSubscriptionWorker } from "./services/subscriptionWorker";
 import { startTrialExpireWorker, stopTrialExpireWorker } from "./services/trialExpireWorker";
+// 2026-05-04 secure tenant teardown — execute + expire sweep loops.
+import {
+  startTenantTeardownExecutorWorker,
+  stopTenantTeardownExecutorWorker,
+} from "./services/tenantTeardownExecutorWorker";
 import { startInvoiceReminderWorker, stopInvoiceReminderWorker } from "./services/invoiceReminderWorker";
 import { startMidnightRolloverWorker, stopMidnightRolloverWorker } from "./services/midnightRolloverWorker";
 import { stopPmAutoGeneration } from "./services/pmAutoGeneration";
@@ -263,6 +268,12 @@ let queuedEmailSweeperHandle: NodeJS.Timeout | null = null;
       // reporting, and notifies the technician. Idempotent via dedupeKey
       // and the end_at IS NULL write-guard. See midnightRolloverWorker.ts.
       startMidnightRolloverWorker();
+      // 2026-05-04 secure tenant teardown: drives Phase 4 of the deletion
+      // workflow. Execute loop runs every 60s for approved rows past
+      // execution_scheduled_at; expire loop runs every 5m for pending
+      // rows past expires_at. Both transitions go through conditional
+      // UPDATEs in the repo so duplicate workers can't double-act.
+      startTenantTeardownExecutorWorker();
     });
   } catch (error) {
     console.error("Failed to start server:", error);
@@ -282,6 +293,7 @@ function shutdownBackgroundWorkers() {
   try { stopSubscriptionWorker(); } catch (err) { console.error("[shutdown] stopSubscriptionWorker failed:", err); }
   try { stopInvoiceReminderWorker(); } catch (err) { console.error("[shutdown] stopInvoiceReminderWorker failed:", err); }
   try { stopMidnightRolloverWorker(); } catch (err) { console.error("[shutdown] stopMidnightRolloverWorker failed:", err); }
+  try { stopTenantTeardownExecutorWorker(); } catch (err) { console.error("[shutdown] stopTenantTeardownExecutorWorker failed:", err); }
   if (orphanSweeperHandle) {
     clearInterval(orphanSweeperHandle);
     orphanSweeperHandle = null;

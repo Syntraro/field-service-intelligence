@@ -261,12 +261,30 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/jobs", jobTimeRouter); // Time tracking: status updates + time summaries
   app.use("/api/jobs", jobExpensesRouter); // Job expenses: CRUD + approval
   app.use("/api/invoices", invoicesRouter);
-  app.use("/api", paymentsRouter); // Payment routes: /api/invoices/:id/payments, /api/payments/:id
-  // 2026-05-03 PR2 — tenant payments onboarding (Stripe Connect):
-  //   GET  /api/payments/account
-  //   POST /api/payments/account/onboard
-  //   POST /api/payments/account/refresh
+  // 2026-05-04 PR8.5 — mount order fix. paymentAccountRouter MUST be
+  // mounted BEFORE paymentsRouter because paymentsRouter declares a
+  // greedy single-segment matcher `GET /api/payments/:id` (used for
+  // legitimate per-payment lookups by UUID). Express dispatches in
+  // mount order, first-match-wins; if paymentsRouter were mounted
+  // first, the `:id` matcher would capture the literal string
+  // segments `account` / `payouts` / `disputes` / `transactions` /
+  // `anomalies` and route every Payments-dashboard read to the
+  // generic `Get single payment not implemented` 501 handler. Putting
+  // paymentAccountRouter first lets its literal-string routes match
+  // before the `:id` fallback ever runs. The `:id` matcher still
+  // resolves correctly for UUID payment lookups because none of the
+  // literal-string sub-paths above are valid UUIDs.
+  //
+  //   paymentAccountRouter exposes (PR2 / PR5 / PR6 / PR7 / PR8):
+  //     GET  /api/payments/account
+  //     POST /api/payments/account/onboard
+  //     POST /api/payments/account/refresh
+  //     GET  /api/payments/payouts(/summary)
+  //     GET  /api/payments/disputes(/summary)
+  //     GET  /api/payments/transactions
+  //     GET  /api/payments/anomalies/summary
   app.use("/api", paymentAccountRouter);
+  app.use("/api", paymentsRouter); // Payment routes: /api/invoices/:id/payments, /api/payments/:id
   // 2026-04-14 Stripe Phase 1: in-app Stripe PaymentIntent creation.
   // Staff-only. Webhook lives in server/routes/stripeWebhook.ts mounted
   // BEFORE express.json() at the app level.

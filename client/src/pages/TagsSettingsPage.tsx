@@ -207,7 +207,7 @@ export default function TagsSettingsPage() {
       {/* Create new tag form */}
       <div className="flex items-end gap-3 flex-wrap">
         <div className="space-y-1">
-          <label htmlFor="new-tag-name" className="text-xs font-medium text-muted-foreground">
+          <label htmlFor="new-tag-name" className="text-form-label text-muted-foreground">
             Tag name
           </label>
           <Input

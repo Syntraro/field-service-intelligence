@@ -50,6 +50,7 @@ import { MobileShell } from "../components/MobileShell";
 // camera capture, and the select is integrated with custom logic that
 // would require a Radix Select rewrite to migrate cleanly.
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
@@ -638,7 +639,7 @@ function AddPartSheet({ equipmentId, equipmentName, recentParts, onClose, onSucc
               </p>
             </div>
             <div>
-              <label htmlFor="add-part-qty" className="text-xs font-semibold text-slate-500 mb-1 block">Quantity</label>
+              <Label htmlFor="add-part-qty" className="block mb-1">Quantity</Label>
               {/* Stepper flanks the numeric input so common qty bumps don't
                   require opening the soft keyboard. Each stepper is 44×44
                   for thumb-friendly hit targets. */}
@@ -819,19 +820,19 @@ function AddEquipmentSheet({ visitId, onClose, onSuccess, addEquipment, onError 
         ) : (
           <div className="space-y-3">
             <div>
-              <label className="text-xs font-semibold text-slate-500 mb-1 block">Name *</label>
+              <Label className="block mb-1">Name *</Label>
               <Input value={newName} onChange={e => setNewName(e.target.value)} autoFocus />
             </div>
             <div>
-              <label className="text-xs font-semibold text-slate-500 mb-1 block">Type</label>
+              <Label className="block mb-1">Type</Label>
               <Input value={newType} onChange={e => setNewType(e.target.value)} placeholder="e.g. RTU, Furnace" />
             </div>
             <div>
-              <label className="text-xs font-semibold text-slate-500 mb-1 block">Model</label>
+              <Label className="block mb-1">Model</Label>
               <Input value={newModel} onChange={e => setNewModel(e.target.value)} placeholder="Model number" />
             </div>
             <div>
-              <label className="text-xs font-semibold text-slate-500 mb-1 block">Serial</label>
+              <Label className="block mb-1">Serial</Label>
               <Input value={newSerial} onChange={e => setNewSerial(e.target.value)} />
             </div>
             <div className="flex gap-2">

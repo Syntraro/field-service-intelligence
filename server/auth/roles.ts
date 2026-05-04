@@ -34,8 +34,36 @@ export const TECH_ROLES = ["owner", "admin", "manager", "dispatcher", "technicia
 /** All valid tenant roles in the system */
 export const ALL_ROLES = ["owner", "admin", "manager", "dispatcher", "technician"] as const;
 
+/**
+ * 2026-05-04 Phase 6: canonical alias for tenant roles. Same content as
+ * `ALL_ROLES`; the `TENANT_ROLES` name makes the tenant-vs-platform split
+ * explicit at every callsite. The list mirrors the SQL CHECK constraint
+ * `users_role_tenant_only_chk` defined in
+ * `migrations/2026_05_04_users_role_restrict_to_tenant.sql` — keep both
+ * lists in lockstep.
+ *
+ * **Database-enforced invariant:** `users.role` can ONLY hold one of
+ * these strings. Platform roles (see `PLATFORM_ROLES` below) are
+ * structurally impossible in this column.
+ */
+export const TENANT_ROLES = ALL_ROLES;
+
 /** Type for tenant role strings */
 export type Role = typeof ALL_ROLES[number];
+
+/** Equivalent type alias — `TenantRole` reads more clearly at split callsites. */
+export type TenantRole = Role;
+
+/**
+ * True if the given role string is a tenant role. The DB CHECK constraint
+ * on `users.role` guarantees this returns true for every value of
+ * `users.role`; the function is provided for symmetry with
+ * `isPlatformRole` and for input-validation use cases (form submissions
+ * etc.) where the source is not yet trusted.
+ */
+export function isTenantRole(role: string | undefined | null): role is TenantRole {
+  return !!role && (TENANT_ROLES as readonly string[]).includes(role);
+}
 
 /** Type for role groups */
 export type RoleGroup = readonly Role[];

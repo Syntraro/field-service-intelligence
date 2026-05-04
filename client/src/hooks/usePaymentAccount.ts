@@ -401,14 +401,46 @@ export function useTenantPaymentTransactions(
   });
 }
 
+// ─── Anomaly summary (PR8) ─────────────────────────────────────────────────
+
+export interface TenantAnomalyWindowSummary {
+  windowDays: number;
+  total: number;
+  byKind: Record<string, number>;
+}
+
+export interface TenantAnomalySummary {
+  last7Days: TenantAnomalyWindowSummary;
+  last30Days: TenantAnomalyWindowSummary;
+}
+
+export const PAYMENT_ANOMALIES_SUMMARY_QUERY_KEY = [
+  "/api/payments/anomalies/summary",
+] as const;
+
+export function useTenantPaymentAnomalySummary() {
+  return useQuery<TenantAnomalySummary>({
+    queryKey: PAYMENT_ANOMALIES_SUMMARY_QUERY_KEY,
+    refetchInterval: false,
+    refetchIntervalInBackground: false,
+    staleTime: 60_000,
+  });
+}
+
 // ─── Internal: query-string builder. ────────────────────────────────────────
 //
 // Tiny enough to inline; wrapping `URLSearchParams` keeps the
 // number/undefined coercion in one place so every hook stamps the
 // same key set into the query-key array (cache hit consistency).
-function buildQueryString(params: Record<string, string | number | undefined>) {
+//
+// Accepts any object with string-keyed primitive values — the filter
+// shapes have known keys (status / from / to / limit / offset) and
+// TS structural compatibility doesn't auto-add an index signature for
+// inline interfaces, so we widen at the call boundary instead of
+// bolting an index signature onto every Filters interface.
+function buildQueryString(params: object): string {
   const sp = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
+  for (const [k, v] of Object.entries(params as Record<string, unknown>)) {
     if (v === undefined || v === null || v === "") continue;
     sp.set(k, String(v));
   }
