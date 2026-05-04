@@ -12,6 +12,10 @@ import { MobileShell } from "../components/MobileShell";
 import { apiRequest } from "@/lib/queryClient";
 import { toTelHref, toMapsHref } from "../utils/externalLinks";
 
+// 2026-05-04 Phase 2 PR 2: shapes track the tech-safe DTOs returned by
+// the location read endpoints under the tech API surface. Sensitive
+// office-only columns (qbo*, notes, parentCompanyId, etc.) are
+// intentionally not in scope here.
 interface LocationData {
   id: string;
   companyName: string;
@@ -23,15 +27,13 @@ interface LocationData {
   contactName?: string | null;
   phone?: string | null;
   email?: string | null;
-  notes?: string | null;
 }
 
 interface EquipmentItem {
   id: string;
-  name: string;
-  equipmentType?: string | null;
+  type?: string | null;
   manufacturer?: string | null;
-  modelNumber?: string | null;
+  model?: string | null;
   serialNumber?: string | null;
 }
 
@@ -76,22 +78,26 @@ export function LocationDetailPage() {
     }
   };
 
+  // 2026-05-04 Phase 2 PR 2: tech-safe location reads. Replaces the
+  // legacy office endpoints; the new tech routes enforce per-tech
+  // assignment scoping and emit explicit allowlist DTOs (no QBO sync
+  // columns, no notes, no billing flags).
   const { data: loc, isLoading, isError } = useQuery<LocationData>({
-    queryKey: ["/api/clients", locationId],
-    queryFn: () => apiRequest(`/api/clients/${locationId}`),
+    queryKey: ["/api/tech/locations", locationId],
+    queryFn: () => apiRequest(`/api/tech/locations/${locationId}`),
     enabled: !!locationId,
   });
 
   const { data: equipment = [] } = useQuery<EquipmentItem[]>({
-    queryKey: ["/api/clients", locationId, "equipment"],
-    queryFn: () => apiRequest(`/api/clients/${locationId}/equipment`),
+    queryKey: ["/api/tech/locations", locationId, "equipment"],
+    queryFn: () => apiRequest(`/api/tech/locations/${locationId}/equipment`),
     enabled: !!locationId && activeTab === "Equipment",
   });
 
   // Recent jobs for this location
-  const { data: recentJobsRaw } = useQuery<{ data: RecentJob[] }>({
-    queryKey: ["/api/jobs", "location", locationId],
-    queryFn: () => apiRequest(`/api/jobs?locationId=${locationId}&limit=10&sortBy=createdAt&sortOrder=desc`),
+  const { data: recentJobsRaw } = useQuery<{ data: RecentJob[]; meta?: { hasMore: boolean } }>({
+    queryKey: ["/api/tech/locations", locationId, "jobs"],
+    queryFn: () => apiRequest(`/api/tech/locations/${locationId}/jobs?limit=10`),
     enabled: !!locationId && activeTab === "History",
   });
   const recentJobs = recentJobsRaw?.data ?? [];
@@ -226,13 +232,9 @@ export function LocationDetailPage() {
                 )}
               </div>
             )}
-            {loc.notes && (
-              <div className="rounded-md border border-slate-200 bg-white p-3">
-                <p className="text-[10px] font-semibold text-slate-400 uppercase mb-1">Notes</p>
-                <p className="text-xs text-slate-700 whitespace-pre-wrap">{loc.notes}</p>
-              </div>
-            )}
-            {!loc.contactName && !loc.notes && (
+            {/* 2026-05-04 Phase 2 PR 2: location notes are not in the
+                tech-safe DTO and are intentionally not surfaced here. */}
+            {!loc.contactName && (
               <EmptyState icon={MapPin} message="No additional details" className="py-8" />
             )}
           </div>
@@ -243,15 +245,22 @@ export function LocationDetailPage() {
             {equipment.length === 0 ? (
               <EmptyState icon={Wrench} message="No equipment registered" className="py-8" />
             ) : (
-              equipment.map(eq => (
-                <div key={eq.id} className="rounded-md border border-slate-200 bg-white p-3">
-                  <p className="text-sm font-semibold text-slate-800">{eq.name}</p>
-                  <p className="text-xs text-slate-400">
-                    {[eq.equipmentType, eq.manufacturer, eq.modelNumber].filter(Boolean).join(" · ") || "Equipment"}
-                  </p>
-                  {eq.serialNumber && <p className="text-[10px] text-slate-400 mt-0.5">S/N: {eq.serialNumber}</p>}
-                </div>
-              ))
+              equipment.map(eq => {
+                // 2026-05-04 Phase 2 PR 2: tech-safe DTO uses `type` /
+                // `model` (no `name`). Primary line falls back to the
+                // type label, secondary captures manufacturer + model.
+                const primary = eq.type || "Equipment";
+                const secondary = [eq.manufacturer, eq.model]
+                  .filter(Boolean)
+                  .join(" · ");
+                return (
+                  <div key={eq.id} className="rounded-md border border-slate-200 bg-white p-3">
+                    <p className="text-sm font-semibold text-slate-800">{primary}</p>
+                    {secondary && <p className="text-xs text-slate-400">{secondary}</p>}
+                    {eq.serialNumber && <p className="text-[10px] text-slate-400 mt-0.5">S/N: {eq.serialNumber}</p>}
+                  </div>
+                );
+              })
             )}
           </div>
         )}

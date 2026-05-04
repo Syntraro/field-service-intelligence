@@ -33,10 +33,13 @@ export function CreateLeadPage() {
   const prefillVisitId = getQueryParam("visitId");
   const hasPrefill = !!prefillLocationId;
 
-  // Fetch location data if prefilled
+  // 2026-05-04 Phase 2 PR 2: prefill via the tech-safe location read.
+  // Same shape (companyName / address / city) as the office endpoint
+  // for the fields this page renders; access is gated by the new
+  // assertCanAccessTechLocation helper.
   const { data: prefillLocation } = useQuery<{ companyName?: string; address?: string; city?: string }>({
-    queryKey: ["/api/clients", prefillLocationId],
-    queryFn: () => apiRequest(`/api/clients/${prefillLocationId}`),
+    queryKey: ["/api/tech/locations", prefillLocationId],
+    queryFn: () => apiRequest(`/api/tech/locations/${prefillLocationId}`),
     enabled: !!prefillLocationId,
   });
 

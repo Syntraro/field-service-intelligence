@@ -6,6 +6,105 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### Quick Create Job → canonical CreateClientModal flow (2026-05-04)
+
+The "Add new client / location: <typed>" affordance in the Quick Create Job location dropdown previously called an inline `quickCreateClientMutation` (one-shot `POST /api/clients/quick-create`), which created a near-empty client record on click. That bypassed the canonical `CreateClientModal` and produced orphan-style records with no contact, no address, and no parent company.
+
+**Behavior change.** Clicking that dropdown action now opens the canonical `CreateClientModal` with prefilled identity values; **no record is created until the user submits the modal**. On modal cancel, the typed search term and every other field on the Quick Create Job form (date / start / duration / tech / service / equipment / recurrence / job-vs-task toggle) is preserved. On modal success, the new `primaryLocationId` auto-selects on the parent form and `selectedEquipmentIds` is reset.
+
+**Heuristic prefill.** A new top-level helper `deriveClientInitialValues(searchTerm)` in `QuickAddJobDialog.tsx` splits the typed text into the modal's `companyName | firstName / lastName` fields:
+
+- Text containing digits, `&`, or business-suffix words (`inc`, `llc`, `ltd`, `co`, `corp`, `corporation`, `company`, `services`, `hvac`, `plumbing`, `electric`, `enterprises`) → `companyName`.
+- Exactly two all-alpha tokens (e.g. "John Smith") → `firstName` / `lastName`.
+- Everything else (single word, three-plus words, ambiguous) → `companyName`.
+
+Address fields are intentionally never inferred — the modal collects them explicitly. Empty / whitespace-only input yields no prefill.
+
+**Files changed.**
+
+- `client/src/components/QuickAddJobDialog.tsx` — added `CreateClientModal` import; added top-level `deriveClientInitialValues` helper; added `clientCreateModalOpen` + `clientCreateInitialValues` state; rewired `onCreateNew` to open the modal with derived prefill; mounted `<CreateClientModal>` with an `onCreated` callback that auto-selects the new location, logs activity, and invalidates `["/api/clients"]` + `["/api/clients/search-locations"]`; removed the inline `quickCreateClientMutation` and its `isSuccess` reminder toast.
+- `client/src/components/CreateClientModal.tsx` — added optional `initialValues?: { companyName?, firstName?, lastName? }` prop and a `useEffect` that applies it on each `open` transition. Address fields remain non-prefillable. The pre-existing `onCreated(customerCompanyId, primaryLocationId)` signature is unchanged.
+
+#### `POST /api/clients/quick-create` removed (2026-05-04)
+
+Audited (frontend, server-internal, tests, tech-app, portal, import flows): zero active callers after the QuickAddJobDialog rewire and the earlier removal of `QuickCreateDrawer`. Route body removed; tombstone comment left in `server/routes/clients.ts` documenting why and pointing future readers to the canonical `POST /api/clients/full-create` and `POST /api/customer-companies/:companyId/locations`. Unused `postalCodeSchema` import dropped. The shared storage helper `createOrGetLocation` (used by every other create surface) was untouched.
+
+#### `client.created` event-log parity restored / gated (2026-05-04)
+
+`POST /api/clients/full-create` previously emitted no event despite being the canonical office-create surface. The legacy `POST /api/clients` and `POST /api/tech/clients` emitters fired unconditionally — including on the `createOrGetLocation` dedupe path, producing phantom duplicate events on idempotent re-submit. `POST /api/customer-companies/:companyId/locations` was silent.
+
+After this pass, all four canonical client-location create surfaces emit `client.created` with correct tenant + actor scope and **only when a new row was actually inserted**:
+
+| Route | Emission | Dedupe gate |
+|---|---|---|
+| `POST /api/clients` | Yes (existing payload shape: `companyName` + `location` in `meta`) | `created` from `createOrGetLocation` (no-parts branch) and from `createClientWithParts` (parts branch). |
+| `POST /api/clients/full-create` | Yes (new — `meta` adds `customerCompanyId` + `primaryLocationId`; summary falls through `companyName → customerCompany.name → "{firstName} {lastName}" → "client"`) | `primaryResult.created` from `createOrGetLocation`. |
+| `POST /api/customer-companies/:companyId/locations` | Yes (new — both branches: inline-contact transaction + no-contact). `meta` shape matches full-create. | `created` from `createOrGetLocationTx` (transaction branch) and `createOrGetLocation` (no-contact branch). |
+| `POST /api/tech/clients` | Yes (existing `(tech field)` summary suffix; `meta` now also includes `primaryLocationId`) | `created` from `createOrGetLocation`. Route also now passes `location: displayName` so the `(companyId, parentCompanyId, lower(location))` dedupe key actually matches — pre-fix the existing comment claiming "gets the existing primary location back" was aspirational and twin location rows were produced on every retry. |
+
+All emissions use the canonical `logEventAsync(getQueryCtx(req), ...)` helper from `server/lib/events.ts`. Tenant + actor attribution come from `getQueryCtx` (`tenantId = req.companyId`, `actorUserId = req.user.id`, `actorType = "user"`). Event taxonomy is `client.created` with `entityType: "client"` and `entityId = primary location id` — no `location.*` event type was introduced (none exists in the codebase; the existing taxonomy already covers the "client_locations row was created" semantic).
+
+**Files changed.**
+
+- `server/routes/clients.ts` — `POST /api/clients` captures `created` from both branches and gates emission on it; `POST /api/clients/full-create` adds gated emission with extended `meta`; legacy `quick-create` route body removed (tombstone left); unused `postalCodeSchema` import dropped.
+- `server/routes/customer-companies.ts` — `logEventAsync` import added; both branches of `POST /api/customer-companies/:companyId/locations` now capture `created` and emit gated `client.created`.
+- `server/routes/techField.ts` — `POST /api/tech/clients` captures `created` and gates emission; payload now includes `location: displayName` so the canonical dedupe key actually matches.
+
+#### `createClientWithParts` return type widened (2026-05-04)
+
+`server/storage/clients.ts::createClientWithParts` now returns `{ location: Client; created: boolean }` (previously `Client`). The internal call to `createOrGetLocationTx` already produced both values; only the wrapper hid `created`. Sole caller updated. The change unblocks the dedupe gate on `POST /api/clients`'s parts-branch emission. Parts append still runs on both create and dedupe paths — `clientParts` is a quantity-tracked line-item table, no semantic change.
+
+**Tests.**
+
+- `tests/quick-create-job-client-flow.test.ts` — 17 source-level guards over `QuickAddJobDialog` + `CreateClientModal` (rewire + heuristic).
+- `tests/client-create-event-parity.test.ts` — 11 HTTP-level integration tests over the four canonical create routes. Stubs `storage.canAddLocation` to bypass the entitlement chain (which has its own coverage) and hits the live `events` table. Asserts: first-create emits with correct tenant + actor + meta; idempotent re-submit does NOT double-emit; residential summary derives person name; tech route uses `getQueryCtx` (source-grep companion guard).
+- Both suites: **28/28 pass**.
+
+**Remaining gaps to flag.**
+
+- `POST /api/clients/full-create` and `POST /api/clients` differ slightly in `meta` shape: full-create includes `customerCompanyId` + `primaryLocationId`; the legacy single-create has only `companyName` + `location`. Consumer queries that filter on `meta` keys must handle both shapes. Worth normalizing in a follow-up.
+- No `customer_company.created` event taxonomy exists for parent-company creation (today implicit inside `findOrCreateCustomerCompany`). Whether to introduce a company-level event distinct from the location-level `client.created` is a Phase-2 design decision for the attention queue, not a bug.
+
+#### Tech PWA frontend cutover to /api/tech/locations/* — Phase 2 PR 2 (2026-05-04)
+
+Frontend-only cutover. Switches the technician PWA from the office API surface to the tech-safe location reads added in Phase 2 PR 1. No backend changes; office routes are not tightened in this PR.
+
+**Files changed.**
+
+- `client/src/tech-app/pages/LocationDetailPage.tsx` — three React Query hooks repointed:
+  - location header: office endpoint → `GET /api/tech/locations/:locationId`
+  - equipment tab: office endpoint → `GET /api/tech/locations/:locationId/equipment`
+  - history tab: office jobs-list filter → `GET /api/tech/locations/:locationId/jobs?limit=10`
+  Query keys updated to `["/api/tech/locations", locationId, ...]` so cache namespaces no longer collide with the office hooks. The `LocationData` interface drops `notes`; the `EquipmentItem` interface drops `name`, replaces `equipmentType` → `type` and `modelNumber` → `model`. The Notes section in the Overview tab is removed (the tech-safe DTO does not expose `client_locations.notes`). Equipment cards now render `type` as the primary line and `manufacturer · model` as the secondary line — minor UX label change driven by the security boundary; serial number row is unchanged.
+- `client/src/tech-app/pages/CreateLeadPage.tsx` — the prefill query repointed: office endpoint → `GET /api/tech/locations/:prefillLocationId`. Query key updated. The `POST /api/leads` mutation is intentionally untouched (no `/api/tech/leads` endpoint exists yet).
+
+**Endpoint references replaced.** All four tech-PWA reads of `/api/clients/:id` and `/api/clients/:id/equipment` plus the one read of `/api/jobs?locationId=...` were migrated. Five total. The `/api/leads` POST in `CreateLeadPage` and the `/api/clients/search-locations` consumer in `SearchPage.tsx` are out of scope (search endpoint, not a per-id read; no tech-safe twin yet).
+
+**Remaining tech-PWA references (pinned, not migrated).**
+
+- `client/src/tech-app/pages/VisitDetailPage.tsx:~731` — calls `apiRequest(\`/api/clients/${loc.id}/equipment\`)` from inside the visit-modal "select equipment" picker, which sits next to a `POST /api/tech/visits/:visitId/location-equipment` create flow. Migrating this requires either adding `name` to the tech-safe equipment DTO (the picker's filter is `e.name?.toLowerCase().includes(...)`) or restructuring the picker; both are larger than this PR's stated scope. Pinned by a new test so any future migration there has to update this test.
+- `client/src/tech-app/pages/SearchPage.tsx:3` — JSDoc reference to `GET /api/clients/search-locations` (search index, distinct from the per-id reads PR 1 covers). Out of scope.
+
+**Tests added.**
+
+- `tests/tech-pwa-api-cutover.test.ts` (new, 12 cases). Source-pin tests over both edited files:
+  - LocationDetailPage forbids `/api/clients` and `/api/jobs` (the office surfaces); requires the three new tech endpoints; pins the React Query cache key namespace.
+  - CreateLeadPage forbids `/api/clients`; requires `/api/tech/locations/:prefillLocationId`; pins that `POST /api/leads` is unchanged and that `/api/tech/leads` is NOT yet referenced (so a future migration there has to update this test).
+  - DTO-shape pins on LocationDetailPage: `eq.type`/`eq.model` are present, `eq.equipmentType`/`eq.modelNumber`/`eq.name` are forbidden, `loc.notes` is forbidden.
+  - Project-state pin: VisitDetailPage still references the office `/api/clients/:id/equipment` (proving this PR did not silently exceed scope).
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npm run build` — clean (frontend bundle + esbuild server bundle + PWA service worker; same warnings as baseline).
+- `npx vitest run tests/tech-pwa-api-cutover.test.ts` → 12/12 pass.
+- `npx vitest run tests/tech-locations-routes.test.ts` (Phase 2 PR 1 pins) → 15/15 pass.
+- `npx vitest run tests/tech-task-create.test.ts tests/tech-visit-workflow-controls.test.ts` (broader tech regression net) → 48/48 pass.
+
+**Pre-existing regression flagged (not caused by this PR).** `tests/dashboard-authz.test.ts` reports 8 failures because the working tree no longer contains the Phase 1 office-route hardening (`requirePermission` mounts on `/api/dashboard|jobs|invoices|clients|quotes`, method-scoped MANAGER_ROLES on `/api/leads` GET, `<ProtectedRoute requireRestrictedManager>` on `/` and `/financials` in `client/src/App.tsx`). HEAD is `605427a Stripe Full, Admin Fix, UI FIx May 4`, which predates the Phase 1 source edits. The dashboard.view permission migration WAS applied (the 5 middleware + DB-state cases in that suite still pass). Re-applying the Phase 1 source-tree edits is intentionally NOT part of this PR — the user's prompt for PR 2 explicitly says "Do not change office app behavior. Do not tighten office routes yet." Restoration is left for a follow-up.
+
 ### Removed
 
 #### Phase 7 — dead `isPlatformRole(user.role)` checks scrubbed from tenant code (2026-05-04)

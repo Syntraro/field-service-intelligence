@@ -37,6 +37,13 @@ import healthRouter from "./health";
 // server/routes/technicianCalendarPublic.ts for the full rationale.
 import technicianCalendarPublicRouter from "./technicianCalendarPublic";
 import { requireAuth } from "../auth/requireAuth";
+// 2026-05-04 Phase 1: dashboard authz fix. requirePermission gates the
+// office reads at the mount level so the API surface is authoritative;
+// requireRole(MANAGER_ROLES) gates `/api/leads` GETs so the tech-app
+// POST flow stays open.
+import { requirePermission } from "../permissions";
+import { requireRole } from "../auth/requireRole";
+import { MANAGER_ROLES } from "../auth/roles";
 import { ensureTenantContext, rateLimitPerTenant } from "../auth/tenantIsolation";
 import { impersonationMiddleware, trackActivity } from "../impersonationMiddleware";
 import { enforceReadOnlySupport } from "../middleware/enforceReadOnlySupport";
@@ -77,6 +84,9 @@ import searchRouter from "./search";
 import pmPartsRouter from "./pm-parts";
 import { tagCrudRouter, customerCompanyTagRouter, locationTagRouter } from "./tags";
 import techFieldRouter from "./techField";
+// 2026-05-04 Phase 2 PR 1: tech-safe location/equipment/jobs read endpoints.
+// Sibling to techField so we don't keep growing that 2k-line file.
+import techLocationsRouter from "./techLocations";
 import adminTimesheetsRouter from "./adminTimesheets";
 import referenceFieldsRouter from "./referenceFields";
 import visitsRouter from "./visits";
@@ -256,11 +266,17 @@ export function registerRoutes(app: Express): Server {
   // PROTECTED ROUTES (after middleware)
   // ========================================
 
+  // 2026-05-04 Phase 1 dashboard authz: mount-level fine-permission
+  // gate, declared BEFORE any /api/jobs sub-router so every read on
+  // the namespace flows through it. Express middleware runs in
+  // declaration order, so subsequent `app.use("/api/jobs", ...)` mounts
+  // inherit this gate.
+  app.use("/api/jobs", requirePermission("jobs.view"));
   app.use("/api/jobs", jobsRouter);
   app.use("/api/jobs", jobVisitsRoutes);
   app.use("/api/jobs", jobTimeRouter); // Time tracking: status updates + time summaries
   app.use("/api/jobs", jobExpensesRouter); // Job expenses: CRUD + approval
-  app.use("/api/invoices", invoicesRouter);
+  app.use("/api/invoices", requirePermission("invoices.view"), invoicesRouter);
   // 2026-05-04 PR8.5 — mount order fix. paymentAccountRouter MUST be
   // mounted BEFORE paymentsRouter because paymentsRouter declares a
   // greedy single-segment matcher `GET /api/payments/:id` (used for
@@ -294,7 +310,7 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/me", meRouter);
   console.log("[ROUTES] ✓ Mounted /api/team (canonical team router)");
   app.use("/api/calendar", calendarRouter);
-  app.use("/api/clients", clientsRouter);
+  app.use("/api/clients", requirePermission("clients.view.basic"), clientsRouter);
   app.use("/api/equipment", equipmentRouter);
   app.use("/api/technicians", techniciansRouter);
   app.use("/api/job-templates", jobTemplatesRouter);
@@ -313,13 +329,21 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/tasks", tasksRoutes);
   app.use("/api/feedback", feedbackRouter);
   app.use("/api/suppliers", suppliersRouter);
-  app.use("/api/dashboard", dashboardRouter);
+  app.use("/api/dashboard", requirePermission("dashboard.view"), dashboardRouter);
   app.use("/api/reports", reportsRouter);
   // Timesheet Report (2026-04-12): mounts /api/reports/timesheets + payroll-settings.
   app.use("/api/reports", timesheetReportsRouter);
   app.use("/api/qbo", qboRouter);
-  app.use("/api/quotes", quotesRouter);
+  app.use("/api/quotes", requirePermission("quotes.view"), quotesRouter);
   app.use("/api/quote-templates", quoteTemplatesRouter);
+  // 2026-05-04 Phase 1 dashboard authz: method-scoped gate. The
+  // tech-app lead-create flow needs anonymous-tenant POST/PATCH/DELETE
+  // access, so we only enforce MANAGER_ROLES on GET reads. Non-GET
+  // methods fall through to the leadsRouter unchanged.
+  app.use("/api/leads", (req, res, next) => {
+    if (req.method === "GET") return requireRole(MANAGER_ROLES)(req, res, next);
+    next();
+  });
   app.use("/api/leads", leadsRouter);
   app.use("/api/notifications", notificationsRouter);
   app.use("/api/time", timeTrackingRouter); // Time tracking: clock in/out + time entries
@@ -372,6 +396,8 @@ export function registerRoutes(app: Express): Server {
 
   // Technician field app: mobile-first API for assigned visits + time
   app.use("/api/tech", techFieldRouter);
+  // Phase 2 PR 1 (2026-05-04): tech-safe location reads.
+  app.use("/api/tech", techLocationsRouter);
 
   // Phase 1 Architecture: Event Log + Attention Queue
   app.use("/api/activity", activityRouter);

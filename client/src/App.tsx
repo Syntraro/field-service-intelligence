@@ -251,7 +251,7 @@ function Router() {
           a back-compat alias so any external links / bookmarks still
           land on the right page. */}
       <Route path="/">
-        <ProtectedRoute requireAdmin>
+        <ProtectedRoute requireRestrictedManager>
           <FinancialDashboard />
         </ProtectedRoute>
       </Route>
@@ -412,7 +412,7 @@ function Router() {
           render the canonical Business Dashboard. The Operations
           dashboard surface was retired in this commit. */}
       <Route path="/financials">
-        <ProtectedRoute requireAdmin>
+        <ProtectedRoute requireRestrictedManager>
           <FinancialDashboard />
         </ProtectedRoute>
       </Route>
