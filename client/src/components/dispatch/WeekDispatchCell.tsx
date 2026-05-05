@@ -11,7 +11,7 @@
 import { useState, useMemo, useCallback, useRef } from "react";
 import { addMinutes } from "date-fns";
 import { useDraggable, useDroppable, useDndContext, useDndMonitor } from "@dnd-kit/core";
-import type { DispatchVisit, DispatchTask } from "./dispatchPreviewTypes";
+import type { DispatchVisit, DispatchTask, DispatchLeadVisit } from "./dispatchPreviewTypes";
 import type { DispatchDragData, DispatchDropData } from "./dispatchDndTypes";
 import { formatDuration, isCompletedStatus, jobStateColor, SNAP_MINUTES, MIN_DURATION_MINUTES } from "./dispatchPreviewUtils";
 import { UNASSIGNED_COLOR } from "@shared/colors";
@@ -24,6 +24,11 @@ type Props = {
   dayKey: string;
   visits: DispatchVisit[];
   tasks: DispatchTask[];
+  /** 2026-05-05 Phase 3 correction: per-day lead visits placed in
+   *  the same day column. Branch render only — never read jobNumber/
+   *  jobStatus/openSubStatus/version/etc. from these. Not draggable,
+   *  not resizable, not a drop target. Click → /leads/:leadId. */
+  leadVisits: DispatchLeadVisit[];
   startHour: number;
   endHour: number;
   hourHeight: number;
@@ -31,6 +36,10 @@ type Props = {
   savingIds: Set<string>;
   onSelectVisit: (visit: DispatchVisit) => void;
   onSelectTask: (task: DispatchTask) => void;
+  /** 2026-05-05 Phase 3 correction: lead-visit click handler — routes
+   *  to /leads/:leadId, not a job route. Required when leadVisits is
+   *  non-empty. */
+  onOpenLead: (leadId: string) => void;
   onResize?: (visit: DispatchVisit, newEndTime: string) => void;
   /** 2026-03-31: techId→color lookup for week-view card coloring */
   techColorMap?: Map<string, string>;
@@ -373,10 +382,65 @@ function WeekCalendarTaskBlock({ task, top, height, left, width, isSelected, isS
   );
 }
 
+/**
+ * Lead-visit block — amber pill, "Lead" badge, no jobNumber/jobStatus.
+ * NOT draggable, NOT resizable, NOT a drop target. Branch render only.
+ * Click → onOpenLead(leadId). Uses the same vertical positioning math
+ * as job-visit blocks so it sits in the right time slot, but never
+ * shares any DnD or color-by-tech logic with them.
+ */
+function WeekCalendarLeadVisitBlock({
+  leadVisit, top, height, left, width, onOpenLead,
+}: {
+  leadVisit: DispatchLeadVisit;
+  top: number;
+  height: number;
+  left: string;
+  width: string;
+  onOpenLead: (leadId: string) => void;
+}) {
+  const time = leadVisit.scheduledStart && !leadVisit.isAllDay
+    ? new Date(leadVisit.scheduledStart)
+    : null;
+  const timeLabel = time
+    ? `${time.getHours() === 0 ? 12 : time.getHours() > 12 ? time.getHours() - 12 : time.getHours()}:${String(time.getMinutes()).padStart(2, "0")} ${time.getHours() >= 12 ? "PM" : "AM"}`
+    : (leadVisit.isAllDay ? "All day" : "");
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onOpenLead(leadVisit.leadId); }}
+      data-dispatch-block="week-cal-lead-visit"
+      data-lead-visit-id={leadVisit.id}
+      data-testid={`week-lead-visit-${leadVisit.id}`}
+      className="absolute rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 px-1 py-0.5 text-left overflow-hidden transition-colors z-[1]"
+      style={{ top, height: Math.max(height, MIN_BLOCK_HEIGHT), left, width, borderLeftWidth: 3, borderLeftColor: "#f59e0b" }}
+      title={`Lead visit · ${leadVisit.leadTitle}${timeLabel ? ` · ${timeLabel}` : ""}`}
+    >
+      <div className="flex items-center gap-1 leading-tight min-w-0">
+        <span className="rounded bg-amber-500 text-white text-[8px] font-bold px-1 py-px leading-none uppercase tracking-wide shrink-0">
+          Lead
+        </span>
+        {timeLabel && (
+          <span className="text-[10px] font-medium text-amber-900 leading-none shrink-0">
+            {timeLabel}
+          </span>
+        )}
+      </div>
+      <p className="mt-0.5 text-[10px] text-amber-900 leading-tight truncate">
+        {leadVisit.leadTitle}
+      </p>
+      {height > 38 && leadVisit.locationCity && (
+        <p className="text-[9px] text-amber-700 leading-tight truncate">
+          {leadVisit.locationCity}
+        </p>
+      )}
+    </button>
+  );
+}
+
 // ── Main day column component ──
 export default function WeekDayColumn({
-  dayKey, visits, tasks, startHour, endHour, hourHeight,
-  selectedItemId, savingIds, onSelectVisit, onSelectTask, onResize, techColorMap,
+  dayKey, visits, tasks, leadVisits, startHour, endHour, hourHeight,
+  selectedItemId, savingIds, onSelectVisit, onSelectTask, onOpenLead, onResize, techColorMap,
 }: Props) {
   // Register as drop target — calendar-style: dayKey only, no technicianId
   const dropData: DispatchDropData = { dayKey };
@@ -422,9 +486,14 @@ export default function WeekDayColumn({
 
   const totalHeight = (endHour - startHour) * hourHeight;
 
-  // Compute vertical positions and overlap layouts
-  const { visitPositions, taskPositions } = useMemo(() => {
-    const allRanges: Array<{ id: string; startMin: number; endMin: number; kind: "visit" | "task" }> = [];
+  // Compute vertical positions and overlap layouts.
+  // 2026-05-05 Phase 3 correction: lead visits join the SAME overlap
+  // layout as jobs/tasks so they don't visually collide — they get a
+  // side-by-side column when their timeslot overlaps. They keep a
+  // separate position map so the render path stays type-discriminated;
+  // we never read jobNumber/jobStatus/etc. from them.
+  const { visitPositions, taskPositions, leadVisitPositions } = useMemo(() => {
+    const allRanges: Array<{ id: string; startMin: number; endMin: number; kind: "visit" | "task" | "lead" }> = [];
 
     for (const v of visits) {
       const range = toTimeRange(v.scheduledStart, v.durationMinutes);
@@ -434,12 +503,17 @@ export default function WeekDayColumn({
       const range = toTimeRange(t.scheduledStart, t.durationMinutes);
       if (range) allRanges.push({ id: t.id, ...range, kind: "task" });
     }
+    for (const lv of leadVisits) {
+      const range = toTimeRange(lv.scheduledStart, lv.durationMinutes ?? 60);
+      if (range) allRanges.push({ id: lv.id, ...range, kind: "lead" });
+    }
 
     const layouts = computeOverlapLayout(allRanges);
     const startMinOffset = startHour * 60;
 
     const vPos = new Map<string, { top: number; height: number; left: string; width: string }>();
     const tPos = new Map<string, { top: number; height: number; left: string; width: string }>();
+    const lPos = new Map<string, { top: number; height: number; left: string; width: string }>();
 
     for (const item of allRanges) {
       const layout = layouts.get(item.id) ?? { column: 0, totalColumns: 1 };
@@ -451,11 +525,12 @@ export default function WeekDayColumn({
 
       const pos = { top, height, left, width };
       if (item.kind === "visit") vPos.set(item.id, pos);
-      else tPos.set(item.id, pos);
+      else if (item.kind === "task") tPos.set(item.id, pos);
+      else lPos.set(item.id, pos);
     }
 
-    return { visitPositions: vPos, taskPositions: tPos };
-  }, [visits, tasks, startHour, hourHeight]);
+    return { visitPositions: vPos, taskPositions: tPos, leadVisitPositions: lPos };
+  }, [visits, tasks, leadVisits, startHour, hourHeight]);
 
   return (
     <div ref={mergedRef} data-week-day={dayKey} className="absolute inset-0" style={{ height: totalHeight }}>
@@ -502,6 +577,27 @@ export default function WeekDayColumn({
             isSaving={savingIds.has(t.id)}
             onSelect={onSelectTask}
             dayKey={dayKey}
+          />
+        );
+      })}
+
+      {/* 2026-05-05 Phase 3 correction: lead-visit blocks. Branch render
+          rule: only items where `type === "lead_visit"` flow through this
+          path. Job-shaped fields (jobNumber, jobStatus, openSubStatus,
+          version, durationMinutes resize) are NOT touched here. */}
+      {leadVisits.map(lv => {
+        if (lv.type !== "lead_visit") return null;
+        const pos = leadVisitPositions.get(lv.id);
+        if (!pos) return null;
+        return (
+          <WeekCalendarLeadVisitBlock
+            key={lv.id}
+            leadVisit={lv}
+            top={pos.top}
+            height={pos.height}
+            left={pos.left}
+            width={pos.width}
+            onOpenLead={onOpenLead}
           />
         );
       })}

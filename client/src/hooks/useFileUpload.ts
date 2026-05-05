@@ -47,6 +47,11 @@ export type FileEntityType =
   // Backend adapter writes through to `invoice_note_attachments`.
   // Mirror of `server/services/fileUploadService.ts::FileEntityType`.
   | "invoice_note"
+  // 2026-05-05 Lead Visits: lead-note attachments via the canonical
+  // pipeline. Backend adapter writes through to
+  // `lead_note_attachments`. Mirror of
+  // `server/services/fileUploadService.ts::FileEntityType`.
+  | "lead_note"
   | "client_note"
   | "client_document"
   | "contract_document"

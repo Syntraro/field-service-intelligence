@@ -66,6 +66,11 @@ type NoteOrigin =
   // the surface can correctly distinguish owned-on-invoice from
   // borrowed-from-job — the latter is no longer emitted.
   | "invoice"
+  // 2026-05-05: lead-owned notes use this origin tag. Lead notes do
+  // not (currently) merge inherited client notes, so every row
+  // returned from /api/leads/:id/notes has origin "lead" and is
+  // editable on this surface.
+  | "lead"
   | "client_location"
   | "client_company"
   | "client_tenant";
@@ -88,7 +93,7 @@ interface EntityNote {
   editable?: boolean;
 }
 
-export type EntityNotesEntityType = "job" | "invoice" | "quote";
+export type EntityNotesEntityType = "job" | "invoice" | "quote" | "lead";
 
 interface EntityNotesSectionProps {
   entityType: EntityNotesEntityType;
@@ -151,6 +156,15 @@ function resolveReadEndpoint(entityType: EntityNotesEntityType, entityId: string
       queryKey: ["/api/invoices", entityId, "notes"] as const,
     };
   }
+  // 2026-05-05: lead surface routes through /api/leads/:leadId/notes.
+  // Server emits the canonical envelope (id, noteText, user, attachments,
+  // origin: "lead", editable: true) the existing render path consumes.
+  if (entityType === "lead") {
+    return {
+      url: `/api/leads/${entityId}/notes`,
+      queryKey: ["/api/leads", entityId, "notes"] as const,
+    };
+  }
   return {
     url: `/api/jobs/${entityId}/notes`,
     queryKey: ["/api/jobs", entityId, "notes"] as const,
@@ -174,6 +188,9 @@ function isOwnedRowEditable(
   if (note.editable === false) return false;
   if (entityType === "quote") return note.origin === "quote";
   if (entityType === "invoice") return note.origin === "invoice";
+  // 2026-05-05: lead surface — owned rows are tagged origin: "lead"
+  // by the server. No inherited rows on this surface today.
+  if (entityType === "lead") return note.origin === "lead";
   return note.origin === "job";
 }
 

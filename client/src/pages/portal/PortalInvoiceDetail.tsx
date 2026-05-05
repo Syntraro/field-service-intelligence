@@ -46,6 +46,8 @@ import {
   type PortalStatusKind,
 } from "./portalUtils";
 import { PortalPayInvoiceForm } from "./PortalPayInvoiceForm";
+import { apiRequest } from "@/lib/queryClient";
+import { usePortalAuth } from "@/lib/portalAuth";
 
 interface InvoiceLine {
   id: string;
@@ -81,11 +83,42 @@ interface InvoiceDetail {
   notesCustomer: string | null;
   clientMessage: string | null;
   workDescription: string | null;
+  // Per-invoice raw flags retained for backward compat with the prior
+  // client. Visibility decisions on this page are now driven entirely
+  // by the resolved `displayPolicy` field on the response (2026-05-05).
   showQuantity: boolean;
   showUnitPrice: boolean;
   showLineTotals: boolean;
   showLineItems: boolean;
   showBalance: boolean;
+}
+
+/**
+ * 2026-05-05: canonical resolved Invoice Display policy. Mirrors the
+ * `InvoiceDisplayPolicy` shape exported from `@shared/invoiceDisplayPolicy`
+ * — the server resolves once and the client renders against it directly.
+ * Pre-policy server responses omit this field; the page falls back to
+ * sensible defaults when it's missing.
+ */
+interface DisplayPolicy {
+  showLogo: boolean;
+  showCompanyAddress: boolean;
+  showCompanyPhone: boolean;
+  showCompanyEmail: boolean;
+  showCompanyWebsite: boolean;
+  showTaxNumber: boolean;
+  showBillingAddress: boolean;
+  showServiceAddress: boolean;
+  showLocationName: boolean;
+  showJobNumber: boolean;
+  showSummary: boolean;
+  showJobDescription: boolean;
+  showClientMessage: boolean;
+  clientMessage: string | null;
+  showLineItems: boolean;
+  showQuantities: boolean;
+  showUnitPrices: boolean;
+  showLineTotals: boolean;
 }
 
 /**
@@ -111,6 +144,36 @@ interface InvoiceDetailResponse {
   paymentsEnabled: boolean;
   /** 2026-05-03 PR 5 — additive; missing on pre-PR-5 server responses. */
   payments?: PaymentHistoryRow[];
+  /** 2026-05-05 — additive resolved display policy; missing on older servers. */
+  displayPolicy?: DisplayPolicy;
+}
+
+/**
+ * Fallback policy mirrors the shared/invoiceDisplayPolicy resolver's
+ * defaults for the case where the server response predates this field.
+ * Per-invoice raw flags are honored so behavior matches the prior client.
+ */
+function defaultPolicyFromInvoice(inv: InvoiceDetail): DisplayPolicy {
+  return {
+    showLogo: false,
+    showCompanyAddress: true,
+    showCompanyPhone: true,
+    showCompanyEmail: true,
+    showCompanyWebsite: false,
+    showTaxNumber: true,
+    showBillingAddress: true,
+    showServiceAddress: true,
+    showLocationName: true,
+    showJobNumber: false,
+    showSummary: false,
+    showJobDescription: true,
+    showClientMessage: true,
+    clientMessage: inv.clientMessage,
+    showLineItems: inv.showLineItems !== false,
+    showQuantities: inv.showQuantity !== false,
+    showUnitPrices: inv.showUnitPrice !== false,
+    showLineTotals: inv.showLineTotals !== false,
+  };
 }
 
 // 2026-04-21 provider-neutral response from the canonical checkout route.
@@ -154,7 +217,27 @@ export default function PortalInvoiceDetail() {
     typeof window !== "undefined" &&
     new URLSearchParams(window.location.search).get("pay") === "1";
 
-  const invoiceQueryKey = [`/api/portal/invoices/${invoiceId}`];
+  // 2026-05-05: invoice-scoped access token from the Pay Invoice email
+  // link (`?t=…`). When present, the customer can view + pay this ONE
+  // invoice without going through magic-link sign-in. The token is
+  // threaded onto every API call as a query string parameter so the
+  // server's `resolveInvoiceTokenScope` middleware can validate it.
+  // Falls through to portal-session auth when absent.
+  const accessToken =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("t")
+      : null;
+  const tokenQuery = accessToken ? `?t=${encodeURIComponent(accessToken)}` : "";
+
+  // 2026-05-05: when the customer arrived via the email Pay Invoice
+  // link (token mode) and has no portal session, surface a "Sign in to
+  // view all invoices" affordance in place of the Invoices back link
+  // (which would 401 anyway). The portal-session probe is the standard
+  // /api/portal/me query mounted by PortalAuthProvider.
+  const portalAuth = usePortalAuth();
+  const isTokenOnlyAccess = !!accessToken && !portalAuth.user && !portalAuth.isLoading;
+
+  const invoiceQueryKey = [`/api/portal/invoices/${invoiceId}${tokenQuery}`];
   const { data, isLoading, isError } = useQuery<InvoiceDetailResponse>({
     queryKey: invoiceQueryKey,
     enabled: !!invoiceId,
@@ -165,15 +248,16 @@ export default function PortalInvoiceDetail() {
       // 2026-04-21 provider-neutral endpoint. Response uses `clientToken`
       // + `providerId`; the Stripe-specific names stay inside the
       // provider-adapter layer and the Stripe Elements call below.
-      const res = await fetch(
-        `/api/portal/invoices/${invoiceId}/payments/checkout`,
-        { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" } },
+      // 2026-05-05: switched from plain fetch() to `apiRequest` so the
+      // global csurf middleware sees the X-CSRF-Token header. The bare
+      // fetch path was the cause of "Invalid CSRF token" on every Pay
+      // click in the portal. Access token (if present) is threaded on
+      // the query string so the server's invoice-scoped access check
+      // can authorize the request without a magic-link session.
+      return await apiRequest<CheckoutResponse>(
+        `/api/portal/invoices/${invoiceId}/payments/checkout${tokenQuery}`,
+        { method: "POST" },
       );
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error || body?.message || "Could not start payment.");
-      }
-      return res.json();
     },
     onSuccess: (result) => {
       setIntent(result);
@@ -289,8 +373,12 @@ export default function PortalInvoiceDetail() {
     );
   }
 
-  const { invoice, lines, taxLines, paymentsEnabled, payments } = data;
+  const { invoice, lines, taxLines, paymentsEnabled, payments, displayPolicy } = data;
   const paymentHistory = payments ?? [];
+  // 2026-05-05: resolved display policy — preferred source of truth for
+  // every visibility decision. Falls back to the prior per-invoice flags
+  // when the server response predates the policy field.
+  const policy: DisplayPolicy = displayPolicy ?? defaultPolicyFromInvoice(invoice);
   const hasBalance = parseFloat(invoice.balance || "0") > 0;
   const isPayable =
     invoice.status === "awaiting_payment" ||
@@ -308,12 +396,22 @@ export default function PortalInvoiceDetail() {
 
   return (
     <div className="space-y-4 pb-24 sm:pb-4">
-      {/* Back link — larger tap target than before */}
-      <Button variant="ghost" size="sm" className="h-10 -ml-2" asChild>
-        <Link href="/portal/invoices">
-          <ArrowLeft className="h-4 w-4 mr-1" /> Invoices
-        </Link>
-      </Button>
+      {/* Back link / sign-in affordance — larger tap target than before.
+           In token-only mode (?t= present, no portal session) the
+           Invoices list would 401, so show a sign-in CTA instead. */}
+      {isTokenOnlyAccess ? (
+        <Button variant="ghost" size="sm" className="h-10 -ml-2" asChild>
+          <Link href="/portal">
+            <ArrowLeft className="h-4 w-4 mr-1" /> Sign in to view all invoices
+          </Link>
+        </Button>
+      ) : (
+        <Button variant="ghost" size="sm" className="h-10 -ml-2" asChild>
+          <Link href="/portal/invoices">
+            <ArrowLeft className="h-4 w-4 mr-1" /> Invoices
+          </Link>
+        </Button>
+      )}
 
       {/* ── Hero card — Balance Due is the emphasis. ──────────────── */}
       <Card className="overflow-hidden">
@@ -342,7 +440,7 @@ export default function PortalInvoiceDetail() {
                 data-testid="portal-download-pdf"
               >
                 <a
-                  href={`/api/portal/invoices/${invoice.id}/pdf`}
+                  href={`/api/portal/invoices/${invoice.id}/pdf${tokenQuery}`}
                   target="_blank"
                   rel="noopener"
                 >
@@ -435,7 +533,7 @@ export default function PortalInvoiceDetail() {
       )}
 
       {/* ── Line items ──────────────────────────────────────────── */}
-      {invoice.showLineItems && lines.length > 0 && (
+      {policy.showLineItems && lines.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Line items</CardTitle>
@@ -447,15 +545,15 @@ export default function PortalInvoiceDetail() {
                   <div className="flex justify-between items-start gap-3">
                     <div className="min-w-0 flex-1">
                       <p className="font-medium text-slate-900">{line.description}</p>
-                      {(invoice.showQuantity || invoice.showUnitPrice) && (
+                      {(policy.showQuantities || policy.showUnitPrices) && (
                         <p className="text-xs text-slate-500 mt-0.5">
-                          {invoice.showQuantity && `Qty: ${line.quantity}`}
-                          {invoice.showQuantity && invoice.showUnitPrice && " × "}
-                          {invoice.showUnitPrice && formatCurrency(line.unitPrice, invoice.currency)}
+                          {policy.showQuantities && `Qty: ${line.quantity}`}
+                          {policy.showQuantities && policy.showUnitPrices && " × "}
+                          {policy.showUnitPrices && formatCurrency(line.unitPrice, invoice.currency)}
                         </p>
                       )}
                     </div>
-                    {invoice.showLineTotals && (
+                    {policy.showLineTotals && (
                       <p className="font-medium text-slate-900 tabular-nums shrink-0">
                         {formatCurrency(line.lineTotal, invoice.currency)}
                       </p>
@@ -580,19 +678,24 @@ export default function PortalInvoiceDetail() {
         </Card>
       )}
 
-      {/* ── Notes / Terms ───────────────────────────────────────── */}
-      {(invoice.clientMessage ||
+      {/* ── Notes / Terms ─────────────────────────────────────────
+          2026-05-05: blocks are gated by the resolved displayPolicy.
+          policy.clientMessage is null when the tenant has the message
+          block off OR when the per-invoice text is empty. notesCustomer
+          (QBO CustomerMemo) is rendered as before — it's a separate
+          field and not part of the new tenant Client-Message toggle. */}
+      {(policy.clientMessage ||
         invoice.notesCustomer ||
-        (invoice.workDescription && (invoice as any).showJobDescription !== false)) && (
+        (invoice.workDescription && policy.showJobDescription)) && (
         <Card>
           <CardContent className="pt-6 space-y-3">
-            {invoice.clientMessage && (
-              <NotesBlock label="Message" text={invoice.clientMessage} />
+            {policy.clientMessage && (
+              <NotesBlock label="Message" text={policy.clientMessage} />
             )}
             {invoice.notesCustomer && (
               <NotesBlock label="Notes" text={invoice.notesCustomer} />
             )}
-            {invoice.workDescription && (invoice as any).showJobDescription !== false && (
+            {invoice.workDescription && policy.showJobDescription && (
               <NotesBlock label="Scope of work" text={invoice.workDescription} />
             )}
           </CardContent>

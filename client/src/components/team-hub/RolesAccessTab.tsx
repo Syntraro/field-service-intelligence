@@ -75,9 +75,14 @@ type OverrideState = "inherited" | "allow" | "deny";
 interface Props {
   selectedMemberId: string | null;
   onSelectMember: (id: string | null) => void;
+  // 2026-05-05 member-centric restructure: when this tab is mounted
+  // inside `TeamMemberWorkspace` it must not render its own member
+  // sidebar — the workspace already provides a single shared list on
+  // the page. Standalone usage keeps the original 260px sidebar.
+  hideMemberList?: boolean;
 }
 
-export function RolesAccessTab({ selectedMemberId, onSelectMember }: Props) {
+export function RolesAccessTab({ selectedMemberId, onSelectMember, hideMemberList = false }: Props) {
   const { toast } = useToast();
   const dirty = useUnsavedChanges();
   const [search, setSearch] = useState("");
@@ -85,6 +90,12 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember }: Props) {
   const [overrides, setOverrides] = useState<Record<string, "grant" | "revoke">>({});
   const [pickedRoleId, setPickedRoleId] = useState<string>("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // 2026-05-05 simplification: per-section disclosure state.
+  // `advancedOpen` controls the entire Advanced Controls (override
+  // editor) card body. Closed by default — most users should never
+  // need to open it. Save endpoints + override state remain wired
+  // through the existing pack list inside the disclosure.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const { data: members = [] } = useQuery<TeamMemberRow[]>({ queryKey: ["/api/team"] });
   const { data: roles = [] } = useQuery<Role[]>({ queryKey: ["/api/roles"] });
@@ -251,62 +262,70 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember }: Props) {
   };
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-4">
-      <Card className="md:sticky md:top-4 md:self-start">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">Members</CardTitle>
-          <div className="relative mt-2">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search..."
-              className="pl-8 h-8 text-sm"
-              data-testid="input-roles-search"
-            />
-          </div>
-        </CardHeader>
-        <CardContent className="px-2 pb-2 max-h-[70vh] overflow-y-auto">
-          {filteredMembers.length === 0 ? (
-            <p className="p-3 text-sm text-muted-foreground">
-              {search ? "No matches." : "No members yet."}
-            </p>
-          ) : (
-            <ul className="space-y-1">
-              {filteredMembers.map((m) => {
-                const active = m.id === displayedId;
-                return (
-                  <li key={m.id}>
-                    <button
-                      type="button"
-                      onClick={() => dirty.confirmLeave(() => onSelectMember(m.id))}
-                      className={`w-full flex items-center gap-2 px-2 py-2 rounded-md text-left text-sm transition-colors ${
-                        active ? "bg-primary/10" : "hover:bg-muted"
-                      }`}
-                      data-testid={`button-roles-select-${m.id}`}
-                    >
-                      <Avatar className="h-7 w-7 shrink-0">
-                        <AvatarFallback
-                          className="text-[10px] text-white"
-                          style={{ backgroundColor: resolveTechnicianColor(m.id, null) }}
-                        >
-                          {getMemberInitials(m)}
-                        </AvatarFallback>
-                      </Avatar>
-                      <div className="flex-1 min-w-0">
-                        <div className="truncate">{getMemberDisplayName(m)}</div>
-                        <div className="text-xs text-muted-foreground truncate">
-                          {memberRoleDisplay(m)}
+    <div
+      className={
+        hideMemberList
+          ? "grid grid-cols-1 gap-4"
+          : "grid grid-cols-1 md:grid-cols-[260px_1fr] gap-4"
+      }
+    >
+      {!hideMemberList && (
+        <Card className="md:sticky md:top-4 md:self-start">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Members</CardTitle>
+            <div className="relative mt-2">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search..."
+                className="pl-8 h-8 text-sm"
+                data-testid="input-roles-search"
+              />
+            </div>
+          </CardHeader>
+          <CardContent className="px-2 pb-2 max-h-[70vh] overflow-y-auto">
+            {filteredMembers.length === 0 ? (
+              <p className="p-3 text-sm text-muted-foreground">
+                {search ? "No matches." : "No members yet."}
+              </p>
+            ) : (
+              <ul className="space-y-1">
+                {filteredMembers.map((m) => {
+                  const active = m.id === displayedId;
+                  return (
+                    <li key={m.id}>
+                      <button
+                        type="button"
+                        onClick={() => dirty.confirmLeave(() => onSelectMember(m.id))}
+                        className={`w-full flex items-center gap-2 px-2 py-2 rounded-md text-left text-sm transition-colors ${
+                          active ? "bg-primary/10" : "hover:bg-muted"
+                        }`}
+                        data-testid={`button-roles-select-${m.id}`}
+                      >
+                        <Avatar className="h-7 w-7 shrink-0">
+                          <AvatarFallback
+                            className="text-[10px] text-white"
+                            style={{ backgroundColor: resolveTechnicianColor(m.id, null) }}
+                          >
+                            {getMemberInitials(m)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1 min-w-0">
+                          <div className="truncate">{getMemberDisplayName(m)}</div>
+                          <div className="text-xs text-muted-foreground truncate">
+                            {memberRoleDisplay(m)}
+                          </div>
                         </div>
-                      </div>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <div className="space-y-4">
         {!displayedId ? (
@@ -381,35 +400,85 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember }: Props) {
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader className="pb-2">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle className="text-base flex items-center gap-2">
-                      <Shield className="h-4 w-4" />
-                      Permission overrides
-                    </CardTitle>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {rolePermissions.length} permissions inherited from{" "}
-                      <span className="font-medium">
-                        {roles.find((r) => r.id === member.roleId)?.displayName ?? member.role}
-                      </span>
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Label htmlFor="toggle-override" className="text-sm">
-                      Override
-                    </Label>
-                    <Switch
-                      id="toggle-override"
-                      checked={overrideMode}
-                      onCheckedChange={setOverrideMode}
-                      data-testid="switch-override-mode"
-                    />
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-2" data-testid="override-pack-list">
+            {/* 2026-05-05 simplification: Access Summary moved BEFORE
+                the override editor — it's the primary management UI;
+                the override editor is now treated as Advanced Controls
+                (collapsed by default). */}
+            <EffectiveAccessPanel
+              data={effectiveAccess}
+              permissions={permissions}
+              roleDisplayName={
+                roles.find((r) => r.id === member.roleId)?.displayName ??
+                member.role
+              }
+            />
+
+            {/* 2026-05-05 simplification: the entire Permission Overrides
+                editor is now treated as Advanced Controls — collapsed
+                by default, fronted by a single toggle + helper line.
+                All inner save logic, the override pack list, the
+                Allow/Deny/Inherit tri-state, and the save/clear
+                actions are unchanged — only the wrapping disclosure
+                is new. */}
+            <Card data-testid="advanced-controls-card">
+              <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+                <CollapsibleTrigger
+                  className="w-full text-left"
+                  data-testid="advanced-controls-trigger"
+                >
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Settings2 className="h-4 w-4 text-muted-foreground" />
+                        <div>
+                          <CardTitle className="text-base">
+                            Advanced Controls
+                          </CardTitle>
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            Advanced controls for fine-tuning access. Most
+                            users should not need this.
+                          </p>
+                        </div>
+                      </div>
+                      {advancedOpen ? (
+                        <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                      ) : (
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      )}
+                    </div>
+                  </CardHeader>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <CardContent className="pt-0 space-y-3">
+                    {/* Inner header (was the card's primary header
+                        before v2) — kept for the inherited-count
+                        summary + the Override toggle. */}
+                    <div className="flex items-center justify-between border-t pt-3">
+                      <div>
+                        <p className="text-sm font-medium flex items-center gap-2">
+                          <Shield className="h-4 w-4" />
+                          Permission overrides
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {rolePermissions.length} permissions inherited from{" "}
+                          <span className="font-medium">
+                            {roles.find((r) => r.id === member.roleId)?.displayName ?? member.role}
+                          </span>
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Label htmlFor="toggle-override" className="text-sm">
+                          Override
+                        </Label>
+                        <Switch
+                          id="toggle-override"
+                          checked={overrideMode}
+                          onCheckedChange={setOverrideMode}
+                          data-testid="switch-override-mode"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-2" data-testid="override-pack-list">
                 {/* 2026-05-04 PR 2: pack-driven render. Each pack
                     shows its primary permissions inline; the noisy /
                     micro-permissions sit behind a per-pack "Advanced"
@@ -535,22 +604,11 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember }: Props) {
                     </div>
                   </div>
                 )}
-              </CardContent>
+                    </div>
+                  </CardContent>
+                </CollapsibleContent>
+              </Collapsible>
             </Card>
-
-            {/* 2026-05-04 PR 3: read-only effective-access preview.
-                Two sections — pack rollup + permission breakdown —
-                neither has any controls. Backed by
-                `GET /api/team/:userId/effective-permissions`, which
-                calls the canonical resolver. */}
-            <EffectiveAccessPanel
-              data={effectiveAccess}
-              permissions={permissions}
-              roleDisplayName={
-                roles.find((r) => r.id === member.roleId)?.displayName ??
-                member.role
-              }
-            />
           </>
         )}
       </div>
@@ -580,6 +638,14 @@ function EffectiveAccessPanel({
   permissions: Permission[];
   roleDisplayName: string;
 }) {
+  // 2026-05-05 simplification: detailed breakdown sections (inherited /
+  // granted / revoked) collapsed by default behind a "View detailed
+  // permissions" disclosure. The pack rollup remains visible — that's
+  // the primary management UI now. Raw keys live inside the
+  // disclosure (kept for power users / debug surfaces, hidden by
+  // default).
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
   // Build a key → Permission lookup so the breakdown rows can show
   // friendly labels next to the raw key.
   const permByKey = useMemo(() => {
@@ -622,7 +688,7 @@ function EffectiveAccessPanel({
         <CardHeader className="pb-2">
           <CardTitle className="text-base flex items-center gap-2">
             <Eye className="h-4 w-4" />
-            What this user can access
+            Access Summary
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -637,7 +703,7 @@ function EffectiveAccessPanel({
       <CardHeader className="pb-2">
         <CardTitle className="text-base flex items-center gap-2">
           <Eye className="h-4 w-4" />
-          What this user can access
+          Access Summary
         </CardTitle>
         <p className="text-xs text-muted-foreground mt-1">
           Resolved from <span className="font-medium">{roleDisplayName}</span>
@@ -651,11 +717,8 @@ function EffectiveAccessPanel({
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Section 1 — Pack rollup */}
+        {/* Section 1 — Pack rollup. Primary UI; visible by default. */}
         <div data-testid="effective-pack-rollup">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-            By pack
-          </h3>
           <div className="space-y-1">
             {packRollup.rows.map((row) => (
               <PackStatusRow
@@ -671,30 +734,49 @@ function EffectiveAccessPanel({
           </div>
         </div>
 
-        {/* Section 2 — Permission breakdown */}
-        <div className="space-y-3" data-testid="effective-breakdown">
-          <BreakdownSection
-            label="Inherited from role"
-            tone="neutral"
-            data={breakdownByPack.inherited}
-            permByKey={permByKey}
-            testIdSuffix="inherited"
-          />
-          <BreakdownSection
-            label="Granted by override"
-            tone="positive"
-            data={breakdownByPack.granted}
-            permByKey={permByKey}
-            testIdSuffix="granted"
-          />
-          <BreakdownSection
-            label="Revoked by override"
-            tone="negative"
-            data={breakdownByPack.revoked}
-            permByKey={permByKey}
-            testIdSuffix="revoked"
-          />
-        </div>
+        {/* Section 2 — Permission breakdown, collapsed by default
+            behind a "View detailed permissions" disclosure. The
+            three sub-sections (inherited / granted / revoked) and
+            their per-pack groups still render; they're just hidden
+            until expanded. */}
+        <Collapsible open={detailsOpen} onOpenChange={setDetailsOpen}>
+          <CollapsibleTrigger
+            className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+            data-testid="effective-details-trigger"
+          >
+            {detailsOpen ? (
+              <ChevronUp className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronDown className="h-3.5 w-3.5" />
+            )}
+            View detailed permissions
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="space-y-3 pt-3" data-testid="effective-breakdown">
+              <BreakdownSection
+                label="Inherited from role"
+                tone="neutral"
+                data={breakdownByPack.inherited}
+                permByKey={permByKey}
+                testIdSuffix="inherited"
+              />
+              <BreakdownSection
+                label="Granted by override"
+                tone="positive"
+                data={breakdownByPack.granted}
+                permByKey={permByKey}
+                testIdSuffix="granted"
+              />
+              <BreakdownSection
+                label="Revoked by override"
+                tone="negative"
+                data={breakdownByPack.revoked}
+                permByKey={permByKey}
+                testIdSuffix="revoked"
+              />
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
       </CardContent>
     </Card>
   );

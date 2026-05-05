@@ -44,10 +44,6 @@ import {
   type JobGroupEntry,
 } from "./JobTimeGroupCard";
 import {
-  TimeEntryEditor,
-  type TimeEntryEditorPayload,
-} from "./TimeEntryEditor";
-import {
   TimeEntryEditModal,
   type TimeEntryEditModalPayload,
 } from "./TimeEntryEditModal";
@@ -56,9 +52,9 @@ import {
   type JobSessionEditModalGroup,
   type JobSessionEditModalSavePayload,
 } from "./JobSessionEditModal";
+import { JobSessionCreateModal } from "./JobSessionCreateModal";
 import {
   categoryForType,
-  defaultTypeForCategory,
   type EntryCategory,
 } from "./categoryMap";
 
@@ -200,7 +196,10 @@ export function DayView({
   // handler with a toast — the user must clock out first.
   const [editingEntry, setEditingEntry] = useState<DayViewEntry | null>(null);
   const [editingGroup, setEditingGroup] = useState<JobSessionEditModalGroup | null>(null);
-  const [adding, setAdding] = useState(false);
+  // 2026-05-05: Add Entry now opens JobSessionCreateModal (the
+  // inline TimeEntryEditor + createMutation were retired; the modal
+  // dispatches its own POST(s) and invalidates the same query keys).
+  const [createOpen, setCreateOpen] = useState(false);
   // 2026-05-04 v4 polish: session-delete confirm flow. Holds the
   // exact list of time_entries row ids the combined editor was bound
   // to (drive + on-site, whichever exist). The prior implementation
@@ -273,30 +272,10 @@ export function DayView({
     },
   });
 
-  const createMutation = useMutation({
-    mutationFn: async (payload: TimeEntryEditorPayload) => {
-      return apiRequest(`/api/admin/timesheets/entries`, {
-        method: "POST",
-        body: JSON.stringify({
-          technicianId: selectedMemberId,
-          type: payload.type,
-          startAt: payload.startAt,
-          endAt: payload.endAt,
-          notes: payload.notes,
-          billable: payload.billable,
-          jobId: payload.jobId,
-        }),
-      });
-    },
-    onSuccess: () => {
-      invalidateAll();
-      setAdding(false);
-      toast({ title: "Entry added" });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Create failed", description: err.message, variant: "destructive" });
-    },
-  });
+  // 2026-05-05: createMutation removed. JobSessionCreateModal dispatches
+  // its own POST(s) (one for general/single mode, two for drive+on-site)
+  // via Promise.all and invalidates the same query keys this component
+  // would have invalidated.
 
   // 2026-05-04 v4 polish: combined drive + on-site save. The editor's
   // payload may include per-row updates and/or a shared job/notes
@@ -510,7 +489,7 @@ export function DayView({
         })),
       });
       setEditingEntry(null);
-      setAdding(false);
+      setCreateOpen(false);
       return;
     }
 
@@ -528,11 +507,11 @@ export function DayView({
     }
     setEditingEntry(entry);
     setEditingGroup(null);
-    setAdding(false);
+    setCreateOpen(false);
   };
 
   const handleAddClick = () => {
-    setAdding(true);
+    setCreateOpen(true);
     setEditingEntry(null);
     setEditingGroup(null);
   };
@@ -603,7 +582,6 @@ export function DayView({
             <Button
               size="sm"
               onClick={handleAddClick}
-              disabled={adding}
               data-testid="day-add-entry"
             >
               <Plus className="mr-1 h-3.5 w-3.5" />
@@ -620,31 +598,11 @@ export function DayView({
               {/* Left rail — chronological dots, independent of cards. */}
               <TimelineRail entries={railEntries} className="pt-1" />
 
-              {/* Right column — grouped cards + add-new editor. */}
+              {/* Right column — grouped cards. (Add Entry now opens
+                  JobSessionCreateModal mounted at the bottom of this
+                  component instead of an inline editor card.) */}
               <div className="min-w-0 flex-1 space-y-3" data-testid="day-groups-list">
-                {/* New-entry editor at top of right column when adding. */}
-                {adding && (
-                  <TimeEntryEditor
-                    mode="create"
-                    initial={{
-                      id: null,
-                      type: defaultTypeForCategory("general"),
-                      startAt: new Date().toISOString(),
-                      endAt: null,
-                      notes: null,
-                      billable: false,
-                      jobId: null,
-                      jobNumber: null,
-                      jobSummary: null,
-                      locationName: null,
-                    }}
-                    isSaving={createMutation.isPending}
-                    onSave={(payload) => createMutation.mutate(payload)}
-                    onCancel={() => setAdding(false)}
-                  />
-                )}
-
-                {groups.length === 0 && !adding && (
+                {groups.length === 0 && (
                   <div className="py-8 text-center text-muted-foreground">
                     <Clock className="mx-auto mb-2 h-6 w-6 opacity-50" />
                     <p className="text-sm">No time entries.</p>
@@ -682,6 +640,19 @@ export function DayView({
         })();
         return (
           <>
+            {/* 2026-05-05: Add Time Entry modal — replaces the prior
+                inline `TimeEntryEditor` card. Modes: Drive + On-site /
+                Drive only / On-site only / General. POST(s) to the
+                canonical /api/admin/timesheets/entries endpoint. */}
+            <JobSessionCreateModal
+              open={createOpen}
+              onOpenChange={setCreateOpen}
+              technicianId={selectedMemberId}
+              employeeName={employeeName}
+              defaultDate={date}
+              invalidateQueryKeys={invalidateQueryKeys}
+            />
+
             {/* 2026-05-04 v4 polish: combined drive + on-site editor for
                 job-linked groups. Backend rows stay separate — Save
                 dispatches per-row PATCHes through sessionSaveMutation. */}

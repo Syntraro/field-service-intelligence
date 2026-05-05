@@ -1657,6 +1657,13 @@ export class InvoiceRepository extends BaseRepository {
       initialSubtotal?: string;
       initialTotal?: string;
       initialBalance?: string;
+      /**
+       * 2026-05-05: prefill text for `invoices.client_message`. Resolved
+       * upstream from the tenant's Invoice Display settings (only set
+       * when the Client Message toggle is on AND a default message
+       * exists). Caller-supplied undefined / null / "" → no prefill.
+       */
+      clientMessage?: string | null;
     },
     tx: any,
     paymentTermsDays: number
@@ -1697,6 +1704,14 @@ export class InvoiceRepository extends BaseRepository {
     const total = params.initialTotal ?? "0";
     const balance = params.initialBalance ?? "0";
 
+    // 2026-05-05: prefilled client_message — only insert when caller passed
+    // a non-empty string. Undefined / null / "" leave the column NULL so
+    // the per-invoice editor stays empty (matches pre-tenant-policy behavior).
+    const clientMessageValue =
+      typeof params.clientMessage === "string" && params.clientMessage.trim().length > 0
+        ? params.clientMessage
+        : null;
+
     // Base invoice INSERT with default fields
     const [invoice] = await tx
       .insert(invoices)
@@ -1717,6 +1732,7 @@ export class InvoiceRepository extends BaseRepository {
         balance,
         summary: params.summary ?? null,
         workDescription: params.workDescription,
+        clientMessage: clientMessageValue,
       })
       .returning();
 
@@ -1803,12 +1819,24 @@ export class InvoiceRepository extends BaseRepository {
       throw this.validationError("Job has invalid location reference");
     }
 
+    // 2026-05-05: also pull the tenant's Invoice Display defaults so the
+    // shell can be seeded with the prefilled client message when the
+    // tenant has the Client Message block enabled and a default text set.
     const [settings] = await queryDb
-      .select({ defaultPaymentTermsDays: companySettings.defaultPaymentTermsDays })
+      .select({
+        defaultPaymentTermsDays: companySettings.defaultPaymentTermsDays,
+        invoiceShowClientMessage: companySettings.invoiceShowClientMessage,
+        invoiceDefaultClientMessage: companySettings.invoiceDefaultClientMessage,
+      })
       .from(companySettings)
       .where(eq(companySettings.companyId, companyId))
       .limit(1);
     const paymentTermsDays = settings?.defaultPaymentTermsDays ?? 30;
+    const prefilledClientMessage = (() => {
+      if (settings?.invoiceShowClientMessage === false) return null;
+      const raw = (settings?.invoiceDefaultClientMessage ?? "").trim();
+      return raw.length > 0 ? raw : null;
+    })();
 
     // 2026-04-18 Phase 5 (multi-invoice-per-job): straight create — no
     // idempotency guard, no row lock on the job. Each call produces a
@@ -1836,6 +1864,8 @@ export class InvoiceRepository extends BaseRepository {
           // from the long-body workDescription below.
           summary: job.summary ?? null,
           workDescription: job.description || job.summary || null,
+          // 2026-05-05: prefill client message from tenant defaults.
+          clientMessage: prefilledClientMessage,
         },
         tx,
         paymentTermsDays,
@@ -1972,13 +2002,23 @@ export class InvoiceRepository extends BaseRepository {
     }
     this.assertCompanyId(companyId);
 
-    // Get company settings for payment terms
+    // Get company settings for payment terms + Invoice Display defaults
+    // (2026-05-05: prefill client_message from tenant defaults).
     const [settings] = await db
-      .select({ defaultPaymentTermsDays: companySettings.defaultPaymentTermsDays })
+      .select({
+        defaultPaymentTermsDays: companySettings.defaultPaymentTermsDays,
+        invoiceShowClientMessage: companySettings.invoiceShowClientMessage,
+        invoiceDefaultClientMessage: companySettings.invoiceDefaultClientMessage,
+      })
       .from(companySettings)
       .where(eq(companySettings.companyId, companyId))
       .limit(1);
     const paymentTermsDays = settings?.defaultPaymentTermsDays ?? 30;
+    const prefilledClientMessage = (() => {
+      if (settings?.invoiceShowClientMessage === false) return null;
+      const raw = (settings?.invoiceDefaultClientMessage ?? "").trim();
+      return raw.length > 0 ? raw : null;
+    })();
 
     return await db.transaction(async (tx) => {
       const { invoice, invoiceNumber } = await this.createInvoiceShell(
@@ -1989,6 +2029,7 @@ export class InvoiceRepository extends BaseRepository {
           jobId: null,
           summary: params.summary ?? null,
           workDescription: params.workDescription ?? null,
+          clientMessage: prefilledClientMessage,
         },
         tx,
         paymentTermsDays
@@ -2088,13 +2129,26 @@ export class InvoiceRepository extends BaseRepository {
     this.assertCompanyId(companyId);
 
     // Default payment terms from company settings unless caller overrides.
+    // 2026-05-05: also pull tenant Invoice Display defaults so the shell
+    // can be seeded with the prefilled client message when the caller
+    // didn't supply one explicitly. Caller-supplied wins.
     const [settings] = await db
-      .select({ defaultPaymentTermsDays: companySettings.defaultPaymentTermsDays })
+      .select({
+        defaultPaymentTermsDays: companySettings.defaultPaymentTermsDays,
+        invoiceShowClientMessage: companySettings.invoiceShowClientMessage,
+        invoiceDefaultClientMessage: companySettings.invoiceDefaultClientMessage,
+      })
       .from(companySettings)
       .where(eq(companySettings.companyId, companyId))
       .limit(1);
     const effectiveTerms =
       params.paymentTermsDays ?? settings?.defaultPaymentTermsDays ?? 30;
+    const prefilledClientMessage = (() => {
+      if (params.clientMessage !== undefined) return params.clientMessage;
+      if (settings?.invoiceShowClientMessage === false) return null;
+      const raw = (settings?.invoiceDefaultClientMessage ?? "").trim();
+      return raw.length > 0 ? raw : null;
+    })();
 
     // Lazy import: applyTaxGroupToInvoice lives in the service layer and
     // would create a circular import if pulled at module top.
@@ -2112,6 +2166,7 @@ export class InvoiceRepository extends BaseRepository {
           jobId: params.primaryJobId,
           summary: params.summary ?? null,
           workDescription: params.workDescription ?? null,
+          clientMessage: prefilledClientMessage,
         },
         tx,
         effectiveTerms,

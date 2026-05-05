@@ -297,6 +297,7 @@ const LINE_TYPE_GROUPS: Array<{ kind: string; label: string }> = [
 // additive `export`.
 export function ClientVisibilityCardV2({
   draft, server, onToggle, onSave, onReset, dirty, isSaving, disabled = false,
+  tenantDefaults, onResetToTenantDefaults,
 }: {
   draft: { showJobDescription: boolean; showLineItems: boolean; showQuantity: boolean; showUnitPrice: boolean; showLineTotals: boolean; showBalance: boolean };
   server: typeof draft;
@@ -309,6 +310,22 @@ export function ClientVisibilityCardV2({
    *  /invoices/new before a client/location is picked so the rail
    *  renders in the same position as live but isn't interactive. */
   disabled?: boolean;
+  /**
+   * 2026-05-05: optional tenant Invoice Display defaults. When provided,
+   * rows whose current draft value differs from the tenant default
+   * carry a small "Custom" hint so operators can see they've overridden
+   * the tenant policy. Omit to render the card without inheritance UI.
+   */
+  tenantDefaults?: Partial<{
+    showJobDescription: boolean;
+    showLineItems: boolean;
+    showQuantity: boolean;
+    showUnitPrice: boolean;
+    showLineTotals: boolean;
+  }>;
+  /** 2026-05-05: copies the resolved tenant defaults into the local
+   *  draft. Renders only when `tenantDefaults` is provided. */
+  onResetToTenantDefaults?: () => void;
 }) {
   // 2026-04-29 UI compact pass: per-row helper hints removed; rows now show
   // label + toggle only.
@@ -321,13 +338,33 @@ export function ClientVisibilityCardV2({
     { key: "showBalance",        label: "Account balance"     },
   ];
   const onCount = ROWS.reduce((n, r) => n + (draft[r.key] ? 1 : 0), 0);
+  // 2026-05-05: per-row custom marker — only computed when tenantDefaults
+  // is supplied. `showBalance` has no tenant equivalent (mandatory at
+  // the tenant level) so it never carries the indicator.
+  const isCustom = (key: keyof typeof draft): boolean => {
+    if (!tenantDefaults) return false;
+    const td = (tenantDefaults as Record<string, boolean | undefined>)[key];
+    if (typeof td !== "boolean") return false;
+    return draft[key] !== td;
+  };
   return (
     <div className="overflow-hidden rounded-lg border border-card-border bg-card shadow-card" data-testid="card-invoice-client-visibility">
       <CardSectionHeader title="Client visibility" count={onCount} />
       <div>
         {ROWS.map((r) => (
           <label key={r.key} className="grid grid-cols-[1fr_auto] items-center gap-3 border-b border-stone-100 px-4 py-2 last:border-b-0">
-            <div className="min-w-0 text-[13px] font-medium text-slate-900">{r.label}</div>
+            <div className="min-w-0 text-[13px] font-medium text-slate-900 flex items-center gap-2">
+              <span>{r.label}</span>
+              {isCustom(r.key) && (
+                <span
+                  className="inline-flex items-center rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200"
+                  title="Differs from tenant default"
+                  data-testid={`vis-custom-${r.key}`}
+                >
+                  Custom
+                </span>
+              )}
+            </div>
             <Switch
               checked={draft[r.key]}
               onCheckedChange={(v) => onToggle(r.key, v)}
@@ -337,12 +374,28 @@ export function ClientVisibilityCardV2({
           </label>
         ))}
       </div>
-      {dirty && (
+      {(dirty || (tenantDefaults && onResetToTenantDefaults)) && (
         <div className="flex justify-end gap-2 border-t border-card-border px-4 py-2">
-          <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={onReset} disabled={isSaving}>Reset</Button>
-          <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onSave} disabled={isSaving} data-testid="button-save-vis-v2">
-            {isSaving ? "Saving..." : "Save"}
-          </Button>
+          {tenantDefaults && onResetToTenantDefaults && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={onResetToTenantDefaults}
+              disabled={isSaving}
+              data-testid="button-vis-reset-to-tenant"
+            >
+              Reset to defaults
+            </Button>
+          )}
+          {dirty && (
+            <>
+              <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={onReset} disabled={isSaving}>Discard</Button>
+              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onSave} disabled={isSaving} data-testid="button-save-vis-v2">
+                {isSaving ? "Saving..." : "Save"}
+              </Button>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -517,6 +570,22 @@ export default function InvoiceDetailPage() {
   // PDF and toggle sent state
   const [pdfPending, setPdfPending] = useState(false);
   const [toggleSentPending, setToggleSentPending] = useState(false);
+
+  // 2026-05-05: tenant-level Invoice Display defaults — drives the
+  // "Custom" badge + "Reset to defaults" action on the Client Visibility
+  // card. Lazy fetch — only the five visibility-card fields are read.
+  const { data: tenantInvoiceDisplay } = useQuery<{
+    invoiceShowJobDescription?: boolean;
+    invoiceShowLineItems?: boolean;
+    invoiceShowQuantities?: boolean;
+    invoiceShowUnitPrices?: boolean;
+    invoiceShowLineTotals?: boolean;
+    invoiceShowClientMessage?: boolean;
+    invoiceDefaultClientMessage?: string | null;
+  }>({
+    queryKey: ["/api/invoice-display-settings"],
+    queryFn: () => apiRequest(`/api/invoice-display-settings`),
+  });
 
   const { data: details, isLoading, isError, error, refetch } = useQuery<InvoiceDetails>({
     // Canonical namespace: ["invoices", "detail", id] — invalidating ["invoices"] refreshes all invoice views
@@ -1924,12 +1993,22 @@ export default function InvoiceDetailPage() {
                 editButtonTestId="button-edit-client-message"
                 textareaTestId="textarea-client-message"
                 saveButtonTestId="button-save-client-message"
+                // 2026-05-05: tenant-level Default Client Message — when set,
+                // the editor exposes "Reset message to default" which copies
+                // the tenant default into the local draft. Save still
+                // routes through the canonical mutation above.
+                defaultValue={tenantInvoiceDisplay?.invoiceDefaultClientMessage ?? null}
+                resetToDefaultLabel="Reset message to default"
               />
           </>
         }
         rightRail={
           <>
-            {/* ─── Client visibility toggles (6 canonical fields). */}
+            {/* ─── Client visibility toggles (6 canonical fields).
+                2026-05-05: tenant-defaults inheritance — when the tenant
+                has Invoice Display defaults loaded, rows whose value
+                differs from the tenant default carry a Custom indicator
+                and the footer offers "Reset to defaults". */}
             <ClientVisibilityCardV2
                 draft={visibilityDraft}
                 server={serverVisibility}
@@ -1938,6 +2017,23 @@ export default function InvoiceDetailPage() {
                 onReset={() => setVisibilityDraft(serverVisibility)}
                 dirty={isVisibilityDirty}
                 isSaving={updateInvoiceFieldsMutation.isPending}
+                tenantDefaults={tenantInvoiceDisplay ? {
+                  showJobDescription: tenantInvoiceDisplay.invoiceShowJobDescription,
+                  showLineItems: tenantInvoiceDisplay.invoiceShowLineItems,
+                  showQuantity: tenantInvoiceDisplay.invoiceShowQuantities,
+                  showUnitPrice: tenantInvoiceDisplay.invoiceShowUnitPrices,
+                  showLineTotals: tenantInvoiceDisplay.invoiceShowLineTotals,
+                } : undefined}
+                onResetToTenantDefaults={tenantInvoiceDisplay ? () => {
+                  setVisibilityDraft({
+                    showJobDescription: tenantInvoiceDisplay.invoiceShowJobDescription ?? true,
+                    showLineItems: tenantInvoiceDisplay.invoiceShowLineItems ?? true,
+                    showQuantity: tenantInvoiceDisplay.invoiceShowQuantities ?? true,
+                    showUnitPrice: tenantInvoiceDisplay.invoiceShowUnitPrices ?? true,
+                    showLineTotals: tenantInvoiceDisplay.invoiceShowLineTotals ?? true,
+                    showBalance: visibilityDraft.showBalance,
+                  });
+                } : undefined}
               />
 
               {/* ─── Canonical invoice notes.

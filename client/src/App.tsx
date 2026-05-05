@@ -92,6 +92,8 @@ const PlatformFeaturesCatalog = lazy(() => import("@/pages/platform/PlatformFeat
 const PlatformFeatureDetail = lazy(() => import("@/pages/platform/PlatformFeatureDetail"));
 const SupportAccessPage = lazy(() => import("@/pages/SupportAccessPage"));
 const InvoiceRemindersSettingsPage = lazy(() => import("@/pages/InvoiceRemindersSettingsPage"));
+// 2026-05-05: tenant-level Invoice Display policy.
+const InvoiceDisplaySettingsPage = lazy(() => import("@/pages/InvoiceDisplaySettingsPage"));
 // 2026-03-21: AddClientPage and NewClientPage removed — replaced by canonical CreateClientModal
 import Clients from "@/pages/Clients";
 import ClientDetailPage from "@/pages/ClientDetailPage";
@@ -551,12 +553,34 @@ function Router() {
         </ProtectedRoute>
       </Route>
       <Route path="/settings/team">
-        {/* 2026-04-20 Phase 2: canonical Team Management hub (tabs: Members,
-            Schedules, Compensation, Roles & Access). Replaced the legacy
-            TechnicianManagementPage which called dead /api/technicians/* paths. */}
+        {/* 2026-04-20 Phase 2: canonical Team Management hub. The 2026-
+            05-05 member-centric restructure relabels the tabs as
+            Overview / Schedule / Compensation / Access; the underlying
+            components are reused. Legacy `?tab=members | schedules`
+            URL values still resolve via TeamHubPage's
+            LEGACY_TAB_ALIAS map. */}
         <ProtectedRoute requireAdmin>
           <TeamHubPage />
         </ProtectedRoute>
+      </Route>
+      {/* 2026-05-05: short-path aliases for the Team Hub. Soft-
+          deprecation only — the canonical surface remains
+          `/settings/team`. */}
+      <Route path="/team">
+        <ProtectedRoute requireAdmin>
+          <TeamHubPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/team/schedules">
+        {/* Legacy deep-link → redirect to the Schedule sub-tab on the
+            canonical Team Hub. Members can still bookmark this path. */}
+        <Redirect to="/team?tab=schedule" />
+      </Route>
+      <Route path="/team/compensation">
+        <Redirect to="/team?tab=compensation" />
+      </Route>
+      <Route path="/team/access">
+        <Redirect to="/team?tab=access" />
       </Route>
       <Route path="/settings/custom-fields">
         <ProtectedRoute requireAdmin>
@@ -571,6 +595,11 @@ function Router() {
       <Route path="/settings/invoice-reminders">
         <ProtectedRoute requireAdmin>
           <InvoiceRemindersSettingsPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/settings/invoice-display">
+        <ProtectedRoute requireAdmin>
+          <InvoiceDisplaySettingsPage />
         </ProtectedRoute>
       </Route>
       <Route path="/settings/integrations">

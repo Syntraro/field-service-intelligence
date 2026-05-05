@@ -10,6 +10,14 @@
  * technician color resolution, and existing DnD drop contract.
  * 2026-03-31: visitsByDay now provided by adapter (useDispatchMonthData),
  * not computed internally — consistent with week grid pattern.
+ * 2026-05-05 Phase 3 correction: lead visits rendered alongside jobs
+ * in each day cell. Branch render on `item.type === "lead_visit"` so
+ * lead pills get amber styling + "Lead" badge + click → /leads/:id
+ * without ever flowing through job-shaped logic. Lead visits count
+ * toward the same MAX_MONTH_CELL_ITEMS overflow as jobs (no silent
+ * drop). Lead visits are NOT droppable targets — DnD remains a
+ * job-side feature; the lead-visit click handler is bound at the
+ * pill level only.
  */
 import { useState, useMemo, useCallback } from "react";
 import {
@@ -17,7 +25,7 @@ import {
   eachDayOfInterval, format, isToday, isSameMonth,
 } from "date-fns";
 import { useDroppable } from "@dnd-kit/core";
-import type { DispatchVisit } from "./dispatchPreviewTypes";
+import type { DispatchVisit, DispatchLeadVisit } from "./dispatchPreviewTypes";
 import type { DispatchDropData } from "./dispatchDndTypes";
 import { VisitCardContent } from "./VisitCardContent";
 import { UNASSIGNED_COLOR } from "@shared/colors";
@@ -30,28 +38,94 @@ const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 type Props = {
   selectedDate: Date;
   visitsByDay: Map<string, DispatchVisit[]>;
+  leadVisitsByDay: Map<string, DispatchLeadVisit[]>;
   techColorMap: Map<string, string>;
   selectedVisitId: string | null;
   onSelectVisit: (visit: DispatchVisit) => void;
+  onOpenLead: (leadId: string) => void;
 };
+
+/**
+ * Discriminated union of items rendered in a month-day cell.
+ * Branch render rules MUST switch on `kind` — never on field shape.
+ * `kind: "lead"` carriers must NEVER be passed to job-shaped consumers
+ * (VisitCardContent, DnD drop data, selected-visit highlight, etc.).
+ */
+type CellItem =
+  | { kind: "job"; visit: DispatchVisit; sortKey: string }
+  | { kind: "lead"; leadVisit: DispatchLeadVisit; sortKey: string };
+
+function buildCellItems(
+  visits: DispatchVisit[],
+  leadVisits: DispatchLeadVisit[],
+): CellItem[] {
+  const items: CellItem[] = [];
+  for (const v of visits) {
+    items.push({ kind: "job", visit: v, sortKey: v.scheduledStart ?? "9999" });
+  }
+  for (const lv of leadVisits) {
+    items.push({ kind: "lead", leadVisit: lv, sortKey: lv.scheduledStart ?? "9999" });
+  }
+  items.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+  return items;
+}
+
+/** Compact lead-visit pill for the month grid — amber tint, "Lead" badge,
+ *  no jobNumber/jobStatus access (those don't exist on DispatchLeadVisit). */
+function MonthLeadVisitPill({
+  leadVisit,
+  onOpenLead,
+}: {
+  leadVisit: DispatchLeadVisit;
+  onOpenLead: (leadId: string) => void;
+}) {
+  const time = leadVisit.scheduledStart && !leadVisit.isAllDay
+    ? format(new Date(leadVisit.scheduledStart), "h:mm a")
+    : leadVisit.isAllDay ? "All day" : "";
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onOpenLead(leadVisit.leadId); }}
+      className="rounded px-1 py-0.5 text-left border bg-amber-50 border-amber-200 hover:bg-amber-100 transition-colors"
+      style={{ borderLeftWidth: 2, borderLeftColor: "#f59e0b" }}
+      data-testid={`month-lead-visit-${leadVisit.id}`}
+      title={`${leadVisit.leadTitle}${time ? ` · ${time}` : ""}`}
+    >
+      <div className="flex items-center gap-1 min-w-0">
+        <span className="rounded bg-amber-500 text-white text-[8px] font-bold px-1 py-px leading-none uppercase tracking-wide">
+          Lead
+        </span>
+        {time && (
+          <span className="text-[10px] text-amber-900 font-medium leading-none shrink-0">
+            {time}
+          </span>
+        )}
+        <span className="text-[10px] text-amber-900 leading-none truncate min-w-0">
+          {leadVisit.leadTitle}
+        </span>
+      </div>
+    </button>
+  );
+}
 
 /** Single day cell — droppable target with expand/collapse for overflow */
 function MonthDayCell({
   date,
-  visits,
+  items,
   isCurrentMonth,
   techColorMap,
   selectedVisitId,
   onSelectVisit,
+  onOpenLead,
   isExpanded,
   onToggleExpand,
 }: {
   date: Date;
-  visits: DispatchVisit[];
+  items: CellItem[];
   isCurrentMonth: boolean;
   techColorMap: Map<string, string>;
   selectedVisitId: string | null;
   onSelectVisit: (visit: DispatchVisit) => void;
+  onOpenLead: (leadId: string) => void;
   isExpanded: boolean;
   onToggleExpand: () => void;
 }) {
@@ -63,8 +137,8 @@ function MonthDayCell({
   });
 
   const today = isToday(date);
-  const hasOverflow = visits.length > MAX_MONTH_CELL_ITEMS;
-  const visibleVisits = isExpanded ? visits : visits.slice(0, MAX_MONTH_CELL_ITEMS);
+  const hasOverflow = items.length > MAX_MONTH_CELL_ITEMS;
+  const visibleItems = isExpanded ? items : items.slice(0, MAX_MONTH_CELL_ITEMS);
 
   return (
     <div
@@ -84,9 +158,20 @@ function MonthDayCell({
         </span>
       </div>
 
-      {/* Visit cards */}
+      {/* Cards — branch render on item.kind so lead pills NEVER flow
+          through VisitCardContent / job-color logic. */}
       <div className="flex flex-col gap-px flex-1 min-w-0">
-        {visibleVisits.map(v => {
+        {visibleItems.map(item => {
+          if (item.kind === "lead") {
+            return (
+              <MonthLeadVisitPill
+                key={`lead-${item.leadVisit.id}`}
+                leadVisit={item.leadVisit}
+                onOpenLead={onOpenLead}
+              />
+            );
+          }
+          const v = item.visit;
           // 2026-04-19: derive color from canonical crew (technicianIds[0]).
           const primaryTechId = v.technicianIds[0] ?? null;
           const techColor = primaryTechId
@@ -95,7 +180,7 @@ function MonthDayCell({
           const isSelected = selectedVisitId === v.id;
           return (
             <button
-              key={v.id}
+              key={`job-${v.id}`}
               onClick={(e) => { e.stopPropagation(); onSelectVisit(v); }}
               className={`rounded px-1 py-0.5 text-left border transition-colors hover:brightness-95 ${
                 isSelected ? "ring-1 ring-primary" : ""
@@ -118,7 +203,7 @@ function MonthDayCell({
             onClick={onToggleExpand}
             className="text-[10px] font-medium text-primary hover:text-primary/80 px-1 py-px text-left"
           >
-            +{visits.length - MAX_MONTH_CELL_ITEMS} more
+            +{items.length - MAX_MONTH_CELL_ITEMS} more
           </button>
         )}
         {hasOverflow && isExpanded && (
@@ -137,9 +222,11 @@ function MonthDayCell({
 export default function MonthDispatchGrid({
   selectedDate,
   visitsByDay,
+  leadVisitsByDay,
   techColorMap,
   selectedVisitId,
   onSelectVisit,
+  onOpenLead,
 }: Props) {
   // Local expand state — tracks which day cells are expanded (by dayKey)
   const [expandedDays, setExpandedDays] = useState<Set<string>>(new Set());
@@ -181,15 +268,20 @@ export default function MonthDispatchGrid({
       <div className="grid grid-cols-7">
         {gridDates.map(date => {
           const dayKey = format(date, "yyyy-MM-dd");
+          const items = buildCellItems(
+            visitsByDay.get(dayKey) ?? [],
+            leadVisitsByDay.get(dayKey) ?? [],
+          );
           return (
             <MonthDayCell
               key={dayKey}
               date={date}
-              visits={visitsByDay.get(dayKey) ?? []}
+              items={items}
               isCurrentMonth={isSameMonth(date, selectedDate)}
               techColorMap={techColorMap}
               selectedVisitId={selectedVisitId}
               onSelectVisit={onSelectVisit}
+              onOpenLead={onOpenLead}
               isExpanded={expandedDays.has(dayKey)}
               onToggleExpand={() => toggleExpand(dayKey)}
             />

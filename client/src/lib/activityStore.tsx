@@ -8,7 +8,7 @@
 import React, { createContext, useContext, useState, useCallback, useMemo } from "react";
 
 // Activity entity types that map to detail pages
-export type ActivityEntityType = "job" | "invoice" | "quote" | "client";
+export type ActivityEntityType = "job" | "invoice" | "quote" | "client" | "lead";
 
 export interface ActivityItem {
   id: string;

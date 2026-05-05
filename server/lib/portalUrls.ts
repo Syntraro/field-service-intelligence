@@ -29,8 +29,19 @@ function appBase(): string {
  * Build the customer-facing portal invoice URL. The customer hits the
  * authenticated portal route; if no portal session exists, the portal
  * sign-in flow takes over.
+ *
+ * 2026-05-05: optional `accessToken` param embeds an invoice-scoped
+ * access token (see `server/services/portal/invoiceAccessTokens.ts`).
+ * Pages presented with `?t=<token>` skip the magic-link sign-in
+ * prompt and grant view + pay access to that ONE invoice — clean
+ * Pay Invoice email flow with no double-email friction.
  */
-export function buildPortalInvoiceUrl(invoiceId: string): string {
+export function buildPortalInvoiceUrl(
+  invoiceId: string,
+  accessToken?: string,
+): string {
   if (!invoiceId) return "";
-  return `${appBase()}/portal/invoices/${encodeURIComponent(invoiceId)}`;
+  const base = `${appBase()}/portal/invoices/${encodeURIComponent(invoiceId)}`;
+  if (!accessToken) return base;
+  return `${base}?t=${encodeURIComponent(accessToken)}`;
 }

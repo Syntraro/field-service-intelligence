@@ -38,7 +38,7 @@ import { usePushRegistration } from "../hooks/usePushRegistration";
 // 2026-04-26 geofence start prompt — opt-in, manual-confirm, prompt-only.
 import { useGeofencePrompt } from "../hooks/useGeofencePrompt";
 import { GeofenceStartPrompt } from "../components/GeofenceStartPrompt";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toEpochMsSafe, toLocalDateKey } from "../utils/safeDateTime";
 import { toTelHref, toMapsHref } from "../utils/externalLinks";
 import type { Task } from "@shared/schema";
@@ -937,6 +937,12 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
         </div>
       )}
 
+      {/* 2026-05-05 Lead Visits — pre-sales onsite appointments. Sibling
+          query (/api/tech/lead-visits/today), separate visual section,
+          merged ONLY at the UI layer per the spec. Self-scope only —
+          cross-tech viewing isn't supported here yet. */}
+      {isSelfScope && <LeadVisitsTodaySection />}
+
       {/* Create FAB — positioned above the 52px bottom nav + iOS safe-area
           inset so the button never clips the home indicator or hides behind
           the nav bar. 12px gap between FAB bottom and nav top. */}
@@ -1051,5 +1057,107 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
         }}
       />
     </MobileShell>
+  );
+}
+
+// ─── Lead Visits section (2026-05-05) ────────────────────────────────
+//
+// Tech-side pre-sales visit list. Visually distinct from the job-visit
+// timeline so the tech can tell at a glance which work doesn't belong
+// to a job yet. Backed by /api/tech/lead-visits/today which returns
+// the strict allowlist DTO (no estimatedValue / description /
+// priority / sourceType leakage).
+
+interface TechLeadVisitToday {
+  id: string;
+  leadId: string;
+  leadTitle: string;
+  location: {
+    companyName: string | null;
+    address: string | null;
+    city: string | null;
+    province: string | null;
+    postalCode: string | null;
+    contactName: string | null;
+    phone: string | null;
+  };
+  scheduledStart: string | null;
+  scheduledEnd: string | null;
+  status: string;
+  visitNotes: string | null;
+  durationMinutes: number | null;
+  type: "lead_visit";
+}
+
+function LeadVisitsTodaySection() {
+  const [, navTo] = useLocation();
+  const { data = [] } = useQuery<TechLeadVisitToday[]>({
+    queryKey: ["/api/tech/lead-visits/today"],
+    queryFn: async () => {
+      const res = await fetch("/api/tech/lead-visits/today", { credentials: "include" });
+      if (!res.ok) return [];
+      const body = await res.json();
+      return Array.isArray(body?.data) ? body.data : [];
+    },
+    staleTime: 30_000,
+  });
+
+  if (data.length === 0) return null;
+
+  return (
+    <div className="px-2.5 pb-2" data-testid="tech-today-lead-visits">
+      <div className="flex items-center gap-1.5 px-1 py-1.5">
+        <FileText className="h-3 w-3 text-slate-400" />
+        <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+          Lead visits ({data.length})
+        </span>
+      </div>
+      <div className="space-y-1.5">
+        {data.map((v) => {
+          const time = v.scheduledStart
+            ? new Date(v.scheduledStart).toLocaleTimeString([], {
+                hour: "numeric",
+                minute: "2-digit",
+              })
+            : "—";
+          const place = [v.location.companyName, v.location.city]
+            .filter(Boolean)
+            .join(" · ");
+          return (
+            <button
+              key={v.id}
+              onClick={() => navTo(`/tech/lead-visit/${v.id}`)}
+              className="w-full text-left bg-white border border-amber-200 rounded-md px-3 py-2.5 flex items-start gap-2 hover:bg-amber-50 active:bg-amber-100"
+              data-testid={`lead-visit-row-${v.id}`}
+            >
+              <div className="shrink-0 mt-0.5">
+                <span className="inline-flex items-center px-1.5 py-0 rounded text-[10px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700">
+                  Lead
+                </span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-slate-600 tabular-nums">
+                    {time}
+                  </span>
+                  {v.durationMinutes && (
+                    <span className="text-[11px] text-slate-400">
+                      · {v.durationMinutes} min
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm font-medium text-slate-800 truncate">
+                  {v.leadTitle}
+                </p>
+                {place && (
+                  <p className="text-[11px] text-slate-500 truncate">{place}</p>
+                )}
+              </div>
+              <ChevronRight className="h-4 w-4 text-slate-300 shrink-0 mt-0.5" />
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }

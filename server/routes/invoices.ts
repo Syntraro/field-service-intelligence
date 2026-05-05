@@ -10,8 +10,9 @@ import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { requireFeature } from "../auth/requireFeature";
 import { assertInvoiceStatusTransition } from "../domain/jobLifecycle";
-import { invoiceStatusEnum } from "@shared/schema";
+import { invoiceStatusEnum, invoices } from "@shared/schema";
 import type { InvoiceStatus } from "@shared/schema";
+import { and, eq, sql } from "drizzle-orm";
 import {
   createInvoiceFromJob as createInvoiceFromJobService,
   calculateDueDate,
@@ -1816,63 +1817,154 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
   }
   checkQboBillingLock(invoice, { status: 'awaiting_payment' }, { overrideQboLock, overrideReason });
 
-  // ── 3. Dispatch email + atomically transition invoice state ──────────────
-  // Phase 4 correction: if email fails, invoice must NOT be marked sent.
-  // 2026-04-14 Phase D atomicity: the invoice status update runs inside
-  // the same DB transaction as `markSent` via the afterMarkSent callback.
-  // Either both the delivery flip and the invoice update commit, or
-  // neither — closing the orphan window where the delivery was `sent`
-  // but the invoice was still `draft`.
+  // ── 3. Transition invoice state BEFORE email dispatch ───────────────────
+  //
+  // 2026-05-05: pre-dispatch transition. The customer-facing artifacts —
+  // the PDF attachment (DRAFT watermark gate) and the email body's
+  // `__PAY_INVOICE_BUTTON__` sentinel (gated on `canAcceptInvoicePayment`,
+  // which rejects `draft`) — both read `invoice.status` at render time.
+  // Previously this transition lived inside `afterMarkSent`, which ran
+  // AFTER the dispatch service had already generated the PDF and built
+  // the email body — so a first-send-from-draft shipped a DRAFT-stamped
+  // PDF and a button-less email.
+  //
+  // Trade-off vs. the prior Phase D atomicity: if the email send throws
+  // AFTER this transaction commits, the invoice is "marked sent" with no
+  // delivery actually made. We accept this — the user retries through
+  // the resend path (status already flipped → falls into the
+  // sentAt-stamp-only branch) and the second attempt produces a clean
+  // PDF + CTA. The send route returns a structured `_emailDeliveryFailed`
+  // warning so the UI can surface the partial-success state.
+  const { db } = await import("../db");
+  const now = new Date();
+  const sentByUserId = req.user?.id;
   let updated: Awaited<ReturnType<typeof storage.updateInvoice>> = null;
   let warning: string | undefined;
 
-  const dispatch = await emailDispatchService.sendInvoiceEmail({
-    tenantId,
-    invoiceId,
-    recipients,
-    cc,
-    subjectOverride,
-    bodyOverride,
-    attachPdf,
-    attachmentFileIds,
-    createdByUserId: req.user?.id ?? null,
-    afterMarkSent: async (tx) => {
-      const now = new Date();
-      // For a first send (draft → awaiting_payment) we set status + sentAt +
-      // sentByUserId. For a re-send on an already-billable invoice we ONLY
-      // stamp the latest sentAt + sentByUserId; status stays as-is so we
-      // don't trip lifecycle invariants on a no-op transition.
-      let updatePayload: Record<string, unknown> = isResend
-        ? { sentAt: now, sentByUserId: req.user?.id }
-        : { status: "awaiting_payment", sentAt: now, sentByUserId: req.user?.id };
+  // Compute due-date / issued-at fillers from the pre-fetched invoice;
+  // the conditional UPDATE inside the transaction applies them in either
+  // branch (first send and resend).
+  const fillers: Record<string, unknown> = {};
+  if (!invoice.issuedAt) fillers.issuedAt = now;
+  if (!invoice.dueDate) {
+    const issuedAt = invoice.issuedAt ? new Date(invoice.issuedAt) : now;
+    fillers.dueDate = calculateDueDate(issuedAt, invoice.paymentTermsDays ?? 30);
+  }
+  // QBO override is computed once and folded into both branches.
+  const qboOverridePayload: Record<string, unknown> = {};
+  if (isQboSynced(invoice) && overrideQboLock && overrideReason) {
+    Object.assign(qboOverridePayload, buildOutOfSyncUpdate(overrideReason, req.user?.id));
+    logQboLockOverride(tenantId, invoiceId, req.user?.id ?? 'unknown', 'send_invoice', overrideReason, invoice.qboInvoiceId);
+    warning = "Invoice is now out of sync with QuickBooks. Manual reconciliation required.";
+  }
 
-      if (!invoice.issuedAt) {
-        updatePayload.issuedAt = now;
-      }
-
-      // 2026-03-19: canonical due-date computation when absent.
-      if (!invoice.dueDate) {
-        const issuedAt = invoice.issuedAt ? new Date(invoice.issuedAt) : now;
-        const paymentTermsDays = invoice.paymentTermsDays ?? 30;
-        updatePayload.dueDate = calculateDueDate(issuedAt, paymentTermsDays);
-      }
-
-      if (isQboSynced(invoice) && overrideQboLock && overrideReason) {
-        const outOfSyncUpdate = buildOutOfSyncUpdate(overrideReason, req.user?.id);
-        updatePayload = { ...updatePayload, ...outOfSyncUpdate };
-        logQboLockOverride(tenantId, invoiceId, req.user?.id ?? 'unknown', 'send_invoice', overrideReason, invoice.qboInvoiceId);
-        warning = "Invoice is now out of sync with QuickBooks. Manual reconciliation required.";
-      }
-
+  await db.transaction(async (tx) => {
+    if (isResend) {
+      // Resend: stamp sentAt + sentByUserId. Status stays as-is. We do
+      // NOT add a `where(status='awaiting_payment'|'sent'|'partial_paid')`
+      // guard here because the pre-fetch already validated state, and a
+      // race that flipped status to `paid`/`voided` between fetch and
+      // here is preferable to silently failing the stamp (the next
+      // resend attempt will re-validate at the top).
       updated = await storage.updateInvoice(
         tenantId,
         invoiceId,
         undefined,
-        updatePayload,
+        { ...fillers, ...qboOverridePayload, sentAt: now, sentByUserId },
         tx,
       );
-    },
+      return;
+    }
+
+    // First send: conditional UPDATE on `status='draft'`. Atomic at the
+    // DB level — if a concurrent send already flipped the row, our UPDATE
+    // matches zero rows and we fall through to the resend-stamp path.
+    const draftFlipPayload = {
+      ...fillers,
+      ...qboOverridePayload,
+      status: "awaiting_payment" as const,
+      sentAt: now,
+      sentByUserId,
+      version: sql`${invoices.version} + 1`,
+      updatedAt: now,
+    };
+    const [flipped] = await tx
+      .update(invoices)
+      .set(draftFlipPayload)
+      .where(and(
+        eq(invoices.id, invoiceId),
+        eq(invoices.companyId, tenantId),
+        eq(invoices.status, "draft"),
+      ))
+      .returning();
+
+    if (flipped) {
+      updated = flipped as any;
+      return;
+    }
+
+    // Lost the race — another request flipped the row first. Fall back
+    // to the resend stamp. We re-validate that the current status is
+    // still resendable (could have moved to `paid`/`voided` in the
+    // narrow window). Use the pre-fetched RESENDABLE_STATES set above
+    // by re-reading the row inside the transaction.
+    const [current] = await tx
+      .select({ status: invoices.status })
+      .from(invoices)
+      .where(and(eq(invoices.id, invoiceId), eq(invoices.companyId, tenantId)));
+    if (!current) throw createError(404, "Invoice not found");
+    if (!RESENDABLE_STATES.has(current.status as InvoiceStatus)) {
+      throw createError(409, `Invoice is in status '${current.status}'; cannot send.`);
+    }
+    updated = await storage.updateInvoice(
+      tenantId,
+      invoiceId,
+      undefined,
+      { ...fillers, ...qboOverridePayload, sentAt: now, sentByUserId },
+      tx,
+    );
   });
+
+  // ── 4. Dispatch email AFTER the transaction has committed ────────────────
+  //
+  // `sendInvoiceEmail` re-reads the invoice for PDF generation + template
+  // data; both now see status === "awaiting_payment", so:
+  //   • invoicePdfService.getStatusWatermark() returns null (no DRAFT)
+  //   • templateDataBuilder.canAcceptInvoicePayment() passes → Pay
+  //     Invoice button rendered when payments-enabled tenant + balance > 0
+  //
+  // Email failure does NOT roll back the status flip above. The user
+  // retries via the resend path; we surface a structured warning so the
+  // UI can show a partial-success state.
+  let dispatch: Awaited<ReturnType<typeof emailDispatchService.sendInvoiceEmail>>;
+  let emailDeliveryFailed: string | undefined;
+  try {
+    dispatch = await emailDispatchService.sendInvoiceEmail({
+      tenantId,
+      invoiceId,
+      recipients,
+      cc,
+      subjectOverride,
+      bodyOverride,
+      attachPdf,
+      attachmentFileIds,
+      createdByUserId: req.user?.id ?? null,
+    });
+  } catch (err: any) {
+    console.error("[invoice.send] email dispatch failed AFTER status transition", {
+      tenantId,
+      invoiceId,
+      invoiceNumber: invoice.invoiceNumber,
+      error: err?.message ?? String(err),
+    });
+    emailDeliveryFailed = `Invoice marked sent, but email delivery failed: ${err?.message ?? "unknown error"}. Please retry from the invoice page.`;
+    dispatch = {
+      emailId: null,
+      recipients,
+      subject: subjectOverride ?? "",
+      attachmentFilename: null,
+    } as any;
+  }
 
   // Phase 1: Log invoice sent event
   logEventAsync(getQueryCtx(req), {
@@ -1884,6 +1976,7 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
       invoiceNumber: invoice.invoiceNumber,
       recipients: dispatch.recipients,
       resendId: dispatch.emailId,
+      deliveryFailed: emailDeliveryFailed ? true : undefined,
     },
   });
 
@@ -1898,6 +1991,9 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
   };
   if (warning) {
     response._qboWarning = warning;
+  }
+  if (emailDeliveryFailed) {
+    response._emailDeliveryFailed = emailDeliveryFailed;
   }
   res.json(response);
 }));
@@ -1998,14 +2094,15 @@ router.get("/:id/pdf", asyncHandler(async (req: AuthedRequest, res: Response) =>
   }
 
   // 2026-04-08: Parallelize independent reads — invoice lines, location,
-  // company branding, and (2026-05-03) the company's tax registrations
-  // list don't depend on each other. Reduces PDF latency by waiting
-  // only for the slowest of the four instead of summing all four.
-  const [lines, location, company, taxRegistrations] = await Promise.all([
+  // company branding, the (2026-05-03) tax registrations list, and the
+  // (2026-05-05) tenant Invoice Display settings don't depend on each
+  // other. Reduces PDF latency by waiting only for the slowest.
+  const [lines, location, company, taxRegistrations, tenantSettings] = await Promise.all([
     storage.getInvoiceLines(companyId, invoiceId),
     storage.getClient(companyId, invoice.locationId),
     storage.getCompanyById(companyId),
     companyTaxRegistrationRepository.list(companyId),
+    storage.getCompanySettings(companyId),
   ]);
 
   if (!location) {
@@ -2016,14 +2113,27 @@ router.get("/:id/pdf", asyncHandler(async (req: AuthedRequest, res: Response) =>
   }
 
   // Get customer company (if exists) — depends on location.parentCompanyId,
-  // so must run after location resolves.
+  // so must run after location resolves. Job lookup (for the optional Job #
+  // field on the PDF) also runs here since it depends on invoice.jobId.
   let customerCompany = null;
   const customerCompanyId = invoice.customerCompanyId || location.parentCompanyId;
   if (customerCompanyId) {
     customerCompany = await storage.getCustomerCompany(companyId, customerCompanyId);
   }
+  let jobNumber: string | null = null;
+  if (invoice.jobId) {
+    const job = await storage.getJob(companyId, invoice.jobId);
+    jobNumber = job?.jobNumber ? String(job.jobNumber) : null;
+  }
 
-  // Generate PDF
+  // 2026-05-05: resolve canonical Invoice Display policy once, here, so the
+  // PDF service stays presentation-only (no tenant lookups).
+  const { resolveInvoiceDisplayPolicy } = await import("@shared/invoiceDisplayPolicy");
+  const policy = resolveInvoiceDisplayPolicy({
+    tenantSettings: tenantSettings as any,
+    invoice: invoice as any,
+  });
+
   const pdfBuffer = await generateInvoicePdf({
     invoice: invoice as any,
     lines,
@@ -2040,6 +2150,8 @@ router.get("/:id/pdf", asyncHandler(async (req: AuthedRequest, res: Response) =>
     },
     customerCompany: customerCompany ? { name: customerCompany.name ?? "" } : null,
     taxRegistrations,
+    policy,
+    jobNumber,
   });
 
   const filename = `Invoice-${invoice.invoiceNumber || invoice.id.slice(0, 8)}.pdf`;

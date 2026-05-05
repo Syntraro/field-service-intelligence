@@ -596,6 +596,53 @@ export async function getTodayCapacity(
     return a.technicianName.localeCompare(b.technicianName);
   });
 
+  // 2026-05-05 Lead Visits: pre-sales onsite appointments BLOCK
+  // technician availability today (we don't want to double-book a
+  // tech against a quote-bound onsite). They do NOT count as jobs:
+  //   - DO add to busyByTech (gap math sees them).
+  //   - DO NOT add to visitsByTech (visitCount + bookedMinutes stay
+  //     job-only).
+  //   - DO NOT add to scheduleBlocks (the tech tile lists job visits
+  //     only — lead visits surface in dispatch separately).
+  //   - DO NOT add to offRosterAssignments (lead visits assigned to
+  //     non-schedulable users are dispatch's concern).
+  // This keeps job KPIs / dashboard tiles untouched while the
+  // booking math correctly reflects "this tech is busy at 2pm."
+  const { listLeadVisitsInRange } = await import("./leadVisits");
+  const todaysLeadVisits = await listLeadVisitsInRange(
+    companyId,
+    dayStart,
+    dayEnd,
+  );
+  for (const lv of todaysLeadVisits) {
+    if (lv.isAllDay) continue;
+    if (lv.status === "cancelled" || lv.status === "completed") continue;
+    if (!lv.scheduledStart) continue;
+    const start = new Date(lv.scheduledStart).getTime();
+    let end: number;
+    if (lv.scheduledEnd) {
+      end = new Date(lv.scheduledEnd).getTime();
+    } else {
+      const fallbackMin = Math.max(lv.estimatedDurationMinutes ?? 60, 30);
+      end = start + fallbackMin * 60_000;
+    }
+    if (!(end > start)) continue;
+    const clippedStart = Math.max(start, dayStartMs);
+    const clippedEnd = Math.min(end, dayEndMs);
+    if (clippedEnd <= clippedStart) continue;
+
+    const techIds = lv.assignedTechnicianIds ?? [];
+    for (const techId of techIds) {
+      // Only schedulable techs feed the gap math — same rule used
+      // for job visits above. Non-schedulable assignees are silently
+      // skipped here (lead visits don't have an off-roster surface).
+      if (!schedulableIds.has(techId)) continue;
+      const arr = busyByTech.get(techId) ?? [];
+      arr.push({ start: clippedStart, end: clippedEnd });
+      busyByTech.set(techId, arr);
+    }
+  }
+
   // --- Per-tech capacity --------------------------------------------------
   const technicians: TechnicianCapacity[] = schedulable.map((member, idx) => {
     const name = resolveTechnicianName(member as any);

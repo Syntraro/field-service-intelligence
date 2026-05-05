@@ -8,7 +8,7 @@
  */
 import { useMemo, useRef, useEffect } from "react";
 import { format, isToday, isWeekend } from "date-fns";
-import type { DispatchVisit, DispatchTask, Technician } from "./dispatchPreviewTypes";
+import type { DispatchVisit, DispatchTask, DispatchLeadVisit, Technician } from "./dispatchPreviewTypes";
 import { UNASSIGNED_TECH_ID } from "./dispatchPreviewTypes";
 import { formatHour } from "./dispatchPreviewUtils";
 import WeekDayColumn from "./WeekDispatchCell";
@@ -29,10 +29,17 @@ type Props = {
   weekDays: Date[];
   visitsByTechByDay: Map<string, Map<string, DispatchVisit[]>>;
   tasksByTechByDay: Map<string, Map<string, DispatchTask[]>>;
+  /** 2026-05-05 Phase 3 correction: per-day lead visits. Rendered in
+   *  the same day column as jobs but always branch-rendered so they
+   *  never flow through job-shaped DnD/color/render paths. */
+  leadVisitsByDay: Map<string, DispatchLeadVisit[]>;
   selectedItemId: string | null;
   savingIds: Set<string>;
   onSelectVisit: (visit: DispatchVisit) => void;
   onSelectTask: (task: DispatchTask) => void;
+  /** 2026-05-05 Phase 3 correction: lead-visit click handler — routes
+   *  to /leads/:leadId, NOT to a job route. */
+  onOpenLead: (leadId: string) => void;
   /** Resize handler — reuses existing shared resizeVisit mutation */
   onResize?: (visit: DispatchVisit, newEndTime: string) => void;
   /** 2026-03-31: 24-hour mode — shared with Day view via same toggle state */
@@ -88,8 +95,8 @@ function NowIndicator({ startHour, hourHeight }: { startHour: number; hourHeight
 }
 
 export default function WeekDispatchGrid({
-  technicians, weekDays, visitsByTechByDay, tasksByTechByDay,
-  selectedItemId, savingIds, onSelectVisit, onSelectTask, onResize,
+  technicians, weekDays, visitsByTechByDay, tasksByTechByDay, leadVisitsByDay,
+  selectedItemId, savingIds, onSelectVisit, onSelectTask, onOpenLead, onResize,
   show24Hour,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -212,6 +219,7 @@ export default function WeekDispatchGrid({
                   dayKey={dayKey}
                   visits={visits}
                   tasks={tasks}
+                  leadVisits={leadVisitsByDay.get(dayKey) ?? []}
                   startHour={startHour}
                   endHour={endHour}
                   hourHeight={WEEK_HOUR_HEIGHT_PX}
@@ -219,6 +227,7 @@ export default function WeekDispatchGrid({
                   savingIds={savingIds}
                   onSelectVisit={onSelectVisit}
                   onSelectTask={onSelectTask}
+                  onOpenLead={onOpenLead}
                   onResize={onResize}
                   techColorMap={techColorMap}
                 />

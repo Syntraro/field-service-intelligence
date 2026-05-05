@@ -24,6 +24,9 @@ import {
 import { format } from "date-fns";
 import { MetaRow } from "@/components/ui/meta-row";
 import { EmptyState } from "@/components/ui/empty-state";
+// 2026-05-05 Lead Visits: canonical notes section + lead-visits card.
+import { EntityNotesSection } from "@/components/notes/EntityNotesSection";
+import { LeadVisitsCard } from "@/components/leads/LeadVisitsCard";
 
 // ── Types ──
 
@@ -65,6 +68,9 @@ interface LeadNote {
 const STATUS_BADGE: Record<string, { bg: string; text: string }> = {
   new: { bg: "bg-blue-100", text: "text-blue-700" },
   contacted: { bg: "bg-amber-100", text: "text-amber-700" },
+  // 2026-05-05 Lead Visits: rendered after the last open lead visit
+  // completes. Office reviews and decides whether to convert to a quote.
+  needs_review: { bg: "bg-violet-100", text: "text-violet-700" },
   quoted: { bg: "bg-purple-100", text: "text-purple-700" },
   won: { bg: "bg-emerald-100", text: "text-emerald-700" },
   lost: { bg: "bg-slate-100", text: "text-slate-500" },
@@ -78,18 +84,17 @@ export default function LeadDetailPage() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const { user } = useAuth();
-  const currentUserId = user?.id ?? null;
-  const [noteText, setNoteText] = useState("");
+  // 2026-05-05: bespoke notes state removed — canonical
+  // EntityNotesSection owns add/edit/delete + author + attachments.
   const [showArchiveConfirm, setShowArchiveConfirm] = useState(false);
   const [showHardDeleteConfirm, setShowHardDeleteConfirm] = useState(false);
   const [showConvertConfirm, setShowConvertConfirm] = useState(false);
   // Description edit state
   const [editingDescription, setEditingDescription] = useState(false);
   const [descriptionDraft, setDescriptionDraft] = useState("");
-  // Note edit state — only one note edit open at a time
-  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
-  const [noteEditDraft, setNoteEditDraft] = useState("");
-  const [noteDeleteConfirmId, setNoteDeleteConfirmId] = useState<string | null>(null);
+  // Touch user binding so the lint pass keeps the import even after
+  // the bespoke notes state was removed.
+  void user;
 
   // ── Queries ──
   const { data: lead, isLoading, isError } = useQuery<LeadDetail>({
@@ -100,46 +105,65 @@ export default function LeadDetailPage() {
     placeholderData: keepPreviousData,
   });
 
-  const { data: notes = [], refetch: refetchNotes } = useQuery<LeadNote[]>({
-    queryKey: ["leads", "detail", leadId, "notes"],
-    queryFn: () => apiRequest(`/api/leads/${leadId}/notes`),
+  // 2026-05-05 Phase 3: read the lead-visits feed so the right-rail
+  // metadata can surface the NEXT upcoming visit instead of a stale
+  // assignee row. Same query key the LeadVisitsCard uses, so React
+  // Query dedupes the fetch.
+  interface LeadVisitRow {
+    id: string;
+    scheduledStart: string | null;
+    assignedTechnicianIds: string[] | null;
+    status: "scheduled" | "in_progress" | "completed" | "cancelled";
+  }
+  const { data: leadVisits = [] } = useQuery<LeadVisitRow[]>({
+    queryKey: ["/api/leads", leadId, "visits"],
     enabled: !!leadId,
-    staleTime: 2 * 60_000,
+    queryFn: async () => {
+      const res = await fetch(`/api/leads/${leadId}/visits`, {
+        credentials: "include",
+      });
+      if (!res.ok) return [];
+      const body = await res.json();
+      return Array.isArray(body) ? body : (body?.data ?? []);
+    },
+    staleTime: 30_000,
   });
+
+  // Bulk team lookup for resolving the next-visit assignee name.
+  // Reuses the canonical /api/team feed shared with TeamHubPage.
+  const { data: teamMembers = [] } = useQuery<
+    Array<{ id: string; fullName: string | null; firstName: string | null; lastName: string | null }>
+  >({
+    queryKey: ["/api/team"],
+    enabled: leadVisits.length > 0,
+  });
+  const teamNameById = new Map<string, string>();
+  for (const m of teamMembers) {
+    const n = m.fullName || [m.firstName, m.lastName].filter(Boolean).join(" ");
+    if (n) teamNameById.set(m.id, n);
+  }
+  const nowMs = Date.now();
+  const nextUpcomingVisit = leadVisits
+    .filter(
+      (v) =>
+        (v.status === "scheduled" || v.status === "in_progress") &&
+        v.scheduledStart &&
+        Date.parse(v.scheduledStart) >= nowMs,
+    )
+    .sort((a, b) =>
+      a.scheduledStart!.localeCompare(b.scheduledStart!),
+    )[0];
+  const nextVisitAssigneeName = nextUpcomingVisit
+    ? (nextUpcomingVisit.assignedTechnicianIds ?? [])
+        .map((id) => teamNameById.get(id))
+        .filter(Boolean)
+        .join(", ") || "Unassigned"
+    : null;
 
   // ── Mutations ──
   const statusMutation = useMutation({
     mutationFn: (status: string) => apiRequest(`/api/leads/${leadId}`, { method: "PATCH", body: JSON.stringify({ status }) }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["leads"] }); toast({ title: "Lead updated" }); },
-    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
-  });
-
-  const addNoteMutation = useMutation({
-    mutationFn: (text: string) => apiRequest(`/api/leads/${leadId}/notes`, { method: "POST", body: JSON.stringify({ noteText: text }) }),
-    onSuccess: () => { refetchNotes(); setNoteText(""); toast({ title: "Note added" }); },
-    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
-  });
-
-  const updateNoteMutation = useMutation({
-    mutationFn: ({ noteId, text }: { noteId: string; text: string }) =>
-      apiRequest(`/api/leads/${leadId}/notes/${noteId}`, { method: "PATCH", body: JSON.stringify({ noteText: text }) }),
-    onSuccess: () => {
-      refetchNotes();
-      setEditingNoteId(null);
-      setNoteEditDraft("");
-      toast({ title: "Note updated" });
-    },
-    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
-  });
-
-  const deleteNoteMutation = useMutation({
-    mutationFn: (noteId: string) =>
-      apiRequest(`/api/leads/${leadId}/notes/${noteId}`, { method: "DELETE" }),
-    onSuccess: () => {
-      refetchNotes();
-      setNoteDeleteConfirmId(null);
-      toast({ title: "Note deleted" });
-    },
     onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
@@ -211,7 +235,11 @@ export default function LeadDetailPage() {
   const fmtValue = (v: string | null) => v ? `$${parseFloat(v).toLocaleString()}` : "—";
   const canContact = lead.status === "new";
   const canMarkLost = lead.status === "new" || lead.status === "contacted";
-  const canConvert = (lead.status === "new" || lead.status === "contacted") && !lead.convertedQuoteId;
+  // 2026-05-05: include `needs_review` — Lead Visits Phase 2 added this status
+  // (set by `markLeadVisitCompleted` when the last open visit completes).
+  // Backend (POST /api/quotes) already accepts conversion from this status;
+  // the gate previously hid the button, leaving needs_review leads stuck.
+  const canConvert = (lead.status === "new" || lead.status === "contacted" || lead.status === "needs_review") && !lead.convertedQuoteId;
   const isTerminal = lead.status === "won" || lead.status === "lost";
   const statusColor = STATUS_BADGE[lead.status] || STATUS_BADGE.new;
   const addressLine = [lead.location?.address, lead.location?.city, lead.location?.province, lead.location?.postalCode].filter(Boolean).join(", ");
@@ -316,139 +344,16 @@ export default function LeadDetailPage() {
               </div>
             </div>
 
-            {/* Notes */}
-            <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
-              <div className="px-5 py-3 bg-[#f8fafc] border-b border-slate-100 flex items-center justify-between">
-                <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
-                  <StickyNote className="h-4 w-4 text-[#64748b]" />Notes
-                  {notes.length > 0 && <span className="text-xs text-slate-400 font-normal">({notes.length})</span>}
-                </span>
-              </div>
-              <div className="px-5 py-3 space-y-3">
-                {/* Add note */}
-                {!isTerminal && (
-                  <div className="flex gap-2">
-                    <Textarea
-                      value={noteText}
-                      onChange={(e) => setNoteText(e.target.value)}
-                      placeholder="Add a note..."
-                      className="min-h-[56px] text-sm resize-none flex-1"
-                      rows={2}
-                    />
-                    <Button
-                      size="sm"
-                      className="self-end h-9 px-3"
-                      onClick={() => addNoteMutation.mutate(noteText.trim())}
-                      disabled={!noteText.trim() || addNoteMutation.isPending}
-                    >
-                      {addNoteMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                    </Button>
-                  </div>
-                )}
-                {/* Notes list */}
-                {notes.length === 0 ? (
-                  <EmptyState message="No notes yet" className="py-4" />
-                ) : (
-                  <div className="space-y-2">
-                    {notes.map(n => {
-                      const isEditing = editingNoteId === n.id;
-                      const isConfirmingDelete = noteDeleteConfirmId === n.id;
-                      const canEdit = !isTerminal && currentUserId === n.userId;
-                      return (
-                        <div key={n.id} className="border border-slate-100 rounded-md px-3 py-2.5">
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="text-xs font-semibold text-slate-500">
-                              {n.author}
-                            </span>
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs text-slate-400">{n.createdAt ? fmtDateTime(n.createdAt) : ""}</span>
-                              {canEdit && !isEditing && !isConfirmingDelete && (
-                                <div className="flex gap-0.5">
-                                  <button
-                                    onClick={() => { setEditingNoteId(n.id); setNoteEditDraft(n.text); }}
-                                    className="p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-600"
-                                    title="Edit note"
-                                    aria-label="Edit note"
-                                  >
-                                    <Pencil className="h-3 w-3" />
-                                  </button>
-                                  <button
-                                    onClick={() => setNoteDeleteConfirmId(n.id)}
-                                    className="p-1 rounded hover:bg-red-50 text-slate-400 hover:text-red-600"
-                                    title="Delete note"
-                                    aria-label="Delete note"
-                                  >
-                                    <Trash2 className="h-3 w-3" />
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                          {isEditing ? (
-                            <div className="space-y-2">
-                              <Textarea
-                                value={noteEditDraft}
-                                onChange={(e) => setNoteEditDraft(e.target.value)}
-                                className="min-h-[64px] text-sm resize-y"
-                                rows={3}
-                                autoFocus
-                              />
-                              <div className="flex justify-end gap-1.5">
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-7 text-xs"
-                                  onClick={() => { setEditingNoteId(null); setNoteEditDraft(""); }}
-                                  disabled={updateNoteMutation.isPending}
-                                >
-                                  <X className="h-3 w-3 mr-1" />Cancel
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  className="h-7 text-xs"
-                                  onClick={() => updateNoteMutation.mutate({ noteId: n.id, text: noteEditDraft.trim() })}
-                                  disabled={!noteEditDraft.trim() || updateNoteMutation.isPending}
-                                >
-                                  {updateNoteMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Check className="h-3 w-3 mr-1" />}
-                                  Save
-                                </Button>
-                              </div>
-                            </div>
-                          ) : isConfirmingDelete ? (
-                            <div className="space-y-2">
-                              <p className="text-xs text-red-600 font-medium">Delete this note? This cannot be undone.</p>
-                              <div className="flex justify-end gap-1.5">
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-7 text-xs"
-                                  onClick={() => setNoteDeleteConfirmId(null)}
-                                  disabled={deleteNoteMutation.isPending}
-                                >
-                                  Cancel
-                                </Button>
-                                <Button
-                                  variant="destructive"
-                                  size="sm"
-                                  className="h-7 text-xs"
-                                  onClick={() => deleteNoteMutation.mutate(n.id)}
-                                  disabled={deleteNoteMutation.isPending}
-                                >
-                                  {deleteNoteMutation.isPending && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
-                                  Delete
-                                </Button>
-                              </div>
-                            </div>
-                          ) : (
-                            <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{n.text}</p>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
+            {/* 2026-05-05 Lead Visits: pre-sales onsite scheduling card.
+                Sits between Description and Notes per ACCESS_CONTROL_MATRIX
+                product layout. */}
+            <LeadVisitsCard leadId={lead.id} leadLocationId={lead.locationId} />
+
+            {/* Notes — 2026-05-05: replaced bespoke inline editor with the
+                canonical EntityNotesSection. Same component used by
+                jobs / quotes / invoices, so author attribution +
+                attachments + edit/delete controls match across surfaces. */}
+            <EntityNotesSection entityType="lead" entityId={lead.id} />
           </div>
 
           {/* ── RIGHT RAIL ── */}
@@ -463,7 +368,29 @@ export default function LeadDetailPage() {
                 <MetaRow label="Estimated Value" value={fmtValue(lead.estimatedValue)} />
                 <MetaRow label="Captured By" value={lead.originTechnicianName || "—"} />
                 <MetaRow label="Created By" value={lead.createdByName || "—"} />
-                <MetaRow label="Assigned To" value={lead.assignedToName || "Unassigned"} />
+                {/* 2026-05-05 Phase 3: row hides entirely when no
+                    visits exist on the lead — replaces the always-on
+                    "Assigned To" pattern. When a visit exists, the
+                    assignee + start time come from the next upcoming
+                    visit row, not the legacy lead.assignedToUserId.
+                    MetaRow takes a `string` value, so the date is
+                    appended inline rather than as a stacked label. */}
+                {leadVisits.length > 0 && nextUpcomingVisit && (
+                  <MetaRow
+                    label="Next Visit Assignee"
+                    value={`${nextVisitAssigneeName ?? "Unassigned"}${
+                      nextUpcomingVisit.scheduledStart
+                        ? ` · ${format(
+                            new Date(nextUpcomingVisit.scheduledStart),
+                            "MMM d, h:mm a",
+                          )}`
+                        : ""
+                    }`}
+                  />
+                )}
+                {leadVisits.length > 0 && !nextUpcomingVisit && (
+                  <MetaRow label="Next visit" value="No upcoming visit" />
+                )}
                 <div className="border-t border-slate-100 pt-1.5">
                   <MetaRow label="Created" value={fmtDate(lead.createdAt)} />
                   {lead.updatedAt && <MetaRow label="Updated" value={fmtDate(lead.updatedAt)} />}

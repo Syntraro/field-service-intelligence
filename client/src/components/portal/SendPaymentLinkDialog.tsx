@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Loader2, Mail } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
 
 interface SendPaymentLinkDialogProps {
   open: boolean;
@@ -61,16 +62,11 @@ export function SendPaymentLinkDialog({
     }
     setIsSending(true);
     try {
-      const res = await fetch("/api/portal/auth/request-link", {
+      // 2026-05-05: routed through apiRequest for CSRF compliance.
+      await apiRequest("/api/portal/auth/request-link", {
         method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: normalized }),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error || `Request failed (${res.status})`);
-      }
       toast({
         title: "Payment link sent",
         description: `If ${normalized} is a registered contact, they'll receive a sign-in link within a minute.`,

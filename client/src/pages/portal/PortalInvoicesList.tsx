@@ -31,6 +31,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
+import { apiRequest, ApiError } from "@/lib/queryClient";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -168,38 +169,33 @@ export default function PortalInvoicesList() {
   //   - other / network               → "Something went wrong starting checkout. Please try again."
   // No error swallowing — every path either redirects or shows copy.
   const batchCheckoutMutation = useMutation({
+    // 2026-05-05: routed through apiRequest so the global csurf
+    // middleware sees X-CSRF-Token. Status-coded UX copy is now
+    // re-applied by inspecting the thrown ApiError.
     mutationFn: async (ids: string[]): Promise<{ checkoutUrl: string }> => {
-      let res: Response;
       try {
-        res = await fetch("/api/portal/invoices/batch-checkout", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ invoiceIds: ids }),
-        });
-      } catch {
-        // Network failure — DNS, offline, blocked. fetch() rejects.
-        throw new Error(
-          "Couldn't reach the server. Check your connection and try again.",
+        return await apiRequest<{ checkoutUrl: string }>(
+          "/api/portal/invoices/batch-checkout",
+          { method: "POST", body: JSON.stringify({ invoiceIds: ids }) },
         );
+      } catch (err) {
+        if (err instanceof ApiError) {
+          if (err.status === 401) {
+            throw new Error("Your session has expired. Please sign in again.");
+          }
+          if (err.status === 404) {
+            throw new Error(
+              "One of the selected invoices is no longer available. Refresh and try again.",
+            );
+          }
+          if (err.status >= 500) {
+            throw new Error("Something went wrong starting checkout. Please try again.");
+          }
+          throw new Error(err.message || "Could not start payment.");
+        }
+        // Network / TypeError — fetch rejection.
+        throw new Error("Couldn't reach the server. Check your connection and try again.");
       }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        const serverMsg: string | undefined = body?.error ?? body?.message;
-        if (res.status === 401) {
-          throw new Error("Your session has expired. Please sign in again.");
-        }
-        if (res.status === 404) {
-          throw new Error(
-            "One of the selected invoices is no longer available. Refresh and try again.",
-          );
-        }
-        if (res.status >= 500) {
-          throw new Error("Something went wrong starting checkout. Please try again.");
-        }
-        throw new Error(serverMsg || "Could not start payment.");
-      }
-      return res.json();
     },
     onSuccess: (result) => {
       // Hand off to Stripe Checkout. Selection clears as soon as we
@@ -251,28 +247,25 @@ export default function PortalInvoicesList() {
   // The customer's click on this button IS the authorization. Idempotency
   // is anchored by the prospectivePaymentId Stripe receives.
   const payOneSavedMutation = useMutation({
+    // 2026-05-05: routed through apiRequest for CSRF compliance.
     mutationFn: async (input: { invoiceId: string; paymentMethodId: string }) => {
-      let res: Response;
       try {
-        res = await fetch(
+        return await apiRequest(
           `/api/portal/invoices/${input.invoiceId}/pay-with-saved-method`,
           {
             method: "POST",
-            credentials: "include",
-            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ paymentMethodId: input.paymentMethodId }),
           },
         );
-      } catch {
+      } catch (err) {
+        if (err instanceof ApiError) {
+          if (err.status === 402) throw new Error(err.message || "Card declined.");
+          if (err.status === 401) throw new Error("Your session has expired.");
+          if (err.status === 404) throw new Error("Invoice or card not found.");
+          throw new Error(err.message || "Payment failed.");
+        }
         throw new Error("Couldn't reach the server. Try again.");
       }
-      const body = await res.json().catch(() => ({}));
-      if (res.status === 200 || res.status === 202) return body;
-      // 402 / 4xx = card actionable. Surface the server message.
-      if (res.status === 402 && body?.message) throw new Error(body.message);
-      if (res.status === 401) throw new Error("Your session has expired.");
-      if (res.status === 404) throw new Error("Invoice or card not found.");
-      throw new Error(body?.error || body?.message || "Payment failed.");
     },
     onMutate: (vars) => {
       setActivePayWithSavedId(vars.invoiceId);
@@ -298,30 +291,28 @@ export default function PortalInvoicesList() {
 
   // Sticky footer "Pay selected with •••• N" — multi-invoice off-session.
   const paySelectedSavedMutation = useMutation({
+    // 2026-05-05: routed through apiRequest for CSRF compliance.
     mutationFn: async (input: {
       invoiceIds: string[];
       paymentMethodId: string;
     }) => {
-      let res: Response;
       try {
-        res = await fetch("/api/portal/invoices/pay-selected-with-saved-method", {
+        return await apiRequest("/api/portal/invoices/pay-selected-with-saved-method", {
           method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             invoiceIds: input.invoiceIds,
             paymentMethodId: input.paymentMethodId,
           }),
         });
-      } catch {
+      } catch (err) {
+        if (err instanceof ApiError) {
+          if (err.status === 402) throw new Error(err.message || "Card declined.");
+          if (err.status === 401) throw new Error("Your session has expired.");
+          if (err.status === 404) throw new Error("Invoice or card not found.");
+          throw new Error(err.message || "Payment failed.");
+        }
         throw new Error("Couldn't reach the server. Try again.");
       }
-      const body = await res.json().catch(() => ({}));
-      if (res.status === 200 || res.status === 202) return body;
-      if (res.status === 402 && body?.message) throw new Error(body.message);
-      if (res.status === 401) throw new Error("Your session has expired.");
-      if (res.status === 404) throw new Error("Invoice or card not found.");
-      throw new Error(body?.error || body?.message || "Payment failed.");
     },
     onMutate: () => {
       setPaySavedError(null);

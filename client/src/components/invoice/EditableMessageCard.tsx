@@ -59,6 +59,17 @@ export interface EditableMessageCardProps {
    *  picked so the card renders in its canonical position but cannot
    *  be entered. */
   disabled?: boolean;
+  /**
+   * 2026-05-05: optional default text. When provided, an additional
+   * "Reset to default" button appears inside the edit footer that
+   * replaces the current draft with this value. Used by the invoice
+   * detail page to give operators a one-click path back to the tenant
+   * Default Client Message. Omit to hide the affordance — every
+   * non-tenant consumer (e.g. internal-notes editor) leaves it off.
+   */
+  defaultValue?: string | null;
+  /** Optional label for the reset action. Defaults to "Reset to default". */
+  resetToDefaultLabel?: string;
 }
 
 export function EditableMessageCard({
@@ -72,6 +83,8 @@ export function EditableMessageCard({
   saveButtonTestId = "button-save-message",
   isSaving = false,
   disabled = false,
+  defaultValue,
+  resetToDefaultLabel = "Reset to default",
 }: EditableMessageCardProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -153,6 +166,18 @@ export function EditableMessageCard({
                 data-testid={textareaTestId}
               />
               <div className="mt-2 flex justify-end gap-2">
+                {typeof defaultValue === "string" && defaultValue.length > 0 && draft !== defaultValue && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 mr-auto text-xs text-slate-500"
+                    onClick={() => setDraft(defaultValue)}
+                    disabled={showSavingLabel}
+                    data-testid="button-reset-to-default-message"
+                  >
+                    {resetToDefaultLabel}
+                  </Button>
+                )}
                 <Button
                   variant="ghost"
                   size="sm"

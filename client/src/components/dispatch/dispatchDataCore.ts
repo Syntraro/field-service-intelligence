@@ -12,7 +12,12 @@
 import { useMemo } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import type { CalendarRangeResponseDto, UnscheduledJobDto } from "@shared/types/scheduling";
-import type { DispatchVisit, DispatchTask, Technician } from "./dispatchPreviewTypes";
+import type {
+  DispatchVisit,
+  DispatchTask,
+  DispatchLeadVisit,
+  Technician,
+} from "./dispatchPreviewTypes";
 import {
   mapEventToDispatchVisit,
   mapUnscheduledToDispatchVisits,
@@ -20,6 +25,57 @@ import {
   buildTechnicianRoster,
 } from "./dispatchPreviewMappers";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
+
+// 2026-05-05 Phase 3: lead-visit dispatch envelope. Fetched in parallel
+// with the canonical job calendar feed; merged client-side ONLY (no
+// SQL UNION). Pinned by the source-pin test.
+interface LeadVisitDispatchResponse {
+  visits: Array<{
+    type: "lead_visit";
+    id: string;
+    leadId: string;
+    leadTitle: string;
+    scheduledStart: string | null;
+    scheduledEnd: string | null;
+    isAllDay: boolean;
+    durationMinutes: number | null;
+    status: "scheduled" | "in_progress" | "completed" | "cancelled";
+    assignedTechnicianIds: string[];
+    technicianNames: string[];
+    location: {
+      id: string;
+      companyName: string | null;
+      address: string | null;
+      city: string | null;
+      province: string | null;
+      postalCode: string | null;
+    } | null;
+    customerCompanyName: string | null;
+  }>;
+}
+
+function mapLeadVisitDispatch(
+  raw: LeadVisitDispatchResponse["visits"][number],
+): DispatchLeadVisit {
+  return {
+    type: "lead_visit",
+    id: raw.id,
+    leadId: raw.leadId,
+    leadTitle: raw.leadTitle,
+    technicianIds: raw.assignedTechnicianIds ?? [],
+    technicianNames: raw.technicianNames ?? [],
+    scheduledStart: raw.scheduledStart,
+    scheduledEnd: raw.scheduledEnd,
+    durationMinutes: raw.durationMinutes ?? null,
+    isAllDay: raw.isAllDay,
+    status: raw.status,
+    locationName: raw.location?.companyName ?? null,
+    locationAddress: raw.location?.address ?? null,
+    locationCity: raw.location?.city ?? null,
+    locationProvinceState: raw.location?.province ?? null,
+    customerName: raw.customerCompanyName ?? null,
+  };
+}
 
 /** Shared JSON fetcher with credentials */
 export async function fetchJson<T>(url: string): Promise<T> {
@@ -41,6 +97,10 @@ export interface DispatchRangeData {
   scheduledVisits: DispatchVisit[];
   unscheduledVisits: DispatchVisit[];
   scheduledTasks: DispatchTask[];
+  /** 2026-05-05 Phase 3: pre-sales onsite appointments. Parallel
+   *  array — never mixed into `scheduledVisits` because the type
+   *  shapes differ (no jobNumber, no job lifecycle). */
+  leadVisits: DispatchLeadVisit[];
   technicians: Technician[];
   isLoading: boolean;
   error: Error | null;
@@ -101,13 +161,32 @@ export function useDispatchRangeData(
     placeholderData: keepPreviousData,
   });
 
+  // 2026-05-05 Phase 3: parallel lead-visit fetch. Never merged into
+  // the job calendar feed at the SQL level — UI merge ONLY (consumers
+  // render lead visits with their own LEAD badge + amber tint).
+  const leadVisitsQuery = useQuery<LeadVisitDispatchResponse>({
+    queryKey: ["/api/calendar/lead-visits", startISO, endISO],
+    queryFn: () =>
+      fetchJson<LeadVisitDispatchResponse>(
+        `/api/calendar/lead-visits?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}`,
+      ),
+    staleTime: 30_000,
+    enabled,
+    placeholderData: keepPreviousData,
+  });
+
   const { teamMembers, isLoading: techLoading, error: techError } = useTechniciansDirectory();
 
   const events = scheduledQuery.data?.events ?? [];
   const unscheduledJobs = unscheduledQuery.data ?? [];
   const rawTasks = tasksQuery.data ? normalizeTasks(tasksQuery.data) : [];
+  const rawLeadVisits = leadVisitsQuery.data?.visits ?? [];
 
   const scheduledVisits = useMemo(() => events.map(mapEventToDispatchVisit), [events]);
+  const leadVisits = useMemo(
+    () => rawLeadVisits.map(mapLeadVisitDispatch),
+    [rawLeadVisits],
+  );
   // 2026-04-18 Phase 3: flatMap — one backlog card per unscheduled visit
   // (not per job). Multi-visit jobs intentionally surface multiple cards.
   const unscheduledVisits = useMemo(
@@ -125,6 +204,7 @@ export function useDispatchRangeData(
     scheduledVisits,
     unscheduledVisits,
     scheduledTasks,
+    leadVisits,
     technicians,
     isLoading: scheduledQuery.isLoading || unscheduledQuery.isLoading || techLoading,
     error: (scheduledQuery.error ?? unscheduledQuery.error ?? techError) as Error | null,

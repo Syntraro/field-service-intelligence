@@ -7,6 +7,11 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { addDays, subDays, addWeeks, subWeeks, addMonths, subMonths, startOfWeek, endOfWeek, eachDayOfInterval, addMinutes, format } from "date-fns";
 import { AlertCircle, Loader2, X as XIcon } from "lucide-react";
+// 2026-05-05 Phase 3: wouter navigation for the lead-visits strip
+// click-through. Other dispatch click handlers route via internal
+// modal state, so this is the only place the page leaves the route.
+import { useLocation } from "wouter";
+import type { DispatchLeadVisit } from "@/components/dispatch/dispatchPreviewTypes";
 import {
   DndContext,
   DragOverlay,
@@ -127,6 +132,8 @@ const DISPATCH_VIEW_KEY = "syntraro:dispatch-view-mode";
 
 export default function DispatchPreview() {
   const { toast } = useToast();
+  // 2026-05-05 Phase 3: navigation for the lead-visits click-through.
+  const [, setLocation] = useLocation();
 
   // 2026-04-08: useDispatchStream() now mounted once at App.tsx root for all office surfaces.
 
@@ -310,6 +317,11 @@ export default function DispatchPreview() {
   const scheduledVisits = activeData.scheduledVisits;
   const unscheduledVisits = activeData.unscheduledVisits;
   const scheduledTasks = activeData.scheduledTasks;
+  // 2026-05-05 Phase 3: lead visits (pre-sales onsite). Rendered as a
+  // sibling strip ABOVE the technician grid — not merged into the
+  // job-centric DispatchVisit shape because they have no jobNumber,
+  // no lifecycle, no drag/resize. Click-through goes to /leads/:id.
+  const leadVisits = activeData.leadVisits ?? [];
   const isLoading = activeData.isLoading;
   const error = activeData.error;
 
@@ -1509,6 +1521,19 @@ export default function DispatchPreview() {
           );
         })()}
 
+        {/* 2026-05-05 Phase 3: lead-visits strip — pre-sales onsite
+            appointments. Day view only (week / month views have their
+            own dense layouts; lead-visit surfacing in those is a
+            future polish). Renders below header, above the
+            technician timeline so it never disrupts dnd. Click →
+            /leads/:id. Lead visits NEVER assume job fields. */}
+        {activeView === "day" && leadVisits.length > 0 && (
+          <LeadVisitsStrip
+            visits={leadVisits}
+            onOpenLead={(leadId) => setLocation(`/leads/${leadId}`)}
+          />
+        )}
+
         {/* Main content area */}
         <div className="flex flex-1 overflow-hidden">
           {isLoading ? (
@@ -1579,10 +1604,12 @@ export default function DispatchPreview() {
                 weekDays={filteredWeekDays}
                 visitsByTechByDay={filteredWeekVisits}
                 tasksByTechByDay={filteredWeekTasks}
+                leadVisitsByDay={weekData.leadVisitsByDay}
                 selectedItemId={selectedVisitId ?? selectedTaskId}
                 savingIds={savingIds}
                 onSelectVisit={handleSelectVisit}
                 onSelectTask={handleSelectTask}
+                onOpenLead={(leadId) => setLocation(`/leads/${leadId}`)}
                 onResize={handleWeekResize}
                 show24Hour={show24Hour}
               />
@@ -1611,9 +1638,11 @@ export default function DispatchPreview() {
               <MonthDispatchGrid
                 selectedDate={selectedDate}
                 visitsByDay={monthData.visitsByDay}
+                leadVisitsByDay={monthData.leadVisitsByDay}
                 techColorMap={monthTechColorMap}
                 selectedVisitId={selectedVisitId}
                 onSelectVisit={handleSelectVisit}
+                onOpenLead={(leadId) => setLocation(`/leads/${leadId}`)}
               />
               {/* Right region: Unscheduled (always) — Month view */}
               <DispatchUnscheduledPanel
@@ -1718,5 +1747,99 @@ export default function DispatchPreview() {
         onTaskChanged={() => queryClient.invalidateQueries({ queryKey: ["/api/tasks"] })}
       />
     </DndContext>
+  );
+}
+
+// ─── Lead-visits strip (2026-05-05 Phase 3) ──────────────────────────
+//
+// Day-view-only ribbon above the technician timeline. Each row is a
+// scheduled lead visit; the LEAD badge + amber tint + lower visual
+// weight signal "this is pre-sales, not a job." Click → /leads/:id.
+// Branches strictly on `type === "lead_visit"` so consumers never
+// assume job fields. No drag, no resize, no status workflow — those
+// are job-only concerns.
+
+function LeadVisitsStrip({
+  visits,
+  onOpenLead,
+}: {
+  visits: DispatchLeadVisit[];
+  onOpenLead: (leadId: string) => void;
+}) {
+  // Sort chronologically by scheduled start (unscheduled at end).
+  const sorted = [...visits].sort((a, b) => {
+    if (a.scheduledStart && b.scheduledStart) {
+      return a.scheduledStart.localeCompare(b.scheduledStart);
+    }
+    if (a.scheduledStart) return -1;
+    if (b.scheduledStart) return 1;
+    return 0;
+  });
+
+  return (
+    <div
+      className="border-b border-amber-200 bg-amber-50 px-3 py-1.5 flex-shrink-0"
+      data-testid="dispatch-lead-visits-strip"
+    >
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs font-semibold text-amber-900 flex items-center gap-1.5">
+          <span className="inline-flex items-center px-1.5 py-0 rounded text-[10px] font-bold uppercase tracking-wider bg-amber-200 text-amber-800">
+            Lead
+          </span>
+          Lead visits ({sorted.length})
+        </span>
+        <span className="text-[10px] text-amber-700/70 italic">
+          Pre-sales onsite
+        </span>
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-1.5 max-h-[100px] overflow-y-auto">
+        {sorted.map((v) => {
+          // Pure-render branch: NEVER reads jobNumber / jobStatus / etc.
+          // Spec invariant — lead visits never assume job fields.
+          if (v.type !== "lead_visit") return null;
+          const time = v.scheduledStart
+            ? format(new Date(v.scheduledStart), "h:mm a")
+            : "Unscheduled";
+          const place = [v.locationName, v.locationCity]
+            .filter(Boolean)
+            .join(" · ");
+          const techLabel =
+            v.technicianNames.length === 0
+              ? "Unassigned"
+              : v.technicianNames.length === 1
+                ? v.technicianNames[0]
+                : `${v.technicianNames[0]} +${v.technicianNames.length - 1}`;
+          return (
+            <button
+              key={v.id}
+              onClick={() => onOpenLead(v.leadId)}
+              className="text-left bg-white border border-amber-300 hover:border-amber-400 hover:bg-amber-50 rounded px-2 py-1.5 transition-colors"
+              data-testid={`dispatch-lead-visit-${v.id}`}
+            >
+              <div className="flex items-center gap-2 mb-0.5">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700">
+                  Lead
+                </span>
+                <span className="text-[11px] font-semibold text-slate-700 tabular-nums">
+                  {time}
+                </span>
+                {v.durationMinutes && (
+                  <span className="text-[10px] text-slate-400">
+                    {v.durationMinutes}m
+                  </span>
+                )}
+              </div>
+              <p className="text-[12px] font-medium text-slate-800 truncate">
+                {v.leadTitle}
+              </p>
+              <p className="text-[10px] text-slate-500 truncate">{techLabel}</p>
+              {place && (
+                <p className="text-[10px] text-slate-400 truncate">{place}</p>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }

@@ -1111,6 +1111,34 @@ export const companySettings = pgTable("company_settings", {
   // Default scheduling buffer (2026-04-26): applied client-side when computing
   // scheduledEnd from a chosen work duration. DB CHECK enforces 0..240.
   defaultSchedulingBufferMinutes: integer("default_scheduling_buffer_minutes").notNull().default(0),
+  // 2026-05-05: tenant-level Invoice Display policy. Visibility-only — controls
+  // what appears on customer-facing invoice surfaces (PDF, email render,
+  // client portal). The canonical resolver in `shared/invoiceDisplayPolicy.ts`
+  // merges these tenant defaults with per-invoice override flags (already on
+  // the `invoices` row) before any renderer touches output. Mandatory invoice
+  // fields (company name, client name, invoice number, issue/due dates,
+  // total, balance) are NOT toggled here — they are always rendered.
+  invoiceShowLogo: boolean("invoice_show_logo").notNull().default(false),
+  invoiceShowCompanyAddress: boolean("invoice_show_company_address").notNull().default(true),
+  invoiceShowCompanyPhone: boolean("invoice_show_company_phone").notNull().default(true),
+  invoiceShowCompanyEmail: boolean("invoice_show_company_email").notNull().default(true),
+  invoiceShowCompanyWebsite: boolean("invoice_show_company_website").notNull().default(false),
+  invoiceShowTaxNumber: boolean("invoice_show_tax_number").notNull().default(true),
+  invoiceShowBillingAddress: boolean("invoice_show_billing_address").notNull().default(true),
+  invoiceShowServiceAddress: boolean("invoice_show_service_address").notNull().default(true),
+  invoiceShowLocationName: boolean("invoice_show_location_name").notNull().default(true),
+  invoiceShowJobNumber: boolean("invoice_show_job_number").notNull().default(false),
+  invoiceShowSummary: boolean("invoice_show_summary").notNull().default(false),
+  invoiceShowJobDescription: boolean("invoice_show_job_description").notNull().default(true),
+  invoiceShowClientMessage: boolean("invoice_show_client_message").notNull().default(true),
+  // Default text used to PREFILL `invoices.client_message` when a new
+  // invoice is created and `invoiceShowClientMessage = true`. Per-invoice
+  // edits never propagate back here.
+  invoiceDefaultClientMessage: text("invoice_default_client_message"),
+  invoiceShowLineItems: boolean("invoice_show_line_items").notNull().default(true),
+  invoiceShowQuantities: boolean("invoice_show_quantities").notNull().default(true),
+  invoiceShowUnitPrices: boolean("invoice_show_unit_prices").notNull().default(true),
+  invoiceShowLineTotals: boolean("invoice_show_line_totals").notNull().default(true),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
@@ -6382,6 +6410,36 @@ export const portalMagicTokens = pgTable("portal_magic_tokens", {
 export type PortalMagicToken = typeof portalMagicTokens.$inferSelect;
 
 // ============================================================================
+// CUSTOMER PORTAL — Invoice Access Tokens
+// 2026-05-05: scope-limited tokens that grant view+pay access to ONE
+// invoice without requiring a full portal session. Minted when an
+// invoice email goes out, embedded in the Pay Invoice URL as `?t=…`,
+// SHA-256 hashed at rest. Default TTL is 30 days. Unlike
+// `portal_magic_tokens` (full account login) these tokens are
+// invoice-scoped and ALWAYS revoked when the invoice reaches a paid
+// state, so a leaked token can never be used to view other invoices
+// or pay an already-paid invoice.
+// ============================================================================
+export const portalInvoiceAccessTokens = pgTable("portal_invoice_access_tokens", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: "cascade" }),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  customerCompanyId: varchar("customer_company_id").notNull().references(() => customerCompanies.id, { onDelete: "cascade" }),
+  /** SHA-256 hash of the raw token. Raw token is never stored. */
+  tokenHash: text("token_hash").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  /** Set on first successful payment to prevent replay. */
+  consumedAt: timestamp("consumed_at"),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  tokenHashIdx: uniqueIndex("portal_invoice_access_tokens_hash_idx").on(table.tokenHash),
+  invoiceIdx: index("portal_invoice_access_tokens_invoice_idx").on(table.invoiceId),
+  expiresIdx: index("portal_invoice_access_tokens_expires_idx").on(table.expiresAt),
+}));
+
+export type PortalInvoiceAccessToken = typeof portalInvoiceAccessTokens.$inferSelect;
+
+// ============================================================================
 // EVENTS — Canonical tenant-scoped append-only event log
 // Used for: Recent Activity feed, entity timelines, analytics, debugging
 // Phase 1 Architecture: Event Log + Attention Queue
@@ -6599,7 +6657,11 @@ export type JobExpense = typeof jobExpenses.$inferSelect;
 // LEADS — Pre-quote pipeline + attribution layer
 // ============================================================================
 
-export const leadStatusEnum = ["new", "contacted", "quoted", "won", "lost"] as const;
+// 2026-05-05: `needs_review` added — set by the lead-visit completion
+// path when the LAST open lead-visit on a lead transitions to
+// completed. The office reviews the lead at that point and decides
+// whether to convert to a quote.
+export const leadStatusEnum = ["new", "contacted", "needs_review", "quoted", "won", "lost"] as const;
 export type LeadStatus = typeof leadStatusEnum[number];
 
 export const leadSourceTypeEnum = ["tech", "office"] as const;
@@ -6670,6 +6732,130 @@ export const leadNotes = pgTable("lead_notes", {
 });
 
 export type LeadNote = typeof leadNotes.$inferSelect;
+
+// ── Lead Note Attachments (2026-05-05) ──
+//
+// Mirrors `job_note_attachments` and `quote_note_attachments` exactly so
+// the canonical fileUploadService can write through `fileEntityBindings`
+// without a special-case branch. Notes own attachments via `note_id`;
+// the file metadata lives in `files`.
+export const leadNoteAttachments = pgTable("lead_note_attachments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  noteId: varchar("note_id").notNull().references(() => leadNotes.id, { onDelete: "cascade" }),
+  fileId: varchar("file_id").notNull().references(() => files.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdBy: varchar("created_by").references(() => users.id),
+});
+
+export type LeadNoteAttachment = typeof leadNoteAttachments.$inferSelect;
+
+// ── Lead Visits (2026-05-05) ──
+//
+// Sibling to `job_visits` — pre-sales onsite appointments scheduled
+// against a lead before any quote/job exists. Sibling table on purpose:
+// lead visits must not pollute job visit predicates, job feeds, job
+// reports, or job KPIs. Capacity reads BOTH tables to compute booked
+// minutes; dispatch + tech-today merge them at the service/UI layer.
+//
+// Schema mirrors job_visits where it makes sense (scheduling, crew,
+// status enum, soft-delete). Lead visits do NOT carry equipment,
+// parts, time entries, or visitNumber — leads have no line items, no
+// per-visit billing, and no per-visit equipment selection.
+//
+// IMPORTANT: never edit `visitPredicates.ts` to fold these in. Lead
+// visits get parallel predicates in `leadVisitPredicates.ts`. The
+// existing job-visit single-source-of-truth filters
+// (`scheduleEligibleVisitFilter`, `uncompletedVisitFilter`,
+// `reconciliationActionableVisitFilter`) drive job lifecycle and
+// performance baselines per CLAUDE.md and must stay job-only.
+export const leadVisitStatusEnum = ["scheduled", "in_progress", "completed", "cancelled"] as const;
+export type LeadVisitStatus = typeof leadVisitStatusEnum[number];
+
+export const leadVisits = pgTable(
+  "lead_visits",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    leadId: varchar("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+
+    // Scheduling — same shape + naming as job_visits. Nullable start
+    // permits unscheduled placeholder rows (the office can pre-create
+    // a visit without a time slot, then assign later).
+    scheduledStart: timestamp("scheduled_start"),
+    scheduledEnd: timestamp("scheduled_end"),
+    isAllDay: boolean("is_all_day").notNull().default(false),
+    estimatedDurationMinutes: integer("estimated_duration_minutes").default(60),
+
+    // Crew — array, mirrors job_visits.assigned_technician_ids. Office
+    // UI surfaces a single-select picker by default; backend stays
+    // array-shaped so future multi-tech assignments don't require a
+    // schema migration.
+    assignedTechnicianIds: varchar("assigned_technician_ids").array(),
+
+    // Status (lightweight 4-value lifecycle — no on_hold, on_route,
+    // dispatched, etc.; lead visits don't go through dispatch states).
+    status: text("status").notNull().default("scheduled"),
+
+    // Lightweight outcome — no equipment, no parts, no time entries.
+    visitNotes: text("visit_notes"),
+    outcomeNote: text("outcome_note"),
+    completedByUserId: varchar("completed_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    completedAt: timestamp("completed_at"),
+
+    // Soft-delete + locking — same shape as job_visits.
+    isActive: boolean("is_active").notNull().default(true),
+    version: integer("version").notNull().default(0),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    archivedByUserId: varchar("archived_by_user_id"),
+
+    // Audit
+    createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id),
+    createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at"),
+  },
+  (table) => ({
+    // Mirrors idx_job_visits_company_active_start. Drives the dispatch
+    // calendar feed + capacity range scan.
+    companyActiveStartIdx: index("idx_lead_visits_company_active_start")
+      .on(table.companyId, table.isActive, table.scheduledStart),
+    // Per-lead lookups (LeadVisitsCard, isLastOpenVisitForLead).
+    leadCompanyActiveIdx: index("idx_lead_visits_lead_company_active")
+      .on(table.leadId, table.companyId, table.isActive),
+  }),
+);
+
+export const insertLeadVisitSchema = createInsertSchema(leadVisits).omit({
+  id: true,
+  companyId: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  status: z.enum(leadVisitStatusEnum).default("scheduled"),
+  // Schedule fields are optional at insert time — `normalizeVisitSchedule`
+  // resolves the canonical start/end/duration before we hit storage.
+  scheduledStart: z.union([z.string(), z.date(), z.null()]).optional(),
+  scheduledEnd: z.union([z.string(), z.date(), z.null()]).optional(),
+  estimatedDurationMinutes: z.number().int().nullable().optional(),
+  isAllDay: z.boolean().optional(),
+  assignedTechnicianIds: z.array(z.string()).nullable().optional(),
+  visitNotes: z.string().nullable().optional(),
+});
+
+export const updateLeadVisitSchema = z.object({
+  scheduledStart: z.union([z.string(), z.date(), z.null()]).optional(),
+  scheduledEnd: z.union([z.string(), z.date(), z.null()]).optional(),
+  estimatedDurationMinutes: z.number().int().nullable().optional(),
+  isAllDay: z.boolean().optional(),
+  assignedTechnicianIds: z.array(z.string()).nullable().optional(),
+  status: z.enum(leadVisitStatusEnum).optional(),
+  visitNotes: z.string().nullable().optional(),
+  outcomeNote: z.string().nullable().optional(),
+});
+
+export type InsertLeadVisit = z.infer<typeof insertLeadVisitSchema>;
+export type UpdateLeadVisit = z.infer<typeof updateLeadVisitSchema>;
+export type LeadVisit = typeof leadVisits.$inferSelect;
 
 // ============================================================================
 // REFERENCE FIELDS — Controlled, tenant-scoped, searchable reference data

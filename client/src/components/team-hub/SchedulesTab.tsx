@@ -64,9 +64,15 @@ const toBaselineHours = (resp: CompanyBusinessHoursResponse | undefined): Workin
 interface Props {
   selectedMemberId: string | null;
   onSelectMember: (id: string | null) => void;
+  // 2026-05-05 member-centric restructure: when this tab is mounted
+  // inside `TeamMemberWorkspace` it must not render its own member
+  // sidebar — the workspace already provides a single shared list on
+  // the page. Standalone usage (`/team/schedules` redirect or any
+  // external mount) keeps the original 260px sidebar.
+  hideMemberList?: boolean;
 }
 
-export function SchedulesTab({ selectedMemberId, onSelectMember }: Props) {
+export function SchedulesTab({ selectedMemberId, onSelectMember, hideMemberList = false }: Props) {
   const { toast } = useToast();
   const dirty = useUnsavedChanges();
   const [search, setSearch] = useState("");
@@ -240,61 +246,69 @@ export function SchedulesTab({ selectedMemberId, onSelectMember }: Props) {
   };
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-4">
-      <Card className="md:sticky md:top-4 md:self-start">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">Team</CardTitle>
-          <div className="relative mt-2">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search..."
-              className="pl-8 h-8 text-sm"
-              data-testid="input-sched-tech-search"
-            />
-          </div>
-        </CardHeader>
-        <CardContent className="px-2 pb-2 max-h-[70vh] overflow-y-auto">
-          {techsLoading ? (
-            <p className="p-3 text-sm text-muted-foreground">Loading…</p>
-          ) : filteredTechs.length === 0 ? (
-            <p className="p-3 text-sm text-muted-foreground">
-              {search ? "No matches." : "No team members yet."}
-            </p>
-          ) : (
-            <ul className="space-y-1">
-              {filteredTechs.map((t) => {
-                const active = t.id === displayedId;
-                return (
-                  <li key={t.id}>
-                    <button
-                      type="button"
-                      onClick={() => dirty.confirmLeave(() => onSelectMember(t.id))}
-                      className={`w-full flex items-center gap-2 px-2 py-2 rounded-md text-left text-sm transition-colors ${
-                        active ? "bg-primary/10" : "hover:bg-muted"
-                      }`}
-                      data-testid={`button-sched-select-${t.id}`}
-                    >
-                      <Avatar className="h-7 w-7 shrink-0">
-                        <AvatarFallback
-                          className="text-[10px] text-white"
-                          style={{ backgroundColor: resolveTechnicianColor(t.id, t.color) }}
-                        >
-                          {getMemberInitials({ fullName: t.fullName, email: t.email })}
-                        </AvatarFallback>
-                      </Avatar>
-                      <span className="flex-1 truncate text-foreground">
-                        {getMemberDisplayName({ fullName: t.fullName, email: t.email })}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
+    <div
+      className={
+        hideMemberList
+          ? "grid grid-cols-1 gap-4"
+          : "grid grid-cols-1 md:grid-cols-[260px_1fr] gap-4"
+      }
+    >
+      {!hideMemberList && (
+        <Card className="md:sticky md:top-4 md:self-start">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Team</CardTitle>
+            <div className="relative mt-2">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search..."
+                className="pl-8 h-8 text-sm"
+                data-testid="input-sched-tech-search"
+              />
+            </div>
+          </CardHeader>
+          <CardContent className="px-2 pb-2 max-h-[70vh] overflow-y-auto">
+            {techsLoading ? (
+              <p className="p-3 text-sm text-muted-foreground">Loading…</p>
+            ) : filteredTechs.length === 0 ? (
+              <p className="p-3 text-sm text-muted-foreground">
+                {search ? "No matches." : "No team members yet."}
+              </p>
+            ) : (
+              <ul className="space-y-1">
+                {filteredTechs.map((t) => {
+                  const active = t.id === displayedId;
+                  return (
+                    <li key={t.id}>
+                      <button
+                        type="button"
+                        onClick={() => dirty.confirmLeave(() => onSelectMember(t.id))}
+                        className={`w-full flex items-center gap-2 px-2 py-2 rounded-md text-left text-sm transition-colors ${
+                          active ? "bg-primary/10" : "hover:bg-muted"
+                        }`}
+                        data-testid={`button-sched-select-${t.id}`}
+                      >
+                        <Avatar className="h-7 w-7 shrink-0">
+                          <AvatarFallback
+                            className="text-[10px] text-white"
+                            style={{ backgroundColor: resolveTechnicianColor(t.id, t.color) }}
+                          >
+                            {getMemberInitials({ fullName: t.fullName, email: t.email })}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="flex-1 truncate text-foreground">
+                          {getMemberDisplayName({ fullName: t.fullName, email: t.email })}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <div className="space-y-4">
         {!displayedId ? (
@@ -315,28 +329,33 @@ export function SchedulesTab({ selectedMemberId, onSelectMember }: Props) {
           </Card>
         ) : (
           <>
+            {/* 2026-05-05 v2 refinement: when this tab is mounted inside
+                <TeamMemberWorkspace>, the workspace header above
+                already shows the member's name + email + status.
+                Only render the inline name/email/status header when
+                used standalone (e.g. via the /team/schedules redirect). */}
             <Card>
-              <CardHeader className="pb-2 flex flex-row items-center justify-between">
-                <div>
-                  <CardTitle className="text-base">{getMemberDisplayName(member)}</CardTitle>
-                  <p className="text-xs text-muted-foreground">{member.email}</p>
-                </div>
-                <Badge
-                  variant={isSchedulable && !member.disabled ? "default" : "secondary"}
-                  className={isSchedulable && !member.disabled ? "bg-green-600 hover:bg-green-600" : ""}
-                >
-                  {member.disabled ? "Disabled" : isSchedulable ? "On calendar" : "Hidden from calendar"}
-                </Badge>
-              </CardHeader>
-              <CardContent className="space-y-3 pt-2">
-                <div className="flex items-center justify-between">
+              {!hideMemberList && (
+                <CardHeader className="pb-2 flex flex-row items-center justify-between">
                   <div>
-                    <Label className="text-sm">Show on calendar</Label>
-                    <p className="text-xs text-muted-foreground">
-                      Controls dispatch calendar visibility and assignment dropdowns. Hidden members keep their working hours and can still be edited here.
-                    </p>
+                    <CardTitle className="text-base">{getMemberDisplayName(member)}</CardTitle>
+                    <p className="text-xs text-muted-foreground">{member.email}</p>
                   </div>
+                  <Badge
+                    variant={isSchedulable && !member.disabled ? "default" : "secondary"}
+                    className={isSchedulable && !member.disabled ? "bg-green-600 hover:bg-green-600" : ""}
+                  >
+                    {member.disabled ? "Disabled" : isSchedulable ? "On calendar" : "Hidden from calendar"}
+                  </Badge>
+                </CardHeader>
+              )}
+              <CardContent className={`space-y-3 ${hideMemberList ? "pt-5" : "pt-2"}`}>
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm" htmlFor="switch-sched-schedulable">
+                    Show on calendar
+                  </Label>
                   <Switch
+                    id="switch-sched-schedulable"
                     checked={isSchedulable}
                     onCheckedChange={(checked) => {
                       setIsSchedulable(checked);
@@ -346,13 +365,11 @@ export function SchedulesTab({ selectedMemberId, onSelectMember }: Props) {
                   />
                 </div>
                 <div className="flex items-center justify-between pt-3 border-t">
-                  <div>
-                    <Label className="text-sm">Use custom schedule</Label>
-                    <p className="text-xs text-muted-foreground">
-                      Override company default hours for this member.
-                    </p>
-                  </div>
+                  <Label className="text-sm" htmlFor="switch-sched-custom">
+                    Use custom schedule
+                  </Label>
                   <Switch
+                    id="switch-sched-custom"
                     checked={useCustom}
                     onCheckedChange={onToggleUseCustom}
                     data-testid="switch-sched-custom"

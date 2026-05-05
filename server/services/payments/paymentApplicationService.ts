@@ -1708,6 +1708,28 @@ async function handlePaymentSucceeded(
             : String(receiptErr),
       });
     }
+
+    // 2026-05-05: revoke any outstanding `?t=` access tokens for this
+    // invoice so a leaked email URL cannot be replayed to "pay" the
+    // already-paid invoice. Failures here are logged and swallowed —
+    // a stale token is at worst a 404 on the next click (the gate at
+    // resolveInvoiceTokenScope already filters expired/consumed rows).
+    try {
+      const { revokeInvoiceAccessTokens } = await import(
+        "../portal/invoiceAccessTokens"
+      );
+      await revokeInvoiceAccessTokens(meta.invoiceId);
+    } catch (revokeErr: unknown) {
+      logAnomaly("invoice_access_token_revoke_failed", {
+        providerId,
+        eventId: event.eventId,
+        invoiceId: meta.invoiceId,
+        message:
+          revokeErr instanceof Error
+            ? revokeErr.message
+            : String(revokeErr),
+      });
+    }
     return "accepted";
   } catch (err: unknown) {
     // 2026-04-21 Patch C1: classify before deciding the ACK path.
@@ -2102,6 +2124,27 @@ async function handleMultiInvoicePaymentSucceeded(
         invoiceCount: allocations.length,
         amountCents: event.amountTotalCents,
       });
+
+      // 2026-05-05: revoke `?t=` invoice-access tokens for every
+      // invoice that received an allocation. Same rationale as the
+      // single-invoice path. Runs inside the transaction so a
+      // rollback un-does the revocation; failures bubble through to
+      // the surrounding catch which classifies them.
+      try {
+        const { revokeInvoiceAccessTokensForInvoices } = await import(
+          "../portal/invoiceAccessTokens"
+        );
+        await revokeInvoiceAccessTokensForInvoices(
+          allocations.map(a => a.invoiceId),
+        );
+      } catch (revokeErr: unknown) {
+        logAnomaly("invoice_access_token_revoke_failed", {
+          providerId,
+          eventId: event.eventId,
+          message:
+            revokeErr instanceof Error ? revokeErr.message : String(revokeErr),
+        });
+      }
 
       return "accepted";
     });

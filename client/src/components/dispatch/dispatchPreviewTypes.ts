@@ -94,6 +94,33 @@ export type DispatchVisit = {
   equipmentIds?: string[] | null;
 };
 
+/**
+ * Lead visit rendered on the dispatch board — sibling to DispatchVisit.
+ * 2026-05-05 Phase 3: pre-sales onsite appointments. Distinct shape
+ * because lead visits have NO jobNumber, NO job lifecycle, NO drag /
+ * resize / status workflow. Click-through goes to /leads/:leadId, not
+ * to a job detail page. Always carries `type: "lead_visit"` so
+ * consumers can branch render rules unambiguously.
+ */
+export type DispatchLeadVisit = {
+  type: "lead_visit";
+  id: string;
+  leadId: string;
+  leadTitle: string;
+  technicianIds: string[];
+  technicianNames: string[];
+  scheduledStart: string | null;
+  scheduledEnd: string | null;
+  durationMinutes: number | null;
+  isAllDay: boolean;
+  status: "scheduled" | "in_progress" | "completed" | "cancelled";
+  locationName: string | null;
+  locationAddress: string | null;
+  locationCity: string | null;
+  locationProvinceState: string | null;
+  customerName: string | null;
+};
+
 /** Task item rendered on the dispatch timeline */
 export type DispatchTask = {
   id: string;

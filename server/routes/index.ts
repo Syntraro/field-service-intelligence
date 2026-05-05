@@ -14,6 +14,9 @@ import onboardingRouter from "./onboarding";
 import usersAdminRouter from "./users_admin";
 import itemsRouter from "./items";
 import companySettingsRouter from "./companySettings";
+// 2026-05-05: tenant-level Invoice Display policy. Companion endpoint to
+// /api/company-settings — see `server/routes/invoiceDisplaySettings.ts`.
+import invoiceDisplaySettingsRouter from "./invoiceDisplaySettings";
 // 2026-05-03: tenant tax registration identity (multi-row).
 // See `server/routes/companyTaxRegistrations.ts` for the two
 // endpoints (GET list + PUT replace-all).
@@ -87,6 +90,12 @@ import techFieldRouter from "./techField";
 // 2026-05-04 Phase 2 PR 1: tech-safe location/equipment/jobs read endpoints.
 // Sibling to techField so we don't keep growing that 2k-line file.
 import techLocationsRouter from "./techLocations";
+// 2026-05-05 Lead Visits — pre-sales scheduling. Office router mounts
+// at /api/leads (nested paths: /:leadId/visits/...). Tech router
+// mounts at /api/tech/lead-visits with its own requireSchedulable +
+// per-visit scoping.
+import leadVisitsRouter from "./leadVisits";
+import leadVisitsTechRouter from "./leadVisitsTech";
 import adminTimesheetsRouter from "./adminTimesheets";
 import referenceFieldsRouter from "./referenceFields";
 import visitsRouter from "./visits";
@@ -339,6 +348,7 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/users-admin", usersAdminRouter);
   app.use("/api/items", itemsRouter);
   app.use("/api/company-settings", companySettingsRouter);
+  app.use("/api/invoice-display-settings", invoiceDisplaySettingsRouter);
   app.use("/api/company-tax-registrations", companyTaxRegistrationsRouter);
   app.use("/api/communication-templates", communicationTemplatesRouter);
   app.use("/api/communications", communicationsRouter);
@@ -369,6 +379,11 @@ export function registerRoutes(app: Express): Server {
     next();
   });
   app.use("/api/leads", leadsRouter);
+  // 2026-05-05 Lead Visits — office sub-router for /api/leads/:leadId/visits.
+  // Mounted AFTER leadsRouter; Express tries each in order, so the
+  // visit-scoped paths resolve here while bare /api/leads/:id stays on
+  // the leadsRouter.
+  app.use("/api/leads", leadVisitsRouter);
   app.use("/api/notifications", notificationsRouter);
   app.use("/api/time", timeTrackingRouter); // Time tracking: clock in/out + time entries
   app.use("/api/payroll", payrollRouter); // Payroll: weekly summaries + approval + CSV export
@@ -422,6 +437,9 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/tech", techFieldRouter);
   // Phase 2 PR 1 (2026-05-04): tech-safe location reads.
   app.use("/api/tech", techLocationsRouter);
+  // 2026-05-05 Lead Visits — tech sub-router with its own
+  // requireSchedulable + assertCanAccessLeadVisit gating.
+  app.use("/api/tech/lead-visits", leadVisitsTechRouter);
 
   // Phase 1 Architecture: Event Log + Attention Queue
   app.use("/api/activity", activityRouter);

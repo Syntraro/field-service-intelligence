@@ -75,7 +75,7 @@ import {
   validateFileClientSide,
 } from "@/hooks/useFileUpload";
 
-export type EntityNoteEntityType = "job" | "invoice" | "quote";
+export type EntityNoteEntityType = "job" | "invoice" | "quote" | "lead";
 
 export interface ExistingNoteAttachment {
   id: string;
@@ -155,6 +155,15 @@ function resolveEndpoints(entityType: EntityNoteEntityType, entityId: string) {
       readQueryKey: ["/api/invoices", entityId, "notes"] as const,
     };
   }
+  // 2026-05-05: lead surface — same shape as quote/invoice. Server
+  // emits the canonical envelope and accepts the same POST body
+  // (noteText, attachmentFileIds) as the other surfaces.
+  if (entityType === "lead") {
+    return {
+      basePath: `/api/leads/${entityId}/notes`,
+      readQueryKey: ["/api/leads", entityId, "notes"] as const,
+    };
+  }
   return {
     basePath: `/api/jobs/${entityId}/notes`,
     readQueryKey: ["/api/jobs", entityId, "notes"] as const,
@@ -176,9 +185,12 @@ function resolveEndpoints(entityType: EntityNoteEntityType, entityId: string) {
  */
 function fileUploadEntityFor(
   entityType: EntityNoteEntityType,
-): "job_note" | "quote_note" | "invoice_note" {
+): "job_note" | "quote_note" | "invoice_note" | "lead_note" {
   if (entityType === "quote") return "quote_note";
   if (entityType === "invoice") return "invoice_note";
+  // 2026-05-05 Lead Visits: lead_note maps to the lead-note adapter
+  // in fileUploadService — same R2 lifecycle as the other surfaces.
+  if (entityType === "lead") return "lead_note";
   // job uses `job_note`.
   return "job_note";
 }
@@ -197,9 +209,10 @@ function fileUploadEntityFor(
  */
 function activityLogEntityFor(
   entityType: EntityNoteEntityType,
-): "job" | "quote" | "invoice" {
+): "job" | "quote" | "invoice" | "lead" {
   if (entityType === "quote") return "quote";
   if (entityType === "invoice") return "invoice";
+  if (entityType === "lead") return "lead";
   return "job";
 }
 

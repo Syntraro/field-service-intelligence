@@ -5,9 +5,9 @@
  * Provides: portalUser, isLoading, logout, and paymentsEnabled flag.
  */
 
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useContext, useEffect, type ReactNode } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { apiRequest, queryClient } from "./queryClient";
+import { apiRequest, initCSRF, queryClient } from "./queryClient";
 
 export interface PortalUser {
   contactId: string;
@@ -33,6 +33,18 @@ interface PortalAuthContextType {
 const PortalAuthContext = createContext<PortalAuthContextType | undefined>(undefined);
 
 export function PortalAuthProvider({ children }: { children: ReactNode }) {
+  // 2026-05-05: pre-warm the CSRF token so the FIRST mutation (most often
+  // a Pay click on PortalInvoiceDetail) doesn't pay a synchronous
+  // round-trip to GET /api/csrf-token before the request actually goes
+  // out. The tenant app does the same on AuthProvider mount; the portal
+  // app previously skipped this because portal pages can be hit cold
+  // from an email link with no prior session warm-up. The global csurf
+  // middleware applies to /api/portal/* — the token must exist in the
+  // session for any portal POST to succeed.
+  useEffect(() => {
+    initCSRF().catch(() => {});
+  }, []);
+
   const { data, isLoading, isError } = useQuery<PortalUser>({
     queryKey: ["/api/portal/me"],
     retry: false,

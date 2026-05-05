@@ -23,6 +23,8 @@ import { SearchPage } from "../pages/SearchPage";
 import { CreateLeadPage } from "../pages/CreateLeadPage";
 import { LocationDetailPage } from "../pages/LocationDetailPage";
 import { TaskDetailPage } from "../pages/TaskDetailPage";
+// 2026-05-05 Lead Visits — pre-sales onsite detail page.
+import { LeadVisitDetailPage } from "../pages/LeadVisitDetailPage";
 import { useTechRealtimeSync } from "../hooks/useTechRealtimeSync";
 import { useNoteSyncReplay } from "../hooks/useNoteSyncReplay";
 import { OfflineStatusBar } from "../components/OfflineStatusBar";
@@ -122,6 +124,11 @@ export default function TechApp() {
 
       <Route path="/tech/visit/:id">
         {(params) => <VisitDetailPage visitId={params.id} />}
+      </Route>
+
+      {/* 2026-05-05 Lead Visits — pre-sales onsite detail. */}
+      <Route path="/tech/lead-visit/:id">
+        <LeadVisitDetailPage />
       </Route>
 
       {/* 2026-04-21 Phase 2: self-service surface hosting notification

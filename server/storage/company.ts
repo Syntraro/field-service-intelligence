@@ -24,6 +24,26 @@ const PREFERENCE_KEYS = new Set([
   "invoiceReminderRepeatEveryDays",
   // 2026-04-26: default scheduling buffer.
   "defaultSchedulingBufferMinutes",
+  // 2026-05-05: tenant-level Invoice Display policy. Consumed by the
+  // canonical resolver at `shared/invoiceDisplayPolicy.ts`.
+  "invoiceShowLogo",
+  "invoiceShowCompanyAddress",
+  "invoiceShowCompanyPhone",
+  "invoiceShowCompanyEmail",
+  "invoiceShowCompanyWebsite",
+  "invoiceShowTaxNumber",
+  "invoiceShowBillingAddress",
+  "invoiceShowServiceAddress",
+  "invoiceShowLocationName",
+  "invoiceShowJobNumber",
+  "invoiceShowSummary",
+  "invoiceShowJobDescription",
+  "invoiceShowClientMessage",
+  "invoiceDefaultClientMessage",
+  "invoiceShowLineItems",
+  "invoiceShowQuantities",
+  "invoiceShowUnitPrices",
+  "invoiceShowLineTotals",
 ]);
 
 export interface CompanyProfile {

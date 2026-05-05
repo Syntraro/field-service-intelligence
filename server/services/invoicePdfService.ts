@@ -1,6 +1,14 @@
 import PDFDocument from "pdfkit";
 import { format, parseISO, isValid } from "date-fns";
 import type { Invoice, InvoiceLine, Company } from "@shared/schema";
+// 2026-05-05: canonical resolved Invoice Display policy. See
+// `shared/invoiceDisplayPolicy.ts` for the merge rules. Callers that
+// don't pass a policy fall back to the resolver's defaults — matches
+// the prior, pre-tenant-policy rendering behavior exactly.
+import {
+  resolveInvoiceDisplayPolicy,
+  type InvoiceDisplayPolicy,
+} from "@shared/invoiceDisplayPolicy";
 
 interface InvoicePdfData {
   invoice: Invoice;
@@ -33,6 +41,23 @@ interface InvoicePdfData {
     label: string | null;
     number: string;
   }>;
+  /**
+   * 2026-05-05: resolved Invoice Display policy. If omitted, the PDF
+   * falls back to the resolver's defaults using the invoice row alone
+   * — preserving the pre-tenant-policy rendering exactly. Callers that
+   * have access to the tenant `company_settings` row SHOULD pass a
+   * resolved policy so per-tenant overrides take effect.
+   */
+  policy?: InvoiceDisplayPolicy;
+  /**
+   * 2026-05-05: optional fields the policy may surface on the PDF.
+   * `jobNumber` shows up only when `policy.showJobNumber` is true.
+   * `companyWebsite` shows up only when `policy.showCompanyWebsite`
+   * is true. Both are passed in by callers (resolved from job +
+   * company storage) since the PDF service has no DB access.
+   */
+  jobNumber?: string | null;
+  companyWebsite?: string | null;
 }
 
 function formatCurrency(amount: string | number | null | undefined): string {
@@ -65,7 +90,18 @@ function getStatusWatermark(status: string): string | null {
 export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     try {
-      const { invoice, lines, company, location, customerCompany, taxRegistrations } = data;
+      const { invoice, lines, company, location, customerCompany, taxRegistrations, jobNumber, companyWebsite } = data;
+      // 2026-05-05: resolved display policy — every visibility decision
+      // below reads from `policy` instead of hand-rolling per-flag null
+      // coalescing. When the caller doesn't supply one, fall back to the
+      // pure resolver against the invoice alone (defaults preserve
+      // pre-tenant-policy behavior exactly).
+      const policy: InvoiceDisplayPolicy =
+        data.policy ??
+        resolveInvoiceDisplayPolicy({
+          tenantSettings: null,
+          invoice: invoice as any,
+        });
       const doc = new PDFDocument({
         size: "LETTER",
         margin: 50,
@@ -105,12 +141,15 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
 
       doc.fontSize(10).fillColor("#666666").font("Helvetica");
       let companyY = 75;
-      if (company.address) {
+      // 2026-05-05: each company-info line gates on the resolved policy.
+      // "Show address" combines the street + city/state line into one
+      // toggle (they are conceptually one address block).
+      if (policy.showCompanyAddress && company.address) {
         doc.text(company.address, leftCol, companyY);
         companyY += 14;
       }
       const cityLine = [company.city, company.provinceState, company.postalCode].filter(Boolean).join(", ");
-      if (cityLine) {
+      if (policy.showCompanyAddress && cityLine) {
         doc.text(cityLine, leftCol, companyY);
         companyY += 14;
       }
@@ -118,12 +157,19 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       // label prefixes so the company block matches the location
       // block formatting (which already renders raw values). The
       // surrounding visual context already implies what each line is.
-      if (company.phone) {
+      if (policy.showCompanyPhone && company.phone) {
         doc.text(company.phone, leftCol, companyY);
         companyY += 14;
       }
-      if (company.email) {
+      if (policy.showCompanyEmail && company.email) {
         doc.text(company.email, leftCol, companyY);
+        companyY += 14;
+      }
+      // 2026-05-05: optional company website line. Renders only when the
+      // tenant policy enables it AND a value was passed in (no schema
+      // column for website yet — caller resolves the value).
+      if (policy.showCompanyWebsite && companyWebsite && companyWebsite.trim().length > 0) {
+        doc.text(companyWebsite, leftCol, companyY);
         companyY += 14;
       }
       // 2026-05-03: tenant tax-registration identity (multi-row).
@@ -143,7 +189,8 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       // caller via `taxRegistrations` (already in presentation order).
       // `companyY` advances 14pt per rendered entry — same line-height
       // as every other contact-block line above.
-      if (taxRegistrations && taxRegistrations.length > 0) {
+      // 2026-05-05: tax-number lines gated by the resolved policy.
+      if (policy.showTaxNumber && taxRegistrations && taxRegistrations.length > 0) {
         for (const reg of taxRegistrations) {
           const number = (reg.number ?? "").trim();
           if (!number) continue;
@@ -174,31 +221,46 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       doc.fontSize(11).fillColor("#333333").font("Helvetica");
       let clientInfoY = clientY + 16;
 
-      // Customer company name (if different from location)
+      // Client name is MANDATORY — always rendered (per spec).
       const clientName = customerCompany?.name || location.companyName;
       doc.font("Helvetica-Bold").text(clientName, leftCol, clientInfoY);
       clientInfoY += 14;
 
-      // Location name (if different from customer company)
-      if (customerCompany && location.companyName !== customerCompany.name) {
+      // 2026-05-05: location name is now policy-gated. We still skip
+      // the line entirely when it would duplicate the customer-company
+      // name (display-equality, not tenant policy).
+      if (
+        policy.showLocationName &&
+        customerCompany &&
+        location.companyName !== customerCompany.name
+      ) {
         doc.font("Helvetica").text(location.companyName, leftCol, clientInfoY);
         clientInfoY += 14;
       }
 
       doc.font("Helvetica");
-      if (location.address) {
+      // 2026-05-05: service address (the location address block). Spec
+      // distinguishes billing address from service address — when only
+      // one address is known (today's data shape), gating on the union
+      // of the two policy flags keeps existing tenants seeing their
+      // address block until they explicitly turn both off.
+      const showAddressBlock = policy.showServiceAddress || policy.showBillingAddress;
+      if (showAddressBlock && location.address) {
         doc.text(location.address, leftCol, clientInfoY);
         clientInfoY += 14;
       }
-      if (location.address2) {
+      if (showAddressBlock && location.address2) {
         doc.text(location.address2, leftCol, clientInfoY);
         clientInfoY += 14;
       }
       const locCityLine = [location.city, location.provinceState, location.postalCode].filter(Boolean).join(", ");
-      if (locCityLine) {
+      if (showAddressBlock && locCityLine) {
         doc.text(locCityLine, leftCol, clientInfoY);
         clientInfoY += 14;
       }
+      // Location-level phone/email are NOT in the new tenant policy
+      // (Section 2 explicitly omits them) — render as-before so this
+      // change stays visibility-only and additive.
       if (location.phone) {
         doc.text(location.phone, leftCol, clientInfoY);
         clientInfoY += 14;
@@ -222,8 +284,19 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
         detailsY += 16;
       };
 
+      // Mandatory locked: Issue Date + Due Date always render.
       addDetail("Issue Date:", formatDate(invoice.issuedAt || invoice.issueDate));
       addDetail("Due Date:", formatDate(invoice.dueDate));
+      // 2026-05-05: optional policy-gated details — Job Number + Summary.
+      // Both render under the dates only when the tenant policy enables
+      // them AND a value exists. Spec keeps the layout summary-style; no
+      // separate header section is added.
+      if (policy.showJobNumber && jobNumber && jobNumber.trim().length > 0) {
+        addDetail("Job #:", jobNumber);
+      }
+      if (policy.showSummary && (invoice as any).summary && String((invoice as any).summary).trim().length > 0) {
+        addDetail("Summary:", String((invoice as any).summary));
+      }
 
       // 2026-05-03 polish: the customer-facing PDF previously rendered an
       // internal status pill ("AWAITING PAYMENT" / "PARTIAL" / etc.) under
@@ -235,12 +308,13 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       // ========================================
       // LINE ITEMS TABLE (respects visibility flags)
       // ========================================
-      const showLineItems = invoice.showLineItems !== false;
-      const showQty = invoice.showQuantity !== false;
-      const showUnitPrice = invoice.showUnitPrice !== false;
-      const showLineTotals = invoice.showLineTotals !== false;
-      // 2026-04-14: client-visibility toggle for the work-description block.
-      const showJobDescription = (invoice as any).showJobDescription !== false;
+      // 2026-05-05: visibility flags now come from the resolved policy
+      // (per-invoice override + tenant default merged upstream).
+      const showLineItems = policy.showLineItems;
+      const showQty = policy.showQuantities;
+      const showUnitPrice = policy.showUnitPrices;
+      const showLineTotals = policy.showLineTotals;
+      const showJobDescription = policy.showJobDescription;
 
       // 2026-05-03 polish (round 4): the `+50` here used to reserve
       // 30pt gap + 20pt for the status pill that lived under the
@@ -402,11 +476,19 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       // ========================================
       const totalsEndY = rowY + totalsHeight;
       const notesY = totalsEndY + 20;
-      if (invoice.clientMessage || invoice.notesCustomer) {
+      // 2026-05-05: client message is gated by the resolved policy.
+      // The resolver returns null when the tenant has the block off
+      // entirely OR when the per-invoice content is empty/whitespace,
+      // so the renderer never has to second-guess intent. notesCustomer
+      // is the QBO-mirrored CustomerMemo and is still rendered when the
+      // primary client message is absent — that's pre-existing behavior
+      // and is unrelated to the new tenant Client-Message toggle.
+      const messageToRender = policy.clientMessage ?? invoice.notesCustomer ?? null;
+      if (messageToRender && messageToRender.trim().length > 0) {
         doc.fontSize(11).fillColor("#333333").font("Helvetica-Bold");
         doc.text("Notes:", leftCol, notesY);
         doc.fontSize(10).fillColor("#666666").font("Helvetica");
-        doc.text(invoice.clientMessage || invoice.notesCustomer || "", leftCol, notesY + 16, { width: pageWidth });
+        doc.text(messageToRender, leftCol, notesY + 16, { width: pageWidth });
       }
 
       // ========================================

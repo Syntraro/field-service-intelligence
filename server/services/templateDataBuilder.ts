@@ -34,6 +34,7 @@ import { entitlementService } from "./entitlementService";
 import { calculateDueDate } from "./invoiceCreationService";
 import { canAcceptInvoicePayment } from "../lib/invoicePredicates";
 import { buildPortalInvoiceUrl } from "../lib/portalUrls";
+import { mintInvoiceAccessToken } from "./portal/invoiceAccessTokens";
 import type {
   INVOICE_TEMPLATE_VARIABLES,
   QUOTE_TEMPLATE_VARIABLES,
@@ -256,7 +257,15 @@ export const templateDataBuilder = {
         "customer_portal_payments",
       );
       if (paymentsEnt?.enabled) {
-        paymentUrl = buildPortalInvoiceUrl(invoiceId);
+        // 2026-05-05: mint an invoice-scoped access token so the email
+        // recipient can click straight through to the invoice page
+        // without going through magic-link sign-in. Token is single-
+        // invoice scope, 30-day TTL, revoked on payment success. If
+        // mint returns null (invoice without customer_company_id, etc.)
+        // fall back to a token-less URL — recipient still sees the
+        // sign-in flow, same as pre-2026-05-05 behavior.
+        const minted = await mintInvoiceAccessToken(invoiceId);
+        paymentUrl = buildPortalInvoiceUrl(invoiceId, minted?.rawToken);
         payNowCta = `Pay securely online: ${paymentUrl}\n\n`;
       }
     }

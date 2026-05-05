@@ -6,6 +6,148 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### Lead → Quote conversion follow-up (2026-05-05)
+
+Two surgical follow-ups to the Lead Visits Phase 2/3 work. Backend conversion logic is unchanged.
+
+- **Convert button visibility for `needs_review` leads.** `LeadDetailPage.tsx` `canConvert` now allows `new`, `contacted`, AND `needs_review` (was: `new` and `contacted` only). Phase 2's `markLeadVisitCompleted` flips a lead → `needs_review` when its last open visit completes; the backend `POST /api/quotes` route always allowed conversion from this status, but the frontend gate was hiding the button — leaving needs_review leads stuck. The gate still excludes `quoted`, `won`, `lost`, and any lead with `convertedQuoteId` already set.
+- **Originating-lead backlink on Quote Detail.** `QuoteHeaderCard.tsx` now renders a "From Lead → View lead" row in the right-side metadata table when `quote.leadId` is set. Renders only for converted quotes; standalone quotes show no row (and incur no clutter). Click navigates to `/leads/:leadId`. Styling reuses the existing meta-row pattern (same `text-xs`, same hover color tokens) to stay visually consistent with Issued / Expiry / Sent / etc.
+- **No backend changes.** No schema, no migration, no new endpoints, no permission edits. The conversion sequence inside `POST /api/quotes` (lead validation → `quoteRepository.createQuote` with `leadId` → `leadRepository.updateLead` setting `status="quoted"` + `convertedQuoteId` + `convertedAt`) is unchanged. Notes and `lead_note_attachments` remain bound to the originating lead — conversion never copies, moves, or duplicates them onto the new quote.
+- **Tests.** `tests/lead-quote-conversion.test.ts` (NEW, 18 cases): real-DB integration coverage for `new`/`contacted`/`needs_review` conversions, the one-lead-→-one-quote guard (status-based + `convertedQuoteId`-based defense-in-depth), standalone quote creation without `leadId`, conversion of a lead with a completed `lead_visit` (visit row stays attached, untouched), and conversion of a lead with notes + photo attachments (verified no duplication onto the quote). Plus source-pin coverage for the `POST /api/quotes` gate (status block list, `convertedQuoteId` block, lead update side-effect, standalone branch), the `LeadDetailPage` `canConvert` regex (must include `needs_review`, must NOT include `quoted`/`won`/`lost`), and the `QuoteHeaderCard` backlink (conditional render on `quote.leadId`, correct route target, testids).
+- **Verification.** `npm run check` clean. `npm run build` clean. `npx vitest run tests/lead-visits.test.ts tests/lead-visits-phase3.test.ts tests/lead-quote-conversion.test.ts` → 74 / 74 pass.
+- **Files affected.** `client/src/pages/LeadDetailPage.tsx`, `client/src/components/QuoteHeaderCard.tsx`, `tests/lead-quote-conversion.test.ts` (new).
+
+### Added
+
+#### Invoice Display Settings — tighten pass (2026-05-06)
+
+Surgical follow-up to the 2026-05-05 feature. No architecture changes, no schema changes, no template-format changes. Three regression guards added, one helper-copy line added.
+
+- **Audit confirmed correct (no code change required):**
+  - **PDF when `showLineItems = false`** — `server/services/invoicePdfService.ts` already gates the entire table block (header rect, headers, rows) inside `if (showLineItems)`; the totals box renders at `tableTop + 10`, Total prints unconditionally, Balance Due prints when there's been a payment. Portal HTML at `client/src/pages/portal/PortalInvoiceDetail.tsx:535` does the same — the "Line items" Card is mounted only when `policy.showLineItems && lines.length > 0`.
+  - **Email body never references `clientMessage` / `summary`** — `INVOICE_TEMPLATE_VARIABLES` (`server/constants/templateVariables.ts:17`) does not list `CLIENT_MESSAGE` or `INVOICE_SUMMARY`; `templateDataBuilder.buildInvoiceTemplateData` (`server/services/templateDataBuilder.ts:273`) does not emit them; the renderer (`server/services/templateRenderer.ts`) and dispatcher (`server/services/emailDispatchService.ts`) contain no references. The visibility contract is enforced by the absence of the data on the rendering path.
+  - **Tenant default never re-syncs into existing invoices** — `invoiceDefaultClientMessage` is read only inside the three create paths (`createInvoiceFromJob`, `createStandaloneInvoice`, `createInvoiceAtomic` in `server/storage/invoices.ts`). `updateInvoice` is a passthrough patch and never reads `company_settings`. `PUT /api/invoice-display-settings` only writes to the `company_settings` row.
+- **Regression guards added** — `tests/invoice-display-settings.test.ts` extended from 20 → 27 tests:
+  - PDF generation succeeds when `policy.showLineItems = false` (with lines and with no lines).
+  - `INVOICE_TEMPLATE_VARIABLES` excludes `CLIENT_MESSAGE` / `INVOICE_SUMMARY` (exact-key + regex sweep for lowercase/underscore aliases).
+  - Manually-cleared `invoice.clientMessage` stays cleared after the tenant default text changes.
+  - Operator-edited `invoice.clientMessage` is not overwritten when the tenant default changes; toggling Show client message OFF at the tenant level does not mutate the row (resolver hides it at render time only).
+- **Settings UX helper copy** — `client/src/pages/InvoiceDisplaySettingsPage.tsx` now shows a small subtitle under the page heading: "Changes apply to new invoices by default. Existing invoices keep their current invoice-level settings unless reset." Matches the existing `text-xs text-muted-foreground` styling used elsewhere on settings sub-pages.
+- **Verification.** `npm run check` clean. `npx vitest run tests/invoice-display-settings.test.ts` 27 / 27 pass. `npx vitest run tests/invoice-display-settings.test.ts tests/invoice-notes-canonical.test.ts tests/invoice-send-pre-dispatch-transition.test.ts` 52 / 52 pass. `npm run build` clean.
+
+#### Tenant-level Invoice Display Settings (2026-05-05)
+
+Canonical, visibility-only policy that controls what appears on customer-facing invoice surfaces — invoice PDF, invoice email, and the client portal invoice view. Layout stays fixed; this change governs visibility only. Per-invoice override flags continue to take precedence at the resolver level.
+
+- **Schema.** Migration `migrations/2026_05_05_invoice_display_settings.sql` adds 18 columns to `company_settings`: `invoice_show_logo`, `invoice_show_company_address`, `invoice_show_company_phone`, `invoice_show_company_email`, `invoice_show_company_website`, `invoice_show_tax_number`, `invoice_show_billing_address`, `invoice_show_service_address`, `invoice_show_location_name`, `invoice_show_job_number`, `invoice_show_summary`, `invoice_show_job_description`, `invoice_show_client_message`, `invoice_default_client_message` (text), `invoice_show_line_items`, `invoice_show_quantities`, `invoice_show_unit_prices`, `invoice_show_line_totals`. Defaults are chosen to match current rendering behavior — existing invoices are NOT silently mutated. Drizzle schema in `shared/schema.ts` mirrors the columns.
+- **Canonical resolver.** New pure module `shared/invoiceDisplayPolicy.ts` exports `resolveInvoiceDisplayPolicy({ tenantSettings, invoice })` returning the merged `InvoiceDisplayPolicy` shape every renderer consumes. Precedence: per-invoice override → tenant default → schema default. Also exports `resolvePrefillClientMessage` (creation-time prefill source), `invoiceVisibilityDiffersFromTenant` (UI helper), and `DEFAULT_TENANT_INVOICE_DISPLAY_SETTINGS`. Internal-only fields (`notes_internal`, payment history, attachments, location-contact name) are intentionally NOT modeled by the policy — a regression test pins this so a future refactor can't leak them onto a customer surface.
+- **Renderers wired through one source.** `server/services/invoicePdfService.ts` now accepts a `policy` argument (and optional `jobNumber` / `companyWebsite` callers resolve) and gates every visibility decision on it. `server/routes/invoices.ts` (admin PDF), `server/routes/portal.ts` (portal PDF + portal HTML detail JSON), and `server/services/emailDispatchService.ts` (email-attached PDF) each fetch the tenant `company_settings` row, resolve via `resolveInvoiceDisplayPolicy`, and pass the merged policy to the PDF service. The portal detail JSON additionally carries the resolved `displayPolicy` field; `client/src/pages/portal/PortalInvoiceDetail.tsx` reads from that field directly (with a defensive fallback that mirrors the prior per-invoice flag behavior for pre-policy server responses).
+- **Client message rendering rule.** When the tenant has `invoiceShowClientMessage = false`, the resolver suppresses the block on every surface even if `invoices.client_message` carries text. When ON and the per-invoice text is empty/whitespace, nothing is rendered — the tenant default message is a PREFILL only, never a render-time fallback.
+- **Settings API.** New router `server/routes/invoiceDisplaySettings.ts` mounted at `/api/invoice-display-settings` (GET + PUT). The umbrella `/api/company-settings` route also accepts the new keys (added to `PREFERENCE_KEYS` in `server/routes/companySettings.ts` and `server/storage/company.ts`) so existing bulk-save callers keep working.
+- **Settings UI.** New page `client/src/pages/InvoiceDisplaySettingsPage.tsx` mounted at `/settings/invoice-display` with a link card under the Automation section in `SettingsPage.tsx`. Grouped cards (Company information, Client & service information, Invoice details, Default client message, Line items & pricing) use the existing Switch/Textarea primitives. Mandatory invoice fields render as locked "Always shown" rows so the canonical contract is obvious.
+- **Invoice-creation prefill.** `server/storage/invoices.ts::createInvoiceShell` now accepts a `clientMessage` param. `createInvoiceFromJob` and `createStandaloneInvoice` both read the tenant Default Client Message and prefill `invoices.client_message` when `invoiceShowClientMessage = true` and the default text is non-empty. `createInvoiceAtomic` honors caller-supplied `clientMessage` first; falls back to the tenant default otherwise. `createInvoiceFromBillingEvent` (PM contracts) intentionally NOT touched.
+- **Invoice-level Client Visibility card inheritance.** `ClientVisibilityCardV2` in `InvoiceDetailPage.tsx` accepts optional `tenantDefaults` + `onResetToTenantDefaults` props. Rows whose value differs from the tenant default carry a small "Custom" indicator; the footer adds a "Reset to defaults" button. The `EditableMessageCard` primitive accepts an optional `defaultValue` prop and renders a "Reset message to default" button inside the editor when supplied — the InvoiceDetailPage call site wires both from `/api/invoice-display-settings`. Other consumers of `EditableMessageCard` (internal-notes editor) leave the prop unset; their UX is unchanged.
+- **Tests.** `tests/invoice-display-settings.test.ts` (20 tests) covers: pure-resolver precedence, the client-message rendering rule (toggle off → hide everywhere; empty content → no echo of tenant default), `resolvePrefillClientMessage` cases, the `invoiceVisibilityDiffersFromTenant` UI helper, end-to-end storage prefill via `createStandaloneInvoice`, and the policy-shape exclusion guarantees (no internal-only fields modeled). All 20 pass.
+- **Verification.** `npm run check` clean; `npx vitest run tests/invoice-display-settings.test.ts tests/invoice-notes-canonical.test.ts tests/invoice-send-pre-dispatch-transition.test.ts` 45 / 45 pass; `npm run build` clean.
+
+#### Lead Visits Phase 3 — dispatch UI + tech photos + UX polish (2026-05-05)
+
+Follow-up polish on the Phase 2 Lead Visits feature. Backend, schema, and capacity logic are unchanged.
+
+- **Dispatch UI integration.** `useDispatchRangeData` now fetches `/api/calendar/lead-visits` in parallel with the canonical job calendar feed and exposes a `leadVisits: DispatchLeadVisit[]` array (separate from `scheduledVisits` — never merged at the SQL level). DispatchPreview's day view renders a new `LeadVisitsStrip` ribbon above the technician timeline: amber-tinted, lower visual weight than jobs, LEAD badge on each row, click → `/leads/:leadId`. Render branches strictly on `type === "lead_visit"` so consumers never assume job fields.
+- **Dispatch UI — week + month parity (2026-05-05 correction).** Lead visits now render in week and month views as well, not just day. `useDispatchWeekData` and `useDispatchMonthData` each expose a parallel `leadVisitsByDay: Map<dayKey, DispatchLeadVisit[]>` map, and the corresponding grid components (`WeekDispatchGrid` / `WeekDispatchCell`, `MonthDispatchGrid`) accept it as a prop and branch-render lead pills with amber styling + "Lead" badge alongside the existing job items. Week-view lead blocks join the same overlap layout as jobs (so they don't visually collide) but go through a separate `WeekCalendarLeadVisitBlock` component — they are NOT draggable, NOT resizable, NOT a drop target, and never read jobNumber / jobStatus / openSubStatus / version. Month-view lead pills count toward the same `MAX_MONTH_CELL_ITEMS` overflow as jobs (no silent drop). Click handler in every view routes to `/leads/:leadId`, never a job route. Discriminator guard on `type === "lead_visit"` is pinned by tests.
+- **Tech photo upload on lead visits.** `LeadVisitDetailPage` now exposes an "Attach photo" button next to the note submit. Files run through the canonical `useFileUpload` hook with `entityType: "lead_note"`, going through the existing 3-step R2 pipeline. Sequence: POST note → for each staged file, upload bound to the new noteId via the lead-note adapter. Staged photos preview as thumbnails; saved attachments render via a mobile-friendly `NoteThumb` helper that resolves R2 access URLs. Allows note submission with photos and no text (note body falls back to "(photo)" — same compromise the canonical office dialog uses).
+- **Tech completion UX.** The completion confirmation dialog adds a non-blocking amber warning when a tech tries to complete a visit with zero notes and no outcome summary ("No notes yet. The office may need to call you for context."). The dialog itself remains the explicit confirmation override per the spec — completion is never blocked, only nudged. Successful completion still redirects to `/tech/today`.
+- **Lead detail right-rail polish.** The "Next Visit Assignee" row on `LeadDetailPage` now hides entirely when no lead visits exist on the lead. When visits exist, the row pulls the assignee + start time from the next upcoming visit (status in {scheduled, in_progress}, sorted earliest first) instead of the legacy `lead.assignedToUserId` field. When all visits are completed/cancelled, shows muted "No upcoming visit". Replaces the always-on placeholder pattern.
+
+**No backend changes.** No schema, no migration, no new permissions, no `visitPredicates.ts` edits, no capacity-logic edits. Tech-safe DTO unchanged. Job KPIs / reports / billing untouched. Existing tests remain green; `tests/lead-visits-phase3.test.ts` now pins 28 source-pin cases for the dispatch day strip, week + month grid integration, tech upload pipeline, completion UX, and lead-detail polish (the day-only Phase 3 had 18; the week+month correction added 10 more).
+
+**Files affected by the week+month correction:** `client/src/components/dispatch/useDispatchMonthData.ts`, `client/src/components/dispatch/useDispatchWeekData.ts`, `client/src/components/dispatch/MonthDispatchGrid.tsx`, `client/src/components/dispatch/WeekDispatchGrid.tsx`, `client/src/components/dispatch/WeekDispatchCell.tsx`, `client/src/pages/DispatchPreview.tsx`, `tests/lead-visits-phase3.test.ts`. **Verification:** `npm run check` clean; `npx vitest run tests/lead-visits-phase3.test.ts` 28 / 28 pass; `npx vitest run tests/lead-visits.test.ts` 28 / 28 pass.
+
+### Changed
+
+#### Team Hub — Calendar Sync restored to Overview (2026-05-05, v3 fix)
+
+The v2 Overview/Profile refinement accidentally dropped the per-user Calendar Sync (read-only ICS subscription URL) feature when it removed the "More profile settings" link to `/manage-team/:id`. v3 restores it directly inside the Overview tab.
+
+* **What's restored.** `<CalendarSyncSection>` is now mounted inside `MemberOverviewPanel`, below the profile fields / actions block. It is the SAME component the legacy long-form profile page used — no new component, no duplicated logic.
+* **Endpoints reused (no new APIs).** All five existing routes are unchanged:
+  * `GET  /api/team/:userId/calendar-token` — read current token state
+  * `POST /api/team/:userId/calendar-token` — create / ensure token
+  * `POST /api/team/:userId/calendar-token/rotate` — regenerate (invalidates old URL)
+  * `POST /api/team/:userId/calendar-token/disable` — flip `is_active=false`
+  * `POST /api/team/:userId/calendar-token/enable` — flip `is_active=true`
+* **UI states.** No-link state shows "No calendar link yet." + Create button. Active state shows a read-only feed-URL input + Copy + Regenerate + Disable. Disabled state shows an amber notice + Re-enable + Regenerate. Read-only by contract — no write-back endpoint exists or is called.
+* **No changes to scheduling, RBAC, or backend.** Route auth (`requireRole(RESTRICTED_MANAGER_ROLES)`) is preserved. Token storage in `server/storage/technicianCalendarTokens.ts` is unchanged. The public read endpoint at `/calendar/technician/:token.ics` is unchanged.
+* **Tests.** `tests/effective-access-preview.test.ts` — 67 / 67 pass (was 61). Added a new `CalendarSyncSection — restored to Overview, reuses existing endpoints` describe block (5 cases): GET / four POSTs preserved on both client + server side, "Create link" button present in no-token state, read-only feed URL + Copy + Regenerate buttons present, and a regression pin that no PUT/PATCH/sync-back endpoint is called. Added one MemberOverviewPanel pin that the section is imported and mounted with `userId={selectedMemberId}`. `tests/role-permission-ui.test.ts` — 26 / 26 pass.
+* **Verification.** `npm run check` clean. `npm run build` clean.
+* **Files affected.** `client/src/components/team-hub/MemberOverviewPanel.tsx` (import + mount only), `tests/effective-access-preview.test.ts`. `CalendarSyncSection.tsx` itself unchanged.
+
+#### Team Hub — Overview / Profile refinement (2026-05-05, v2)
+
+Follow-up pass on the member-centric Team Hub. Overview is now the COMPLETE basic-profile editor — admins do not have to bounce out to `/manage-team/:id` for everyday edits. Role management is concentrated in the Access tab; Overview no longer surfaces it.
+
+* **Overview is the profile.** `MemberOverviewPanel.tsx` now contains the editable basic fields (firstName, lastName, phone) + read-only login email + Last login + Joined date + a one-click "Send password reset" action + Save. Removed: the "Profile" CardTitle, the "Basic identity fields…" subtitle, the email helper paragraph, and the "More profile settings" link to the legacy long-form page. The legacy `/manage-team/:id` route is **kept on disk for compat** but is no longer linked from the normal Hub flow.
+* **Password reset.** Wired to the canonical admin-triggered email flow: `POST /api/team/:userId/send-password-reset`. The admin never sees or sets the password; the user receives a one-shot reset link. (The legacy `PUT /api/team/:userId/password` admin-set endpoint is unused from this surface.)
+* **Role ownership concentrated in Access.** Overview no longer renders a role <Select>, role label, or any roleId mutation control. The role dropdown + Save role + role-hierarchy guard remain ONLY in `RolesAccessTab`. The workspace header still shows a read-only role badge alongside the active/inactive badge so the selected member is identifiable across tabs.
+* **Schedule + Compensation lightly compacted.** When mounted inside the workspace (`hideMemberList=true`), both tabs drop their inner duplicate name/email header (the workspace header above already shows it). Schedule drops the verbose schedulable-toggle helper paragraph and "Override company default hours for this member" subtitle — the labels are self-explanatory. Compensation drops the "Internal cost…", "Default rate charged…", "Same color shows on dispatch…", and "Overtime multipliers…" helper lines. The "Full profile" link in CompensationTab is dropped from the workspace flow (only renders when this tab is mounted standalone). Standalone usage of either tab is unchanged.
+* **Backend / save endpoints unchanged.** `PATCH /api/team/:userId` (profile saves), `PUT /api/team/:userId/working-hours`, `PUT /api/team/:userId/profile`, `PUT /api/team/:userId/permissions`, `POST /api/team/:userId/{activate|deactivate}`, and `POST /api/team/:userId/send-password-reset` are all pre-existing endpoints. No backend, schema, route, permission, or migration changes.
+* **Tests.** `tests/effective-access-preview.test.ts` now 61 / 61 pass (was 51). Added a new `MemberOverviewPanel — complete basic-profile editor (v2 refinement)` describe block (8 cases) and a `RolesAccessTab — owns role management (v2 refinement pin)` block (2 cases). Pins: every basic-profile input is rendered, email is read-only, password-reset hits the canonical endpoint, save hits PATCH `/api/team/:id`, NO role <Select>, NO "More profile settings" / "Full profile" link, NO "Basic identity fields" copy. `tests/role-permission-ui.test.ts` 26 / 26 pass — no source changes required.
+* **Verification.** `npm run check` clean. `npm run build` clean (vite + esbuild successful).
+* **Files affected.** `client/src/components/team-hub/MemberOverviewPanel.tsx`, `client/src/components/team-hub/SchedulesTab.tsx`, `client/src/components/team-hub/CompensationTab.tsx`, `tests/effective-access-preview.test.ts`.
+
+#### Team Hub — member-centric workspace restructure (2026-05-05)
+
+Real structural redesign of `/settings/team`. The page is no longer a feature-tabbed surface (Members / Schedules / Compensation / Roles & Access, each with its own member sidebar); it is now a 2-column member workspace where the user picks ONE member from a single shared list and every right-pane tab operates on that person.
+
+**Shape change.**
+
+* Layout: `grid-cols-[300px_1fr]` — `<TeamMemberList>` left, `<TeamMemberWorkspace>` right.
+* Selection: `?member=<id>` URL param is the single source of truth. The list calls `setSelectedMember(id)`; the workspace reads it. No tab owns selection state any more.
+* Workspace tabs: Overview / Schedule / Compensation / Access — all four operate on the same selected member. No tab has its own list, search box, or status filter.
+
+**New components.**
+
+* `client/src/components/team-hub/TeamMemberList.tsx` — single shared sidebar (search + status filter + role filter + member rows). Reads `GET /api/team`. Onclick → `onSelect(id)`.
+* `client/src/components/team-hub/TeamMemberWorkspace.tsx` — selected-member header (avatar / name / role chip / status chip / activate-deactivate button) + member-level tabs that mount the right panels.
+* `client/src/components/team-hub/MemberOverviewPanel.tsx` — basic profile editor (firstName, lastName, phone) + read-only email / last login / joined date + "More profile settings" link to the full `/manage-team/:id` page. Saves via `PATCH /api/team/:userId` (existing endpoint, payload preserves non-editable fields).
+
+**Legacy tab components — embeddable.**
+
+* `SchedulesTab`, `CompensationTab`, `RolesAccessTab` now accept an optional `hideMemberList?: boolean` prop. When true, the inner 260px member sidebar is suppressed and the outer grid collapses to single-column. Standalone usage (any external mount, including the `/team/schedules` redirect) is unchanged. All save endpoints + payload shapes are unchanged.
+
+**Page rewrite.**
+
+* `client/src/pages/TeamHubPage.tsx` — header (Team / "Pick a member on the left…" / Invite / Add Member) followed by the 2-column workspace layout. The previous `<Tabs>` block that mounted `MembersTab` / `SchedulesTab` / `CompensationTab` / `RolesAccessTab` directly on the page is gone. `MembersTab` is no longer imported here (file kept on disk for any outside caller). Legacy `?tab=members | schedules` URL values still resolve via `LEGACY_TAB_ALIAS`.
+* `useHubUrlState()` is preserved (`tab`, `selectedMember`, `setTab`, `setSelectedMember`); `goToTabWithMember` was unused after the restructure and removed.
+
+**Backend / security — unchanged.** No backend, schema, route, permission, or migration changes. Activate/deactivate still posts to `/api/team/:userId/{activate|deactivate}`. Profile saves still PATCH `/api/team/:userId`. Schedule saves still PUT `/api/team/:userId/working-hours`. Compensation saves still PUT `/api/team/:userId/profile`. Permission overrides still PUT `/api/team/:userId/permissions`. Effective-permission resolver query and `EffectiveAccessPanel` are untouched.
+
+**Tests.** `tests/effective-access-preview.test.ts` — 51 / 51 pass. Replaced the v3 "tabs live on the page" assertions with v4 workspace pins; added `TeamMemberList`, `TeamMemberWorkspace`, and `Legacy tabs accept hideMemberList` describe blocks. `tests/role-permission-ui.test.ts` — 26 / 26 pass.
+
+**Files affected.** `client/src/pages/TeamHubPage.tsx`, `client/src/components/team-hub/TeamMemberList.tsx` (new), `client/src/components/team-hub/TeamMemberWorkspace.tsx` (new), `client/src/components/team-hub/MemberOverviewPanel.tsx` (new), `client/src/components/team-hub/SchedulesTab.tsx`, `client/src/components/team-hub/CompensationTab.tsx`, `client/src/components/team-hub/RolesAccessTab.tsx`, `tests/effective-access-preview.test.ts`.
+
+### Added
+
+#### Lead Visits — pre-sales onsite scheduling (2026-05-05)
+
+Leads can now carry scheduled onsite appointments before any quote or job exists. Office schedules a tech to visit a lead, the tech completes the visit (notes / photos via the canonical attachment pipeline), and on completion the lead transitions to a new `needs_review` status that the office reviews before deciding whether to convert to a quote.
+
+- **Schema.** New table `lead_visits` (sibling to `job_visits` — never folded into job-side feeds, predicates, or KPIs). New table `lead_note_attachments` mirroring `job_note_attachments`. New value `needs_review` added to `leadStatusEnum`. Migration: `migrations/2026_05_05_lead_visits.sql` (idempotent, indexes on `(company_id, is_active, scheduled_start)` + `(lead_id, company_id, is_active)` mirror the job-side pattern).
+- **Storage.** `server/storage/leadVisits.ts` (CRUD + `markLeadVisitCompleted` atomic transition + `isLastOpenVisitForLead`). `server/storage/leadVisitPredicates.ts` (sibling predicates — `scheduleEligibleLeadVisitFilter`, `uncompletedLeadVisitFilter` — never edits `server/lib/visitPredicates.ts`). `server/storage/leadVisitsDispatch.ts` (`getScheduledLeadVisitsInRangeWithMetadata` — same envelope as the job dispatch query, plus `type: "lead_visit"`). `server/storage/leadNoteAttachments.ts` (1:1 mirror of `JobNoteAttachmentRepository`).
+- **Routes.**
+  - Office: `GET/POST /api/leads/:leadId/visits`, `PATCH /api/leads/:leadId/visits/:visitId`, `POST /api/leads/:leadId/visits/:visitId/cancel`, `DELETE /api/leads/:leadId/visits/:visitId` — all behind the existing `/api/leads` GET role gate plus `requireRole(MANAGER_ROLES)` on writes.
+  - Tech: `GET /api/tech/lead-visits/today`, `GET /api/tech/lead-visits/:visitId`, `POST /api/tech/lead-visits/:visitId/complete`, `POST /api/tech/lead-visits/:visitId/notes` — gated by `requireSchedulable` + `assertCanAccessLeadVisit` (assignment-scoped; office roles bypass).
+  - Dispatch: `GET /api/calendar/lead-visits?start=&end=` — sibling to the canonical job dispatch feed.
+- **Capacity.** `server/storage/capacity.ts` now reads BOTH `getScheduledJobsInRange` (existing) AND `listLeadVisitsInRange` (new). Lead visits **block per-tech availability** by entering the gap-math busy intervals, but they **do not** increment `visitCount`, `bookedMinutes`, or `scheduleBlocks`. Job KPIs and dashboard tiles stay job-only.
+- **Office UI.** New `LeadVisitsCard` + `ScheduleLeadVisitModal` (single-select tech picker; backend stays array-shaped). Inserted on `LeadDetailPage` between Description and Notes. Bespoke inline notes block REMOVED — the page now uses the canonical `<EntityNotesSection entityType="lead">` (same pattern as job/quote/invoice). "Assigned To" relabeled to "Next Visit Assignee". `needs_review` rendered as a violet status pill.
+- **Notes & attachments.** `lead_note` added to `FileEntityType` (server + client). Lead-note attachments use the existing 3-step R2 upload pipeline. `GET /api/leads/:id/notes` response shape aligned to canonical (`{ id, noteText, user: { id, fullName, ... }, attachments[], origin: "lead", editable: true }`). Manual transitions now allow `new → needs_review`, `contacted → needs_review`, `needs_review → contacted/lost`.
+- **Tech PWA.** `TodayPage` adds a "Lead visits" section consuming `/api/tech/lead-visits/today` (visually distinct LEAD badge + amber tint). New `LeadVisitDetailPage` at `/tech/lead-visit/:id` — header, schedule info, notes thread (canonical lead-notes endpoint), and a "Mark complete" action with a confirmation dialog. Tech endpoints emit a STRICT allowlist DTO (no `description`, no `estimatedValue`, no `priority`, no `sourceType`).
+- **Tests.** `tests/lead-visits.test.ts` (28 cases): scheduling normalization, completion → needs_review transition, last-open detection, assignment scoping (assigned / unassigned / cross-tenant / office-bypass), dispatch separation, source pins for the canonical-notes migration, capacity behavior, MANUAL_TRANSITIONS, and a regression pin that `visitPredicates.ts` (job-side) was NOT modified.
+- **No job lifecycle, job KPI, job report, or job billing surfaces touched.** No edits to `server/lib/visitPredicates.ts`. Lead visits are never observable to job-side feeds.
+
 ### Changed
 
 #### Stack View — UI density tightening (2026-05-04)
@@ -415,6 +557,65 @@ A second, isolated weekly timesheet layout for side-by-side comparison with the 
 **Easy removal.** To drop the experiment, delete `client/src/pages/timesheets/`, `client/src/components/timesheets/stack/`, the route block in `App.tsx`, and the "Stack View" header button in `PayrollPage.tsx`. No shared component or shared type was modified.
 
 ### Fixed
+
+#### Portal Pay flow: CSRF + invoice-scoped access tokens (2026-05-05)
+
+Two related portal-side fixes shipped together.
+
+**A. "Invalid CSRF token" on every Pay click.** `PortalInvoiceDetail.tsx` used a plain `fetch()` for `POST /api/portal/invoices/:id/payments/checkout` — the global `csurf` middleware (`server/index.ts:162`) rejected the request because no `x-csrf-token` header was attached. The portal app also never bootstrapped the CSRF token (no equivalent of the tenant app's `initCSRF()` mount effect).
+
+Fix:
+- Routed every state-changing portal request through the `apiRequest` helper, which auto-injects `x-csrf-token` and auto-retries on `EBADCSRFTOKEN`. Files touched: `PortalInvoiceDetail.tsx` (checkout), `PortalPaymentMethods.tsx` (set-default, remove, setup-intent), `PortalInvoicesList.tsx` (batch-checkout, pay-with-saved-method, pay-selected-with-saved-method), `components/portal/SendPaymentLinkDialog.tsx` (request-link).
+- Added `useEffect(() => { initCSRF().catch(() => {}); }, [])` to `PortalAuthProvider` (`client/src/lib/portalAuth.tsx`) so the token is pre-warmed on portal-page mount, eliminating first-click latency for cold deep links.
+
+CSRF middleware was NOT disabled, no carve-outs were added for `/api/portal/*`, and the backend CSRF logic is unchanged.
+
+**B. "Pay Invoice" email forced a magic-link re-login.** Customers clicking the email button hit `/portal/invoices/:id`, which required a portal session. Email already implies trust; the double-email round-trip was friction.
+
+Fix — invoice-scoped access tokens, additive to the existing magic-link model:
+
+- New table `portal_invoice_access_tokens` (migration `2026_05_05_portal_invoice_access_tokens.sql`): `invoice_id`, `company_id`, `customer_company_id`, `token_hash`, `expires_at`, `consumed_at`. SHA-256 hash at rest; raw token never persisted.
+- New service `server/services/portal/invoiceAccessTokens.ts` — `mintInvoiceAccessToken`, `resolveInvoiceAccessToken`, `revokeInvoiceAccessTokens`, `revokeInvoiceAccessTokensForInvoices`. 30-day TTL. 32-byte base64url tokens.
+- `buildPortalInvoiceUrl(invoiceId, accessToken?)` widened to accept an optional token; emits `?t=<token>` when present.
+- `templateDataBuilder.buildInvoiceTemplateData` mints a fresh token before resolving the `paymentUrl` so every Pay Invoice email carries a working `?t=` URL. Mint failure (e.g., invoice with no `customer_company_id`) falls through to the legacy session-required URL.
+- New middleware `server/middleware/portalInvoiceAccess.ts` — `resolveInvoiceTokenScope` (reads `?t=`, validates) + `requireInvoiceAccess(paramName)` (passes if EITHER a valid token scope OR a portal session is present, with route-param scope match). Replaces `requirePortalAuth` on three routes: `GET /api/portal/invoices/:invoiceId`, `GET /api/portal/invoices/:invoiceId/pdf`, `POST /api/portal/invoices/:invoiceId/payments/checkout` (and its legacy alias). All other portal routes still gate on `requirePortalAuth` — token mode only unlocks ONE invoice's view + pay + PDF.
+- Saved-card flow (`saveForFuture: true`) is gated on session auth — token-mode customers cannot persist a card because there's no portal account to attach it to. Returns `400 "Sign in to your customer portal to save a card for future use"`.
+- Tokens are revoked on payment success in `paymentApplicationService.ts` (single-invoice and multi-invoice paths) so a leaked URL cannot be replayed against an already-paid invoice.
+- Frontend `PortalInvoiceDetail` reads `?t=` from `window.location.search` and threads it on every API call (invoice query key, checkout POST, PDF download href). When token-only access is detected (no portal session), the back link swaps to a "Sign in to view all invoices" CTA pointing at `/portal`.
+
+Security boundary: a leaked token grants view + pay on ONE invoice, never account-wide access. Tokens cannot view other invoices, list invoices, view saved cards, or trigger any portal account action. Magic-link sign-in remains the only route to a full portal session.
+
+**Files changed.**
+
+- Backend: `shared/schema.ts` (new table); `migrations/2026_05_05_portal_invoice_access_tokens.sql` (new); `server/services/portal/invoiceAccessTokens.ts` (new); `server/middleware/portalInvoiceAccess.ts` (new); `server/lib/portalUrls.ts` (token param); `server/services/templateDataBuilder.ts` (mint token before paymentUrl); `server/routes/portal.ts` (apply new middleware to GET invoice / PDF / checkout / legacy alias; gate saveForFuture on session); `server/services/payments/paymentApplicationService.ts` (revoke on payment success, single + multi).
+- Frontend: `client/src/lib/portalAuth.tsx` (initCSRF on mount); `client/src/pages/portal/PortalInvoiceDetail.tsx` (apiRequest + accessToken read + threading + sign-in CTA); `client/src/pages/portal/PortalPaymentMethods.tsx` (apiRequest); `client/src/pages/portal/PortalInvoicesList.tsx` (apiRequest with status-coded error map); `client/src/components/portal/SendPaymentLinkDialog.tsx` (apiRequest).
+- Tests: `tests/portal-invoice-access-token.test.ts` (new — 9 cases: mint, resolve, expired, revoke single + bulk, scope isolation, missing customerCompanyId, malformed input).
+
+No CSRF middleware disable. No backend CSRF carve-outs. No payment provider changes. Magic-link login flow untouched.
+
+#### Invoice send: pre-dispatch status transition (no DRAFT watermark, payment CTA appears) (2026-05-05)
+
+Two visible bugs on a first-send-from-draft, sharing one root cause.
+
+- **PDF attachment showed a `DRAFT` watermark.** `invoicePdfService.getStatusWatermark()` returns `"DRAFT"` whenever `invoice.status === "draft"`, and PDF generation happened *before* the status was flipped.
+- **Email body had no Pay Invoice CTA**, even on payments-enabled tenants. `templateDataBuilder.canAcceptInvoicePayment("draft")` returns `false`, so the `__PAY_INVOICE_BUTTON__` sentinel was stripped from the rendered HTML.
+
+Both stemmed from ordering: the prior Phase D atomic design transitioned the invoice status inside an `afterMarkSent` callback that ran *inside* the dispatch service, *after* the PDF and email body had already been built against the still-`draft` row.
+
+**Behavior change.** `POST /api/invoices/:id/send` (`server/routes/invoices.ts:1760-1900`) now:
+
+1. Validates the request and pre-checks invoice state (unchanged).
+2. Opens a transaction. For first-send: atomically `UPDATE invoices SET status='awaiting_payment', sent_at, sent_by_user_id, ... WHERE id=? AND status='draft'`. For resend (already `awaiting_payment` / `partial_paid` / `sent`): only stamps `sent_at` + `sent_by_user_id`. The conditional `status='draft'` predicate makes the flip race-safe — concurrent send attempts fall through to the resend stamp.
+3. Commits the transaction.
+4. Calls `emailDispatchService.sendInvoiceEmail(...)` (the `afterMarkSent` callback is no longer passed). PDF + template rendering inside the dispatch now read `status='awaiting_payment'`, so the watermark gate suppresses DRAFT and the CTA gate passes.
+5. If email dispatch throws AFTER commit, the status stays flipped. The route returns `200` with `_emailDeliveryFailed` set so the UI can show "marked sent — delivery failed, please retry"; the user's resend request takes the resend stamp path. This is a deliberate departure from the prior atomic design — the user explicitly accepted the trade-off ("Email send failure does NOT rollback invoice status. Log failure and allow resend").
+
+**Files changed.**
+
+- `server/routes/invoices.ts` — replaced the `afterMarkSent`-based send handler with a pre-dispatch transaction. Added `invoices` table import + `and / eq / sql` from drizzle-orm to support the conditional `status='draft'` UPDATE. The QBO override warning + due-date / issued-at fillers were lifted out of the callback into the transaction body.
+- `tests/invoice-send-pre-dispatch-transition.test.ts` — new regression suite (4 cases): first send transitions before dispatch (verified by mocking `sendInvoiceEmail` and reading the row at call time); resend re-stamps `sentAt`; email failure leaves status flipped + returns `_emailDeliveryFailed`; paid-invoice send is rejected with no transition.
+
+`templateDataBuilder`, `invoicePdfService`, `canAcceptInvoicePayment`, and the entitlement-based payment gating logic are all untouched.
 
 #### "Leave open" actually leaves the job open + Create Invoice on completed jobs (2026-05-04)
 

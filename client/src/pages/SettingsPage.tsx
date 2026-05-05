@@ -162,6 +162,9 @@ const SECTIONS: SettingsSection[] = [
       // reminders are an automation, not a billing surface. Reminder template
       // editing happens ON this page, not in Client Communication.
       { title: "Invoice Reminders", description: "Automatic nudges for overdue invoices", href: "/settings/invoice-reminders", icon: Bell },
+      // 2026-05-05: tenant-level Invoice Display policy. Visibility-only —
+      // controls what appears on PDF / email / portal invoice surfaces.
+      { title: "Invoice Display", description: "What shows on client-facing invoices and the default client message", href: "/settings/invoice-display", icon: Receipt },
     ],
   },
   {

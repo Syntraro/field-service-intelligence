@@ -35,6 +35,12 @@ import {
   quoteNotes,
   quoteNoteAttachments,
   quotes,
+  // 2026-05-05 Lead Visits: lead-note attachments use the same
+  // canonical pipeline. Adapter writes through to
+  // `lead_note_attachments` (table added by the 2026_05_05 migration).
+  leadNotes,
+  leadNoteAttachments,
+  leads,
   clientNotes,
   clientLocations,
   noteAttachments,
@@ -88,6 +94,7 @@ function resolveCategory(entityType: FileEntityType, mimeType: string): FileCate
     case "quote_note":
     case "invoice_note":
     case "client_note":
+    case "lead_note":
       if (IMAGE_MIME_TYPES.has(mimeType)) return "note_image";
       if (PDF_MIME_TYPES.has(mimeType)) return "note_pdf";
       return "other";
@@ -184,6 +191,11 @@ export type FileEntityType =
   // invoice notes to support attachments without borrowing the linked
   // job's note plumbing.
   | "invoice_note"
+  // 2026-05-05 Lead Visits: lead-note attachments via the same
+  // canonical pipeline as job/quote/invoice. Adapter writes through
+  // to `lead_note_attachments`. Required for tech-attached photos
+  // on pre-sales onsite visits.
+  | "lead_note"
   | "client_note"
   | "client_document"
   | "contract_document"
@@ -261,6 +273,26 @@ async function resolveInvoiceNote(companyId: string, noteId: string): Promise<En
     .limit(1);
   if (!invoice) throw createError(404, "Invoice not found");
   return { tenantId: companyId, invoiceId: note.invoiceId, noteId: note.id };
+}
+
+// 2026-05-05 Lead Visits: one-for-one mirror of `resolveJobNote`,
+// walking `lead_notes → leads`. Same defensive tenant check on the
+// parent lead so a stale-noteId can't punch through to another
+// tenant's data.
+async function resolveLeadNote(companyId: string, noteId: string): Promise<EntityContext> {
+  const [note] = await db
+    .select({ id: leadNotes.id, leadId: leadNotes.leadId })
+    .from(leadNotes)
+    .where(and(eq(leadNotes.id, noteId), eq(leadNotes.companyId, companyId)))
+    .limit(1);
+  if (!note) throw createError(404, "Lead note not found");
+  const [lead] = await db
+    .select({ id: leads.id })
+    .from(leads)
+    .where(and(eq(leads.id, note.leadId), eq(leads.companyId, companyId)))
+    .limit(1);
+  if (!lead) throw createError(404, "Lead not found");
+  return { tenantId: companyId, leadId: note.leadId, noteId: note.id };
 }
 
 // 2026-05-02 (Audit #2 PR 3C): one-for-one mirror of `resolveJobNote`,
@@ -461,6 +493,35 @@ const ENTITY_ADAPTERS: Record<FileEntityType, EntityAdapter> = {
         .delete(quoteNoteAttachments)
         .where(
           and(eq(quoteNoteAttachments.companyId, companyId), eq(quoteNoteAttachments.fileId, fileId)),
+        );
+    },
+  },
+  // 2026-05-05 Lead Visits — direct mirror of `quote_note` /
+  // `job_note`. Object-key layout under `tenants/{tenantId}/leads/{leadId}/...`.
+  lead_note: {
+    resolve: resolveLeadNote,
+    buildObjectKey: (ctx, fileId, filename) =>
+      `tenants/${ctx.tenantId}/leads/${ctx.leadId}/notes/${ctx.noteId}/${fileId}/${sanitizeFilename(filename)}`,
+    ensureAttachment: async (companyId, userId, noteId, fileId) => {
+      const [existing] = await db
+        .select({ id: leadNoteAttachments.id })
+        .from(leadNoteAttachments)
+        .where(
+          and(
+            eq(leadNoteAttachments.companyId, companyId),
+            eq(leadNoteAttachments.noteId, noteId),
+            eq(leadNoteAttachments.fileId, fileId),
+          ),
+        )
+        .limit(1);
+      if (existing) return;
+      await db.insert(leadNoteAttachments).values({ companyId, noteId, fileId, createdBy: userId });
+    },
+    detachByFileId: async (companyId, fileId) => {
+      await db
+        .delete(leadNoteAttachments)
+        .where(
+          and(eq(leadNoteAttachments.companyId, companyId), eq(leadNoteAttachments.fileId, fileId)),
         );
     },
   },

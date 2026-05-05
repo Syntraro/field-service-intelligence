@@ -627,11 +627,15 @@ export const emailDispatchService = {
     // the email-attached PDF carries the same tax-ID lines as the
     // staff/portal downloads (canonical contract: every PDF surface
     // the customer can see renders the same registration block).
-    const [lines, location, company, taxRegistrations] = await Promise.all([
+    // 2026-05-05: tenant Invoice Display settings + the (optional) job
+    // for the Job # PDF line are loaded alongside the existing fan-out
+    // so the email-attached PDF respects the canonical resolved policy.
+    const [lines, location, company, taxRegistrations, tenantSettings] = await Promise.all([
       storage.getInvoiceLines(tenantId, invoiceId),
       storage.getClient(tenantId, invoice.locationId),
       storage.getCompanyById(tenantId),
       companyTaxRegistrationRepository.list(tenantId),
+      storage.getCompanySettings(tenantId),
     ]);
     if (!location) throw createError(400, "Invoice has invalid location reference");
     if (!company) throw createError(500, "Company not found");
@@ -643,6 +647,11 @@ export const emailDispatchService = {
       const cc = await storage.getCustomerCompany(tenantId, customerCompanyId);
       customerCompany = cc ? { name: cc.name ?? "" } : null;
     }
+    let jobNumber: string | null = null;
+    if ((invoice as any).jobId) {
+      const job = await storage.getJob(tenantId, (invoice as any).jobId);
+      jobNumber = job?.jobNumber ? String(job.jobNumber) : null;
+    }
 
     // 6b. Assemble the outbound attachment list + audit metadata via the
     // shared helper. Generates the invoice PDF only when requested.
@@ -651,6 +660,11 @@ export const emailDispatchService = {
     if (attachPdf) {
       let pdfBuffer: Buffer;
       try {
+        const { resolveInvoiceDisplayPolicy } = await import("@shared/invoiceDisplayPolicy");
+        const policy = resolveInvoiceDisplayPolicy({
+          tenantSettings: tenantSettings as any,
+          invoice: invoice as any,
+        });
         pdfBuffer = await generateInvoicePdf({
           invoice: invoice as any,
           lines,
@@ -667,6 +681,8 @@ export const emailDispatchService = {
           },
           customerCompany,
           taxRegistrations,
+          policy,
+          jobNumber,
         });
       } catch (err: any) {
         throw createError(500, `Invoice PDF generation failed: ${err?.message ?? "unknown error"}`);

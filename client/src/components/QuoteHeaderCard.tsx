@@ -231,6 +231,24 @@ export function QuoteHeaderCard({
                     <td className="text-slate-600 py-0.5">{declinedAt}</td>
                   </tr>
                 )}
+                {/* 2026-05-05: Originating-lead backlink. Only renders when
+                    `quote.leadId` is set (quotes created via Lead → Quote
+                    conversion). Click navigates to the source lead. */}
+                {quote.leadId && (
+                  <tr data-testid="row-quote-originating-lead">
+                    <td className="text-xs text-slate-500 pr-3 py-0.5 whitespace-nowrap font-normal">From Lead</td>
+                    <td className="py-0.5">
+                      <Link href={`/leads/${quote.leadId}`}>
+                        <span
+                          className="text-slate-600 hover:text-[#76B054] transition-colors cursor-pointer"
+                          data-testid="link-quote-originating-lead"
+                        >
+                          View lead →
+                        </span>
+                      </Link>
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

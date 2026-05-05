@@ -26,10 +26,15 @@ import { users, clientLocations } from "@shared/schema";
 
 const router = Router();
 
-// Valid manual status transitions (from PATCH only)
+// Valid manual status transitions (from PATCH only).
+// 2026-05-05: `needs_review` added — set by the lead-visits completion
+// path when the LAST open visit completes (atomic transaction inside
+// `markLeadVisitCompleted`). Office can also flip into / out of it
+// manually here.
 const MANUAL_TRANSITIONS: Record<string, string[]> = {
-  new: ["contacted", "lost"],
-  contacted: ["lost"],
+  new: ["contacted", "needs_review", "lost"],
+  contacted: ["needs_review", "lost"],
+  needs_review: ["contacted", "lost"],
   // 'quoted' and 'won' are set by quote/job routes, not manually
   // 'lost' is terminal for manual transitions
 };
@@ -231,14 +236,30 @@ router.delete(
 // ============================================================================
 // Lead Notes — CRUD for internal lead notes
 // ============================================================================
+//
+// 2026-05-05 Lead Visits: response shape aligned to the canonical
+// EntityNotesSection contract (jobs / quotes / invoices). The
+// frontend's `<EntityNotesSection entityType="lead">` consumes the
+// same { id, noteText, user: { id, fullName, ... }, attachments,
+// origin, editable } envelope all three other surfaces use; no third
+// notes system. Lead-note attachments use the canonical
+// fileUploadService pipeline via `FileEntityType="lead_note"`.
 
 import { leadNotes } from "@shared/schema";
+import { leadNoteAttachmentRepository } from "../storage/leadNoteAttachments";
 
-/** GET /api/leads/:id/notes */
+/** GET /api/leads/:id/notes — canonical envelope. */
 router.get(
   "/:id/notes",
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
+    const leadId = req.params.id;
+
+    // Tenant + existence gate.
+    const lead = await leadRepository.getLead(companyId, leadId);
+    if (!lead) throw createError(404, "Lead not found");
+
+    // Owned notes joined with author identity.
     const rows = await db
       .select({
         id: leadNotes.id,
@@ -246,32 +267,71 @@ router.get(
         noteText: leadNotes.noteText,
         createdAt: leadNotes.createdAt,
         updatedAt: leadNotes.updatedAt,
-        userName: users.fullName,
+        userEmail: users.email,
+        userFullName: users.fullName,
         userFirstName: users.firstName,
+        userLastName: users.lastName,
       })
       .from(leadNotes)
       .leftJoin(users, eq(leadNotes.userId, users.id))
-      .where(and(eq(leadNotes.companyId, companyId), eq(leadNotes.leadId, req.params.id)))
+      .where(and(eq(leadNotes.companyId, companyId), eq(leadNotes.leadId, leadId)))
       .orderBy(desc(leadNotes.createdAt));
 
-    res.json(rows.map(r => ({
-      id: r.id,
-      userId: r.userId,
-      text: r.noteText,
-      author: r.userName ?? r.userFirstName ?? "Unknown",
-      createdAt: r.createdAt?.toISOString() ?? null,
-      updatedAt: r.updatedAt?.toISOString() ?? null,
-    })));
-  })
+    if (rows.length === 0) {
+      return res.json([]);
+    }
+
+    // Bulk-fetch attachments for all returned notes via the canonical
+    // repository (single SELECT, properly parameterized).
+    const noteIds = rows.map((r) => r.id);
+    const attachmentRows = await leadNoteAttachmentRepository.listForNoteIds(
+      companyId,
+      noteIds,
+    );
+    const attachmentsByNote = new Map<string, typeof attachmentRows>();
+    for (const a of attachmentRows) {
+      const arr = attachmentsByNote.get(a.noteId) ?? [];
+      arr.push(a);
+      attachmentsByNote.set(a.noteId, arr);
+    }
+
+    res.json(
+      rows.map((r) => {
+        const userName =
+          r.userFullName ||
+          [r.userFirstName, r.userLastName].filter(Boolean).join(" ") ||
+          "Unknown";
+        return {
+          id: r.id,
+          noteText: r.noteText,
+          createdAt: r.createdAt?.toISOString() ?? null,
+          updatedAt: r.updatedAt?.toISOString() ?? null,
+          userName,
+          user: r.userId
+            ? {
+                id: r.userId,
+                email: r.userEmail ?? null,
+                fullName: r.userFullName ?? null,
+                firstName: r.userFirstName ?? null,
+                lastName: r.userLastName ?? null,
+              }
+            : null,
+          attachments: attachmentsByNote.get(r.id) ?? [],
+          origin: "lead" as const,
+          editable: true,
+        };
+      }),
+    );
+  }),
 );
 
-/** POST /api/leads/:id/notes */
+/** POST /api/leads/:id/notes — canonical create + optional attachmentFileIds. */
 router.post(
   "/:id/notes",
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
     const userId = req.user!.id;
-    const { noteText } = req.body;
+    const { noteText, attachmentFileIds } = req.body ?? {};
 
     if (!noteText || typeof noteText !== "string" || !noteText.trim()) {
       throw createError(400, "noteText is required");
@@ -280,10 +340,31 @@ router.post(
     const lead = await leadRepository.getLead(companyId, req.params.id);
     if (!lead) throw createError(404, "Lead not found");
 
-    const note = await leadRepository.createNote(companyId, req.params.id, userId, noteText.trim());
+    const note = await leadRepository.createNote(
+      companyId,
+      req.params.id,
+      userId,
+      noteText.trim(),
+    );
+
+    // Attach files via the canonical lead-note-attachment repo —
+    // mirrors the job/quote/invoice attachment flow exactly so the
+    // R2 binding + tenant scoping stay single-sourced.
+    if (Array.isArray(attachmentFileIds) && attachmentFileIds.length > 0 && note) {
+      for (const fileId of attachmentFileIds) {
+        if (typeof fileId === "string" && fileId.length > 0) {
+          await leadNoteAttachmentRepository.attach(
+            companyId,
+            userId,
+            note.id,
+            fileId,
+          );
+        }
+      }
+    }
 
     res.status(201).json(note);
-  })
+  }),
 );
 
 /** PATCH /api/leads/:id/notes/:noteId — Update note text (author only) */

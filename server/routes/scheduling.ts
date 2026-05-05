@@ -321,6 +321,37 @@ const legacyQuerySchema = z.object({
 });
 
 // ============================================================================
+// GET /api/calendar/lead-visits — Lead-visit dispatch feed (2026-05-05)
+// ============================================================================
+//
+// Sibling to GET /api/calendar — same range query, but returns the
+// LEAD-VISIT stream as a separate envelope. The dispatch frontend
+// fetches both and merges client-side; lead visits render with a
+// "Lead" badge + amber tint and click through to /leads/:id.
+//
+// NEVER mixed into the job calendar feed. Lead visits do not have
+// a jobNumber, do not flow through visit lifecycle states, and
+// do not count against job KPIs.
+router.get(
+  "/lead-visits",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const { start, end } = validateSchema(rangeQuerySchema, req.query);
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+    const { getScheduledLeadVisitsInRangeWithMetadata } = await import(
+      "../storage/leadVisitsDispatch"
+    );
+    const result = await getScheduledLeadVisitsInRangeWithMetadata(
+      companyId,
+      startDate,
+      endDate,
+    );
+    res.json(result);
+  }),
+);
+
+// ============================================================================
 // GET /api/calendar - Range Query
 // ============================================================================
 

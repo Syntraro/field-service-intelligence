@@ -39,8 +39,8 @@ const DAY_SUMMARY = resolve(ROOT, "client/src/components/timesheets/DaySummaryCa
 const TIMELINE_RAIL = resolve(ROOT, "client/src/components/timesheets/TimelineRail.tsx");
 const GROUP_CARD = resolve(ROOT, "client/src/components/timesheets/JobTimeGroupCard.tsx");
 const ROW_COMPACT = resolve(ROOT, "client/src/components/timesheets/TimeEntryRowCompact.tsx");
-const ENTRY_EDITOR = resolve(ROOT, "client/src/components/timesheets/TimeEntryEditor.tsx");
 const EDIT_MODAL = resolve(ROOT, "client/src/components/timesheets/TimeEntryEditModal.tsx");
+const CREATE_MODAL = resolve(ROOT, "client/src/components/timesheets/JobSessionCreateModal.tsx");
 const TECH_FIELD_ROUTES = resolve(ROOT, "server/routes/techField.ts");
 
 // Files that must NOT exist after the v2 refactor.
@@ -53,8 +53,8 @@ const daySummarySrc = readFileSync(DAY_SUMMARY, "utf-8");
 const railSrc = readFileSync(TIMELINE_RAIL, "utf-8");
 const groupSrc = readFileSync(GROUP_CARD, "utf-8");
 const rowCompactSrc = readFileSync(ROW_COMPACT, "utf-8");
-const editorSrc = readFileSync(ENTRY_EDITOR, "utf-8");
 const editModalSrc = readFileSync(EDIT_MODAL, "utf-8");
+const createModalSrc = readFileSync(CREATE_MODAL, "utf-8");
 const techFieldSrc = readFileSync(TECH_FIELD_ROUTES, "utf-8");
 
 // ── Unit: categoryMap covers all 9 enum values ──────────────────────
@@ -226,9 +226,13 @@ describe("DayView API contract", () => {
     expect(dayViewSrc).not.toMatch(/\/api\/time\/entries\/\$\{[^}]+\}/);
   });
 
-  it("posts inline adds to POST /api/admin/timesheets/entries", () => {
-    expect(dayViewSrc).toMatch(/POST.*\/api\/admin\/timesheets\/entries/);
-    expect(dayViewSrc).toMatch(/technicianId:\s*selectedMemberId/);
+  it("Add Entry modal posts to POST /api/admin/timesheets/entries with technicianId", () => {
+    // 2026-05-05: create flow moved from inline editor + DayView's
+    // createMutation to JobSessionCreateModal with its own POST(s).
+    expect(createModalSrc).toMatch(/POST.*\/api\/admin\/timesheets\/entries/);
+    expect(createModalSrc).toMatch(/technicianId,/);
+    // DayView still passes the selected member as technicianId on mount.
+    expect(dayViewSrc).toMatch(/technicianId=\{selectedMemberId\}/);
   });
 
   it("uses the canonical clock-out endpoint (/api/time/entries/stop)", () => {
@@ -237,9 +241,10 @@ describe("DayView API contract", () => {
 
   it("routes locked entries to the existing TimeEntryModal via onOpenLockedEdit", () => {
     expect(dayViewSrc).toMatch(/onOpenLockedEdit\(entry\)/);
-    // Editor must not render an override-reason input — that's modal-only.
-    expect(editorSrc).not.toMatch(/override\s+reason/i);
-    expect(editorSrc).not.toMatch(/lockReason/);
+    // Edit modal must not render an override-reason input — that's the
+    // canonical TimeEntryModal's responsibility, not the v3 focused editor.
+    expect(editModalSrc).not.toMatch(/override\s+reason/i);
+    expect(editModalSrc).not.toMatch(/lockReason/);
   });
 });
 
@@ -295,44 +300,36 @@ describe("Day View v2 component test surface", () => {
     expect(rowCompactSrc).toMatch(/day-entry-compact-clockout-\$\{entry\.id\}/);
   });
 
-  it("TimeEntryEditor exposes editor testids for every field", () => {
-    expect(editorSrc).toMatch(/editor-category-\$\{cat\}/);
-    expect(editorSrc).toMatch(/data-testid="editor-job-search"/);
-    expect(editorSrc).toMatch(/data-testid="editor-clear-job"/);
-    expect(editorSrc).toMatch(/data-testid="editor-start"/);
-    expect(editorSrc).toMatch(/data-testid="editor-end"/);
-    expect(editorSrc).toMatch(/data-testid="editor-notes"/);
-    expect(editorSrc).toMatch(/data-testid="editor-billable"/);
-    expect(editorSrc).toMatch(/data-testid="editor-save"/);
-    expect(editorSrc).toMatch(/data-testid="editor-cancel"/);
+  it("JobSessionCreateModal exposes compact Add-Entry testids", () => {
+    // 2026-05-05 v2: 4-mode pill selector replaced by inline rows
+    // (Drive + On-site optional in labor view; General in secondary view).
+    expect(createModalSrc).toMatch(/data-testid="create-identity"/);
+    expect(createModalSrc).toMatch(/data-testid="create-employee"/);
+    expect(createModalSrc).toMatch(/data-testid="create-date"/);
+    expect(createModalSrc).toMatch(/data-testid="create-job-search"/);
+    // Per-row testids use template literals (`create-row-${rowKey}`).
+    expect(createModalSrc).toMatch(/data-testid=\{`create-row-\$\{rowKey\}`\}/);
+    // Switch links between labor / general views.
+    expect(createModalSrc).toMatch(/data-testid="create-switch-general"/);
+    expect(createModalSrc).toMatch(/data-testid="create-switch-labor"/);
+    expect(createModalSrc).toMatch(/data-testid="create-notes"/);
+    expect(createModalSrc).toMatch(/data-testid="create-save"/);
+    expect(createModalSrc).toMatch(/data-testid="create-cancel"/);
   });
 });
 
 // ── Spec hard-pins ──────────────────────────────────────────────────
 
 describe("Day View spec compliance — hard pins", () => {
-  it("drive entries can carry a job link (job picker is universal, not on-site only)", () => {
-    expect(editorSrc).not.toMatch(/category === "onsite".*Job link/s);
-    expect(editorSrc).toMatch(/Job link/);
-  });
-
-  it("general entries can be created without a jobId (jobId nullable end-to-end)", () => {
-    expect(editorSrc).toMatch(/setJobId\(null\)/);
-    expect(dayViewSrc).toMatch(/jobId:\s*payload\.jobId/);
-  });
-
   it("running entries have no end time and surface a Clock out action in the compact row", () => {
-    expect(editorSrc).toMatch(/blank = running/i);
     expect(rowCompactSrc).toMatch(/Clock out/);
     expect(rowCompactSrc).toMatch(/isRunning/);
   });
 
-  it("Add Entry default is General with no job and start = now", () => {
-    // The mode="create" initial in DayView seeds the documented defaults.
-    expect(dayViewSrc).toMatch(/defaultTypeForCategory\("general"\)/);
-    expect(dayViewSrc).toMatch(/jobId:\s*null/);
-    expect(dayViewSrc).toMatch(/startAt:\s*new Date\(\)\.toISOString\(\)/);
-    expect(dayViewSrc).toMatch(/billable:\s*false/);
+  it("Add Entry default view is 'labor' (Drive + On-site rows visible)", () => {
+    // 2026-05-05 v2: mode pills replaced by a labor/general view
+    // toggle. Labor view shows both Drive and On-site rows up front.
+    expect(createModalSrc).toMatch(/useState<CreateView>\("labor"\)/);
   });
 
   it("layout is 2-column: rail left + grouped cards right", () => {
@@ -456,13 +453,12 @@ describe("Day View v3 UX refinement", () => {
     expect(groupSrc).not.toMatch(/editorSlotEntryId/);
   });
 
-  it("Add Entry inline editor remains (only edit-on-click moved to modal)", () => {
-    // The TimeEntryEditor for new-entry creation is still mounted at
-    // the top of the right column when adding. Type radios + job
-    // picker are part of the CREATE flow only.
-    expect(dayViewSrc).toMatch(/<TimeEntryEditor[\s\S]+?mode="create"/);
-    expect(editorSrc).toMatch(/editor-category-\$\{cat\}/);
-    expect(editorSrc).toMatch(/data-testid="editor-job-search"/);
+  it("Add Entry now opens a modal (no inline create editor)", () => {
+    // 2026-05-05: the inline `<TimeEntryEditor mode="create">` mount
+    // was removed. Add Entry button opens JobSessionCreateModal.
+    expect(dayViewSrc).not.toMatch(/<TimeEntryEditor/);
+    expect(dayViewSrc).toMatch(/<JobSessionCreateModal/);
+    expect(dayViewSrc).toMatch(/setCreateOpen\(true\)/);
   });
 });
 
@@ -777,5 +773,315 @@ describe("Day View v4 polish — Delete Session behavior", () => {
     expect(sessionHandler).not.toBeNull();
     expect(sessionHandler![0]).not.toMatch(/onRequestDelete\(/);
     expect(sessionHandler![0]).toMatch(/setSessionDeleteTarget\(/);
+  });
+});
+
+// ── 2026-05-05: Unified Add Entry modal (JobSessionCreateModal) ────
+
+describe("Add Entry modal — JobSessionCreateModal (compact v2)", () => {
+  it("Add Entry button opens the modal (not an inline editor)", () => {
+    expect(dayViewSrc).not.toMatch(/<TimeEntryEditor/);
+    expect(dayViewSrc).toMatch(/<JobSessionCreateModal/);
+    expect(dayViewSrc).toMatch(/setCreateOpen\(true\)/);
+    expect(dayViewSrc).toMatch(/data-testid="day-add-entry"/);
+  });
+
+  it("4-mode pill selector is gone (removed in v2)", () => {
+    // The old `<button data-testid="create-mode-...">` block and the
+    // `CreateMode` union are out of the source. Strip comments before
+    // the negative pin so doc commentary that explains the removal
+    // doesn't false-match.
+    const codeOnly = createModalSrc
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    expect(codeOnly).not.toMatch(/data-testid="create-mode-selector"/);
+    expect(codeOnly).not.toMatch(/data-testid=\{`create-mode-/);
+    expect(codeOnly).not.toMatch(/CreateMode\b/);
+  });
+
+  it("renders compact Drive AND On-site rows in the labor view", () => {
+    // Two CompactRow mounts in the labor branch — drive + onsite.
+    expect(createModalSrc).toMatch(/rowKey="drive"/);
+    expect(createModalSrc).toMatch(/rowKey="onsite"/);
+    expect(createModalSrc).toMatch(/rowLabel="Drive"/);
+    expect(createModalSrc).toMatch(/rowLabel="On-site"/);
+    // Each row marked optional in its label strip.
+    expect(createModalSrc).toMatch(/\(optional\)/);
+  });
+
+  it("Drive-only fill saves ONE drive POST (other rows skipped)", () => {
+    // The save mutation pushes a section ONLY when `rowIsComplete(...)`.
+    expect(createModalSrc).toMatch(
+      /if\s*\(rowIsComplete\(drive\)\)\s*\{[\s\S]+?type:\s*"travel_to_job"/,
+    );
+  });
+
+  it("On-site-only fill saves ONE on-site POST (other rows skipped)", () => {
+    expect(createModalSrc).toMatch(
+      /if\s*\(rowIsComplete\(onsite\)\)\s*\{[\s\S]+?type:\s*"on_site"/,
+    );
+  });
+
+  it("Drive + On-site filled saves TWO POSTs in parallel", () => {
+    // Both sections push; Promise.all dispatches in parallel.
+    expect(createModalSrc).toMatch(/Promise\.all\(/);
+    expect(createModalSrc).toMatch(/type:\s*"travel_to_job"/);
+    expect(createModalSrc).toMatch(/type:\s*"on_site"/);
+  });
+
+  it("empty modal cannot save (validation rejects)", () => {
+    expect(createModalSrc).toMatch(/Fill Drive or On-site time to save/);
+    expect(createModalSrc).toMatch(/Fill General time to save/);
+  });
+
+  it("General view stays available as a secondary toggle", () => {
+    // Switch links between labor / general views.
+    expect(createModalSrc).toMatch(/data-testid="create-switch-general"/);
+    expect(createModalSrc).toMatch(/data-testid="create-switch-labor"/);
+    expect(createModalSrc).toMatch(/Add general time instead/);
+    expect(createModalSrc).toMatch(/Back to job time/);
+    // General save dispatches a single "other" POST with no jobId.
+    expect(createModalSrc).toMatch(
+      /rowIsComplete\(general\)[\s\S]+?type:\s*"other"[\s\S]+?jobId:\s*null/,
+    );
+  });
+
+  it("Drive / On-site require a job once any time is entered", () => {
+    expect(createModalSrc).toMatch(
+      /\(rowIsComplete\(drive\)\s*\|\|\s*rowIsComplete\(onsite\)\)\s*&&\s*!jobId/,
+    );
+    expect(createModalSrc).toMatch(/Pick a job for Drive or On-site time/);
+  });
+
+  it("Notes default blank — no auto-fill placeholder", () => {
+    expect(createModalSrc).toMatch(/setNotes\(""\)/);
+    expect(createModalSrc).not.toMatch(/placeholder=["'`].*Visit\s*#/);
+    expect(createModalSrc).not.toMatch(/placeholder=["'`].*en route/i);
+    expect(createModalSrc).not.toMatch(/placeholder=["'`].*on site/i);
+  });
+
+  it("no Billable checkbox in the create modal", () => {
+    const codeOnly = createModalSrc
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    expect(codeOnly).not.toMatch(/<Checkbox/);
+    expect(codeOnly).not.toMatch(/import\s*\{[^}]*\bCheckbox\b/);
+  });
+
+  it("date is shown ONCE at the top, no per-row Start Date input", () => {
+    // The friendly date appears once via `data-testid="create-date"`.
+    expect(createModalSrc).toMatch(/data-testid="create-date"/);
+    // Strip comments — the doc legitimately documents what's NOT here.
+    const codeOnly = createModalSrc
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    expect(codeOnly).not.toMatch(/data-testid=\{`create-\$\{[^}]+\}-start-date`\}/);
+    expect(codeOnly).not.toMatch(/Start Date/);
+  });
+
+  it("no 'End blank = running' hint and never creates running entries", () => {
+    const codeOnly = createModalSrc
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    expect(codeOnly).not.toMatch(/blank = running/i);
+    // Validator requires endTime — no nullable end-time creation path.
+    expect(createModalSrc).toMatch(/needs a start and end time/);
+  });
+
+  it("duration sync: editing duration updates end time per row", () => {
+    expect(createModalSrc).toMatch(/handleRowDurationChange/);
+    // 2026-05-05 polish: handler now uses the shared addMinutesToTime
+    // helper directly (HH:mm → HH:mm) instead of round-tripping
+    // through ISO + date-fns. Cleaner; same semantics.
+    expect(createModalSrc).toMatch(/addMinutesToTime\(prev\.startTime,\s*total\)/);
+  });
+
+  it("Day View invalidate keys are forwarded to the create modal", () => {
+    expect(dayViewSrc).toMatch(/invalidateQueryKeys=\{invalidateQueryKeys\}/);
+    expect(createModalSrc).toMatch(/invalidateQueryKeys/);
+  });
+
+  it("no spinner arrows on duration number inputs", () => {
+    expect(createModalSrc).toMatch(/\[appearance:textfield\]/);
+    expect(createModalSrc).toMatch(/webkit-inner-spin-button\]:appearance-none/);
+  });
+
+  it("modal max-width is in the 560–620px range (compact)", () => {
+    expect(createModalSrc).toMatch(/max-w-\[6\d\dpx\]|max-w-\[57\dpx\]|max-w-\[58\dpx\]|max-w-\[59\dpx\]/);
+  });
+});
+
+// ── 2026-05-05 input-speed polish: structured time inputs + autofill ─
+
+import {
+  addMinutesToTime,
+  valueToSegments,
+  segmentsToValue,
+} from "../client/src/components/timesheets/timeParse";
+
+describe("timeParse.addMinutesToTime", () => {
+  it("adds minutes within the same day", () => {
+    expect(addMinutesToTime("08:00", 60)).toBe("09:00");
+    expect(addMinutesToTime("08:00", 30)).toBe("08:30");
+    expect(addMinutesToTime("17:30", 45)).toBe("18:15");
+  });
+
+  it("wraps across midnight modulo 24h", () => {
+    expect(addMinutesToTime("23:30", 60)).toBe("00:30");
+    expect(addMinutesToTime("00:00", 0)).toBe("00:00");
+  });
+});
+
+describe("timeParse.valueToSegments", () => {
+  it("decomposes 24h values into 12h segments", () => {
+    expect(valueToSegments("08:00")).toEqual({ h12: "8", min: "00", period: "AM" });
+    expect(valueToSegments("08:30")).toEqual({ h12: "8", min: "30", period: "AM" });
+    expect(valueToSegments("12:00")).toEqual({ h12: "12", min: "00", period: "PM" });
+    expect(valueToSegments("13:30")).toEqual({ h12: "1", min: "30", period: "PM" });
+    expect(valueToSegments("23:59")).toEqual({ h12: "11", min: "59", period: "PM" });
+    expect(valueToSegments("00:00")).toEqual({ h12: "12", min: "00", period: "AM" });
+  });
+
+  it("returns blank-but-AM when input is empty / invalid", () => {
+    expect(valueToSegments("")).toEqual({ h12: "", min: "", period: "AM" });
+    expect(valueToSegments("not-a-time")).toEqual({ h12: "", min: "", period: "AM" });
+  });
+});
+
+describe("timeParse.segmentsToValue", () => {
+  it("recomposes 12h segments back into canonical 24h", () => {
+    expect(segmentsToValue("8", "00", "AM")).toBe("08:00");
+    expect(segmentsToValue("8", "30", "AM")).toBe("08:30");
+    expect(segmentsToValue("12", "00", "PM")).toBe("12:00"); // noon
+    expect(segmentsToValue("12", "00", "AM")).toBe("00:00"); // midnight
+    expect(segmentsToValue("1", "30", "PM")).toBe("13:30");
+    expect(segmentsToValue("11", "59", "PM")).toBe("23:59");
+  });
+
+  it("returns empty string when any segment is missing or out of range", () => {
+    expect(segmentsToValue("", "00", "AM")).toBe("");
+    expect(segmentsToValue("8", "", "AM")).toBe("");
+    expect(segmentsToValue("13", "00", "AM")).toBe(""); // 12h cap
+    expect(segmentsToValue("0", "00", "AM")).toBe("");  // 12h cap
+    expect(segmentsToValue("8", "60", "AM")).toBe("");  // minute cap
+  });
+});
+
+describe("Add Entry modal — segmented time inputs + autofill", () => {
+  it("uses SegmentedTimeInput for Start AND End (no browser picker chrome)", () => {
+    // 2026-05-05 (revision): browser type="time" replaced with three
+    // direct H | M | AM/PM segments. No picker indicator, no popup,
+    // no native dropdown.
+    expect(createModalSrc).toMatch(/function\s+SegmentedTimeInput\s*\(/);
+    expect(createModalSrc).toMatch(
+      /<SegmentedTimeInput[\s\S]+?value=\{fields\.startTime\}/,
+    );
+    expect(createModalSrc).toMatch(
+      /<SegmentedTimeInput[\s\S]+?value=\{fields\.endTime\}/,
+    );
+    // Strip comments before negative pins (doc commentary explains
+    // the revert and would otherwise false-match).
+    const codeOnly = createModalSrc
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    // Browser time picker / its CSS hack are out.
+    expect(codeOnly).not.toMatch(/<Input[^<>]*type="time"/);
+    expect(codeOnly).not.toMatch(/calendar-picker-indicator/);
+    // Free-text fallback subcomponent stays gone.
+    expect(codeOnly).not.toMatch(/<TimeInput\b/);
+    expect(codeOnly).not.toMatch(/placeholder=["'`]e\.g\./);
+  });
+
+  it("hour-first defaults: typing hour sets minute='00' and period='AM' if empty", () => {
+    // The handleHourChange path commits with `min = segments.min || "00"`
+    // and `period = segments.period || "AM"`. That's the spec rule.
+    expect(createModalSrc).toMatch(
+      /handleHourChange[\s\S]+?segments\.min\s*\|\|\s*"00"[\s\S]+?segments\.period\s*\|\|\s*"AM"/,
+    );
+  });
+
+  it("minute and AM/PM remain independently editable after hour is set", () => {
+    expect(createModalSrc).toMatch(/handleMinuteChange/);
+    expect(createModalSrc).toMatch(/handlePeriodToggle/);
+    // The period toggle is a button, not a dropdown.
+    expect(createModalSrc).toMatch(
+      /<button[\s\S]+?onClick=\{handlePeriodToggle\}/,
+    );
+    // Three sub-testids per input (hour, min, period) so downstream
+    // UI tests can target each segment.
+    expect(createModalSrc).toMatch(/-hour\b/);
+    expect(createModalSrc).toMatch(/-min\b/);
+    expect(createModalSrc).toMatch(/-period\b/);
+  });
+
+  it("auto-fills End = Start + 1h when Start changes and End is blank", () => {
+    // Trigger condition documented inline in handleRowTimeChange.
+    expect(createModalSrc).toMatch(
+      /field === "startTime"\s*&&\s*value\s*&&\s*!prev\.endTime/,
+    );
+    expect(createModalSrc).toMatch(/addMinutesToTime\(value,\s*60\)/);
+    // Duration sets to 1h 0m.
+    expect(createModalSrc).toMatch(/hoursInput\s*=\s*"1"/);
+    expect(createModalSrc).toMatch(/minutesInput\s*=\s*"0"/);
+  });
+
+  it("does NOT override a manually-set End — autofill predicate requires empty End", () => {
+    // Predicate explicitly checks `!prev.endTime`. If End is set,
+    // autofill skips and the user's value stays.
+    expect(createModalSrc).toMatch(/!prev\.endTime/);
+  });
+
+  it("On-site row prefills from Drive End when On-site is empty (focus hook)", () => {
+    expect(createModalSrc).toMatch(/handleOnsiteStartFocus/);
+    // Predicate: skip if on-site already has any value, skip if drive
+    // end is blank.
+    expect(createModalSrc).toMatch(/if\s*\(rowHasAnyValue\(onsite\)\)\s*return/);
+    expect(createModalSrc).toMatch(/if\s*\(!drive\.endTime\)\s*return/);
+    // Wired to the on-site row's start input.
+    expect(createModalSrc).toMatch(
+      /<CompactRow[\s\S]+?rowKey="onsite"[\s\S]+?onFocusStart=\{handleOnsiteStartFocus\}/,
+    );
+  });
+
+  it("General row uses the same SegmentedTimeInput (uniform across all 3 rows)", () => {
+    // CompactRow renders both Start and End via SegmentedTimeInput.
+    // Since the General row uses the same CompactRow, it inherits
+    // the same input UX automatically.
+    expect(createModalSrc).toMatch(/rowKey="general"/);
+    const segmentedMatches = createModalSrc.match(/<SegmentedTimeInput\b/g) ?? [];
+    expect(segmentedMatches.length).toBeGreaterThanOrEqual(2);
+    // No remaining browser-native time picker anywhere in the modal.
+    const codeOnly = createModalSrc
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    expect(codeOnly).not.toMatch(/<Input[^<>]*type="time"/);
+  });
+
+  it("toggle ('Add general time instead' / 'Back to job time') is rendered as outline button", () => {
+    // The small text link became an outline Button (more visible,
+    // still secondary to Save).
+    expect(createModalSrc).toMatch(
+      /<Button[\s\S]+?variant="outline"[\s\S]+?data-testid="create-switch-general"/,
+    );
+    expect(createModalSrc).toMatch(
+      /<Button[\s\S]+?variant="outline"[\s\S]+?data-testid="create-switch-labor"/,
+    );
+    // Visible labels unchanged.
+    expect(createModalSrc).toMatch(/Add general time instead/);
+    expect(createModalSrc).toMatch(/Back to job time/);
+  });
+
+  // Sentinel (placeholder). Replaced the prior TimeInput-draft test
+  // since the custom input is gone; structured browser inputs don't
+  // expose a draft model.
+  it("modal source no longer references the removed TimeInput component", () => {
+    // Strip comments so doc commentary about the revert doesn't false-match.
+    const codeOnly = createModalSrc
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    expect(codeOnly).not.toMatch(/parseTimeInput/);
+    expect(codeOnly).not.toMatch(/formatTimeDisplay/);
+    expect(codeOnly).not.toMatch(/const \[focused, setFocused\]/);
+    expect(codeOnly).not.toMatch(/const \[draft, setDraft\]/);
   });
 });

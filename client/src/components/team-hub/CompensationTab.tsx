@@ -26,9 +26,14 @@ const MONEY_PATTERN = /^\d+(\.\d{1,2})?$/;
 interface Props {
   selectedMemberId: string | null;
   onSelectMember: (id: string | null) => void;
+  // 2026-05-05 member-centric restructure: when this tab is mounted
+  // inside `TeamMemberWorkspace` it must not render its own member
+  // sidebar — the workspace already provides a single shared list on
+  // the page. Standalone usage keeps the original 260px sidebar.
+  hideMemberList?: boolean;
 }
 
-export function CompensationTab({ selectedMemberId, onSelectMember }: Props) {
+export function CompensationTab({ selectedMemberId, onSelectMember, hideMemberList = false }: Props) {
   const { toast } = useToast();
   const dirty = useUnsavedChanges();
   const [search, setSearch] = useState("");
@@ -111,68 +116,76 @@ export function CompensationTab({ selectedMemberId, onSelectMember }: Props) {
   });
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-4">
-      <Card className="md:sticky md:top-4 md:self-start">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">Team</CardTitle>
-          <div className="relative mt-2">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search..."
-              className="pl-8 h-8 text-sm"
-              data-testid="input-comp-search"
-            />
-          </div>
-        </CardHeader>
-        <CardContent className="px-2 pb-2 max-h-[70vh] overflow-y-auto">
-          {techsLoading ? (
-            <p className="p-3 text-sm text-muted-foreground">Loading…</p>
-          ) : filtered.length === 0 ? (
-            <p className="p-3 text-sm text-muted-foreground">
-              {search ? "No matches." : "No technicians on the calendar yet."}
-            </p>
-          ) : (
-            <ul className="space-y-1">
-              {filtered.map((t) => {
-                const active = t.id === displayedId;
-                return (
-                  <li key={t.id}>
-                    <button
-                      type="button"
-                      onClick={() => dirty.confirmLeave(() => onSelectMember(t.id))}
-                      className={`w-full flex items-center gap-2 px-2 py-2 rounded-md text-left text-sm transition-colors ${
-                        active ? "bg-primary/10" : "hover:bg-muted"
-                      }`}
-                      data-testid={`button-comp-select-${t.id}`}
-                    >
-                      <Avatar className="h-7 w-7 shrink-0">
-                        <AvatarFallback
-                          className="text-[10px] text-white"
-                          style={{ backgroundColor: resolveTechnicianColor(t.id, t.color) }}
-                        >
-                          {getMemberInitials({ fullName: t.fullName, email: t.email })}
-                        </AvatarFallback>
-                      </Avatar>
-                      <div className="flex-1 min-w-0">
-                        <div className="truncate">
-                          {getMemberDisplayName({ fullName: t.fullName, email: t.email })}
-                        </div>
-                        {t.laborCostPerHour && (
-                          <div className="text-xs text-muted-foreground">
-                            ${t.laborCostPerHour}/hr cost
+    <div
+      className={
+        hideMemberList
+          ? "grid grid-cols-1 gap-4"
+          : "grid grid-cols-1 md:grid-cols-[260px_1fr] gap-4"
+      }
+    >
+      {!hideMemberList && (
+        <Card className="md:sticky md:top-4 md:self-start">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Team</CardTitle>
+            <div className="relative mt-2">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search..."
+                className="pl-8 h-8 text-sm"
+                data-testid="input-comp-search"
+              />
+            </div>
+          </CardHeader>
+          <CardContent className="px-2 pb-2 max-h-[70vh] overflow-y-auto">
+            {techsLoading ? (
+              <p className="p-3 text-sm text-muted-foreground">Loading…</p>
+            ) : filtered.length === 0 ? (
+              <p className="p-3 text-sm text-muted-foreground">
+                {search ? "No matches." : "No technicians on the calendar yet."}
+              </p>
+            ) : (
+              <ul className="space-y-1">
+                {filtered.map((t) => {
+                  const active = t.id === displayedId;
+                  return (
+                    <li key={t.id}>
+                      <button
+                        type="button"
+                        onClick={() => dirty.confirmLeave(() => onSelectMember(t.id))}
+                        className={`w-full flex items-center gap-2 px-2 py-2 rounded-md text-left text-sm transition-colors ${
+                          active ? "bg-primary/10" : "hover:bg-muted"
+                        }`}
+                        data-testid={`button-comp-select-${t.id}`}
+                      >
+                        <Avatar className="h-7 w-7 shrink-0">
+                          <AvatarFallback
+                            className="text-[10px] text-white"
+                            style={{ backgroundColor: resolveTechnicianColor(t.id, t.color) }}
+                          >
+                            {getMemberInitials({ fullName: t.fullName, email: t.email })}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1 min-w-0">
+                          <div className="truncate">
+                            {getMemberDisplayName({ fullName: t.fullName, email: t.email })}
                           </div>
-                        )}
-                      </div>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
+                          {t.laborCostPerHour && (
+                            <div className="text-xs text-muted-foreground">
+                              ${t.laborCostPerHour}/hr cost
+                            </div>
+                          )}
+                        </div>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <div className="space-y-4">
         {!displayedId ? (
@@ -193,29 +206,37 @@ export function CompensationTab({ selectedMemberId, onSelectMember }: Props) {
           </Card>
         ) : (
           <Card>
-            <CardHeader className="pb-2">
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle className="text-base">{getMemberDisplayName(member)}</CardTitle>
-                  <p className="text-xs text-muted-foreground">{member.email}</p>
+            {/* 2026-05-05 v2 refinement: when this tab is mounted inside
+                <TeamMemberWorkspace>, the workspace header above
+                already shows the member's name + email. The "Full
+                profile" link is removed from the normal flow per the
+                v2 brief — Overview now hosts every basic profile
+                field. Standalone usage keeps the inline header. */}
+            {!hideMemberList && (
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-base">{getMemberDisplayName(member)}</CardTitle>
+                    <p className="text-xs text-muted-foreground">{member.email}</p>
+                  </div>
+                  <Link href={`/manage-team/${member.id}`}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={(e) => {
+                        if (dirty.isDirty && !window.confirm("Discard unsaved changes?")) {
+                          e.preventDefault();
+                        }
+                      }}
+                      data-testid={`button-comp-open-profile-${member.id}`}
+                    >
+                      Full profile <ExternalLink className="h-3.5 w-3.5 ml-1" />
+                    </Button>
+                  </Link>
                 </div>
-                <Link href={`/manage-team/${member.id}`}>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={(e) => {
-                      if (dirty.isDirty && !window.confirm("Discard unsaved changes?")) {
-                        e.preventDefault();
-                      }
-                    }}
-                    data-testid={`button-comp-open-profile-${member.id}`}
-                  >
-                    Full profile <ExternalLink className="h-3.5 w-3.5 ml-1" />
-                  </Button>
-                </Link>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
+              </CardHeader>
+            )}
+            <CardContent className={`space-y-4 ${hideMemberList ? "pt-5" : ""}`}>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="comp-cost">Labor cost / hour</Label>
@@ -232,9 +253,6 @@ export function CompensationTab({ selectedMemberId, onSelectMember }: Props) {
                       data-testid="input-comp-cost"
                     />
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    Internal cost — used by payroll + job costing reports.
-                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="comp-billable">Billable rate / hour</Label>
@@ -251,9 +269,6 @@ export function CompensationTab({ selectedMemberId, onSelectMember }: Props) {
                       data-testid="input-comp-billable"
                     />
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    Default rate charged on labor line items. Overridden by per-invoice edits.
-                  </p>
                 </div>
               </div>
 
@@ -273,9 +288,6 @@ export function CompensationTab({ selectedMemberId, onSelectMember }: Props) {
                     style={{ backgroundColor: form.color }}
                     aria-hidden="true"
                   />
-                  <span className="text-xs text-muted-foreground">
-                    Same color shows on dispatch and the team hub.
-                  </span>
                 </div>
               </div>
 
@@ -289,9 +301,6 @@ export function CompensationTab({ selectedMemberId, onSelectMember }: Props) {
                   rows={3}
                   data-testid="input-comp-note"
                 />
-                <p className="text-xs text-muted-foreground">
-                  Overtime multipliers + rounding live under Settings → Time Billing.
-                </p>
               </div>
 
               <div className="flex justify-end items-center gap-2 pt-2">

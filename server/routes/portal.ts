@@ -57,6 +57,10 @@ import { paymentApplicationService } from "../services/payments/paymentApplicati
 // expose list / setup-intent / default / remove operations under the
 // existing `customer_portal_payments` entitlement gate.
 import { paymentMethodsRepository } from "../storage/paymentMethods";
+import {
+  resolveInvoiceTokenScope,
+  requireInvoiceAccess,
+} from "../middleware/portalInvoiceAccess";
 
 // ============================================================================
 // Types
@@ -541,12 +545,21 @@ router.get(
 
 // ------------------------------------------------------------------
 // GET /api/portal/invoices/:invoiceId — invoice detail
+//
+// 2026-05-05: gates via `requireInvoiceAccess` so a customer arriving
+// from the Pay Invoice email link (`?t=<token>`) can view + pay this
+// ONE invoice without going through magic-link sign-in. Authenticated
+// portal sessions still work — the middleware accepts EITHER. The
+// scope (companyId + customerCompanyId) is read from
+// `req.invoiceAccessScope` so cross-tenant probe protection is
+// preserved on both auth paths.
 // ------------------------------------------------------------------
 router.get(
   "/invoices/:invoiceId",
-  requirePortalAuth,
+  resolveInvoiceTokenScope,
+  requireInvoiceAccess(),
   asyncHandler(async (req: Request, res: Response) => {
-    const { companyId, customerCompanyId } = (req as PortalRequest).portal;
+    const { companyId, customerCompanyId } = req.invoiceAccessScope!;
     const { invoiceId } = req.params;
 
     // Fetch invoice with strict scoping
@@ -617,8 +630,22 @@ router.get(
     );
     const paymentsEnabled = paymentsEnt?.enabled === true;
 
-    // Respect visibility toggles
-    const visibleLines = invoice.showLineItems ? lines : [];
+    // 2026-05-05: resolve canonical Invoice Display policy. The portal
+    // client renders against this `displayPolicy` shape so PDF, email,
+    // and portal HTML all use the same merged tenant + per-invoice
+    // visibility decisions.
+    const tenantSettings = await storage.getCompanySettings(companyId);
+    const { resolveInvoiceDisplayPolicy } = await import("@shared/invoiceDisplayPolicy");
+    const displayPolicy = resolveInvoiceDisplayPolicy({
+      tenantSettings: tenantSettings as any,
+      invoice: invoice as any,
+    });
+
+    // Respect resolved visibility — line items are stripped server-side
+    // when hidden so pre-PR-5 clients (which read `invoice.showLineItems`)
+    // also see no line content. The new clients ignore `lines` directly
+    // and gate on `displayPolicy.showLineItems`.
+    const visibleLines = displayPolicy.showLineItems ? lines : [];
 
     // 2026-05-03 PR 5: payment history. ADDITIVE field on the existing
     // response — never breaks pre-PR-5 clients. Two sources are unioned:
@@ -729,6 +756,8 @@ router.get(
         notesCustomer: invoice.notesCustomer,
         clientMessage: invoice.clientMessage,
         workDescription: invoice.workDescription,
+        // Per-invoice raw flags retained for backward compatibility — the
+        // canonical visibility decisions live on `displayPolicy` below.
         showQuantity: invoice.showQuantity,
         showUnitPrice: invoice.showUnitPrice,
         showLineTotals: invoice.showLineTotals,
@@ -740,6 +769,9 @@ router.get(
       paymentsEnabled,
       // 2026-05-03 PR 5 — additive field; pre-PR-5 clients ignore it.
       payments: paymentsHistory,
+      // 2026-05-05 — additive resolved Invoice Display policy. Pre-policy
+      // clients ignore it; new clients render exclusively against this.
+      displayPolicy,
     });
   })
 );
@@ -754,9 +786,13 @@ router.get(
 // tenant + customerCompanyId isolation.
 router.get(
   "/invoices/:invoiceId/pdf",
-  requirePortalAuth,
+  resolveInvoiceTokenScope,
+  requireInvoiceAccess(),
   asyncHandler(async (req: Request, res: Response) => {
-    const { companyId, customerCompanyId } = (req as PortalRequest).portal;
+    // 2026-05-05: dual-mode access (token OR session). Scope is read
+    // from `req.invoiceAccessScope` so token-mode customers can
+    // download the same PDF the staff route serves.
+    const { companyId, customerCompanyId } = req.invoiceAccessScope!;
     const { invoiceId } = req.params;
 
     const invoice = await storage.getInvoice(companyId, invoiceId);
@@ -772,11 +808,15 @@ router.get(
     // 2026-05-03: tax registrations fetched alongside company so the
     // portal-served PDF carries the same tax-ID lines as the staff
     // download (canonical contract: customer sees the same document).
-    const [lines, location, company, taxRegistrations] = await Promise.all([
+    // 2026-05-05: same canonical contract — load tenant Invoice Display
+    // settings here so the customer-served PDF respects the same
+    // visibility policy as the staff download and the portal HTML view.
+    const [lines, location, company, taxRegistrations, tenantSettings] = await Promise.all([
       storage.getInvoiceLines(companyId, invoiceId),
       storage.getClient(companyId, invoice.locationId),
       storage.getCompanyById(companyId),
       companyTaxRegistrationRepository.list(companyId),
+      storage.getCompanySettings(companyId),
     ]);
     if (!location) throw createError(400, "Invoice has invalid location reference");
     if (!company) throw createError(500, "Company not found");
@@ -786,6 +826,17 @@ router.get(
     if (resolvedCustCompanyId) {
       customerCompany = await storage.getCustomerCompany(companyId, resolvedCustCompanyId);
     }
+    let jobNumber: string | null = null;
+    if (invoice.jobId) {
+      const job = await storage.getJob(companyId, invoice.jobId);
+      jobNumber = job?.jobNumber ? String(job.jobNumber) : null;
+    }
+
+    const { resolveInvoiceDisplayPolicy } = await import("@shared/invoiceDisplayPolicy");
+    const policy = resolveInvoiceDisplayPolicy({
+      tenantSettings: tenantSettings as any,
+      invoice: invoice as any,
+    });
 
     const pdfBuffer = await generateInvoicePdf({
       invoice: invoice as any,
@@ -803,6 +854,8 @@ router.get(
       },
       customerCompany: customerCompany ? { name: customerCompany.name ?? "" } : null,
       taxRegistrations,
+      policy,
+      jobNumber,
     });
 
     const filename = `Invoice-${invoice.invoiceNumber || invoice.id.slice(0, 8)}.pdf`;
@@ -828,7 +881,16 @@ router.get(
 // The Stripe SDK lives only behind the Stripe adapter — routes don't
 // import it.
 async function portalCheckoutHandler(req: Request, res: Response) {
-  const { companyId, customerCompanyId, contactId } = (req as PortalRequest).portal;
+  // 2026-05-05: dual-mode access. companyId / customerCompanyId come
+  // from `req.invoiceAccessScope` (populated by `requireInvoiceAccess`,
+  // which accepts EITHER a valid `?t=…` access token OR a portal
+  // session). `contactId` is only available on the session path —
+  // token-mode payments cannot persist a saved card because there's
+  // no portal account to attach it to. Saving a card therefore
+  // requires session auth (asserted below).
+  const scope = req.invoiceAccessScope!;
+  const { companyId, customerCompanyId } = scope;
+  const sessionContactId = req.session?.portal?.contactId ?? null;
   const { invoiceId } = req.params;
 
   // Feature-gate — tenant must have the canonical `customer_portal_payments`
@@ -862,6 +924,16 @@ async function portalCheckoutHandler(req: Request, res: Response) {
   const saveForFuture = body.saveForFuture === true;
   let consentText: string | undefined;
   if (saveForFuture) {
+    // Token-mode requests cannot save cards — the user has no portal
+    // account to attach the saved method to. Surface a clean 400 so
+    // the UI can prompt the customer to sign in if they want to save
+    // the card for future use.
+    if (!sessionContactId) {
+      throw createError(
+        400,
+        "Sign in to your customer portal to save a card for future use",
+      );
+    }
     if (typeof body.consentText !== "string" || body.consentText.trim() === "") {
       throw createError(
         400,
@@ -875,14 +947,14 @@ async function portalCheckoutHandler(req: Request, res: Response) {
     companyId,
     invoiceId,
     source: "portal",
-    ...(saveForFuture
+    ...(saveForFuture && sessionContactId
       ? {
           saveForFuture: true,
           consentText,
           consentIp: req.ip ?? null,
           consentUserAgent:
             (req.headers["user-agent"] as string | undefined) ?? null,
-          contactId,
+          contactId: sessionContactId,
         }
       : {}),
   });
@@ -890,10 +962,13 @@ async function portalCheckoutHandler(req: Request, res: Response) {
 }
 
 // Canonical (provider-neutral) route.
+// 2026-05-05: gates via `requireInvoiceAccess` so a customer with a
+// valid invoice access token (`?t=…`) can pay without a portal session.
 router.post(
   "/invoices/:invoiceId/payments/checkout",
   portalPaymentIntentLimiter,
-  requirePortalAuth,
+  resolveInvoiceTokenScope,
+  requireInvoiceAccess(),
   asyncHandler(async (req: Request, res: Response) => {
     const result = await portalCheckoutHandler(req, res);
     res.status(201).json(result);
@@ -906,7 +981,8 @@ router.post(
 router.post(
   "/invoices/:invoiceId/stripe/payment-intent",
   portalPaymentIntentLimiter,
-  requirePortalAuth,
+  resolveInvoiceTokenScope,
+  requireInvoiceAccess(),
   asyncHandler(async (req: Request, res: Response) => {
     const result = await portalCheckoutHandler(req, res);
     res.status(201).json({

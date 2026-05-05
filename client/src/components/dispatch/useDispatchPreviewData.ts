@@ -9,7 +9,12 @@
  */
 import { useMemo } from "react";
 import { startOfDay, endOfDay, format } from "date-fns";
-import type { DispatchVisit, DispatchTask, Technician } from "./dispatchPreviewTypes";
+import type {
+  DispatchVisit,
+  DispatchTask,
+  DispatchLeadVisit,
+  Technician,
+} from "./dispatchPreviewTypes";
 import { getDispatchDayKey } from "./dispatchPreviewUtils";
 import { useDispatchRangeData, widenStartForAllDay } from "./dispatchDataCore";
 
@@ -17,6 +22,7 @@ export interface DispatchPreviewData {
   scheduledVisits: DispatchVisit[];
   unscheduledVisits: DispatchVisit[];
   scheduledTasks: DispatchTask[];
+  leadVisits: DispatchLeadVisit[];
   technicians: Technician[];
   isLoading: boolean;
   error: Error | null;
@@ -45,8 +51,18 @@ export function useDispatchPreviewData(selectedDate: Date, enabled = true): Disp
     });
   }, [rangeData.scheduledVisits, dayStr]);
 
+  // 2026-05-05 Phase 3: same day-key filter for lead visits so the
+  // day view doesn't render adjacent-day bleeds.
+  const leadVisits = useMemo(() => {
+    return rangeData.leadVisits.filter((v) => {
+      if (!v.scheduledStart) return true;
+      return getDispatchDayKey(v.scheduledStart, v.isAllDay) === dayStr;
+    });
+  }, [rangeData.leadVisits, dayStr]);
+
   return {
     ...rangeData,
     scheduledVisits,
+    leadVisits,
   };
 }

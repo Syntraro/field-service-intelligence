@@ -9,7 +9,7 @@
  */
 import { useMemo } from "react";
 import { startOfWeek, endOfWeek, eachDayOfInterval, startOfDay, endOfDay, format } from "date-fns";
-import type { DispatchVisit, DispatchTask } from "./dispatchPreviewTypes";
+import type { DispatchVisit, DispatchTask, DispatchLeadVisit } from "./dispatchPreviewTypes";
 import { UNASSIGNED_TECH_ID } from "./dispatchPreviewTypes";
 import { getDispatchDayKey } from "./dispatchPreviewUtils";
 import { useDispatchRangeData, widenStartForAllDay } from "./dispatchDataCore";
@@ -81,10 +81,33 @@ export function useDispatchWeekData(selectedDate: Date, enabled = true) {
     return map;
   }, [rangeData.scheduledTasks]);
 
+  /**
+   * 2026-05-05 Phase 3 correction: lead visits grouped by canonical
+   * day key for the week grid. Parallel to `visitsByTechByDay` but
+   * keyed only by day — week-view lead pills render in a separate
+   * "Lead" lane per day column rather than under a technician row,
+   * so we never need to fan out by tech here. The render layer
+   * (WeekDispatchGrid → WeekDayColumn) reads this map and branches
+   * on `type === "lead_visit"` so lead pills can pick up amber
+   * styling and route to /leads/:leadId without flowing through
+   * job-shaped code.
+   */
+  const leadVisitsByDay = useMemo(() => {
+    const map = new Map<string, DispatchLeadVisit[]>();
+    for (const v of rangeData.leadVisits) {
+      if (!v.scheduledStart) continue;
+      const key = getDispatchDayKey(v.scheduledStart, v.isAllDay);
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(v);
+    }
+    return map;
+  }, [rangeData.leadVisits]);
+
   return {
     ...rangeData,
     weekDays,
     visitsByTechByDay,
     tasksByTechByDay,
+    leadVisitsByDay,
   };
 }

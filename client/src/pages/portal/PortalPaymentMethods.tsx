@@ -22,6 +22,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
+import { apiRequest } from "@/lib/queryClient";
 import { loadStripe, type Stripe as StripeJs } from "@stripe/stripe-js";
 import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-stripe-js";
 import { Card, CardContent } from "@/components/ui/card";
@@ -110,18 +111,12 @@ export default function PortalPaymentMethods() {
   const { data, isLoading } = useQuery<ListResponse>({ queryKey: listKey });
 
   const setDefaultMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const res = await fetch(`/api/portal/payment-methods/${id}/default`, {
+    // 2026-05-05: routed through apiRequest so the global csurf
+    // middleware sees X-CSRF-Token. Plain fetch was a CSRF dead end.
+    mutationFn: (id: string) =>
+      apiRequest(`/api/portal/payment-methods/${id}/default`, {
         method: "PATCH",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error || "Couldn't set as default.");
-      }
-      return res.json();
-    },
+      }),
     onSuccess: () => {
       setActionError(null);
       queryClient.invalidateQueries({ queryKey: listKey });
@@ -130,18 +125,9 @@ export default function PortalPaymentMethods() {
   });
 
   const removeMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const res = await fetch(`/api/portal/payment-methods/${id}`, {
-        method: "DELETE",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error || "Couldn't remove this card.");
-      }
-      return res.json();
-    },
+    // 2026-05-05: routed through apiRequest for CSRF compliance.
+    mutationFn: (id: string) =>
+      apiRequest(`/api/portal/payment-methods/${id}`, { method: "DELETE" }),
     onSuccess: () => {
       setActionError(null);
       setRemoveTarget(null);
@@ -392,19 +378,12 @@ function AddCardDialog({
   const [intentError, setIntentError] = useState<string | null>(null);
 
   const createIntent = useMutation({
-    mutationFn: async (): Promise<SetupIntentResponse> => {
-      const res = await fetch("/api/portal/payment-methods/setup-intent", {
+    // 2026-05-05: routed through apiRequest for CSRF compliance.
+    mutationFn: (): Promise<SetupIntentResponse> =>
+      apiRequest<SetupIntentResponse>("/api/portal/payment-methods/setup-intent", {
         method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ consentText: CONSENT_TEXT }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error || "Couldn't start the add-card flow.");
-      }
-      return res.json();
-    },
+      }),
     onSuccess: (result) => {
       setIntent(result);
       setIntentError(null);
