@@ -99,8 +99,12 @@ describe("tech-app/LocationDetailPage — UI shape adapts to the tech-safe DTO",
     expect(techLocationDetailCode).toMatch(/\beq\.model\b/);
     expect(techLocationDetailCode).not.toMatch(/\beq\.equipmentType\b/);
     expect(techLocationDetailCode).not.toMatch(/\beq\.modelNumber\b/);
-    // `name` is intentionally not in the tech DTO; the page must not
-    // render it directly off the equipment row.
+    // 2026-05-04 Phase 2 PR 3 update: `name` IS now in the tech DTO
+    // (added so the visit-detail picker can filter on the asset
+    // label). LocationDetailPage's render still does not use it —
+    // the card still leads with `eq.type` — and we pin that here so
+    // a future edit doesn't silently change the card's primary line
+    // without an explicit decision.
     expect(techLocationDetailCode).not.toMatch(/\beq\.name\b/);
   });
 
@@ -111,19 +115,20 @@ describe("tech-app/LocationDetailPage — UI shape adapts to the tech-safe DTO",
   });
 });
 
-describe("PR scope — sibling tech-app pages left for follow-up", () => {
-  // The user's PR 2 prompt explicitly enumerated only LocationDetailPage
-  // and CreateLeadPage. VisitDetailPage also reads
-  // `/api/clients/:locationId/equipment` (one site, line ~731) but
-  // requires a different cutover because the surrounding modal also
-  // creates equipment — out of scope for this PR. Pinning the current
-  // shape here forces any future migration of VisitDetailPage to
-  // update this test, which is what we want.
-  it("VisitDetailPage still references the office equipment endpoint (not migrated yet)", () => {
-    const src = readFileSync(
-      resolve(__dirname, "../client/src/tech-app/pages/VisitDetailPage.tsx"),
-      "utf-8",
-    );
-    expect(src).toMatch(/\/api\/clients\/\$\{[^}]+\}\/equipment/);
+describe("VisitDetailPage equipment picker (Phase 2 PR 3 cutover)", () => {
+  // Phase 2 PR 2 left VisitDetailPage on the office endpoint because
+  // the picker filters on `name`, which the tech DTO didn't expose.
+  // PR 3 added `name` and migrated the picker — pin both halves here.
+  const src = readFileSync(
+    resolve(__dirname, "../client/src/tech-app/pages/VisitDetailPage.tsx"),
+    "utf-8",
+  );
+  it("uses the tech-safe equipment endpoint, not the office one", () => {
+    expect(src).not.toMatch(/\/api\/clients\/\$\{[^}]+\}\/equipment/);
+    expect(src).toMatch(/\/api\/tech\/locations\/\$\{[^}]+\}\/equipment/);
+  });
+  it("uses the tech-safe equipment timeline + notes endpoints", () => {
+    expect(src).toMatch(/\/api\/tech\/equipment\/\$\{[^}]+\}\/timeline/);
+    expect(src).toMatch(/\/api\/tech\/equipment\/\$\{[^}]+\}\/notes/);
   });
 });

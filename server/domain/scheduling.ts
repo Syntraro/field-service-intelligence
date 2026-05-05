@@ -100,6 +100,104 @@ export function isCalendarJob(job: JobLike): boolean {
 /** Default timezone when company settings not available */
 export const DEFAULT_TIMEZONE = "America/Toronto";
 
+/** Default visit duration when caller does not specify one (minutes). */
+export const DEFAULT_VISIT_DURATION_MINUTES = 60;
+/** Lower bound on visit duration. Anything shorter is coerced to this. */
+export const MIN_VISIT_DURATION_MINUTES = 30;
+
+/**
+ * Canonical visit-schedule integrity guard.
+ *
+ * 2026-05-04: introduced after dispatch board / Today's Schedule diverged
+ * because legacy rows with `scheduled_end IS NULL` slipped past the
+ * dashboard's read-side filter. Going forward, every storage write that
+ * touches a visit's schedule routes through this helper so the DB never
+ * holds an illegal state again.
+ *
+ * Rules (enforced by this helper):
+ *   1. If `scheduledStart` is null/undefined, the visit is unscheduled —
+ *      `scheduledEnd` is forced to null. Caller's duration is preserved
+ *      (for estimating future scheduling) but floored at MIN.
+ *   2. If `scheduledStart` is set:
+ *        a) all-day → `scheduledEnd` = same calendar day at 23:59:59 UTC.
+ *        b) timed   → `scheduledEnd` is kept iff it's a valid Date strictly
+ *           after start; otherwise re-derived from `start + duration`.
+ *   3. Duration: `Math.max(input.durationMinutes ?? DEFAULT, MIN)`.
+ *      When a valid explicit end is preserved, duration is recomputed
+ *      from the actual interval (still floored at MIN).
+ *
+ * The helper does NOT attempt to write the row — it returns the canonical
+ * triple `{ scheduledStart, scheduledEnd, durationMinutes, isAllDay }`
+ * and lets the storage layer assemble the insert/update payload around
+ * the existing UTC-safe sanitizer (`sanitizeSchedulingTimestamps`).
+ */
+export interface VisitScheduleInput {
+  scheduledStart?: Date | string | null;
+  scheduledEnd?: Date | string | null;
+  /** Caller's preferred duration in minutes. Default 60. Floor 30. */
+  durationMinutes?: number | null;
+  isAllDay?: boolean | null;
+}
+
+export interface NormalizedVisitSchedule {
+  scheduledStart: Date | null;
+  scheduledEnd: Date | null;
+  /** Always >= MIN_VISIT_DURATION_MINUTES. */
+  durationMinutes: number;
+  isAllDay: boolean;
+}
+
+function toDateOrNull(v: Date | string | null | undefined): Date | null {
+  if (v === null || v === undefined) return null;
+  const d = v instanceof Date ? v : new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+export function normalizeVisitSchedule(input: VisitScheduleInput): NormalizedVisitSchedule {
+  const requestedDuration =
+    input.durationMinutes != null && Number.isFinite(input.durationMinutes)
+      ? Number(input.durationMinutes)
+      : DEFAULT_VISIT_DURATION_MINUTES;
+  const duration = Math.max(requestedDuration, MIN_VISIT_DURATION_MINUTES);
+  const isAllDay = input.isAllDay === true;
+
+  const start = toDateOrNull(input.scheduledStart);
+  if (start === null) {
+    // Unscheduled — both timestamps forced to null. Duration preserved
+    // for downstream estimating (UI default-duration hint, etc.).
+    return { scheduledStart: null, scheduledEnd: null, durationMinutes: duration, isAllDay };
+  }
+
+  if (isAllDay) {
+    const end = new Date(start);
+    end.setUTCHours(23, 59, 59, 0);
+    const allDayDuration = Math.max(
+      Math.round((end.getTime() - start.getTime()) / 60_000),
+      MIN_VISIT_DURATION_MINUTES,
+    );
+    return { scheduledStart: start, scheduledEnd: end, durationMinutes: allDayDuration, isAllDay: true };
+  }
+
+  const fallbackEnd = new Date(start.getTime() + duration * 60_000);
+  const explicitEnd = toDateOrNull(input.scheduledEnd);
+  if (explicitEnd === null || explicitEnd.getTime() <= start.getTime()) {
+    return { scheduledStart: start, scheduledEnd: fallbackEnd, durationMinutes: duration, isAllDay: false };
+  }
+
+  // Valid explicit end — keep it, but recompute duration so it reflects
+  // the actual interval the caller wrote (rounded, floor MIN).
+  const actualDuration = Math.max(
+    Math.round((explicitEnd.getTime() - start.getTime()) / 60_000),
+    MIN_VISIT_DURATION_MINUTES,
+  );
+  return {
+    scheduledStart: start,
+    scheduledEnd: explicitEnd,
+    durationMinutes: actualDuration,
+    isAllDay: false,
+  };
+}
+
 /**
  * Get the start of day (00:00:00.000) for a given date in a specific timezone.
  * Returns the equivalent UTC Date object.

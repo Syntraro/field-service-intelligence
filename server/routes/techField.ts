@@ -341,7 +341,11 @@ router.post(
         status: "en_route",
         visitId: visit.id,
         at: now,
-        notes: `Visit #${visit.visitNumber} — en route`,
+        // 2026-05-04 v3 polish: notes default blank — user-entered only.
+        // Audit context (visitId / visitNumber) is preserved via the
+        // FK join; downstream consumers (timeTracking.ts:visitLabel)
+        // derive labels from `visitNumber`, not from notes text.
+        notes: null,
         source: "mobile",
       });
       if (timeEntry) {
@@ -398,7 +402,7 @@ router.post(
         status: "arrived",
         visitId: visit.id,
         at: now,
-        notes: `Visit #${visit.visitNumber} — on site`,
+        notes: null,
         source: "mobile",
       });
       if (timeEntry) {
@@ -513,7 +517,7 @@ router.post(
         status: "paused",
         visitId: visit.id,
         at: now,
-        notes: `Visit #${visit.visitNumber} — route cancelled`,
+        notes: null,
         source: "mobile",
       });
     } catch {
@@ -555,7 +559,7 @@ router.post(
         status: "paused",
         visitId: visit.id,
         at: now,
-        notes: `Visit #${visit.visitNumber} — start cancelled`,
+        notes: null,
         source: "mobile",
       });
     } catch {
@@ -608,7 +612,7 @@ router.post(
         status: "paused",
         visitId: visit.id,
         at: now,
-        notes: `Visit #${visit.visitNumber} — paused`,
+        notes: null,
         source: "mobile",
       });
     } catch {
@@ -653,7 +657,7 @@ router.post(
         status: "resumed",
         visitId: visit.id,
         at: now,
-        notes: `Visit #${visit.visitNumber} — resumed`,
+        notes: null,
         source: "mobile",
       });
       if (timeEntry) {

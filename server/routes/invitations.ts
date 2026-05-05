@@ -1,6 +1,10 @@
 import express, { Request, Response } from "express";
 import { requireRole } from "../auth/requireRole";
 import { canAssignRole, type Role } from "../auth/roles";
+// 2026-05-04 PR 4: invitations are team management. team.manage gate
+// behind the existing role gate. POST /accept is intentionally NOT
+// gated — it's the public token-redemption endpoint.
+import { requirePermission } from "../permissions";
 import { invitationRepository } from "../storage/invitations";
 import { logInvitationCreated, logInvitationResent } from "../services/auditService";
 import { asyncHandler, createError } from "../middleware/errorHandler";
@@ -28,7 +32,7 @@ const acceptInvitationSchema = z.object({
 
 // Admin/dispatcher create invite (protected by requireAuth upstream)
 // Role hierarchy enforced: dispatchers can only invite technicians
-router.post("/", requireRole(["admin", "dispatcher"]), asyncHandler(async (req: AuthedRequest, res: Response) => {
+router.post("/", requireRole(["admin", "dispatcher"]), requirePermission("team.manage"), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const validation = createInvitationSchema.safeParse(req.body);
   if (!validation.success) {
     throw createError(400, "Validation failed");
@@ -51,7 +55,7 @@ router.post("/", requireRole(["admin", "dispatcher"]), asyncHandler(async (req: 
 }));
 
 // Resend invite (pending only) - validates invitation belongs to company
-router.post("/:id/resend", requireRole(["admin", "dispatcher"]), asyncHandler(async (req: AuthedRequest, res: Response) => {
+router.post("/:id/resend", requireRole(["admin", "dispatcher"]), requirePermission("team.manage"), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
   const { token, expiresAt } = await invitationRepository.resendInvitation(companyId, req.params.id);
 

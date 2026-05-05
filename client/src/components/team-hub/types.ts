@@ -63,6 +63,10 @@ export interface Role {
   description?: string | null;
   hierarchy: number;
   memberCount?: number;
+  // 2026-05-04 PR 2: surfaces backend `roles.is_system_role`. The
+  // server already includes this in `GET /api/roles`; the type was
+  // missing it. UI uses this for the lock badge + clone-CTA branch.
+  isSystemRole?: boolean;
 }
 
 export interface Permission {

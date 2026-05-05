@@ -37,7 +37,7 @@ import { db } from "../db";
 import { eq, and } from "drizzle-orm";
 import { permissions, userPermissionOverrides } from "@shared/schema";
 import { requirePermission } from "../permissions";
-import { clearPermissionCache } from "../storage/permissions";
+import { clearPermissionCache, permissionRepository } from "../storage/permissions";
 
 const router = Router();
 
@@ -200,6 +200,11 @@ router.get(
 router.post(
   "/",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  // 2026-05-04 PR 4: team.manage on create. Role-assignment paths
+  // (PATCH /:userId/role, PATCH /:userId/status) intentionally NOT
+  // gated here — they keep their owner/admin role gate per the
+  // matrix doc; team.manage covers invite/edit/deactivate/schedule.
+  requirePermission("team.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
     const actorUserId = req.user!.id;
@@ -396,8 +401,14 @@ router.get(
 );
 
 // GET /api/team - List all team members with pagination
+// 2026-05-04 PR 4: `team.view` gate added. Per ACCESS_CONTROL_MATRIX.md,
+// dispatchers and technicians do not have this permission by default
+// — they should not see the full team roster (separate from the
+// `/technicians` endpoints below, which remain operationally open
+// for assignment/scheduling).
 router.get(
   "/",
+  requirePermission("team.view"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { params, explicit } = parsePaginationLenient(req.query);
 
@@ -417,6 +428,7 @@ router.get(
 // GET /api/team/:userId - Get single team member with full details
 router.get(
   "/:userId",
+  requirePermission("team.view"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
     const member = await storage.getTeamMember(req.companyId!, userId);
@@ -441,10 +453,89 @@ router.get(
   })
 );
 
+/**
+ * GET /api/team/:userId/effective-permissions
+ *
+ * Phase 2 PR 3 (2026-05-04): read-only "what can this user actually
+ * access" view for the Roles & Access tab. Pure read; no auth changes.
+ *
+ * Resolution path is the SAME path `requirePermission(...)` uses at
+ * the route layer — `permissionRepository.getUserEffectivePermissions`.
+ * We do NOT reimplement permission logic here. The breakdown
+ * (`inheritedFromRole`, `grantedByOverride`, `revokedByOverride`) is
+ * pulled from the same primitives the resolver consumes:
+ *
+ *   inheritedFromRole = permissionRepository.getRolePermissions(roleId)
+ *   overrides         = permissionRepository.getUserPermissionOverrides(userId)
+ *   effective         = the resolver's final Set (role ∪ grants \ revokes)
+ *
+ * Tenant scoping: `storage.getTeamMember(companyId, userId)` returns
+ * null for any user not in the caller's company → 404. No explicit
+ * role gate, matching the existing `GET /api/team` and
+ * `GET /api/team/:userId` read access semantics.
+ */
+router.get(
+  "/:userId/effective-permissions",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId } = req.params;
+    const companyId = req.companyId!;
+
+    // Tenant gate. `getTeamMember` already filters by companyId and
+    // returns null for cross-tenant lookups — same shape as the
+    // sibling endpoints above, no leak.
+    const member = await storage.getTeamMember(companyId, userId);
+    if (!member) {
+      throw createError(404, "Team member not found");
+    }
+
+    // Reuse the canonical resolver. This is the same call
+    // requirePermission(...) makes per request, so the `effective`
+    // list is exactly what the gates use.
+    const effectiveSet = await permissionRepository.getUserEffectivePermissions(userId);
+
+    // Inherited from role: the role's permission keys, before per-user
+    // overrides are applied. Empty when the user has no roleId (the
+    // resolver self-heals NULL roleId via `users.role` string lookup;
+    // the persisted roleId is what we read here).
+    let inheritedFromRole: string[] = [];
+    if (member.roleId) {
+      inheritedFromRole = await permissionRepository.getRolePermissions(
+        member.roleId,
+      );
+    }
+
+    // Per-user overrides: split into grant / revoke buckets. The
+    // resolver applies grants AFTER role merge and revokes AFTER
+    // grants, but the bucket UI just needs the raw split.
+    const rawOverrides = await permissionRepository.getUserPermissionOverrides(
+      userId,
+    );
+    const grantedByOverride: string[] = [];
+    const revokedByOverride: string[] = [];
+    for (const o of rawOverrides) {
+      if (o.override === "grant") grantedByOverride.push(o.key);
+      else if (o.override === "revoke") revokedByOverride.push(o.key);
+    }
+
+    // Stable sort everywhere so consumers get deterministic output
+    // (UI grouping, snapshot tests).
+    res.json({
+      userId,
+      role: member.role,
+      roleId: member.roleId ?? null,
+      effective: Array.from(effectiveSet).sort(),
+      inheritedFromRole: inheritedFromRole.slice().sort(),
+      grantedByOverride: grantedByOverride.slice().sort(),
+      revokedByOverride: revokedByOverride.slice().sort(),
+    });
+  })
+);
+
 // PATCH /api/team/:userId - Update team member basic info
 router.patch(
   "/:userId",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
     const companyId = req.companyId!;
@@ -492,6 +583,7 @@ router.patch(
 router.post(
   "/:userId/deactivate",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
     const companyId = req.companyId!;
@@ -531,6 +623,7 @@ router.post(
 router.post(
   "/:userId/activate",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
     const companyId = req.companyId!;
@@ -649,6 +742,7 @@ router.patch(
 router.put(
   "/:userId/profile",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
 
@@ -674,6 +768,7 @@ router.put(
 router.put(
   "/:userId/working-hours",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
 
@@ -690,9 +785,14 @@ router.put(
 );
 
 // PUT /api/team/:userId/permissions - Set permission overrides
+// 2026-05-04 PR 4: legacy bulk-override endpoint. Permission editing
+// is intentionally NOT under team.manage — it stays under
+// permissions.manage to mirror the canonical PATCH endpoint below.
+// Brings the legacy PUT in line with the two-layer model.
 router.put(
   "/:userId/permissions",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("permissions.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
 
@@ -706,24 +806,6 @@ router.put(
     const updated = await storage.getUserPermissionOverrides(userId);
 
     res.json(updated);
-  })
-);
-
-// GET /api/team/:userId/effective-permissions - Get user's effective permissions
-router.get(
-  "/:userId/effective-permissions",
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const { userId } = req.params;
-
-    const member = await storage.getTeamMember(req.companyId!, userId);
-    if (!member) {
-      throw createError(404, "Team member not found");
-    }
-
-    const { getUserEffectivePermissions } = await import("../permissions");
-    const permissionSet = await getUserEffectivePermissions(userId);
-
-    res.json(Array.from(permissionSet));
   })
 );
 
@@ -749,6 +831,7 @@ const updatePasswordSchema = z.object({
 router.put(
   "/:userId/email",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
     const companyId = req.companyId!;
@@ -810,6 +893,7 @@ router.put(
 router.put(
   "/:userId/password",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
     const companyId = req.companyId!;
@@ -861,6 +945,7 @@ router.put(
 router.post(
   "/:userId/send-password-reset",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("team.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
     const companyId = req.companyId!;

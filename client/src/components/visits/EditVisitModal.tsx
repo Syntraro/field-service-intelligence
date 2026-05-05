@@ -65,7 +65,7 @@ import { format, parseISO } from "date-fns";
 // editing surface for visits in the office app; no page-specific callback
 // plumbing, no duplicate orchestration per entry point.
 import { useDispatchPreviewMutations } from "@/components/dispatch/useDispatchPreviewMutations";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -80,7 +80,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 // 2026-05-03 modal form-field polish: internal-label wrapper for the
 // compact Schedule grid (Date / Start / Duration / Assigned To).
-import { CompactField } from "@/components/ui/compact-field";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 // 2026-04-26: canonical compact duration options (15m / 30m / 1h / 1.5h / 2h / 3h / 4h / 8h)
@@ -596,7 +595,18 @@ export function EditVisitModal({
       // 2026-04-26 (Option A): bail on hook-level failure. Lifecycle action;
       // a silent close here would imply the visit was completed when it
       // wasn't.
-      const result = await completeVisitWithOutcome({ visitId, jobId, ...payload });
+      // 2026-05-04: office completion never auto-closes the parent job.
+      // PostVisitCompletionDialog (mounted by VisitEditorLauncher after
+      // this modal closes) owns the close-vs-leave-open decision via
+      // its own close-job mutation. Without this flag, reconciliation
+      // would fire CLOSE_JOB before the dialog appears and "Leave open"
+      // would be a no-op against an already-closed job.
+      const result = await completeVisitWithOutcome({
+        visitId,
+        jobId,
+        ...payload,
+        autoCloseJobOnLastVisit: false,
+      });
       if (!result.ok) {
         return;
       }
@@ -662,20 +672,25 @@ export function EditVisitModal({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="sm:max-w-3xl p-0 gap-0 overflow-hidden rounded-xl [&>button.absolute]:hidden" data-testid="dialog-edit-visit">
+        <DialogContent className="sm:max-w-[560px] w-full p-0 gap-0 overflow-hidden rounded-xl [&>button.absolute]:hidden" data-testid="dialog-edit-visit">
 
           {/* ══════ HEADER ══════
               Top row: title + inline Job # link on the left, wired action
               buttons on the right. Below the title row: prominent customer
               name + muted address line. */}
-          <div className="px-5 pt-3.5 pb-3 border-b border-slate-200 bg-slate-50/80">
+          <div className="p-4 border-b border-slate-200 bg-slate-50/80">
             <div className="flex items-center justify-between gap-3">
-              <div className="flex items-baseline gap-3 min-w-0">
-                <h2 className="text-base font-semibold text-slate-900" data-testid="text-visit-modal-title">Edit Visit</h2>
+              <div className="flex flex-col gap-0.5 min-w-0">
+                <DialogTitle
+                  className="text-base font-semibold text-slate-900 whitespace-nowrap"
+                  data-testid="text-visit-modal-title"
+                >
+                  Edit Visit
+                </DialogTitle>
                 {jobNumber !== undefined && (
                   <Link
                     href={`/jobs/${jobId}`}
-                    className="text-xs font-medium text-slate-500 hover:text-[#76B054] hover:underline whitespace-nowrap"
+                    className="text-caption text-text-muted hover:text-[#76B054] hover:underline whitespace-nowrap"
                     onClick={(e) => { e.stopPropagation(); onOpenChange(false); }}
                     data-testid="link-job-number"
                   >
@@ -703,7 +718,7 @@ export function EditVisitModal({
                       size="sm"
                       onClick={() => handleComplete({ outcome: "completed" })}
                       disabled={isPending}
-                      className="h-8 px-3 text-xs bg-emerald-500 hover:bg-emerald-600 text-white font-semibold"
+                      className="h-8 px-2 text-caption bg-emerald-500 hover:bg-emerald-600 text-white font-semibold"
                       data-testid="button-complete-visit"
                     >
                       <CheckCircle2 className="h-3.5 w-3.5 mr-1" />Complete
@@ -714,7 +729,7 @@ export function EditVisitModal({
                           size="sm"
                           variant="outline"
                           disabled={isPending}
-                          className="h-8 px-3 text-xs border-amber-300 text-amber-700 hover:bg-amber-50 font-semibold"
+                          className="h-8 px-2 text-caption border-amber-300 text-amber-700 hover:bg-amber-50 font-semibold"
                           data-testid="button-follow-up"
                         >
                           Follow-up
@@ -741,7 +756,7 @@ export function EditVisitModal({
                         variant="outline"
                         onClick={handleUnschedule}
                         disabled={isPending}
-                        className="h-8 px-3 text-xs font-semibold"
+                        className="h-8 px-2 text-caption font-semibold"
                         data-testid="button-unschedule-visit"
                       >
                         Unschedule
@@ -796,72 +811,72 @@ export function EditVisitModal({
           ) : (
             <>
               {/* ══════ BODY ══════ */}
-              <div className="px-5 py-4 space-y-3">
+              <div className="p-4 space-y-4">
 
                 {/* 1. Service + Equipment row.
                     Both render as compact comboboxes (search trigger on top,
-                    selected chips below). The two sub-components share the
-                    same visual rhythm; data flows are different so the
-                    components are specialized. */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div>
-                    <Label className="text-xs font-medium mb-1 block flex items-center gap-1.5">
-                      <Wrench className="h-3 w-3 text-muted-foreground" />
-                      Service(s)
-                    </Label>
-                    <ServiceMultiSelect
-                      jobId={jobId}
-                      selectedServices={selectedServices}
-                      onAdd={(product) => addServiceMutation.mutate(product)}
-                      onRemove={(jobPartId) => removeServiceMutation.mutate(jobPartId)}
-                      busy={addServiceMutation.isPending || removeServiceMutation.isPending}
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-xs font-medium mb-1 block flex items-center gap-1.5">
-                      <Wrench className="h-3 w-3 text-muted-foreground" />
-                      Equipment
-                    </Label>
-                    <EquipmentMultiSelect
-                      locationId={effectiveLocationId ?? null}
-                      selectedIds={selectedEquipmentIds}
-                      onChange={setSelectedEquipmentIds}
-                    />
-                  </div>
-                </div>
-
-                {/* 2. Team Instructions — full-width textarea. Same
-                    `visitNotes` state as before; placeholder and label
-                    style match QuickAddJobDialog. */}
-                <div>
-                  <Label htmlFor="visit-notes" className="text-xs font-medium mb-1 block">
-                    Team Instructions
-                  </Label>
-                  <Textarea
-                    id="visit-notes"
-                    value={visitNotes}
-                    onChange={(e) => setVisitNotes(e.target.value)}
-                    placeholder="Add any notes or instructions for the team..."
-                    rows={3}
-                    className="text-sm resize-none"
-                    data-testid="textarea-visit-notes"
+                    selected chips below). 2026-05-04 modal compression:
+                    outer "Service(s)" / "Equipment" labels removed —
+                    each combobox already renders its own search-trigger
+                    placeholder ("Search services..." / "Search
+                    equipment...") so the field's purpose is unambiguous
+                    without the redundant label. */}
+                <div className="grid grid-cols-1 gap-2">
+                  <ServiceMultiSelect
+                    jobId={jobId}
+                    selectedServices={selectedServices}
+                    onAdd={(product) => addServiceMutation.mutate(product)}
+                    onRemove={(jobPartId) => removeServiceMutation.mutate(jobPartId)}
+                    busy={addServiceMutation.isPending || removeServiceMutation.isPending}
+                  />
+                  <EquipmentMultiSelect
+                    locationId={effectiveLocationId ?? null}
+                    selectedIds={selectedEquipmentIds}
+                    onChange={setSelectedEquipmentIds}
                   />
                 </div>
 
-                {/* 3. Schedule — 4-column grid: Date | Start | End | Assigned.
+                {/* 2. Team Instructions — full-width textarea. Same
+                    `visitNotes` state as before. 2026-05-04 modal
+                    compression: outer "Team Instructions" label removed;
+                    placeholder text carries the field purpose. Compact
+                    default height that expands on focus so the modal
+                    stays small at rest but gives writers room when
+                    they need it. */}
+                <Textarea
+                  id="visit-notes"
+                  value={visitNotes}
+                  onChange={(e) => setVisitNotes(e.target.value)}
+                  placeholder="Add team instructions..."
+                  className="text-sm resize-none h-16 min-h-0 px-3 py-2"
+                  data-testid="textarea-visit-notes"
+                />
+
+                {/* 3. Schedule — 4-column grid: Date | Start | Duration | Assigned.
                     Visit scheduling is end-time based (preserved from
                     prior wiring); QuickAddJobDialog uses duration for
                     new jobs but visits round-trip startAt/endAt and we
-                    keep that contract intact here. */}
-                <div>
-                  <Label className="text-xs font-medium mb-1 block">Schedule</Label>
-                  {/* 2026-05-03 polish: each Schedule cell now wraps its
-                      control in a <CompactField> with the cell label
-                      rendered INSIDE the bordered chrome. The inner
-                      controls render borderless / paddingless so the
-                      wrapper owns the visual chrome and focus ring. */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    <CompactField label="Date" className="min-w-0">
+                    keep that contract intact here.
+                    2026-05-04 modal compression: outer "Schedule" label
+                    removed — each cell already carries its inline
+                    label inside the CompactField chrome.
+                    2026-05-03 polish: each Schedule cell wraps its
+                    control in a <CompactField> with the cell label
+                    rendered INSIDE the bordered chrome. The inner
+                    controls render borderless / paddingless so the
+                    wrapper owns the visual chrome and focus ring. */}
+                {/* 2026-05-04 modal compression r2: schedule fields render
+                     INLINE (label left, value right) inside h-11 bordered
+                     rows. CompactField was dropped here because its
+                     inline mode bakes a fixed 40px label column and its
+                     own padding — the schedule fields need a tighter
+                     `flex items-center justify-between` row that lets the
+                     value control claim the rest of the width. The
+                     control is borderless / paddingless / transparent so
+                     the wrapper owns the visual chrome and focus ring. */}
+                <div className="grid grid-cols-2 gap-2">
+                    <div className="min-w-0 h-11 rounded-md border border-border-strong bg-surface px-3 py-2 flex items-center justify-between gap-3 focus-within:border-brand focus-within:shadow-[0_0_0_2px_rgba(118,176,84,0.25)]">
+                      <span className="text-label text-text-muted shrink-0">DATE</span>
                       <Popover>
                         <PopoverTrigger asChild>
                           <Button
@@ -869,15 +884,19 @@ export function EditVisitModal({
                             variant="ghost"
                             size="sm"
                             className={cn(
-                              "h-7 w-full justify-start gap-1.5 px-0 text-xs hover:bg-transparent",
-                              !schedule.date && "text-muted-foreground",
+                              // Canonical schedule value typography. Overrides
+                              // buttonVariants base (text-sm font-medium) AND
+                              // size="sm" (text-xs min-h-8) so this button
+                              // visually matches Start/Duration/Assigned.
+                              "h-7 min-h-0 min-w-0 justify-end gap-1.5 px-0 text-input text-text-primary font-normal leading-none hover:bg-transparent",
+                              !schedule.date && "text-text-muted",
                             )}
                             data-testid="button-select-date"
                           >
-                            <CalendarIcon className="h-3.5 w-3.5 shrink-0" />
                             <span className="truncate">
                               {schedule.date ? format(selectedDate!, "MMM d, yyyy") : "Pick date"}
                             </span>
+                            <CalendarIcon className="h-3.5 w-3.5 shrink-0" />
                           </Button>
                         </PopoverTrigger>
                         <PopoverContent className="w-auto p-0" align="start">
@@ -889,8 +908,9 @@ export function EditVisitModal({
                           />
                         </PopoverContent>
                       </Popover>
-                    </CompactField>
-                    <CompactField label="Start" htmlFor="input-start-time" className="min-w-0">
+                    </div>
+                    <div className="min-w-0 h-11 rounded-md border border-border-strong bg-surface px-3 py-2 flex items-center justify-between gap-3 focus-within:border-brand focus-within:shadow-[0_0_0_2px_rgba(118,176,84,0.25)]">
+                      <label htmlFor="input-start-time" className="text-label text-text-muted shrink-0">START</label>
                       <Input
                         id="input-start-time"
                         type="time"
@@ -903,17 +923,18 @@ export function EditVisitModal({
                             return { ...s, startTime: v, endTime: v ? addMinutesToTime(v, dur) : s.endTime };
                           });
                         }}
-                        className="h-7 w-full text-xs border-0 px-0 shadow-none focus-visible:border-0 focus-visible:shadow-none bg-transparent"
+                        className="h-7 w-auto min-w-0 text-input text-text-primary font-normal leading-none text-right border-0 px-0 shadow-none focus-visible:border-0 focus-visible:shadow-none bg-transparent"
                         data-testid="input-start-time"
                       />
-                    </CompactField>
+                    </div>
                     {/* 2026-04-26: Duration replaces End. The save still
                          emits canonical startAt + endAt — `endTime` is
                          derived from `startTime + duration` on every
                          change. Manual edits flip `manuallyEditedDuration`
                          so subsequent service-adds don't override the
                          user's intent. */}
-                    <CompactField label="Duration" className="min-w-0">
+                    <div className="min-w-0 h-11 rounded-md border border-border-strong bg-surface px-3 py-2 flex items-center justify-between gap-3 focus-within:border-brand focus-within:shadow-[0_0_0_2px_rgba(118,176,84,0.25)]">
+                      <span className="text-label text-text-muted shrink-0">DURATION</span>
                       <Select
                         value={(() => {
                           if (!schedule.startTime || !schedule.endTime) return "60";
@@ -930,7 +951,10 @@ export function EditVisitModal({
                         }}
                       >
                         <SelectTrigger
-                          className="h-7 w-full text-xs border-0 px-0 shadow-none focus:ring-0 focus:ring-offset-0 bg-transparent"
+                          // Canonical schedule value typography. Overrides
+                          // SelectTrigger's baked `h-9 text-row` so this
+                          // matches the Date/Start/Assigned siblings.
+                          className="h-7 min-h-0 w-auto min-w-0 gap-1.5 text-input text-text-primary font-normal leading-none border-0 px-0 shadow-none focus:ring-0 focus:ring-offset-0 bg-transparent"
                           data-testid="select-duration"
                           aria-label="Duration"
                         >
@@ -944,16 +968,21 @@ export function EditVisitModal({
                           ))}
                         </SelectContent>
                       </Select>
-                    </CompactField>
-                    <CompactField label="Assigned to" className="min-w-0">
+                    </div>
+                    <div className="min-w-0 h-11 rounded-md border border-border-strong bg-surface px-3 py-2 flex items-center justify-between gap-3 focus-within:border-brand focus-within:shadow-[0_0_0_2px_rgba(118,176,84,0.25)]">
+                      <span className="text-label text-text-muted shrink-0">ASSIGNED</span>
                       <TechnicianSelector
                         mode="multi"
                         value={schedule.assignedTechnicianIds}
                         onChange={(ids) => setSchedule((s) => ({ ...s, assignedTechnicianIds: ids }))}
-                        className="!min-w-0 !max-w-full w-full"
+                        // Override TechnicianSelector's baked
+                        // `h-9 text-xs` and outline-variant border/shadow
+                        // so the trigger renders chromeless and matches
+                        // the canonical schedule value typography of the
+                        // Date/Start/Duration siblings.
+                        className="!min-w-0 !max-w-full !h-7 !min-h-0 !px-0 !border-0 !bg-transparent !shadow-none flex-1 !text-input !text-text-primary !font-normal !leading-none"
                       />
-                    </CompactField>
-                  </div>
+                    </div>
                 </div>
 
                 {/* 4. Conditional follow-up note — hidden by default. */}
@@ -1009,12 +1038,12 @@ export function EditVisitModal({
               </div>
 
               {/* ══════ FOOTER ══════ */}
-              <div className="flex items-center justify-between border-t border-slate-200 bg-white px-5 py-3">
+              <div className="flex items-center justify-between border-t border-slate-200 bg-white p-4">
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => setShowDeleteConfirm(true)}
-                  className="text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300 text-xs h-8 px-3"
+                  className="text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300 text-xs h-9 px-3"
                   data-testid="button-delete-visit"
                 >
                   <Trash2 className="h-3 w-3 mr-1" />Delete Visit
@@ -1024,7 +1053,7 @@ export function EditVisitModal({
                     variant="outline"
                     size="sm"
                     onClick={() => onOpenChange(false)}
-                    className="h-8 text-xs px-4"
+                    className="h-9 text-xs px-3"
                     data-testid="button-cancel-visit-edit"
                   >
                     Cancel
@@ -1033,7 +1062,7 @@ export function EditVisitModal({
                     size="sm"
                     onClick={handleSave}
                     disabled={isPending}
-                    className="h-8 text-xs px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
+                    className="h-9 text-xs px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
                     data-testid="button-save-visit"
                   >
                     {isPending && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
@@ -1200,22 +1229,29 @@ function ServiceMultiSelect({
   });
 
   return (
-    <div className="space-y-1.5">
-      {/* Search trigger — top */}
+    // 2026-05-04 modal compression: single bordered container holds
+    // BOTH the search trigger AND the selected chips. The previous
+    // layout rendered the trigger and the chips as two separate
+    // bordered boxes stacked vertically, which doubled the visual
+    // weight of every populated selector. The trigger button is now
+    // a borderless row inside the wrapper; chip remove still works
+    // because each chip is its own button (separate from the trigger,
+    // sibling inside the wrapper).
+    <div className="min-h-[58px] rounded-md border border-border-strong bg-surface px-3 py-2">
+      {/* Search trigger — top row inside the wrapper */}
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
-          <Button
+          <button
             type="button"
-            variant="outline"
             role="combobox"
             aria-expanded={open}
-            className="h-9 w-full justify-between text-xs font-normal"
-            data-testid="button-service-search"
             disabled={busy}
+            className="flex h-7 w-full items-center justify-between text-left text-input disabled:cursor-not-allowed disabled:opacity-60"
+            data-testid="button-service-search"
           >
-            <span className="text-muted-foreground truncate">Search or add service...</span>
-            <ChevronsUpDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-50" />
-          </Button>
+            <span className="truncate text-text-muted">Search or add service...</span>
+            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 text-text-muted" />
+          </button>
         </PopoverTrigger>
         <PopoverContent className="p-0 w-[--radix-popover-trigger-width]" align="start">
           <Command shouldFilter={false}>
@@ -1324,27 +1360,28 @@ function ServiceMultiSelect({
         </PopoverContent>
       </Popover>
 
-      {/* Selected chips — below */}
+      {/* Selected chips — inside the wrapper, below the trigger. Each
+           chip is itself a button so the whole chip is the click target
+           for removal. The X icon is decorative; aria-label on the
+           button carries the action label. */}
       {selectedServices.length > 0 && (
-        <div className="flex flex-col gap-1.5">
+        <div className="mt-2 flex flex-wrap gap-2">
           {selectedServices.map((svc) => (
-            <div
+            <button
               key={svc.id}
-              className="flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
+              type="button"
+              onClick={() => onRemove(svc.id)}
+              aria-label={`Remove ${svc.description}`}
+              disabled={busy}
+              className="inline-flex h-6 max-w-full items-center gap-2 rounded-md border border-border-default bg-surface-subtle px-2 text-input text-text-primary disabled:cursor-not-allowed disabled:opacity-60 hover:bg-surface"
               data-testid={`chip-service-${svc.id}`}
             >
-              <span className="truncate text-slate-800 font-medium">{svc.description}</span>
-              <button
-                type="button"
-                onClick={() => onRemove(svc.id)}
-                aria-label={`Remove ${svc.description}`}
-                className="h-5 w-5 rounded-sm text-slate-400 hover:bg-slate-100 hover:text-slate-700 flex items-center justify-center shrink-0"
-                disabled={busy}
+              <span className="truncate">{svc.description}</span>
+              <X
+                className="h-3.5 w-3.5 shrink-0 text-text-muted"
                 data-testid={`chip-remove-service-${svc.id}`}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
+              />
+            </button>
           ))}
         </div>
       )}
@@ -1460,31 +1497,37 @@ function EquipmentMultiSelect({
   // scoped so without a location the field has nothing to offer.
   if (!locationId) {
     return (
-      <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 flex items-center text-xs text-muted-foreground italic">
+      <div className="min-h-[58px] w-full rounded-md border border-border-strong bg-surface-subtle px-3 py-2 flex items-center text-input text-text-muted italic">
         Location required
       </div>
     );
   }
 
   return (
-    <div className="space-y-1.5">
-      {/* Search trigger — top */}
+    // 2026-05-04 modal compression: same single-wrapper pattern as
+    // ServiceMultiSelect — search trigger and selected chips share
+    // one bordered container so a populated equipment field doesn't
+    // double its visual height. AddEquipmentDialog still renders as
+    // a sibling outside the wrapper because it's a portal-mounted
+    // dialog, not a chrome element of the field itself.
+    <>
+    <div className="min-h-[58px] rounded-md border border-border-strong bg-surface px-3 py-2">
+      {/* Search trigger — top row inside the wrapper */}
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
-          <Button
+          <button
             type="button"
-            variant="outline"
             role="combobox"
             aria-expanded={open}
-            className="h-9 w-full justify-between text-xs font-normal"
-            data-testid="button-equipment-search"
             disabled={isLoading}
+            className="flex h-7 w-full items-center justify-between text-left text-input disabled:cursor-not-allowed disabled:opacity-60"
+            data-testid="button-equipment-search"
           >
-            <span className="text-muted-foreground truncate">
+            <span className="truncate text-text-muted">
               {isLoading ? "Loading equipment…" : "Search or add equipment..."}
             </span>
-            <ChevronsUpDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-50" />
-          </Button>
+            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 text-text-muted" />
+          </button>
         </PopoverTrigger>
         <PopoverContent className="p-0 w-[--radix-popover-trigger-width]" align="start">
           <Command shouldFilter={false}>
@@ -1536,41 +1579,43 @@ function EquipmentMultiSelect({
         </PopoverContent>
       </Popover>
 
-      {/* Selected chips — below */}
+      {/* Selected chips — inside the wrapper. Each chip is its own
+           button so the whole chip removes on click. Wrench prefix is
+           retained as a visual cue that these are equipment items
+           (vs services). */}
       {selected.length > 0 && (
-        <div className="flex flex-col gap-1.5">
+        <div className="mt-2 flex flex-wrap gap-2">
           {selected.map((eq) => (
-            <div
+            <button
               key={eq.id}
-              className="flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
+              type="button"
+              onClick={() => handleRemove(eq.id)}
+              aria-label={`Remove ${eq.name}`}
+              className="inline-flex h-6 max-w-full items-center gap-2 rounded-md border border-border-default bg-surface-subtle px-2 text-input text-text-primary hover:bg-surface"
               data-testid={`chip-equipment-${eq.id}`}
             >
-              <div className="flex items-center gap-1.5 min-w-0">
-                <Wrench className="h-3 w-3 text-slate-500 shrink-0" />
-                <span className="truncate text-slate-800 font-medium">{formatLabel(eq)}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => handleRemove(eq.id)}
-                aria-label={`Remove ${eq.name}`}
-                className="h-5 w-5 rounded-sm text-slate-400 hover:bg-slate-100 hover:text-slate-700 flex items-center justify-center shrink-0"
+              <Wrench className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+              <span className="truncate">{formatLabel(eq)}</span>
+              <X
+                className="h-3.5 w-3.5 shrink-0 text-text-muted"
                 data-testid={`chip-remove-equipment-${eq.id}`}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </div>
+              />
+            </button>
           ))}
         </div>
       )}
-
-      {/* Inline equipment-create dialog — pre-fills with the typed name. */}
-      <AddEquipmentDialog
-        locationId={locationId}
-        open={addDialogOpen}
-        onOpenChange={setAddDialogOpen}
-        defaultName={pendingCreateName}
-        onCreated={handleEquipmentCreated}
-      />
     </div>
+
+    {/* Inline equipment-create dialog — pre-fills with the typed name.
+         Sibling of the wrapper (not a child) since it's a portal-mounted
+         dialog, not a chrome element of the field. */}
+    <AddEquipmentDialog
+      locationId={locationId}
+      open={addDialogOpen}
+      onOpenChange={setAddDialogOpen}
+      defaultName={pendingCreateName}
+      onCreated={handleEquipmentCreated}
+    />
+    </>
   );
 }

@@ -1,24 +1,26 @@
 /**
  * Technician PWA — Search Page.
- * Client/location search using canonical GET /api/clients/search-locations endpoint.
- * Tenant-safe, tech-safe. Reuses the same endpoint as CreateJobPage location picker.
+ * Tech-safe location search through the assignment-scoped tech endpoint.
+ * 2026-05-04 Phase 2 PR 3: switched from the shared office hook to the
+ * tech-only sibling so the search surface no longer depends on an
+ * office API. Backend scoping enforces per-tech assignment access.
  */
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { Search, MapPin, Phone, ChevronRight, AlertCircle, Loader2 } from "lucide-react";
 import { MobileShell } from "../components/MobileShell";
-import { useLocationSearch } from "@/hooks/useLocationSearch";
+import { useTechLocationSearch } from "../hooks/useTechLocationSearch";
 import { useDebouncedValue } from "../utils/useDebouncedValue";
 
 export function SearchPage() {
   const [, setLocation] = useLocation();
   const [search, setSearch] = useState("");
-  // Debounce the query string locally so the canonical `useLocationSearch`
-  // hook fires at most once per quiet window instead of on every keystroke.
+  // Debounce the query string locally so the tech search hook fires
+  // at most once per quiet window instead of on every keystroke.
   // Does not change the hook's contract or query key.
   const debouncedSearch = useDebouncedValue(search, 200);
 
-  const { data: results, isLoading, isError, refetch } = useLocationSearch(debouncedSearch, { limit: 30 });
+  const { data: results, isLoading, isError, refetch } = useTechLocationSearch(debouncedSearch, { limit: 30 });
 
   const list = results ?? [];
 

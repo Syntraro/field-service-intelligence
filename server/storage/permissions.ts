@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { roles, permissions, rolePermissions, userPermissionOverrides, users } from "@shared/schema";
 // 2026-05-01 RBAC system fix: platform roles bypass tenant-scoped
 // permission resolution entirely (they don't operate within a tenant's
@@ -135,20 +135,63 @@ export class PermissionRepository {
     // is no longer authoritative for "platform identity" anyway
     // (that lives on `platform_user_roles`).
 
-    // Tenant users MUST have a tenant `role_id`. Throw
-    // loudly instead of silently degrading — the prior behavior
-    // returned an empty set, which masked the bug for months.
-    if (!user.roleId) {
-      throw new Error(
-        `RBAC ERROR: user.role_id is missing for user ${userId} (role="${user.role}"). ` +
-        `Apply migration 2026_05_01_backfill_users_role_id.sql to backfill, ` +
-        `or assign a role through the admin UI before this user can authenticate.`
-      );
+    // 2026-05-04 Phase 2 PR 3 hotfix (auth regression):
+    //
+    // Previously this branch THREW when `users.role_id` was NULL,
+    // expecting the 2026_05_01 backfill migration to have populated
+    // every row. In practice, rows created AFTER the backfill (new
+    // tenants, test fixtures, recreated owners) re-introduce NULL
+    // role_ids — `userRepository.createUser` does not set role_id
+    // — and every authenticated request from those users 500s.
+    //
+    // Resilient resolution: when `role_id` is NULL but `role` is a
+    // canonical tenant role string, look up `roles.id` by name match.
+    // The Phase 6 DB CHECK constraint on `users.role` guarantees
+    // `role` is one of the five seeded tenant roles (owner / admin /
+    // manager / dispatcher / technician), so this lookup always
+    // resolves. Self-heal by persisting the resolved role_id back to
+    // the row so subsequent requests bypass this branch.
+    //
+    // Genuinely misconfigured rows (no `role` AND no `role_id`) still
+    // throw — that's a real data problem the operator must fix.
+    let effectiveRoleId = user.roleId;
+    if (!effectiveRoleId) {
+      if (!user.role) {
+        throw new Error(
+          `RBAC ERROR: user ${userId} has no role and no role_id. ` +
+          `Assign a role through the admin UI.`
+        );
+      }
+      const matched = await db
+        .select({ id: roles.id })
+        .from(roles)
+        .where(sql`LOWER(${roles.name}) = LOWER(${user.role})`)
+        .limit(1);
+      if (matched.length === 0) {
+        throw new Error(
+          `RBAC ERROR: user ${userId} role="${user.role}" does not match any seeded role. ` +
+          `Re-run migration 2026_05_01_backfill_users_role_id.sql or seed the missing role.`
+        );
+      }
+      effectiveRoleId = matched[0].id;
+      // Self-heal: persist resolved role_id back to the row. Best-
+      // effort — if this UPDATE fails (race, transient db error),
+      // the next request will simply re-resolve via the same path.
+      // We do NOT await with a rejection-propagating semantic; a
+      // failed self-heal must not break the current request.
+      try {
+        await db
+          .update(users)
+          .set({ roleId: effectiveRoleId })
+          .where(eq(users.id, userId));
+      } catch {
+        // swallow — resolution proceeds with the in-memory roleId
+      }
     }
 
     // (3) Standard resolution: role permissions merged with overrides.
     const effectivePermissions = new Set<string>();
-    const rolePerms = await this.getRolePermissions(user.roleId);
+    const rolePerms = await this.getRolePermissions(effectiveRoleId);
     rolePerms.forEach((key) => effectivePermissions.add(key));
 
     const overrides = await this.getUserPermissionOverrides(userId);

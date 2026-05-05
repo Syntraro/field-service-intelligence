@@ -6,6 +6,10 @@ import { z } from "zod";
 import { postalCodeSchema } from "@shared/schema";
 import { requireRole } from "../auth/requireRole";
 import { RESTRICTED_MANAGER_ROLES } from "../auth/roles";
+// 2026-05-04 PR 4: settings.manage on writes behind the existing
+// role gate. GET stays open — settings are read by every page in
+// the office app for display formatting, currency, etc.
+import { requirePermission } from "../permissions";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { AuthedRequest } from "../auth/tenantIsolation";
 
@@ -175,7 +179,7 @@ const handleUpsertSettings = asyncHandler(async (req: AuthedRequest, res: Respon
   res.json(await buildSettingsResponse(companyId));
 });
 
-router.put("/", requireRole(RESTRICTED_MANAGER_ROLES), handleUpsertSettings);
-router.post("/", requireRole(RESTRICTED_MANAGER_ROLES), handleUpsertSettings);
+router.put("/", requireRole(RESTRICTED_MANAGER_ROLES), requirePermission("settings.manage"), handleUpsertSettings);
+router.post("/", requireRole(RESTRICTED_MANAGER_ROLES), requirePermission("settings.manage"), handleUpsertSettings);
 
 export default router;

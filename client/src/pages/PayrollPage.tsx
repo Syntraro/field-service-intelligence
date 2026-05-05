@@ -65,23 +65,22 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Calendar } from "@/components/ui/calendar";
 import { cn } from "@/lib/utils";
 import { TimeEntryModal, type TimeEntryForModal } from "@/components/time";
+// 2026-05-04 Day View redesign — canonical Day View timeline component.
+import { DayView, type DayViewEntry } from "@/components/timesheets/DayView";
+// 2026-05-04 Week Timeline (dispatch-style) — read-only horizontal-block
+// week view. Replaces the prior job-row weekly grid in `viewMode === "week"`.
+// Editing remains in the Day View.
+import { WeekTimeline } from "@/components/timesheets/timeline/WeekTimeline";
+import {
+  buildWeekTimelineViewModel,
+  formatMinutes as formatTimelineMinutes,
+} from "@/components/timesheets/timeline/timeBlockAdapter";
+import { CATEGORY_STYLE, type EntryCategory } from "@/components/timesheets/categoryMap";
 import type { TechnicianWeeklySummary, TimeEntryType } from "@shared/schema";
 
 import { MANAGER_ROLES } from "@/lib/roles";
 const DAY_ABBREVS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const GENERAL_KEY = "__general__";
-
-/** Shared type-badge display config */
-const TYPE_DISPLAY: Record<string, { label: string; color: string }> = {
-  travel_to_job: { label: "Travel", color: "bg-blue-100 text-blue-700" },
-  on_site: { label: "On Site", color: "bg-green-100 text-green-700" },
-  travel_to_supplier: { label: "To Supplier", color: "bg-purple-100 text-purple-700" },
-  supplier_run: { label: "Parts Pickup", color: "bg-purple-100 text-purple-700" },
-  travel_between_jobs: { label: "Between Jobs", color: "bg-blue-50 text-blue-600" },
-  admin: { label: "Admin", color: "bg-orange-100 text-orange-700" },
-  break: { label: "Break", color: "bg-gray-100 text-gray-600" },
-  other: { label: "Other", color: "bg-gray-100 text-gray-600" },
-};
 
 function formatMinutes(minutes: number): string {
   if (minutes === 0) return "0:00";
@@ -362,6 +361,43 @@ export default function PayrollPage() {
     return buildJobRows(weekData.entries, weekDates);
   }, [weekData, weekDates]);
 
+  // 2026-05-04 Week Timeline view-model. Adapts the SAME `weekData`
+  // already on the page into a per-day block list + per-category totals
+  // so the dispatch-style timeline renders without any extra fetch.
+  const weekTimelineVm = useMemo(() => {
+    if (!weekData?.entries) return null;
+    return buildWeekTimelineViewModel({
+      weekStart: weekData.weekStart,
+      userId: weekData.userId,
+      // The server response carries `visitId` / `taskId` (see
+      // `getTimesheetWeek`), but the local `WeekEntry` interface in
+      // this file only declares the fields the job-row grid needed.
+      // Cast through `any` for the timeline-only optional keys so the
+      // adapter can read them when present without forcing a wider
+      // local interface change.
+      entries: weekData.entries.map((e) => {
+        const x = e as WeekEntry & { visitId?: string | null; taskId?: string | null };
+        return {
+          id: x.id,
+          technicianId: x.technicianId ?? weekTechId,
+          jobId: x.jobId ?? null,
+          visitId: x.visitId ?? null,
+          taskId: x.taskId ?? null,
+          type: x.type,
+          startAt: x.startAt,
+          endAt: x.endAt,
+          durationMinutes: x.durationMinutes,
+          billable: x.billable,
+          notes: x.notes,
+          jobNumber: x.jobNumber,
+          jobSummary: x.jobSummary,
+          locationName: x.locationName,
+          date: x.date,
+        };
+      }),
+    });
+  }, [weekData, weekTechId]);
+
   // 2026-04-08 fix: Shift totals (top strip + totals row) come from work_sessions
   // via `currentSummary` (defined below from `summaries`), NOT from time_entries
   // aggregates. Previously this useMemo summed `jobRows` (time_entries) into
@@ -579,182 +615,6 @@ export default function PayrollPage() {
     );
   }
 
-  // ── Shared day entry list renderer ──
-  const renderEntryList = (entries: TimesheetDayEntry[], loading: boolean, dateLabel: string) => (
-    <Card>
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-sm">{dateLabel}</CardTitle>
-          <Button size="sm" onClick={openAddEntry}>
-            <Plus className="h-3.5 w-3.5 mr-1" />
-            Add Entry
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent className="py-2">
-        {loading ? (
-          <div className="flex items-center justify-center py-6"><Loader2 className="h-5 w-5 animate-spin" /></div>
-        ) : entries.length === 0 ? (
-          <div className="text-center py-6 text-muted-foreground">
-            <Clock className="h-6 w-6 mx-auto mb-2 opacity-50" />
-            <p className="text-sm">No time entries.</p>
-          </div>
-        ) : (
-          // 2026-04-26 Day View redesign — same compact grouped pattern
-          // applied to the tech-app PWA (`client/src/tech-app/pages/
-          // TimesheetPage.tsx`). Entries are bucketed by `jobId` (with
-          // a single "Other / Manual" fallback for entries without a
-          // job). Each group renders one header card with `#jobNumber
-          // locationName · locationCity · Total hh:mm`, then child
-          // rows that show only the type badge, time range, duration,
-          // and hover-revealed edit/delete actions — no repeated job
-          // number, client, or location text per row. No divider
-          // between Travel and On-Site rows. `jobSummary` (if present)
-          // moves into the group header as a faint trailing context
-          // string. `TimesheetDayEntry` shape, the type-display map,
-          // edit / delete mutations, and the lock / live badges are
-          // all unchanged.
-          (() => {
-            type Group = { key: string; entries: TimesheetDayEntry[]; sortKey: number };
-            const groups = new Map<string, Group>();
-            const NO_JOB_KEY = "__no_job__";
-            for (const e of entries) {
-              const key = e.jobId ?? NO_JOB_KEY;
-              const sortKey = new Date(e.startAt).getTime();
-              const g = groups.get(key);
-              if (!g) {
-                groups.set(key, { key, entries: [e], sortKey });
-              } else {
-                g.entries.push(e);
-                if (sortKey < g.sortKey) g.sortKey = sortKey;
-              }
-            }
-            const groupList = Array.from(groups.values()).sort((a, b) => a.sortKey - b.sortKey);
-            for (const g of groupList) {
-              g.entries.sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
-            }
-            return (
-              <div className="space-y-2">
-                {groupList.map((group) => {
-                  const first = group.entries[0];
-                  const isNoJob = group.key === NO_JOB_KEY;
-                  const totalMinutes = group.entries.reduce(
-                    (sum, e) => sum + (e.durationMinutes ?? 0),
-                    0,
-                  );
-                  const totalLabel = formatMinutes(totalMinutes);
-                  const groupHasLocked = group.entries.some((e) => isEntryLocked(e));
-                  return (
-                    <div
-                      key={group.key}
-                      className="bg-white dark:bg-gray-900 rounded-md border border-slate-200 dark:border-gray-700 overflow-hidden"
-                      data-testid={`day-entry-group-${group.key}`}
-                    >
-                      {/* Group header — single line:
-                            #jobNumber clientName     Total hh:mm
-                          2026-04-26: dropped the duplicated `jobSummary`
-                          italic context, the right-side `locationCity`
-                          chip, and the multi-segment header so the
-                          line never wraps and reads as a clean job
-                          identity + total. Lock icon stays inline so
-                          the locked state is still surfaced. */}
-                      <div className="px-3 py-2 border-b border-slate-100 bg-slate-50/60 dark:bg-gray-800/40 flex items-center gap-2">
-                        <div className="flex items-center gap-2 min-w-0 flex-1">
-                          {isNoJob ? (
-                            <span className="text-sm font-semibold text-muted-foreground truncate">Other / Manual</span>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => first.jobId && setLocation(`/jobs/${first.jobId}`)}
-                                className="text-sm font-bold text-primary hover:underline cursor-pointer tabular-nums shrink-0"
-                                title="View job"
-                              >
-                                #{first.jobNumber}
-                              </button>
-                              {first.locationName && (
-                                <button
-                                  type="button"
-                                  onClick={() => first.locationId && setLocation(`/clients/${first.locationId}`)}
-                                  className="text-sm font-semibold text-primary hover:underline cursor-pointer truncate min-w-0"
-                                  title="View client"
-                                >
-                                  {first.locationName}
-                                </button>
-                              )}
-                              {groupHasLocked && (
-                                <Lock className="h-3.5 w-3.5 text-amber-500 shrink-0" />
-                              )}
-                            </>
-                          )}
-                        </div>
-                        <span className="text-xs text-muted-foreground tabular-nums shrink-0">
-                          Total{" "}
-                          <strong className="ml-0.5 font-mono text-foreground">{totalLabel}</strong>
-                        </span>
-                      </div>
-                      {/* Child rows — entire row is the click target.
-                          2026-04-26: per-row Pencil + Trash2 hover icons
-                          were removed. Clicking anywhere on the row
-                          opens the canonical `TimeEntryModal` (which
-                          carries its own Delete button), so no
-                          functionality is lost — just the inline
-                          icon clutter. Hover background darkened to
-                          `bg-slate-100` so the click target reads as
-                          intentionally interactive. No divider between
-                          Travel and On-Site rows. */}
-                      <div>
-                        {group.entries.map((entry) => {
-                          const typeInfo = TYPE_DISPLAY[entry.type] ?? TYPE_DISPLAY.other;
-                          const locked = isEntryLocked(entry);
-                          return (
-                            <button
-                              type="button"
-                              key={entry.id}
-                              onClick={() => openEditEntry(entry)}
-                              className={cn(
-                                "w-full text-left flex items-center py-1.5 px-3 gap-2 hover:bg-slate-100 dark:hover:bg-gray-800/60 transition-colors cursor-pointer",
-                                locked && "opacity-70",
-                              )}
-                              data-testid={`day-entry-row-${entry.id}`}
-                              title={locked ? "View locked time entry" : "Edit time entry"}
-                            >
-                              <Badge
-                                variant="outline"
-                                className={cn(
-                                  "text-xs shrink-0 whitespace-nowrap px-1.5 py-0",
-                                  typeInfo.color,
-                                )}
-                              >
-                                {typeInfo.label}
-                              </Badge>
-                              <span className="text-[13px] text-foreground/60 shrink-0 tabular-nums">
-                                {formatTime(entry.startAt)} – {formatTime(entry.endAt)}
-                              </span>
-                              <div className="shrink-0 ml-auto">
-                                <span className="text-sm font-mono font-bold">
-                                  {entry.durationMinutes != null
-                                    ? formatMinutes(entry.durationMinutes)
-                                    : <span className="text-green-600 animate-pulse text-[13px]">Live</span>}
-                                </span>
-                                {!entry.billable && (
-                                  <span className="text-xs text-muted-foreground ml-1">non-bill</span>
-                                )}
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })()
-        )}
-      </CardContent>
-    </Card>
-  );
 
   return (
     <div className="p-4 space-y-4" data-testid="payroll-page">
@@ -771,6 +631,16 @@ export default function PayrollPage() {
             size="sm"
           >
             Timesheet Reports
+          </Button>
+          {/* 2026-05-04 — Link to experimental stacked-day layout. Strictly
+              additive; default view remains this page. */}
+          <Button
+            onClick={() => setLocation("/timesheets/stack")}
+            variant="outline"
+            size="sm"
+            data-testid="link-stack-view"
+          >
+            Stack View
           </Button>
           {viewMode === "week" && (
             <Button onClick={handleExportCsv} variant="outline" size="sm" disabled={summaries.length === 0}>
@@ -871,6 +741,55 @@ export default function PayrollPage() {
                     );
                   })()}
                 </div>
+
+                {/* 2026-05-04 v6: Week View pills simplified. Drive +
+                    On-site pills were removed — the Week Timeline
+                    groups drive + on-site into single visit cards, so
+                    the per-category split is no longer the primary
+                    signal in Week View. Only "Unbillable" survives,
+                    and only when non-zero (legitimate billable-only
+                    weeks shouldn't carry an empty zero pill). The
+                    category breakdown still lives in the underlying
+                    `weekTotals.byCategory` data and the per-block
+                    tooltip — operators who need it can hover.
+                    Day View pills are unaffected. */}
+                {weekTechId &&
+                  weekTimelineVm &&
+                  weekTimelineVm.weekTotals.byCategory.general > 0 && (
+                    <div
+                      className="flex flex-wrap items-center gap-1.5"
+                      data-testid="week-category-strip"
+                    >
+                      {(() => {
+                        const cat: EntryCategory = "general";
+                        const style = CATEGORY_STYLE[cat];
+                        const minutes =
+                          weekTimelineVm.weekTotals.byCategory[cat];
+                        return (
+                          <div
+                            className={cn(
+                              "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs",
+                              style.chip,
+                            )}
+                            data-testid={`week-category-total-${cat}`}
+                          >
+                            <span
+                              className={cn(
+                                "h-1.5 w-1.5 rounded-full",
+                                style.dot,
+                              )}
+                              aria-hidden
+                            />
+                            <span className="font-medium">Unbillable</span>
+                            <span className="font-mono font-semibold tabular-nums">
+                              {formatTimelineMinutes(minutes)}
+                            </span>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+
                 {/* Right: total + approve */}
                 {weekTechId && (
                   <div className="flex items-center gap-3 ml-auto">
@@ -899,7 +818,22 @@ export default function PayrollPage() {
             </CardContent>
           </Card>
 
-          {/* Job-row week grid */}
+          {/* 2026-05-04: dispatch-style read-only Week Timeline replaced
+              the prior job-row grid here. Editing now lives in Day View
+              (click a day row or block → routes to `?view=day&...`). The
+              old grid + pendingEdits / Save / Reset / Add Entry controls
+              were removed in this iteration; reintroduce them only if
+              the new editor surfaces ship in a later iteration.
+
+              Path A: no tech selected.
+              Path B: loading.
+              Path C: render the WeekTimeline.
+
+              `pendingEdits`, `parseHoursInput`, and `buildJobRows` are
+              kept around for now — their consumers shrink to zero after
+              this swap, but they're still referenced elsewhere in the
+              file (notably in mutations) and removing them is out of
+              scope for this UI revision iteration. */}
           {!weekTechId ? (
             <Card>
               <CardContent className="py-8 text-center text-muted-foreground">
@@ -909,9 +843,41 @@ export default function PayrollPage() {
             </Card>
           ) : weekLoading ? (
             <Card><CardContent className="py-8 flex justify-center"><Loader2 className="h-6 w-6 animate-spin" /></CardContent></Card>
-          ) : (
+          ) : !weekTimelineVm ? (
             <Card>
-              <CardContent className="pt-4 pb-2">
+              <CardContent className="py-8 text-center text-muted-foreground">
+                <Clock className="h-6 w-6 mx-auto mb-2 opacity-50" />
+                <p className="text-sm">No time entries this week.</p>
+              </CardContent>
+            </Card>
+          ) : (
+            <WeekTimeline
+              days={weekTimelineVm.days}
+              onDayClick={(date) => {
+                if (!weekTechId) return;
+                setLocation(`/timesheets?view=day&tech=${weekTechId}&date=${date}`);
+              }}
+              onBlockClick={(block) => {
+                if (!weekTechId) return;
+                setLocation(`/timesheets?view=day&tech=${weekTechId}&date=${block.date}`);
+              }}
+            />
+          )}
+
+          {/* Read-only contract notice — week mode is overview-only.
+              Edits happen on the Day View. */}
+          {weekTechId && weekTimelineVm && (
+            <p className="text-xs text-muted-foreground italic">
+              Read-only weekly overview. To edit a time entry, click the day or block.
+            </p>
+          )}
+        </>
+      )}
+
+      {false && (
+        <>
+          <Card>
+            <CardContent className="pt-4 pb-2">
                 <div className="overflow-x-auto">
                   <Table>
                     <TableHeader>
@@ -1062,68 +1028,34 @@ export default function PayrollPage() {
                 </div>
               </CardContent>
             </Card>
-          )}
-
         </>
       )}
 
       {/* ═══════════════ DAY VIEW ═══════════════ */}
       {viewMode === "day" && (
-        <>
-          {/* Day view technician card — dropdown + name + date + total */}
-          <Card>
-            <CardContent className="py-3">
-              <div className="flex items-center gap-4 flex-wrap">
-                <div className="flex items-center gap-3">
-                  <User className="h-4 w-4 text-muted-foreground" />
-                  <Select value={dayViewTechId} onValueChange={setDayViewTechId}>
-                    <SelectTrigger className="w-[200px] h-8 text-sm"><SelectValue placeholder="Select team member" /></SelectTrigger>
-                    <SelectContent>
-                      {technicians.map((u) => (
-                        <SelectItem key={u.id} value={u.id}>
-                          {getMemberDisplayName(u)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {dayViewTechId && (
-                    <>
-                      <span className="text-sm font-semibold">{getTechName(dayViewTechId)}</span>
-                      <span className="text-xs text-muted-foreground">{format(parseISO(dayViewDate), "EEE, MMM d, yyyy")}</span>
-                    </>
-                  )}
-                </div>
-                {dayViewTechId && dayData && (
-                  <div className="flex items-center gap-3 ml-auto">
-                    <div className="text-right">
-                      <p className="font-mono font-semibold text-sm">{formatMinutes(dayData.totalMinutes)}</p>
-                      <p className="text-xs text-muted-foreground">{dayData.entries.length} {dayData.entries.length === 1 ? "entry" : "entries"}</p>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-          {!dayViewTechId ? (
-            <Card><CardContent className="py-8 text-center text-muted-foreground"><User className="h-8 w-8 mx-auto mb-2 opacity-50" /><p>Select a team member to view their timesheet.</p></CardContent></Card>
-          ) : (
-            renderEntryList(dayData?.entries ?? [], dayLoading, "Time Entries")
-          )}
-        </>
+        // 2026-05-04 Day View redesign — timeline + category-strip + inline
+        // editor card. The previous compact-grouped block (and its
+        // `renderEntryList` helper) was replaced by the canonical
+        // `<DayView>` component under `client/src/components/timesheets/`.
+        // Locked entries still route through the existing `TimeEntryModal`
+        // via `onOpenLockedEdit` so the manager-override-reason flow is
+        // unchanged. Week View is intentionally not redesigned in this PR.
+        <DayView
+          date={dayViewDate}
+          members={technicians}
+          selectedMemberId={dayViewTechId}
+          entries={(dayData?.entries ?? []) as DayViewEntry[]}
+          loading={dayLoading}
+          formatMemberName={getMemberDisplayName}
+          isEntryLocked={(entry) => isEntryLocked(entry as TimesheetDayEntry)}
+          onSelectMember={setDayViewTechId}
+          onJobClick={(jobId) => setLocation(`/jobs/${jobId}`)}
+          onLocationClick={(locationId) => setLocation(`/clients/${locationId}`)}
+          onOpenLockedEdit={(entry) => openEditEntry(entry as TimesheetDayEntry)}
+          onRequestDelete={(id, label) => setDeleteTarget({ id, label })}
+          invalidateQueryKeys={[[QK_DAY], [QK_WEEKLY], [QK_WEEK_ENTRIES]]}
+        />
       )}
-
-      {/* Info Card */}
-      <Card>
-        <CardContent className="py-3">
-          <div className="flex items-start gap-3 text-sm text-muted-foreground">
-            <LockKeyhole className="h-4 w-4 mt-0.5" />
-            <div>
-              <p className="font-medium text-foreground">Approval Locks</p>
-              <p>Once a week is approved, time entries are locked. Modifications require manager override with a reason.{viewMode === "week" ? " Edit hours directly in the grid, then click Save." : " Use the entry list above to add, edit, or delete entries."}</p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
 
       {/* Time Entry Modal */}
       <TimeEntryModal

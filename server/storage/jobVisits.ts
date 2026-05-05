@@ -12,6 +12,7 @@ import {
   scheduleEligibleVisitFilter,
   uncompletedVisitFilter,
 } from "../lib/visitPredicates";
+import { normalizeVisitSchedule } from "../domain/scheduling";
 
 // ============================================================================
 // ENRICHED VISIT TYPES — shared response shapes for tech + calendar consumers
@@ -622,28 +623,31 @@ export class JobVisitsRepository extends BaseRepository {
       ? input.visitNumber
       : await this.getNextVisitNumber(companyId, jobId);
 
-    // Part 2: Normalize scheduling fields
+    // Part 2: Normalize scheduling fields through the canonical guard.
+    // 2026-05-04: replaces the prior inline start/end/duration computation.
+    // The helper guarantees `scheduledEnd > scheduledStart`, defaults
+    // duration to 60 min, and floors it at 30 — same rules as updateJobVisit
+    // and createJob's seed-visit path. Insert callers always supply a
+    // start (route schema requires `scheduledDate`) so the normalized
+    // start/end are guaranteed non-null here.
     const rawStart = input.scheduledStart ?? input.scheduledDate;
-    const scheduledStart = rawStart instanceof Date ? rawStart : new Date(rawStart);
-    const scheduledDate = scheduledStart; // legacy mirror
-
-    const isAllDay = Boolean(input.isAllDay ?? false);
-    const estimatedDurationMinutes = Number(input.estimatedDurationMinutes ?? 60);
-
-    // Compute scheduledEnd if not provided
-    let scheduledEnd: Date;
-    if (input.scheduledEnd) {
-      scheduledEnd = input.scheduledEnd instanceof Date
-        ? input.scheduledEnd
-        : new Date(input.scheduledEnd);
-    } else if (isAllDay) {
-      // UTC-safe: setUTCHours ensures 23:59:59 UTC regardless of server timezone
-      const end = new Date(scheduledStart);
-      end.setUTCHours(23, 59, 59, 0);
-      scheduledEnd = end;
-    } else {
-      scheduledEnd = new Date(scheduledStart.getTime() + estimatedDurationMinutes * 60_000);
+    const norm = normalizeVisitSchedule({
+      scheduledStart: rawStart,
+      scheduledEnd: input.scheduledEnd,
+      durationMinutes: input.estimatedDurationMinutes,
+      isAllDay: input.isAllDay,
+    });
+    if (!norm.scheduledStart || !norm.scheduledEnd) {
+      throw new Error(
+        `[createJobVisit] normalizeVisitSchedule produced null start/end (jobId=${jobId}); ` +
+          `caller must supply a valid scheduledStart/scheduledDate.`,
+      );
     }
+    const scheduledStart = norm.scheduledStart;
+    const scheduledDate = scheduledStart; // legacy mirror
+    const scheduledEnd = norm.scheduledEnd;
+    const isAllDay = norm.isAllDay;
+    const estimatedDurationMinutes = norm.durationMinutes;
 
     const assignedTechnicianIds: string[] | null = Array.isArray(input.assignedTechnicianIds)
       ? input.assignedTechnicianIds
@@ -835,21 +839,37 @@ export class JobVisitsRepository extends BaseRepository {
     // explicit selection"; writing `[]` means "explicitly empty selection".
     if ("equipmentIds" in input) updates.equipmentIds = input.equipmentIds;
 
-    // 4) Compute scheduledEnd when we have a start but no explicit end yet
-    // Skip if scheduledStart was explicitly cleared (unschedule path already handled above)
+    // 4) FINAL pass: enforce schedule integrity through the canonical
+    // normalizer. 2026-05-04: replaces the inline duration → end compute.
+    // Skipped on unschedule (start cleared) — that branch already set
+    // scheduledEnd = null at step 3. For every other case, normalize
+    // sees the merged-but-not-yet-written state and produces the
+    // canonical { start, end, durationMinutes, isAllDay } triple,
+    // guaranteeing end > start AND duration ≥ 30.
     const startWasCleared = "scheduledStart" in input && input.scheduledStart == null;
-    const finalStart = startWasCleared ? null : (updates.scheduledStart ?? existing.scheduledStart);
-    if (finalStart && !("scheduledEnd" in updates)) {
-      const isAllDay = updates.isAllDay ?? existing.isAllDay ?? false;
-      const duration = updates.estimatedDurationMinutes ?? existing.estimatedDurationMinutes ?? 60;
-      if (isAllDay) {
-        const d = finalStart instanceof Date ? finalStart : new Date(finalStart);
-        const endOfDay = new Date(d);
-        endOfDay.setUTCHours(23, 59, 59, 0);
-        updates.scheduledEnd = endOfDay;
-      } else {
-        const startMs = finalStart instanceof Date ? finalStart.getTime() : new Date(finalStart).getTime();
-        updates.scheduledEnd = new Date(startMs + Number(duration) * 60_000);
+    if (!startWasCleared) {
+      const finalStartCandidate =
+        ("scheduledStart" in updates ? updates.scheduledStart : existing.scheduledStart) ?? null;
+      if (finalStartCandidate) {
+        const finalEndCandidate =
+          ("scheduledEnd" in updates ? updates.scheduledEnd : existing.scheduledEnd) ?? null;
+        const finalDuration =
+          ("estimatedDurationMinutes" in updates
+            ? updates.estimatedDurationMinutes
+            : existing.estimatedDurationMinutes) ?? null;
+        const finalIsAllDay =
+          ("isAllDay" in updates ? updates.isAllDay : existing.isAllDay) ?? false;
+        const norm = normalizeVisitSchedule({
+          scheduledStart: finalStartCandidate,
+          scheduledEnd: finalEndCandidate,
+          durationMinutes: finalDuration,
+          isAllDay: finalIsAllDay,
+        });
+        if (norm.scheduledStart && norm.scheduledEnd) {
+          updates.scheduledStart = norm.scheduledStart;
+          updates.scheduledEnd = norm.scheduledEnd;
+          updates.estimatedDurationMinutes = norm.durationMinutes;
+        }
       }
     }
 

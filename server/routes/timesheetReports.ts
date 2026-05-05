@@ -19,6 +19,11 @@ import { asyncHandler } from "../middleware/errorHandler";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { validateSchema } from "../utils/validationHelpers";
 import { requireRole } from "../auth/requireRole";
+// 2026-05-04 PR 4: timesheet reports are operational; payroll-settings
+// PATCH stays under MANAGER_ROLES only (it's a configuration change,
+// not a report read — settings.manage is intentionally not added here
+// to avoid making payroll cadence tenant-customizable in this PR).
+import { requirePermission } from "../permissions";
 import { MANAGER_ROLES } from "../auth/roles";
 import { payrollFrequencyEnum } from "@shared/schema";
 import {
@@ -40,6 +45,7 @@ const reportQuerySchema = z.object({
 timesheetReportsRouter.get(
   "/timesheets",
   requireRole(MANAGER_ROLES),
+  requirePermission("reports.view.basic"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const parsed = validateSchema(reportQuerySchema, req.query);
     const result = await getTimesheetReport({
@@ -56,6 +62,7 @@ timesheetReportsRouter.get(
 timesheetReportsRouter.get(
   "/timesheets/payroll-settings",
   requireRole(MANAGER_ROLES),
+  requirePermission("reports.view.basic"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const row = await getPayrollSettings(req.companyId!);
     res.json(

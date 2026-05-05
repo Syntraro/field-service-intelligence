@@ -47,6 +47,12 @@ import { Router, type Response } from "express";
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
 import { ADMIN_ROLES, RESTRICTED_MANAGER_ROLES } from "../auth/roles";
+// 2026-05-04 PR 4: `payments.view` on the financial-data reads
+// (payouts / disputes / transactions / anomalies). Account
+// setup/onboarding routes stay on `requireRole(ADMIN_ROLES)` only —
+// payment-provider account onboarding is operationally adjacent to
+// integrations setup and remains role-fixed per the matrix doc.
+import { requirePermission } from "../permissions";
 import { asyncHandler } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { type AuthedRequest, rateLimitPerTenant } from "../auth/tenantIsolation";
@@ -222,6 +228,7 @@ const payoutsListQuerySchema = z
 router.get(
   "/payments/payouts",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("payments.view"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const q = validateSchema(payoutsListQuerySchema, req.query ?? {});
     const payouts = await paymentPayoutsRepository.listForCompany(
@@ -248,6 +255,7 @@ router.get(
 router.get(
   "/payments/payouts/summary",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("payments.view"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const summary = await paymentPayoutsRepository.getSummaryForCompany(
       req.companyId!,
@@ -297,6 +305,7 @@ const disputesListQuerySchema = z
 router.get(
   "/payments/disputes",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("payments.view"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const q = validateSchema(disputesListQuerySchema, req.query ?? {});
     const disputes = await paymentDisputesRepository.listForCompany(
@@ -323,6 +332,7 @@ router.get(
 router.get(
   "/payments/disputes/summary",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("payments.view"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const summary = await paymentDisputesRepository.getSummaryForCompany(
       req.companyId!,
@@ -379,6 +389,7 @@ const transactionsListQuerySchema = z
 router.get(
   "/payments/transactions",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("payments.view"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const q = validateSchema(transactionsListQuerySchema, req.query ?? {});
     const transactions =
@@ -408,6 +419,7 @@ router.get(
 router.get(
   "/payments/anomalies/summary",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("payments.view"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const [last7Days, last30Days] = await Promise.all([
       getTenantWebhookAnomalySummary(req.companyId!, 7),

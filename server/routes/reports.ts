@@ -6,6 +6,12 @@ import { eq, and, gte, sql, desc } from "drizzle-orm";
 import { activeJobFilter } from "../storage/jobFilters";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
+// 2026-05-04 PR 4: split reports gate into operational vs financial
+// fine permissions, behind the existing role gate.
+//   reports.view.basic     → operations, sales, jobs, sales-funnel,
+//                            team, parts-forecast, action-required-kpis
+//   reports.view.financial → snapshot, financial, ar, revenue, ar-aging
+import { requirePermission } from "../permissions";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { reportsRepository } from "../storage/reports";
@@ -52,6 +58,7 @@ const snapshotQuerySchema = z.object({
 router.get(
   "/snapshot",
   requireRole(MANAGER_ROLES),
+  requirePermission("reports.view.financial"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const parsed = snapshotQuerySchema.safeParse(req.query);
@@ -84,6 +91,7 @@ const financialQuerySchema = z.object({
 router.get(
   "/financial",
   requireRole(MANAGER_ROLES),
+  requirePermission("reports.view.financial"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const parsed = financialQuerySchema.safeParse(req.query);
@@ -116,6 +124,7 @@ const operationsQuerySchema = z.object({
 router.get(
   "/operations",
   requireRole(MANAGER_ROLES),
+  requirePermission("reports.view.basic"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const parsed = operationsQuerySchema.safeParse(req.query);
@@ -147,6 +156,7 @@ const salesQuerySchema = z.object({
 router.get(
   "/sales",
   requireRole(MANAGER_ROLES),
+  requirePermission("reports.view.basic"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const parsed = salesQuerySchema.safeParse(req.query);
@@ -175,6 +185,7 @@ const arQuerySchema = z.object({
 router.get(
   "/ar",
   requireRole(MANAGER_ROLES),
+  requirePermission("reports.view.financial"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const parsed = arQuerySchema.safeParse(req.query);
@@ -205,6 +216,7 @@ const revenueQuerySchema = z.object({
 router.get(
   "/revenue",
   requireRole(MANAGER_ROLES),
+  requirePermission("reports.view.financial"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const parsed = revenueQuerySchema.safeParse(req.query);
@@ -237,6 +249,7 @@ const jobsQuerySchema = z.object({
 router.get(
   "/jobs",
   requireRole(MANAGER_ROLES),
+  requirePermission("reports.view.basic"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const parsed = jobsQuerySchema.safeParse(req.query);
@@ -269,6 +282,7 @@ const salesFunnelQuerySchema = z.object({
 router.get(
   "/sales-funnel",
   requireRole(MANAGER_ROLES),
+  requirePermission("reports.view.basic"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const parsed = salesFunnelQuerySchema.safeParse(req.query);
@@ -300,6 +314,7 @@ const teamQuerySchema = z.object({
 router.get(
   "/team",
   requireRole(MANAGER_ROLES),
+  requirePermission("reports.view.basic"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const parsed = teamQuerySchema.safeParse(req.query);
@@ -333,6 +348,7 @@ const partsForecastQuerySchema = z.object({
 router.get(
   "/parts-forecast",
   requireRole(MANAGER_ROLES),
+  requirePermission("reports.view.basic"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const parsed = partsForecastQuerySchema.safeParse(req.query);
@@ -356,7 +372,7 @@ const kpiQuerySchema = z.object({
  * GET /api/reports/action-required-kpis
  * Returns Action Required KPIs for the current state and historical trends
  */
-router.get("/action-required-kpis", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+router.get("/action-required-kpis", requireRole(MANAGER_ROLES), requirePermission("reports.view.basic"), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const { days } = kpiQuerySchema.parse(req.query);
 
@@ -539,7 +555,7 @@ router.get("/action-required-kpis", requireRole(MANAGER_ROLES), asyncHandler(asy
  * Bounded: invoices array paginated (default limit=200, max 200)
  * Summary and buckets always returned in full.
  */
-router.get("/ar-aging", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+router.get("/ar-aging", requireRole(MANAGER_ROLES), requirePermission("reports.view.financial"), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const report = await reportsRepository.getARAgingReport(companyId);
 

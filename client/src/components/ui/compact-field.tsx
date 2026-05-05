@@ -122,8 +122,8 @@ export function CompactField({
           // 2026-05-03 polish: tightened padding (px-3 py-1.5 → px-2.5 py-1)
           // so internal-label fields read like normal compact inputs
           // rather than tall labelled boxes.
-          "rounded-md border border-[#CBD5E1] bg-white px-2.5 py-1",
-          "focus-within:border-[#76B054] focus-within:shadow-[0_0_0_2px_rgba(118,176,84,0.25)]",
+          "rounded-md border border-border-strong bg-surface px-2.5 py-1",
+          "focus-within:border-brand focus-within:shadow-[0_0_0_2px_rgba(118,176,84,0.25)]",
           error && "border-destructive/60 focus-within:border-destructive focus-within:shadow-[0_0_0_2px_rgba(239,68,68,0.25)]",
         )}
         data-testid={testId}

@@ -866,9 +866,24 @@ interface CapacityTechDto {
   state?: "open" | "no_open_today" | "fully_booked" | "day_over" | "off_today";
   scheduleBlocks: CapacityBlockDto[];
 }
+interface OffRosterAssignmentDto {
+  visitId: string;
+  jobId: string;
+  title: string;
+  companyName: string | null;
+  technicianName: string;
+  scheduledStart: string;
+  scheduledEnd: string;
+  status: string;
+}
 interface CapacityResponseDto {
   timezone: string;
   technicians: CapacityTechDto[];
+  /** 2026-05-04: visits assigned to non-schedulable technicians.
+   *  Capacity math (capacity %, available minutes, open slots) is
+   *  unaffected — these are listed separately so dispatchers still see
+   *  every booked visit even when the assignee is disabled / off-roster. */
+  offRosterAssignments?: OffRosterAssignmentDto[];
 }
 
 function TodaysScheduleCard({
@@ -1031,6 +1046,15 @@ function TodaysScheduleCard({
       });
     }
   };
+
+  // 2026-05-04: off-roster row click reuses the canonical visit-editor
+  // path so editing flows through one launcher (no duplicate modal logic).
+  const handleOffRosterClick = async (row: OffRosterAssignmentDto) => {
+    const state = await enrichVisitEditorState(row.visitId, row.jobId);
+    onOpenVisit(state);
+  };
+
+  const offRosterRows = capacityQuery.data?.offRosterAssignments ?? [];
 
   return (
     <DashCard>
@@ -1405,6 +1429,40 @@ function TodaysScheduleCard({
           })()
         )}
       </div>
+      {/*
+        2026-05-04 — "Other scheduled visits". Catch-all for visits that
+        dispatch surfaces but the per-tech grid above cannot place:
+        unassigned visits, visits assigned to disabled / non-schedulable
+        techs, or visits whose assignee is no longer in `users`
+        (soft-deleted, platform-role). Capacity math is unchanged — these
+        rows are display-only. Click opens the canonical Edit Visit modal
+        via enrichVisitEditorState (no duplicate launcher).
+      */}
+      {offRosterRows.length > 0 && (
+        <div
+          className="border-t border-[#e2e8f0] dark:border-gray-700 px-4 py-3"
+          data-testid="other-scheduled-visits"
+        >
+          <div className="text-xs font-semibold text-slate-600 dark:text-gray-300 mb-1.5">
+            Other scheduled visits
+          </div>
+          <ul className="space-y-1">
+            {offRosterRows.map((row) => (
+              <li key={`${row.visitId}-${row.technicianName}`}>
+                <button
+                  type="button"
+                  onClick={() => handleOffRosterClick(row)}
+                  className="w-full text-left text-sm text-slate-700 dark:text-gray-200 hover:text-[#76B054] truncate"
+                  data-testid={`other-scheduled-row-${row.visitId}`}
+                >
+                  {row.title} — {row.technicianName} —{" "}
+                  {formatTimeRange(row.scheduledStart, row.scheduledEnd)}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </DashCard>
   );
 }

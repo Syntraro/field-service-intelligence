@@ -10,7 +10,9 @@ import { ArrowLeft, Loader2, Check, MapPin, Briefcase } from "lucide-react";
 import { MobileShell } from "../components/MobileShell";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
-import { useLocationSearch, type LocationResult } from "@/hooks/useLocationSearch";
+// 2026-05-04 Phase 2 PR 3: tech-only sibling hook so the picker no
+// longer reads from the office client-search surface.
+import { useTechLocationSearch, type LocationResult } from "../hooks/useTechLocationSearch";
 // 2026-05-04 form-canonicalization: tech-app raw <input>/<textarea>
 // migrated to canonical primitives. Layout (h-9 px-3) preserved by
 // the primitive defaults; raw `text-sm border-slate-200` styling
@@ -74,7 +76,7 @@ export function CreateLeadPage() {
     }
   }, [hasPrefill]);
 
-  const { data: locations } = useLocationSearch(locationSearch);
+  const { data: locations } = useTechLocationSearch(locationSearch);
 
   // Derive display label
   const locationLabel = locationId === prefillLocationId ? prefillName : "";

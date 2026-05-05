@@ -15,6 +15,12 @@ import crypto from "crypto";
 import { requireRole } from "../auth/requireRole";
 import { requireFeature } from "../auth/requireFeature";
 import { ADMIN_ROLES } from "../auth/roles";
+// 2026-05-04 PR 4: integrations.manage on every QBO route (oauth /
+// sync / queue / settings / diagnostics) behind the existing
+// ADMIN_ROLES gate. Two-layer model — admin role first, then the
+// fine permission. Public OAuth callback (no requireRole) is
+// intentionally untouched.
+import { requirePermission } from "../permissions";
 import { asyncHandler } from "../middleware/errorHandler";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { createSyncOrchestrator, QboClient, createReconciliationService, createPreflightService, QboCustomerImportService, QboCatalogImportService, isQboReadOnlyMode, isImportReadOnlyEnforced, getQboEnvironment, isImportAllowedInEnvironment } from "../services/qbo";
@@ -120,6 +126,7 @@ async function persistRefreshedTokens(companyId: string, tokens: QboTokens): Pro
 router.get(
   "/oauth/setup-info",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     // Detect app origin robustly behind proxies
     const proto = (req.get("x-forwarded-proto") || req.protocol || "https").split(",")[0].trim();
@@ -155,6 +162,7 @@ router.get(
 router.get(
   "/oauth/start",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const clientId = process.env.QBO_CLIENT_ID;
     const clientSecret = process.env.QBO_CLIENT_SECRET;
@@ -325,6 +333,7 @@ router.get(
 router.post(
   "/oauth/disconnect",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     await db.delete(qboConnections).where(eq(qboConnections.companyId, companyId));
@@ -339,6 +348,7 @@ router.post(
 router.post(
   "/sync/customer-company/:id",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { id } = req.params;
     const companyId = req.companyId;
@@ -375,6 +385,7 @@ router.post(
 router.post(
   "/sync/client-location/:id",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { id } = req.params;
     const companyId = req.companyId;
@@ -411,6 +422,7 @@ router.post(
 router.post(
   "/sync/invoice/:id",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { id } = req.params;
     const companyId = req.companyId;
@@ -448,6 +460,7 @@ router.post(
 router.post(
   "/sync/invoice-with-deps/:id",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { id } = req.params;
     const companyId = req.companyId;
@@ -504,6 +517,7 @@ function createQboClient(tokens: QboTokens): QboClient | null {
 router.post(
   "/reconcile/invoice/:id",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { id } = req.params;
     const companyId = req.companyId;
@@ -551,6 +565,7 @@ router.post(
 router.post(
   "/reconcile/invoice/:id/apply",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (_req: AuthedRequest, res: Response) => {
     res.status(410).json({
       success: false,
@@ -584,6 +599,7 @@ const paymentSyncToggleSchema = z.object({
 router.get(
   "/payment-sync",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const [company] = await db
@@ -621,6 +637,7 @@ router.get(
 router.put(
   "/payment-sync",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
 
@@ -671,6 +688,7 @@ router.put(
 router.post(
   "/sync/payment/:id",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { id } = req.params;
     const companyId = req.companyId;
@@ -759,6 +777,7 @@ router.post(
 router.get(
   "/status",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
 
@@ -853,6 +872,7 @@ router.get(
 router.get(
   "/mapping-config",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
 
@@ -879,6 +899,7 @@ router.get(
 router.put(
   "/mapping-config",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
 
@@ -920,6 +941,7 @@ router.put(
 router.get(
   "/preflight",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -947,6 +969,7 @@ const enableSchema = z.object({
 router.put(
   "/enabled",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -985,6 +1008,7 @@ router.put(
 router.post(
   "/dry-run/invoice/:id",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { id } = req.params;
     const companyId = req.companyId;
@@ -1004,6 +1028,7 @@ router.post(
 router.post(
   "/dry-run/queue/process",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 20, 1), 100);
@@ -1052,6 +1077,7 @@ router.post(
 router.post(
   "/connectivity-test",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -1085,6 +1111,7 @@ router.post(
 router.get(
   "/events",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 50, 1), 200);
@@ -1147,6 +1174,7 @@ const enqueueSchema = z.object({
 router.post(
   "/queue/enqueue",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -1191,6 +1219,7 @@ router.post(
 router.post(
   "/queue/process",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -1220,6 +1249,7 @@ router.post(
 router.get(
   "/queue",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const status = req.query.status as string | undefined;
@@ -1239,6 +1269,7 @@ router.get(
 router.post(
   "/queue/:id/replay",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -1275,6 +1306,7 @@ router.post(
 router.delete(
   "/queue/:id",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const { id } = req.params;
@@ -1362,6 +1394,7 @@ router.post(
 router.post(
   "/webhook/process",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -1382,6 +1415,7 @@ router.post(
 router.get(
   "/webhooks",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const status = req.query.status as string | undefined;
@@ -1420,6 +1454,7 @@ router.get(
 router.get(
   "/drift-alerts",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
 
@@ -1437,6 +1472,7 @@ router.get(
 router.post(
   "/drift-alerts/:eventId/reconcile",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -1508,6 +1544,7 @@ router.post(
 router.get(
   "/runs",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.user!.companyId;
     const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
@@ -1660,6 +1697,7 @@ router.get(
 router.get(
   "/runs/:syncRunId",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.user!.companyId;
     const { syncRunId } = req.params;
@@ -1729,6 +1767,7 @@ router.get(
 router.get(
   "/items",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { client, error, persistIfRefreshed } = await createTenantQboClient(req.companyId);
     if (!client) return res.status(400).json({ error });
@@ -1770,6 +1809,7 @@ router.get(
 router.get(
   "/items/advanced",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -1801,6 +1841,7 @@ router.get(
 router.get(
   "/items/local",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -1836,6 +1877,7 @@ router.get(
 router.post(
   "/items/link",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -1876,6 +1918,7 @@ router.post(
 router.post(
   "/items/create/:itemId",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -1912,6 +1955,7 @@ router.post(
 router.post(
   "/catalog/sync",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -1943,6 +1987,7 @@ router.post(
 router.post(
   "/items/bulk-create",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -2026,6 +2071,7 @@ router.post(
 router.post(
   "/import/customers",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     // Hard fail: block import in production environment
     const environment = getQboEnvironment();
@@ -2088,6 +2134,7 @@ const customerImportModeSchema = z.enum(["merge", "overwrite", "wipe", "link_onl
 router.get(
   "/catalog/import/preview",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -2116,6 +2163,7 @@ router.get(
 router.post(
   "/catalog/import/run",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -2162,6 +2210,7 @@ router.post(
 router.get(
   "/customers/import/preview",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -2190,6 +2239,7 @@ router.get(
 router.post(
   "/customers/import/run",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
@@ -2235,6 +2285,7 @@ router.post(
 router.get(
   "/read-only-status",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (_req: AuthedRequest, res: Response) => {
     res.json({
       readOnly: isQboReadOnlyMode(),
@@ -2255,6 +2306,7 @@ router.get(
 router.get(
   "/connection-status",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const environment = getQboEnvironment();
@@ -2348,6 +2400,7 @@ async function createTenantQboClient(companyId: string) {
 router.get(
   "/company-info",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { client, error, persistIfRefreshed } = await createTenantQboClient(req.companyId);
     if (!client) return res.status(400).json({ error });
@@ -2384,6 +2437,7 @@ router.get(
 router.get(
   "/taxcodes",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { client, error, persistIfRefreshed } = await createTenantQboClient(req.companyId);
     if (!client) return res.status(400).json({ error });
@@ -2459,6 +2513,7 @@ router.get(
 router.get(
   "/accounts",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { client, error, persistIfRefreshed } = await createTenantQboClient(req.companyId);
     if (!client) return res.status(400).json({ error });
@@ -2498,6 +2553,7 @@ router.get(
 router.get(
   "/preflight/import-customers",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const checks: { name: string; ok: boolean; detail: string }[] = [];
@@ -2632,6 +2688,7 @@ router.get(
 router.post(
   "/dev/seed-customers",
   requireRole(ADMIN_ROLES),
+  requirePermission("integrations.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const environment = getQboEnvironment();

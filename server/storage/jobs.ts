@@ -25,6 +25,7 @@ import type { InsertJob, Job, InsertJobPart, JobPart, InsertJobStatusEvent, JobS
 import { BaseRepository } from "./base";
 import { locationDisplayNameExpr } from "../lib/queryHelpers";
 import { sanitizeAllDayTimestamps, sanitizeSchedulingTimestamps } from "../utils/allDaySanitizer";
+import { normalizeVisitSchedule } from "../domain/scheduling";
 import { IS_DEV } from "../utils/devFlags";
 import { resolveTechnicianName } from "../lib/resolveTechnicianName";
 import { encodeCursor, decodeCursor } from "../utils/cursor";
@@ -612,31 +613,24 @@ export class JobRepository extends BaseRepository {
         })
         .returning();
 
-      // 2. Build initial visit from job scheduling fields
+      // 2. Build initial visit from job scheduling fields.
+      // 2026-05-04: routed through canonical `normalizeVisitSchedule` so
+      // the seed visit obeys the same integrity rules as createJobVisit
+      // / updateJobVisit (end > start, default 60min, floor 30min,
+      // all-day → 23:59:59 UTC). The unscheduled branch is kept as-is
+      // — `scheduledDate` is a legacy NOT NULL column so we still seed
+      // it with `now` for placeholder semantics, but `scheduledStart`
+      // and `scheduledEnd` are both null.
       const hasSchedule = !!createdJob.scheduledStart;
-      const isAllDay = Boolean(createdJob.isAllDay);
+      const norm = normalizeVisitSchedule({
+        scheduledStart: hasSchedule ? createdJob.scheduledStart : null,
+        scheduledEnd: hasSchedule ? createdJob.scheduledEnd : null,
+        durationMinutes: createdJob.durationMinutes,
+        isAllDay: createdJob.isAllDay,
+      });
       const now = new Date();
-
-      let visitStart: Date;
-      let visitEnd: Date;
-
-      if (hasSchedule) {
-        visitStart = new Date(createdJob.scheduledStart as any);
-        if (createdJob.scheduledEnd) {
-          visitEnd = new Date(createdJob.scheduledEnd as any);
-        } else if (isAllDay) {
-          const end = new Date(visitStart);
-          end.setHours(23, 59, 59, 0);
-          visitEnd = end;
-        } else {
-          const durationMs = (createdJob.durationMinutes ?? 60) * 60_000;
-          visitEnd = new Date(visitStart.getTime() + durationMs);
-        }
-      } else {
-        // Unscheduled job: use current timestamp as placeholder for legacy scheduledDate
-        visitStart = now;
-        visitEnd = now;
-      }
+      const visitStart: Date = norm.scheduledStart ?? now;
+      const visitEnd: Date = norm.scheduledEnd ?? now;
 
       // Forward crew from job payload onto the seed VISIT only. The job row
       // itself never carries tech.
@@ -647,10 +641,10 @@ export class JobRepository extends BaseRepository {
         companyId,
         jobId: createdJob.id,
         scheduledDate: visitStart,          // legacy required field
-        scheduledStart: hasSchedule ? visitStart : null,
-        scheduledEnd: hasSchedule ? visitEnd : null,
-        isAllDay: hasSchedule ? isAllDay : false,
-        estimatedDurationMinutes: createdJob.durationMinutes ?? 60,
+        scheduledStart: hasSchedule ? norm.scheduledStart : null,
+        scheduledEnd: hasSchedule ? norm.scheduledEnd : null,
+        isAllDay: hasSchedule ? norm.isAllDay : false,
+        estimatedDurationMinutes: norm.durationMinutes,
         assignedTechnicianIds,
         status: "scheduled",
         visitNumber: 1,

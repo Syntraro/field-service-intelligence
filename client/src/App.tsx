@@ -49,6 +49,7 @@ import ReportsSalesFunnel from "@/pages/ReportsSalesFunnel";
 import ReportsTeam from "@/pages/ReportsTeam";
 import ReportsPartsForecast from "@/pages/ReportsPartsForecast";
 import TimesheetReportPage from "@/pages/TimesheetReportPage";
+import WeekStackPage from "@/pages/timesheets/WeekStackPage";
 import AccountsReceivablePage from "@/pages/AccountsReceivablePage";
 // 2026-04-21: Financial Dashboard reintroduced with full nav + header-button wiring.
 // The prior page (removed 2026-04-10 for zero navigation entries) has been replaced
@@ -513,10 +514,20 @@ function Router() {
           <Clients />
         </ProtectedRoute>
       </Route>
-      {/* Timesheets — canonical timesheet page (formerly /settings/payroll) */}
+      {/* Timesheets — canonical timesheet page (formerly /settings/payroll).
+          Week mode renders the dispatch-style WeekTimeline inline; Day mode
+          renders the canonical DayView. Both surfaces live within PayrollPage. */}
       <Route path="/timesheets">
         <ProtectedRoute requireAdmin>
           <PayrollPage />
+        </ProtectedRoute>
+      </Route>
+      {/* 2026-05-04 — Experimental stacked-day timesheet layout, isolated
+          from the canonical /timesheets surface. Read-only: clicks route
+          back into PayrollPage's Day View for editing. */}
+      <Route path="/timesheets/stack">
+        <ProtectedRoute requireAdmin>
+          <WeekStackPage />
         </ProtectedRoute>
       </Route>
       <Route path="/settings">

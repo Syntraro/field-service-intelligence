@@ -89,7 +89,10 @@ describe("Backend wiring — /api/tech tech-safe location reads", () => {
     expect(techLocationsSrc).toMatch(/router\.use\(\s*requireSchedulable\s*\)/);
   });
 
-  it("each route invokes assertCanAccessTechLocation", () => {
+  it("each location-id route invokes assertCanAccessTechLocation", () => {
+    // 2026-05-04 Phase 2 PR 3: count rose to 4 (the 3 original
+    // location routes + the loadEquipmentWithLocationGate helper that
+    // the two equipment routes share).
     const matches = techLocationsSrc.match(/assertCanAccessTechLocation\(/g);
     expect(matches?.length ?? 0).toBeGreaterThanOrEqual(3);
   });
@@ -418,14 +421,18 @@ describe("DTO redaction — /api/tech/locations/:locationId response shape", () 
     }
   });
 
-  it("equipment handler emits only the seven whitelisted keys", () => {
+  it("equipment handler emits only the eight whitelisted keys", () => {
     const handler = techLocationsSrc.match(
       /router\.get\(\s*["']\/locations\/:locationId\/equipment["'][\s\S]*?\}\),\s*\);/,
     );
     expect(handler).toBeTruthy();
     const block = handler![0];
+    // 2026-05-04 Phase 2 PR 3: `name` added to the allowlist so the
+    // visit-detail equipment picker can filter on the canonical
+    // asset label without falling back to manufacturer/model.
     const required = [
       "id",
+      "name",
       "type",
       "manufacturer",
       "model",

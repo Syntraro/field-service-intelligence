@@ -70,6 +70,17 @@ export interface CompleteVisitIntent {
   outcomeNote?: string | null;
   /** Visit number for the auto-generated job note label (e.g., "Visit #2"). */
   visitNumber?: number | null;
+  /**
+   * 2026-05-04: opt-in auto-close of the parent job when this completes
+   * the LAST actionable visit with outcome=`completed`. Default false —
+   * visit completion no longer implicitly closes its parent job. The
+   * office's `EditVisitModal` always passes `false`; the user picks
+   * close-vs-leave-open through `PostVisitCompletionDialog`. Tech-app
+   * callers may pass `true` to preserve the legacy "all visits done →
+   * job closed" behavior. The needs_parts / needs_followup → on_hold
+   * reconciliation rule is unaffected by this flag.
+   */
+  autoCloseJobOnLastVisit?: boolean;
 }
 
 /** Force-close a job from the office (archive / invoice_later / invoice_now). */
@@ -642,6 +653,7 @@ export async function completeVisit(
     holdReason,
     holdNotes,
     completedByUserId,
+    autoCloseJobOnLastVisit: intent.autoCloseJobOnLastVisit ?? false,
   });
 
   // Step 5: Sync job schedule from visits AFTER transaction commits.
@@ -1611,8 +1623,18 @@ async function reconcileJobAfterVisitCompletion(input: {
   holdNotes?: string | null;
   /** User who completed the visit — used as closedBy actor for canonical lifecycle close. */
   completedByUserId: string;
+  /**
+   * 2026-05-04: gate for Rule 1 (auto-close on last completed visit).
+   * Default false — visit completion no longer implicitly closes the
+   * parent job. Office flows (EditVisitModal) always pass false; the
+   * close decision is owned by `PostVisitCompletionDialog`. Tech-app
+   * callers may pass true to preserve the prior auto-close behavior.
+   * The needs_parts / needs_followup → on_hold rule (Rule 2 / Rule 3)
+   * is unaffected and still fires regardless of this flag.
+   */
+  autoCloseJobOnLastVisit: boolean;
 }): Promise<ReconciliationResult> {
-  const { companyId, jobId, outcome, holdReason, holdNotes, completedByUserId } = input;
+  const { companyId, jobId, outcome, holdReason, holdNotes, completedByUserId, autoCloseJobOnLastVisit } = input;
 
   // Verify job is still open — only open jobs need reconciliation.
   // Load version for optimistic locking in canonical lifecycle path.
@@ -1689,6 +1711,16 @@ async function reconcileJobAfterVisitCompletion(input: {
   if (!hasRemainingVisits) {
     // This was the LAST actionable visit
     if (outcome === "completed") {
+      // 2026-05-04: Rule 1 is now opt-in. Without `autoCloseJobOnLastVisit`,
+      // visit completion no longer implicitly closes its parent job — the
+      // close decision belongs to whatever surface the user is on
+      // (PostVisitCompletionDialog → "Invoice now / Invoice later /
+      // Leave open"). Without this gate, "Leave open" was a literal
+      // no-op because reconciliation had already fired CLOSE_JOB.
+      if (!autoCloseJobOnLastVisit) {
+        return { jobUpdated: false, newJobStatus: "open", newOpenSubStatus: job.openSubStatus ?? null };
+      }
+
       // Rule 1: Completed Fully → close job through canonical lifecycle engine.
       // 2026-03-18 BP-1 fix: Previously this was a direct db.update(jobs) that
       // missed previousStatus, closedBy, schedule clearing, pmBillingStatus,

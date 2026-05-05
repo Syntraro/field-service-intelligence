@@ -1267,65 +1267,46 @@ export default function JobDetailPage() {
   // keep the diff minimal.
   const createInvoiceFromJobMutation = useMutation({
     mutationFn: async () => {
-      // 2026-05-01: explicit guard. `job` is `JobDetailResponse |
-      // undefined` from `useJobHeader`. The mutation closure is created
-      // during render, so TS can't narrow `job` to defined here even
-      // though the CTA call site is gated on `job.status === "completed"`.
-      // Using `job?.version ?? 0` would silently send a 0 version on
-      // optimistic-locking writes — throwing surfaces the impossible
-      // case loudly and lets TS narrow `job` for the body below.
-      if (!job) {
-        throw new Error("Job is not loaded");
-      }
-      return apiRequest<{ job: { id: string }; invoice: { id: string; invoiceNumber?: string } | null }>(
-        `/api/jobs/${jobId}/close`,
+      // 2026-05-04: switched from POST /api/jobs/:id/close (which always
+      // calls forceCloseJob() and rejects non-`open` jobs via
+      // CLOSEABLE_STATUSES) to the canonical POST /api/invoices/from-job/:id
+      // path. The button only renders when `job.status === "completed"`
+      // (see CTA condition below), so the close attempt was unnecessary
+      // anyway — `markJobCompleted: true` runs the canonical
+      // `markInvoiced` lifecycle transition (completed → invoiced)
+      // without re-attempting close. Response is the invoice itself
+      // (flattened) plus `_created: boolean`.
+      return apiRequest<{ id: string; invoiceNumber?: string; _created: boolean }>(
+        `/api/invoices/from-job/${jobId}`,
         {
           method: "POST",
-          body: JSON.stringify({
-            mode: "invoice_now",
-            version: job.version ?? 0,
-            autoCompleteOpenVisits: false,
-          }),
+          body: JSON.stringify({ markJobCompleted: true }),
         },
       );
     },
-    onSuccess: (data) => {
-      // Server contract: `mode: "invoice_now"` always returns a non-null
-      // `invoice`. The `if (data.invoice)` guard is defensive — if the
-      // server ever returns null for this mode, we fall back to a generic
-      // success toast and stay on the job page rather than navigate to
-      // an undefined route.
-      if (data.invoice) {
-        logActivity({
-          type: "created",
-          entityType: "invoice",
-          entityId: data.invoice.id,
-          label: `Created Invoice${data.invoice.invoiceNumber ? ` #${data.invoice.invoiceNumber}` : ""}`,
-        });
-      }
+    onSuccess: (invoice) => {
+      logActivity({
+        type: "created",
+        entityType: "invoice",
+        entityId: invoice.id,
+        label: `Created Invoice${invoice.invoiceNumber ? ` #${invoice.invoiceNumber}` : ""}`,
+      });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["jobs", jobId, "billable-preview"] });
-      if (data.invoice) {
-        toast({
-          title: "Job Closed",
-          description: data.invoice.invoiceNumber
-            ? `Invoice #${data.invoice.invoiceNumber} created.`
-            : "Job closed and invoice created.",
-        });
-        setLocation(`/invoices/${data.invoice.id}`);
-      } else {
-        toast({
-          title: "Job Closed",
-          description: "Job closed.",
-        });
-      }
+      toast({
+        title: "Invoice Created",
+        description: invoice.invoiceNumber
+          ? `Invoice #${invoice.invoiceNumber} created.`
+          : "Invoice created.",
+      });
+      setLocation(`/invoices/${invoice.id}`);
     },
     onError: (err: Error) => {
       toast({
-        title: "Failed to close & invoice",
+        title: "Failed to create invoice",
         description: err.message || "Try again from the job detail page.",
         variant: "destructive",
       });

@@ -14,7 +14,13 @@ import { ArrowLeft, Loader2, MapPin, Clock, Calendar, Check, UserPlus } from "lu
 import { MobileShell } from "../components/MobileShell";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
-import { useLocationSearch, useLocationById, type LocationResult } from "@/hooks/useLocationSearch";
+// 2026-05-04 Phase 2 PR 3: tech-only sibling hooks. Search +
+// resolve-by-id both go through the tech-safe location endpoints.
+import {
+  useTechLocationSearch,
+  useTechLocationById,
+  type LocationResult,
+} from "../hooks/useTechLocationSearch";
 // 2026-05-04 form-canonicalization: migrate raw <input>/<textarea>
 // to canonical primitives. Compact schedule inputs (h-8 text-xs) keep
 // their layout via className overrides. The native <select> at line
@@ -39,7 +45,7 @@ export function CreateJobPage() {
   const prefillLocationId = new URLSearchParams(window.location.search).get("locationId") || "";
 
   // Resolve prefilled location from server
-  const { data: resolvedLocation } = useLocationById(prefillLocationId || null);
+  const { data: resolvedLocation } = useTechLocationById(prefillLocationId || null);
 
   // Form state
   const [locationId, setLocationId] = useState(prefillLocationId);
@@ -73,8 +79,8 @@ export function CreateJobPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  // Location search — shared hook with canonical endpoint + snake_case mapping
-  const { data: locations } = useLocationSearch(locationSearch);
+  // Location search — tech-safe hook (tech endpoint + assignment scoping).
+  const { data: locations } = useTechLocationSearch(locationSearch);
 
   // Team members for assignment — canonical directory hook
   const { teamMembers: techMembers } = useTechniciansDirectory();

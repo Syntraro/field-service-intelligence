@@ -718,24 +718,34 @@ function AddEquipmentSheet({ visitId, onClose, onSuccess, addEquipment, onError 
   const [newSerial, setNewSerial] = useState("");
   const [createPending, setCreatePending] = useState(false);
 
-  // Fetch location equipment for the visit's job location
+  // Fetch location equipment for the visit's job location.
+  // 2026-05-04 Phase 2 PR 3: switched to the tech-safe location
+  // equipment endpoint. The DTO now includes `name` (asset label) so
+  // the picker can filter on the canonical identifier.
   const { data: locationEquip, isError: locationEquipError, refetch: refetchLocationEquip } = useQuery<any[]>({
     queryKey: ["/api/tech/visits", visitId, "location-equipment"],
     queryFn: async () => {
-      // Get the visit to find job → location, then fetch location equipment
       const detail = await apiRequest<any>(`/api/tech/visits/${visitId}`);
       if (!detail?.job?.id) return [];
-      // Use the clients/location equipment endpoint
       const loc = detail.location;
       if (!loc?.id) return [];
-      const resp = await apiRequest<any>(`/api/clients/${loc.id}/equipment`);
+      const resp = await apiRequest<any>(`/api/tech/locations/${loc.id}/equipment`);
       return Array.isArray(resp) ? resp : (resp?.data ?? []);
     },
   });
 
-  const filtered = (locationEquip ?? []).filter((e: any) =>
-    !search || e.name?.toLowerCase().includes(search.toLowerCase())
-  );
+  // Filter against the canonical asset label. If `name` is null (not
+  // expected — column is NOT NULL — but defensive), fall back to the
+  // type/manufacturer/model triple so the picker keeps working.
+  const filtered = (locationEquip ?? []).filter((e: any) => {
+    if (!search) return true;
+    const needle = search.toLowerCase();
+    const haystack = (
+      e.name ??
+      [e.type, e.manufacturer, e.model].filter(Boolean).join(" ")
+    ).toLowerCase();
+    return haystack.includes(needle);
+  });
 
   const handleSelect = async (equipmentId: string) => {
     try {
@@ -907,13 +917,16 @@ function EquipmentDetailScreen({ equipmentId, equipment, isTerminal, onClose, on
   const [confirmRemove, setConfirmRemove] = useState(false);
   const eq = equipment.find(e => e.id === equipmentId);
 
+  // 2026-05-04 Phase 2 PR 3: tech-safe equipment timeline + notes.
+  // Backed by /api/tech/equipment/* — same response shape as the
+  // office endpoint plus per-tech assignment scoping.
   const timeline = useQuery<TimelineEntry[]>({
-    queryKey: ["/api/equipment", equipmentId, "timeline"],
-    queryFn: () => apiRequest(`/api/equipment/${equipmentId}/timeline`),
+    queryKey: ["/api/tech/equipment", equipmentId, "timeline"],
+    queryFn: () => apiRequest(`/api/tech/equipment/${equipmentId}/timeline`),
   });
   const eqNotes = useQuery<HistoryNote[]>({
-    queryKey: ["/api/equipment", equipmentId, "notes"],
-    queryFn: () => apiRequest(`/api/equipment/${equipmentId}/notes`),
+    queryKey: ["/api/tech/equipment", equipmentId, "notes"],
+    queryFn: () => apiRequest(`/api/tech/equipment/${equipmentId}/notes`),
   });
 
   if (!eq) return null;
@@ -1478,8 +1491,10 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
       }
 
       if (equipmentId) {
-        queryClient.invalidateQueries({ queryKey: ["/api/equipment", equipmentId, "notes"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/equipment", equipmentId, "timeline"] });
+        // 2026-05-04 Phase 2 PR 3: invalidate the tech-namespaced cache
+        // keys that match the tech-safe equipment timeline + notes hooks.
+        queryClient.invalidateQueries({ queryKey: ["/api/tech/equipment", equipmentId, "notes"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/tech/equipment", equipmentId, "timeline"] });
         queryClient.invalidateQueries({ queryKey: ["equipment-history", equipmentId] });
       }
       showSuccess("Note saved");

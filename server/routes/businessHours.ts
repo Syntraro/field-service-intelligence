@@ -11,6 +11,9 @@ import { z } from "zod";
 import { storage } from "../storage/index";
 import { requireRole } from "../auth/requireRole";
 import { RESTRICTED_MANAGER_ROLES } from "../auth/roles";
+// 2026-05-04 PR 4: settings.manage on writes behind the existing
+// role gate. GET stays open (read by scheduling consumers).
+import { requirePermission } from "../permissions";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 
@@ -93,6 +96,7 @@ router.get(
 router.put(
   "/",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("settings.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     if (!companyId) throw createError(401, "Unauthorized");

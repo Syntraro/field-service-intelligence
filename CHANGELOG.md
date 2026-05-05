@@ -8,6 +8,549 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Stack View — UI density tightening (2026-05-04)
+
+UI-only density pass on `/timesheets/stack`. The chronological weekly-review structure (rows, headers, footer pills, click → Day View) is correct and unchanged. This iteration removes residual card chrome from each entry, switches to flat row-list rendering with `divide-y` separators, demotes the "Unbilled" subtitle that was confusing the General Time hierarchy, and tightens spacing so the column reads as a continuous timeline rather than a stack of mini cards.
+
+**No data, route, or behavioral changes.** `buildWeekStackViewModel.ts` is untouched, the 12 adapter tests still pass, the click model still routes to canonical Day View, and the synthetic-unallocated, chronological-ordering, and footer-summary logic are all preserved.
+
+**Per-row chrome — removed.**
+
+  * Was: each entry button had `rounded border border-slate-200 bg-white px-2.5 py-2 hover:border-slate-300` (job) / `rounded border border-slate-100 bg-slate-50/50 px-2.5 py-2 hover:border-slate-200 hover:bg-slate-50` (general). Each row read as its own mini card with a subtle frame.
+  * Now: each entry is `block w-full px-3 py-2 text-left hover:bg-slate-50 transition-colors`. No border, no rounded corners, no bg fill (relying on the column's white bg). Hover is a subtle full-width slate-50 wash. Reads as a flat row in a continuous list.
+  * Inter-row spacing: `space-y-1.5` → `divide-y divide-slate-100`. Rows touch each other; a thin slate-100 hairline separates them. No vertical gaps.
+
+**General Time row — minimal.**
+
+  * Removed the **Unbilled** subtitle. General Time is now a single line: green dot · `General Time` · time. The dot alone carries the green-vs-blue distinction.
+  * Removed the `bg-slate-50/50` fill. The dot color is the only visual differentiator vs job rows. Per spec: "subtle green dot" (preferred) — no bg, no badge, no left-border accent (we evaluated the 2px green left-border alternative; the dot is sufficient at this density).
+
+**Time alignment — vertically consistent.**
+
+  * Top line of every row now uses the same `flex items-baseline gap-2` pattern: `[dot] [identifier] [ml-auto] [time]`. With consistent `px-3` row padding, every time sits at the same x-position on the right edge of its row, so times line up cleanly down the column.
+  * Time stays `text-sm font-semibold tabular-nums text-slate-900` — strongest element after the day total.
+  * Dot is `h-1.5 w-1.5` (6px) baseline-aligned with the identifier text. Subsequent lines (location, summary, "Unfinished entry") indent via `pl-3.5` so they align under the identifier rather than the dot.
+
+**Typography hierarchy — applied.**
+
+  * Job number: `text-sm font-medium tabular-nums text-slate-700` (was `text-xs font-semibold text-slate-600`). Promoted to text-sm so it sits on the same line height as the time, with medium weight (per spec: "primary → medium weight").
+  * Location/company: `text-sm text-slate-700` (was `text-sm font-semibold text-slate-900`). Demoted from font-semibold to font-normal per the new hierarchy ("secondary → normal weight"). Slate-700 keeps it readable but no longer the loudest element.
+  * Summary: `text-xs text-slate-500 leading-snug line-clamp-2` (unchanged). Tertiary, muted.
+  * "General Time" label: `text-sm font-medium text-slate-700` (was `text-sm font-semibold`). Medium weight per primary-tier spec.
+  * Time: `text-sm font-semibold tabular-nums text-slate-900` — unchanged. Strongest in row.
+  * Day total in header: `text-base font-semibold` — unchanged. Largest in column.
+
+**Body padding — tightened.**
+
+  * Body wrapper: `px-2 py-2` → no horizontal/vertical padding (rows carry their own `px-3`). Dividers span full column width for a continuous timeline look.
+  * Body min-height: `min-h-[260px]` → `min-h-[200px]`. Less wasted vertical space on light days.
+  * Empty state: removed extra padding, kept centered `No entries` (`text-xs text-slate-400`).
+  * `+ Add Entry` wrapper: `mt-auto px-1 pt-3` (with conditional `mt-3 border-t`) → `mt-auto px-3 py-2` (with conditional `border-t`). Tighter, no double-margin.
+
+**Header — unchanged.**
+
+  * The day-header / summary / body separation already had a `border-b border-slate-200` between the header button (which contains the weekday, date, day total, and the two summary lines) and the body. That single divider is the "border under summary" the spec calls for. No change needed.
+
+**Tailwind class deltas (key tokens).**
+
+| Element | Before | After |
+|---|---|---|
+| Row container (job) | `block w-full rounded border border-slate-200 bg-white px-2.5 py-2 hover:border-slate-300 transition-colors` | `block w-full px-3 py-2 text-left hover:bg-slate-50 transition-colors` |
+| Row container (general) | `block w-full rounded border border-slate-100 bg-slate-50/50 px-2.5 py-2 hover:border-slate-200 hover:bg-slate-50 transition-colors` | `block w-full px-3 py-2 text-left hover:bg-slate-50 transition-colors` |
+| Inter-row spacing | `space-y-1.5` | `divide-y divide-slate-100` |
+| Body wrapper | `px-2 py-2 flex-1 flex flex-col min-h-[260px]` | `flex-1 flex flex-col min-h-[200px]` |
+| Job number | `text-xs font-semibold tabular-nums text-slate-600` | `text-sm font-medium tabular-nums text-slate-700` |
+| Location | `mt-0.5 text-sm font-semibold text-slate-900 leading-snug break-words` | `pl-3.5 mt-0.5 text-sm text-slate-700 leading-snug break-words` |
+| Summary indent | (own col under content) | `pl-3.5` so it aligns under the identifier, not the dot |
+| General Time label | `text-sm font-semibold text-slate-700` | `text-sm font-medium text-slate-700` |
+| General "Unbilled" subtitle | `mt-0.5 text-xs text-slate-400` | **removed** |
+| General row bg | `bg-slate-50/50` | (none — relies on green dot only) |
+| Add Entry wrapper | `mt-auto px-1 pt-3` (+ `mt-3 border-t` conditional) | `mt-auto px-3 py-2` (+ `border-t` conditional) |
+
+**Files changed.**
+
+  * `client/src/pages/timesheets/WeekStackPage.tsx` — only `EntryRow` (both branches) and the body wrapper inside `DayStackCard` touched. Header, footer, queries, view-model wiring all untouched.
+
+**Files explicitly NOT changed.**
+
+  * `client/src/components/timesheets/stack/buildWeekStackViewModel.ts` — adapter logic untouched.
+  * `tests/timesheets-week-stack.test.ts` — unchanged. 12/12 still pass.
+  * `client/src/App.tsx`, `client/src/pages/PayrollPage.tsx` — routing and canonical page untouched.
+
+**Acceptance.**
+
+  * ✅ Entries read as a continuous vertical timeline (`divide-y` hairlines, no card frames).
+  * ✅ No card-stacking feel remains (no per-row borders, no per-row rounded corners, no per-row bg fill).
+  * ✅ Time is the strongest element in each row after the day total — `text-sm font-semibold tabular-nums text-slate-900`, right-aligned via `ml-auto`, vertically consistent across rows.
+  * ✅ Columns feel connected — outer container + `border-r` between columns + bg-slate-50 header strip across all 7. Same as before; not regressed.
+  * ✅ UI density tighter — body wrapper has no internal padding (rows own their own padding), min-h dropped from 260px to 200px, no inter-row margin.
+  * ✅ General Time visible but not dominant — green dot only; no bg, no badge, no subtitle.
+  * ✅ "Unbilled" label removed (verified via grep — no occurrences in `WeekStackPage.tsx`).
+  * ✅ No drive/on-site breakdown anywhere in the daily list.
+  * ✅ `npx tsc --noEmit` → 0 errors.
+  * ✅ `npx vitest run tests/timesheets-week-stack.test.ts` → 12 / 12 pass.
+
+#### Stack View — chronological weekly review (Job Time / General Time model) (2026-05-04)
+
+Final layout pass for `/timesheets/stack`. The page now reads as a Sunday-night weekly review tool: each day column shows its chronological sequence of work, the daily Job Time / General Time split, and a footer that compares the week's Job vs General split as a stacked bar. **Same route, same APIs, same canonical Day View edit flow** — no new endpoint, no new modal, no new page.
+
+**Concept change.** The previous adapter aggregated all entries by `jobId` into one block per job per day, with a single trailing "General / Unassigned" block. That model worked for "how much time on each job" but obscured the actual day flow ("clocked in 30 min before first job, then job A, then 15 min idle, then job B"). The new model emits a chronological list of rows per day:
+
+  * **Job rows** — consecutive entries with the same `jobId` collapse into one row (drive + on-site for the same job → one row whose duration is the sum). Per-type breakdown remains in Day View only, intentionally not surfaced here.
+  * **General Time rows** — consecutive jobless entries (admin, break, other) collapse into one General Time row. Multiple non-consecutive idle gaps each become their own row in time order.
+  * **Synthetic unallocated row** — `max(0, sessionMinutes − sum(time_entries))` surfaces as ONE General Time row inserted at the top of the day, representing clocked-in-but-unlogged time. We don't try to position it between entries because per-session clock-in/out detail isn't on `/api/admin/timesheets/week`; the leading-row placement matches the canonical "clocked in at 8:00, started job at 8:30 = 30 min General" example without inventing positional data.
+
+**Wording — "General / Unassigned" → "General Time" + "Unbilled".** Per the spec, every general row now reads `General Time` (slate-700, font-semibold) with subtitle `Unbilled` (text-xs, slate-400). The phrase "General / Unassigned" no longer appears in the stack view.
+
+**Day column header — adds a 2-line summary.**
+
+  * Top: weekday (left) · date (right). Unchanged.
+  * Day total: `text-base font-semibold tabular-nums`. Unchanged.
+  * **New:** two compact summary lines — `● Job Time   X:XX` (blue dot) and `● General Time   X:XX` (green dot). Always rendered, even on empty days, so the seven column headers visually rhyme.
+  * Whole header is one button — clicking anywhere routes to canonical Day View.
+
+**Day body — chronological row list.**
+
+  * Sequence: each row is a `<button>` that routes to Day View on click. New navigation affordance per spec ("Clicking an entry should open the canonical Day View/edit flow").
+  * **Job row content**: blue dot · `#1234` (top-left, tabular-nums) · duration (top-right) · location/company name (own line, slate-900 semibold, full row width) · summary (line-clamp-2, slate-500). No drive/on-site sub-rows.
+  * **General row content**: green dot · `General Time` (top-left) · duration (top-right) · `Unbilled` (slate-400, text-xs).
+  * **Empty day**: centered `No entries`. Header and summary lines still render so the column reads as a real day, not an empty card.
+  * **+ Add Entry**: bottom-pinned text link, conditional `border-t` when rows exist above it. Routes to canonical Day View add-entry flow.
+
+**Footer summary — target removed, stacked bar added.**
+
+  * Pills: `WEEK TOTAL X:XX` (dark, primary) · `Job Time X:XX (NN%)` (blue chip) · `General Time X:XX (NN%)` (green chip). Percentages are computed against the week total; `genPct = 100 - jobPct` so the two pills always sum to exactly 100%.
+  * Bar: single `h-2` rounded bar split between blue (Job Time) and green (General Time). No `bg-emerald-500` weekly-target overlay, no `Target 40:00 · 6%` line. The 40-hour `WEEKLY_TARGET_MINUTES` constant was deleted.
+
+**Click model — read-only, navigation-only.** No new edit modal. Day header click, entry-row click, and `+ Add Entry` all route to `/timesheets?view=day&tech=<id>&date=<yyyy-mm-dd>`, which is the canonical Day View on PayrollPage. Existing Approve Week / Export / Reports actions are unchanged. Approval semantics are untouched.
+
+**Adapter contract changes (the data layer reshaped, not the data source).**
+
+| | Before | After |
+|---|---|---|
+| Per-day output | `blocks: WeekStackJobBlock[]` aggregated by jobId | `rows: WeekStackRow[]` in chronological order |
+| Row identity | `{ key, jobId, isGeneral, category, ... }` | `{ key, kind: "job"\|"general", isUnallocated, sortMs, ... }` |
+| Day fields | `entriesMinutes, sessionMinutes, unallocatedSessionMinutes` (kept) | + `jobMinutes`, `generalMinutes` (new) |
+| Week totals | `byCategory: Record<EntryCategory, number>` | `{ totalMinutes, jobMinutes, generalMinutes }` |
+| Drive vs on-site | Tracked via `categoryForType` for dominant-category dot | Not tracked here — Day View shows the breakdown |
+| Same-job drive+on-site | One block, summed | One row, summed (same outcome, different shape) |
+| Unallocated session | Merged into the trailing General/Unassigned block | Surfaced as a synthetic leading General Time row with `isUnallocated: true` |
+
+`WeekStackEntry` is unchanged — same input, same upstream API. `formatHm` is unchanged. The `categoryForType` import was dropped (no longer needed), as were the `formatHmLong` helper and the `CATEGORY_STYLE` / `EntryCategory` page imports.
+
+**Tests rewritten.** `tests/timesheets-week-stack.test.ts` is now 12 tests (was 10), covering: same-job collapsing (drive + on-site → one Job row), interleaved jobs (separate rows in time order), consecutive jobless collapsing, session-only days, session > entries (synthetic leading row), session === entries, entries > session (entries-win), the canonical chronological-mix scenario from the spec, multi-day weekly accumulation without leakage, and two invariants (`day.totalMinutes === sum(row.totalMinutes) === day.jobMinutes + day.generalMinutes` and chronological row order). All 12 pass.
+
+**Files changed.**
+
+  * `client/src/components/timesheets/stack/buildWeekStackViewModel.ts` — full adapter rewrite for the rows-not-blocks contract.
+  * `client/src/pages/timesheets/WeekStackPage.tsx` — rebuilt header summary, body row rendering, footer pills + stacked bar. Removed `WEEKLY_TARGET_MINUTES`, removed `formatHmLong`, removed `CATEGORY_STYLE` / `EntryCategory` imports.
+  * `tests/timesheets-week-stack.test.ts` — full rewrite for the new contract; 12 tests passing.
+
+**Files explicitly NOT changed.**
+
+  * `client/src/App.tsx` — same `/timesheets/stack` route.
+  * `client/src/pages/PayrollPage.tsx` — canonical timesheet page untouched. Existing "Stack View" header link unchanged.
+  * `server/routes/adminTimesheets.ts`, `server/storage/timeTracking.ts` — backend payload untouched. No new endpoint.
+  * `client/src/components/time/TimeEntryModal.tsx`, `client/src/components/timesheets/{DayView,timeline/*}.tsx` — out of scope. No duplicate editor.
+
+**Acceptance checks.**
+
+  * ✅ Seven connected columns in one weekly grid (one shared bordered container, internal `border-r` dividers, no per-column shadow / radius).
+  * ✅ Each day column shows: total · Job Time · General Time at the top.
+  * ✅ Entries listed in chronological sequence — no "Jobs" / "General" / "Drive" sub-sections.
+  * ✅ Entries show total duration only — no start/end ranges rendered.
+  * ✅ General Time rows labeled exactly "General Time" with "Unbilled" subtitle.
+  * ✅ No "General / Unassigned" wording remains anywhere in stack view (verified via grep).
+  * ✅ No Drive / Travel section in the daily list.
+  * ✅ Footer has no `Target 40:00` and no target percent.
+  * ✅ No new route, no new page, no new editor.
+  * ✅ `npx tsc --noEmit` → 0 errors.
+  * ✅ `npx vitest run tests/timesheets-week-stack.test.ts` → 12 / 12 pass.
+
+#### Stack View — row-style entries (drop card chrome) (2026-05-04)
+
+UI-only refactor of the day-column body in `/timesheets/stack`. The connected weekly grid stays — outer container, header strip, footer summary, and column dividers all unchanged. The change is **inside each column**: replaced "boxed mini cards" with simple stacked rows separated by `border-b` dividers, and rebuilt each row into a 4-line stacked layout so the company name (the most-scanned field) always gets full column width and the summary can wrap to two lines instead of getting ellipsed.
+
+**No data, route, API, or edit-model changes.** `buildWeekStackViewModel.ts` is byte-for-byte unchanged. The 10 adapter tests still pass.
+
+**Day body — list, not stack-of-cards.**
+
+  * Was: `space-y-2` between blocks; each block had its own `rounded-md border border-slate-200 bg-white px-2.5 py-2 hover:border-slate-300` card frame.
+  * Now: `divide-y divide-slate-100` between rows; each row is plain `px-3 py-3` with no border, no rounded corners, no shadow, no hover-border. Last row has no border-b automatically (divide-y skips trailing). Reads as a Jobber-style table.
+  * Horizontal padding moved from the body wrapper onto each row so the General row's `bg-slate-50/40` tint can fill the full row width without an inset gutter. The body wrapper keeps `py-2 min-h-[260px]` for vertical rhythm.
+  * `+ Add Entry` is bottom-pinned via `mt-auto` and now gets its own wrapper with conditional `border-t border-slate-100` — only drawn when at least one row sits above it, so it doesn't float a stray rule under empty days.
+
+**Job row — four-line stacked.**
+
+  * **Line 1.** `#1234` — `text-xs font-semibold tabular-nums text-slate-700`. Compact identifier.
+  * **Line 2.** Location / company name — `text-sm font-semibold text-slate-900 leading-snug break-words`. Most readable text in the row, full row width, no truncation guard. `break-words` prevents long names from forcing horizontal scroll inside the column.
+  * **Line 3.** Job summary — `text-xs text-slate-500 leading-snug line-clamp-2 break-words`. Allowed to wrap to two lines (was single-line `truncate`); after two lines the rest is ellipsed. `title` attribute carries the full string for hover.
+  * **Line 3.5 (conditional).** Open-entry pill in amber, unchanged.
+  * **Line 4 (duration).** Right-aligned, separated from content by `mt-2 pt-2 border-t border-slate-100`. `text-sm font-semibold tabular-nums text-slate-900`. Duration no longer competes with the job number on the same line.
+
+**General row — same rhythm, muted.**
+
+  * Container: `px-3 py-3 bg-slate-50/40` (no border, no dashed frame). The bg tint plus the standard divide-y divider above it is enough to read it as distinct.
+  * Line 1: "General / Unassigned" — `text-sm font-medium text-slate-500`.
+  * Line 2 (conditional): "Includes Xh Ym untracked time" — `text-xs text-slate-400`.
+  * Line 3 (duration): right-aligned, separated by `mt-2 pt-2 border-t border-slate-200/70`. `text-sm font-semibold tabular-nums text-slate-700` — readable but slightly muted vs job rows' `text-slate-900`.
+
+**Empty day — unchanged.** Centered `No entries` (`text-xs text-slate-400`).
+
+**Tailwind class deltas (key tokens).**
+
+| Element | Before | After |
+|---|---|---|
+| Body wrapper | `px-2 py-2 flex-1 flex flex-col min-h-[260px]` | `py-2 flex-1 flex flex-col min-h-[260px]` (horizontal padding moved to rows) |
+| Rows wrapper | `space-y-2` | `divide-y divide-slate-100` |
+| Job row container | `rounded-md border border-slate-200 bg-white px-2.5 py-2 hover:border-slate-300 transition-colors` | `px-3 py-3` (no border, no rounded, no shadow, no hover) |
+| Job line 1 (number) | combined with location · `#1234 · Acme` on one row | `text-xs font-semibold text-slate-700 tabular-nums` (own line) |
+| Job line 2 (location) | `text-sm font-medium text-slate-700 truncate` (was on row 2) | `text-sm font-semibold text-slate-900 leading-snug break-words` (own line, more contrast, no truncate) |
+| Job line 3 (summary) | `text-xs text-slate-500 truncate` | `text-xs text-slate-500 leading-snug line-clamp-2 break-words` |
+| Job line 4 (duration) | inline on row 1 (`flex justify-between`) | right-aligned own row, separated by `mt-2 pt-2 border-t border-slate-100`, `text-sm font-semibold tabular-nums text-slate-900` |
+| General row container | `rounded-md border border-dashed border-slate-200 bg-slate-50/50 px-2.5 py-2` | `px-3 py-3 bg-slate-50/40` (no card frame, full-bleed tint) |
+| General duration | inline beside title (`flex justify-between`) | right-aligned own row, separated by `mt-2 pt-2 border-t border-slate-200/70`, `text-sm font-semibold tabular-nums text-slate-700` |
+| Add Entry separator | none | conditional `border-t border-slate-100` when rows exist |
+
+**Files changed.**
+
+  * `client/src/pages/timesheets/WeekStackPage.tsx` — only `DayStackCard`'s body region and `JobBlock` (both branches) touched. Outer connected-grid container, day header, footer summary, and all data-handling code untouched.
+
+**Files explicitly NOT changed.**
+
+  * `client/src/components/timesheets/stack/buildWeekStackViewModel.ts` — adapter / data logic untouched.
+  * `client/src/App.tsx`, `client/src/pages/PayrollPage.tsx` — routing and canonical page untouched.
+  * `tests/timesheets-week-stack.test.ts` — unchanged. All 10 tests pass against the same adapter.
+  * `client/src/components/time/TimeEntryModal.tsx`, `client/src/components/timesheets/{DayView,timeline/*}.tsx` — out of scope.
+
+#### Stack View — connected weekly grid (2026-05-04)
+
+UI-only restructure of `/timesheets/stack`. The previous "seven floating cards in a CSS grid with gap" layout wasted horizontal width — each column was narrow enough that job number, location name, and duration competed for a single line and forced location/summary truncation. This iteration replaces the floating-cards model with a single connected weekly grid (one outer container, shared internal borders), and rebuilds the job block as a three-row layout so company name and summary each get their own line.
+
+**No data, route, API, or edit-model changes.** `buildWeekStackViewModel.ts` is byte-for-byte unchanged. The 10 adapter tests still pass against the same contract. The canonical `/timesheets` route is untouched.
+
+**Outer container.** Was: a `grid gap-3 grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7` of standalone day cards (each with its own `border + rounded-md + shadow-sm`). Now: one bordered, rounded, shadowed container holding seven equal-width columns separated by shared `border-r` dividers (no gap, no per-column rounded corners, no per-column shadow). Reads as one calendar-style table instead of seven detached panels.
+
+**Responsive behavior.** Each column is `minmax(150px, 1fr)`; on wide viewports the seven columns share the row equally, on narrow viewports the inner wrapper enables horizontal scroll inside the bordered container so columns stay legible rather than stacking. The arbitrary class is `grid-cols-[repeat(7,minmax(150px,1fr))]` inside an `overflow-x-auto` wrapper inside the `overflow-hidden` rounded outer.
+
+**Day header.** Now `bg-slate-50` with `border-b border-slate-200` so all seven headers read as one continuous strip. Day total demoted further to `text-base font-semibold tabular-nums text-slate-700` (was `text-lg`). Hover lightens to `bg-slate-100` to keep the click-to-Day-View affordance discoverable.
+
+**Day body.** `px-2 py-2 min-h-[260px]` (was `px-3 py-3 min-h-[220px]`) — slightly tighter horizontal padding to give the now-three-row blocks more text width, taller minimum to enforce visual rhythm across the row even on light days. Blocks remain `space-y-2`. The `+ Add Entry` text-link is pinned via `mt-auto pt-3` so it sits at the bottom regardless of body content.
+
+**Job block — three rows.** This is the central fix.
+
+  * **Row 1.** `#1234` (left, `text-sm font-semibold tabular-nums text-slate-800`) and duration (right, `text-sm font-semibold tabular-nums text-slate-900`). Both compact and balanced.
+  * **Row 2.** Location/company name on its own line, full available width — `text-sm font-medium text-slate-700 truncate`. Was previously combined with the job number on row 1 ("`#1234 · Acme`") and got truncated to "`#1234 · A…`" on narrow columns. Now it gets the entire row.
+  * **Row 3.** Job summary, muted — `text-xs text-slate-500 truncate`.
+  * **Row 4 (conditional).** "Unfinished entry" pill in amber when an open-ended entry exists.
+
+**General / Unassigned block.** Same outer style brief but visually muted: `border border-dashed border-slate-200 bg-slate-50/50`. Two rows max (no company / summary applies):
+
+  * Row 1: "General / Unassigned" (left, `text-sm font-medium text-slate-500`) — duration (right, `text-sm font-semibold tabular-nums text-slate-600`).
+  * Row 2 (conditional): "Includes Xh Ym untracked time" (`text-xs text-slate-400`).
+
+**Empty day.** Centered `No entries` (`text-xs text-slate-400`) — unchanged from previous iteration.
+
+**`+ Add Entry`.** Same subtle text-link style — `text-xs text-slate-400 hover:text-slate-700 hover:underline`. Pinned to bottom via `mt-auto pt-3`. No icon.
+
+**Footer.** Existing weekly summary card unchanged — sits below the connected grid in the page's `space-y-4` flow, so widths match naturally without adding any explicit attachment styling. The progress bar, summary pills, and `formatHmLong` helper from prior iterations are reused.
+
+**Layout summary (Tailwind tokens).**
+
+| Element | Before | After |
+|---|---|---|
+| Outer | `grid gap-3 … lg:grid-cols-7` (no container) | `border border-slate-200 rounded-lg overflow-hidden bg-white shadow-sm` wrapping `overflow-x-auto > grid grid-cols-[repeat(7,minmax(150px,1fr))]` |
+| Day column | `rounded-md border border-slate-200 bg-white shadow-sm flex flex-col min-h-[220px]` | `flex flex-col min-w-0 bg-white` + `border-r border-slate-200` (omitted on last column) |
+| Day header | `px-3 py-2 hover:bg-slate-50 rounded-t-md border-b border-slate-200` | `px-3 py-2 bg-slate-50 hover:bg-slate-100 border-b border-slate-200` |
+| Day total | `text-lg font-semibold tabular-nums text-slate-700` | `text-base font-semibold tabular-nums text-slate-700` |
+| Day body | `px-3 py-3 flex-1 flex flex-col` | `px-2 py-2 flex-1 flex flex-col min-h-[260px]` |
+| Job block | combined `#1234 · Acme    4:00` row + summary | Row 1: `#1234` / `4:00` · Row 2: `Acme Acoustics` (own line) · Row 3: summary (muted) |
+| Add Entry pin | `mt-3 self-start` | `mt-auto pt-3 self-start` |
+
+**Files changed.**
+
+  * `client/src/pages/timesheets/WeekStackPage.tsx` — outer grid wrapper rebuilt as connected container; `DayStackCard` now accepts `isLast` to suppress its right divider on the seventh column; `JobBlock` job-block branch restructured to a three-row layout (number/duration → location → summary). Function name kept (`DayStackCard`) to minimize churn even though it's no longer a "card" — the test-id prefix `day-stack-` stays stable.
+
+**Files explicitly NOT changed.**
+
+  * `client/src/components/timesheets/stack/buildWeekStackViewModel.ts` — adapter / data logic untouched.
+  * `client/src/App.tsx`, `client/src/pages/PayrollPage.tsx` — routing and canonical page untouched.
+  * `tests/timesheets-week-stack.test.ts` — unchanged. All 10 tests pass against the same adapter.
+  * `client/src/components/time/TimeEntryModal.tsx`, `client/src/components/timesheets/{DayView,timeline/*}.tsx` — out of scope.
+
+#### Stack View — UI hierarchy refactor (2026-05-04)
+
+UI-only refactor of `/timesheets/stack` to fix the visual imbalance reported on the previous iteration: the giant mono day-total was dominating each card and pulling the eye away from the actual work. **No data-logic, routing, page-structure, editing-model, or API changes** — `buildWeekStackViewModel` is byte-for-byte unchanged, the 10 adapter tests still pass, and clicks still route into the canonical Day View.
+
+**New visual hierarchy (in priority order).**
+
+  1. **Job blocks** are the primary focus — larger block padding (`px-2.5 py-2`), `text-sm font-medium` titles, `space-y-2` between blocks, subtle hover (`hover:border-slate-300`).
+  2. **General / Unassigned block** is visually distinct but quieter — dashed slate border + `bg-muted/30` (lighter than the previous `bg-slate-50/60`), `text-slate-500` title (lower contrast vs the slate-800 of job blocks), sub-line "Includes Xh Ym untracked time" using a friendlier `formatHmLong` format.
+  3. **Day total** is now `text-lg font-semibold tabular-nums text-slate-700` (was `text-2xl font-mono font-bold text-slate-900`). Visible, but no longer dominant.
+  4. **Day label / date** stays at `text-[11px]` uppercase tracking-wider — tertiary, supporting role.
+
+**Three-section card structure.**
+
+  * **[1] Header** — `px-3 py-2`, `border-b border-slate-200` (was a thin `border-slate-100` divider). Top row: weekday label (left) · date (right). Below: day total + optional Issue pill.
+  * **[2] Body** — `px-3 py-3` for breathing room (was `px-2 pt-2 pb-2`). Job blocks are wrapped in a `space-y-2` group so vertical rhythm survives content variation.
+  * **[3] Add Entry** — moved to bottom of body via `mt-3 self-start`, dropped the `Plus` lucide icon entirely (per "Do not reintroduce icons everywhere"), now plain text `+ Add Entry` with `text-xs text-slate-400 hover:text-slate-700 hover:underline`. The icon import was removed from `lucide-react` to stop importing what we don't use.
+
+**Empty day state** — replaced the lone `—` glyph with centered `No entries` in `text-xs text-slate-400`. More legible, still minimal.
+
+**Card container.**
+
+  * Added `shadow-sm` so cards read as containers, not flat panels. Border kept (`border border-slate-200`) so the elevation is subtle, not heavy.
+  * `min-h-[220px]` (was 200) enforces consistent vertical rhythm across all 7 columns even when content varies.
+
+**Tailwind class deltas (key tokens).**
+
+| Element | Before | After |
+|---|---|---|
+| Day card | `rounded-md border border-slate-200 bg-white flex flex-col min-h-[200px]` | `rounded-md border border-slate-200 bg-white shadow-sm flex flex-col min-h-[220px]` |
+| Day total | `text-2xl font-mono font-bold tabular-nums text-slate-900` | `text-lg font-semibold tabular-nums text-slate-700` |
+| Header divider | `border-b border-slate-100` | `border-b border-slate-200` |
+| Body wrapper | `px-2 pt-2 pb-2 flex-1 flex flex-col gap-1.5` | `px-3 py-3 flex-1 flex flex-col` (+ inner `space-y-2` group) |
+| Job block container | `rounded border border-slate-200 bg-white px-2 py-1.5 text-[11px] leading-tight` | `rounded-md border border-slate-200 bg-white px-2.5 py-2 hover:border-slate-300 transition-colors` |
+| Job title | `font-semibold text-slate-700 truncate` (text-[11px]) | `text-sm font-medium text-slate-800 truncate` |
+| Job duration | `font-mono font-semibold text-slate-800` (text-[11px]) | `text-sm font-semibold tabular-nums text-slate-900` |
+| Job summary | `mt-0.5 text-slate-500 truncate` (text-[11px]) | `mt-0.5 text-xs text-slate-500 truncate` |
+| General block | `rounded border border-dashed border-slate-200 bg-slate-50/60 px-2 py-1.5 text-[11px]` | `rounded-md border border-dashed border-slate-200 bg-muted/30 px-2.5 py-2` |
+| General title | `font-medium text-slate-500 truncate` (text-[11px]) | `text-sm font-medium text-slate-500 truncate` |
+| General duration | `font-mono font-semibold text-slate-700` | `text-sm font-semibold tabular-nums text-slate-600` |
+| General sub-line | `mt-0.5 text-[10px] text-slate-400` ("Includes 3:00 unallocated") | `mt-0.5 text-xs text-slate-400` ("Includes 3h untracked time") |
+| Empty state | `text-[11px] text-slate-300` `—` | `text-xs text-slate-400` `No entries` |
+| Add Entry | `inline-flex items-center justify-center gap-1 text-[11px] font-medium text-slate-400 hover:text-slate-700 hover:bg-slate-50 rounded px-2 py-1` (with `<Plus />`) | `mt-3 self-start text-xs text-slate-400 hover:text-slate-700 hover:underline transition-colors` (no icon) |
+
+**Files changed.**
+
+  * `client/src/pages/timesheets/WeekStackPage.tsx` — only `DayStackCard` and `JobBlock` touched (plus a small local `formatHmLong` helper for the "Xh Ym" sub-line). Lucide `Plus` import removed. Outer page header, summary footer, query layer, and adapter call site unchanged.
+
+**Files explicitly NOT changed (per safety rules).**
+
+  * `client/src/components/timesheets/stack/buildWeekStackViewModel.ts` — data logic untouched. Same exports, same shape, same field semantics.
+  * `client/src/App.tsx` — routes unchanged.
+  * `client/src/pages/PayrollPage.tsx` — canonical page untouched.
+  * `tests/timesheets-week-stack.test.ts` — unchanged. All 10 data-layer tests still pass against the same adapter.
+  * `client/src/components/time/TimeEntryModal.tsx`, `client/src/components/timesheets/{DayView,timeline/*}.tsx` — out of scope.
+
+#### Stack View polish — paid/general accuracy + visual tightening (2026-05-04)
+
+Follow-up to the experimental Weekly Timesheet Stack View. Three goals: (a) make day totals reflect *clocked-in* time so a "8h shift, 6h logged" tech doesn't appear to have a 6h day, (b) tighten the visual hierarchy so the day total reads at a glance, and (c) lock the new accuracy contract with adapter unit tests. Canonical `/timesheets` page is untouched. No new edit modal. No new endpoint.
+
+**Backend payload — unchanged.** The polish reuses `/api/payroll/weekly`'s existing `daily[].totalMinutes` field (sourced from `work_sessions`, the same data PayrollPage already shows in its Week View shift totals). No new field, no new route, no widening of `/api/admin/timesheets/week`.
+
+**Adapter contract.** `buildWeekStackViewModel` now accepts an optional `dailySessionMinutes: Record<string, number>` keyed by `YYYY-MM-DD`. When supplied, the per-day pipeline computes `unallocated = max(0, sessionMinutes - entriesMinutes)` and merges it into the day's General / Unassigned block (creating one if none exists). Two invariants are now guaranteed:
+
+  1. `day.totalMinutes === sum(visible blocks)`
+  2. When session data exists for the day: `day.totalMinutes === max(entriesMinutes, sessionMinutes)`. If a tech logged more entry-minutes than work_sessions reports, entries win — never silently truncated.
+
+The view-model also exposes `day.entriesMinutes`, `day.sessionMinutes`, `day.unallocatedSessionMinutes`, and per-block `unallocatedSessionMinutes` for transparency and tests. Weekly category totals (`weekTotals.byCategory.general`) include the unallocated portion so the footer and the day cards reconcile.
+
+**Before / after — totals.**
+
+  * **Before.** Day total = sum of `time_entries.durationMinutes` for the day. A tech who clocked in 08:00–16:00 (480 min) but only created 360 min of entries showed `6:00` on the day card. Footer "Weekly Total" was the entries-only sum.
+  * **After.** Day total = max(entries, work_sessions). Same scenario now shows `8:00` on the card, with the General / Unassigned block carrying the 120-min difference labeled "Includes 2:00 unallocated". Footer "Weekly Total" sums the new day totals; "General / Unassigned" footer pill includes the unallocated portion. If a day has no session row (work_sessions absent), behavior is byte-for-byte identical to before — entries-only summing.
+
+**Visual layout (final).**
+
+  * Day card header is now a vertical stack: small uppercase weekday label + date on top, then the day total in `text-2xl font-mono font-bold` so it dominates the card. The "Issue" pill sits inline next to the total, only when an open-ended entry exists.
+  * Job blocks are stripped of the category dot — `#1234 · Acme Acoustics` (left), duration (right), summary line below if present, and an `Unfinished entry` line if the entry is still open. The category info still drives the *weekly footer* breakdown, but per-block dots were noise at this density.
+  * General / Unassigned blocks are visually distinct but quiet: dashed slate border, light slate-50 background, no leading dot, muted typography. When unallocated session minutes are merged in, the block shows a sub-line "Includes H:MM unallocated".
+  * Empty day state is now a single muted `—` instead of an icon + label — matches the "minimal" requirement.
+  * Footer summary row, weekly progress bar, and header controls are unchanged from the first iteration.
+
+**Tests.** Added `tests/timesheets-week-stack.test.ts` (10 tests, all passing). Coverage: job-only entries, general-only entries, session-only days (zero entries + clocked time), session > allocated, session === allocated, entries > session (entries-win contract), and a multi-day mixed scenario verifying the day-total === sum-of-blocks invariant. Existing `tests/timesheets-week-timeline.test.ts` still passes (92 tests) — adapter changes did not touch the Week Timeline path.
+
+**Files changed.**
+
+  * `client/src/components/timesheets/stack/buildWeekStackViewModel.ts` — added `dailySessionMinutes` parameter, unallocated-time merge, and `sessionMinutes` / `entriesMinutes` / `unallocatedSessionMinutes` fields on `WeekStackDay` + `WeekStackJobBlock`. Pure function; no UI imports.
+  * `client/src/pages/timesheets/WeekStackPage.tsx` — derived `dailySessionMinutes` from the existing `currentSummary.daily[]` array (no new query) and passed it to the adapter. Visual polish in colocated `DayStackCard` and `JobBlock`. Dropped now-unused `Clock` lucide import.
+  * `tests/timesheets-week-stack.test.ts` — new file, 10 unit tests pinning the contract above.
+
+**Files NOT changed (per safety rules).**
+
+  * `server/routes/adminTimesheets.ts`, `server/storage/timeTracking.ts` — backend payload is untouched. No new endpoint, no shape widening.
+  * `client/src/pages/PayrollPage.tsx` — untouched in this iteration (the additive "Stack View" header link from the first iteration remains; nothing else changed).
+  * `client/src/App.tsx` — routes unchanged from the first iteration.
+  * `client/src/components/timesheets/{DayView,timeline/*}.tsx` and `client/src/components/time/TimeEntryModal.tsx` — not touched. No duplicate edit modal, no shared-component widening.
+
+### Added
+
+#### Experimental Weekly Timesheet Stack View (2026-05-04)
+
+A second, isolated weekly timesheet layout for side-by-side comparison with the canonical `/timesheets` page. Mounted at `/timesheets/stack` behind the same `requireAdmin` gate. The default Timesheets page is **not** modified beyond a single additive header link ("Stack View") that opens the new surface in the same window. Stack View has a reciprocal "Default View" button.
+
+**Layout.** A 7-column responsive grid (1 / 2 / 4 / 7 columns at sm/md/lg breakpoints) of stacked day cards Mon–Sun. Each day card shows: day label + date, day-total hours, optional issue indicator (open-ended entries), one stacked block per `jobId` (or a "General / Unassigned" block for entries without a job), and a `+ Add Entry` action. Each block surfaces job number, location/company name, job summary, and per-day total minutes. Same-job entries for the same technician on the same day are collapsed into one visible block. Footer summary row shows Weekly Total, Drive total, On-site total, General/Unassigned total, and a 40-hour weekly target progress bar.
+
+**Read-only by design.** No new edit modal was introduced. Clicking a day header or `+ Add Entry` routes to `/timesheets?view=day&tech=<id>&date=<yyyy-mm-dd>` — the canonical Day View on PayrollPage owns all add/edit/delete flows (`TimeEntryModal`, lock-override prompts, etc.). Job blocks themselves are non-clickable because no canonical "edit aggregate" flow exists; aggregate-level editing would require a new modal, which is explicitly out of scope.
+
+**Data sources (all reused, no new endpoints).**
+
+- `GET /api/admin/timesheets/users` — technician picker.
+- `GET /api/admin/timesheets/week?userId=…&weekStart=…` — same payload PayrollPage week mode consumes; the stack adapter projects it into per-day, per-job groups.
+- `GET /api/payroll/weekly?weekStart=…` — supplies approved/locked status for the Approve Week control.
+- `POST /api/payroll/approve` — Approve Week mutation.
+- `GET /api/payroll/weekly.csv?weekStart=…` — Export CSV.
+
+**View-model.** `buildWeekStackViewModel({ weekStart, entries }) → { days[7], weekTotals }` is a pure function: groups entries by local `date` field, then by `jobId` (with `__general__` sentinel for nulls), sums minutes per group, picks a dominant category (`onsite` / `drive` / `general`) by majority minutes, and emits weekly totals broken down by category. Lives at `client/src/components/timesheets/stack/buildWeekStackViewModel.ts` so it can be deleted with the page if the experiment is dropped.
+
+**Files added.**
+
+- `client/src/components/timesheets/stack/buildWeekStackViewModel.ts` — pure adapter; no UI imports.
+- `client/src/pages/timesheets/WeekStackPage.tsx` — page component, including small `DayStackCard`, `JobBlock`, and `SummaryPill` sub-components colocated for easy removal.
+
+**Files changed (additive only).**
+
+- `client/src/App.tsx` — registered `/timesheets/stack` route under existing `requireAdmin` wrapper. Existing `/timesheets` route untouched.
+- `client/src/pages/PayrollPage.tsx` — added a single "Stack View" header button next to "Timesheet Reports". No other behavior change; the page remains the canonical Timesheets surface.
+
+**Limitations / known compromises.**
+
+- **Drive vs on-site split per block is not surfaced.** Each block shows one "dominant category" dot and one combined total because the prompt asked not to break each job into drive/on-site sub-rows when current backend data wouldn't make that easy. Per-category split *is* available on the same `WeekEntry` payload via `categoryForType(entry.type)`; the dominant-category dot is computed from it. Callers wanting a finer breakdown can hover the future tooltip or open Day View. Weekly footer totals do show the Drive / On-site / General split because aggregating across all blocks is cheap and useful for the running shift summary.
+- **Day-total uses time_entries, not work_sessions.** Like the canonical Week Timeline blocks, day totals are summed from `time_entries.durationMinutes` (the same source `getTimesheetWeek` returns). PayrollPage's "shift total" pill in Week View comes from `work_sessions` via `currentSummary.totalMinutes` and may not match if a tech clocked in but logged no entries. This was an intentional choice — the stack-view day total is the sum of the *visible* blocks, so the eye-test arithmetic always reconciles.
+- **`+ Add Entry` does not pre-seed a job or category.** It routes to Day View for that date, where the canonical add-entry modal opens with today's defaults. Threading a job-pre-fill into `TimeEntryModal` would have required widening its props — out of scope per the "do not refactor unrelated timesheet logic" rule.
+- **Open / unfinished entries** are flagged on both the day header (single "Issue" pill) and per-block ("Unfinished entry") when `endAt === null`. No remediation is offered here; cleanup happens in the canonical Day View.
+- **40-hour target is hardcoded.** The prompt explicitly allowed this default since the existing schema does not expose a per-tech / per-company weekly-hours target.
+
+**Easy removal.** To drop the experiment, delete `client/src/pages/timesheets/`, `client/src/components/timesheets/stack/`, the route block in `App.tsx`, and the "Stack View" header button in `PayrollPage.tsx`. No shared component or shared type was modified.
+
+### Fixed
+
+#### "Leave open" actually leaves the job open + Create Invoice on completed jobs (2026-05-04)
+
+Two related bugs in the visit-completion → close → invoice flow.
+
+**Bug 1.** Selecting "Leave open" in `PostVisitCompletionDialog` was a literal no-op — but the parent job was already `completed` by the time the dialog appeared. Root cause: `reconcileJobAfterVisitCompletion` (Rule 1) unconditionally fired a `CLOSE_JOB` intent whenever the just-completed visit was the last actionable visit on the job AND its outcome was `completed`. The dialog had no way to suppress this.
+
+**Bug 2.** Clicking "Create Invoice" on a `completed` job threw `Cannot close job in status 'completed'. Job must be 'open' to close.` Root cause: the JobDetailPage button called `POST /api/jobs/:id/close` with `mode: invoice_now`. The close route always calls `forceCloseJob` first; that route's `canClose` guard reads `CLOSEABLE_STATUSES = ["open"]` and rejects any non-open job — even when the actual intent is "create invoice".
+
+**Fix 1 — opt-in auto-close.** `CompleteVisitIntent` gained an optional `autoCloseJobOnLastVisit?: boolean` (default `false`). The reconciler's Rule 1 (close on last completed visit) is now gated on that flag. Office completion always passes `false` — the close decision belongs to `PostVisitCompletionDialog`. The needs_parts / needs_followup → on_hold reconciliation rule is unaffected and still fires regardless of the flag. Tech-app callers that want the legacy auto-close can opt back in by passing `true`, but they don't need to: the tech-app's existing post-completion sheet calls `POST /api/jobs/:id/close` directly for the close-and-invoice paths, so default `false` produces the right behavior end-to-end (and the tech-app's "Complete only / leave open" tertiary button now actually leaves the job open, matching its label).
+
+**Fix 2 — invoice-only path.** `JobDetailPage`'s `createInvoiceFromJobMutation` now calls `POST /api/invoices/from-job/:jobId { markJobCompleted: true }` — the canonical invoice-from-job route that already existed at `server/routes/invoices.ts:1251`. It doesn't attempt close. For a `completed` job (the only status that surfaces this button — see CTA gate at `JobDetailPage.tsx:1662`), the route runs `createInvoiceFromJobService` then routes through `lifecycle.markInvoiced` for the `completed → invoiced` transition. `canClose` / `CLOSEABLE_STATUSES` were not weakened.
+
+**Files changed.**
+
+- `server/services/jobLifecycleOrchestrator.ts` — added `autoCloseJobOnLastVisit?: boolean` to `CompleteVisitIntent`; threaded the flag through to `reconcileJobAfterVisitCompletion`'s input shape (now required there); gated Rule 1 on the flag; needs_parts / needs_followup → on_hold paths unchanged.
+- `server/routes/jobVisits.routes.ts` — extended `completeVisitWithOutcomeSchema` with optional `autoCloseJobOnLastVisit: boolean`; forwarded it to the lifecycle call.
+- `client/src/components/dispatch/useDispatchPreviewMutations.ts` — `completeVisitWithOutcome` accepts optional `autoCloseJobOnLastVisit` and forwards it in the request body.
+- `client/src/components/visits/EditVisitModal.tsx` — `handleComplete` always passes `autoCloseJobOnLastVisit: false`.
+- `client/src/pages/JobDetailPage.tsx` — `createInvoiceFromJobMutation` now hits `POST /api/invoices/from-job/:jobId` with body `{ markJobCompleted: true }`; response shape adjusted (route returns the flattened invoice with `_created: boolean` rather than `{ job, invoice }`); button toast text updated to "Invoice Created" / "Failed to create invoice".
+
+No schema changes, no migration, no new routes, no duplicate logic. `canClose` / `CLOSEABLE_STATUSES` untouched. Tech-app behavior unchanged in practice (the auto-close it relied on was only firing on the office side; tech-app's close-and-invoice always called the close route explicitly).
+
+**Tests to add (separate task).** `tests/job-lifecycle.test.ts` (or new `tests/visit-completion-leave-open.test.ts`):
+- Last visit completed via `/jobs/:jobId/visits/:visitId/complete` with `outcome: "completed"` and no `autoCloseJobOnLastVisit` flag → job stays `open`.
+- Same call with `autoCloseJobOnLastVisit: true` → job transitions `open → completed`.
+- `outcome: "needs_parts"` → job placed `on_hold` regardless of flag.
+- `POST /api/invoices/from-job/:id { markJobCompleted: true }` against a `completed` job → invoice created, job transitions `completed → invoiced`.
+- Same call against an `invoiced` or `archived` job → fails with a clear error.
+
+#### Outside-hours visits surface on Today's Schedule (2026-05-04)
+
+A visit assigned to a schedulable technician but scheduled outside that tech's configured working hours used to disappear from Today's Schedule even though dispatch showed it. Root cause: `buildScheduleBlocks()` clipped every visit to `[workStartMs, workEndMs]` and dropped the result when `clipped.end <= clipped.start`. A 5:00–6:30 PM visit against a 9–5 workday clipped to 5:00–5:00 and got filtered out at `capacity.ts:259`.
+
+**Fix.** Split `buildScheduleBlocks` into two independently-windowed passes:
+
+- `buildBookedBlocks(visits)` — emits each visit at its REAL start/end. No working-hours clipping. Outside-hours visits stay attached to the tech's column at their actual time.
+- `buildOpenGapBlocks(workStartMs, workEndMs, visits)` — derives Open slots from gaps inside the workday only. Outside-hours busy time produces zero workday-clipped overlap, so it never creates a fake open slot at 6 PM.
+
+The two streams are concatenated and sorted by start time (booked before open on tied starts). Math elsewhere in the per-tech loop (`freeSlots`, `meaningfulSlotCount`, `totalAvailableMinutes`, `summary` aggregate) reads `busyByTech` directly and is byte-for-byte unchanged — capacity %, available minutes, open-slot detection, and dispatcher-first sort all behave exactly as before.
+
+The `!hasValidWorkday` fallback path (techs with no working hours configured) is preserved: visit-derived bounds are passed in, booked blocks render at their real times, and gap emission inside that tight window naturally produces nothing.
+
+**Files changed.**
+
+- `server/storage/capacity.ts` — replaced the single-pass `buildScheduleBlocks` with `buildBookedBlocks` + `buildOpenGapBlocks` + a thin combiner. Added a shared `VisitForBlocks` interface. Call site at `getTodayCapacity` is unchanged — same `(workStart, workEnd, techVisits)` signature.
+
+No schema, route, or DTO changes. No frontend changes — the `scheduleBlocks` array shape is identical (one `ScheduleBlock[]` per tech, chronological, mixed `booked`/`open`). Dispatch board untouched.
+
+#### Visit schedule integrity — canonical `normalizeVisitSchedule` (2026-05-04)
+
+A scheduled visit must never have a missing or zero-duration end time. Three storage paths (`createJobVisit`, `updateJobVisit`, `createJob`'s seed visit) each carried their own inline `scheduledStart + duration → scheduledEnd` arithmetic, with subtle drift between them:
+
+- `updateJobVisit` defaulted `estimatedDurationMinutes` to 60 but did not floor it.
+- `createJob`'s seed visit used `setHours(23,59,59)` (server-local) for all-day rather than `setUTCHours`.
+- None of the three rejected an explicit `scheduledEnd <= scheduledStart` from the caller.
+
+Legacy rows from these paths could persist with `scheduled_end IS NULL`, which the dashboard's capacity walk silently skipped at `capacity.ts:469` — that was the proximate cause of "visit on dispatch, missing on Today's Schedule".
+
+**Canonical helper.** `server/domain/scheduling.ts` now exports `normalizeVisitSchedule(input)` returning `{ scheduledStart, scheduledEnd, durationMinutes, isAllDay }`. Rules:
+
+- If `scheduledStart` is null/undefined → both timestamps null (unscheduled).
+- If `scheduledStart` set, all-day → `scheduledEnd = same calendar day at 23:59:59 UTC`.
+- If `scheduledStart` set, timed → keep caller's `scheduledEnd` iff valid (`> start`); otherwise re-derive from `start + Math.max(durationMinutes ?? 60, 30) * 60_000`.
+- Returned `durationMinutes` is recomputed from the actual interval and floored at 30.
+
+**Wired into.** All three write paths — `server/storage/jobVisits.ts::createJobVisit`, `server/storage/jobVisits.ts::updateJobVisit` (final-pass guard after merge), and `server/storage/jobs.ts::createJob` (seed visit). Each site's prior inline arithmetic was deleted.
+
+**Read-side fallback for legacy rows.** `server/storage/capacity.ts:469` no longer drops visits whose `scheduledEnd` is null. When end is missing and start is set, it derives an end from the visit's `estimatedDurationMinutes` (defaulted to 60, floored at 30) — the same rules the write-side helper applies. The DTO `ScheduledJobWithDetails` was widened with `estimatedDurationMinutes: number | null` (sourced from the existing `jv.estimated_duration_minutes` SQL select); other consumers ignore the new field.
+
+**Files changed.**
+
+- `server/domain/scheduling.ts` — added `DEFAULT_VISIT_DURATION_MINUTES`, `MIN_VISIT_DURATION_MINUTES`, `VisitScheduleInput`, `NormalizedVisitSchedule`, `normalizeVisitSchedule()`.
+- `server/storage/jobVisits.ts` — imported the helper; replaced `createJobVisit`'s start/end/duration block (was lines 625–646); replaced `updateJobVisit`'s end-derivation block (was lines 838–854) with a final-pass normalize that runs after merge but before `sanitizeSchedulingTimestamps`.
+- `server/storage/jobs.ts` — imported the helper; rewrote the seed-visit start/end derivation in `createJob` to route through `normalizeVisitSchedule`. The unscheduled branch still sets `scheduledStart=null` / `scheduledEnd=null` and seeds the legacy `scheduledDate` NOT NULL column with `now`.
+- `server/storage/scheduling.ts` — added `estimatedDurationMinutes: number | null` to the `ScheduledJobWithDetails` interface; populated it in all three result mappers (`getScheduledJobsInRange`, `getOpenJobs`, `getRecentlyCompletedJobsForFollowUp`).
+- `server/storage/capacity.ts` — replaced the early-`continue` on `!v.scheduledEnd` with a duration-fallback compute so legacy rows surface correctly. Capacity math is unchanged for new rows (which always carry a valid `scheduledEnd`).
+
+No schema, migration, or route-handler signature changes. The fix is additive on the DTO side and corrective on the storage side.
+
+
+
+#### Tech app Today page crash — `object is not iterable` (2026-05-04)
+
+The tech-app Today page crashed at mount with `object is not iterable` thrown from `useMyCapabilities` line 24 (`new Set(query.data ?? [])`). Root cause was a duplicate-route shadowing bug in `server/routes/team.ts`: two `router.get("/:userId/effective-permissions", ...)` handlers were registered, and the newer object-shape handler (built 2026-05-04 for the Roles & Access tab — returns `{ userId, role, roleId, effective, inheritedFromRole, grantedByOverride, revokedByOverride }`) shadowed the legacy bare-`string[]` handler that the tech-app hook still expected. Express dispatches the first match, so the legacy handler had been dead code — but the tech-app hook was still typed to its shape, and calling `new Set({...})` on the new object payload threw.
+
+**Resolution.** Aligned the tech app with the canonical Phase-1 permissions hook and deleted the dead legacy handler.
+
+**Files changed.**
+
+- `client/src/tech-app/pages/TodayPage.tsx` — swapped `useMyCapabilities` for the canonical `useEffectivePermissions` from `@/hooks/useEffectivePermissions` (which calls `GET /api/me/permissions`, the Phase-1 self-scoped read endpoint). `canViewOthers` is now derived as `(data?.permissions ?? []).includes(SCOPE_ALL_VIEW)` — single key check, no intermediate `Set`. No UI or auth-behavior changes; cross-tech viewing scope picker still gates on `schedule.all.view` and the server still enforces it on every request.
+- `client/src/tech-app/hooks/useMyCapabilities.ts` — **deleted**. The tech-app never needed a team-scoped permission read; the canonical `useEffectivePermissions` against `/api/me/permissions` covers the use case and is what the rest of the tenant frontend already uses.
+- `server/routes/team.ts` — **deleted** the legacy duplicate handler at the former lines 812–828 (the one that returned `Array.from(permissionSet)` via the legacy `../permissions::getUserEffectivePermissions` dynamic import). Only the Phase 2 PR 3 handler at lines ~477–533 remains, which is what `RolesAccessTab.tsx` and the `tests/effective-access-preview.test.ts` source-pin assertions already target.
+
+**Verification.**
+
+- `grep -R "useMyCapabilities" client/src` → no matches (only CHANGELOG history reference).
+- One and only one `router.get("/:userId/effective-permissions", ...)` registration remains in `server/routes/team.ts` (line 478).
+- `npx tsc --noEmit` passes for all touched surfaces. Pre-existing TS errors in the in-flight `client/src/components/timesheets/...` and `client/src/pages/timesheets/...` files are unrelated and out of scope per the fix prompt.
+- `tests/effective-access-preview.test.ts` source-pin regexes still match (they target the new shape and matched the first occurrence, which is now the only occurrence).
+
+### Removed
+
+#### Tech app Today page — visit/done counter (2026-05-04)
+
+The "X visits · N in progress · N done" summary line above the day timeline on the tech-app Today page was removed as redundant noise. The timeline strip and per-card status pills already convey this information; the summary added clutter without unique signal.
+
+**Files changed.**
+
+- `client/src/tech-app/pages/TodayPage.tsx` — deleted the `summaryCounts` `useMemo` and the rendered counter `<div>` directly above the day timeline. `ACTIVE_VISIT_STATUSES` and `TERMINAL_STATUSES` constants are retained — both are still consumed by the next-visit selector, the past/future/terminal partitioner, and the resume pill. No replacement counter was added; layout reads tighter (push-CTA flows straight into the timeline). Self-view and manager cross-tech grouped view both unaffected beyond the removed row. The per-tech "N visits" caption in cross-tech grouping is preserved (it's a group label, not a day-level summary).
+
+### Added
+
+#### "Other scheduled visits" on Today's Schedule (2026-05-04)
+
+Scheduled visits the dashboard's per-tech grid couldn't place — unassigned visits, visits assigned to disabled / non-schedulable techs, or visits whose assignee is no longer in `users` (soft-deleted, platform-role) — used to disappear from Today's Schedule while remaining visible on the Dispatch Board. The first iteration scoped only to disabled/non-schedulable assignees; this revision broadens the bucket so the dashboard surfaces every scheduled visit dispatch surfaces.
+
+**Decision rule.** A visit lands in the secondary list iff it produced ZERO entries in the schedulable per-tech grid. Visits with at least one schedulable assignee render in the grid as before and never appear in the secondary list.
+
+**Display labels.** One row per visit, with `technicianName` chosen from:
+
+- Disabled / non-schedulable assignee(s) → tech's resolved display name (comma-joined when multiple)
+- Soft-deleted / platform-role assignee, no excluded ones → `"Removed user"`
+- No `assignedTechnicianIds` at all → `"Unassigned"`
+
+**Behavior change.** `GET /api/dashboard/capacity` now returns an `offRosterAssignments` array sorted chronologically. Capacity math (capacity %, available minutes, open slots, summary aggregate) is unchanged: only schedulable assignees feed `busyByTech` / `visitsByTech`. The dashboard's Today's Schedule card renders an "Other scheduled visits" section beneath the team grid when the array is non-empty; clicking a row opens the canonical Edit Visit modal via `enrichVisitEditorState`.
+
+**Files changed.**
+
+- `server/storage/capacity.ts` — added `OffRosterAssignment` interface; extended `getTodayCapacity()` return type; built `schedulableIds: Set<string>` and `excludedTechNames: Map<string, string>` from `filterSchedulableTechnicians()`; rewrote the visit walk so only schedulable assignees feed the grid, and visits without any schedulable assignee emit a single secondary row with the appropriate label; chronologically sorted output.
+- `client/src/pages/FinancialDashboard.tsx` — added `OffRosterAssignmentDto`; widened `CapacityResponseDto` with optional `offRosterAssignments`; added `handleOffRosterClick` that reuses `enrichVisitEditorState` + `onOpenVisit`; rendered the section as "Other scheduled visits" inside `TodaysScheduleCard` (testid `other-scheduled-visits`, row testid `other-scheduled-row-<visitId>`).
+
+No schema, migration, or API-route signature changes. The new field is additive — existing consumers keep working.
+
+### Changed
+
 #### Quick Create Job → canonical CreateClientModal flow (2026-05-04)
 
 The "Add new client / location: <typed>" affordance in the Quick Create Job location dropdown previously called an inline `quickCreateClientMutation` (one-shot `POST /api/clients/quick-create`), which created a near-empty client record on click. That bypassed the canonical `CreateClientModal` and produced orphan-style records with no contact, no address, and no parent company.

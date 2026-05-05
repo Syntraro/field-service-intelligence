@@ -3,6 +3,11 @@ import { z } from "zod";
 import { storage } from "../storage/index";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
+// 2026-05-04 PR 4: `pricing.edit` on catalog mutations behind the
+// existing role gate. Reads (GET /) stay open — the catalog is a
+// shared dependency for job/invoice creation flows; gating reads
+// would break operational paths for non-MANAGER tenant users.
+import { requirePermission } from "../permissions";
 import { parsePaginationLenient, applyOffsetPagination } from "../utils/pagination";
 import { paginatedCompat } from "../utils/paginatedResponse";
 import { asyncHandler, createError } from "../middleware/errorHandler";
@@ -80,7 +85,7 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
 // re-inserted. The matching unique index lives in
 // `2026_04_29_items_unique_name_company_active.sql` (replaces the
 // type-scoped index from 2026_04_19).
-router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+router.post("/", requireRole(MANAGER_ROLES), requirePermission("pricing.edit"), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const userId = req.user?.id;
   if (!companyId || !userId) throw createError(401, "Unauthorized");
@@ -104,7 +109,7 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
 // (regardless of type), the storage layer throws `ITEM_NAME_CONFLICT`
 // which we translate to a clean 409. The DB unique index is the final
 // safety net but won't be reached.
-router.put("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+router.put("/:id", requireRole(MANAGER_ROLES), requirePermission("pricing.edit"), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   if (!companyId) throw createError(401, "Unauthorized");
 
@@ -126,7 +131,7 @@ router.put("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRe
 }));
 
 // DELETE /api/items/:id - Delete item
-router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+router.delete("/:id", requireRole(MANAGER_ROLES), requirePermission("pricing.edit"), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   if (!companyId) throw createError(401, "Unauthorized");
 
@@ -137,7 +142,7 @@ router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authe
 // POST /api/items/bulk-delete - Soft-delete multiple items in one request
 // 2026-04-08: P5 — implements the previously-missing endpoint that
 // useProductsServices.bulkDeleteMutation was calling 404.
-router.post("/bulk-delete", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+router.post("/bulk-delete", requireRole(MANAGER_ROLES), requirePermission("pricing.edit"), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   if (!companyId) throw createError(401, "Unauthorized");
 

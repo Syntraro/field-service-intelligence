@@ -140,8 +140,15 @@ export interface ScheduledJobWithDetails {
   scheduledStart: Date | null;
   scheduledEnd: Date | null;
   isAllDay: boolean;
-  /** Scheduled duration in minutes (canonical) */
+  /** Scheduled duration in minutes (canonical). Computed from
+   *  `scheduledEnd - scheduledStart`; null when end is missing. */
   durationMinutes: number | null;
+  /** Office's estimate persisted on the visit row. 2026-05-04: surfaced
+   *  to the calendar DTO so consumers (capacity/Today's Schedule) can
+   *  fall back to a derived end-time when a legacy row has
+   *  `scheduled_end IS NULL`. New rows always carry a valid end via the
+   *  `normalizeVisitSchedule` write-side guard. */
+  estimatedDurationMinutes: number | null;
   assignedTechnicianIds: string[] | null;
   technicians: Array<{
     id: string;
@@ -444,6 +451,7 @@ export class SchedulingRepository extends BaseRepository {
         scheduledEnd,
         isAllDay: row.is_all_day ?? false,
         durationMinutes,
+        estimatedDurationMinutes: row.estimated_duration_minutes,
         assignedTechnicianIds: techIds.length > 0 ? techIds : null,
         technicians,
         // Use visit version for scheduled events — rescheduleVisit checks visit.version (2026-03-06)
@@ -670,6 +678,7 @@ export class SchedulingRepository extends BaseRepository {
         scheduledEnd: job.scheduledEnd,
         isAllDay: job.isAllDay ?? false,
         durationMinutes: job.durationMinutes,
+        estimatedDurationMinutes: job.durationMinutes,
         assignedTechnicianIds: techIds.length > 0 ? techIds : null,
         technicians,
         version: job.version,
@@ -806,6 +815,7 @@ export class SchedulingRepository extends BaseRepository {
         scheduledEnd: null,
         isAllDay: false,
         durationMinutes: null,
+        estimatedDurationMinutes: null,
         assignedTechnicianIds: techIds.length > 0 ? techIds : null,
         technicians,
         version: row.version,

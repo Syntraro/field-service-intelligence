@@ -1608,6 +1608,15 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      // 2026-05-04 dashboard refresh fix — the Team Workload / Today's
+      // Schedule card on FinancialDashboard uses a different top-level
+      // query key (`["/api/dashboard/capacity"]`) than the rest of the
+      // dashboard (`["dashboard", "financial" | "workflow"]`). Without
+      // this explicit invalidation, jobs created from an open slot
+      // didn't appear on the workload row until a page navigation
+      // triggered a refetch. React Query prefix-matching on `["dashboard"]`
+      // does NOT match a key whose first element is `"/api/dashboard/capacity"`.
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard/capacity"] });
       queryClient.invalidateQueries({ queryKey: ["/api/clients"], exact: false });
       queryClient.invalidateQueries({ queryKey: ["/api/customer-companies"], exact: false });
 

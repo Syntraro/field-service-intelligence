@@ -271,6 +271,15 @@ export function registerRoutes(app: Express): Server {
   // the namespace flows through it. Express middleware runs in
   // declaration order, so subsequent `app.use("/api/jobs", ...)` mounts
   // inherit this gate.
+  //
+  // 2026-05-04 Phase 2 PR 4: coarse role gate added BEFORE the fine
+  // permission gate. Two-layer model per CLAUDE.md: requireRole runs
+  // first (cheap, no DB read), requirePermission second (DB-backed,
+  // honors per-user overrides). Technicians retain `jobs.view` in
+  // their fine permission set so the office API surface continues to
+  // protect against a granular permission revoke, but they no longer
+  // pass the role gate. Tech-PWA reads route through `/api/tech/*`.
+  app.use("/api/jobs", requireRole(MANAGER_ROLES));
   app.use("/api/jobs", requirePermission("jobs.view"));
   app.use("/api/jobs", jobsRouter);
   app.use("/api/jobs", jobVisitsRoutes);
@@ -310,7 +319,18 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/me", meRouter);
   console.log("[ROUTES] ✓ Mounted /api/team (canonical team router)");
   app.use("/api/calendar", calendarRouter);
+  // 2026-05-04 Phase 2 PR 4: coarse role gate runs first. Technicians
+  // retain `clients.view.basic` in their fine permission set; the
+  // mount-level role gate is what closes the office surface to them.
+  // Tech-PWA reads route through `/api/tech/locations/*`.
+  app.use("/api/clients", requireRole(MANAGER_ROLES));
   app.use("/api/clients", requirePermission("clients.view.basic"), clientsRouter);
+  // 2026-05-04 Phase 2 PR 4: equipment GETs (timeline, notes, parts,
+  // history, catalog-items) had no mount-level gate; writes already
+  // require MANAGER_ROLES per route. Adding a coarse role gate here
+  // closes the read surface to technicians. Tech-PWA reads route
+  // through `/api/tech/equipment/*`.
+  app.use("/api/equipment", requireRole(MANAGER_ROLES));
   app.use("/api/equipment", equipmentRouter);
   app.use("/api/technicians", techniciansRouter);
   app.use("/api/job-templates", jobTemplatesRouter);
@@ -328,6 +348,10 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/subscriptions", subscriptionsRouter);
   app.use("/api/tasks", tasksRoutes);
   app.use("/api/feedback", feedbackRouter);
+  // 2026-05-04 Phase 2 PR 4: supplier GETs (list, detail, contacts,
+  // visits) had no mount-level gate; writes already require
+  // MANAGER_ROLES per route. Closing the read surface to technicians.
+  app.use("/api/suppliers", requireRole(MANAGER_ROLES));
   app.use("/api/suppliers", suppliersRouter);
   app.use("/api/dashboard", requirePermission("dashboard.view"), dashboardRouter);
   app.use("/api/reports", reportsRouter);

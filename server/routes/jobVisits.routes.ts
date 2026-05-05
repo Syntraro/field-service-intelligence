@@ -357,6 +357,10 @@ const completeVisitWithOutcomeSchema = z.object({
   outcome: z.enum(visitOutcomeEnum),
   holdReason: z.enum(holdReasonEnum).nullable().optional(),
   holdNotes: z.string().max(2000).nullable().optional(),
+  // 2026-05-04: opt-in auto-close. Default false — completing a visit no
+  // longer implicitly closes its parent job even when it's the last
+  // actionable visit. See CompleteVisitIntent doc-comment.
+  autoCloseJobOnLastVisit: z.boolean().optional(),
 }).strict().refine(
   (data) => {
     // holdReason required when outcome is not "completed"
@@ -373,7 +377,7 @@ router.post(
     const companyId = req.companyId!;
     const { jobId, visitId } = req.params;
 
-    const { outcome, holdReason, holdNotes } = validateSchema(
+    const { outcome, holdReason, holdNotes, autoCloseJobOnLastVisit } = validateSchema(
       completeVisitWithOutcomeSchema,
       req.body
     );
@@ -388,6 +392,7 @@ router.post(
       holdReason,
       holdNotes,
       completedByUserId: req.user?.id || "unknown",
+      autoCloseJobOnLastVisit,
     });
 
     // Emit events

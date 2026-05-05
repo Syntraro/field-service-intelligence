@@ -18,6 +18,10 @@ import { Router, type Response } from "express";
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
+// 2026-05-04 PR 4: legacy Stripe checkout alias mirrors the canonical
+// `/invoices/:invoiceId/payments/checkout` gate — `payments.collect`
+// behind the existing role gate.
+import { requirePermission } from "../permissions";
 import { asyncHandler } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { rateLimitPerTenant, type AuthedRequest } from "../auth/tenantIsolation";
@@ -45,6 +49,7 @@ const legacyIntentSchema = z
 router.post(
   "/invoices/:invoiceId/stripe/payment-intent",
   requireRole(MANAGER_ROLES),
+  requirePermission("payments.collect"),
   staffPaymentCheckoutLimiter,
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { amount } = validateSchema(legacyIntentSchema, req.body);

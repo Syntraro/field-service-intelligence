@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils"
 // (which wraps Label) now reads its size + weight from a single
 // named role rather than a raw-class combo.
 const labelVariants = cva(
-  "text-form-label leading-none text-[#334155] peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+  "text-form-label leading-none text-text-secondary peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
 )
 
 const Label = React.forwardRef<

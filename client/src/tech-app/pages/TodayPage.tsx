@@ -18,7 +18,7 @@ import { DaySelector, toDateStr } from "../components/DaySelector";
 import { useTodayVisits, type TodayVisit, type TodayScope } from "../hooks/useTodayVisits";
 import { useTechShift } from "../hooks/useTechShift";
 import { useElapsedTimer } from "../hooks/useElapsedTimer";
-import { useMyCapabilities } from "../hooks/useMyCapabilities";
+import { useEffectivePermissions } from "@/hooks/useEffectivePermissions";
 import { ViewingScopePicker } from "../components/ViewingScopePicker";
 import { useTechnicianName } from "@/components/TechnicianSelector";
 import { useAuth } from "@/lib/auth";
@@ -351,8 +351,8 @@ function TaskCard({ task, isTimerRunning, onTap }: {
 export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) {
   const [, setLocation] = useLocation();
   const { user } = useAuth();
-  const { has: hasCapability } = useMyCapabilities();
-  const canViewOthers = hasCapability(SCOPE_ALL_VIEW);
+  const { data: effectivePermissions } = useEffectivePermissions();
+  const canViewOthers = (effectivePermissions?.permissions ?? []).includes(SCOPE_ALL_VIEW);
   const resolveTechName = useTechnicianName();
 
   // Date navigation state
@@ -555,17 +555,6 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
     const m = diffMin % 60;
     return m === 0 ? `in ${h} h` : `in ${h} h ${m} min`;
   }, [nextVisitId, visits, nowTick]);
-
-  // Day summary counts — drive the one-line header above the timeline.
-  const summaryCounts = useMemo(() => {
-    let inProgress = 0;
-    let done = 0;
-    for (const v of visits) {
-      if (ACTIVE_VISIT_STATUSES.includes(v.status)) inProgress++;
-      else if (TERMINAL_STATUSES.includes(v.status)) done++;
-    }
-    return { total: visits.length, inProgress, done };
-  }, [visits]);
 
   // Auto-scroll the NEXT visit into view on first arrival to the page (or
   // when the user changes day). A ref guard prevents re-scrolling on
@@ -837,27 +826,6 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
           >
             <X className="h-3.5 w-3.5" />
           </button>
-        </div>
-      )}
-
-      {/* One-line day summary — visible as soon as the timeline is ready.
-          Kept outside the sticky block so it scrolls with content and
-          doesn't steal permanent header real estate. */}
-      {!isLoading && !isError && hasAnyTimeline && (
-        <div className="px-3 pt-2.5 pb-0.5 flex items-center gap-2 text-xs text-slate-500">
-          <span><span className="font-semibold text-slate-700">{summaryCounts.total}</span> visit{summaryCounts.total === 1 ? "" : "s"}</span>
-          {summaryCounts.inProgress > 0 && (
-            <>
-              <span className="text-slate-300">·</span>
-              <span><span className="font-semibold text-[#22c55e]">{summaryCounts.inProgress}</span> in progress</span>
-            </>
-          )}
-          {summaryCounts.done > 0 && (
-            <>
-              <span className="text-slate-300">·</span>
-              <span><span className="font-semibold text-slate-600">{summaryCounts.done}</span> done</span>
-            </>
-          )}
         </div>
       )}
 

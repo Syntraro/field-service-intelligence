@@ -39,9 +39,36 @@ import {
   ChevronUp,
   ExternalLink,
   Shield,
+  Eye,
+  Check,
+  X,
+  AlertTriangle,
 } from "lucide-react";
 import { resolveTechnicianColor } from "@shared/colors";
 import type { Permission, Role, TeamMemberDetail, TeamMemberRow } from "./types";
+// 2026-05-04 PR 2: pack-driven UI grouping. Save path is unchanged —
+// `permissionPacks` is a thin client-only mapper.
+// 2026-05-04 PR 3: getPackAccess powers the read-only "What this user
+// can access" panel below.
+import {
+  groupPermissionsByPack,
+  isAdvancedPermission,
+  isPermissionEnforced,
+  getPackAccess,
+  PERMISSION_PACKS,
+  packIdForPermissionKey,
+  type PackAccessStatus,
+} from "@/lib/permissionPacks";
+
+interface EffectiveAccessResponse {
+  userId: string;
+  role: string;
+  roleId: string | null;
+  effective: string[];
+  inheritedFromRole: string[];
+  grantedByOverride: string[];
+  revokedByOverride: string[];
+}
 
 type OverrideState = "inherited" | "allow" | "deny";
 
@@ -88,6 +115,17 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember }: Props) {
     enabled: !!displayedId,
   });
 
+  // 2026-05-04 PR 3: read-only effective-access view. Powered by
+  // `GET /api/team/:userId/effective-permissions` which calls the same
+  // resolver `requirePermission(...)` uses, so this rollup matches
+  // what the backend gates actually decide. Short-cached; explicitly
+  // invalidated by saveRole + savePerms below.
+  const { data: effectiveAccess } = useQuery<EffectiveAccessResponse>({
+    queryKey: [`/api/team/${displayedId}/effective-permissions`],
+    enabled: !!displayedId,
+    staleTime: 30_000,
+  });
+
   // Default getQueryFn uses queryKey[0] as the URL, but the role-permissions
   // endpoint lives at /api/roles/:roleId/permissions — not /api/roles. Without
   // a custom queryFn the default fetcher hits /api/roles and returns Role[]
@@ -106,12 +144,14 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember }: Props) {
     staleTime: 10 * 60_000,
   });
 
-  const permissionsByCategory = useMemo(() => {
-    return permissions.reduce((acc, p) => {
-      (acc[p.category] ??= []).push(p);
-      return acc;
-    }, {} as Record<string, Permission[]>);
-  }, [permissions]);
+  // 2026-05-04 PR 2: pack-driven grouping replaces the raw `category`
+  // bucketing. Keeps the same per-permission render shape so override
+  // toggles (Inherited / Allow / Deny) and the save endpoint are
+  // unchanged.
+  const groupedPermissions = useMemo(
+    () => groupPermissionsByPack(permissions),
+    [permissions],
+  );
 
   const permissionById = useMemo(() => {
     const m: Record<string, Permission> = {};
@@ -369,19 +409,26 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember }: Props) {
                   </div>
                 </div>
               </CardHeader>
-              <CardContent className="space-y-2">
-                {Object.entries(permissionsByCategory).map(([category, perms]) => {
-                  const open = expanded.has(category);
-                  const overrideCount = perms.filter((p) => overrides[p.name]).length;
+              <CardContent className="space-y-2" data-testid="override-pack-list">
+                {/* 2026-05-04 PR 2: pack-driven render. Each pack
+                    shows its primary permissions inline; the noisy /
+                    micro-permissions sit behind a per-pack "Advanced"
+                    disclosure. Save path (`PUT /api/team/:id/permissions`)
+                    is untouched — only the visual grouping changes. */}
+                {groupedPermissions.packs.map(({ pack, primary, advanced }) => {
+                  const open = expanded.has(pack.id);
+                  const allInPack = [...primary, ...advanced];
+                  const overrideCount = allInPack.filter((p) => overrides[p.name]).length;
                   return (
-                    <Collapsible key={category} open={open} onOpenChange={() => toggleCat(category)}>
-                      <CollapsibleTrigger className="flex items-center justify-between w-full p-2.5 bg-muted rounded-md">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-medium uppercase tracking-wider">
-                            {category}
-                          </span>
-                          <Badge variant="secondary" className="text-xs">
-                            {perms.length}
+                    <Collapsible key={pack.id} open={open} onOpenChange={() => toggleCat(pack.id)}>
+                      <CollapsibleTrigger
+                        className="flex items-center justify-between w-full p-2.5 bg-muted rounded-md"
+                        data-testid={`override-pack-trigger-${pack.id}`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-sm font-medium">{pack.label}</span>
+                          <Badge variant="secondary" className="text-xs shrink-0">
+                            {allInPack.length}
                           </Badge>
                           {overrideCount > 0 && (
                             <Badge variant="outline" className="text-xs border-primary text-primary">
@@ -392,73 +439,74 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember }: Props) {
                         {open ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
                       </CollapsibleTrigger>
                       <CollapsibleContent className="pt-2">
+                        <p className="text-xs text-muted-foreground px-3 pb-2">
+                          {pack.description}
+                        </p>
                         <div className="space-y-1 pl-1">
-                          {perms.map((p) => {
-                            const inherited = rolePermissions.includes(p.name);
-                            const state: OverrideState =
-                              overrides[p.name] === "grant"
-                                ? "allow"
-                                : overrides[p.name] === "revoke"
-                                ? "deny"
-                                : "inherited";
-                            const isOverridden = state !== "inherited";
-                            return (
-                              <div
-                                key={p.id}
-                                className={`flex items-center justify-between py-1.5 px-3 rounded-md ${
-                                  isOverridden
-                                    ? "bg-primary/5 border-l-2 border-primary"
-                                    : "bg-muted/30"
-                                }`}
+                          {primary.map((p) =>
+                            renderOverrideRow(p, rolePermissions, overrides, overrideMode, setState),
+                          )}
+                          {advanced.length > 0 && (
+                            <Collapsible
+                              open={expanded.has(`${pack.id}::advanced`)}
+                              onOpenChange={() => toggleCat(`${pack.id}::advanced`)}
+                            >
+                              <CollapsibleTrigger
+                                className="flex items-center gap-2 text-xs text-muted-foreground py-1.5 pl-3 hover:text-foreground"
+                                data-testid={`override-advanced-trigger-${pack.id}`}
                               >
-                                <div className="flex-1 min-w-0 mr-3">
-                                  <p className="text-sm font-medium truncate">{p.displayName}</p>
-                                  {p.description && (
-                                    <p className="text-xs text-muted-foreground truncate">
-                                      {p.description}
-                                    </p>
+                                {expanded.has(`${pack.id}::advanced`) ? (
+                                  <ChevronUp className="h-3 w-3" />
+                                ) : (
+                                  <ChevronDown className="h-3 w-3" />
+                                )}
+                                Advanced ({advanced.length})
+                              </CollapsibleTrigger>
+                              <CollapsibleContent>
+                                <div className="space-y-1 pl-2 border-l-2 border-muted ml-3">
+                                  {advanced.map((p) =>
+                                    renderOverrideRow(
+                                      p,
+                                      rolePermissions,
+                                      overrides,
+                                      overrideMode,
+                                      setState,
+                                    ),
                                   )}
                                 </div>
-                                <div className="flex items-center gap-1 shrink-0">
-                                  <Button
-                                    size="sm"
-                                    variant={state === "inherited" ? "default" : "outline"}
-                                    className="text-xs h-7 px-2"
-                                    onClick={() => setState(p.name, "inherited")}
-                                    disabled={!overrideMode}
-                                    data-testid={`button-perm-inherited-${p.id}`}
-                                  >
-                                    Inherited{state === "inherited" && ` · ${inherited ? "Yes" : "No"}`}
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant={state === "allow" ? "default" : "outline"}
-                                    className="text-xs h-7 px-2"
-                                    onClick={() => setState(p.name, "allow")}
-                                    disabled={!overrideMode}
-                                    data-testid={`button-perm-allow-${p.id}`}
-                                  >
-                                    Allow
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant={state === "deny" ? "destructive" : "outline"}
-                                    className="text-xs h-7 px-2"
-                                    onClick={() => setState(p.name, "deny")}
-                                    disabled={!overrideMode}
-                                    data-testid={`button-perm-deny-${p.id}`}
-                                  >
-                                    Deny
-                                  </Button>
-                                </div>
-                              </div>
-                            );
-                          })}
+                              </CollapsibleContent>
+                            </Collapsible>
+                          )}
                         </div>
                       </CollapsibleContent>
                     </Collapsible>
                   );
                 })}
+                {groupedPermissions.unmapped.length > 0 && (
+                  <Collapsible
+                    open={expanded.has("__unmapped__")}
+                    onOpenChange={() => toggleCat("__unmapped__")}
+                  >
+                    <CollapsibleTrigger
+                      className="flex items-center gap-2 text-xs text-muted-foreground py-2 pl-3 hover:text-foreground"
+                      data-testid="override-advanced-trigger-unmapped"
+                    >
+                      {expanded.has("__unmapped__") ? (
+                        <ChevronUp className="h-3 w-3" />
+                      ) : (
+                        <ChevronDown className="h-3 w-3" />
+                      )}
+                      Other (Advanced) ({groupedPermissions.unmapped.length})
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      <div className="space-y-1 pl-2 border-l-2 border-muted ml-3">
+                        {groupedPermissions.unmapped.map((p) =>
+                          renderOverrideRow(p, rolePermissions, overrides, overrideMode, setState),
+                        )}
+                      </div>
+                    </CollapsibleContent>
+                  </Collapsible>
+                )}
                 {overrideMode && (
                   <div className="flex justify-between pt-4 mt-2 border-t">
                     <Button
@@ -489,8 +537,420 @@ export function RolesAccessTab({ selectedMemberId, onSelectMember }: Props) {
                 )}
               </CardContent>
             </Card>
+
+            {/* 2026-05-04 PR 3: read-only effective-access preview.
+                Two sections — pack rollup + permission breakdown —
+                neither has any controls. Backed by
+                `GET /api/team/:userId/effective-permissions`, which
+                calls the canonical resolver. */}
+            <EffectiveAccessPanel
+              data={effectiveAccess}
+              permissions={permissions}
+              roleDisplayName={
+                roles.find((r) => r.id === member.roleId)?.displayName ??
+                member.role
+              }
+            />
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Read-only "What this user can access" panel — Phase 2 PR 3.
+ *
+ * Two sections:
+ *   1. Pack rollup — 8 rows, one per pack, with status icon
+ *      (full / partial / none).
+ *   2. Permission breakdown — three sub-lists (inherited / granted /
+ *      revoked), each grouped by pack.
+ *
+ * No controls. Pure read. Updates whenever the upstream query
+ * (`/api/team/:userId/effective-permissions`) refetches, which the
+ * existing role + override save mutations already invalidate.
+ */
+function EffectiveAccessPanel({
+  data,
+  permissions,
+  roleDisplayName,
+}: {
+  data: EffectiveAccessResponse | undefined;
+  permissions: Permission[];
+  roleDisplayName: string;
+}) {
+  // Build a key → Permission lookup so the breakdown rows can show
+  // friendly labels next to the raw key.
+  const permByKey = useMemo(() => {
+    const m = new Map<string, Permission>();
+    for (const p of permissions) m.set(p.name, p);
+    return m;
+  }, [permissions]);
+
+  const packRollup = useMemo(() => {
+    if (!data) return null;
+    return getPackAccess(data.effective);
+  }, [data]);
+
+  const breakdownByPack = useMemo(() => {
+    if (!data) return null;
+    function bucket(keys: string[]) {
+      const out = new Map<string, string[]>();
+      const orphans: string[] = [];
+      for (const key of keys) {
+        const packId = packIdForPermissionKey(key);
+        if (!packId) {
+          orphans.push(key);
+          continue;
+        }
+        if (!out.has(packId)) out.set(packId, []);
+        out.get(packId)!.push(key);
+      }
+      return { byPack: out, orphans };
+    }
+    return {
+      inherited: bucket(data.inheritedFromRole),
+      granted: bucket(data.grantedByOverride),
+      revoked: bucket(data.revokedByOverride),
+    };
+  }, [data]);
+
+  if (!data || !packRollup || !breakdownByPack) {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Eye className="h-4 w-4" />
+            What this user can access
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-xs text-muted-foreground">Loading…</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card data-testid="effective-access-panel">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Eye className="h-4 w-4" />
+          What this user can access
+        </CardTitle>
+        <p className="text-xs text-muted-foreground mt-1">
+          Resolved from <span className="font-medium">{roleDisplayName}</span>
+          {" + "}
+          {data.grantedByOverride.length} grant
+          {data.grantedByOverride.length === 1 ? "" : "s"}
+          {", "}
+          {data.revokedByOverride.length} revoke
+          {data.revokedByOverride.length === 1 ? "" : "s"}.
+          Reflects exactly what the backend gates check.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Section 1 — Pack rollup */}
+        <div data-testid="effective-pack-rollup">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+            By pack
+          </h3>
+          <div className="space-y-1">
+            {packRollup.rows.map((row) => (
+              <PackStatusRow
+                key={row.pack.id}
+                packId={row.pack.id}
+                label={row.pack.label}
+                description={row.pack.description}
+                status={row.status}
+                grantedCount={row.grantedCount}
+                totalCount={row.totalCount}
+              />
+            ))}
+          </div>
+        </div>
+
+        {/* Section 2 — Permission breakdown */}
+        <div className="space-y-3" data-testid="effective-breakdown">
+          <BreakdownSection
+            label="Inherited from role"
+            tone="neutral"
+            data={breakdownByPack.inherited}
+            permByKey={permByKey}
+            testIdSuffix="inherited"
+          />
+          <BreakdownSection
+            label="Granted by override"
+            tone="positive"
+            data={breakdownByPack.granted}
+            permByKey={permByKey}
+            testIdSuffix="granted"
+          />
+          <BreakdownSection
+            label="Revoked by override"
+            tone="negative"
+            data={breakdownByPack.revoked}
+            permByKey={permByKey}
+            testIdSuffix="revoked"
+          />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function PackStatusRow({
+  packId,
+  label,
+  description,
+  status,
+  grantedCount,
+  totalCount,
+}: {
+  packId: string;
+  label: string;
+  description: string;
+  status: PackAccessStatus;
+  grantedCount: number;
+  totalCount: number;
+}) {
+  return (
+    <div
+      className="flex items-start justify-between gap-2 py-1.5 px-2 rounded-md bg-muted/30"
+      data-testid={`pack-status-${packId}`}
+    >
+      <div className="flex items-start gap-2 min-w-0 flex-1">
+        <span className="mt-0.5 shrink-0" aria-hidden="true">
+          {status === "full" && <Check className="h-4 w-4 text-emerald-600" />}
+          {status === "partial" && (
+            <AlertTriangle className="h-4 w-4 text-amber-500" />
+          )}
+          {status === "none" && <X className="h-4 w-4 text-muted-foreground" />}
+        </span>
+        <div className="min-w-0">
+          <p className="text-sm font-medium leading-5">{label}</p>
+          <p className="text-xs text-muted-foreground leading-4 truncate">
+            {description}
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-1 shrink-0">
+        <Badge
+          variant="outline"
+          className="text-[10px] px-1.5 py-0 h-5 font-normal"
+          data-testid={`pack-status-badge-${packId}`}
+        >
+          {status === "full" && "Has access"}
+          {status === "partial" && "Partial"}
+          {status === "none" && "No access"}
+        </Badge>
+        <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-5 font-mono">
+          {grantedCount}/{totalCount}
+        </Badge>
+      </div>
+    </div>
+  );
+}
+
+function BreakdownSection({
+  label,
+  tone,
+  data,
+  permByKey,
+  testIdSuffix,
+}: {
+  label: string;
+  tone: "neutral" | "positive" | "negative";
+  data: { byPack: Map<string, string[]>; orphans: string[] };
+  permByKey: Map<string, Permission>;
+  testIdSuffix: string;
+}) {
+  const total =
+    Array.from(data.byPack.values()).reduce((s, a) => s + a.length, 0) +
+    data.orphans.length;
+  if (total === 0) {
+    return (
+      <div data-testid={`effective-breakdown-${testIdSuffix}`}>
+        <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+          {label} <span className="font-normal text-muted-foreground/70">(0)</span>
+        </h4>
+        <p className="text-xs text-muted-foreground italic px-2">None.</p>
+      </div>
+    );
+  }
+  // Render packs in canonical order so all three sub-lists agree.
+  return (
+    <div data-testid={`effective-breakdown-${testIdSuffix}`}>
+      <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+        {label} <span className="font-normal text-muted-foreground/70">({total})</span>
+      </h4>
+      <div className="space-y-1.5">
+        {PERMISSION_PACKS.map((pack) => {
+          const keys = data.byPack.get(pack.id);
+          if (!keys || keys.length === 0) return null;
+          return (
+            <div
+              key={pack.id}
+              className="px-2 py-1 rounded bg-muted/20"
+              data-testid={`effective-${testIdSuffix}-pack-${pack.id}`}
+            >
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground/80 mb-0.5">
+                {pack.label}
+              </p>
+              <ul className="space-y-0.5">
+                {keys.slice().sort().map((key) => (
+                  <li key={key} className="flex items-baseline gap-2">
+                    <span
+                      className={
+                        tone === "positive"
+                          ? "h-1 w-1 rounded-full bg-emerald-600 mt-1.5 shrink-0"
+                          : tone === "negative"
+                            ? "h-1 w-1 rounded-full bg-rose-600 mt-1.5 shrink-0"
+                            : "h-1 w-1 rounded-full bg-muted-foreground/40 mt-1.5 shrink-0"
+                      }
+                      aria-hidden="true"
+                    />
+                    <div className="min-w-0">
+                      <span className="text-xs">
+                        {permByKey.get(key)?.displayName ?? key}
+                      </span>
+                      <span className="text-[10px] text-muted-foreground/70 font-mono ml-1.5">
+                        {key}
+                      </span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
+        {data.orphans.length > 0 && (
+          <div
+            className="px-2 py-1 rounded bg-muted/20"
+            data-testid={`effective-${testIdSuffix}-pack-orphans`}
+          >
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground/80 mb-0.5">
+              Other
+            </p>
+            <ul className="space-y-0.5">
+              {data.orphans.slice().sort().map((key) => (
+                <li key={key} className="flex items-baseline gap-2">
+                  <span
+                    className="h-1 w-1 rounded-full bg-muted-foreground/40 mt-1.5 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <div className="min-w-0">
+                    <span className="text-xs">
+                      {permByKey.get(key)?.displayName ?? key}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground/70 font-mono ml-1.5">
+                      {key}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Single override row. Extracted so the primary list and the
+ * Advanced disclosure inside each pack render the same shape.
+ *
+ * - Allow / Deny / Inherited tri-state preserved unchanged from the
+ *   pre-PR-2 version. Save endpoint is unaffected.
+ * - "Not enforced yet" badge surfaces keys that the backend doesn't
+ *   currently consult at the route layer (see
+ *   `client/src/lib/permissionPacks.ts::ENFORCED_PERMISSION_KEYS`).
+ *   Helps admins distinguish which toggles control live behavior.
+ */
+function renderOverrideRow(
+  p: Permission,
+  rolePermissions: string[],
+  overrides: Record<string, "grant" | "revoke">,
+  overrideMode: boolean,
+  setState: (name: string, s: OverrideState) => void,
+) {
+  const inherited = rolePermissions.includes(p.name);
+  const state: OverrideState =
+    overrides[p.name] === "grant"
+      ? "allow"
+      : overrides[p.name] === "revoke"
+        ? "deny"
+        : "inherited";
+  const isOverridden = state !== "inherited";
+  const enforced = isPermissionEnforced(p.name);
+  const advanced = isAdvancedPermission(p.name);
+  return (
+    <div
+      key={p.id}
+      className={`flex items-center justify-between py-1.5 px-3 rounded-md ${
+        isOverridden ? "bg-primary/5 border-l-2 border-primary" : "bg-muted/30"
+      }`}
+      data-testid={`override-row-${p.name}`}
+    >
+      <div className="flex-1 min-w-0 mr-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <p className="text-sm font-medium">{p.displayName}</p>
+          {!enforced && (
+            <Badge
+              variant="outline"
+              className="text-[10px] px-1 py-0 h-4 font-normal text-muted-foreground"
+              data-testid={`override-badge-unenforced-${p.name}`}
+            >
+              Not enforced yet
+            </Badge>
+          )}
+          {advanced && (
+            <Badge
+              variant="outline"
+              className="text-[10px] px-1 py-0 h-4 font-normal text-muted-foreground"
+            >
+              Advanced
+            </Badge>
+          )}
+        </div>
+        {p.description && (
+          <p className="text-xs text-muted-foreground">{p.description}</p>
+        )}
+        <p className="text-[10px] text-muted-foreground/70 font-mono mt-0.5">{p.name}</p>
+      </div>
+      <div className="flex items-center gap-1 shrink-0">
+        <Button
+          size="sm"
+          variant={state === "inherited" ? "default" : "outline"}
+          className="text-xs h-7 px-2"
+          onClick={() => setState(p.name, "inherited")}
+          disabled={!overrideMode}
+          data-testid={`button-perm-inherited-${p.id}`}
+        >
+          Inherited{state === "inherited" && ` · ${inherited ? "Yes" : "No"}`}
+        </Button>
+        <Button
+          size="sm"
+          variant={state === "allow" ? "default" : "outline"}
+          className="text-xs h-7 px-2"
+          onClick={() => setState(p.name, "allow")}
+          disabled={!overrideMode}
+          data-testid={`button-perm-allow-${p.id}`}
+        >
+          Allow
+        </Button>
+        <Button
+          size="sm"
+          variant={state === "deny" ? "destructive" : "outline"}
+          className="text-xs h-7 px-2"
+          onClick={() => setState(p.name, "deny")}
+          disabled={!overrideMode}
+          data-testid={`button-perm-deny-${p.id}`}
+        >
+          Deny
+        </Button>
       </div>
     </div>
   );

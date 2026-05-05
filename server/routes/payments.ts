@@ -9,6 +9,12 @@ import { Router, Response } from "express";
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
+// 2026-05-04 PR 4: fine permission gates added BEHIND existing role
+// gates per the two-layer model in CLAUDE.md. `payments.view` on
+// reads, `payments.collect` on create/update/reversal/delete. Refunds
+// intentionally stay on the role gate only — refunds are not
+// tenant-customizable yet (see ACCESS_CONTROL_MATRIX.md §5).
+import { requirePermission } from "../permissions";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest, rateLimitPerTenant } from "../auth/tenantIsolation";
@@ -93,6 +99,7 @@ const checkoutSchema = z
 router.post(
   "/invoices/:invoiceId/payments/checkout",
   requireRole(MANAGER_ROLES),
+  requirePermission("payments.collect"),
   staffPaymentCheckoutLimiter,
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { amount, currency } = validateSchema(checkoutSchema, req.body ?? {});
@@ -110,6 +117,7 @@ router.post(
 // GET /api/invoices/:invoiceId/payments - List payments for invoice
 router.get(
   "/invoices/:invoiceId/payments",
+  requirePermission("payments.view"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const payments = await paymentRepository.getPayments(
       req.companyId!,
@@ -123,6 +131,7 @@ router.get(
 router.post(
   "/invoices/:invoiceId/payments",
   requireRole(MANAGER_ROLES),
+  requirePermission("payments.collect"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const validated = validateSchema(createPaymentSchema, req.body);
 
@@ -167,6 +176,7 @@ router.post(
 // GET /api/payments/:id - Get single payment
 router.get(
   "/payments/:id",
+  requirePermission("payments.view"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     // Would need a getPayment method - for now redirect to list
     throw createError(501, "Get single payment not implemented");
@@ -177,6 +187,7 @@ router.get(
 router.patch(
   "/payments/:id",
   requireRole(MANAGER_ROLES),
+  requirePermission("payments.collect"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const validated = validateSchema(updatePaymentSchema, req.body);
 
@@ -298,6 +309,7 @@ router.post(
 router.post(
   "/payments/:id/reversal",
   requireRole(MANAGER_ROLES),
+  requirePermission("payments.collect"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const validated = validateSchema(adjustmentSchema, req.body);
     try {
@@ -332,6 +344,7 @@ router.post(
 router.delete(
   "/payments/:id",
   requireRole(MANAGER_ROLES),
+  requirePermission("payments.collect"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     try {
       // 2026-04-09: Snapshot the payment row BEFORE the local delete so the

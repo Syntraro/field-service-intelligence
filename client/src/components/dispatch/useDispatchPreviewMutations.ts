@@ -1112,8 +1112,13 @@ export function useDispatchPreviewMutations() {
     outcome: "completed" | "needs_parts" | "needs_followup";
     holdReason?: string | null;
     holdNotes?: string | null;
+    /** 2026-05-04: opt-in auto-close of the parent job when this is the
+     *  last actionable visit. Default false — office flows never auto-
+     *  close (PostVisitCompletionDialog owns the close decision). Pass
+     *  true from the tech app if you want the legacy behavior. */
+    autoCloseJobOnLastVisit?: boolean;
   }): Promise<DispatchMutationResult> => {
-    const { visitId, jobId, outcome, holdReason, holdNotes } = params;
+    const { visitId, jobId, outcome, holdReason, holdNotes, autoCloseJobOnLastVisit } = params;
     markSaving(visitId);
     inflightRef.current++;
     try {
@@ -1122,7 +1127,7 @@ export function useDispatchPreviewMutations() {
         reconciliation: { jobUpdated: boolean; newJobStatus: string; newOpenSubStatus: string | null };
       }>(`/api/jobs/${jobId}/visits/${visitId}/complete`, {
         method: "POST",
-        body: JSON.stringify({ outcome, holdReason, holdNotes }),
+        body: JSON.stringify({ outcome, holdReason, holdNotes, autoCloseJobOnLastVisit }),
       });
       // 2026-03-20: Optimistic patch — immediately flip visitStatus/visitOutcome in
       // calendar cache so the detail panel shows "Reopen Visit" instead of stale

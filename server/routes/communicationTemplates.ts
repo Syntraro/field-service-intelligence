@@ -12,6 +12,10 @@ import type { Response } from "express";
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
 import { RESTRICTED_MANAGER_ROLES } from "../auth/roles";
+// 2026-05-04 PR 4: settings.manage on every route — templates are
+// settings-tier configuration. The existing role gate stays first;
+// the fine permission gate sits behind it.
+import { requirePermission } from "../permissions";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
@@ -48,6 +52,7 @@ const paramsSchema = z.object({
 router.get(
   "/:entityType/:channel",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("settings.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const tenantId = req.companyId;
     if (!tenantId) throw createError(401, "Unauthorized");
@@ -97,6 +102,7 @@ const previewBodySchema = z.object({
 router.post(
   "/preview/:entityType",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("settings.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const tenantId = req.companyId;
     if (!tenantId) throw createError(401, "Unauthorized");
@@ -132,6 +138,7 @@ router.post(
 router.post(
   "/",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("settings.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const tenantId = req.companyId;
     if (!tenantId) throw createError(401, "Unauthorized");
@@ -166,6 +173,7 @@ router.post(
 router.put(
   "/",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("settings.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const tenantId = req.companyId;
     if (!tenantId) throw createError(401, "Unauthorized");
@@ -200,6 +208,7 @@ router.put(
 router.delete(
   "/:entityType/:channel",
   requireRole(RESTRICTED_MANAGER_ROLES),
+  requirePermission("settings.manage"),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const tenantId = req.companyId;
     if (!tenantId) throw createError(401, "Unauthorized");

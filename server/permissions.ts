@@ -36,7 +36,31 @@ export function requirePermission(permissionKey: string) {
     // can never be a platform string. During impersonation, `req.user`
     // is the impersonated tenant user (also a tenant role). The
     // bypass was dead code.
-    const hasPermission = await userHasPermission(user.id, permissionKey);
+    //
+    // 2026-05-04 Phase 2 PR 3 hotfix: wrap the resolver call so a
+    // genuine RBAC misconfiguration (resolver throws) returns a
+    // structured 500 with the failing user / permission instead of
+    // becoming an unhandled promise rejection. Express 4 does NOT
+    // auto-route async middleware throws to the error handler; an
+    // uncaught throw here becomes a hung request from the client's
+    // perspective. The runtime fallback in
+    // `getUserEffectivePermissions` resolves the common
+    // NULL-role_id case, so this catch is the last-resort net for
+    // the (rare) case where role doesn't match any seeded row.
+    let hasPermission: boolean;
+    try {
+      hasPermission = await userHasPermission(user.id, permissionKey);
+    } catch (err: any) {
+      console.error(
+        `[requirePermission] resolver error for user=${user.id} permission=${permissionKey}: ${err?.message ?? err}`,
+      );
+      return res.status(500).json({
+        error: "Permission resolution failed",
+        message:
+          "Your account is missing role assignment. Please contact your administrator.",
+        requiredPermission: permissionKey,
+      });
+    }
 
     if (!hasPermission) {
       return res.status(403).json({

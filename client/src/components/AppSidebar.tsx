@@ -70,14 +70,42 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       isActive: location === "/dispatch",
       testId: "nav-dispatch"
     });
-    // --- Divider 1 --- Work Management: Jobs, PM, Invoices, Quotes
+    // 2026-05-04 workflow-first reorder. Five groups separated by
+    // dividers — see the "isDivider" flag on each group leader (a
+    // divider line renders ABOVE that item via the JSX below).
+    //
+    //   Group 1 (no leading divider) — Dashboard, Dispatch.
+    //   Group 2 — Leads → Quotes → Jobs → Recurring Jobs.
+    //                       (sales pipeline + work backlog)
+    //   Group 3 — Invoices, Payments.       (billing + collections)
+    //   Group 4 — Clients, Suppliers.       (relationships)
+    //   Group 5 — Timesheets, Reports.      (back office)
+    //
+    // Routes / labels / icons / role-gating preserved EXACTLY — only
+    // ordering + which items carry `isDivider: true` changed.
+
+    // --- Group 2 leader: Leads → Quotes → Jobs → Recurring Jobs ---
+    menuItems.push({
+      title: "Leads",
+      icon: Users,
+      href: "/leads",
+      isActive: location === "/leads" || location.startsWith("/leads/"),
+      testId: "nav-leads",
+      isDivider: true
+    });
+    menuItems.push({
+      title: "Quotes",
+      icon: FileCheck,
+      href: "/quotes",
+      isActive: location === "/quotes" || location.startsWith("/quotes/"),
+      testId: "nav-quotes"
+    });
     menuItems.push({
       title: "Jobs",
       icon: ClipboardList,
       href: "/jobs",
       isActive: location === "/jobs" || location.startsWith("/jobs/"),
-      testId: "nav-jobs",
-      isDivider: true
+      testId: "nav-jobs"
     });
     menuItems.push({
       title: "Recurring Jobs",
@@ -87,27 +115,19 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       testId: "nav-pm",
       hoverText: "Preventive Maintenance & Recurring Jobs"
     });
+
+    // --- Group 3 leader: Invoices → Payments (billing) ---
     menuItems.push({
       title: "Invoices",
       icon: Receipt,
       href: "/invoices",
       isActive: location === "/invoices" || location.startsWith("/invoices/"),
-      testId: "nav-invoices"
+      testId: "nav-invoices",
+      isDivider: true
     });
-    // 2026-04-22: Financials sidebar entry removed — Financial Dashboard
-    // is now reachable exclusively through the Dashboard view toggle
-    // (Operations ↔ Financial). The `/financials` route is still live and
-    // used by the toggle; only the redundant sidebar entry was retired.
-    //
     // 2026-05-04 PR7 — Payments dashboard (online payments / payouts /
-    // disputes). Distinct from Financial Dashboard (which is the
-    // operations / financial view toggle). Tenant-facing surface for
-    // the Stripe Connect lifecycle data captured by PR2/PR4/PR5/PR6.
-    //
-    // 2026-05-04 PR8 — RBAC alignment: dispatcher is excluded from the
-    // /payments route gate (`requireRestrictedManager`) so we hide the
-    // nav entry for them too. Owner/admin/manager (and platform-role
-    // support sessions) keep it.
+    // disputes). RBAC: dispatcher excluded from the /payments route
+    // gate (`requireRestrictedManager`); nav entry hidden to match.
     if (user?.role !== "dispatcher") {
       menuItems.push({
         title: "Payments",
@@ -119,21 +139,8 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
         hoverText: "Online payments, payouts, and disputes"
       });
     }
-    menuItems.push({
-      title: "Quotes",
-      icon: FileCheck,
-      href: "/quotes",
-      isActive: location === "/quotes" || location.startsWith("/quotes/"),
-      testId: "nav-quotes"
-    });
-    menuItems.push({
-      title: "Leads",
-      icon: Users,
-      href: "/leads",
-      isActive: location === "/leads" || location.startsWith("/leads/"),
-      testId: "nav-leads"
-    });
-    // --- Divider 2 --- Relationships: Clients, Suppliers
+
+    // --- Group 4 leader: Clients → Suppliers (relationships) ---
     menuItems.push({
       title: "Clients",
       icon: Users,
@@ -149,16 +156,8 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       isActive: location === "/suppliers" || location.startsWith("/suppliers/"),
       testId: "nav-suppliers"
     });
-    // --- Divider 3 --- System / Back Office: Reports
-    menuItems.push({
-      title: "Reports",
-      icon: FileText,
-      href: "/reports",
-      isActive: location === "/reports" || location.startsWith("/reports/"),
-      testId: "nav-reports",
-      isDivider: true
-    });
-    // --- Divider 4 --- Timesheets, Admin
+
+    // --- Group 5 leader: Timesheets → Reports (back office) ---
     menuItems.push({
       title: "Timesheets",
       icon: Clock,
@@ -166,6 +165,13 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       isActive: location === "/timesheets" || location.startsWith("/timesheets/"),
       testId: "nav-timesheets",
       isDivider: true
+    });
+    menuItems.push({
+      title: "Reports",
+      icon: FileText,
+      href: "/reports",
+      isActive: location === "/reports" || location.startsWith("/reports/"),
+      testId: "nav-reports"
     });
     
     // Platform admin gets the Support Console

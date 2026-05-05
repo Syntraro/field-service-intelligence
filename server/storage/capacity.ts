@@ -144,6 +144,44 @@ export interface CapacitySummary {
   techniciansWithRoomLaterCount: number;
 }
 
+/**
+ * Other-scheduled-visit row — a visit that the per-tech capacity grid
+ * cannot place but that dispatch shows. Surfaced verbatim in the
+ * dashboard's "Other scheduled visits" section so dispatchers see EVERY
+ * scheduled visit on the board.
+ *
+ * 2026-05-04: introduced as a "scheduled-but-not-in-grid" bucket. A
+ * visit lands here iff it produced ZERO entries in the schedulable
+ * per-tech grid. That covers four origin cases, distinguished by
+ * `technicianName`:
+ *
+ *   • disabled / non-schedulable tech → tech's resolved display name
+ *     (or comma-joined names when multiple)
+ *   • soft-deleted / platform-role user → `"Removed user"`
+ *   • no assignee at all              → `"Unassigned"`
+ *
+ * Visits with at least one schedulable assignee never appear here —
+ * they're already in the per-tech grid above.
+ *
+ * Capacity math (capacity %, available minutes, open slots, summary
+ * aggregate) does NOT consider these rows; they are display-only.
+ */
+export interface OffRosterAssignment {
+  visitId: string;
+  jobId: string;
+  /** Customer-facing label — customerCompanyName ?? locationName. */
+  title: string;
+  /** Customer company name when present (separate from `title` so the UI
+   *  can format it independently). */
+  companyName: string | null;
+  /** Resolved label for the row. See interface doc-comment for the four
+   *  origin cases and how they map to this string. */
+  technicianName: string;
+  scheduledStart: string;
+  scheduledEnd: string;
+  status: string;
+}
+
 interface Interval {
   start: number; // epoch ms
   end: number;
@@ -176,97 +214,134 @@ function mergeIntervals(intervals: Interval[]): Interval[] {
   return out;
 }
 
+interface VisitForBlocks {
+  start: number;
+  end: number;
+  title: string;
+  description?: string;
+  visitId: string;
+  jobId: string;
+  visitStatus: string;
+}
+
 /**
- * Build the tech tile's chronological day view.
+ * Emit one booked block per visit at the visit's REAL start/end (no
+ * working-hours clipping). Outside-hours visits stay attached to the
+ * tech's column at their actual time so dispatchers see every assigned
+ * piece of work, regardless of whether it falls inside the configured
+ * shift. Visits are emitted in chronological order. Overlaps are
+ * preserved as separate blocks (dispatchers need to see overlaps as a
+ * data-quality signal).
  *
- * Given the tech's workday bounds and their visits for the day, emit a
- * single ordered list that interleaves booked blocks (one per visit) with
- * Open blocks (gaps ≥ SCHEDULE_BLOCK_OPEN_THRESHOLD_MINUTES).
+ * 2026-05-04: split out of `buildScheduleBlocks` so booked emission no
+ * longer shares a window with gap emission. Previously a single pass
+ * clipped visits to the workday before emitting booked blocks, which
+ * silently dropped any visit fully outside hours.
+ */
+function buildBookedBlocks(visits: VisitForBlocks[]): ScheduleBlock[] {
+  const sorted = visits.slice().sort((a, b) => a.start - b.start || a.end - b.end);
+  return sorted.map(v => ({
+    kind: "booked",
+    startISO: new Date(v.start).toISOString(),
+    endISO: new Date(v.end).toISOString(),
+    durationMinutes: Math.round((v.end - v.start) / 60_000),
+    title: v.title,
+    description: v.description,
+    visitId: v.visitId,
+    jobId: v.jobId,
+    visitStatus: v.visitStatus,
+  }));
+}
+
+/**
+ * Emit Open blocks for gaps inside the configured workday only.
  *
- * Rules:
- *  - Workday bounds come from canonical working hours (custom or company).
- *  - Visits are clipped to [workStart, workEnd].
- *  - Overlapping visits: each visit is emitted as its own booked block
- *    (dispatchers need to see overlaps as a data-quality signal). Gap
- *    detection merges overlaps into a single busy interval.
- *  - Leading (workStart → first visit), inter-visit, and trailing
- *    (last visit → workEnd) gaps are all emitted if they meet the
- *    threshold. Sub-threshold gaps are suppressed.
- *  - When there are no visits: a single Open block spanning the whole
- *    workday is emitted if it meets the threshold.
+ * Visits are clipped to `[workStartMs, workEndMs]` for the purposes of
+ * "what blocks the workday" — a 5-6 PM visit when the workday ends at
+ * 5 PM produces zero workday-clipped busy time, so it does NOT create
+ * a fake open slot at 6 PM.
+ *
+ * Gaps shorter than SCHEDULE_BLOCK_OPEN_THRESHOLD_MINUTES are suppressed
+ * (matching the prior behavior the dispatcher UI relies on). When there
+ * are no busy-within-workday intervals, a single Open block covering
+ * the whole workday is emitted (subject to the same threshold).
+ *
+ * 2026-05-04: split out of `buildScheduleBlocks`. The math is unchanged
+ * from the prior single-pass version — only the input pruning that used
+ * to drop outside-hours visits before they could become booked blocks
+ * is gone (booked emission now lives in `buildBookedBlocks`).
+ */
+function buildOpenGapBlocks(
+  workStartMs: number,
+  workEndMs: number,
+  visits: VisitForBlocks[],
+): ScheduleBlock[] {
+  if (workEndMs <= workStartMs) return [];
+  const thresholdMs = SCHEDULE_BLOCK_OPEN_THRESHOLD_MINUTES * 60_000;
+  const busy = mergeIntervals(
+    visits
+      .map(v => ({ start: Math.max(v.start, workStartMs), end: Math.min(v.end, workEndMs) }))
+      .filter(v => v.end > v.start),
+  );
+
+  const out: ScheduleBlock[] = [];
+  let cursor = workStartMs;
+  for (const b of busy) {
+    if (b.start - cursor >= thresholdMs) {
+      out.push({
+        kind: "open",
+        startISO: new Date(cursor).toISOString(),
+        endISO: new Date(b.start).toISOString(),
+        durationMinutes: Math.round((b.start - cursor) / 60_000),
+      });
+    }
+    cursor = Math.max(cursor, b.end);
+  }
+  if (workEndMs - cursor >= thresholdMs) {
+    out.push({
+      kind: "open",
+      startISO: new Date(cursor).toISOString(),
+      endISO: new Date(workEndMs).toISOString(),
+      durationMinutes: Math.round((workEndMs - cursor) / 60_000),
+    });
+  }
+  return out;
+}
+
+/**
+ * Build the tech tile's chronological day view by merging two
+ * independently-windowed passes:
+ *
+ *   • booked blocks → emitted at their REAL times via `buildBookedBlocks`.
+ *     Visits outside the configured workday are kept; dispatchers still
+ *     see assigned work scheduled before/after hours.
+ *   • open gaps → derived from `buildOpenGapBlocks` against the workday
+ *     window only. Outside-hours time never becomes an Open slot.
+ *
+ * The two streams are concatenated and sorted by start time. When two
+ * blocks share a start, the booked block sorts first so the rendered
+ * list reads as "booked at X, then open from Y" rather than the other
+ * way around.
+ *
+ * Capacity math (`freeSlots`, `meaningfulSlotCount`, `totalAvailable
+ * Minutes`, the summary aggregate) is computed elsewhere in the
+ * per-tech loop and is unaffected by this refactor — it always read
+ * `busyByTech` directly, never the schedule-block list.
  */
 function buildScheduleBlocks(
   workStartMs: number,
   workEndMs: number,
-  visits: Array<{
-    start: number;
-    end: number;
-    title: string;
-    description?: string;
-    visitId: string;
-    jobId: string;
-    visitStatus: string;
-  }>,
+  visits: VisitForBlocks[],
 ): ScheduleBlock[] {
-  if (workEndMs <= workStartMs) return [];
-  const thresholdMs = SCHEDULE_BLOCK_OPEN_THRESHOLD_MINUTES * 60_000;
-  const out: ScheduleBlock[] = [];
-
-  const clipped = visits
-    .map(v => ({
-      ...v,
-      start: Math.max(v.start, workStartMs),
-      end: Math.min(v.end, workEndMs),
-    }))
-    .filter(v => v.end > v.start)
-    .sort((a, b) => a.start - b.start || a.end - b.end);
-
-  const merged = mergeIntervals(clipped.map(v => ({ start: v.start, end: v.end })));
-
-  let cursor = workStartMs;
-  let vi = 0;
-  for (const busy of merged) {
-    const gapStart = cursor;
-    const gapEnd = busy.start;
-    if (gapEnd - gapStart >= thresholdMs) {
-      out.push({
-        kind: "open",
-        startISO: new Date(gapStart).toISOString(),
-        endISO: new Date(gapEnd).toISOString(),
-        durationMinutes: Math.round((gapEnd - gapStart) / 60_000),
-      });
-    }
-    while (vi < clipped.length && clipped[vi].start < busy.end) {
-      const v = clipped[vi];
-      out.push({
-        kind: "booked",
-        startISO: new Date(v.start).toISOString(),
-        endISO: new Date(v.end).toISOString(),
-        durationMinutes: Math.round((v.end - v.start) / 60_000),
-        title: v.title,
-        description: v.description,
-        visitId: v.visitId,
-        jobId: v.jobId,
-        visitStatus: v.visitStatus,
-      });
-      vi++;
-    }
-    cursor = busy.end;
-  }
-
-  // Trailing gap (also covers the no-visits case: cursor stays at workStartMs).
-  const tailStart = cursor;
-  const tailEnd = workEndMs;
-  if (tailEnd - tailStart >= thresholdMs) {
-    out.push({
-      kind: "open",
-      startISO: new Date(tailStart).toISOString(),
-      endISO: new Date(tailEnd).toISOString(),
-      durationMinutes: Math.round((tailEnd - tailStart) / 60_000),
-    });
-  }
-
-  return out;
+  const booked = buildBookedBlocks(visits);
+  const gaps = buildOpenGapBlocks(workStartMs, workEndMs, visits);
+  return [...booked, ...gaps].sort((a, b) => {
+    const aStart = Date.parse(a.startISO);
+    const bStart = Date.parse(b.startISO);
+    if (aStart !== bStart) return aStart - bStart;
+    if (a.kind !== b.kind) return a.kind === "booked" ? -1 : 1;
+    return Date.parse(a.endISO) - Date.parse(b.endISO);
+  });
 }
 
 /** Subtract busy intervals from [windowStart, windowEnd], returning free slots (sorted). */
@@ -322,6 +397,13 @@ export async function getTodayCapacity(
   timezone: string;
   technicians: TechnicianCapacity[];
   summary: CapacitySummary;
+  /**
+   * Visits assigned to non-schedulable technicians (disabled OR
+   * isSchedulable=false). Surfaced so Dashboard "Today's Schedule" can
+   * render them in a labelled rollup — capacity math above DOES NOT
+   * include these visits or their technicians.
+   */
+  offRosterAssignments: OffRosterAssignment[];
 }> {
   // --- Day window (company-local day) -------------------------------------
   const timezone =
@@ -351,7 +433,25 @@ export async function getTodayCapacity(
 
   // --- Canonical roster + schedules ---------------------------------------
   const members = await teamRepository.getTeamMembers(companyId);
-  const { schedulable } = filterSchedulableTechnicians(members, "capacity:getTodayCapacity");
+  const { schedulable, excluded } = filterSchedulableTechnicians(members, "capacity:getTodayCapacity");
+
+  // 2026-05-04: lookup tables for the secondary "Other scheduled visits"
+  // bucket. The dashboard's per-tech grid only renders visits whose
+  // assignee appears in `schedulable`. Anything else — disabled tech,
+  // non-schedulable tech, soft-deleted user, platform-role user, or no
+  // assignee at all — would silently disappear without a secondary
+  // surface, even though dispatch shows the visit. We classify each
+  // assignee ID into one of three buckets:
+  //   • schedulable → drives the per-tech grid + capacity math
+  //   • excluded   → surfaces in the secondary list with the tech name
+  //   • orphaned   → surfaces in the secondary list as "Removed user"
+  // (Unassigned visits are detected by an empty assignedTechnicianIds
+  // array — no map lookup needed.)
+  const schedulableIds = new Set(schedulable.map(m => m.id));
+  const excludedTechNames = new Map<string, string>();
+  for (const { user } of excluded) {
+    excludedTechNames.set(user.id, resolveTechnicianName(user as any));
+  }
 
   const [companyHours, ...perTechHours] = await Promise.all([
     businessHoursRepository.getCompanyBusinessHours(companyId),
@@ -389,12 +489,36 @@ export async function getTodayCapacity(
   }
   const busyByTech = new Map<string, Interval[]>();
   const visitsByTech = new Map<string, VisitMeta[]>();
+  // 2026-05-04: secondary "Other scheduled visits" list. A visit lands
+  // here iff it produced ZERO entries in the schedulable per-tech grid.
+  // Cases covered:
+  //   • Visit assigned to a disabled / non-schedulable tech only → tech name
+  //   • Visit assigned to a soft-deleted / platform-role user only → "Removed user"
+  //   • Visit with no assignee at all → "Unassigned"
+  //   • Visit with mixed schedulable + non-schedulable assignees → grid only
+  //     (the schedulable column already shows it; we don't double-list).
+  // Capacity math (busyByTech / freeSlots / summary) only sees schedulable
+  // assignees, so it is byte-for-byte identical to the pre-2026-05-04 code.
+  const offRosterAssignments: OffRosterAssignment[] = [];
   for (const v of todaysVisits) {
     if (v.isAllDay) continue;
     if (v.visitStatus === "cancelled") continue;
-    if (!v.scheduledStart || !v.scheduledEnd) continue;
+    if (!v.scheduledStart) continue;
     const start = new Date(v.scheduledStart).getTime();
-    const end = new Date(v.scheduledEnd).getTime();
+    // 2026-05-04: derive a fallback end for legacy rows that predate the
+    // `normalizeVisitSchedule` write-side guard. New rows always carry a
+    // valid `scheduledEnd > scheduledStart`; legacy rows may have
+    // `scheduled_end IS NULL` and would otherwise be silently dropped
+    // here (the original cause of the dispatch-vs-dashboard mismatch).
+    // Fallback uses the office's `estimatedDurationMinutes`, defaulting
+    // to 60 and floored at 30 — same rules the write-side guard applies.
+    let end: number;
+    if (v.scheduledEnd) {
+      end = new Date(v.scheduledEnd).getTime();
+    } else {
+      const fallbackMin = Math.max(v.estimatedDurationMinutes ?? 60, 30);
+      end = start + fallbackMin * 60_000;
+    }
     if (!(end > start)) continue;
     const clippedStart = Math.max(start, dayStartMs);
     const clippedEnd = Math.min(end, dayEndMs);
@@ -410,18 +534,67 @@ export async function getTodayCapacity(
       jobId: v.jobId,
       visitStatus: v.visitStatus ?? "scheduled",
     };
-    for (const techId of v.assignedTechnicianIds ?? []) {
-      const metaArr = visitsByTech.get(techId) ?? [];
-      metaArr.push(meta);
-      visitsByTech.set(techId, metaArr);
-      // Completed visits don't block remaining capacity.
-      if (v.visitStatus !== "completed") {
-        const arr = busyByTech.get(techId) ?? [];
-        arr.push({ start: clippedStart, end: clippedEnd });
-        busyByTech.set(techId, arr);
+
+    const techIds = v.assignedTechnicianIds ?? [];
+    let placedInGrid = false;
+    const excludedNames: string[] = [];
+    let hasOrphanAssignee = false;
+
+    for (const techId of techIds) {
+      if (schedulableIds.has(techId)) {
+        // Schedulable assignee → grid render + capacity math.
+        const metaArr = visitsByTech.get(techId) ?? [];
+        metaArr.push(meta);
+        visitsByTech.set(techId, metaArr);
+        // Completed visits don't block remaining capacity.
+        if (v.visitStatus !== "completed") {
+          const arr = busyByTech.get(techId) ?? [];
+          arr.push({ start: clippedStart, end: clippedEnd });
+          busyByTech.set(techId, arr);
+        }
+        placedInGrid = true;
+        continue;
+      }
+      const excludedName = excludedTechNames.get(techId);
+      if (excludedName !== undefined) {
+        excludedNames.push(excludedName);
+      } else {
+        // ID is not in `members` at all — soft-deleted or platform-role.
+        hasOrphanAssignee = true;
       }
     }
+
+    if (placedInGrid) continue;
+
+    // Visit produced zero schedulable grid entries → secondary list.
+    let technicianName: string;
+    if (excludedNames.length > 0) {
+      // Multiple disabled assignees: comma-join so each off-roster
+      // assignment is named.
+      technicianName = excludedNames.join(", ");
+    } else if (hasOrphanAssignee) {
+      technicianName = "Removed user";
+    } else {
+      technicianName = "Unassigned";
+    }
+
+    offRosterAssignments.push({
+      visitId: meta.visitId,
+      jobId: meta.jobId,
+      title,
+      companyName: v.customerCompanyName ?? null,
+      technicianName,
+      scheduledStart: new Date(clippedStart).toISOString(),
+      scheduledEnd: new Date(clippedEnd).toISOString(),
+      status: meta.visitStatus,
+    });
   }
+  // Stable order for the UI: chronological by start, then by label.
+  offRosterAssignments.sort((a, b) => {
+    const t = Date.parse(a.scheduledStart) - Date.parse(b.scheduledStart);
+    if (t !== 0) return t;
+    return a.technicianName.localeCompare(b.technicianName);
+  });
 
   // --- Per-tech capacity --------------------------------------------------
   const technicians: TechnicianCapacity[] = schedulable.map((member, idx) => {
@@ -685,5 +858,5 @@ export async function getTodayCapacity(
     techniciansWithRoomLaterCount,
   };
 
-  return { generatedAt: now.toISOString(), timezone, technicians, summary };
+  return { generatedAt: now.toISOString(), timezone, technicians, summary, offRosterAssignments };
 }

@@ -161,6 +161,11 @@ describe("BP-1: Reconciliation canonical close (integration)", () => {
       jobId,
       outcome: "completed",
       completedByUserId: userId,
+      // 2026-05-04: opt in to the legacy auto-close path. This suite
+      // tests that auto-close uses the canonical lifecycle engine when
+      // it fires; the gating itself is covered in
+      // tests/visit-completion-leave-open.test.ts.
+      autoCloseJobOnLastVisit: true,
     });
 
     expect(result.reconciliation.jobUpdated).toBe(true);
@@ -196,6 +201,9 @@ describe("BP-1: Reconciliation canonical close (integration)", () => {
       jobId,
       outcome: "completed",
       completedByUserId: userId,
+      // 2026-05-04: opt in to legacy auto-close path (this suite tests
+      // the canonical lifecycle close that runs DURING reconciliation).
+      autoCloseJobOnLastVisit: true,
     });
 
     const updatedJob = await loadFullJob(companyId, jobId);
@@ -224,6 +232,9 @@ describe("BP-1: Reconciliation canonical close (integration)", () => {
       jobId,
       outcome: "completed",
       completedByUserId: userId,
+      // 2026-05-04: opt in to legacy auto-close path (this suite tests
+      // the canonical lifecycle close that runs DURING reconciliation).
+      autoCloseJobOnLastVisit: true,
     });
 
     // Query audit events for this job
@@ -258,6 +269,9 @@ describe("BP-1: Reconciliation canonical close (integration)", () => {
       jobId,
       outcome: "completed",
       completedByUserId: userId,
+      // 2026-05-04: opt in to legacy auto-close path (this suite tests
+      // the canonical lifecycle close that runs DURING reconciliation).
+      autoCloseJobOnLastVisit: true,
     });
 
     const updatedJob = await loadFullJob(companyId, jobId);
@@ -281,6 +295,9 @@ describe("BP-1: Reconciliation canonical close (integration)", () => {
       jobId,
       outcome: "completed",
       completedByUserId: userId,
+      // 2026-05-04: opt in to legacy auto-close path (this suite tests
+      // the canonical lifecycle close that runs DURING reconciliation).
+      autoCloseJobOnLastVisit: true,
     });
 
     const updatedJob = await loadFullJob(companyId, jobId);
@@ -321,6 +338,11 @@ describe("BP-1: Reconciliation canonical close (integration)", () => {
       jobId,
       outcome: "completed",
       completedByUserId: userId,
+      // 2026-05-04: opt in to the legacy auto-close path. This suite
+      // tests that auto-close uses the canonical lifecycle engine when
+      // it fires; the gating itself is covered in
+      // tests/visit-completion-leave-open.test.ts.
+      autoCloseJobOnLastVisit: true,
     });
 
     // Reconciliation should report no update (job was already terminal)
