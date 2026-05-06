@@ -31,25 +31,16 @@
  *     into a plain `NOT EXISTS` over every sibling — exactly what we
  *     want: "show parts that aren't already on any invoice."
  *
- *   - **Labor** (`time_entries`): `companyId + jobId + billable=true +
- *     endAt NOT NULL + invoicedAt IS NULL`, then
- *     `applyBillingRulesToEntries(rules, entries)` to resolve final
- *     billed minutes / billed rate per the company's time-billing
- *     rules (rounding, minimums, multipliers, caps), then grouped by
- *     `technician + type` exactly the way the writer groups them.
+ *   - **Labour**: REMOVED 2026-05-05. Tracked labour never auto-creates
+ *     invoice line items. The preview returns parts only. Labour stays
+ *     visible on the Job + Invoice labour cards as operational data;
+ *     to bill labour the user adds a line item by hand.
  *
  *   - **Expenses**: NOT included. The existing `refreshInvoiceFromJob`
  *     does not pull job expenses into invoice lines today, so neither
  *     does this preview. Adding expense support is a separate Phase
  *     (would require both the writer + this preview to change in
  *     lockstep).
- *
- * Lock state: the existing writer THROWS when any time entry is
- * already locked (a sibling invoice creation is in flight). Preview
- * is informational and does NOT throw on locks — the user might still
- * want to see the value. The save-time atomic create path will reject
- * if a lock conflict is still active when `POST /api/invoices/atomic`
- * runs.
  *
  * Eligibility:
  *   - 404 when the job doesn't exist or belongs to another tenant.
@@ -65,7 +56,11 @@
  * `productId`, `lineItemType`, plus optional `date` / `technicianId`.
  */
 
-import { and, asc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+// 2026-05-05: imports trimmed after the labour-decoupling change. The
+// preview now returns parts only — billing-rules resolution, time-entry
+// table imports, and time-related drizzle helpers are no longer needed
+// here.
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   jobs,
@@ -73,14 +68,8 @@ import {
   invoices,
   invoiceLines,
   items,
-  timeEntries,
-  users,
   clientLocations,
 } from "@shared/schema";
-import {
-  applyBillingRulesToEntries,
-  timeBillingRulesRepository,
-} from "../storage/timeBillingRules";
 
 // ────────────────────────────────────────────────────────────────────
 // Types
@@ -273,115 +262,12 @@ export async function getJobBillablePreview(
     };
   });
 
-  // ── 3) Labor (mirrors refreshInvoiceFromJob Step 3b) ────────────────
-  // Same SELECT + same `applyBillingRulesToEntries` aggregation, then
-  // grouped by `technician + type` exactly the way the writer groups
-  // them. No lock check (preview is informational; save-time atomic
-  // create will reject on active locks).
-  const rules = await timeBillingRulesRepository.getRules(companyId);
-
-  const entries = await db
-    .select({
-      id: timeEntries.id,
-      technicianId: timeEntries.technicianId,
-      technicianName: users.fullName,
-      type: timeEntries.type,
-      durationMinutes: timeEntries.durationMinutes,
-      billableRateSnapshot: timeEntries.billableRateSnapshot,
-      costRateSnapshot: timeEntries.costRateSnapshot,
-      jobId: timeEntries.jobId,
-      startAt: timeEntries.startAt,
-    })
-    .from(timeEntries)
-    .leftJoin(users, eq(timeEntries.technicianId, users.id))
-    .where(
-      and(
-        eq(timeEntries.companyId, companyId),
-        eq(timeEntries.jobId, jobId),
-        eq(timeEntries.billable, true),
-        isNotNull(timeEntries.endAt),
-        isNull(timeEntries.invoicedAt),
-      ),
-    )
-    .orderBy(asc(timeEntries.startAt));
-
-  let laborLines: JobBillablePreviewLine[] = [];
-  if (entries.length > 0) {
-    const rulesResult = applyBillingRulesToEntries(
-      rules,
-      entries.map((e) => ({
-        id: e.id,
-        type: e.type,
-        durationMinutes: e.durationMinutes ?? 0,
-        billableRateSnapshot: e.billableRateSnapshot,
-        jobId: e.jobId,
-        startAt: e.startAt,
-      })),
-    );
-
-    const billedMap = new Map(rulesResult.entries.map((be) => [be.entryId, be]));
-
-    type LaborGroup = {
-      technicianId: string;
-      technicianName: string | null;
-      type: string;
-      totalBilledMinutes: number;
-      billedRate: number;
-      costRate: number;
-    };
-    const grouped = new Map<string, LaborGroup>();
-
-    for (const entry of entries) {
-      const billed = billedMap.get(entry.id);
-      if (!billed || billed.wasExcluded || billed.billedMinutes === 0) {
-        continue;
-      }
-      const key = `${entry.technicianId}:${entry.type}`;
-      const costRate = parseFloat(entry.costRateSnapshot || "0");
-      if (!grouped.has(key)) {
-        grouped.set(key, {
-          technicianId: entry.technicianId,
-          technicianName: entry.technicianName,
-          type: entry.type,
-          totalBilledMinutes: 0,
-          billedRate: billed.billedRate,
-          costRate,
-        });
-      }
-      const group = grouped.get(key)!;
-      group.totalBilledMinutes += billed.billedMinutes;
-    }
-
-    laborLines = Array.from(grouped.values())
-      .filter((g) => g.totalBilledMinutes > 0)
-      .map((g) => {
-        const hours = g.totalBilledMinutes / 60;
-        const unitPrice = g.billedRate || 0;
-        const unitCost = g.costRate || 0;
-        const lineSubtotal = hours * unitPrice;
-        const typeDisplay = g.type
-          .replace(/_/g, " ")
-          .replace(/\b\w/g, (c) => c.toUpperCase());
-        const description = g.technicianName
-          ? `Labor - ${typeDisplay} (${g.technicianName})`
-          : `Labor - ${typeDisplay}`;
-        return {
-          clientKey: `labor-${g.technicianId}-${g.type}`,
-          sourceType: "labor",
-          source: "job",
-          lineItemType: "service",
-          description,
-          quantity: hours.toFixed(2),
-          unitPrice: unitPrice.toFixed(2),
-          unitCost: unitCost.toFixed(2),
-          productId: null,
-          jobLineItemId: null,
-          technicianId: g.technicianId,
-          date: null,
-          lineSubtotal: lineSubtotal.toFixed(2),
-        };
-      });
-  }
+  // ── 3) Labour ────────────────────────────────────────────────────
+  // 2026-05-05: REMOVED. Tracked labour never auto-creates invoice
+  // lines. The preview returns parts only. Labour stays operational on
+  // the Job + Invoice labour cards; if a user wants to bill labour they
+  // add a line item manually on the invoice.
+  const laborLines: JobBillablePreviewLine[] = [];
 
   return {
     jobId: jobRow.id,

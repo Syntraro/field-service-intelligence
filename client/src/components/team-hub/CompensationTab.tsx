@@ -89,7 +89,7 @@ export function CompensationTab({ selectedMemberId, onSelectMember, hideMemberLi
   const saveProfile = useMutation({
     mutationFn: async () => {
       if (form.laborCostPerHour && !MONEY_PATTERN.test(form.laborCostPerHour)) {
-        throw new Error("Labor cost must be a number with up to 2 decimals");
+        throw new Error("Labour cost must be a number with up to 2 decimals");
       }
       if (form.billableRatePerHour && !MONEY_PATTERN.test(form.billableRatePerHour)) {
         throw new Error("Billable rate must be a number with up to 2 decimals");
@@ -239,7 +239,7 @@ export function CompensationTab({ selectedMemberId, onSelectMember, hideMemberLi
             <CardContent className={`space-y-4 ${hideMemberList ? "pt-5" : ""}`}>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="comp-cost">Labor cost / hour</Label>
+                  <Label htmlFor="comp-cost">Labour cost / hour</Label>
                   <div className="relative">
                     <DollarSign className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                     <Input

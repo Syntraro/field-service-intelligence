@@ -95,9 +95,17 @@ declare module "express-session" {
 // ============================================================================
 
 const MAGIC_LINK_EXPIRY_MS = 15 * 60 * 1000; // 15 minutes
-const BASE_URL = process.env.BASE_URL || process.env.REPLIT_DEV_DOMAIN
-  ? `https://${process.env.REPLIT_DEV_DOMAIN}`
-  : "http://localhost:5000";
+// 2026-05-05: removed the local `BASE_URL` constant — the prior
+// expression `process.env.BASE_URL || process.env.REPLIT_DEV_DOMAIN
+// ? \`https://${process.env.REPLIT_DEV_DOMAIN}\` : "http://localhost:5000"`
+// parsed via JS precedence as
+// `(BASE_URL || REPLIT_DEV_DOMAIN) ? https://${REPLIT_DEV_DOMAIN} : localhost`,
+// which produced `https://undefined/...` whenever BASE_URL was set but
+// REPLIT_DEV_DOMAIN was not. Magic-link emails on those tenants
+// shipped a Sign In button pointing at a non-existent host. The
+// canonical resolver lives in `server/lib/portalUrls.ts::appBase()` —
+// imported below and used by every URL builder in this module.
+import { appBase as resolveAppBase } from "../lib/portalUrls";
 
 // ============================================================================
 // Helpers
@@ -245,9 +253,12 @@ router.post(
       );
     }
 
-    // Build magic link URL
-    const appBase = process.env.APP_URL || BASE_URL;
-    const magicLink = `${appBase}/portal/verify?token=${encodeURIComponent(rawToken)}`;
+    // 2026-05-05: route through the canonical `appBase()` resolver so
+    // we get a correct URL whether the host is set via `APP_URL`,
+    // `BASE_URL`, `REPLIT_DEV_DOMAIN`, or the localhost dev fallback.
+    // The prior local `BASE_URL` constant could produce
+    // `https://undefined/...` (see header).
+    const magicLink = `${resolveAppBase()}/portal/verify?token=${encodeURIComponent(rawToken)}`;
 
     // Fetch company name for the email
     const [company] = await db
@@ -284,6 +295,16 @@ router.post(
     let emailSent = true;
     try {
       const { client, fromEmail } = await getResendClient();
+      // 2026-05-05: visible plaintext URL fallback below the styled
+      // button. Several email clients (text-mode readers, locked-down
+      // corporate clients, and some Gmail rendering paths) suppress
+      // styled buttons; without a visible URL the customer sees an
+      // empty email. The fallback paragraph mirrors the
+      // `buildPayInvoiceButtonHtml` pattern used for invoice emails.
+      // Also supplies a Resend `text` field so plaintext-only
+      // recipients see the URL inline. URL-encoding in the href and
+      // anchor text is safe — `magicLink` came from
+      // `encodeURIComponent` on the token + the controlled appBase().
       const result = await client.emails.send({
         from: fromEmail,
         to: normalizedEmail,
@@ -299,6 +320,12 @@ router.post(
                 Sign In
               </a>
             </div>
+            <p style="color: #666; font-size: 14px; margin: 0 0 4px 0;">
+              If the button doesn't work, copy and paste this link into your browser:
+            </p>
+            <p style="font-size: 14px; word-break: break-all; margin: 0 0 24px 0;">
+              <a href="${magicLink}" style="color: #2563eb;">${magicLink}</a>
+            </p>
             <p style="color: #666; font-size: 14px;">
               This link expires in 15 minutes and can only be used once.
             </p>
@@ -307,6 +334,11 @@ router.post(
             </p>
           </div>
         `,
+        text:
+          `Sign in to your account at ${company?.name || "Customer Portal"}.\n\n` +
+          `Click or paste this link to sign in:\n${magicLink}\n\n` +
+          `This link expires in 15 minutes and can only be used once.\n\n` +
+          `If you didn't request this link, you can safely ignore this email.\n`,
       });
 
       // Resend SDK returns error object instead of throwing
@@ -1110,8 +1142,8 @@ router.post(
         customerCompanyId,
         invoiceIds,
         source: "portal",
-        successUrl: `${BASE_URL}/portal/invoices?paid=1`,
-        cancelUrl: `${BASE_URL}/portal/invoices`,
+        successUrl: `${resolveAppBase()}/portal/invoices?paid=1`,
+        cancelUrl: `${resolveAppBase()}/portal/invoices`,
         ...(saveForFuture
           ? {
               saveForFuture: true,

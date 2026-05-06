@@ -2,7 +2,7 @@
  * Tax & Billing Rules Page — Payment terms + tax rates/groups CRUD.
  * Replaces the "Coming Soon" placeholder with full v1 tax management UI.
  */
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Link } from "wouter";
 import { ArrowLeft, Receipt, Calendar, Save, Plus, Pencil, Trash2, Star, X } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -326,9 +326,18 @@ export default function TaxBillingRulesPage() {
   // ========================================
   // TAX GROUPS STATE
   // ========================================
-  const { data: taxGroups = [], isLoading: groupsLoading } = useQuery<TaxGroup[]>({
+  // 2026-05-05: filter out system per-rate wrapper groups
+  // (`__sys_rate__:<rateId>`). These are auto-created by the invoice
+  // tax selector when a user picks a standalone rate; they're internal
+  // plumbing and should not clutter the Settings list.
+  const SYSTEM_RATE_GROUP_PREFIX = "__sys_rate__:";
+  const { data: allTaxGroups = [], isLoading: groupsLoading } = useQuery<TaxGroup[]>({
     queryKey: ["/api/tax/groups"],
   });
+  const taxGroups = useMemo(
+    () => allTaxGroups.filter((g) => !g.name.startsWith(SYSTEM_RATE_GROUP_PREFIX)),
+    [allTaxGroups],
+  );
 
   const [groupDialogOpen, setGroupDialogOpen] = useState(false);
   const [editingGroup, setEditingGroup] = useState<TaxGroup | null>(null);

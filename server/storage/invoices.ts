@@ -259,6 +259,14 @@ export class InvoiceRepository extends BaseRepository {
         showLineTotals: invoices.showLineTotals,
         showLineItems: invoices.showLineItems,
         showBalance: invoices.showBalance,
+        // 2026-05-06: previously missing from the explicit projection,
+        // which meant the API silently dropped `showJobDescription` from
+        // every invoice read. The InvoiceDetailPage Client Visibility
+        // card couldn't see operator toggles round-trip and the resolver
+        // received `undefined` for the per-invoice flag (resolver fell
+        // through to tenant default — accidentally correct for the
+        // "inherit" case but broken for the "explicit override" case).
+        showJobDescription: invoices.showJobDescription,
         qboInvoiceId: invoices.qboInvoiceId,
         qboSyncToken: invoices.qboSyncToken,
         qboLastSyncedAt: invoices.qboLastSyncedAt,
@@ -350,17 +358,9 @@ export class InvoiceRepository extends BaseRepository {
   }
 
   /**
-   * 2026-04-18 Phase 8 (invoice composition control): compute what's
-   * currently billable for a job — the union of uninvoiced time entries
-   * and un-allocated job parts, with canonical billing-rules applied
-   * to labor amounts so the preview matches what creation will write.
-   *
-   * Labor eligibility mirrors `addLaborLinesFromTimeEntries`:
-   *   - billable = true
-   *   - endAt IS NOT NULL (completed entries only)
-   *   - invoicedAt IS NULL (not yet billed)
-   *   - lockedAt IS NULL AND lockedByInvoiceId IS NULL (not locked by a
-   *     concurrent invoice in-flight)
+   * Compute what's currently billable for a job — the un-allocated job
+   * parts only. Labour was removed from this preview 2026-05-05; tracked
+   * labour never auto-creates invoice lines.
    *
    * Parts eligibility mirrors the Phase 7 allocation guard in
    * `refreshInvoiceFromJob`: no existing `invoice_lines.jobLineItemId`
@@ -368,73 +368,19 @@ export class InvoiceRepository extends BaseRepository {
    *
    * Returns money fields as strings to match the rest of the invoice
    * pipeline (numeric-as-string is the canonical precision discipline).
+   *
+   * The response still carries `labor: []` and `laborSubtotal: "0.00"`
+   * so older clients (InvoiceCompositionDialog before 2026-05-05) do not
+   * crash on missing fields. Both fields will always be empty.
    */
   async getBillablePreviewForJob(companyId: string, jobId: string) {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
-    // ── Labor ────────────────────────────────────────────────────────
-    const laborRaw = await db
-      .select({
-        id: timeEntries.id,
-        technicianId: timeEntries.technicianId,
-        technicianName: users.fullName,
-        type: timeEntries.type,
-        durationMinutes: timeEntries.durationMinutes,
-        billableRateSnapshot: timeEntries.billableRateSnapshot,
-        startAt: timeEntries.startAt,
-        jobId: timeEntries.jobId,
-      })
-      .from(timeEntries)
-      .leftJoin(users, eq(timeEntries.technicianId, users.id))
-      .where(
-        and(
-          eq(timeEntries.companyId, companyId),
-          eq(timeEntries.jobId, jobId),
-          eq(timeEntries.billable, true),
-          isNotNull(timeEntries.endAt),
-          isNull(timeEntries.invoicedAt),
-          isNull(timeEntries.lockedAt),
-          isNull(timeEntries.lockedByInvoiceId),
-        ),
-      )
-      .orderBy(asc(timeEntries.startAt));
-
-    const rules = await timeBillingRulesRepository.getRules(companyId);
-    const rulesResult = applyBillingRulesToEntries(
-      rules,
-      laborRaw.map((e) => ({
-        id: e.id,
-        type: e.type,
-        durationMinutes: e.durationMinutes ?? 0,
-        billableRateSnapshot: e.billableRateSnapshot,
-        jobId: e.jobId,
-        startAt: e.startAt,
-      })),
-    );
-    const billedMap = new Map(rulesResult.entries.map((b) => [b.entryId, b]));
-
-    let laborSubtotalCents = 0;
-    const labor = laborRaw
-      .map((e) => {
-        const billed = billedMap.get(e.id);
-        const billedMinutes = billed?.billedMinutes ?? 0;
-        const billedRate = billed?.billedRate ?? parseFloat(e.billableRateSnapshot || "0");
-        const amountCents = Math.round((billedMinutes / 60) * billedRate * 100);
-        laborSubtotalCents += amountCents;
-        return {
-          id: e.id,
-          startAt: e.startAt instanceof Date ? e.startAt.toISOString() : e.startAt,
-          technicianId: e.technicianId,
-          technicianName: e.technicianName ?? "Unknown",
-          type: e.type,
-          billedMinutes,
-          billedRate: billedRate.toFixed(2),
-          billedAmount: (amountCents / 100).toFixed(2),
-          wasExcluded: billed?.wasExcluded === true,
-        };
-      })
-      .filter((e) => !e.wasExcluded && e.billedMinutes > 0);
+    // ── Labour ───────────────────────────────────────────────────────
+    // 2026-05-05: tracked labour does NOT flow onto invoices. Always empty.
+    const labor: Array<never> = [];
+    const laborSubtotalCents = 0;
 
     // ── Parts ────────────────────────────────────────────────────────
     const partsRaw = await db
@@ -1315,20 +1261,14 @@ export class InvoiceRepository extends BaseRepository {
         linesCreated = newLines.length;
       }
 
-      // Step 3b: Add labor lines from uninvoiced billable time entries
-      // Group by technician + type for cleaner invoice presentation.
-      // Phase 8: pass through `selection.timeEntryIds` so the caller can
-      // restrict to a specific user-picked subset. The labor path still
-      // enforces `invoicedAt IS NULL` + lock guards, so stale selections
-      // can't double-bill.
-      const laborLinesCreated = await this.addLaborLinesFromTimeEntries(
-        tx,
-        companyId,
-        invoiceId,
-        invoice.jobId!,
-        baseLineNumber + linesCreated,
-        selection?.timeEntryIds,
-      );
+      // 2026-05-05 — Labour auto-add REMOVED from all invoice paths.
+      // Tracked labour / time entries no longer create invoice line items
+      // automatically (was Step 3b). Labour stays operational data only —
+      // visible on the Job + Invoice labour cards. Users who want to bill
+      // labour must add a line item manually.
+      // The `selection.timeEntryIds` field on the request body is now a
+      // no-op; kept on the schema for backward compat so older clients
+      // do not 400 when they send it.
 
       // Step 4: Recalculate invoice totals
       await this.recalculateInvoiceTotalsInTx(tx, companyId, invoiceId);
@@ -1336,7 +1276,7 @@ export class InvoiceRepository extends BaseRepository {
       return {
         invoiceId,
         jobId: invoice.jobId,
-        linesRefreshed: linesCreated + laborLinesCreated,
+        linesRefreshed: linesCreated,
       };
     };
 
@@ -1345,293 +1285,27 @@ export class InvoiceRepository extends BaseRepository {
   }
 
   /**
-   * Add labor lines from time entries to an invoice (within transaction)
-   * Applies company billing rules (rounding, minimums, multipliers, caps)
-   * Groups entries by technician + type for cleaner presentation
-   * Marks time entries as invoiced with billing snapshots
+   * 2026-05-05 — DELETED: addLaborLinesFromTimeEntries
    *
-   * Phase 8: Now applies billing rules before creating invoice lines
+   * Previously auto-converted billable time entries into invoice lines
+   * (`lineItemType: "service"`, `source: "job"`) and locked the entries
+   * via `invoicedAt` / `lockedAt` / `lockedByInvoiceId` on `time_entries`.
+   *
+   * That path is gone. Tracked labour is operational-only:
+   *   - Job detail "Labour" card shows tracked time as data
+   *   - Invoice detail "Labour" card shows tracked time as data
+   *   - To bill labour, the user adds a line item manually
+   *
+   * The `time_entries.invoiced_at` / `locked_at` / `locked_by_invoice_id`
+   * / `billed_*_snapshot` columns remain on the schema for historical
+   * rows but are never written by new code.
+   *
+   * `selection.timeEntryIds` on the refresh-from-job request body is
+   * accepted for backward compat but ignored.
+   *
+   * Do NOT re-introduce this function. A regression test in
+   * `tests/labour-no-auto-lines.test.ts` pins its absence.
    */
-  private async addLaborLinesFromTimeEntries(
-    tx: any,
-    companyId: string,
-    invoiceId: string,
-    jobId: string,
-    startLineNumber: number,
-    timeEntryIdsSelection?: string[],
-  ): Promise<number> {
-    // Get company billing rules (or defaults)
-    const rules = await timeBillingRulesRepository.getRules(companyId);
-
-    // Get uninvoiced billable time entries for this job.
-    // Phase 8: when a selection is provided, further restrict to that
-    // explicit set. The canonical invoicedAt / lock guards still apply,
-    // so a stale selection silently drops any already-invoiced IDs
-    // rather than double-billing.
-    const entryWhere: any[] = [
-      eq(timeEntries.companyId, companyId),
-      eq(timeEntries.jobId, jobId),
-      eq(timeEntries.billable, true),
-      isNotNull(timeEntries.endAt),
-      isNull(timeEntries.invoicedAt),
-    ];
-    if (Array.isArray(timeEntryIdsSelection)) {
-      if (timeEntryIdsSelection.length === 0) {
-        entryWhere.push(sql`false`);
-      } else {
-        entryWhere.push(inArray(timeEntries.id, timeEntryIdsSelection));
-      }
-    }
-
-    const entries = await tx
-      .select({
-        id: timeEntries.id,
-        technicianId: timeEntries.technicianId,
-        technicianName: users.fullName,
-        type: timeEntries.type,
-        durationMinutes: timeEntries.durationMinutes,
-        billableRateSnapshot: timeEntries.billableRateSnapshot,
-        costRateSnapshot: timeEntries.costRateSnapshot,
-        jobId: timeEntries.jobId,
-        startAt: timeEntries.startAt,
-        // Phase 9: Include lock fields for validation
-        lockedAt: timeEntries.lockedAt,
-        lockedByInvoiceId: timeEntries.lockedByInvoiceId,
-      })
-      .from(timeEntries)
-      .leftJoin(users, eq(timeEntries.technicianId, users.id))
-      .where(and(...entryWhere))
-      .orderBy(asc(timeEntries.startAt)); // Oldest first for deterministic capping
-
-    if (entries.length === 0) {
-      return 0;
-    }
-
-    // Phase 9: Check for already-locked entries and abort if found
-    const alreadyLocked = entries.filter((e: typeof entries[number]) => e.lockedAt !== null || e.lockedByInvoiceId !== null);
-    if (alreadyLocked.length > 0) {
-      const lockedIds = alreadyLocked.map((e: typeof entries[number]) => e.id).join(", ");
-      const lockingInvoice = alreadyLocked[0].lockedByInvoiceId;
-      throw this.conflictError(
-        `Cannot invoice: ${alreadyLocked.length} time entries are already locked` +
-        (lockingInvoice ? ` by invoice ${lockingInvoice}` : "") +
-        `. Entry IDs: ${lockedIds}`
-      );
-    }
-
-    // Apply billing rules to compute final billed minutes and rates
-    const rulesResult = applyBillingRulesToEntries(
-      rules,
-      entries.map((e: typeof entries[number]) => ({
-        id: e.id,
-        type: e.type,
-        durationMinutes: e.durationMinutes ?? 0,
-        billableRateSnapshot: e.billableRateSnapshot,
-        jobId: e.jobId,
-        startAt: e.startAt,
-      }))
-    );
-
-    // Create a lookup map for billed entries
-    const billedMap = new Map(
-      rulesResult.entries.map((be) => [be.entryId, be])
-    );
-
-    // Group entries by technician + type (only include non-excluded entries)
-    const grouped = new Map<
-      string,
-      {
-        technicianId: string;
-        technicianName: string | null;
-        type: string;
-        totalBilledMinutes: number;
-        billedRate: number;
-        costRate: number;
-        entrySnapshots: Array<{
-          id: string;
-          billedMinutes: number;
-          billedRate: number;
-        }>;
-      }
-    >();
-
-    for (const entry of entries) {
-      const billed = billedMap.get(entry.id);
-      if (!billed || billed.wasExcluded || billed.billedMinutes === 0) {
-        // Still mark as invoiced but with 0 billed minutes
-        continue;
-      }
-
-      const key = `${entry.technicianId}:${entry.type}`;
-      const costRate = parseFloat(entry.costRateSnapshot || "0");
-
-      if (!grouped.has(key)) {
-        grouped.set(key, {
-          technicianId: entry.technicianId,
-          technicianName: entry.technicianName,
-          type: entry.type,
-          totalBilledMinutes: 0,
-          billedRate: billed.billedRate,
-          costRate,
-          entrySnapshots: [],
-        });
-      }
-
-      const group = grouped.get(key)!;
-      group.totalBilledMinutes += billed.billedMinutes;
-      group.entrySnapshots.push({
-        id: entry.id,
-        billedMinutes: billed.billedMinutes,
-        billedRate: billed.billedRate,
-      });
-    }
-
-    // P3-02 Phase 1: Pre-build all invoice line values, then batch INSERT
-    const allLineValues: Array<{
-      companyId: string; invoiceId: string; lineNumber: number;
-      lineItemType: "service"; description: string; quantity: string;
-      source: "job"; unitPrice: string; unitCost: string | null;
-      lineSubtotal: string; taxRate: string; taxAmount: string;
-      lineTotal: string; technicianId: string;
-    }> = [];
-    // Track which groups get which lineNumber for the back-reference mapping
-    const groupsByLineNumber = new Map<number, typeof grouped extends Map<string, infer V> ? V : never>();
-    let lineNumber = startLineNumber;
-
-    for (const group of Array.from(grouped.values())) {
-      if (group.totalBilledMinutes === 0) continue;
-
-      const hours = group.totalBilledMinutes / 60;
-      const unitPrice = group.billedRate || 0;
-      const unitCost = group.costRate || 0;
-      const lineSubtotal = hours * unitPrice;
-
-      const typeDisplay = group.type
-        .replace(/_/g, " ")
-        .replace(/\b\w/g, (c: string) => c.toUpperCase());
-
-      const description = group.technicianName
-        ? `Labor - ${typeDisplay} (${group.technicianName})`
-        : `Labor - ${typeDisplay}`;
-
-      const assignedLineNumber = ++lineNumber;
-      groupsByLineNumber.set(assignedLineNumber, group);
-
-      allLineValues.push({
-        companyId,
-        invoiceId,
-        lineNumber: assignedLineNumber,
-        lineItemType: "service" as const,
-        description,
-        quantity: hours.toFixed(2),
-        source: "job" as const,
-        unitPrice: String(unitPrice.toFixed(2)),
-        unitCost: unitCost > 0 ? String(unitCost.toFixed(2)) : null,
-        lineSubtotal: String(lineSubtotal.toFixed(2)),
-        taxRate: "0",
-        taxAmount: "0",
-        lineTotal: String(lineSubtotal.toFixed(2)),
-        technicianId: group.technicianId,
-      });
-    }
-
-    if (allLineValues.length === 0) {
-      // No non-zero groups — still need to process excluded entries below
-    } else {
-      // Single batch INSERT with RETURNING for lineId mapping
-      const insertedLines = await tx
-        .insert(invoiceLines)
-        .values(allLineValues)
-        .returning({ id: invoiceLines.id, lineNumber: invoiceLines.lineNumber });
-
-      // Build lineId lookup by lineNumber
-      const lineIdByNumber = new Map<number, string>();
-      for (const row of insertedLines) {
-        lineIdByNumber.set(row.lineNumber, row.id);
-      }
-
-      // 2026-04-14 Phase 1 next-frontier: batched single UPDATE for
-      // included entries. The only per-row distinct values are
-      // `invoiceLineId`, `billedMinutesSnapshot`, and `billedRateSnapshot`
-      // — everything else is uniform — so we join the rows against a
-      // VALUES expression and fire one statement instead of N. Preserves
-      // tenant scoping via `t.company_id = ${companyId}`. Semantics are
-      // identical to the prior per-snapshot loop.
-      const now = new Date();
-      const updateRows: Array<{
-        id: string;
-        invoiceLineId: string;
-        billedMinutes: number;
-        billedRate: string;
-      }> = [];
-      for (const [assignedLineNumber, group] of Array.from(groupsByLineNumber.entries())) {
-        const lineId = lineIdByNumber.get(assignedLineNumber);
-        if (!lineId) continue; // Should not happen — defensive guard
-        for (const snapshot of group.entrySnapshots) {
-          updateRows.push({
-            id: snapshot.id,
-            invoiceLineId: lineId,
-            billedMinutes: snapshot.billedMinutes,
-            billedRate: snapshot.billedRate.toFixed(2),
-          });
-        }
-      }
-      if (updateRows.length > 0) {
-        const valuesSql = sql.join(
-          updateRows.map(
-            (r) =>
-              sql`(${r.id}, ${r.invoiceLineId}, ${r.billedMinutes}, ${r.billedRate})`,
-          ),
-          sql`, `,
-        );
-        await tx.execute(sql`
-          UPDATE time_entries AS t
-          SET invoice_id = ${invoiceId},
-              invoice_line_id = v.invoice_line_id,
-              invoiced_at = ${now},
-              billed_minutes_snapshot = v.billed_minutes::int,
-              billed_rate_snapshot = v.billed_rate::numeric,
-              billing_rules_hash = ${rulesResult.rulesHash},
-              locked_at = ${now},
-              locked_by_invoice_id = ${invoiceId},
-              lock_reason = 'INVOICED',
-              updated_at = ${now}
-          FROM (VALUES ${valuesSql}) AS v(id, invoice_line_id, billed_minutes, billed_rate)
-          WHERE t.id = v.id AND t.company_id = ${companyId}
-        `);
-      }
-    }
-
-    // P3-02 Phase 3: Batch UPDATE excluded entries (uniform values)
-    const excludedIds: string[] = [];
-    for (const entry of entries) {
-      const billed = billedMap.get(entry.id);
-      if (billed && (billed.wasExcluded || billed.billedMinutes === 0)) {
-        excludedIds.push(entry.id);
-      }
-    }
-    if (excludedIds.length > 0) {
-      const lockTime = new Date();
-      await tx
-        .update(timeEntries)
-        .set({
-          invoiceId,
-          invoicedAt: lockTime,
-          billedMinutesSnapshot: 0,
-          billedRateSnapshot: "0.00",
-          billingRulesHash: rulesResult.rulesHash,
-          // Phase 9: Lock entries to prevent edits
-          lockedAt: lockTime,
-          lockedByInvoiceId: invoiceId,
-          lockReason: "INVOICED",
-          updatedAt: lockTime,
-        })
-        .where(inArray(timeEntries.id, excludedIds));
-    }
-
-    return allLineValues.length;
-  }
-
   /**
    * Canonical shared invoice shell creation — single runtime owner of:
    * - invoice number generation (counter SELECT FOR UPDATE + increment)

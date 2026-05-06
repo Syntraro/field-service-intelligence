@@ -29,15 +29,27 @@ const updateTaxRateSchema = z.object({
   description: z.string().max(500).optional(),
 }).strict();
 
+// 2026-05-05: reject the system-group prefix (`__sys_rate__:`) so a
+// user-created group cannot collide with the auto-managed per-rate
+// wrappers used by the invoice tax selector.
+const SYSTEM_GROUP_PREFIX_PATTERN = /^__sys_rate__:/;
+const userGroupName = z
+  .string()
+  .min(1)
+  .max(100)
+  .refine((s) => !SYSTEM_GROUP_PREFIX_PATTERN.test(s), {
+    message: "Tax group name must not start with __sys_rate__: (reserved)",
+  });
+
 const createTaxGroupSchema = z.object({
-  name: z.string().min(1).max(100),
+  name: userGroupName,
   description: z.string().max(500).optional(),
   isDefault: z.boolean().optional(),
   rateIds: z.array(z.string().uuid()).min(1, "At least one tax rate is required"),
 }).strict();
 
 const updateTaxGroupSchema = z.object({
-  name: z.string().min(1).max(100).optional(),
+  name: userGroupName.optional(),
   description: z.string().max(500).optional(),
   isDefault: z.boolean().optional(),
   rateIds: z.array(z.string().uuid()).optional(),

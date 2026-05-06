@@ -612,6 +612,223 @@ async function createMultiCheckout(
 }
 
 // ============================================================================
+// 2026-05-06 — createCardIntentWithAllocations.
+//
+// Inline-Elements multi-invoice card payment for the staff Collect Payment
+// dialog. Distinct from createMultiCheckout (Checkout Session redirect)
+// because the modal cannot embed a hosted-checkout page; we need a
+// PaymentIntent + PaymentElement that the dialog mounts directly.
+//
+// Architectural shape:
+//   • Caller passes per-invoice allocation amounts (sum = card charge).
+//   • Server creates ONE PaymentIntent for the sum.
+//   • Allocations are encoded as a single Stripe metadata JSON field.
+//   • Webhook (`handlePaymentSucceeded`) detects `multiInvoiceMode =
+//     "manual_allocations"` in metadata, reads the allocations, writes
+//     ONE payments row (invoiceId=NULL) + N payment_allocations rows
+//     atomically — same canonical writer as the existing multi-invoice
+//     Checkout Session path.
+//
+// Stripe metadata limits (50 keys / 500 chars per value / 8KB total):
+//   We pack allocations into a single key as `[["uuid","100.00"], …]`.
+//   At ~50 chars per allocation entry, ~10 allocations fit safely.
+//   The service rejects > MAX_ALLOCATIONS_PER_CARD_INTENT with a 400 so
+//   we never silently overflow Stripe's limit. Operators with more than
+//   that can either split the request or use the manual cheque/e-transfer
+//   path which has no such cap.
+// ============================================================================
+
+const MAX_ALLOCATIONS_PER_CARD_INTENT = 10;
+
+export interface CreateCardIntentAllocation {
+  invoiceId: string;
+  /** Dollars-as-string — `^\d+(\.\d{1,2})?$`. Validated server-side. */
+  amount: string;
+}
+
+export interface CreateCardIntentParams {
+  companyId: string;
+  customerCompanyId: string;
+  allocations: CreateCardIntentAllocation[];
+  source: "staff";
+  currency?: string;
+}
+
+export interface CreateCardIntentResponse {
+  providerId: "stripe";
+  clientToken: string;
+  providerPaymentId: string;
+  publishableKey?: string;
+  prospectivePaymentId: string;
+  /** Sum of allocations as a dollars string — for UI display. */
+  totalAmount: string;
+}
+
+async function createCardIntentWithAllocations(
+  params: CreateCardIntentParams,
+): Promise<CreateCardIntentResponse> {
+  const { companyId, customerCompanyId, source } = params;
+  const currency = params.currency ?? "usd";
+
+  if (!Array.isArray(params.allocations) || params.allocations.length === 0) {
+    throw createError(400, "At least one allocation is required");
+  }
+  if (params.allocations.length > MAX_ALLOCATIONS_PER_CARD_INTENT) {
+    throw createError(
+      400,
+      `Card payments support up to ${MAX_ALLOCATIONS_PER_CARD_INTENT} invoices per charge. Reduce the selection or use a non-card payment method for the rest.`,
+    );
+  }
+
+  // Defensive de-dupe — the DB unique on (paymentId, invoiceId) would catch
+  // it later but we want a clean 400 here.
+  const seen = new Set<string>();
+  for (const a of params.allocations) {
+    if (seen.has(a.invoiceId)) {
+      throw createError(400, "Duplicate invoice ids in allocations");
+    }
+    seen.add(a.invoiceId);
+  }
+
+  // Provider gate (same contract as createCheckout / createMultiCheckout).
+  const account = await paymentProviderAccountService.getActiveAccount(
+    companyId,
+  );
+  if (!account || !account.providerAccountId) {
+    throw createDomainError(
+      "PAYMENTS_NOT_ENABLED",
+      "Online payments are not available for this company.",
+    );
+  }
+  const providerAccountId = account.providerAccountId;
+  const paymentProviderAccountId = account.id;
+
+  // Validate every invoice: same tenant, same customer, payable status,
+  // allocated amount > 0 and ≤ current balance. First failure short-
+  // circuits — we do not want a partially valid request to mint a
+  // PaymentIntent.
+  type ValidatedAllocation = {
+    invoiceId: string;
+    invoiceNumber: string | null;
+    amountCents: number;
+  };
+  const validated: ValidatedAllocation[] = [];
+  for (const alloc of params.allocations) {
+    const invoice = await invoiceRepository.getInvoice(companyId, alloc.invoiceId);
+    if (!invoice) {
+      throw createError(404, `Invoice ${alloc.invoiceId} not found`);
+    }
+    if (invoice.customerCompanyId !== customerCompanyId) {
+      // Cross-customer attempt. 404 (not 403) so we don't leak the
+      // existence of another customer's invoice id.
+      throw createError(404, `Invoice ${alloc.invoiceId} not found`);
+    }
+    if (!canAcceptInvoicePayment(invoice.status)) {
+      throw createError(
+        400,
+        `Invoice ${invoice.invoiceNumber ?? alloc.invoiceId} cannot accept payment (status="${invoice.status}").`,
+      );
+    }
+    const amountCents = dollarsStringToCents(alloc.amount);
+    if (!Number.isFinite(amountCents) || amountCents <= 0) {
+      throw createError(
+        400,
+        `Allocation amount for invoice ${invoice.invoiceNumber ?? alloc.invoiceId} must be greater than zero.`,
+      );
+    }
+    const balanceCents = Math.round(parseFloat(invoice.balance ?? "0") * 100);
+    if (amountCents > balanceCents) {
+      throw createError(
+        400,
+        `Allocation $${alloc.amount} exceeds invoice ${invoice.invoiceNumber ?? alloc.invoiceId} balance ${centsToDollarsString(balanceCents)}.`,
+      );
+    }
+    validated.push({
+      invoiceId: invoice.id,
+      invoiceNumber: invoice.invoiceNumber ?? null,
+      amountCents,
+    });
+  }
+
+  const totalCents = validated.reduce((s, v) => s + v.amountCents, 0);
+  if (totalCents <= 0) {
+    throw createError(400, "Total charge amount must be greater than zero");
+  }
+  // Stripe minimum charge: 50¢ for USD/CAD. The PaymentIntent create
+  // would fail anyway, but a clean 400 is friendlier.
+  if (totalCents < 50) {
+    throw createError(400, "Total charge amount is below the minimum card payment amount");
+  }
+
+  // Single source of truth for the idempotency / payment-id chain.
+  const prospectivePaymentId = randomUUID();
+
+  // Pack allocations into a single Stripe metadata field. Format is
+  // a tight tuple JSON to maximize the count we can fit:
+  //   [["<uuid>","<dollars>"], …]
+  // Each tuple ~50 chars; 500-char Stripe field cap → ~10 entries safely.
+  const allocationsJson = JSON.stringify(
+    validated.map((v) => [v.invoiceId, centsToDollarsString(v.amountCents)]),
+  );
+  if (allocationsJson.length > 480) {
+    // Hard guardrail. 480 is conservative against the 500-char Stripe
+    // metadata-value limit. The MAX_ALLOCATIONS_PER_CARD_INTENT cap
+    // above should already prevent this; if a future schema change
+    // makes ids longer we surface the error early instead of letting
+    // Stripe reject the create call.
+    throw createError(
+      400,
+      "Allocation set is too large to fit safely in provider metadata",
+    );
+  }
+
+  // The adapter is the ONLY place that speaks the provider SDK. We
+  // reuse the existing single-invoice `provider.createCheckout` (which
+  // creates a PaymentIntent) — passing `invoiceId: ""` would break its
+  // metadata contract, so we keep its signature unchanged and instead
+  // call it with the FIRST invoice's id as the "carrier". The metadata
+  // we attach below carries the canonical multi-invoice payload; the
+  // webhook reads `multiInvoiceMode` first and routes appropriately,
+  // never falling through to the single-invoice path. This means the
+  // adapter's per-call metadata of `invoiceId` becomes a no-op for our
+  // path — present but unread.
+  const carrierInvoice = validated[0];
+  const provider: PaymentProvider = resolveForCompany(companyId);
+  const result = await provider.createCheckout({
+    companyId,
+    invoiceId: carrierInvoice.invoiceId,
+    amountCents: totalCents,
+    currency,
+    source,
+    idempotencyKey: prospectivePaymentId,
+    providerAccountId,
+    metadata: {
+      companyId,
+      customerCompanyId,
+      // CRITICAL discriminator — the webhook checks this first and
+      // dispatches to the manual-allocations multi-invoice writer.
+      multiInvoiceMode: "manual_allocations",
+      allocations: allocationsJson,
+      prospectivePaymentId,
+      source,
+      paymentProviderAccountId,
+      // Carrier invoice id stays in metadata for diagnostics, but the
+      // webhook does NOT use it — `allocations` is the source of truth.
+      carrierInvoiceId: carrierInvoice.invoiceId,
+    },
+  });
+
+  return {
+    providerId: "stripe",
+    clientToken: result.clientToken,
+    providerPaymentId: result.providerPaymentId,
+    publishableKey: result.publishableKey,
+    prospectivePaymentId,
+    totalAmount: centsToDollarsString(totalCents),
+  };
+}
+
+// ============================================================================
 // 2026-05-03 PR C — Saved-card management (portal-facing).
 //
 // Three methods for the portal "Saved cards" page:
@@ -1609,6 +1826,20 @@ async function handlePaymentSucceeded(
     }),
   };
 
+  // 2026-05-06 — Manual-allocations multi-invoice path. The Collect
+  // Payment dialog mints PaymentIntents with `multiInvoiceMode =
+  // "manual_allocations"` + a JSON allocations payload. We branch
+  // BEFORE `readTenantMetadata` because that helper requires a single
+  // `invoiceId`, which manual-allocations payments do NOT carry (the
+  // invoice list lives entirely in `allocations`).
+  if (event.metadata?.multiInvoiceMode === "manual_allocations") {
+    return await handleManualAllocationsPaymentSucceeded(
+      providerId,
+      event,
+      logBase,
+    );
+  }
+
   const meta = readTenantMetadata(event.metadata);
   if (!meta) {
     logAnomaly("metadata_missing_or_malformed", {
@@ -1976,6 +2207,386 @@ async function applyMultiInvoiceAllocationsTx(
         ),
       );
   }
+}
+
+/**
+ * 2026-05-06 — Webhook handler for Collect Payment dialog card charges
+ * (multi-invoice via PaymentIntent + inline Elements).
+ *
+ * Triggered when `event.metadata.multiInvoiceMode === "manual_allocations"`.
+ * Reads the explicit allocations list from metadata, writes ONE
+ * `payments` row (invoiceId=NULL) + N `payment_allocations` rows, and
+ * updates each affected invoice's balance/status. Reuses the canonical
+ * `applyMultiInvoiceAllocationsTx` so the on-disk shape is byte-for-
+ * byte identical to the existing portal Checkout Session multi-invoice
+ * path — receipts, dedupe, idempotency, refund/reversal handling all
+ * inherit from that contract.
+ *
+ * Idempotency: anchored by `payments_provider_event_id_uq` on
+ * (companyId, providerSource, providerEventId). A replay collides on
+ * the parent payment insert and rolls the tx back without writing any
+ * allocations — same pattern as the single-invoice path.
+ *
+ * Failure policy:
+ *   - Metadata missing / malformed → 200 ACK + config_error log (the
+ *     money already moved; Stripe retries cannot help).
+ *   - Sum-of-allocations ≠ amount Stripe charged → 200 ACK + config
+ *     error (operator-visible alert, no partial ledger).
+ *   - Per-invoice validation failure inside the tx → entire tx rolls
+ *     back; same classification as Checkout Session path.
+ */
+async function handleManualAllocationsPaymentSucceeded(
+  providerId: string,
+  event: Extract<NormalizedWebhookEvent, { kind: "payment_succeeded" }>,
+  logBase: Omit<Parameters<typeof safeRecordPaymentWebhookEvent>[0], "outcome" | "httpStatus">,
+): Promise<"accepted" | "replay"> {
+  const metadata = event.metadata ?? {};
+  const companyId = metadata.companyId;
+  const customerCompanyId = metadata.customerCompanyId;
+  const prospectivePaymentId = metadata.prospectivePaymentId;
+  const allocationsRaw = metadata.allocations;
+
+  // 2026-05-06 PR4 — every early-exit config_error branch carries a
+  // structured `kind=` + `providerPaymentId=` + `chargeId=` payload so
+  // the persisted `payment_webhook_events` row points an operator
+  // straight at the Stripe charge, regardless of which malformed-
+  // metadata branch fired. Without this, a null-companyId early exit
+  // would persist with NO context — the row would be invisible from
+  // the tenant-scoped Payments dashboard banner.
+  const orphanRefForLog = [
+    `providerPaymentId=${event.providerPaymentId}`,
+    `chargeId=${event.chargeId ?? "null"}`,
+    `stripeCents=${event.amountCents}`,
+  ].join(" ");
+
+  if (!companyId || !customerCompanyId || !prospectivePaymentId || !allocationsRaw) {
+    logAnomaly("manual_allocations_metadata_missing_or_malformed", {
+      providerId,
+      eventId: event.eventId,
+      providerPaymentId: event.providerPaymentId,
+      chargeId: event.chargeId ?? null,
+      stripeAmountCents: event.amountCents,
+      providedMetadata: metadata,
+    });
+    void safeRecordPaymentWebhookEvent({
+      ...logBase,
+      outcome: "config_error",
+      httpStatus: 200,
+      // `companyId` may legitimately be undefined here (that's the
+      // failure mode this branch handles). Forward whatever we have.
+      companyId: companyId ?? null,
+      errorMessage: `kind=manual_allocations_metadata_missing_or_malformed ${orphanRefForLog}`,
+    });
+    return "accepted";
+  }
+
+  // Parse the packed allocations payload. Format set by
+  // createCardIntentWithAllocations: `[["<uuid>","<dollars>"], …]`.
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(allocationsRaw);
+  } catch {
+    logAnomaly("manual_allocations_metadata_invalid_json", {
+      providerId,
+      eventId: event.eventId,
+      providerPaymentId: event.providerPaymentId,
+      chargeId: event.chargeId ?? null,
+      stripeAmountCents: event.amountCents,
+      companyId,
+      customerCompanyId,
+      providedMetadata: metadata,
+    });
+    void safeRecordPaymentWebhookEvent({
+      ...logBase,
+      outcome: "config_error",
+      httpStatus: 200,
+      companyId,
+      errorMessage: `kind=manual_allocations_metadata_invalid_json ${orphanRefForLog} customerCompanyId=${customerCompanyId}`,
+    });
+    return "accepted";
+  }
+
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    logAnomaly("manual_allocations_metadata_empty", {
+      providerId,
+      eventId: event.eventId,
+      providerPaymentId: event.providerPaymentId,
+      chargeId: event.chargeId ?? null,
+      stripeAmountCents: event.amountCents,
+      companyId,
+      customerCompanyId,
+    });
+    void safeRecordPaymentWebhookEvent({
+      ...logBase,
+      outcome: "config_error",
+      httpStatus: 200,
+      companyId,
+      errorMessage: `kind=manual_allocations_metadata_empty ${orphanRefForLog} customerCompanyId=${customerCompanyId}`,
+    });
+    return "accepted";
+  }
+
+  const allocations: Array<{ invoiceId: string; allocatedCents: number }> = [];
+  for (const entry of parsed) {
+    if (
+      !Array.isArray(entry) ||
+      entry.length !== 2 ||
+      typeof entry[0] !== "string" ||
+      typeof entry[1] !== "string"
+    ) {
+      logAnomaly("manual_allocations_metadata_bad_entry", {
+        providerId,
+        eventId: event.eventId,
+        providerPaymentId: event.providerPaymentId,
+        chargeId: event.chargeId ?? null,
+        stripeAmountCents: event.amountCents,
+        companyId,
+        customerCompanyId,
+        entry: entry as unknown,
+      });
+      void safeRecordPaymentWebhookEvent({
+        ...logBase,
+        outcome: "config_error",
+        httpStatus: 200,
+        companyId,
+        errorMessage: `kind=manual_allocations_metadata_bad_entry ${orphanRefForLog} customerCompanyId=${customerCompanyId}`,
+      });
+      return "accepted";
+    }
+    const cents = dollarsStringToCents(entry[1]);
+    if (!Number.isFinite(cents) || cents <= 0) {
+      logAnomaly("manual_allocations_metadata_invalid_amount", {
+        providerId,
+        eventId: event.eventId,
+        providerPaymentId: event.providerPaymentId,
+        chargeId: event.chargeId ?? null,
+        stripeAmountCents: event.amountCents,
+        companyId,
+        customerCompanyId,
+        entry: entry as unknown,
+      });
+      void safeRecordPaymentWebhookEvent({
+        ...logBase,
+        outcome: "config_error",
+        httpStatus: 200,
+        companyId,
+        errorMessage: `kind=manual_allocations_metadata_invalid_amount ${orphanRefForLog} customerCompanyId=${customerCompanyId}`,
+      });
+      return "accepted";
+    }
+    allocations.push({ invoiceId: entry[0], allocatedCents: cents });
+  }
+
+  // Sum guard: the metadata-encoded allocations MUST sum to exactly the
+  // cents Stripe actually charged. If they diverge (e.g. an invoice
+  // balance moved between intent creation and webhook delivery and the
+  // operator paid the original snapshot), we have an "orphan charge":
+  // Stripe took the money but our local ledger cannot safely accept
+  // an allocation. Surface as a config_error rather than write a
+  // partial ledger. Operators recover via `docs/PAYMENTS_OPS_RECOVERY.md`.
+  const sumCents = allocations.reduce((s, a) => s + a.allocatedCents, 0);
+  if (sumCents !== event.amountCents) {
+    // 2026-05-06 PR4 — operator-triage payload. logAnomaly fires the
+    // structured stdout line; safeRecordPaymentWebhookEvent persists a
+    // row to `payment_webhook_events` with `outcome='config_error'`
+    // which lights up the Payments dashboard "events requiring
+    // attention" banner via getTenantWebhookAnomalySummary. Both
+    // payloads MUST carry every field a triage operator needs to find
+    // the Stripe charge and the affected customer / invoices without
+    // a code reader.
+    const orphanContext = {
+      providerId,
+      eventId: event.eventId,
+      providerPaymentId: event.providerPaymentId,
+      chargeId: event.chargeId ?? null,
+      companyId,
+      customerCompanyId,
+      stripeAmountCents: event.amountCents,
+      allocationSumCents: sumCents,
+      diffCents: event.amountCents - sumCents,
+      allocationInvoiceIds: allocations.map((a) => a.invoiceId),
+      prospectivePaymentId,
+    };
+    logAnomaly("manual_allocations_amount_mismatch", orphanContext);
+    void safeRecordPaymentWebhookEvent({
+      ...logBase,
+      outcome: "config_error",
+      httpStatus: 200,
+      companyId,
+      // Structured, grep-friendly key=value pairs. This shows up
+      // verbatim on the dashboard / `psql` row so an operator can
+      // copy-paste the chargeId / providerPaymentId straight into
+      // Stripe Dashboard search.
+      errorMessage: [
+        "kind=manual_allocations_amount_mismatch",
+        `providerPaymentId=${event.providerPaymentId}`,
+        `chargeId=${event.chargeId ?? "null"}`,
+        `customerCompanyId=${customerCompanyId}`,
+        `stripeCents=${event.amountCents}`,
+        `allocationSumCents=${sumCents}`,
+        `diffCents=${event.amountCents - sumCents}`,
+        `invoiceCount=${allocations.length}`,
+      ].join(" "),
+    });
+    return "accepted";
+  }
+
+  // Connect-account attribution. Same fallback pattern as the
+  // single-invoice handler — log + tolerate when missing because the
+  // money already moved.
+  const attribution = await resolveAccountAttributionForWebhook(
+    providerId,
+    event.providerAccountId,
+    companyId,
+  );
+  if (attribution.ok !== true) {
+    logAnomaly("manual_allocations_account_attribution_skipped", {
+      providerId,
+      eventId: event.eventId,
+      reason: attribution.reason,
+      message: attribution.message,
+      companyId,
+      providerAccountId: event.providerAccountId,
+    });
+  }
+
+  let txOutcome: "accepted" | "replay";
+  try {
+    txOutcome = await db.transaction(async (tx): Promise<"accepted" | "replay"> => {
+      // Insert the parent payment row. Same shape as the existing
+      // multi-invoice Checkout Session writer — invoiceId=NULL, the
+      // allocations table holds the breakdown.
+      await tx.insert(paymentsTable).values({
+        id: prospectivePaymentId,
+        companyId,
+        invoiceId: null,
+        amount: centsToDollarsString(event.amountCents),
+        method: "credit",
+        reference: event.chargeId ?? event.providerPaymentId,
+        notes: null,
+        receivedAt: new Date(),
+        paymentType: "payment",
+        providerSource: providerId as "stripe",
+        providerEventId: event.eventId,
+        paymentProviderAccountId:
+          attribution.ok === true ? attribution.paymentProviderAccountId : null,
+        providerAccountId:
+          attribution.ok === true ? attribution.providerAccountId : null,
+      });
+
+      // Reuse the canonical multi-invoice in-tx writer. The `meta`
+      // shape it expects: { companyId, customerCompanyId, invoiceIds,
+      // prospectivePaymentId }. We synthesize invoiceIds from the
+      // parsed allocations.
+      await applyMultiInvoiceAllocationsTx(
+        tx,
+        {
+          companyId,
+          customerCompanyId,
+          invoiceIds: allocations.map((a) => a.invoiceId),
+          prospectivePaymentId,
+        },
+        prospectivePaymentId,
+        allocations,
+      );
+
+      logInfo("manual_allocations_payment_recorded", {
+        providerId,
+        eventId: event.eventId,
+        providerPaymentId: event.providerPaymentId,
+        chargeId: event.chargeId,
+        companyId,
+        paymentId: prospectivePaymentId,
+        invoiceCount: allocations.length,
+        amountCents: event.amountCents,
+      });
+
+      // 2026-05-05 — revoke any outstanding `?t=` access tokens for
+      // every covered invoice (mirrors the existing multi-invoice
+      // Checkout Session path).
+      try {
+        const { revokeInvoiceAccessTokensForInvoices } = await import(
+          "../portal/invoiceAccessTokens"
+        );
+        await revokeInvoiceAccessTokensForInvoices(
+          allocations.map((a) => a.invoiceId),
+        );
+      } catch (revokeErr: unknown) {
+        logAnomaly("invoice_access_token_revoke_failed", {
+          providerId,
+          eventId: event.eventId,
+          message:
+            revokeErr instanceof Error ? revokeErr.message : String(revokeErr),
+        });
+      }
+
+      return "accepted";
+    });
+  } catch (err: unknown) {
+    const klass = classifyWebhookError(err);
+    const errMessage = err instanceof Error ? err.message : String(err);
+    if (klass === "final_replay") {
+      logInfo("manual_allocations_replay_already_ingested", {
+        providerId,
+        eventId: event.eventId,
+        companyId,
+      });
+      void safeRecordPaymentWebhookEvent({
+        ...logBase,
+        outcome: "replayed",
+        httpStatus: 200,
+        companyId,
+      });
+      return "replay";
+    }
+    if (klass === "final_config") {
+      logAnomaly("manual_allocations_config_error", {
+        providerId,
+        eventId: event.eventId,
+        companyId,
+        message: errMessage,
+      });
+      void safeRecordPaymentWebhookEvent({
+        ...logBase,
+        outcome: "config_error",
+        httpStatus: 200,
+        companyId,
+        errorMessage: errMessage,
+      });
+      return "accepted";
+    }
+    // Transient — bubble so the route returns 500 and Stripe retries.
+    throw err;
+  }
+
+  // Post-payment receipt email. Reuses the existing multi-invoice
+  // helper which loads allocations off `payment_allocations` and
+  // renders the unified template. Failures are logged and swallowed so
+  // they cannot bubble to the webhook ACK.
+  try {
+    await emailDispatchService.sendMultiInvoicePaymentReceiptEmail({
+      tenantId: companyId,
+      paymentId: prospectivePaymentId,
+    });
+  } catch (receiptErr: unknown) {
+    logAnomaly("manual_allocations_receipt_send_failed", {
+      providerId,
+      eventId: event.eventId,
+      paymentId: prospectivePaymentId,
+      message:
+        receiptErr instanceof Error
+          ? receiptErr.message
+          : String(receiptErr),
+    });
+  }
+
+  void safeRecordPaymentWebhookEvent({
+    ...logBase,
+    outcome: txOutcome === "replay" ? "replayed" : "accepted",
+    httpStatus: 200,
+    companyId,
+  });
+  return txOutcome;
 }
 
 async function handleMultiInvoicePaymentSucceeded(
@@ -3247,6 +3858,8 @@ async function handleInboundWebhook(
 export const paymentApplicationService = {
   createCheckout,
   createMultiCheckout,
+  // 2026-05-06 — inline-Elements multi-invoice card payment.
+  createCardIntentWithAllocations,
   // 2026-05-03 PR C — saved-card management.
   createPortalSetupIntent,
   setDefaultSavedPaymentMethod,

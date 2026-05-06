@@ -28,6 +28,14 @@ export interface TimeEntryRowCompactProps {
   isLocked: boolean;
   onEdit: () => void;
   onClockOut: () => void;
+  /**
+   * 2026-05-05: when the parent group already labels the bucket
+   * (e.g. the General card header reads "General"), suppress the
+   * per-row category chip to avoid duplicate hierarchy. Default false
+   * preserves the existing job-card behaviour where rows show their
+   * Drive / On-site chip alongside the job header.
+   */
+  hideTypeChip?: boolean;
 }
 
 function formatTime(iso: string | null): string {
@@ -50,6 +58,7 @@ export function TimeEntryRowCompact({
   isLocked,
   onEdit,
   onClockOut,
+  hideTypeChip = false,
 }: TimeEntryRowCompactProps) {
   const category = categoryForType(entry.type);
   const style = CATEGORY_STYLE[category];
@@ -69,15 +78,19 @@ export function TimeEntryRowCompact({
         onClick={onEdit}
         className="flex flex-1 items-center gap-2 text-left"
         title={isLocked ? "Open locked entry" : "Edit entry"}
+        data-testid={`day-entry-compact-edit-${entry.id}`}
       >
-        <span
-          className={cn(
-            "inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold",
-            style.chip,
-          )}
-        >
-          {style.label}
-        </span>
+        {!hideTypeChip && (
+          <span
+            className={cn(
+              "inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold",
+              style.chip,
+            )}
+            data-testid={`day-entry-compact-chip-${entry.id}`}
+          >
+            {style.label}
+          </span>
+        )}
         <span className="font-mono tabular-nums text-foreground/70">
           {formatTime(entry.startAt)} → {formatTime(entry.endAt)}
         </span>

@@ -87,6 +87,18 @@ export interface CreateCheckoutResult {
    * when the staff surface owns the form (not implemented yet).
    */
   publishableKey?: string;
+  /**
+   * 2026-05-05: provider connected-account identifier (Stripe Connect
+   * `acct_...`). When the PaymentIntent is created on a connected
+   * account (Direct Charges model), the customer device MUST load the
+   * provider SDK with `{ stripeAccount }` so the PaymentElement iframe
+   * can fetch the connected-account-scoped intent. Without it the
+   * iframe never resolves, `onReady` never fires, and the Pay button
+   * sits stuck on "Loading payment form…". Present whenever the
+   * provider runs Direct Charges and the SDK mounts on the customer
+   * device (portal).
+   */
+  providerAccountId?: string;
 }
 
 // ============================================================================

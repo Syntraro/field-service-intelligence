@@ -160,11 +160,12 @@ function groupEntries(entries: DayViewEntry[]): JobGroup[] {
       (a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime(),
     );
   }
-  groups.sort((a, b) => {
-    if (a.variant === "general" && b.variant !== "general") return 1;
-    if (b.variant === "general" && a.variant !== "general") return -1;
-    return a.sortKey - b.sortKey;
-  });
+  // 2026-05-05: groups are sorted purely by their earliest entry's
+  // start time. Previously the General/unbillable group was forced
+  // to the bottom regardless of when its time was logged, which
+  // contradicted the chronological reading of the day card and the
+  // timeline rail. Now: 7am general renders before 8am job, etc.
+  groups.sort((a, b) => a.sortKey - b.sortKey);
   return groups;
 }
 

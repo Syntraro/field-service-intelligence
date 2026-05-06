@@ -22,16 +22,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
   ArrowLeft,
   Loader2,
-  CreditCard,
   Download,
   CheckCircle2,
   AlertTriangle,
@@ -185,37 +177,76 @@ interface CheckoutResponse {
   clientToken: string;
   providerPaymentId: string;
   publishableKey?: string;
+  /**
+   * 2026-05-05: connected-account id (Stripe Connect `acct_...`). The
+   * backend creates the PaymentIntent on the tenant's connected
+   * account (Direct Charges); the customer device MUST load Stripe.js
+   * with `{ stripeAccount }` or PaymentElement's iframe sits stuck
+   * trying to fetch the intent on the platform account and `onReady`
+   * never fires. Present on portal source.
+   */
+  providerAccountId?: string;
   prospectivePaymentId: string;
 }
 
 // Cache Stripe.js loads across invoice pages — loading the script once
-// per publishable key is the documented pattern.
+// per (publishable key, stripeAccount) tuple is the documented pattern.
+//
+// 2026-05-05: wrap loadStripe with a `.catch(() => null)` so a script-
+// load failure (CSP block, network outage, ad-blocker) resolves the
+// returned Promise to `null` instead of REJECTING. A rejected Promise
+// here would bubble into <Elements> and surface as Vite's
+// "Failed to load Stripe.js" runtime overlay; the null path renders
+// a graceful "Online payments are temporarily unavailable" message.
+//
+// 2026-05-05 (Connect fix): cache key now includes the connected
+// account id. Different tenants land on different connected accounts;
+// reusing the same Stripe.js instance across them mounts intents on
+// the wrong account and the iframe never resolves.
 const stripePromiseCache = new Map<string, Promise<Stripe | null>>();
-function getStripePromise(publishableKey: string): Promise<Stripe | null> {
-  let p = stripePromiseCache.get(publishableKey);
+function getStripePromise(
+  publishableKey: string,
+  stripeAccount?: string | null,
+): Promise<Stripe | null> {
+  const cacheKey = stripeAccount
+    ? `${publishableKey}|${stripeAccount}`
+    : publishableKey;
+  let p = stripePromiseCache.get(cacheKey);
   if (!p) {
-    p = loadStripe(publishableKey);
-    stripePromiseCache.set(publishableKey, p);
+    p = loadStripe(
+      publishableKey,
+      stripeAccount ? { stripeAccount } : undefined,
+    ).catch((err) => {
+      console.error("[PortalInvoiceDetail] Stripe.js failed to load", err);
+      return null;
+    });
+    stripePromiseCache.set(cacheKey, p);
   }
   return p;
 }
 
 export default function PortalInvoiceDetail() {
   const { invoiceId } = useParams<{ invoiceId: string }>();
-  const [payModalOpen, setPayModalOpen] = useState(false);
   const [intent, setIntent] = useState<CheckoutResponse | null>(null);
   const [intentError, setIntentError] = useState<string | null>(null);
+  // 2026-05-05: Stripe accepted the payment but we haven't yet confirmed
+  // that the canonical webhook writer applied it server-side. Until
+  // either the balance decreases OR the status transitions, we show
+  // "Processing payment…" — NOT "Payment received". Webhook stays the
+  // sole writer (no synchronous-finalize endpoint); the portal just
+  // polls until it sees the writer commit.
+  const [awaitingApplication, setAwaitingApplication] = useState(false);
+  // Snapshot of the balance at the moment Stripe accepted the payment.
+  // If the polled `data.invoice.balance` drops below this value we know
+  // the webhook landed.
+  const [pendingBalanceCents, setPendingBalanceCents] = useState<number | null>(null);
+  // 30-second timeout. After this, the customer sees a "your invoice
+  // will update once Stripe confirms" message instead of a stuck
+  // spinner. Common cause: dev environment without Stripe CLI
+  // forwarding (in production the webhook usually lands within ~3s).
+  const [applicationTimedOut, setApplicationTimedOut] = useState(false);
   const [justPaid, setJustPaid] = useState(false);
   const queryClient = useQueryClient();
-
-  // 2026-05-03 PR 3: support `?pay=1` deep-link from the list page's
-  // per-row Pay Now button. We auto-open the pay modal once the
-  // invoice loads (and is payable). One-shot — clearing the query
-  // string isn't necessary because wouter doesn't re-fire the effect
-  // on identical-state renders.
-  const autoOpenPay =
-    typeof window !== "undefined" &&
-    new URLSearchParams(window.location.search).get("pay") === "1";
 
   // 2026-05-05: invoice-scoped access token from the Pay Invoice email
   // link (`?t=…`). When present, the customer can view + pay this ONE
@@ -268,64 +299,107 @@ export default function PortalInvoiceDetail() {
     },
   });
 
-  const openPayModal = () => {
-    setIntent(null);
-    setIntentError(null);
-    setPayModalOpen(true);
-    createIntentMutation.mutate();
-  };
-
-  const closePayModal = () => {
-    setPayModalOpen(false);
-    setIntent(null);
-    setIntentError(null);
-  };
-
-  // When Stripe confirms inline, the webhook has NOT necessarily
-  // finished yet — refetch on an interval briefly so the UI picks up
-  // the balance update as soon as the canonical writer commits.
+  // 2026-05-05: Stripe-accepted → backend-applied polling. After
+  // confirmPayment succeeds the canonical webhook writer is what
+  // actually creates the payment row, allocation, balance update,
+  // status transition, AND receipt email. Without webhook delivery
+  // the portal must NOT pretend "Payment received" — so we poll the
+  // invoice every 1.5s until either the balance decreases (or the
+  // status transitions to paid / partial_paid). 30-second cap so a
+  // dev environment without Stripe CLI forwarding doesn't spin
+  // forever — see `applicationTimedOut` branch in the panel below.
   useEffect(() => {
-    if (!justPaid) return;
-    const timers: number[] = [];
-    [1500, 3500, 7500].forEach((delay) => {
-      timers.push(
-        window.setTimeout(() => {
-          queryClient.invalidateQueries({ queryKey: invoiceQueryKey });
-        }, delay),
-      );
-    });
-    return () => timers.forEach((t) => clearTimeout(t));
-  }, [justPaid, queryClient, invoiceId]);
+    if (!awaitingApplication) return;
+    const POLL_MS = 1500;
+    const TIMEOUT_MS = 30_000;
+    const start = Date.now();
+    const timer = window.setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: invoiceQueryKey });
+      if (Date.now() - start >= TIMEOUT_MS) {
+        setApplicationTimedOut(true);
+        window.clearInterval(timer);
+      }
+    }, POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [awaitingApplication, queryClient, invoiceId, accessToken]);
 
-  // Auto-open pay modal when the page lands with `?pay=1` AND the
-  // invoice has loaded into a payable state. We trigger via the same
-  // openPayModal path as the manual button so every guard stays in
-  // one place. Re-runs only when the underlying invoice id or
-  // payments-enabled flag changes (the boolean dep keeps it idempotent
-  // on the same load).
+  // Watch for the webhook's effect to land. The `data` from useQuery
+  // refreshes on each invalidate from the polling effect above; when
+  // the balance has dropped below `pendingBalanceCents` we know the
+  // canonical writer committed. Status transition is a secondary
+  // signal for the rare case where the new balance equals the old
+  // one (e.g., a refund/adjustment race).
+  useEffect(() => {
+    if (!awaitingApplication) return;
+    if (pendingBalanceCents == null) return;
+    const inv = data?.invoice;
+    if (!inv) return;
+    const currentCents = Math.round(parseFloat(inv.balance || "0") * 100);
+    const statusTransitioned =
+      inv.status === "paid" || inv.status === "partial_paid";
+    if (currentCents < pendingBalanceCents || statusTransitioned) {
+      setJustPaid(true);
+      setAwaitingApplication(false);
+      setApplicationTimedOut(false);
+    }
+  }, [awaitingApplication, pendingBalanceCents, data?.invoice?.balance, data?.invoice?.status]);
+
+  // 2026-05-05 redesign: the Pay flow no longer hides behind a modal.
+  // The right-side payment panel renders inline as soon as the invoice
+  // loads into a payable state, so we mint the PaymentIntent eagerly
+  // here. Guarded against re-firing while a request is in flight, while
+  // an intent already exists, while a previous attempt errored, and
+  // after a successful payment.
   const dataInvoiceStatus = data?.invoice.status;
   const dataPaymentsEnabled = data?.paymentsEnabled;
   const dataBalance = data?.invoice.balance;
-  useEffect(() => {
-    if (!autoOpenPay) return;
-    if (!dataInvoiceStatus) return;
-    if (!dataPaymentsEnabled) return;
-    const hasBalance = parseFloat(dataBalance ?? "0") > 0;
-    const isPayable =
-      dataInvoiceStatus === "awaiting_payment" ||
+  const isPayableForIntent =
+    !!dataInvoiceStatus &&
+    !!dataPaymentsEnabled &&
+    parseFloat(dataBalance ?? "0") > 0 &&
+    (dataInvoiceStatus === "awaiting_payment" ||
       dataInvoiceStatus === "sent" ||
-      dataInvoiceStatus === "partial_paid";
-    if (hasBalance && isPayable && !payModalOpen) {
-      openPayModal();
-    }
-    // openPayModal closes over stable state setters; safe to omit.
+      dataInvoiceStatus === "partial_paid");
+  useEffect(() => {
+    if (!isPayableForIntent) return;
+    if (intent) return;
+    if (intentError) return;
+    if (createIntentMutation.isPending) return;
+    if (justPaid) return;
+    createIntentMutation.mutate();
+    // createIntentMutation is referentially stable from useMutation;
+    // omitted from deps so we don't re-fire on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoOpenPay, dataInvoiceStatus, dataPaymentsEnabled, dataBalance]);
+  }, [isPayableForIntent, intent, intentError, justPaid]);
 
   const stripePromise = useMemo(
-    () => (intent?.publishableKey ? getStripePromise(intent.publishableKey) : null),
-    [intent?.publishableKey],
+    () =>
+      intent?.publishableKey
+        ? getStripePromise(intent.publishableKey, intent.providerAccountId ?? null)
+        : null,
+    [intent?.publishableKey, intent?.providerAccountId],
   );
+
+  // 2026-05-05: track whether Stripe.js actually loaded. The promise
+  // returned by `getStripePromise` resolves to `null` on script-load
+  // failure (see catch wrap above). Without this state the modal's
+  // ternary mounts <Elements stripe={null}>, which Stripe throws on.
+  // We observe the resolved value and surface a clean error UI.
+  const [stripeLoadFailed, setStripeLoadFailed] = useState(false);
+  useEffect(() => {
+    if (!stripePromise) {
+      setStripeLoadFailed(false);
+      return;
+    }
+    setStripeLoadFailed(false);
+    let cancelled = false;
+    stripePromise.then((stripe) => {
+      if (!cancelled && !stripe) setStripeLoadFailed(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [stripePromise]);
 
   if (isLoading) {
     return (
@@ -413,8 +487,21 @@ export default function PortalInvoiceDetail() {
         </Button>
       )}
 
-      {/* ── Hero card — Balance Due is the emphasis. ──────────────── */}
-      <Card className="overflow-hidden">
+      {/* 2026-05-05 redesign: two-column layout. Left column carries
+          the invoice itself (hero, status banner, line items, totals,
+          history, notes); the right column hosts a sticky payment
+          panel that mounts Stripe Elements directly — no modal step.
+          Below `lg` the columns stack and the panel renders inline
+          beneath the invoice content. */}
+      <div className="grid lg:grid-cols-3 gap-4 lg:items-start">
+        <div className="lg:col-span-2 space-y-4">
+
+      {/* ── Top card — invoice identity + dates + scope + amount due.
+           2026-05-05 redesign: replaces the prior dual-emphasis hero
+           (Total + giant Balance Due). The right-side payment panel
+           is the single source of "balance due" visual emphasis;
+           this card carries identity and the billable summary. */}
+      <Card className="overflow-hidden" data-testid="portal-invoice-top-card">
         <CardHeader className="pb-3">
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div className="min-w-0">
@@ -423,72 +510,68 @@ export default function PortalInvoiceDetail() {
               </CardTitle>
               <p className="text-sm text-slate-500 mt-1">
                 Issued {formatDate(invoice.issueDate)}
-                {dueLabel && kind !== "paid" ? ` · ${dueLabel}` : ""}
+                {invoice.dueDate ? ` · Due ${formatDate(invoice.dueDate)}` : ""}
               </p>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <span
-                className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${badge.className}`}
+            <Button
+              variant="outline"
+              size="sm"
+              asChild
+              className="h-9 shrink-0"
+              data-testid="portal-download-pdf"
+            >
+              <a
+                href={`/api/portal/invoices/${invoice.id}/pdf${tokenQuery}`}
+                target="_blank"
+                rel="noopener"
               >
-                {badge.label}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                asChild
-                className="h-9"
-                data-testid="portal-download-pdf"
-              >
-                <a
-                  href={`/api/portal/invoices/${invoice.id}/pdf${tokenQuery}`}
-                  target="_blank"
-                  rel="noopener"
-                >
-                  <Download className="h-4 w-4 mr-1" /> PDF
-                </a>
-              </Button>
-            </div>
+                <Download className="h-4 w-4 mr-1" /> PDF
+              </a>
+            </Button>
           </div>
         </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 gap-4 items-end">
+        <CardContent className="space-y-4">
+          {/* Scope of Work — promoted up from the legacy Notes/Terms
+               block. Customers want context for "what am I paying for"
+               at the top, not at the bottom of the page. Gated by the
+               same `showJobDescription` policy that previously drove
+               the Notes block. */}
+          {invoice.workDescription && policy.showJobDescription && (
             <div>
-              <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">Total</p>
-              <p className="text-lg font-semibold text-slate-900 tabular-nums">
-                {formatCurrency(invoice.total, invoice.currency)}
+              <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
+                Scope of Work
+              </p>
+              <p
+                className="text-sm text-slate-700 mt-1 whitespace-pre-wrap leading-relaxed"
+                data-testid="portal-scope-of-work"
+              >
+                {invoice.workDescription}
               </p>
             </div>
-            {invoice.showBalance && (
-              <div>
-                <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">Balance Due</p>
-                <p
-                  className={`text-3xl font-bold tabular-nums leading-tight ${
-                    kind === "past_due"
-                      ? "text-red-700"
-                      : kind === "due_soon"
-                        ? "text-orange-700"
-                        : "text-slate-900"
-                  }`}
-                  data-testid="portal-balance-due"
-                >
-                  {formatCurrency(invoice.balance, invoice.currency)}
-                </p>
-              </div>
-            )}
-          </div>
+          )}
 
-          {/* Inline Pay CTA on desktop (hidden on mobile — sticky bar covers it). */}
-          {canPayNow && (
-            <div className="hidden sm:block mt-5">
-              <Button
-                onClick={openPayModal}
-                className="w-full h-12 text-base bg-[#76B054] hover:bg-[#6aa147] text-white"
-                size="lg"
-                data-testid="portal-pay-now"
+          {/* Amount Due — single line. Big balance treatment lives in
+               the right-side payment panel; here it's just informational
+               so a customer scanning the top of the page sees what they
+               owe. Hidden when the tenant's display policy hides the
+               balance on customer-facing PDFs/portal. */}
+          {invoice.showBalance && (
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-xs uppercase tracking-wide text-slate-500 font-medium">
+                Amount Due
+              </span>
+              <span
+                className={`text-lg font-semibold tabular-nums ${
+                  kind === "past_due"
+                    ? "text-red-700"
+                    : kind === "due_soon"
+                      ? "text-orange-700"
+                      : "text-slate-900"
+                }`}
+                data-testid="portal-amount-due"
               >
-                <CreditCard className="h-5 w-5 mr-2" />
-                Pay {formatCurrency(invoice.balance, invoice.currency)}
-              </Button>
+                {formatCurrency(invoice.balance, invoice.currency)}
+              </span>
             </div>
           )}
         </CardContent>
@@ -566,8 +649,13 @@ export default function PortalInvoiceDetail() {
         </Card>
       )}
 
-      {/* ── Totals ──────────────────────────────────────────────── */}
-      <Card>
+      {/* ── Compact totals block.
+           2026-05-05 redesign: was a separate Card; now a slim
+           summary that lives at the bottom of the line items. The
+           balance row only renders when it differs from the total
+           (i.e., a partial payment has been applied) — repeating
+           "Total = Balance Due" added noise without information. */}
+      <Card data-testid="portal-totals">
         <CardContent className="pt-6 space-y-2">
           <TotalsRow
             label="Subtotal"
@@ -586,20 +674,28 @@ export default function PortalInvoiceDetail() {
           ) : null}
           <div className="flex justify-between font-semibold text-base border-t pt-2.5">
             <span>Total</span>
-            <span className="tabular-nums">{formatCurrency(invoice.total, invoice.currency)}</span>
+            <span className="tabular-nums">
+              {formatCurrency(invoice.total, invoice.currency)}
+            </span>
           </div>
           {parseFloat(invoice.amountPaid || "0") > 0 && (
             <div className="flex justify-between text-sm text-emerald-700">
               <span>Paid</span>
-              <span className="tabular-nums">-{formatCurrency(invoice.amountPaid, invoice.currency)}</span>
+              <span className="tabular-nums">
+                -{formatCurrency(invoice.amountPaid, invoice.currency)}
+              </span>
             </div>
           )}
-          {invoice.showBalance && hasBalance && (
-            <div className="flex justify-between font-semibold text-base">
-              <span>Balance Due</span>
-              <span className="tabular-nums">{formatCurrency(invoice.balance, invoice.currency)}</span>
-            </div>
-          )}
+          {invoice.showBalance &&
+            hasBalance &&
+            parseFloat(invoice.amountPaid || "0") > 0 && (
+              <div className="flex justify-between font-semibold text-base">
+                <span>Balance Due</span>
+                <span className="tabular-nums">
+                  {formatCurrency(invoice.balance, invoice.currency)}
+                </span>
+              </div>
+            )}
         </CardContent>
       </Card>
 
@@ -679,14 +775,12 @@ export default function PortalInvoiceDetail() {
       )}
 
       {/* ── Notes / Terms ─────────────────────────────────────────
-          2026-05-05: blocks are gated by the resolved displayPolicy.
-          policy.clientMessage is null when the tenant has the message
-          block off OR when the per-invoice text is empty. notesCustomer
-          (QBO CustomerMemo) is rendered as before — it's a separate
-          field and not part of the new tenant Client-Message toggle. */}
-      {(policy.clientMessage ||
-        invoice.notesCustomer ||
-        (invoice.workDescription && policy.showJobDescription)) && (
+          2026-05-05 redesign: `Scope of work` (workDescription) moved
+          UP to the top card so a customer scanning the page sees what
+          they're paying for first. This block now carries the
+          remaining customer-facing copy: tenant Client-Message and
+          QBO CustomerMemo notes. */}
+      {(policy.clientMessage || invoice.notesCustomer) && (
         <Card>
           <CardContent className="pt-6 space-y-3">
             {policy.clientMessage && (
@@ -695,93 +789,189 @@ export default function PortalInvoiceDetail() {
             {invoice.notesCustomer && (
               <NotesBlock label="Notes" text={invoice.notesCustomer} />
             )}
-            {invoice.workDescription && policy.showJobDescription && (
-              <NotesBlock label="Scope of work" text={invoice.workDescription} />
-            )}
           </CardContent>
         </Card>
       )}
 
-      {/* ── Sticky mobile Pay CTA ──────────────────────────────────
-          Sits above the PortalLayout trust strip + bottom nav. The
-          parent already sets `pb-24 sm:pb-4` on the content container
-          so nothing scrolls underneath the bar. */}
-      {canPayNow && (
-        <div
-          className="fixed bottom-[112px] left-0 right-0 z-30 sm:hidden px-4 pb-2 pt-3 bg-gradient-to-t from-white via-white to-transparent"
-          data-testid="portal-pay-now-sticky"
-        >
-          <Button
-            onClick={openPayModal}
-            className="w-full h-12 text-base bg-[#76B054] hover:bg-[#6aa147] text-white shadow-lg"
-            size="lg"
-          >
-            <CreditCard className="h-5 w-5 mr-2" />
-            Pay {formatCurrency(invoice.balance, invoice.currency)}
-          </Button>
-        </div>
-      )}
+        </div>{/* /lg:col-span-2 (left column) */}
 
-      {/* ── Payment modal ──────────────────────────────────────── */}
-      <Dialog open={payModalOpen} onOpenChange={(open) => (open ? setPayModalOpen(true) : closePayModal())}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Pay invoice</DialogTitle>
-            <DialogDescription>
-              Paying {formatCurrency(invoice.balance, invoice.currency)} for invoice #
-              {invoice.invoiceNumber || "—"}.
-            </DialogDescription>
-          </DialogHeader>
-
-          {justPaid ? (
-            <div className="py-6 text-center space-y-3" data-testid="portal-pay-success">
-              <div className="mx-auto h-12 w-12 rounded-full bg-emerald-50 flex items-center justify-center">
-                <CheckCircle2 className="h-7 w-7 text-emerald-600" />
-              </div>
-              <p className="font-semibold text-lg text-slate-900">Payment received</p>
-              <p className="text-sm text-slate-600 leading-relaxed">
-                Your balance will update here once processing completes. A receipt will be emailed to you.
-              </p>
-              <Button variant="outline" onClick={closePayModal} className="h-10">
-                Close
-              </Button>
+        {/* ── Right column: sticky inline payment panel ───────────────
+             Renders only when:
+               - the invoice is in a payable state (canPayNow), OR
+               - we're showing the post-payment success card.
+             Mounts on `lg+` as a sticky sidebar; on smaller breakpoints
+             it stacks below the invoice content. */}
+        {(canPayNow || justPaid) && (
+          <aside className="lg:col-span-1" data-testid="portal-payment-panel">
+            <div className="lg:sticky lg:top-4">
+              <Card className="overflow-hidden">
+                <CardHeader className="pb-3">
+                  {/* 2026-05-05 redesign: slim header. Title is just
+                       "Payment", and the amount sits as a single-line
+                       "Amount due: $XX" — no large balance hero
+                       treatment (the top card already shows the
+                       Amount Due line, no need to repeat in big type). */}
+                  <CardTitle className="text-base">Payment</CardTitle>
+                  {invoice.showBalance && (
+                    <div
+                      className="flex items-baseline justify-between gap-2 pt-1"
+                      data-testid="portal-payment-panel-amount-due"
+                    >
+                      <span className="text-xs uppercase tracking-wide text-slate-500 font-medium">
+                        Amount Due
+                      </span>
+                      <span className="text-base font-semibold tabular-nums text-slate-900">
+                        {formatCurrency(invoice.balance, invoice.currency)}
+                      </span>
+                    </div>
+                  )}
+                </CardHeader>
+                <CardContent>
+                  {justPaid ? (
+                    <div
+                      className="text-center space-y-3 py-2"
+                      data-testid="portal-pay-success"
+                    >
+                      <div className="mx-auto h-12 w-12 rounded-full bg-emerald-50 flex items-center justify-center">
+                        <CheckCircle2 className="h-7 w-7 text-emerald-600" />
+                      </div>
+                      <p className="font-semibold text-slate-900">
+                        Payment received
+                      </p>
+                      <p className="text-sm text-slate-600 leading-relaxed">
+                        A receipt will be emailed to you shortly.
+                      </p>
+                    </div>
+                  ) : applicationTimedOut ? (
+                    // 2026-05-05: webhook hasn't landed within 30s.
+                    // Stripe definitely accepted the payment (we got
+                    // here from a successful confirmPayment), but our
+                    // backend hasn't recorded it yet. The customer
+                    // should NOT see "Payment received" until the
+                    // canonical writer commits — but we also can't
+                    // leave them spinning forever. Surface an honest
+                    // "still processing" state with a hint.
+                    <div
+                      className="text-center space-y-3 py-2"
+                      data-testid="portal-pay-awaiting-timeout"
+                    >
+                      <div className="mx-auto h-12 w-12 rounded-full bg-amber-50 flex items-center justify-center">
+                        <AlertTriangle className="h-6 w-6 text-amber-600" />
+                      </div>
+                      <p className="font-semibold text-slate-900">
+                        Payment is still processing
+                      </p>
+                      <p className="text-sm text-slate-600 leading-relaxed">
+                        Your invoice will update once Stripe confirms it. If
+                        you don't see a receipt within a few minutes, please
+                        contact us — we can confirm directly from the
+                        payment processor.
+                      </p>
+                    </div>
+                  ) : awaitingApplication ? (
+                    // 2026-05-05: Stripe accepted the payment, polling
+                    // for the canonical writer (webhook) to commit.
+                    <div
+                      className="text-center space-y-3 py-2"
+                      data-testid="portal-pay-awaiting"
+                    >
+                      <Loader2 className="h-6 w-6 animate-spin text-slate-400 mx-auto" />
+                      <p className="font-semibold text-slate-900">
+                        Processing your payment…
+                      </p>
+                      <p className="text-sm text-slate-600 leading-relaxed">
+                        Stripe accepted your card. We're confirming the
+                        payment with our records now — this usually takes
+                        a few seconds.
+                      </p>
+                    </div>
+                  ) : intentError ? (
+                    <div className="space-y-3" data-testid="portal-intent-error">
+                      <p className="text-sm text-red-600 leading-snug">
+                        {intentError}
+                      </p>
+                      <Button
+                        variant="outline"
+                        className="w-full h-10"
+                        onClick={() => {
+                          setIntent(null);
+                          setIntentError(null);
+                          createIntentMutation.mutate();
+                        }}
+                      >
+                        Try again
+                      </Button>
+                    </div>
+                  ) : stripeLoadFailed ? (
+                    <div
+                      className="flex flex-col items-center gap-3 text-center py-2"
+                      data-testid="portal-stripe-load-failed"
+                    >
+                      <div className="mx-auto h-12 w-12 rounded-full bg-amber-50 flex items-center justify-center">
+                        <AlertTriangle className="h-6 w-6 text-amber-600" />
+                      </div>
+                      <p className="font-semibold text-slate-900">
+                        Online payments are temporarily unavailable.
+                      </p>
+                      <p className="text-sm text-slate-600 leading-relaxed">
+                        We couldn't load the secure payment form. Please try
+                        again later, or reply to your invoice email and we'll
+                        arrange another way to pay.
+                      </p>
+                    </div>
+                  ) : !intent || createIntentMutation.isPending ? (
+                    <div
+                      className="flex flex-col items-center gap-2 py-6"
+                      data-testid="portal-payment-panel-loading"
+                    >
+                      <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+                      <p className="text-sm text-slate-500">
+                        Preparing secure payment…
+                      </p>
+                    </div>
+                  ) : stripePromise ? (
+                    <Elements
+                      stripe={stripePromise}
+                      options={{ clientSecret: intent.clientToken }}
+                    >
+                      <PortalPayInvoiceForm
+                        amountLabel={`Pay ${formatCurrency(invoice.balance, invoice.currency)}`}
+                        onSucceeded={() => {
+                          // 2026-05-05: Stripe accepted the payment —
+                          // but the backend hasn't applied it yet. The
+                          // canonical webhook writer creates the
+                          // payment row + allocation + balance update
+                          // + receipt email. Snapshot the current
+                          // balance and start polling; the panel
+                          // shows "Processing payment…" until the
+                          // poll observes the writer commit.
+                          const cents = Math.round(
+                            parseFloat(invoice.balance || "0") * 100,
+                          );
+                          setPendingBalanceCents(cents);
+                          setApplicationTimedOut(false);
+                          setAwaitingApplication(true);
+                          queryClient.invalidateQueries({
+                            queryKey: invoiceQueryKey,
+                          });
+                        }}
+                        onRetry={() => {
+                          // Reset intent so the auto-create-intent
+                          // useEffect re-mints. Useful when Stripe.js
+                          // mounts the script but PaymentElement's
+                          // iframe never reports onReady within 10s.
+                          setIntent(null);
+                          setIntentError(null);
+                        }}
+                      />
+                    </Elements>
+                  ) : null}
+                </CardContent>
+              </Card>
             </div>
-          ) : createIntentMutation.isPending || !intent ? (
-            <div className="py-6 flex flex-col items-center gap-2">
-              {intentError ? (
-                <>
-                  <p className="text-sm text-red-600" data-testid="portal-intent-error">
-                    {intentError}
-                  </p>
-                  <Button variant="outline" onClick={closePayModal} className="h-10">
-                    Close
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
-                  <p className="text-sm text-slate-500">Preparing secure payment…</p>
-                </>
-              )}
-            </div>
-          ) : (
-            stripePromise && (
-              <Elements
-                stripe={stripePromise}
-                options={{ clientSecret: intent.clientToken }}
-              >
-                <PortalPayInvoiceForm
-                  onSucceeded={() => {
-                    setJustPaid(true);
-                    queryClient.invalidateQueries({ queryKey: invoiceQueryKey });
-                  }}
-                  onCancel={closePayModal}
-                />
-              </Elements>
-            )
-          )}
-        </DialogContent>
-      </Dialog>
+          </aside>
+        )}
+      </div>{/* /grid */}
     </div>
   );
 }

@@ -15,8 +15,10 @@
 
 const FALLBACK_BASE = "http://localhost:5000";
 
-/** Resolve the configured app base URL. Mirrors `portal.ts` resolution. */
-function appBase(): string {
+/** Resolve the configured app base URL. Mirrors `portal.ts` resolution.
+ *  2026-05-05: exported so the magic-link route in `portal.ts` can use the
+ *  canonical resolver instead of its own buggy local constant. */
+export function appBase(): string {
   if (process.env.APP_URL) return process.env.APP_URL;
   if (process.env.BASE_URL) return process.env.BASE_URL;
   if (process.env.REPLIT_DEV_DOMAIN) {

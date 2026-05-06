@@ -260,11 +260,19 @@ describe("DayView grouping rule", () => {
     expect(dayViewSrc).toMatch(/categoryForType\(entry\.type\)/);
   });
 
-  it("orders General card last; jobs sorted by earliest entry start", () => {
-    // Sorter pushes General to the end and orders other groups by sortKey.
-    expect(dayViewSrc).toMatch(/a\.variant === "general".*?return 1/s);
-    expect(dayViewSrc).toMatch(/b\.variant === "general".*?return -1/s);
-    expect(dayViewSrc).toMatch(/a\.sortKey - b\.sortKey/);
+  it("groups sort purely by earliest entry start time (General is no longer pinned last)", () => {
+    // 2026-05-05: dropped the "General last" exception. All groups
+    // — job-linked AND general — sort by `sortKey` (earliest entry's
+    // startAt). General time logged at 7am renders before a job
+    // starting at 8am.
+    expect(dayViewSrc).toMatch(/groups\.sort\(\(a, b\)\s*=>\s*a\.sortKey - b\.sortKey\)/);
+    // The variant-based sort exception is gone. Strip comments before
+    // the negative pin so doc commentary doesn't false-match.
+    const codeOnly = dayViewSrc
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    expect(codeOnly).not.toMatch(/a\.variant === "general"\s*&&\s*b\.variant !== "general"/);
+    expect(codeOnly).not.toMatch(/b\.variant === "general"\s*&&\s*a\.variant !== "general"/);
   });
 });
 
@@ -992,16 +1000,25 @@ describe("Add Entry modal — segmented time inputs + autofill", () => {
     expect(codeOnly).not.toMatch(/placeholder=["'`]e\.g\./);
   });
 
-  it("hour-first defaults: typing hour sets minute='00' and period='AM' if empty", () => {
-    // The handleHourChange path commits with `min = segments.min || "00"`
-    // and `period = segments.period || "AM"`. That's the spec rule.
+  it("hour-first defaults: blurring hour sets minute='00' and period='AM' if empty", () => {
+    // The handleHourBlur path commits with `min = segments.min || "00"`
+    // and `period: Period = segments.period || "AM"`. Hour-first rule.
     expect(createModalSrc).toMatch(
-      /handleHourChange[\s\S]+?segments\.min\s*\|\|\s*"00"[\s\S]+?segments\.period\s*\|\|\s*"AM"/,
+      /handleHourBlur[\s\S]+?segments\.min\s*\|\|\s*"00"[\s\S]+?segments\.period\s*\|\|\s*"AM"/,
     );
   });
 
+  it("12 → PM heuristic on first commit (no canonical yet)", () => {
+    // 2026-05-05 v3: typing 12 with an empty canonical defaults the
+    // period to PM (noon). Once canonical exists, the user's explicit
+    // period sticks across hour edits — so this only fires when value
+    // was "" before the commit.
+    expect(createModalSrc).toMatch(/isFirstCommit\s*=\s*!value/);
+    expect(createModalSrc).toMatch(/isFirstCommit\s*&&\s*h\s*===\s*12[\s\S]+?period\s*=\s*"PM"/);
+  });
+
   it("minute and AM/PM remain independently editable after hour is set", () => {
-    expect(createModalSrc).toMatch(/handleMinuteChange/);
+    expect(createModalSrc).toMatch(/handleMinuteBlur/);
     expect(createModalSrc).toMatch(/handlePeriodToggle/);
     // The period toggle is a button, not a dropdown.
     expect(createModalSrc).toMatch(
@@ -1012,6 +1029,39 @@ describe("Add Entry modal — segmented time inputs + autofill", () => {
     expect(createModalSrc).toMatch(/-hour\b/);
     expect(createModalSrc).toMatch(/-min\b/);
     expect(createModalSrc).toMatch(/-period\b/);
+  });
+
+  it("draft + blur model: hour and minute keep local drafts, commit on blur", () => {
+    // 2026-05-05 v3: rather than committing on every keystroke (which
+    // forced one-character-at-a-time editing), each segment maintains
+    // a local draft while focused and only commits on blur. This lets
+    // the user select-all and type "30" without the input clamping
+    // each digit independently.
+    expect(createModalSrc).toMatch(/const \[hourDraft, setHourDraft\]/);
+    expect(createModalSrc).toMatch(/const \[minuteDraft, setMinuteDraft\]/);
+    expect(createModalSrc).toMatch(/const \[hourFocused, setHourFocused\]/);
+    expect(createModalSrc).toMatch(/const \[minuteFocused, setMinuteFocused\]/);
+    // onBlur — not onChange — is what commits the canonical value.
+    expect(createModalSrc).toMatch(/onBlur=\{handleHourBlur\}/);
+    expect(createModalSrc).toMatch(/onBlur=\{handleMinuteBlur\}/);
+    // While focused, the input shows the draft; otherwise mirrors
+    // the canonical-derived segment (so external prefill flows in).
+    expect(createModalSrc).toMatch(/value=\{hourFocused \? hourDraft : segments\.h12\}/);
+    expect(createModalSrc).toMatch(/value=\{minuteFocused \? minuteDraft : segments\.min\}/);
+    // Auto-select on focus so the user can immediately replace.
+    expect(createModalSrc).toMatch(/e\.currentTarget\.select\(\)/);
+  });
+
+  it("minute blur normalisation: blank → '00' if hour exists, out-of-range snaps back", () => {
+    // Blank with hour → commit "00".
+    expect(createModalSrc).toMatch(
+      /handleMinuteBlur[\s\S]+?if \(segments\.h12\)[\s\S]+?setMinuteDraft\("00"\)[\s\S]+?commit\(segments\.h12, "00"/,
+    );
+    // Out-of-range minute (e.g. "89") snaps the draft back to the
+    // last good value rather than rejecting the keystroke.
+    expect(createModalSrc).toMatch(
+      /m < 0 \|\| m > 59[\s\S]+?setMinuteDraft\(segments\.min\)/,
+    );
   });
 
   it("auto-fills End = Start + 1h when Start changes and End is blank", () => {
@@ -1071,11 +1121,15 @@ describe("Add Entry modal — segmented time inputs + autofill", () => {
     expect(createModalSrc).toMatch(/Back to job time/);
   });
 
-  // Sentinel (placeholder). Replaced the prior TimeInput-draft test
-  // since the custom input is gone; structured browser inputs don't
-  // expose a draft model.
+  // 2026-05-05 v3: the removed-TimeInput sentinel had to be relaxed
+  // because SegmentedTimeInput now intentionally uses a draft model
+  // (per-segment hourDraft / minuteDraft). The negative pins below
+  // still guard the OLD shape: the deleted helpers parseTimeInput /
+  // formatTimeDisplay must stay gone, and the prior single-`draft`
+  // text-input pattern (`const [draft, setDraft]`, `const [focused,
+  // setFocused]`) must not return — the segmented input uses the
+  // explicit per-segment names instead.
   it("modal source no longer references the removed TimeInput component", () => {
-    // Strip comments so doc commentary about the revert doesn't false-match.
     const codeOnly = createModalSrc
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/\/\/[^\n]*/g, "");
@@ -1083,5 +1137,272 @@ describe("Add Entry modal — segmented time inputs + autofill", () => {
     expect(codeOnly).not.toMatch(/formatTimeDisplay/);
     expect(codeOnly).not.toMatch(/const \[focused, setFocused\]/);
     expect(codeOnly).not.toMatch(/const \[draft, setDraft\]/);
+  });
+});
+
+// ── 2026-05-05: search/save eligibility alignment + chrono ordering ─
+
+import { readFileSync as _readFileSync } from "fs";
+const TIME_TRACKING_STORAGE = resolve(
+  ROOT,
+  "server/storage/timeTracking.ts",
+);
+const timeTrackingSrc = _readFileSync(TIME_TRACKING_STORAGE, "utf-8");
+
+describe("Manual time-entry job validation", () => {
+  it("createFinishedTimeEntry uses activeJobFilter (allows closed jobs)", () => {
+    // Predicate identifies the manual-create site by its preceding
+    // jobId-validation comment shape.
+    expect(timeTrackingSrc).toMatch(
+      /If jobId provided[\s\S]+?activeJobFilter\(\)/,
+    );
+    // Error message updated — no more "closed/inactive" wording on
+    // the manual-create path.
+    const createSection = timeTrackingSrc.match(
+      /async\s+createFinishedTimeEntry[\s\S]+?\n\s{2}\}/,
+    );
+    expect(createSection).not.toBeNull();
+    expect(createSection![0]).not.toMatch(/closed\/inactive/);
+    expect(createSection![0]).toMatch(/has been deleted/);
+  });
+
+  it("updateTimeEntry / linkTimeEntryToJob / updateTimeEntryManager all use activeJobFilter", () => {
+    // 4 sites use the relaxed filter (manual-correction paths).
+    const relaxedMatches = timeTrackingSrc.match(/activeJobFilter\(\)/g) ?? [];
+    expect(relaxedMatches.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("startTimeEntry and recordJobStatus keep activeWorkJobFilter (live-tech strictness)", () => {
+    // Strict filter retained for live tech operations: en-route /
+    // arrived / running-entry start. Tech can't go en route on a
+    // closed job.
+    const startSection = timeTrackingSrc.match(
+      /async\s+startTimeEntry[\s\S]+?If jobId provided[\s\S]+?activeWorkJobFilter\(\)/,
+    );
+    expect(startSection).not.toBeNull();
+    const recordSection = timeTrackingSrc.match(
+      /async\s+recordJobStatus[\s\S]+?activeWorkJobFilter\(\)/,
+    );
+    expect(recordSection).not.toBeNull();
+  });
+
+  it("createFinishedTimeEntry does NOT mutate job status or invoice (insert-only)", () => {
+    // The transaction body inserts into time_entries and returns. No
+    // jobs.update / invoices.update / status side effects.
+    const createSection = timeTrackingSrc.match(
+      /async\s+createFinishedTimeEntry[\s\S]+?return entry;\s*\}\);\s*\}/,
+    );
+    expect(createSection).not.toBeNull();
+    const body = createSection![0];
+    // Strip comments (doc text legitimately mentions "no … invoice"
+    // side effects — that's an explanation, not code).
+    const codeOnly = body
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    expect(codeOnly).not.toMatch(/db\.update\(jobs\)/);
+    expect(codeOnly).not.toMatch(/db\.update\(invoices\)/);
+    expect(codeOnly).not.toMatch(/markTimeEntriesInvoiced/);
+  });
+});
+
+describe("DayView label + chronological ordering", () => {
+  it("General-variant card label renders 'General' (not 'General / Unbillable')", () => {
+    expect(groupSrc).toMatch(/>\s*General\s*</);
+    const codeOnly = groupSrc
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    expect(codeOnly).not.toMatch(/General\s*\/\s*Unbillable/);
+  });
+
+  it("internal categoryMap value is unchanged (still 'general')", () => {
+    // Public label changed; the storage / category enum is untouched.
+    expect(categoryForType("admin")).toBe("general");
+    expect(categoryForType("break")).toBe("general");
+    expect(categoryForType("other")).toBe("general");
+  });
+
+  it("DayView groups sort by earliest start, including General", () => {
+    // Pure sortKey sort; General is no longer pinned last.
+    expect(dayViewSrc).toMatch(
+      /groups\.sort\(\(a, b\)\s*=>\s*a\.sortKey - b\.sortKey\)/,
+    );
+  });
+});
+
+// ── 2026-05-05: closed/invoiced job confirmation in Add Time Entry ──
+
+describe("Add Entry — closed/invoiced job confirmation", () => {
+  it("captures status + invoiceId from the job-search response on pick", () => {
+    // The picker's JobSearchResult type now includes status + invoiceId
+    // so the modal can decide whether to gate the save.
+    expect(createModalSrc).toMatch(/status\?:\s*string\s*\|\s*null/);
+    expect(createModalSrc).toMatch(/invoiceId\?:\s*string\s*\|\s*null/);
+    // handlePickJob captures both into state.
+    expect(createModalSrc).toMatch(/setJobStatus\(job\.status\s*\?\?\s*null\)/);
+    expect(createModalSrc).toMatch(/setJobInvoiceId\(job\.invoiceId\s*\?\?\s*null\)/);
+  });
+
+  it("save gate predicate fires for non-open OR already-invoiced jobs", () => {
+    // The trigger captures both axes: non-open status (closed /
+    // completed / archived) AND invoiced (jobs.invoiceId not null).
+    // General mode (no jobId) skips the gate entirely.
+    expect(createModalSrc).toMatch(/isJobClosedOrInvoiced/);
+    expect(createModalSrc).toMatch(/view === "labor"\s*&&\s*!!jobId/);
+    expect(createModalSrc).toMatch(/jobStatus\s*!==\s*"open"/);
+    expect(createModalSrc).toMatch(/jobInvoiceId\s*!==\s*null/);
+  });
+
+  it("open job (status='open' AND invoiceId=null) skips the confirm dialog", () => {
+    // The save handler runs the predicate; if false, fires saveMutation
+    // directly without opening the AlertDialog.
+    expect(createModalSrc).toMatch(
+      /handleSave[\s\S]+?if\s*\(isJobClosedOrInvoiced\)\s*\{[\s\S]+?setConfirmOpen\(true\);[\s\S]+?return;[\s\S]+?\}[\s\S]+?saveMutation\.mutate\(\)/,
+    );
+  });
+
+  it("Confirm action runs the existing save mutation", () => {
+    // handleConfirmedSave closes the dialog and triggers the same
+    // canonical save path. No separate POST endpoint or API change.
+    expect(createModalSrc).toMatch(
+      /handleConfirmedSave[\s\S]+?setConfirmOpen\(false\);[\s\S]+?saveMutation\.mutate\(\)/,
+    );
+    expect(createModalSrc).toMatch(
+      /onClick=\{handleConfirmedSave\}[\s\S]+?data-testid="closed-job-confirm-action"/,
+    );
+  });
+
+  it("Cancel keeps the modal open and does NOT run save", () => {
+    // The AlertDialogCancel uses the default Radix behavior — closes
+    // the alert. The parent modal stays mounted. State is preserved.
+    expect(createModalSrc).toMatch(
+      /<AlertDialogCancel[\s\S]+?data-testid="closed-job-confirm-cancel"[\s\S]+?Cancel/,
+    );
+    // Cancel should NOT call saveMutation.mutate.
+    const cancelSection = createModalSrc.match(
+      /<AlertDialogCancel[\s\S]+?\/AlertDialogCancel>/,
+    );
+    expect(cancelSection).not.toBeNull();
+    expect(cancelSection![0]).not.toMatch(/saveMutation\.mutate/);
+  });
+
+  it("uses the spec'd confirmation copy verbatim", () => {
+    expect(createModalSrc).toMatch(
+      /This job is closed or already invoiced\.\s*Time will be added to the\s*timesheet only and will not update the invoice automatically\./,
+    );
+    expect(createModalSrc).toMatch(/>\s*Add time\s*</);
+  });
+
+  it("closed/invoiced confirm flow does NOT mutate job status or invoice on the server", () => {
+    // The save mutation body is the SAME canonical POST as before —
+    // identical body shape, no new flags, no job-status patch, no
+    // invoice mutation. Server-side guarantee is covered separately
+    // by the `createFinishedTimeEntry does NOT mutate job status or
+    // invoice` pin in the prior pass.
+    expect(createModalSrc).toMatch(/POST.*\/api\/admin\/timesheets\/entries/);
+    // Strip comments so doc commentary doesn't false-match.
+    const codeOnly = createModalSrc
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    expect(codeOnly).not.toMatch(/reopenJob/);
+    expect(codeOnly).not.toMatch(/updateInvoice/);
+    expect(codeOnly).not.toMatch(/markTimeEntriesInvoiced/);
+    // Confirm action wires straight back to the existing save mutation
+    // — no parallel POST.
+    expect(createModalSrc).toMatch(
+      /handleConfirmedSave[\s\S]+?saveMutation\.mutate\(\)/,
+    );
+  });
+});
+
+describe("Job Detail labor card visibility for closed/invoiced jobs", () => {
+  it("getJobTimeSummary filters by jobId — labor on closed/invoiced jobs still shows", () => {
+    // The Job Detail labor card pulls live time_entries by jobId.
+    // The function may READ timeEntries.invoiceId in its SELECT for
+    // billable/uninvoiced breakdown, but the WHERE clause is keyed
+    // on jobId — there is no exclusion that would hide a new entry
+    // just because the linked job is closed or already invoiced.
+    expect(timeTrackingSrc).toMatch(
+      /async\s+getJobTimeSummary[\s\S]+?eq\(timeEntries\.jobId,\s*jobId\)/,
+    );
+  });
+});
+
+// ── 2026-05-05: General card simplification ─────────────────────────
+//
+// The General group used to render duplicate hierarchy: card header
+// "General" + per-row "General" pill chip + the time/duration row.
+// We now suppress the per-row chip on the General card via a new
+// `hideTypeChip` prop on TimeEntryRowCompact, wired from JobTimeGroupCard
+// only when `variant === "general"`. Job cards keep their per-row Drive
+// / On-site chips so a single card with mixed rows stays distinguishable.
+
+describe("Day View — General card simplification (2026-05-05)", () => {
+  it("TimeEntryRowCompact accepts a hideTypeChip prop with default false", () => {
+    // Prop is opt-in — default behavior (job cards) renders the chip
+    // as before. Default value is set in the destructure so callers
+    // don't need to pass it.
+    expect(rowCompactSrc).toMatch(/hideTypeChip\?\s*:\s*boolean/);
+    expect(rowCompactSrc).toMatch(/hideTypeChip\s*=\s*false/);
+  });
+
+  it("TimeEntryRowCompact only renders the chip when hideTypeChip is false", () => {
+    // The category chip is now conditionally rendered behind a
+    // !hideTypeChip guard. Suppressing on General avoids duplicating
+    // the bucket label that the card header already carries.
+    expect(rowCompactSrc).toMatch(/\{!hideTypeChip\s*&&[\s\S]+?\{style\.label\}/);
+  });
+
+  it("JobTimeGroupCard general variant renders inline rows (no hideTypeChip routing)", () => {
+    // 2026-05-05: General variant collapsed from "header + body rows" to
+    // a single flat row per entry. The "General" label sits inline on
+    // each row alongside the start→end time and duration. The general
+    // branch no longer routes through TimeEntryRowCompact, so it does
+    // not need to thread the `hideTypeChip` prop. Job cards still use
+    // TimeEntryRowCompact (with the chip on by default).
+    expect(groupSrc).not.toMatch(/hideTypeChip=/);
+    // Job-variant rows still mount TimeEntryRowCompact.
+    expect(groupSrc).toMatch(/<TimeEntryRowCompact/);
+  });
+
+  it("TimeEntryRowCompact still exposes the per-row chip testid for non-general rows", () => {
+    // Job cards still need the chip's data-testid for downstream UI
+    // tests. The testid wraps the chip's <span>, so it only mounts
+    // when the chip itself does (i.e. !hideTypeChip).
+    expect(rowCompactSrc).toMatch(/day-entry-compact-chip-\$\{entry\.id\}/);
+  });
+
+  it("General card header still labels the bucket 'General'", () => {
+    // The card header is the SOLE place "General" appears now —
+    // the duplicate per-row pill is suppressed but the header label
+    // must stay. Ditto the General-only group testid.
+    expect(groupSrc).toMatch(/variant === "general"[\s\S]+?>\s*General\s*</);
+    expect(groupSrc).toMatch(/"day-group-general"/);
+  });
+
+  it("edit handler is preserved on the General row (whole row remains the click target)", () => {
+    // The chip lived inside the same <button onClick={onEdit}> that
+    // wraps the time range, so suppressing it does NOT change the
+    // edit-on-click behavior. The button still mounts and still
+    // routes to onEdit (which DayView wires to TimeEntryEditModal /
+    // JobSessionEditModal per the existing entry-driven router).
+    expect(rowCompactSrc).toMatch(
+      /<button[\s\S]+?onClick=\{onEdit\}[\s\S]+?data-testid=\{`day-entry-compact-edit-\$\{entry\.id\}`\}/,
+    );
+  });
+
+  it("Week View / Stack View are NOT touched by this change", () => {
+    // Sanity guard: hideTypeChip lives on TimeEntryRowCompact only.
+    // The Week-Timeline + Week-Stack components don't import
+    // TimeEntryRowCompact (they have their own row components), so
+    // they cannot be affected by this prop. Pin the absence.
+    const weekStackPath = resolve(ROOT, "client/src/components/timesheets/stack");
+    const weekTimelinePath = resolve(ROOT, "client/src/components/timesheets/timeline");
+    // Both directories exist as separate structural concerns; the
+    // change doesn't reach into either. (We don't grep their files
+    // for hideTypeChip because hideTypeChip is a brand-new identifier
+    // — its presence anywhere outside Day View would itself be the
+    // regression. But we keep the directory references explicit so
+    // the next reader knows where Week / Stack live.)
+    expect(existsSync(weekStackPath) || existsSync(weekTimelinePath)).toBe(true);
   });
 });

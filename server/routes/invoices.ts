@@ -130,16 +130,25 @@ const updateInvoiceSchema = z.object({
   notesCustomer: z.string().max(2000).optional(),
   workDescription: z.string().max(2000).optional(),
   clientMessage: z.string().max(2000).optional(),
-  showQuantity: z.boolean().optional(),
-  showUnitPrice: z.boolean().optional(),
-  showLineTotals: z.boolean().optional(),
-  showLineItems: z.boolean().optional(),
+  // 2026-05-06: nullable so the "Reset to defaults" affordance on the
+  // invoice detail page can PATCH `null` to clear the per-invoice
+  // override (the resolver then falls back to tenant default at render
+  // time — see migration `2026_05_06_invoice_visibility_inherit.sql`
+  // and `shared/invoiceDisplayPolicy.ts::pick()`). The route declares
+  // its own strict schema (separate from `shared/schema.ts`'s
+  // `updateInvoiceSchema`) — both must accept null to keep the contract
+  // consistent. `showBalance` stays non-null; it gates a mandatory
+  // surface and is not part of the tenant Invoice Display catalog.
+  showQuantity: z.boolean().nullable().optional(),
+  showUnitPrice: z.boolean().nullable().optional(),
+  showLineTotals: z.boolean().nullable().optional(),
+  showLineItems: z.boolean().nullable().optional(),
   showBalance: z.boolean().optional(),
   // 2026-04-29: Added to align with shared/schema.ts updateInvoiceSchema and
   // the existing `show_job_description` column. Without this entry, the
   // strict() route schema rejected the toggle with
   // "Unrecognized key(s) in object: 'showJobDescription'".
-  showJobDescription: z.boolean().optional(),
+  showJobDescription: z.boolean().nullable().optional(),
   amountPaid: z.number().min(0).max(999999.99).optional(),
   version: z.number().int().nonnegative().optional(),
   // Phase 11: Discount fields
@@ -1162,28 +1171,62 @@ router.patch("/:id/lines/:lineId", requireRole(MANAGER_ROLES), requireEditableSt
 }));
 
 // POST /api/invoices/:id/refresh-from-job - Refresh invoice lines from job (draft only, with QBO lock check)
-// POST /api/invoices/:id/apply-tax - Apply tax group or remove tax from invoice
+// POST /api/invoices/:id/apply-tax - Apply tax group / standalone rate / remove tax
 // Reuses canonical batchApplyLineTax() + tax snapshot — does NOT mutate company settings
-// Accepts { taxGroupId: "uuid" } to apply a group, or { taxGroupId: null } for no tax
-const applyTaxSchema = z.object({
-  taxGroupId: z.string().uuid().nullable(),
-}).strict();
+//
+// 2026-05-05: now accepts EITHER `taxGroupId` OR `taxRateId` (mutually
+// exclusive). Sending both is rejected. Sending neither acts as
+// `taxGroupId: null` (no tax). Standalone rates resolve to a hidden
+// per-rate system group (`__sys_rate__:<rateId>`) that is created on
+// first use and reused on subsequent applies — invoices keep storing
+// `taxGroupId`, the rate stays the source of truth, and the canonical
+// batch tax application path is unchanged.
+const applyTaxSchema = z
+  .object({
+    taxGroupId: z.string().uuid().nullable().optional(),
+    taxRateId: z.string().uuid().optional(),
+  })
+  .strict()
+  .refine(
+    (v) =>
+      !(v.taxGroupId !== undefined && v.taxGroupId !== null && v.taxRateId !== undefined),
+    { message: "Provide either taxGroupId or taxRateId, not both" },
+  );
 
 router.post("/:id/apply-tax", requireRole(MANAGER_ROLES), requireEditableStatus(), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const validated = validateSchema(applyTaxSchema, req.body);
   const companyId = req.companyId!;
   const invoiceId = req.params.id;
 
-  // Validate tax group exists before applying (null = no tax, always valid)
-  if (validated.taxGroupId !== null) {
-    const { taxRepository } = await import("../storage/tax");
-    const group = await taxRepository.getTaxGroup(companyId, validated.taxGroupId);
-    if (!group) throw createError(404, "Tax group not found");
-    if (!group.rates || group.rates.length === 0) throw createError(400, "Tax group has no rates configured");
+  const { taxRepository } = await import("../storage/tax");
+
+  let resolvedGroupId: string | null;
+
+  if (validated.taxRateId !== undefined) {
+    // Standalone-rate path: find-or-create the system wrapper group,
+    // then delegate to the canonical apply-group path.
+    const wrapper = await taxRepository.ensureSystemRateGroup(
+      companyId,
+      validated.taxRateId,
+    );
+    if (!wrapper) throw createError(404, "Tax rate not found");
+    resolvedGroupId = wrapper.id;
+  } else {
+    // Group path (or explicit null = remove tax). Default when neither
+    // field is provided is null (no tax) — keeps backward compat with
+    // older callers that POSTed `{ taxGroupId: null }`.
+    resolvedGroupId = validated.taxGroupId ?? null;
+
+    // Validate group exists before applying (null = no tax, always valid)
+    if (resolvedGroupId !== null) {
+      const group = await taxRepository.getTaxGroup(companyId, resolvedGroupId);
+      if (!group) throw createError(404, "Tax group not found");
+      if (!group.rates || group.rates.length === 0) throw createError(400, "Tax group has no rates configured");
+    }
   }
 
   // Delegate to canonical shared function (same logic as invoice creation)
-  await applyTaxGroupToInvoice(companyId, invoiceId, validated.taxGroupId);
+  await applyTaxGroupToInvoice(companyId, invoiceId, resolvedGroupId);
 
   // Re-fetch to return updated invoice with recalculated totals
   const updated = await storage.getInvoice(companyId, invoiceId);

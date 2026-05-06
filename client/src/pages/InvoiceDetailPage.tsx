@@ -1,4 +1,9 @@
 import { useState, useMemo, useEffect, useRef, Fragment, type ReactNode } from "react";
+// 2026-05-06: canonical resolver — used to compute the effective
+// "Client visibility" toggle states (raw invoice flag merged with tenant
+// default per the inheritance contract documented in
+// shared/invoiceDisplayPolicy.ts).
+import { resolveInvoiceDisplayPolicy } from "@shared/invoiceDisplayPolicy";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, useLocation, Link } from "wouter";
 import { format } from "date-fns";
@@ -111,7 +116,11 @@ import { buildPortalInvoiceUrl } from "@/lib/portalUrls";
 // 2026-04-29 Stripe completion: staff card-take + refund surfaces. Both
 // dialogs delegate to the canonical paymentApplicationService via the
 // existing checkout / refund routes; no new backend writes.
-import { StaffTakeCardDialog } from "@/components/invoice/StaffTakeCardDialog";
+// 2026-05-06 PR3: StaffTakeCardDialog is no longer mounted from this page;
+// the unified CollectPaymentDialog now owns card payments via embedded
+// Stripe Elements + multi-invoice allocation. The dialog file remains in
+// the repo for now — it's still a valid component, just unmounted here.
+import { CollectPaymentDialog } from "@/components/invoice/CollectPaymentDialog";
 import { RefundPaymentDialog } from "@/components/invoice/RefundPaymentDialog";
 import { computeAlreadyOffset } from "@shared/paymentRefundability";
 // 2026-04-21 Phase 2 canonical policy architecture: portal gating reads
@@ -297,7 +306,8 @@ const LINE_TYPE_GROUPS: Array<{ kind: string; label: string }> = [
 // additive `export`.
 export function ClientVisibilityCardV2({
   draft, server, onToggle, onSave, onReset, dirty, isSaving, disabled = false,
-  tenantDefaults, onResetToTenantDefaults,
+  tenantDefaults, onResetToTenantDefaults, rawInvoiceFlags,
+  defaultCollapsed = true,
 }: {
   draft: { showJobDescription: boolean; showLineItems: boolean; showQuantity: boolean; showUnitPrice: boolean; showLineTotals: boolean; showBalance: boolean };
   server: typeof draft;
@@ -312,9 +322,9 @@ export function ClientVisibilityCardV2({
   disabled?: boolean;
   /**
    * 2026-05-05: optional tenant Invoice Display defaults. When provided,
-   * rows whose current draft value differs from the tenant default
-   * carry a small "Custom" hint so operators can see they've overridden
-   * the tenant policy. Omit to render the card without inheritance UI.
+   * rows whose stored invoice value differs from the tenant default
+   * carry a small "Custom" hint and the footer exposes "Reset to defaults".
+   * Omit to render the card without inheritance UI.
    */
   tenantDefaults?: Partial<{
     showJobDescription: boolean;
@@ -323,9 +333,32 @@ export function ClientVisibilityCardV2({
     showUnitPrice: boolean;
     showLineTotals: boolean;
   }>;
-  /** 2026-05-05: copies the resolved tenant defaults into the local
-   *  draft. Renders only when `tenantDefaults` is provided. */
+  /** 2026-05-05: clears all five per-invoice overrides — the consumer
+   *  should PATCH `null` for each so the resolver falls back to tenant
+   *  defaults at render time. */
   onResetToTenantDefaults?: () => void;
+  /**
+   * 2026-05-06: the raw, post-migration invoice flags (each may be `null`
+   * meaning "inherit tenant default"). Required for honest "Custom"
+   * indication: a row is custom ONLY when the stored invoice value is a
+   * real boolean AND it differs from the resolved tenant value. A null
+   * stored value is "inheriting" — never custom — even when the
+   * effective draft toggle is currently sitting at the tenant value.
+   */
+  rawInvoiceFlags?: Partial<{
+    showJobDescription: boolean | null;
+    showLineItems: boolean | null;
+    showQuantity: boolean | null;
+    showUnitPrice: boolean | null;
+    showLineTotals: boolean | null;
+  }>;
+  /**
+   * 2026-05-06: card collapse default. The card is now low-importance
+   * (tenant defaults handle most cases), so it ships collapsed; the
+   * header still surfaces the on-count and a Custom badge so operators
+   * can spot per-invoice deviations at a glance.
+   */
+  defaultCollapsed?: boolean;
 }) {
   // 2026-04-29 UI compact pass: per-row helper hints removed; rows now show
   // label + toggle only.
@@ -338,65 +371,135 @@ export function ClientVisibilityCardV2({
     { key: "showBalance",        label: "Account balance"     },
   ];
   const onCount = ROWS.reduce((n, r) => n + (draft[r.key] ? 1 : 0), 0);
-  // 2026-05-05: per-row custom marker — only computed when tenantDefaults
-  // is supplied. `showBalance` has no tenant equivalent (mandatory at
-  // the tenant level) so it never carries the indicator.
+  // 2026-05-06: per-row "Custom" only when the stored invoice flag is a
+  // real boolean AND differs from the tenant default. A NULL stored
+  // value (post-migration "inherit" semantics) is never custom even if
+  // the effective toggle position matches the tenant value.
+  // `showBalance` has no tenant equivalent (mandatory at the tenant
+  // level) so it never carries the indicator.
   const isCustom = (key: keyof typeof draft): boolean => {
-    if (!tenantDefaults) return false;
+    if (!tenantDefaults || !rawInvoiceFlags) return false;
+    const stored = (rawInvoiceFlags as Record<string, boolean | null | undefined>)[key];
+    if (typeof stored !== "boolean") return false;
     const td = (tenantDefaults as Record<string, boolean | undefined>)[key];
     if (typeof td !== "boolean") return false;
-    return draft[key] !== td;
+    return stored !== td;
   };
+  const anyCustom = ROWS.some((r) => isCustom(r.key));
+
+  // Collapse state — owned by the card itself so the page doesn't have
+  // to thread through yet another prop. Forced expanded while the user
+  // has unsaved edits so an in-flight Save can't be hidden behind a
+  // collapsed header.
+  //
+  // 2026-05-06 follow-up: auto-expand on the first tick where
+  // `anyCustom` becomes true. Legacy invoices (created before migration
+  // `2026_05_06_invoice_visibility_inherit.sql`) carry explicit boolean
+  // overrides; surfacing the rows + the Reset action immediately is the
+  // whole point of the card for those rows. After the initial auto-
+  // expand the user retains control via the chevron — we intentionally
+  // do NOT re-collapse if `anyCustom` flips to false (that's "I just
+  // clicked Reset"; staying expanded gives the user visual confirmation
+  // that the Custom badges have cleared).
+  const [collapsed, setCollapsed] = useState<boolean>(defaultCollapsed);
+  const [autoExpanded, setAutoExpanded] = useState(false);
+  useEffect(() => {
+    if (anyCustom && !autoExpanded) {
+      setCollapsed(false);
+      setAutoExpanded(true);
+    }
+  }, [anyCustom, autoExpanded]);
+  const isExpanded = !collapsed || dirty;
+
   return (
     <div className="overflow-hidden rounded-lg border border-card-border bg-card shadow-card" data-testid="card-invoice-client-visibility">
-      <CardSectionHeader title="Client visibility" count={onCount} />
-      <div>
-        {ROWS.map((r) => (
-          <label key={r.key} className="grid grid-cols-[1fr_auto] items-center gap-3 border-b border-stone-100 px-4 py-2 last:border-b-0">
-            <div className="min-w-0 text-[13px] font-medium text-slate-900 flex items-center gap-2">
-              <span>{r.label}</span>
-              {isCustom(r.key) && (
-                <span
-                  className="inline-flex items-center rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200"
-                  title="Differs from tenant default"
-                  data-testid={`vis-custom-${r.key}`}
-                >
-                  Custom
-                </span>
-              )}
-            </div>
-            <Switch
-              checked={draft[r.key]}
-              onCheckedChange={(v) => onToggle(r.key, v)}
-              disabled={disabled || isSaving}
-              data-testid={`switch-vis-${r.key}`}
-            />
-          </label>
-        ))}
-      </div>
-      {(dirty || (tenantDefaults && onResetToTenantDefaults)) && (
-        <div className="flex justify-end gap-2 border-t border-card-border px-4 py-2">
-          {tenantDefaults && onResetToTenantDefaults && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-xs"
-              onClick={onResetToTenantDefaults}
-              disabled={isSaving}
-              data-testid="button-vis-reset-to-tenant"
+      {/* Clickable collapsed header. Expand-toggle replaces the static
+          CardSectionHeader's count chip with a chevron + Custom badge so
+          operators can see at a glance whether this invoice has any
+          per-invoice overrides. */}
+      <button
+        type="button"
+        onClick={() => setCollapsed((c) => !c)}
+        className="grid w-full grid-cols-[1fr_auto] items-center gap-3 border-b border-card-border px-4 py-2 text-left hover:bg-stone-50"
+        aria-expanded={isExpanded}
+        data-testid="button-vis-toggle-collapse"
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="text-[13px] font-semibold text-slate-900">Client visibility</span>
+          <span className="text-[11px] tabular-nums text-slate-500">{onCount} on</span>
+          {anyCustom ? (
+            <span
+              className="inline-flex items-center rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200"
+              title="This invoice has per-invoice overrides"
+              data-testid="vis-card-badge-custom"
             >
-              Reset to defaults
-            </Button>
-          )}
-          {dirty && (
-            <>
-              <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={onReset} disabled={isSaving}>Discard</Button>
-              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onSave} disabled={isSaving} data-testid="button-save-vis-v2">
-                {isSaving ? "Saving..." : "Save"}
-              </Button>
-            </>
+              Custom
+            </span>
+          ) : (
+            <span
+              className="text-[11px] text-slate-400"
+              data-testid="vis-card-badge-inherit"
+            >
+              Using invoice display defaults
+            </span>
           )}
         </div>
+        <ChevronDown
+          className={`h-4 w-4 text-slate-500 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+        />
+      </button>
+
+      {isExpanded && (
+        <>
+          <div>
+            {ROWS.map((r) => (
+              <label key={r.key} className="grid grid-cols-[1fr_auto] items-center gap-3 border-b border-stone-100 px-4 py-2 last:border-b-0">
+                <div className="min-w-0 text-[13px] font-medium text-slate-900 flex items-center gap-2">
+                  <span>{r.label}</span>
+                  {isCustom(r.key) && (
+                    <span
+                      className="inline-flex items-center rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200"
+                      title="Differs from tenant default"
+                      data-testid={`vis-custom-${r.key}`}
+                    >
+                      Custom
+                    </span>
+                  )}
+                </div>
+                <Switch
+                  checked={draft[r.key]}
+                  onCheckedChange={(v) => onToggle(r.key, v)}
+                  disabled={disabled || isSaving}
+                  data-testid={`switch-vis-${r.key}`}
+                />
+              </label>
+            ))}
+          </div>
+          {(dirty || (tenantDefaults && onResetToTenantDefaults && anyCustom)) && (
+            <div className="flex justify-end gap-2 border-t border-card-border px-4 py-2">
+              {tenantDefaults && onResetToTenantDefaults && anyCustom && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={onResetToTenantDefaults}
+                  disabled={isSaving}
+                  data-testid="button-vis-reset-to-tenant"
+                >
+                  Reset to defaults
+                </Button>
+              )}
+              {dirty && (
+                <>
+                  <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={onReset} disabled={isSaving}>Discard</Button>
+                  <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onSave} disabled={isSaving} data-testid="button-save-vis-v2">
+                    {isSaving ? "Saving..." : "Save"}
+                  </Button>
+                </>
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -532,8 +635,12 @@ export default function InvoiceDetailPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   // 2026-04-19 Portal activation: dialog state for "Send payment link".
   const [showSendPaymentLink, setShowSendPaymentLink] = useState(false);
-  // 2026-04-29 Stripe completion: staff card-take dialog state.
-  const [showTakeCardDialog, setShowTakeCardDialog] = useState(false);
+  // 2026-05-06 PR3: unified Collect Payment dialog. Owns ALL payment
+  // methods including credit card (which embeds Stripe Elements via
+  // `EmbeddedStripeCardForm` and posts to /api/payments/card-intent).
+  // The legacy `showTakeCardDialog` flag was retired alongside the
+  // overflow "Charge credit card (Stripe)" item.
+  const [showCollectPaymentDialog, setShowCollectPaymentDialog] = useState(false);
   // 2026-04-29 Stripe completion: refund target. `null` when closed.
   const [refundTarget, setRefundTarget] = useState<Payment | null>(null);
   const [paymentAmount, setPaymentAmount] = useState("");
@@ -977,12 +1084,23 @@ export default function InvoiceDetailPage() {
     },
   });
 
-  // Invoice-level tax selector mutation — applies tax group or removes tax
+  // Invoice-level tax selector mutation — applies a tax group, a
+  // standalone tax rate, or removes tax (null).
+  // 2026-05-05: accepts either a `{kind:"group", id}` or `{kind:"rate", id}`
+  // descriptor so the same mutation handles both selector sections.
+  type TaxSelection =
+    | { kind: "none" }
+    | { kind: "group"; id: string }
+    | { kind: "rate"; id: string };
   const applyTaxMutation = useMutation({
-    mutationFn: async (taxGroupId: string | null) => {
+    mutationFn: async (selection: TaxSelection) => {
+      const body =
+        selection.kind === "none" ? { taxGroupId: null }
+        : selection.kind === "group" ? { taxGroupId: selection.id }
+        : { taxRateId: selection.id };
       return apiRequest(`/api/invoices/${invoiceId}/apply-tax`, {
         method: "POST",
-        body: JSON.stringify({ taxGroupId }),
+        body: JSON.stringify(body),
       });
     },
     onSuccess: () => {
@@ -1097,36 +1215,43 @@ export default function InvoiceDetailPage() {
     return { totalPrice, totalCost, profit, margin };
   }, [details?.lines]);
 
-  // Tax groups query for selector
+  // Tax options for selector — fetches BOTH user-created groups AND
+  // standalone rates so a tenant with only rates configured can still
+  // apply tax to an invoice (2026-05-05 fix). System-managed wrapper
+  // groups (`__sys_rate__:<rateId>`) are filtered out client-side; the
+  // user picks the underlying rate, and the apply-tax route resolves
+  // the wrapper internally.
+  interface TaxRateOption {
+    id: string;
+    name: string;
+    rate: string;
+    description?: string | null;
+  }
   interface TaxGroupOption {
     id: string;
     name: string;
     rates: { id: string; name: string; rate: string }[];
   }
-  // 2026-04-29 v2: tax architecture note (read before changing this query).
-  //   • The schema stores tax at the INVOICE level via
-  //     `invoices.taxGroupId`; per-line `invoice_lines.taxRate` is a
-  //     denormalised cascade written by `batchApplyLineTax` in
-  //     `server/storage/invoices.ts`. There is NO per-line `tax_group_id`
-  //     column — line-level tax granularity isn't supported by the
-  //     schema today.
-  //   • The visible per-line "Yes / No" cell is therefore READ-ONLY by
-  //     design — it reflects whichever cascade rate the invoice's tax
-  //     group resolves to.
-  //   • The CANONICAL tax selector lives in the totals footer (popover
-  //     wired to `applyTaxMutation` → `POST /api/invoices/:id/apply-tax`)
-  //     and writes through the canonical service. Picking a tax group
-  //     there updates all line-item rates and the totals atomically.
-  //   • staleTime reduced from 5min → 30s so a tax group created in
-  //     tenant settings appears in this popover within 30 seconds
-  //     without forcing a hard reload. A longer staleTime previously
-  //     made it look like the new group wasn't selectable.
-  const { data: taxGroups = [], isError: taxGroupsError } = useQuery<TaxGroupOption[]>({
+  const SYSTEM_RATE_GROUP_PREFIX = "__sys_rate__:";
+  const { data: allTaxGroups = [], isError: taxGroupsError } = useQuery<TaxGroupOption[]>({
     queryKey: ["/api/tax/groups"],
     staleTime: 30 * 1000,
     refetchOnMount: true,
     retry: 2,
   });
+  const { data: taxRates = [], isError: taxRatesError } = useQuery<TaxRateOption[]>({
+    queryKey: ["/api/tax"],
+    staleTime: 30 * 1000,
+    refetchOnMount: true,
+    retry: 2,
+  });
+  // User-visible groups exclude the per-rate system wrappers. The full
+  // list is kept in `allTaxGroups` so we can still resolve the current
+  // invoice's `taxGroupId` even when it points at a wrapper.
+  const taxGroups = useMemo(
+    () => allTaxGroups.filter((g) => !g.name.startsWith(SYSTEM_RATE_GROUP_PREFIX)),
+    [allTaxGroups],
+  );
 
   // 2026-04-19 Portal activation — hook order fix (2026-04-19):
   // This hook MUST stay at the top level, above the `if (isLoading)` /
@@ -1137,22 +1262,29 @@ export default function InvoiceDetailPage() {
   // co-located with the other invoice-detail queries above.
   const entitlementsQuery = useEntitlements();
 
-  // Compute current tax label from taxGroupId — single source of truth for display
-  // taxGroupId is the canonical reference; invoice_lines.taxRate is calculation-only
+  // Compute current tax label from taxGroupId — single source of truth for display.
+  // taxGroupId is the canonical reference; invoice_lines.taxRate is calculation-only.
+  // 2026-05-05: when the invoice's group is a system per-rate wrapper
+  // (`__sys_rate__:<rateId>`), derive the label from the underlying rate
+  // — users never see the synthetic group name.
   const currentTaxLabel = useMemo(() => {
     const inv = details?.invoice;
     if (!inv) return "Tax";
     if (inv.taxGroupId) {
-      const group = taxGroups.find(g => g.id === inv.taxGroupId);
+      const group = allTaxGroups.find(g => g.id === inv.taxGroupId);
       if (group) {
         const combinedRate = group.rates.reduce((s, r) => s + parseFloat(r.rate || "0"), 0);
-        return `${group.name} (${combinedRate.toFixed(2).replace(/\.?0+$/, "")}%)`;
+        const isSystemWrapper = group.name.startsWith(SYSTEM_RATE_GROUP_PREFIX);
+        const displayName = isSystemWrapper && group.rates[0]
+          ? group.rates[0].name
+          : group.name;
+        return `${displayName} (${combinedRate.toFixed(2).replace(/\.?0+$/, "")}%)`;
       }
       // taxGroupId set but group is deactivated/missing — honest label
       return "Tax (group unavailable)";
     }
     return "No Tax";
-  }, [details?.invoice, taxGroups]);
+  }, [details?.invoice, allTaxGroups]);
 
   // 2026-05-02 (Phase 3): the discount-state sync useEffect is gone —
   // <DiscountEditor> owns its draft and resyncs from `value` itself.
@@ -1160,15 +1292,66 @@ export default function InvoiceDetailPage() {
   // 2026-05-03: client-message draft sync useEffect retired —
   // <EditableMessageCard> resyncs from `value` itself.
 
-  // Canonical server-side visibility values
-  const serverVisibility = useMemo(() => ({
-    showLineItems: details?.invoice?.showLineItems !== false,
-    showQuantity: details?.invoice?.showQuantity !== false,
-    showUnitPrice: details?.invoice?.showUnitPrice !== false,
-    showLineTotals: details?.invoice?.showLineTotals !== false,
-    showBalance: details?.invoice?.showBalance !== false,
-    showJobDescription: (details?.invoice as any)?.showJobDescription !== false,
-  }), [details?.invoice?.showLineItems, details?.invoice?.showQuantity, details?.invoice?.showUnitPrice, details?.invoice?.showLineTotals, details?.invoice?.showBalance, (details?.invoice as any)?.showJobDescription]);
+  // 2026-05-06: serverVisibility now reflects the EFFECTIVE resolved
+  // policy — invoice override (if non-null) merged with tenant defaults.
+  // Previously this collapsed null/undefined into "true", which masked
+  // tenant defaults entirely and forced operators to override every
+  // invoice. The toggle Switch's `checked` prop reads from this
+  // effective value; the "Custom" badge consults the raw stored flags
+  // separately so it only appears when the operator deliberately set an
+  // override (see `rawInvoiceFlags` below).
+  const serverVisibility = useMemo(() => {
+    const inv = details?.invoice as any;
+    const policy = resolveInvoiceDisplayPolicy({
+      tenantSettings: tenantInvoiceDisplay as any,
+      invoice: {
+        showLineItems: inv?.showLineItems ?? null,
+        showQuantity: inv?.showQuantity ?? null,
+        showUnitPrice: inv?.showUnitPrice ?? null,
+        showLineTotals: inv?.showLineTotals ?? null,
+        showJobDescription: inv?.showJobDescription ?? null,
+      },
+    });
+    return {
+      showLineItems: policy.showLineItems,
+      showQuantity: policy.showQuantities,
+      showUnitPrice: policy.showUnitPrices,
+      showLineTotals: policy.showLineTotals,
+      // showBalance is a separate non-null flag (mandatory surface gate);
+      // it does not flow through the resolver.
+      showBalance: inv?.showBalance !== false,
+      showJobDescription: policy.showJobDescription,
+    };
+  }, [
+    details?.invoice?.showLineItems,
+    details?.invoice?.showQuantity,
+    details?.invoice?.showUnitPrice,
+    details?.invoice?.showLineTotals,
+    details?.invoice?.showBalance,
+    (details?.invoice as any)?.showJobDescription,
+    tenantInvoiceDisplay,
+  ]);
+
+  // Raw invoice flags as they sit in storage (each may be null = "inherit
+  // tenant default"). Used by the card to render the "Custom" badge
+  // honestly — a row is custom only when the stored value is a real
+  // boolean AND it differs from the tenant default.
+  const rawInvoiceFlags = useMemo(() => {
+    const inv = details?.invoice as any;
+    return {
+      showLineItems: (inv?.showLineItems ?? null) as boolean | null,
+      showQuantity: (inv?.showQuantity ?? null) as boolean | null,
+      showUnitPrice: (inv?.showUnitPrice ?? null) as boolean | null,
+      showLineTotals: (inv?.showLineTotals ?? null) as boolean | null,
+      showJobDescription: (inv?.showJobDescription ?? null) as boolean | null,
+    };
+  }, [
+    details?.invoice?.showLineItems,
+    details?.invoice?.showQuantity,
+    details?.invoice?.showUnitPrice,
+    details?.invoice?.showLineTotals,
+    (details?.invoice as any)?.showJobDescription,
+  ]);
 
   const isVisibilityDirty =
     visibilityDraft.showLineItems !== serverVisibility.showLineItems ||
@@ -1541,17 +1724,12 @@ export default function InvoiceDetailPage() {
         {portalCtasAvailable && <DropdownMenuItem onClick={handleCopyPaymentLink}>Copy payment link</DropdownMenuItem>}
         {portalCtasAvailable && <DropdownMenuItem onClick={handleOpenClientPortal}>Open client portal</DropdownMenuItem>}
         {portalCtasAvailable && <DropdownMenuItem onClick={() => setShowSendPaymentLink(true)}>Email payment link…</DropdownMenuItem>}
-        {!isDraft &&
-          invoice.status !== "voided" &&
-          invoice.status !== "paid" &&
-          parseFloat(invoice.balance ?? "0") > 0 && (
-            <DropdownMenuItem
-              onClick={() => setShowTakeCardDialog(true)}
-              data-testid="menu-item-take-card-payment"
-            >
-              Take card payment
-            </DropdownMenuItem>
-          )}
+        {/* 2026-05-06 PR3: the legacy "Charge credit card (Stripe)" overflow
+            item is REMOVED. Card payments now route through the unified
+            Collect Payment dialog (method = "credit"), which embeds the
+            same Stripe Elements form and supports multi-invoice allocation
+            via a single PaymentIntent + webhook write. Collect Payment is
+            the single entry point for ALL payment methods. */}
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => handleToggleSent(!invoice.sentAt)} disabled={toggleSentPending}>
           {invoice.sentAt ? "Mark as not sent" : "Mark as sent"}
@@ -1695,6 +1873,26 @@ export default function InvoiceDetailPage() {
                   {primaryAction.label}
                 </Button>
               )}
+              {/* 2026-05-06: primary green Collect Payment CTA. Visible
+                  whenever the invoice can accept a payment — same predicate
+                  as the canonical server-side `canAcceptInvoicePayment` plus
+                  a balance > 0 check. Opens the provider-neutral multi-invoice
+                  manual flow (cash / cheque / e-transfer / debit / external
+                  card / other). The Stripe direct-charge path remains in the
+                  overflow menu as "Charge credit card (Stripe)". */}
+              {!isDraft &&
+                invoice.status !== "voided" &&
+                invoice.status !== "paid" &&
+                parseFloat(invoice.balance ?? "0") > 0 && (
+                  <Button
+                    size="sm"
+                    className="h-8 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                    onClick={() => setShowCollectPaymentDialog(true)}
+                    data-testid="button-collect-payment"
+                  >
+                    Collect Payment
+                  </Button>
+                )}
               <Button
                 size="sm"
                 variant="outline"
@@ -1905,34 +2103,81 @@ export default function InvoiceDetailPage() {
                               <button
                                 type="button"
                                 className={`w-full text-left px-2 py-1.5 rounded text-sm hover:bg-stone-100 ${!invoice.taxGroupId ? "bg-stone-100 font-medium" : ""}`}
-                                onClick={() => applyTaxMutation.mutate(null)}
+                                onClick={() => applyTaxMutation.mutate({ kind: "none" })}
                                 disabled={applyTaxMutation.isPending}
                                 data-testid="tax-option-no-tax"
                               >
                                 No Tax
                               </button>
-                              {taxGroups.map((group) => {
-                                const combinedRate = group.rates.reduce((s, r) => s + parseFloat(r.rate || "0"), 0);
-                                const isSelected = invoice.taxGroupId === group.id;
-                                return (
-                                  <button
-                                    key={group.id}
-                                    type="button"
-                                    className={`w-full text-left px-2 py-1.5 rounded text-sm hover:bg-stone-100 ${isSelected ? "bg-stone-100 font-medium" : ""}`}
-                                    onClick={() => applyTaxMutation.mutate(group.id)}
-                                    disabled={applyTaxMutation.isPending}
-                                    data-testid={`tax-option-${group.id}`}
-                                  >
-                                    <span>{group.name}</span>
-                                    <span className="text-slate-500 ml-1">({combinedRate.toFixed(2)}%)</span>
-                                  </button>
-                                );
-                              })}
-                              {taxGroups.length === 0 && !taxGroupsError && (
-                                <p className="text-xs text-slate-500 px-2 py-1">No tax groups configured. Set up tax rates in Settings.</p>
+
+                              {/* Tax Groups section — only renders when at least one user-created group exists. */}
+                              {taxGroups.length > 0 && (
+                                <>
+                                  <p className="text-[10px] uppercase tracking-wide font-semibold text-slate-400 px-2 pt-2 pb-0.5">Tax Groups</p>
+                                  {taxGroups.map((group) => {
+                                    const combinedRate = group.rates.reduce((s, r) => s + parseFloat(r.rate || "0"), 0);
+                                    const isSelected = invoice.taxGroupId === group.id;
+                                    return (
+                                      <button
+                                        key={group.id}
+                                        type="button"
+                                        className={`w-full text-left px-2 py-1.5 rounded text-sm hover:bg-stone-100 ${isSelected ? "bg-stone-100 font-medium" : ""}`}
+                                        onClick={() => applyTaxMutation.mutate({ kind: "group", id: group.id })}
+                                        disabled={applyTaxMutation.isPending}
+                                        data-testid={`tax-option-group-${group.id}`}
+                                      >
+                                        <span>{group.name}</span>
+                                        <span className="text-slate-500 ml-1">({combinedRate.toFixed(2)}%)</span>
+                                      </button>
+                                    );
+                                  })}
+                                </>
                               )}
-                              {taxGroupsError && (
-                                <p className="text-xs text-rose-600 px-2 py-1">Failed to load tax groups. Check permissions or try again.</p>
+
+                              {/* Tax Rates section — standalone rates that aren't bundled in a group.
+                                  2026-05-05: lets a tenant with only `HST 13%` configured apply tax
+                                  without having to first create a wrapper group. The backend creates
+                                  a hidden per-rate system group on demand. */}
+                              {taxRates.length > 0 && (
+                                <>
+                                  <p className="text-[10px] uppercase tracking-wide font-semibold text-slate-400 px-2 pt-2 pb-0.5">Tax Rates</p>
+                                  {taxRates.map((rate) => {
+                                    // The invoice currently has this rate selected when its
+                                    // taxGroupId resolves to a system wrapper whose only rate is this one.
+                                    const currentGroup = invoice.taxGroupId
+                                      ? allTaxGroups.find((g) => g.id === invoice.taxGroupId)
+                                      : null;
+                                    const isSelected = !!(
+                                      currentGroup &&
+                                      currentGroup.name.startsWith(SYSTEM_RATE_GROUP_PREFIX) &&
+                                      currentGroup.rates[0]?.id === rate.id
+                                    );
+                                    const pct = parseFloat(rate.rate || "0");
+                                    return (
+                                      <button
+                                        key={rate.id}
+                                        type="button"
+                                        className={`w-full text-left px-2 py-1.5 rounded text-sm hover:bg-stone-100 ${isSelected ? "bg-stone-100 font-medium" : ""}`}
+                                        onClick={() => applyTaxMutation.mutate({ kind: "rate", id: rate.id })}
+                                        disabled={applyTaxMutation.isPending}
+                                        data-testid={`tax-option-rate-${rate.id}`}
+                                      >
+                                        <span>{rate.name}</span>
+                                        <span className="text-slate-500 ml-1">({pct.toFixed(2)}%)</span>
+                                      </button>
+                                    );
+                                  })}
+                                </>
+                              )}
+
+                              {/* Branched empty state — only fires when BOTH lists are empty. */}
+                              {taxGroups.length === 0 && taxRates.length === 0 && !taxGroupsError && !taxRatesError && (
+                                <p className="text-xs text-slate-500 px-2 py-1">
+                                  No tax rates configured. Add a tax rate in Settings.
+                                </p>
+                              )}
+                              {(taxGroupsError || taxRatesError) && (
+                                <p className="text-xs text-rose-600 px-2 py-1">Failed to load tax options. Check permissions or try again.</p>
                               )}
                             </div>
                           </PopoverContent>
@@ -2004,11 +2249,15 @@ export default function InvoiceDetailPage() {
         }
         rightRail={
           <>
-            {/* ─── Client visibility toggles (6 canonical fields).
-                2026-05-05: tenant-defaults inheritance — when the tenant
-                has Invoice Display defaults loaded, rows whose value
-                differs from the tenant default carry a Custom indicator
-                and the footer offers "Reset to defaults". */}
+            {/* ─── Client visibility toggles.
+                2026-05-06: collapsed by default. Tenant defaults flow
+                through the resolver so the Switch positions reflect what
+                the customer will actually see. "Custom" badges appear
+                only on rows whose stored invoice flag is a real boolean
+                AND differs from the tenant default. "Reset to defaults"
+                PATCHes null on the five visibility columns — the
+                resolver then falls back to tenant defaults at render
+                time. */}
             <ClientVisibilityCardV2
                 draft={visibilityDraft}
                 server={serverVisibility}
@@ -2017,6 +2266,7 @@ export default function InvoiceDetailPage() {
                 onReset={() => setVisibilityDraft(serverVisibility)}
                 dirty={isVisibilityDirty}
                 isSaving={updateInvoiceFieldsMutation.isPending}
+                rawInvoiceFlags={rawInvoiceFlags}
                 tenantDefaults={tenantInvoiceDisplay ? {
                   showJobDescription: tenantInvoiceDisplay.invoiceShowJobDescription,
                   showLineItems: tenantInvoiceDisplay.invoiceShowLineItems,
@@ -2025,13 +2275,17 @@ export default function InvoiceDetailPage() {
                   showLineTotals: tenantInvoiceDisplay.invoiceShowLineTotals,
                 } : undefined}
                 onResetToTenantDefaults={tenantInvoiceDisplay ? () => {
-                  setVisibilityDraft({
-                    showJobDescription: tenantInvoiceDisplay.invoiceShowJobDescription ?? true,
-                    showLineItems: tenantInvoiceDisplay.invoiceShowLineItems ?? true,
-                    showQuantity: tenantInvoiceDisplay.invoiceShowQuantities ?? true,
-                    showUnitPrice: tenantInvoiceDisplay.invoiceShowUnitPrices ?? true,
-                    showLineTotals: tenantInvoiceDisplay.invoiceShowLineTotals ?? true,
-                    showBalance: visibilityDraft.showBalance,
+                  // PATCH `null` for each of the 5 per-invoice override
+                  // flags. The resolver will then fall back to tenant
+                  // defaults at render time, and the Custom badges will
+                  // disappear because the stored values are no longer
+                  // real booleans.
+                  updateInvoiceFieldsMutation.mutate({
+                    showJobDescription: null,
+                    showLineItems: null,
+                    showQuantity: null,
+                    showUnitPrice: null,
+                    showLineTotals: null,
                   });
                 } : undefined}
               />
@@ -2217,17 +2471,24 @@ export default function InvoiceDetailPage() {
         invoiceNumber={invoice.invoiceNumber ?? null}
       />
 
-      {/* 2026-04-29 Stripe completion: staff card-take dialog.
-          Backend route: POST /api/invoices/:invoiceId/payments/checkout
-          (provider-neutral; resolves to Stripe via paymentApplicationService).
-          The Stripe webhook is the canonical writer — this dialog only
-          opens an intent and refetches on success. */}
-      <StaffTakeCardDialog
-        open={showTakeCardDialog}
-        onOpenChange={setShowTakeCardDialog}
+      {/* 2026-05-06 PR3: StaffTakeCardDialog mount REMOVED. The unified
+          CollectPaymentDialog (mounted below) embeds the same Stripe
+          Elements flow when method = "credit" and supports multi-invoice
+          allocation via /api/payments/card-intent + the webhook canonical
+          writer. Collect Payment is the single entry point for all
+          payment methods. */}
+
+      {/* 2026-05-06: provider-neutral Collect Payment dialog. Manual
+          multi-invoice allocation flow (cash / cheque / e-transfer /
+          debit / external card / other). Writes via POST /api/payments
+          which creates ONE payment row + N allocations + per-invoice
+          balance updates atomically. Stripe is intentionally NOT
+          involved here — the overflow "Charge credit card (Stripe)"
+          item still mounts the canonical StaffTakeCardDialog above. */}
+      <CollectPaymentDialog
+        open={showCollectPaymentDialog}
+        onOpenChange={setShowCollectPaymentDialog}
         invoiceId={invoiceId}
-        invoiceNumber={invoice.invoiceNumber ?? null}
-        balanceDue={invoice.balance ?? "0"}
         invoiceQueryKey={["invoices", "detail", invoiceId]}
         paymentsQueryKey={["invoices", "detail", invoiceId, "payments"]}
       />

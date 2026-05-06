@@ -142,9 +142,15 @@ export interface InvoiceDisplayPolicy {
 }
 
 /**
- * Pick a flag — invoice override wins if it's a real boolean, else fall
- * back to the tenant default (with hard schema-level default as the
- * final fallback for safety).
+ * Pick a flag — explicit per-invoice override wins, else inherit the
+ * tenant default, else fall back to the hard schema default.
+ *
+ * 2026-05-06: this function's contract is now load-bearing for the new
+ * "null = inherit" semantics. Migration `2026_05_06_invoice_visibility_inherit.sql`
+ * dropped NOT NULL on the per-invoice visibility columns so callers can
+ * persist NULL to mean "no override; use tenant default at render time."
+ *   * `invoiceFlag === null/undefined` → tenant default
+ *   * `invoiceFlag === true / false`   → explicit override (always wins)
  */
 function pick(
   invoiceFlag: boolean | null | undefined,
@@ -195,11 +201,19 @@ export function resolveInvoiceDisplayPolicy(input: {
 
   return {
     // Section 1
-    showLogo: tenantOnly(t.invoiceShowLogo, D.invoiceShowLogo),
+    // 2026-05-06: showLogo + showCompanyWebsite are FORCED FALSE here
+    // because the app does not yet support tenant logo upload or a
+    // canonical company website field. The schema columns + PUT payload
+    // stay in place (no data migration risk), but every renderer
+    // consults this resolver — pinning false at the merge layer keeps
+    // PDF / email / portal honest until the underlying features ship.
+    // When those features land, swap each `false` back to the canonical
+    // `tenantOnly(...)` form and delete this comment block.
+    showLogo: false,
     showCompanyAddress: tenantOnly(t.invoiceShowCompanyAddress, D.invoiceShowCompanyAddress),
     showCompanyPhone: tenantOnly(t.invoiceShowCompanyPhone, D.invoiceShowCompanyPhone),
     showCompanyEmail: tenantOnly(t.invoiceShowCompanyEmail, D.invoiceShowCompanyEmail),
-    showCompanyWebsite: tenantOnly(t.invoiceShowCompanyWebsite, D.invoiceShowCompanyWebsite),
+    showCompanyWebsite: false,
     showTaxNumber: tenantOnly(t.invoiceShowTaxNumber, D.invoiceShowTaxNumber),
     // Section 2
     showBillingAddress: tenantOnly(t.invoiceShowBillingAddress, D.invoiceShowBillingAddress),

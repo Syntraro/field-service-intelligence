@@ -1,15 +1,16 @@
 /**
- * Weekly Timesheet Stack View — experimental side-by-side layout (2026-05-04).
+ * Weekly Timesheets — canonical weekly review surface (2026-05-05).
  *
- * Renders the same `/api/admin/timesheets/week` payload that PayrollPage
- * already consumes, but as a 7-column stacked-day grid instead of the
- * dispatch-style horizontal Week Timeline. Read-only by design — clicks
- * on a day or block route to the canonical `/timesheets?view=day` so all
- * editing flows through PayrollPage's existing DayView + TimeEntryModal.
+ * Mounted at `/timesheets`. Renders the `/api/admin/timesheets/week`
+ * payload as a 7-column stacked-day grid. Read-only by design: clicks
+ * on a day header or an entry route to `/timesheets?view=day&...`, where
+ * the wouter dispatcher in `App.tsx` (`TimesheetsRoute`) routes the
+ * canonical Day View on PayrollPage. All editing still flows through
+ * PayrollPage's `DayView` + `TimeEntryModal`.
  *
- * This page is purposely isolated (own folder, own helpers) so it can be
- * deleted with no ripple effect on the canonical Timesheets page if the
- * experiment is dropped. Mounted at `/timesheets/stack`.
+ * History: this layout was introduced 2026-05-04 as an experimental
+ * stack view at `/timesheets/stack` and promoted to canonical on
+ * 2026-05-05. The legacy `/timesheets/stack` URL now redirects here.
  */
 
 import { useMemo, useState, useEffect } from "react";
@@ -26,6 +27,7 @@ import {
   FileText,
   Loader2,
   LockKeyhole,
+  Plus,
   User,
 } from "lucide-react";
 
@@ -185,6 +187,13 @@ export default function WeekStackPage() {
     setLocation(`/timesheets?view=day&tech=${techId}&date=${date}`);
   };
 
+  // Global Add Entry — opens canonical Day View with today as the seeded
+  // date; user picks the actual day inside that flow.
+  const handleAddEntryGlobal = () => {
+    if (!techId) return;
+    setLocation(`/timesheets?view=day&tech=${techId}`);
+  };
+
   const handleExportCsv = async () => {
     try {
       const res = await fetch(`/api/payroll/weekly.csv?weekStart=${weekStart}`, {
@@ -222,34 +231,17 @@ export default function WeekStackPage() {
     );
   }
 
-  // Footer split percentages — pure ratio, no weekly-target concept.
-  // `genPct` is derived as `100 - jobPct` so the two pills always sum to
-  // exactly 100 even after Math.round drift.
-  const totalMinutes = vm?.weekTotals.totalMinutes ?? 0;
-  const jobPct = totalMinutes > 0
-    ? Math.round(((vm?.weekTotals.jobMinutes ?? 0) / totalMinutes) * 100)
-    : 0;
-  const genPct = totalMinutes > 0 ? 100 - jobPct : 0;
-
   return (
     <div className="p-4 space-y-4" data-testid="week-stack-page">
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold">Timesheets</h1>
-            <Badge variant="outline" className="text-[10px] uppercase tracking-wider">
-              Stack View · Experimental
-            </Badge>
-          </div>
-          <p className="text-muted-foreground text-sm">Stacked daily view for weekly review.</p>
+          <h1 className="text-2xl font-bold">Timesheets</h1>
+          <p className="text-muted-foreground text-sm">Weekly review of technician time entries.</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => setLocation("/timesheets")}>
-            Default View
-          </Button>
           <Button variant="outline" size="sm" onClick={() => setLocation("/reports/timesheets")}>
             <FileText className="h-4 w-4 mr-1.5" />
-            Reports
+            Timesheet Reports
           </Button>
           <Button variant="outline" size="sm" onClick={handleExportCsv}>
             <Download className="h-4 w-4 mr-1.5" />
@@ -277,9 +269,18 @@ export default function WeekStackPage() {
         </div>
       </div>
 
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-1.5">
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={goToPrev}>
+      {/* Controls row — left-grouped navigation + segmented Day/Week toggle;
+          right-aligned Add Entry primary CTA. Tech selector lives in the
+          context header card below this row, mirroring Day View structure. */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 hover:bg-slate-100"
+            onClick={goToPrev}
+            aria-label="Previous week"
+          >
             <ChevronLeft className="h-4 w-4" />
           </Button>
           <Popover open={calOpen} onOpenChange={setCalOpen}>
@@ -307,16 +308,76 @@ export default function WeekStackPage() {
               />
             </PopoverContent>
           </Popover>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={goToNext}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 hover:bg-slate-100"
+            onClick={goToNext}
+            aria-label="Next week"
+          >
             <ChevronRight className="h-4 w-4" />
           </Button>
-          <Button variant="outline" size="sm" className="h-8 text-xs" onClick={goToCurrent}>
+          <button
+            type="button"
+            onClick={goToCurrent}
+            className="px-3 py-1.5 rounded-md border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+          >
             Today
-          </Button>
+          </button>
+
+          {/* Segmented Day / Week toggle. Week is active here. Day click
+              routes to canonical Day View, preserving tech context. */}
+          <div
+            className="inline-flex items-center rounded-md border border-slate-200 bg-slate-100 p-0.5"
+            data-testid="timesheets-view-toggle"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setLocation(
+                  techId
+                    ? `/timesheets?view=day&tech=${techId}`
+                    : "/timesheets?view=day",
+                );
+              }}
+              className="px-3 py-1.5 text-sm font-medium rounded text-slate-500 hover:text-slate-700 hover:bg-slate-200 transition-colors"
+              data-testid="view-toggle-day"
+            >
+              Day
+            </button>
+            <button
+              type="button"
+              className="px-3 py-1.5 text-sm font-medium rounded bg-white text-slate-900 shadow-sm"
+              aria-current="page"
+              data-testid="view-toggle-week"
+            >
+              Week
+            </button>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <User className="h-4 w-4 text-muted-foreground" />
+        {/* Right-side primary CTA. */}
+        <Button
+          size="sm"
+          onClick={handleAddEntryGlobal}
+          disabled={!techId}
+          className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600"
+          data-testid="button-add-entry-global"
+        >
+          <Plus className="h-3.5 w-3.5 mr-1" />
+          Add Entry
+        </Button>
+      </div>
+
+      {/* Timesheet Context Header — shared structure with Day View. Tech
+          selector on the left; tech name + week range + Job/General chips
+          on the right when a tech is selected. */}
+      <div
+        className="bg-white border border-slate-200 rounded-md px-4 py-3 flex items-center justify-between gap-3 flex-wrap"
+        data-testid="timesheet-context-header"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <User className="h-4 w-4 text-muted-foreground shrink-0" />
           <Select value={techId} onValueChange={setTechId}>
             <SelectTrigger className="w-[220px] h-8 text-sm">
               <SelectValue placeholder="Select team member" />
@@ -330,6 +391,30 @@ export default function WeekStackPage() {
             </SelectContent>
           </Select>
         </div>
+        {techId && vm && (() => {
+          const selectedTech = technicians.find((t) => t.id === techId);
+          const techName = selectedTech ? getMemberDisplayName(selectedTech) : "";
+          return (
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex items-baseline gap-2 flex-wrap">
+                <span className="text-sm font-semibold text-slate-900">{techName}</span>
+                <span className="text-xs text-slate-500 tabular-nums">
+                  {format(parseISO(weekStart), "MMM d")} – {format(parseISO(weekEnd), "MMM d, yyyy")}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <SummaryPill variant="job" label="Job Time" minutes={vm.weekTotals.jobMinutes} />
+                <SummaryPill variant="general" label="General Time" minutes={vm.weekTotals.generalMinutes} />
+              </div>
+              <span
+                className="text-sm font-semibold tabular-nums text-slate-900"
+                data-testid="week-context-total"
+              >
+                {formatHm(vm.weekTotals.totalMinutes)}
+              </span>
+            </div>
+          );
+        })()}
       </div>
 
       {!techId ? (
@@ -357,7 +442,6 @@ export default function WeekStackPage() {
                   key={day.date}
                   day={day}
                   isLast={i === vm.days.length - 1}
-                  onAddEntry={goToDay}
                   onEditDay={goToDay}
                 />
               ))}
@@ -368,34 +452,22 @@ export default function WeekStackPage() {
 
       {vm && (
         <Card>
-          <CardContent className="py-3 space-y-2">
+          <CardContent className="py-3">
+            {/* Compact weekly summary — pills only. The progress bar and the
+                per-pill percentages were removed; the per-day footers carry
+                the daily Job/General split, so the week pill row is now a
+                pure totals readout. */}
             <div className="flex items-center gap-3 flex-wrap text-sm">
               <SummaryPill primary label="WEEK TOTAL" minutes={vm.weekTotals.totalMinutes} />
               <SummaryPill
                 variant="job"
                 label="Job Time"
                 minutes={vm.weekTotals.jobMinutes}
-                percent={jobPct}
               />
               <SummaryPill
                 variant="general"
                 label="General Time"
                 minutes={vm.weekTotals.generalMinutes}
-                percent={genPct}
-              />
-            </div>
-            {/* Stacked progress bar — blue for Job Time, green for General Time.
-                No 40h target overlay; ratio-only. */}
-            <div className="h-2 w-full bg-slate-100 rounded overflow-hidden flex">
-              <div
-                className="h-full bg-blue-500 transition-all"
-                style={{ width: `${jobPct}%` }}
-                data-testid="week-bar-job"
-              />
-              <div
-                className="h-full bg-emerald-500 transition-all"
-                style={{ width: `${genPct}%` }}
-                data-testid="week-bar-general"
               />
             </div>
           </CardContent>
@@ -403,7 +475,7 @@ export default function WeekStackPage() {
       )}
 
       <p className="text-xs text-muted-foreground italic">
-        Read-only weekly review. Click a day header, an entry, or “+ Add Entry” to edit in the canonical Day View.
+        Read-only weekly review. Click a day header or any entry to edit in the canonical Day View.
       </p>
     </div>
   );
@@ -465,15 +537,15 @@ function SummaryPill({
 function DayStackCard({
   day,
   isLast,
-  onAddEntry,
   onEditDay,
 }: {
   day: import("@/components/timesheets/stack/buildWeekStackViewModel").WeekStackDay;
   isLast: boolean;
-  onAddEntry: (date: string) => void;
   onEditDay: (date: string) => void;
 }) {
-  const dateLabel = format(parseISO(day.date), "MMM d");
+  // Ordinal day-of-month per spec ("MON 4th"). date-fns `do` token returns
+  // "1st", "2nd", "3rd", "4th", etc. — strict English ordinals.
+  const dateLabel = format(parseISO(day.date), "do");
   const hasRows = day.rows.length > 0;
   return (
     <div
@@ -483,81 +555,73 @@ function DayStackCard({
       )}
       data-testid={`day-stack-${day.date}`}
     >
-      {/* Header — weekday + date + day total + Job/General summary lines.
-          Whole header is one button so clicking anywhere in it opens Day View. */}
+      {/* Header — weekday + ordinal day inline ("MON 4th"). Whole header is
+          a button so clicking anywhere in it routes to the canonical Day View. */}
       <button
         type="button"
         onClick={() => onEditDay(day.date)}
-        className="px-3 py-2 text-left bg-slate-50 hover:bg-slate-100 active:bg-slate-200 transition-colors border-b border-slate-200"
+        className="px-3 py-3 text-left bg-slate-50 hover:bg-slate-100 active:bg-slate-200 transition-colors border-b border-slate-200"
         aria-label={`Open ${day.dayLabel} in Day View`}
       >
-        <div className="flex items-baseline justify-between">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">
-            {day.dayLabel}
-          </div>
-          <div className="text-[11px] text-slate-400">{dateLabel}</div>
-        </div>
-        <div className="mt-1 flex items-baseline justify-between gap-2">
-          <div className="text-base font-semibold tabular-nums text-slate-700 leading-none">
-            {formatHm(day.totalMinutes)}
-          </div>
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-xs">
+            <span className="font-semibold uppercase tracking-wider text-slate-700">
+              {day.dayLabel}
+            </span>{" "}
+            <span className="text-slate-400">{dateLabel}</span>
+          </span>
           {day.hasIssue && (
-            <div
-              className="inline-flex items-center gap-0.5 text-[10px] font-medium text-amber-600"
+            <span
+              className="inline-flex items-center gap-0.5 text-[10px] font-medium text-amber-600 shrink-0"
               title="Open or unfinished entry on this day"
             >
               <AlertTriangle className="h-2.5 w-2.5" />
               Issue
-            </div>
+            </span>
           )}
-        </div>
-        {/* Compact daily summary — Job Time + General Time. Always rendered
-            so the seven column headers visually rhyme regardless of which
-            days have entries. */}
-        <div className="mt-1.5 space-y-0.5">
-          <DaySummaryLine variant="job" label="Job Time" minutes={day.jobMinutes} />
-          <DaySummaryLine variant="general" label="General Time" minutes={day.generalMinutes} />
         </div>
       </button>
 
-      {/* Body — flat continuous timeline. Rows separated by divide-y, no
-          per-row card chrome. Rows route to the canonical Day View on click. */}
-      <div className="flex-1 flex flex-col min-h-[200px]">
-        {!hasRows ? (
-          <div className="flex-1 flex items-center justify-center py-4">
-            <span className="text-xs text-slate-400">No entries</span>
-          </div>
-        ) : (
-          <div className="divide-y divide-slate-100">
+      {/* Body — chronological rows only. No empty-state label; an empty day
+          simply renders a blank body block (footer still shows zero totals
+          for visual consistency). `pt-3 pb-3` gives breathing room below the
+          header and above the daily summary footer; `min-h-[300px]` keeps
+          sparse days from feeling crushed. flex-1 keeps the column extending
+          to the tallest body in the row so the bottom footers align. */}
+      <div className="flex-1 flex flex-col min-h-[300px] pt-3 pb-3">
+        {hasRows && (
+          <div className="divide-y divide-slate-200">
             {day.rows.map((r) => (
               <EntryRow key={r.key} row={r} onClick={() => onEditDay(day.date)} />
             ))}
           </div>
         )}
+      </div>
 
-        <div
-          className={cn(
-            "mt-auto px-3 py-2",
-            hasRows && "border-t border-slate-100",
-          )}
-        >
-          <button
-            type="button"
-            onClick={() => onAddEntry(day.date)}
-            className="text-xs text-slate-400 hover:text-slate-700 hover:underline transition-colors"
-            data-testid={`stack-add-entry-${day.date}`}
+      {/* Daily summary footer — bottom-anchored. Job Time + General Time +
+          Total. Same data the header used to surface; relocated for cleaner
+          top hierarchy. All seven footers align horizontally because the
+          grid row's `flex-1` body equalizes column heights. */}
+      <div className="px-3 py-3 bg-slate-50 border-t border-slate-200 space-y-1">
+        <DaySummaryLine variant="job" label="Job Time" minutes={day.jobMinutes} />
+        <DaySummaryLine variant="general" label="General Time" minutes={day.generalMinutes} />
+        <div className="border-t border-slate-200 pt-1.5 mt-1.5 grid grid-cols-[1fr_auto] gap-2 items-baseline">
+          <span className="text-sm font-semibold text-slate-900">Total</span>
+          <span
+            className="text-sm font-semibold tabular-nums text-slate-900"
+            data-testid={`stack-day-total-${day.date}`}
           >
-            + Add Entry
-          </button>
+            {formatHm(day.totalMinutes)}
+          </span>
         </div>
       </div>
     </div>
   );
 }
 
-// Daily-summary line in the column header. Blue dot + label + minutes for
-// Job Time, green dot equivalent for General Time. Compact text-[11px] so
-// the header stays scannable.
+// Daily-summary line in the bottom footer. Blue dot for Job Time, green dot
+// for General Time. Uses the same `1fr auto` grid as entry rows so the time
+// column aligns visually with the Total row directly below it.
 function DaySummaryLine({
   variant,
   label,
@@ -569,21 +633,24 @@ function DaySummaryLine({
 }) {
   const dotClasses = variant === "job" ? "bg-blue-500" : "bg-emerald-500";
   return (
-    <div className="flex items-center gap-1.5 text-[11px]">
-      <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", dotClasses)} aria-hidden />
-      <span className="text-slate-600 font-medium">{label}</span>
-      <span className="ml-auto tabular-nums text-slate-700 font-semibold">
+    <div className="grid grid-cols-[1fr_auto] gap-2 items-baseline text-xs">
+      <div className="flex items-baseline gap-1.5 min-w-0">
+        <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", dotClasses)} aria-hidden />
+        <span className="text-slate-600 font-medium truncate">{label}</span>
+      </div>
+      <span className="tabular-nums text-slate-700 font-semibold">
         {formatHm(minutes)}
       </span>
     </div>
   );
 }
 
-// Flat row in the daily entry list. No border, no rounded corners, no bg fill —
-// row dividers come from the parent's `divide-y`. Dot sits inline with the
-// identifier on the same baseline as the right-aligned time so times line up
-// vertically across the column. Secondary lines (location, summary) indent
-// under the identifier (skip the dot column) via `pl-3.5`.
+// Flat row in the daily entry list. Outer layout is a 2-column grid —
+// `1fr auto` — so the right column is pinned to the row's right edge and
+// times line up vertically across the column regardless of left-side
+// content length. `items-start` baselines the time with the first line of
+// left content. No per-row border / rounded / bg — dividers come from the
+// parent's `divide-y divide-slate-200`.
 function EntryRow({
   row,
   onClick,
@@ -596,13 +663,17 @@ function EntryRow({
       <button
         type="button"
         onClick={onClick}
-        className="block w-full px-3 py-2 text-left hover:bg-slate-50 transition-colors"
+        className="block w-full px-3 py-2 text-left bg-slate-50 hover:bg-slate-100 transition-colors"
         data-testid={`stack-row-${row.key}`}
       >
-        <div className="flex items-baseline gap-2">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" aria-hidden />
-          <span className="text-sm font-medium text-slate-700">General Time</span>
-          <span className="ml-auto text-sm font-semibold tabular-nums text-slate-900 shrink-0">
+        <div className="grid grid-cols-[1fr_auto] items-start gap-2">
+          <div className="flex items-baseline gap-2 min-w-0">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" aria-hidden />
+            <span className="text-sm font-medium text-slate-600 leading-tight">
+              General Time
+            </span>
+          </div>
+          <span className="text-sm font-semibold tabular-nums text-slate-900 leading-tight">
             {formatHm(row.totalMinutes)}
           </span>
         </div>
@@ -610,8 +681,9 @@ function EntryRow({
     );
   }
 
-  // Job row — top line: dot · #number · time. Subsequent lines indent under
-  // the identifier (pl-3.5) so the time column stays clean.
+  // Job row — left column stacks identifier / location / summary; right
+  // column carries only the time. Secondary lines indent via `pl-3.5` so
+  // they align under the identifier rather than the dot.
   return (
     <button
       type="button"
@@ -619,36 +691,40 @@ function EntryRow({
       className="block w-full px-3 py-2 text-left hover:bg-slate-50 transition-colors"
       data-testid={`stack-row-${row.key}`}
     >
-      <div className="flex items-baseline gap-2">
-        <span className="h-1.5 w-1.5 rounded-full bg-blue-500 shrink-0" aria-hidden />
-        <span className="text-sm font-medium tabular-nums text-slate-700">
-          #{row.jobNumber ?? "—"}
-        </span>
-        <span className="ml-auto text-sm font-semibold tabular-nums text-slate-900 shrink-0">
+      <div className="grid grid-cols-[1fr_auto] items-start gap-2">
+        <div className="min-w-0">
+          <div className="flex items-baseline gap-2">
+            <span className="h-1.5 w-1.5 rounded-full bg-blue-500 shrink-0" aria-hidden />
+            <span className="text-sm font-medium tabular-nums text-slate-700 leading-tight">
+              #{row.jobNumber ?? "—"}
+            </span>
+          </div>
+          {row.locationName && (
+            <div
+              className="pl-3.5 mt-0.5 text-sm text-slate-700 leading-tight break-words"
+              title={row.locationName}
+            >
+              {row.locationName}
+            </div>
+          )}
+          {row.jobSummary && (
+            <div
+              className="pl-3.5 mt-0.5 text-xs text-slate-500 leading-tight line-clamp-2 break-words"
+              title={row.jobSummary}
+            >
+              {row.jobSummary}
+            </div>
+          )}
+          {row.hasOpenEntry && (
+            <div className="pl-3.5 mt-1 text-[10px] font-medium text-amber-600">
+              Unfinished entry
+            </div>
+          )}
+        </div>
+        <span className="text-sm font-semibold tabular-nums text-slate-900 leading-tight">
           {formatHm(row.totalMinutes)}
         </span>
       </div>
-      {row.locationName && (
-        <div
-          className="pl-3.5 mt-0.5 text-sm text-slate-700 leading-snug break-words"
-          title={row.locationName}
-        >
-          {row.locationName}
-        </div>
-      )}
-      {row.jobSummary && (
-        <div
-          className="pl-3.5 mt-0.5 text-xs text-slate-500 leading-snug line-clamp-2 break-words"
-          title={row.jobSummary}
-        >
-          {row.jobSummary}
-        </div>
-      )}
-      {row.hasOpenEntry && (
-        <div className="pl-3.5 mt-1 text-[10px] font-medium text-amber-600">
-          Unfinished entry
-        </div>
-      )}
     </button>
   );
 }

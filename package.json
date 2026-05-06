@@ -19,7 +19,8 @@
     "sanity:scheduling": "tsx server/scripts/schedulingSanityCheck.ts",
     "backfill:quotes-customer-company": "tsx server/scripts/backfillQuoteCustomerCompanyId.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "stripe:listen": "stripe listen --forward-to localhost:5000/api/webhooks/stripe"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",

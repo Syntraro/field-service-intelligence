@@ -1879,14 +1879,22 @@ export const invoices = pgTable("invoices", {
   // Client message (customer-facing message for invoice PDF/email)
   clientMessage: text("client_message"), // Customer-facing message
   // Client visibility toggles (controls what appears on client-facing invoice)
-  showQuantity: boolean("show_quantity").notNull().default(true),
-  showUnitPrice: boolean("show_unit_price").notNull().default(true),
-  showLineTotals: boolean("show_line_totals").notNull().default(true),
-  showLineItems: boolean("show_line_items").notNull().default(true), // If false, client sees only subtotal/total
+  // 2026-05-06: the five flags below are NULLABLE per migration
+  // 2026_05_06_invoice_visibility_inherit.sql.
+  //   NULL          → inherit the tenant Invoice Display default
+  //                   (resolved by shared/invoiceDisplayPolicy.ts::pick)
+  //   true / false  → explicit per-invoice override
+  // Existing rows keep their pre-migration boolean values (no data
+  // mutation) so legacy invoices behave exactly as before; new invoices
+  // created after the migration leave these columns NULL and inherit.
+  showQuantity: boolean("show_quantity"),
+  showUnitPrice: boolean("show_unit_price"),
+  showLineTotals: boolean("show_line_totals"),
+  showLineItems: boolean("show_line_items"), // If false, client sees only subtotal/total
   showBalance: boolean("show_balance").notNull().default(true),
   // 2026-04-14: gate the work-description block on client-facing
-  // surfaces (PDF + portal). Default true preserves existing behavior.
-  showJobDescription: boolean("show_job_description").notNull().default(true),
+  // surfaces (PDF + portal). 2026-05-06: nullable for tenant-default inheritance.
+  showJobDescription: boolean("show_job_description"),
   // QBO sync fields
   qboInvoiceId: text("qbo_invoice_id"), // QBO Invoice.Id
   qboSyncToken: text("qbo_sync_token"), // QBO Invoice.SyncToken (required for updates)
@@ -1986,12 +1994,16 @@ export const updateInvoiceSchema = z.object({
   // workDescription. Surfaces in the canonical detail header.
   summary: z.string().max(255).nullable().optional(),
   clientMessage: z.string().nullable().optional(),
-  showQuantity: z.boolean().optional(),
-  showUnitPrice: z.boolean().optional(),
-  showLineTotals: z.boolean().optional(),
-  showLineItems: z.boolean().optional(),
+  // 2026-05-06: nullable so the "Reset to tenant defaults" affordance on
+  // the invoice detail page can PATCH `null` to clear the per-invoice
+  // override. `null` → inherit tenant default at render time.
+  // `showBalance` stays non-null — it gates a mandatory surface.
+  showQuantity: z.boolean().nullable().optional(),
+  showUnitPrice: z.boolean().nullable().optional(),
+  showLineTotals: z.boolean().nullable().optional(),
+  showLineItems: z.boolean().nullable().optional(),
   showBalance: z.boolean().optional(),
-  showJobDescription: z.boolean().optional(),
+  showJobDescription: z.boolean().nullable().optional(),
   qboInvoiceId: z.string().nullable().optional(),
   qboSyncToken: z.string().nullable().optional(),
   qboLastSyncedAt: z.date().nullable().optional(),

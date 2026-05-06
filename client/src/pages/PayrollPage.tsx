@@ -632,16 +632,9 @@ export default function PayrollPage() {
           >
             Timesheet Reports
           </Button>
-          {/* 2026-05-04 — Link to experimental stacked-day layout. Strictly
-              additive; default view remains this page. */}
-          <Button
-            onClick={() => setLocation("/timesheets/stack")}
-            variant="outline"
-            size="sm"
-            data-testid="link-stack-view"
-          >
-            Stack View
-          </Button>
+          {/* 2026-05-05 — "Stack View" header link removed; the stack layout
+              IS now the canonical /timesheets surface. PayrollPage is reached
+              only via `?view=day` deep-links from Stack View entries. */}
           {viewMode === "week" && (
             <Button onClick={handleExportCsv} variant="outline" size="sm" disabled={summaries.length === 0}>
               <Download className="h-4 w-4 mr-2" />
@@ -651,12 +644,12 @@ export default function PayrollPage() {
         </div>
       </div>
 
-      {/* Row 1: View toggle + date controls for active view */}
+      {/* 2026-05-05 — Day/Week toggle removed. PayrollPage is now exclusively
+          the Day View host (Stack View at /timesheets owns the weekly review).
+          The Week mode JSX below is unreachable from active routing but is
+          preserved verbatim for now — it will be removed in a follow-up
+          cleanup once the timeline-test source-pins are migrated. */}
       <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-1 rounded-md border bg-muted p-1">
-          <button onClick={() => setViewMode("day")} className={cn("px-4 py-1.5 text-sm font-medium rounded-md transition-all", viewMode === "day" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>Day</button>
-          <button onClick={() => setViewMode("week")} className={cn("px-4 py-1.5 text-sm font-medium rounded-md transition-all", viewMode === "week" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>Week</button>
-        </div>
         {viewMode === "week" && (
           <div className="flex items-center gap-1.5">
             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={goToPreviousWeek}><ChevronLeft className="h-4 w-4" /></Button>
@@ -686,8 +679,8 @@ export default function PayrollPage() {
           </div>
         )}
         {viewMode === "day" && (
-          <div className="flex items-center gap-1.5">
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={goToPreviousDay}><ChevronLeft className="h-4 w-4" /></Button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-slate-100" onClick={goToPreviousDay} aria-label="Previous day"><ChevronLeft className="h-4 w-4" /></Button>
             <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
               <PopoverTrigger asChild>
                 <Button variant="outline" className="h-9 gap-2 font-semibold text-sm px-4 min-w-[190px] justify-center shadow-sm border-primary/30 hover:border-primary hover:bg-primary/5">
@@ -699,8 +692,37 @@ export default function PayrollPage() {
                 <Calendar mode="single" selected={parseISO(dayViewDate)} onSelect={(date) => { if (date) { setDayViewDate(format(date, "yyyy-MM-dd")); setCalendarOpen(false); } }} initialFocus />
               </PopoverContent>
             </Popover>
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={goToNextDay}><ChevronRight className="h-4 w-4" /></Button>
-            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={goToToday}>Today</Button>
+            <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-slate-100" onClick={goToNextDay} aria-label="Next day"><ChevronRight className="h-4 w-4" /></Button>
+            <button
+              type="button"
+              onClick={goToToday}
+              className="px-3 py-1.5 rounded-md border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors"
+            >
+              Today
+            </button>
+            {/* 2026-05-05 — Segmented Day / Week toggle. Day is active on
+                this page; clicking Week routes to canonical Stack View. */}
+            <div
+              className="inline-flex items-center rounded-md border border-slate-200 bg-slate-100 p-0.5"
+              data-testid="timesheets-view-toggle"
+            >
+              <button
+                type="button"
+                className="px-3 py-1.5 text-sm font-medium rounded bg-white text-slate-900 shadow-sm"
+                aria-current="page"
+                data-testid="view-toggle-day"
+              >
+                Day
+              </button>
+              <button
+                type="button"
+                onClick={() => setLocation("/timesheets")}
+                className="px-3 py-1.5 text-sm font-medium rounded text-slate-500 hover:text-slate-700 hover:bg-slate-200 transition-colors"
+                data-testid="view-toggle-week"
+              >
+                Week
+              </button>
+            </div>
           </div>
         )}
       </div>

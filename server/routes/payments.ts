@@ -21,9 +21,15 @@ import { AuthedRequest, rateLimitPerTenant } from "../auth/tenantIsolation";
 import { paymentRepository } from "../storage/payments";
 import { invoiceRepository } from "../storage/invoices";
 import { isInvoicePaid } from "../lib/invoicePredicates";
-import { paymentMethodEnum, payments as paymentsTable } from "@shared/schema";
+import {
+  paymentMethodEnum,
+  payments as paymentsTable,
+  invoices as invoicesTable,
+  customerCompanies as customerCompaniesTable,
+} from "@shared/schema";
+import { UNPAID_INVOICE_STATUSES } from "@shared/invoiceStatus";
 import { db } from "../db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray, sql } from "drizzle-orm";
 import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
 // 2026-04-09: Outbound QBO payment sync — fire-and-forget hook called AFTER
@@ -34,6 +40,11 @@ import { maybeSyncPaymentToQbo } from "../services/qbo/maybeSyncPayment";
 // 2026-04-21 provider-neutral seam. Routes do auth + validation + call the
 // application service. Stripe SDK usage lives only behind the Stripe adapter.
 import { paymentApplicationService } from "../services/payments/paymentApplicationService";
+// 2026-05-06 PR2: receipt email wiring for the manual Collect Payment
+// flow. `sendMultiInvoicePaymentReceiptEmail` handles BOTH single- and
+// multi-allocation receipts (the template builder loads allocations off
+// the payment row, so a one-allocation manual payment renders cleanly).
+import { emailDispatchService } from "../services/emailDispatchService";
 
 const router = Router();
 
@@ -111,6 +122,382 @@ router.post(
       currency,
     });
     res.status(201).json(result);
+  }),
+);
+
+// ========================================
+// COLLECT PAYMENT (provider-neutral, multi-invoice)
+// 2026-05-06
+// ========================================
+//
+// Two endpoints power the staff "Collect Payment" flow:
+//
+//   GET  /api/invoices/:invoiceId/collect-payment-context
+//        Returns the data the modal needs in one round trip:
+//          - the source invoice (for header context + preselected row)
+//          - the customer company
+//          - every UNPAID invoice for that customer company
+//            (the source invoice is included by design)
+//          - account balance (sum of unpaid invoice balances)
+//          - supported payment methods (from the schema enum)
+//
+//   POST /api/payments
+//        Body: { customerCompanyId, method, transactionDate, reference,
+//                notes, allocations: [{invoiceId, amount}], emailReceipt }
+//        Creates ONE payment row (invoiceId=null, providerSource=manual)
+//        + N allocation rows + per-invoice balance/status updates,
+//        atomically. emailReceipt is best-effort; receipt-mailer wiring
+//        for the manual path is a follow-up.
+//
+// The Stripe staff "Take card payment" path
+// (`/api/invoices/:invoiceId/payments/checkout`) is NOT touched. Staff
+// can still mount that flow from the overflow menu when they want to
+// charge a card directly. This endpoint is for cash / cheque / e-transfer
+// / debit / external-card / other manual entry.
+
+router.get(
+  "/invoices/:invoiceId/collect-payment-context",
+  requireRole(MANAGER_ROLES),
+  requirePermission("payments.collect"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const sourceInvoiceId = req.params.invoiceId;
+
+    const sourceInvoice = await invoiceRepository.getInvoice(companyId, sourceInvoiceId);
+    if (!sourceInvoice) throw createError(404, "Invoice not found");
+
+    if (!sourceInvoice.customerCompanyId) {
+      // Standalone-location invoices have no parent customer company —
+      // they can still take a single-invoice manual payment, but the
+      // multi-invoice picker is not meaningful. Return an empty list
+      // alongside the source invoice so the dialog renders correctly
+      // and only the source row is selectable.
+      // 2026-05-06 — pre-resolve recipient so the dialog can disable
+      // "Save and Email Receipt" upfront when no billing email is on
+      // file. We resolve the SAME way the receipt mailer will resolve
+      // it — `recipientResolverService.getDefaultRecipients` keyed by
+      // entityType "payment_receipt" — so the upfront UI signal is
+      // truthful.
+      const billingEmail = await resolveBillingEmail(companyId, sourceInvoiceId);
+      res.json({
+        sourceInvoiceId,
+        customerCompany: null,
+        invoices: [
+          {
+            id: sourceInvoice.id,
+            invoiceNumber: sourceInvoice.invoiceNumber,
+            status: sourceInvoice.status,
+            issueDate: sourceInvoice.issueDate,
+            dueDate: sourceInvoice.dueDate,
+            total: sourceInvoice.total,
+            amountPaid: sourceInvoice.amountPaid,
+            balance: sourceInvoice.balance,
+            locationId: sourceInvoice.locationId,
+          },
+        ],
+        accountBalance: sourceInvoice.balance ?? "0.00",
+        supportedMethods: paymentMethodEnum,
+        billingEmail,
+      });
+      return;
+    }
+
+    const [customerCompany] = await db
+      .select()
+      .from(customerCompaniesTable)
+      .where(
+        and(
+          eq(customerCompaniesTable.id, sourceInvoice.customerCompanyId),
+          eq(customerCompaniesTable.companyId, companyId),
+        ),
+      )
+      .limit(1);
+
+    // All UNPAID invoices for this customer company. Filters in SQL via
+    // (a) the canonical UNPAID statuses set, (b) balance > 0, (c) tenant
+    // scope, (d) customer-company scope. The source invoice is naturally
+    // included if it is itself unpaid.
+    const unpaidRows = await db
+      .select({
+        id: invoicesTable.id,
+        invoiceNumber: invoicesTable.invoiceNumber,
+        status: invoicesTable.status,
+        issueDate: invoicesTable.issueDate,
+        dueDate: invoicesTable.dueDate,
+        total: invoicesTable.total,
+        amountPaid: invoicesTable.amountPaid,
+        balance: invoicesTable.balance,
+        locationId: invoicesTable.locationId,
+      })
+      .from(invoicesTable)
+      .where(
+        and(
+          eq(invoicesTable.companyId, companyId),
+          eq(invoicesTable.customerCompanyId, sourceInvoice.customerCompanyId),
+          inArray(invoicesTable.status, UNPAID_INVOICE_STATUSES),
+          sql`CAST(${invoicesTable.balance} AS numeric) > 0`,
+        ),
+      )
+      .orderBy(invoicesTable.dueDate);
+
+    // Defensive: if the source invoice itself isn't in the unpaid set
+    // (e.g. paid already) but the user still hit this endpoint, fold
+    // it in so the dialog can show "this invoice has nothing left to
+    // collect" without crashing.
+    const found = unpaidRows.some((r) => r.id === sourceInvoiceId);
+    if (!found) {
+      unpaidRows.unshift({
+        id: sourceInvoice.id,
+        invoiceNumber: sourceInvoice.invoiceNumber,
+        status: sourceInvoice.status,
+        issueDate: sourceInvoice.issueDate,
+        dueDate: sourceInvoice.dueDate,
+        total: sourceInvoice.total,
+        amountPaid: sourceInvoice.amountPaid,
+        balance: sourceInvoice.balance,
+        locationId: sourceInvoice.locationId,
+      });
+    }
+
+    const accountBalance = unpaidRows
+      .reduce((sum, r) => sum + parseFloat(r.balance ?? "0"), 0)
+      .toFixed(2);
+
+    const billingEmail = await resolveBillingEmail(companyId, sourceInvoiceId);
+
+    res.json({
+      sourceInvoiceId,
+      customerCompany: customerCompany
+        ? { id: customerCompany.id, name: customerCompany.name }
+        : null,
+      invoices: unpaidRows,
+      accountBalance,
+      supportedMethods: paymentMethodEnum,
+      billingEmail,
+    });
+  }),
+);
+
+/**
+ * 2026-05-06 — pre-resolve the billing email the receipt mailer would
+ * use, so the Collect Payment dialog can disable "Save and Email
+ * Receipt" upfront. Returns the FIRST resolvable address, or null when
+ * the canonical resolver returns nothing (e.g. customer has no billing
+ * contact + no invoice-level billing_email override).
+ *
+ * NOTE: this is a READ-ONLY hint. The actual receipt dispatch goes
+ * through the same resolver at send time, so a stale billing record
+ * after the dialog opens degrades gracefully — the worst case is we
+ * disabled the email button but the address is on file by send time
+ * (the operator simply re-opens the dialog).
+ */
+async function resolveBillingEmail(
+  companyId: string,
+  invoiceId: string,
+): Promise<string | null> {
+  try {
+    const { recipientResolverService } = await import(
+      "../services/recipientResolverService"
+    );
+    const resolved = await recipientResolverService.getDefaultRecipients({
+      tenantId: companyId,
+      entityType: "payment_receipt",
+      entityId: invoiceId,
+    });
+    return resolved.recipients[0] ?? null;
+  } catch {
+    // Resolver failure is non-fatal here — the dialog handles a null
+    // result by treating the email button as unavailable, which is
+    // strictly safer than enabling it and discovering the failure at
+    // send time.
+    return null;
+  }
+}
+
+const collectPaymentSchema = z
+  .object({
+    customerCompanyId: z.string().uuid(),
+    method: z.enum(paymentMethodEnum),
+    transactionDate: z.string().datetime().optional(),
+    reference: z.string().max(100).nullable().optional(),
+    notes: z.string().max(2000).nullable().optional(),
+    allocations: z
+      .array(
+        z.object({
+          invoiceId: z.string().uuid(),
+          amount: z.string().regex(/^\d+(\.\d{1,2})?$/, "Invalid amount format"),
+        }),
+      )
+      .min(1, "At least one invoice allocation is required"),
+    emailReceipt: z.boolean().optional(),
+  })
+  .strict();
+
+// 2026-05-06 — Inline-Elements multi-invoice card payment intent.
+// Distinct from the existing single-invoice /payments/checkout (which
+// charges a single invoice's full balance). The Collect Payment dialog
+// posts here when the operator picks Credit Card. The service mints a
+// Stripe PaymentIntent for the SUM of allocations and packs the
+// allocation breakdown into Stripe metadata; the webhook handler is
+// the canonical writer (one payment row + N allocations).
+const cardIntentSchema = z
+  .object({
+    customerCompanyId: z.string().uuid(),
+    allocations: z
+      .array(
+        z.object({
+          invoiceId: z.string().uuid(),
+          amount: z.string().regex(/^\d+(\.\d{1,2})?$/, "Invalid amount format"),
+        }),
+      )
+      .min(1, "At least one allocation is required"),
+    currency: z.string().length(3).optional(),
+  })
+  .strict();
+
+const cardIntentLimiter = rateLimitPerTenant({
+  scope: "staff-card-intent",
+  windowMs: 60_000,
+  max: 12,
+});
+
+router.post(
+  "/payments/card-intent",
+  requireRole(MANAGER_ROLES),
+  requirePermission("payments.collect"),
+  cardIntentLimiter,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const validated = validateSchema(cardIntentSchema, req.body ?? {});
+
+    const result = await paymentApplicationService.createCardIntentWithAllocations({
+      companyId,
+      customerCompanyId: validated.customerCompanyId,
+      allocations: validated.allocations,
+      source: "staff",
+      currency: validated.currency,
+    });
+
+    res.status(201).json(result);
+  }),
+);
+
+router.post(
+  "/payments",
+  requireRole(MANAGER_ROLES),
+  requirePermission("payments.collect"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const validated = validateSchema(collectPaymentSchema, req.body);
+
+    // Storage layer enforces tenant + customer-scope + status + per-allocation
+    // amount-vs-balance invariants atomically.
+    const result = await paymentRepository.createManualMultiInvoicePayment(
+      companyId,
+      {
+        customerCompanyId: validated.customerCompanyId,
+        method: validated.method,
+        reference: validated.reference ?? null,
+        notes: validated.notes ?? null,
+        receivedAt: validated.transactionDate,
+        allocations: validated.allocations.map((a) => ({
+          invoiceId: a.invoiceId,
+          allocatedAmount: a.amount,
+        })),
+        createdByUserId: req.user?.id ?? null,
+      },
+    );
+
+    // Lifecycle event — fires once per invoice that hit `paid` because
+    // of this payment, mirroring the legacy single-invoice flow.
+    for (const inv of result.invoices) {
+      if (isInvoicePaid(inv.status)) {
+        logEventAsync(getQueryCtx(req), {
+          eventType: "invoice.paid",
+          entityType: "invoice",
+          entityId: inv.id,
+          summary: `Invoice #${inv.invoiceNumber} fully paid`,
+          meta: {
+            invoiceNumber: inv.invoiceNumber,
+            paymentId: result.payment.id,
+            method: validated.method,
+            multiInvoice: result.invoices.length > 1,
+          },
+        });
+      }
+    }
+
+    // 2026-05-06 PR2 — receipt email dispatch. We use the canonical
+    // `sendMultiInvoicePaymentReceiptEmail({ tenantId, paymentId })`
+    // because manual payments ALWAYS write `payments.invoiceId = NULL`
+    // + N allocation rows (even for single-invoice manual entries), so
+    // the multi-invoice template builder is the right surface for both
+    // 1-allocation and N-allocation receipts. The single-invoice
+    // `sendPaymentReceiptEmail({ invoiceId })` would be the wrong call
+    // here — its template builder reads payment.amount off the payment
+    // row keyed by `payments.invoiceId`, which is null on this path.
+    //
+    // Failure policy mirrors the Stripe webhook receipt path: the
+    // payment row + allocations + balance updates have ALREADY committed
+    // when we get here, so a Resend failure must NOT roll any of that
+    // back. We catch every throw, surface it on the response as
+    // `receiptEmailQueued: false` + `receiptEmailReason`, and continue.
+    // The customer can be re-emailed later via the canonical email
+    // history retry path.
+    let receiptEmailQueued = false;
+    let receiptEmailReason: "not_requested" | "no_recipient" | "send_failed" | null = null;
+    let receiptEmailMessageId: string | null = null;
+    let receiptEmailErrorMessage: string | null = null;
+
+    if (validated.emailReceipt === true) {
+      try {
+        const sendResult = await emailDispatchService.sendMultiInvoicePaymentReceiptEmail({
+          tenantId: companyId,
+          paymentId: result.payment.id,
+        });
+        if (sendResult === null) {
+          // No recipient resolved — `getDefaultRecipients` returned
+          // empty and the caller did not pass an explicit override.
+          receiptEmailQueued = false;
+          receiptEmailReason = "no_recipient";
+        } else {
+          receiptEmailQueued = true;
+          receiptEmailMessageId = sendResult.emailId;
+          receiptEmailReason = null;
+        }
+      } catch (err: any) {
+        // Resend transport error / template render failure / etc. The
+        // payment is committed, so we log and surface the failure on
+        // the response without bubbling.
+        receiptEmailQueued = false;
+        receiptEmailReason = "send_failed";
+        receiptEmailErrorMessage = err?.message ?? "Receipt send failed";
+        // eslint-disable-next-line no-console
+        console.error(
+          JSON.stringify({
+            event: "manual_payment.receipt_send_failed",
+            companyId,
+            paymentId: result.payment.id,
+            error: receiptEmailErrorMessage,
+            timestamp: new Date().toISOString(),
+          }),
+        );
+      }
+    } else {
+      receiptEmailReason = "not_requested";
+    }
+
+    res.status(201).json({
+      payment: result.payment,
+      invoices: result.invoices,
+      receiptEmailRequested: validated.emailReceipt === true,
+      receiptEmailQueued,
+      receiptEmailReason,
+      receiptEmailMessageId,
+      // Only included when send_failed — gives the UI a human-readable
+      // hint without blowing up the response shape on success.
+      receiptEmailError: receiptEmailErrorMessage,
+    });
   }),
 );
 

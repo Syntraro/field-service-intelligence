@@ -6,8 +6,8 @@
  */
 
 import { db } from "../db";
-import { eq, and, sql, desc, gte, lte } from "drizzle-orm";
-import { payments, invoices, customerCompanies } from "@shared/schema";
+import { eq, and, sql, desc, gte, lte, inArray } from "drizzle-orm";
+import { payments, invoices, customerCompanies, paymentAllocations } from "@shared/schema";
 import { BaseRepository } from "./base";
 import type { InvoiceStatus, PaymentType } from "@shared/schema";
 import { canAcceptInvoicePayment, isInvoiceVoided } from "../lib/invoicePredicates";
@@ -320,6 +320,161 @@ export class PaymentRepository extends BaseRepository {
       await this.recalculateInvoiceBalance(tx, companyId, invoiceId);
 
       return payment;
+    });
+  }
+
+  /**
+   * 2026-05-06 — Provider-neutral manual multi-invoice payment.
+   *
+   * Creates ONE payment row (`invoiceId = NULL`, `providerSource =
+   * "manual"`) plus N allocation rows in a single transaction. Each
+   * allocated invoice has its `amountPaid` / `balance` / `status`
+   * updated DIRECTLY (subtract allocated amount, transition status) —
+   * we mirror the same in-tx pattern the Stripe multi-invoice webhook
+   * handler uses (`paymentApplicationService.applyMultiInvoiceAllocationsTx`).
+   *
+   * Validation invariants enforced server-side:
+   *   - All invoices belong to the same `companyId` (tenant scope)
+   *   - All invoices belong to the same `customerCompanyId` (account scope)
+   *   - Every invoice is `canAcceptInvoicePayment(...)` (payable status)
+   *   - Each allocation amount > 0 and ≤ that invoice's current `balance`
+   *   - Sum of allocations equals the payment's `amount`
+   *
+   * Used by the new `POST /api/payments` route. The existing legacy
+   * `POST /api/invoices/:invoiceId/payments` path continues to call
+   * `createPayment(...)` for backward compat (one-invoice manual entries
+   * with the legacy 1:1 contract).
+   */
+  async createManualMultiInvoicePayment(
+    companyId: string,
+    input: {
+      customerCompanyId: string;
+      method: string;
+      reference?: string | null;
+      notes?: string | null;
+      receivedAt?: string;
+      allocations: Array<{ invoiceId: string; allocatedAmount: string }>;
+      createdByUserId?: string | null;
+    },
+  ) {
+    this.assertCompanyId(companyId);
+
+    if (!Array.isArray(input.allocations) || input.allocations.length === 0) {
+      throw createError(400, "At least one invoice allocation is required");
+    }
+
+    // Stable order — used for friendly error messages.
+    const allocations = input.allocations.map((a) => ({ ...a }));
+
+    return await db.transaction(async (tx) => {
+      // 1. Load every allocated invoice in one query for tenant + customer scope check.
+      const invoiceIds = allocations.map((a) => a.invoiceId);
+      const rows = await tx
+        .select()
+        .from(invoices)
+        .where(
+          and(eq(invoices.companyId, companyId), inArray(invoices.id, invoiceIds)),
+        );
+
+      if (rows.length !== invoiceIds.length) {
+        throw createError(404, "One or more invoices not found in this tenant");
+      }
+      for (const inv of rows) {
+        if (inv.customerCompanyId !== input.customerCompanyId) {
+          throw createError(
+            400,
+            "All allocations must belong to the same client/customer company",
+          );
+        }
+        if (!canAcceptInvoicePayment(inv.status)) {
+          throw createError(
+            400,
+            `Invoice ${inv.invoiceNumber ?? inv.id} cannot accept payment (status: ${inv.status})`,
+          );
+        }
+      }
+
+      const byId = new Map(rows.map((r) => [r.id, r]));
+
+      // 2. Per-allocation amount validation against current balance.
+      let totalCents = 0;
+      for (const a of allocations) {
+        const amt = parseFloat(a.allocatedAmount);
+        if (!Number.isFinite(amt) || amt <= 0) {
+          throw createError(400, "Allocation amount must be greater than zero");
+        }
+        const inv = byId.get(a.invoiceId)!;
+        const currentBalance = parseFloat(inv.balance ?? "0");
+        if (amt > currentBalance + 0.0049) {
+          throw createError(
+            400,
+            `Allocation $${amt.toFixed(2)} exceeds invoice ${inv.invoiceNumber ?? inv.id} balance $${currentBalance.toFixed(2)}`,
+          );
+        }
+        totalCents += Math.round(amt * 100);
+      }
+      const totalAmount = (totalCents / 100).toFixed(2);
+
+      // 3. Insert the parent payment row. invoiceId is NULL even for
+      //    single-invoice manual entries on this path — allocations are
+      //    the source of truth. providerSource defaults to "manual".
+      const trimmedReference = input.reference?.trim() ?? "";
+      const [payment] = await tx
+        .insert(payments)
+        .values({
+          companyId,
+          invoiceId: null,
+          amount: totalAmount,
+          method: input.method as any,
+          reference: trimmedReference.length > 0 ? trimmedReference : null,
+          notes: input.notes ?? null,
+          receivedAt: input.receivedAt ? new Date(input.receivedAt) : new Date(),
+        })
+        .returning();
+
+      // 4. Insert allocation rows in a single batch.
+      await tx.insert(paymentAllocations).values(
+        allocations.map((a) => ({
+          companyId,
+          paymentId: payment.id,
+          invoiceId: a.invoiceId,
+          allocatedAmount: a.allocatedAmount,
+        })),
+      );
+
+      // 5. Per-invoice direct update — same pattern as the multi-invoice
+      //    Stripe webhook handler. Subtract allocated amount, bump
+      //    amountPaid, transition status. Single UPDATE per invoice.
+      const updatedInvoices: Array<typeof rows[number]> = [];
+      for (const a of allocations) {
+        const inv = byId.get(a.invoiceId)!;
+        const allocatedDollars = parseFloat(a.allocatedAmount);
+        const currentBalance = parseFloat(inv.balance ?? "0");
+        const currentAmountPaid = parseFloat(inv.amountPaid ?? "0");
+        const newBalance = Math.max(0, currentBalance - allocatedDollars);
+        const newAmountPaid = currentAmountPaid + allocatedDollars;
+
+        let newStatus: InvoiceStatus = inv.status as InvoiceStatus;
+        if (newBalance <= 0 && newAmountPaid > 0) {
+          newStatus = "paid";
+        } else if (newAmountPaid > 0 && newBalance > 0) {
+          newStatus = "partial_paid";
+        }
+
+        const [updated] = await tx
+          .update(invoices)
+          .set({
+            amountPaid: newAmountPaid.toFixed(2),
+            balance: newBalance.toFixed(2),
+            status: newStatus,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(invoices.id, a.invoiceId), eq(invoices.companyId, companyId)))
+          .returning();
+        updatedInvoices.push(updated);
+      }
+
+      return { payment, invoices: updatedInvoices };
     });
   }
 

@@ -1,4 +1,4 @@
-import { Switch, Route, useLocation, Link, Redirect } from "wouter";
+import { Switch, Route, useLocation, Link, Redirect, useSearch } from "wouter";
 import { Suspense, lazy } from "react";
 
 // ─── AUDIT INSTRUMENTATION (TEMPORARY) ──────────────────────────────────────
@@ -516,21 +516,24 @@ function Router() {
           <Clients />
         </ProtectedRoute>
       </Route>
-      {/* Timesheets — canonical timesheet page (formerly /settings/payroll).
-          Week mode renders the dispatch-style WeekTimeline inline; Day mode
-          renders the canonical DayView. Both surfaces live within PayrollPage. */}
+      {/* Timesheets — 2026-05-05 promotion: WeekStackPage is now the
+          canonical weekly review surface. PayrollPage hosts the canonical
+          Day View at `?view=day&tech=...&date=...`. The dispatcher below
+          reads `?view=` reactively (wouter's `useSearch`) so deep-links
+          from Stack View entries continue to land on PayrollPage Day View
+          without route flips. The legacy week mode of PayrollPage is no
+          longer reachable from the canonical flow — its JSX remains in
+          the file pending the timeline-test cleanup pass. */}
       <Route path="/timesheets">
         <ProtectedRoute requireAdmin>
-          <PayrollPage />
+          <TimesheetsRoute />
         </ProtectedRoute>
       </Route>
-      {/* 2026-05-04 — Experimental stacked-day timesheet layout, isolated
-          from the canonical /timesheets surface. Read-only: clicks route
-          back into PayrollPage's Day View for editing. */}
+      {/* 2026-05-05 — `/timesheets/stack` now redirects to the canonical
+          `/timesheets` (which IS the stack layout). The redirect keeps
+          any persisted bookmarks / external links working. */}
       <Route path="/timesheets/stack">
-        <ProtectedRoute requireAdmin>
-          <WeekStackPage />
-        </ProtectedRoute>
+        <Redirect to="/timesheets" />
       </Route>
       <Route path="/settings">
         <ProtectedRoute requireAdmin>
@@ -756,7 +759,12 @@ function PortalRouter() {
         </PortalProtected>
       </Route>
       <Route path="/portal/invoices/:invoiceId">
-        <PortalProtected>
+        {/* 2026-05-05: token-mode access. Pay Invoice email links carry
+            `?t=<token>` and must render PortalInvoiceDetail without a
+            portal session. PortalProtected's `allowInvoiceToken` prop
+            opts this single route into the bypass; every other portal
+            route still requires the magic-link session. */}
+        <PortalProtected allowInvoiceToken>
           <PortalLayout><PortalInvoiceDetail /></PortalLayout>
         </PortalProtected>
       </Route>
@@ -775,8 +783,30 @@ function PortalRouter() {
   );
 }
 
-/** Guard: redirects to /portal/login if no portal session */
-function PortalProtected({ children }: { children: React.ReactNode }) {
+/** Guard: redirects to /portal/login if no portal session.
+ *
+ *  2026-05-05: when `allowInvoiceToken` is set AND the URL carries a
+ *  `?t=…` query parameter, the guard renders the children even without
+ *  a portal session. This is the bypass that lets the Pay Invoice
+ *  email link land directly on `PortalInvoiceDetail`, which then runs
+ *  its own token-mode flow against the backend (the server-side
+ *  `requireInvoiceAccess` middleware validates the token). Without
+ *  this bypass the guard redirects to /portal/login BEFORE
+ *  PortalInvoiceDetail ever renders, completely defeating the
+ *  invoice-scoped access design.
+ *
+ *  Security: the bypass only changes the FRONTEND auth gate. Every
+ *  API call from the page still has to authenticate against
+ *  `requireInvoiceAccess` server-side, which validates the token's
+ *  hash, expiry, and scope. A bogus or absent token simply produces
+ *  a 401 from the backend; the page can render but reads nothing. */
+function PortalProtected({
+  children,
+  allowInvoiceToken = false,
+}: {
+  children: React.ReactNode;
+  allowInvoiceToken?: boolean;
+}) {
   const { user, isLoading } = usePortalAuth();
   const [location, setLocation] = useLocation();
 
@@ -789,6 +819,14 @@ function PortalProtected({ children }: { children: React.ReactNode }) {
   }
 
   if (!user) {
+    // 2026-05-05: token-mode bypass — see component doc-comment.
+    if (allowInvoiceToken && typeof window !== "undefined") {
+      const hasToken = !!new URLSearchParams(window.location.search).get("t");
+      if (hasToken) {
+        return <>{children}</>;
+      }
+    }
+
     // 2026-04-19 Portal auth fix: preserve the user's intended portal
     // destination across the magic-link round-trip. `PortalVerify` reads
     // this key on success and navigates there instead of defaulting to
@@ -810,6 +848,19 @@ function PortalProtected({ children }: { children: React.ReactNode }) {
   }
 
   return <>{children}</>;
+}
+
+// 2026-05-05 — Timesheets route dispatcher. Stack View is canonical; the
+// only remaining entry into PayrollPage is for `?view=day` deep-links from
+// Stack View entries / day headers. `useSearch` is reactive to query-string
+// changes so toggling between days inside PayrollPage doesn't trip a remount.
+function TimesheetsRoute() {
+  const search = useSearch();
+  const params = new URLSearchParams(search);
+  if (params.get("view") === "day") {
+    return <PayrollPage />;
+  }
+  return <WeekStackPage />;
 }
 
 function AppContent() {

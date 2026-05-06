@@ -375,6 +375,82 @@ export class TaxRepository extends BaseRepository {
     });
   }
 
+  /**
+   * 2026-05-05 — System group convention for standalone-rate invoice apply.
+   *
+   * Invoices store a `taxGroupId` (no `taxRateId` column). When the user
+   * picks a standalone rate from the invoice tax selector, we still
+   * need a group to apply via the canonical `applyTaxGroupToInvoice`
+   * path. Solution: deterministic per-rate "system" group with the
+   * naming convention `__sys_rate__:<rateId>`. Find-or-create.
+   *
+   * The `__sys_rate__:` prefix is NEVER user-typeable (creation routes
+   * reject it). Settings UI hides groups with this prefix client-side.
+   * Invoice display derives its label from the underlying rate rather
+   * than the synthetic group name.
+   */
+  static readonly SYSTEM_RATE_GROUP_PREFIX = "__sys_rate__:";
+
+  /** True iff this group was auto-created as a wrapper for a single standalone rate. */
+  static isSystemRateGroup(group: { name: string }): boolean {
+    return group.name.startsWith(TaxRepository.SYSTEM_RATE_GROUP_PREFIX);
+  }
+
+  /**
+   * Find-or-create a one-rate system group wrapping the given tax rate.
+   * Idempotent: subsequent calls for the same companyId+taxRateId
+   * return the SAME group row (no duplicates).
+   */
+  async ensureSystemRateGroup(companyId: string, taxRateId: string) {
+    this.assertCompanyId(companyId);
+
+    // Validate rate exists + tenant-scoped + active.
+    const rate = await this.getTaxRate(companyId, taxRateId);
+    if (!rate) return null;
+    if (rate.active === false) return null;
+
+    const systemName = `${TaxRepository.SYSTEM_RATE_GROUP_PREFIX}${taxRateId}`;
+
+    // Find existing.
+    const existing = await db
+      .select()
+      .from(companyTaxGroups)
+      .where(
+        and(
+          eq(companyTaxGroups.companyId, companyId),
+          eq(companyTaxGroups.name, systemName),
+          eq(companyTaxGroups.active, true),
+        ),
+      )
+      .limit(1);
+    if (existing[0]) {
+      const rates = await this.getGroupRates(existing[0].id);
+      return { ...existing[0], rates };
+    }
+
+    // Create new.
+    return db.transaction(async (tx) => {
+      const [group] = await tx
+        .insert(companyTaxGroups)
+        .values({
+          companyId,
+          name: systemName,
+          description: `Auto-managed wrapper for tax rate ${rate.name}`,
+          isDefault: false,
+          active: true,
+        })
+        .returning();
+
+      await tx.insert(companyTaxGroupRates).values({
+        groupId: group.id,
+        taxRateId,
+      });
+
+      const rates = await this.getGroupRatesInTx(tx, group.id);
+      return { ...group, rates };
+    });
+  }
+
   /** Get the default tax group for a company (with rates) */
   async getDefaultTaxGroup(companyId: string) {
     this.assertCompanyId(companyId);

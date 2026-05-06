@@ -44,6 +44,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -77,6 +87,11 @@ interface JobSearchResult {
   jobNumber: number | null;
   summary: string | null;
   locationName?: string | null;
+  /** 2026-05-05: surfaced from the existing /api/jobs?search response
+   *  (already present runtime — just typed here). Used to gate the
+   *  closed/invoiced confirmation dialog. */
+  status?: string | null;
+  invoiceId?: string | null;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -137,6 +152,11 @@ export function JobSessionCreateModal({
 
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobLabel, setJobLabel] = useState<string>("");
+  // 2026-05-05: track picked job's status + invoice link so Save can
+  // gate a closed/invoiced-job confirmation dialog. Both come from
+  // the same /api/jobs?search response that drives the picker.
+  const [jobStatus, setJobStatus] = useState<string | null>(null);
+  const [jobInvoiceId, setJobInvoiceId] = useState<string | null>(null);
   const [jobSearch, setJobSearch] = useState<string>("");
   const [jobPickerOpen, setJobPickerOpen] = useState(false);
 
@@ -146,6 +166,11 @@ export function JobSessionCreateModal({
 
   const [notes, setNotes] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  // 2026-05-05: confirmation gate for closed/invoiced jobs. The
+  // confirm dialog only opens when the user clicks Save AND the
+  // currently picked job is non-open or already invoiced. Cancel
+  // returns to the modal; Confirm runs the existing save mutation.
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   // Re-seed every open transition (clean form per add).
   useEffect(() => {
@@ -153,6 +178,9 @@ export function JobSessionCreateModal({
     setView("labor");
     setJobId(null);
     setJobLabel("");
+    setJobStatus(null);
+    setJobInvoiceId(null);
+    setConfirmOpen(false);
     setJobSearch("");
     setJobPickerOpen(false);
     setDrive(BLANK_ROW);
@@ -264,6 +292,8 @@ export function JobSessionCreateModal({
   const handleClearJob = () => {
     setJobId(null);
     setJobLabel("");
+    setJobStatus(null);
+    setJobInvoiceId(null);
     setJobSearch("");
     setJobPickerOpen(false);
   };
@@ -275,6 +305,8 @@ export function JobSessionCreateModal({
         job.summary ? ` / ${job.summary}` : ""
       }`,
     );
+    setJobStatus(job.status ?? null);
+    setJobInvoiceId(job.invoiceId ?? null);
     setJobSearch("");
     setJobPickerOpen(false);
   };
@@ -382,10 +414,31 @@ export function JobSessionCreateModal({
     return null;
   };
 
+  /**
+   * 2026-05-05: Save gate. If the user picked a closed/completed job
+   * (`status !== "open"`) OR an already-invoiced job (`invoiceId`
+   * non-null), open the confirmation AlertDialog FIRST. Confirm runs
+   * the canonical save; Cancel returns to the modal with state intact.
+   * General-mode (no job link) skips the gate entirely.
+   */
+  const isJobClosedOrInvoiced =
+    view === "labor" &&
+    !!jobId &&
+    ((jobStatus !== null && jobStatus !== "open") || jobInvoiceId !== null);
+
   const handleSave = () => {
     const v = validate();
     setError(v);
     if (v) return;
+    if (isJobClosedOrInvoiced) {
+      setConfirmOpen(true);
+      return;
+    }
+    saveMutation.mutate();
+  };
+
+  const handleConfirmedSave = () => {
+    setConfirmOpen(false);
     saveMutation.mutate();
   };
 
@@ -399,6 +452,7 @@ export function JobSessionCreateModal({
   };
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="max-w-[600px]"
@@ -604,17 +658,58 @@ export function JobSessionCreateModal({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    {/* 2026-05-05: closed-or-invoiced confirmation. The trigger
+        condition is `isJobClosedOrInvoiced` (status !== "open" OR
+        invoiceId set). Opens INSIDE the modal — Cancel returns to
+        the modal with state intact; Confirm runs the canonical save. */}
+    <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+      <AlertDialogContent data-testid="closed-job-confirm">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Add time to a closed or invoiced job?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This job is closed or already invoiced. Time will be added to the
+            timesheet only and will not update the invoice automatically.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel data-testid="closed-job-confirm-cancel">
+            Cancel
+          </AlertDialogCancel>
+          <AlertDialogAction
+            onClick={handleConfirmedSave}
+            data-testid="closed-job-confirm-action"
+          >
+            Add time
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }
 
 // ── SegmentedTimeInput — direct H | M | AM/PM fields, no picker chrome ─
 //
 // Three inline editable segments instead of `<input type="time">`. No
-// browser dropdown / picker indicator / popup. Hour-first behavior:
-// typing an hour immediately commits a canonical value with default
-// minute "00" and period "AM" (or the segment's existing values if
-// the user has already touched them). Minute and AM/PM remain
-// independently editable.
+// browser dropdown / picker indicator / popup.
+//
+// Editing model (2026-05-05 v3): the hour and minute segments behave
+// like normal 2-digit text fields. Each one keeps a local `draft`
+// while focused and only commits to the canonical value on BLUR.
+// While focused the user can freely select-all and replace, type a
+// partial value (e.g. just "3"), or paste — no per-keystroke clamp
+// gets in the way. On blur the draft is parsed, range-checked, and
+// either committed or snapped back to the last good value.
+//
+// Defaults & heuristics (applied at blur time):
+//   - Hour: empty min normalises to "00", empty period to "AM".
+//   - Hour: when canonical is still empty (no value yet) and the
+//     user types 12, period defaults to "PM" (12 = noon). Once the
+//     canonical exists, the user's explicit period choice sticks
+//     across subsequent hour edits.
+//   - Minute: blank with hour set normalises to "00"; out-of-range
+//     (e.g. "89") snaps the draft back to the previous good value.
 //
 // Canonical I/O is `"HH:mm"` 24h — same shape the upstream autofill /
 // duration-sync / drive→onsite-prefill chain expects.
@@ -639,62 +734,86 @@ function SegmentedTimeInput({
   // yet) so the button never renders empty.
   const segments = valueToSegments(value);
 
-  // The minute / period segments default to "00" / "AM" the moment
-  // the hour gets typed in — that's the spec's hour-first rule.
-  // We avoid emitting a partial canonical (no hour) because the
-  // upstream save path only accepts complete HH:mm.
+  // Per-segment draft state. While focused the input shows the draft;
+  // when blur lands, we either commit a clamped value or snap back.
+  // The useEffect mirrors external segment changes (parent autofill,
+  // duration sync, drive→onsite prefill) into the draft so external
+  // updates flow through. User keystrokes only touch the draft, so
+  // this never fights mid-typing.
+  const [hourDraft, setHourDraft] = useState(segments.h12);
+  const [minuteDraft, setMinuteDraft] = useState(segments.min);
+  const [hourFocused, setHourFocused] = useState(false);
+  const [minuteFocused, setMinuteFocused] = useState(false);
+
+  useEffect(() => {
+    setHourDraft(segments.h12);
+  }, [segments.h12]);
+  useEffect(() => {
+    setMinuteDraft(segments.min);
+  }, [segments.min]);
+
   const commit = (h12: string, min: string, period: Period) => {
     const next = segmentsToValue(h12, min, period);
     onChange(next);
   };
 
-  const handleHourChange = (raw: string) => {
-    const cleaned = raw.replace(/\D/g, "").slice(0, 2);
+  const handleHourBlur = () => {
+    setHourFocused(false);
+    const cleaned = hourDraft.replace(/\D/g, "");
     if (cleaned === "") {
       onChange(""); // user cleared the hour → clear canonical
       return;
     }
     const h = parseInt(cleaned, 10);
     if (Number.isNaN(h) || h < 1 || h > 12) {
-      // Out-of-range; ignore the keystroke. Keeping the segment value
-      // unchanged is fine — the input is controlled by `segments.h12`
-      // via `value`.
+      // Out-of-range typing → snap draft back to last good hour.
+      setHourDraft(segments.h12);
       return;
     }
-    // Hour-first defaults: if minute / period haven't been set yet,
-    // commit "00" and "AM".
+    // Hour-first defaults: empty min → "00", empty period → "AM".
+    // 12 → PM heuristic: only fires on the FIRST commit (no canonical
+    // yet). After canonical exists, the user's explicit period choice
+    // sticks across subsequent hour edits — including switching to
+    // 12 AM (midnight).
+    const isFirstCommit = !value;
     const min = segments.min || "00";
-    const period: Period = segments.period || "AM";
+    let period: Period = segments.period || "AM";
+    if (isFirstCommit && h === 12) period = "PM";
     commit(String(h), min, period);
   };
 
-  const handleMinuteChange = (raw: string) => {
-    const cleaned = raw.replace(/\D/g, "").slice(0, 2);
+  const handleMinuteBlur = () => {
+    setMinuteFocused(false);
+    const cleaned = minuteDraft.replace(/\D/g, "");
     if (cleaned === "") {
-      // If hour exists, hold the row in "incomplete" state by
-      // emitting empty canonical. Caller treats empty as "nothing
-      // saved yet for this row".
-      onChange("");
+      // Blank minute. If hour exists, normalise to "00" and commit;
+      // otherwise leave canonical empty (no full HH:mm to write).
+      if (segments.h12) {
+        setMinuteDraft("00");
+        commit(segments.h12, "00", segments.period);
+      } else {
+        onChange("");
+      }
       return;
     }
     const m = parseInt(cleaned, 10);
-    if (Number.isNaN(m) || m < 0 || m > 59) return;
-    if (!segments.h12) return; // no hour yet — minute alone isn't meaningful
-    commit(segments.h12, String(m).padStart(2, "0"), segments.period);
+    if (Number.isNaN(m) || m < 0 || m > 59) {
+      // Out-of-range (e.g. "89") → snap back to the prior good value
+      // without trapping the user.
+      setMinuteDraft(segments.min);
+      return;
+    }
+    const padded = String(m).padStart(2, "0");
+    setMinuteDraft(padded);
+    if (!segments.h12) return; // minute alone isn't a complete canonical
+    commit(segments.h12, padded, segments.period);
   };
 
   const handlePeriodToggle = () => {
     // Toggling period without an hour is a no-op (no canonical to
     // emit). Once hour is set, toggling immediately re-commits.
     const nextPeriod: Period = segments.period === "AM" ? "PM" : "AM";
-    if (!segments.h12) {
-      // Best-effort: store nothing (canonical needs hour). The button
-      // visually toggles via `segments.period`, but until hour is
-      // typed there's no canonical to commit. We rely on the rerender
-      // via `value` — empty value → segments.period stays "AM" until
-      // hour fills. Simpler than tracking a separate period state.
-      return;
-    }
+    if (!segments.h12) return;
     commit(segments.h12, segments.min || "00", nextPeriod);
   };
 
@@ -709,9 +828,16 @@ function SegmentedTimeInput({
       <input
         type="text"
         inputMode="numeric"
-        value={segments.h12}
-        onChange={(e) => handleHourChange(e.target.value)}
-        onFocus={onFocus}
+        value={hourFocused ? hourDraft : segments.h12}
+        onChange={(e) =>
+          setHourDraft(e.target.value.replace(/\D/g, "").slice(0, 2))
+        }
+        onFocus={(e) => {
+          setHourFocused(true);
+          e.currentTarget.select();
+          onFocus?.();
+        }}
+        onBlur={handleHourBlur}
         maxLength={2}
         className="w-7 border-0 bg-transparent p-0 text-center text-sm tabular-nums outline-none focus:ring-0"
         data-testid={testId ? `${testId}-hour` : undefined}
@@ -722,8 +848,15 @@ function SegmentedTimeInput({
       <input
         type="text"
         inputMode="numeric"
-        value={segments.min}
-        onChange={(e) => handleMinuteChange(e.target.value)}
+        value={minuteFocused ? minuteDraft : segments.min}
+        onChange={(e) =>
+          setMinuteDraft(e.target.value.replace(/\D/g, "").slice(0, 2))
+        }
+        onFocus={(e) => {
+          setMinuteFocused(true);
+          e.currentTarget.select();
+        }}
+        onBlur={handleMinuteBlur}
         maxLength={2}
         className="w-7 border-0 bg-transparent p-0 text-center text-sm tabular-nums outline-none focus:ring-0"
         data-testid={testId ? `${testId}-min` : undefined}

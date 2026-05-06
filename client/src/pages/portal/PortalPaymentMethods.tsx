@@ -78,11 +78,20 @@ const CONSENT_TEXT =
 
 // Cache Stripe.js loads across sessions — same pattern as
 // PortalInvoiceDetail.
+//
+// 2026-05-05: catches script-load failures so the resulting Promise
+// resolves to null instead of rejecting. A rejection here would bubble
+// into <Elements> as a Vite runtime-overlay error ("Failed to load
+// Stripe.js"); the null path renders cleanly at the call site (the
+// caller's intent state stays in "loading" if Stripe never resolves).
 const stripePromiseCache = new Map<string, Promise<StripeJs | null>>();
 function getStripePromise(publishableKey: string): Promise<StripeJs | null> {
   let p = stripePromiseCache.get(publishableKey);
   if (!p) {
-    p = loadStripe(publishableKey);
+    p = loadStripe(publishableKey).catch((err) => {
+      console.error("[PortalPaymentMethods] Stripe.js failed to load", err);
+      return null;
+    });
     stripePromiseCache.set(publishableKey, p);
   }
   return p;

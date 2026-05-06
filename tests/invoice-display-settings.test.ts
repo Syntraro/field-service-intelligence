@@ -124,13 +124,14 @@ describe("resolveInvoiceDisplayPolicy — precedence", () => {
       tenantSettings: {
         invoiceShowLineItems: false,
         invoiceShowQuantities: false,
-        invoiceShowLogo: true,
+        // showLogo is intentionally NOT asserted here — it's pinned to
+        // false at the resolver level (feature not yet supported); see
+        // the "unsupported features" describe block below.
       },
       invoice: {},
     });
     expect(policy.showLineItems).toBe(false);
     expect(policy.showQuantities).toBe(false);
-    expect(policy.showLogo).toBe(true);
   });
 
   it("invoice-level override wins over tenant default for line items", () => {
@@ -590,5 +591,518 @@ describe("Regression: tenant default does not re-sync existing invoices", () => 
     await setTenantDefault({ showClientMessage: false, defaultMessage: "Replacement default" });
     const afterToggleOff = await invoiceRepository.getInvoice(companyId, invoice.id);
     expect(afterToggleOff?.clientMessage).toBe("Hand-edited per invoice");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Per-invoice visibility inheritance (2026-05-06)
+// ---------------------------------------------------------------------------
+//
+// Migration `2026_05_06_invoice_visibility_inherit.sql` made the five
+// invoice-level visibility columns nullable. NULL means "inherit tenant
+// default"; an explicit boolean means "per-invoice override". The
+// resolver's `pick()` handles the merge. These tests pin the new
+// inheritance contract end-to-end:
+//   - new invoice has NULL on all five columns,
+//   - resolver inherits tenant defaults when invoice flags are NULL,
+//   - explicit override always wins,
+//   - PATCH null can clear an override (the "Reset to defaults" affordance),
+//   - existing rows with stored booleans behave as before.
+
+describe("Invoice visibility inheritance — null = use tenant default", () => {
+  async function setTenantVisibility(opts: {
+    showLineItems: boolean;
+    showQuantities: boolean;
+    showUnitPrices: boolean;
+    showLineTotals: boolean;
+    showJobDescription: boolean;
+  }) {
+    await db
+      .insert(companySettings)
+      .values({
+        companyId,
+        userId,
+        invoiceShowLineItems: opts.showLineItems,
+        invoiceShowQuantities: opts.showQuantities,
+        invoiceShowUnitPrices: opts.showUnitPrices,
+        invoiceShowLineTotals: opts.showLineTotals,
+        invoiceShowJobDescription: opts.showJobDescription,
+      })
+      .onConflictDoUpdate({
+        target: companySettings.companyId,
+        set: {
+          invoiceShowLineItems: opts.showLineItems,
+          invoiceShowQuantities: opts.showQuantities,
+          invoiceShowUnitPrices: opts.showUnitPrices,
+          invoiceShowLineTotals: opts.showLineTotals,
+          invoiceShowJobDescription: opts.showJobDescription,
+        },
+      });
+  }
+
+  it("a freshly created invoice has NULL on the five visibility columns", async () => {
+    const { invoice } = await invoiceRepository.createStandaloneInvoice(
+      companyId,
+      { locationId, customerCompanyId },
+      "STANDALONE_ROUTE",
+    );
+    // Each of the five flags must be NULL (= inherit tenant default).
+    expect(invoice.showLineItems).toBeNull();
+    expect(invoice.showQuantity).toBeNull();
+    expect(invoice.showUnitPrice).toBeNull();
+    expect(invoice.showLineTotals).toBeNull();
+    expect(invoice.showJobDescription).toBeNull();
+  });
+
+  it("resolver returns tenant-default values for an invoice with NULL flags", async () => {
+    // Tenant says: hide quantities + unit prices, show everything else.
+    await setTenantVisibility({
+      showLineItems: true,
+      showQuantities: false,
+      showUnitPrices: false,
+      showLineTotals: true,
+      showJobDescription: false,
+    });
+    const { invoice } = await invoiceRepository.createStandaloneInvoice(
+      companyId,
+      { locationId, customerCompanyId },
+      "STANDALONE_ROUTE",
+    );
+    const tenantSettings = await db
+      .select()
+      .from(companySettings)
+      .where(eq(companySettings.companyId, companyId))
+      .limit(1);
+    const policy = resolveInvoiceDisplayPolicy({
+      tenantSettings: tenantSettings[0] as any,
+      invoice: invoice as any,
+    });
+    // Effective policy mirrors the tenant defaults — invoice has no overrides.
+    expect(policy.showLineItems).toBe(true);
+    expect(policy.showQuantities).toBe(false);
+    expect(policy.showUnitPrices).toBe(false);
+    expect(policy.showLineTotals).toBe(true);
+    expect(policy.showJobDescription).toBe(false);
+  });
+
+  it("an explicit per-invoice override always wins over the tenant default", async () => {
+    await setTenantVisibility({
+      showLineItems: true,
+      showQuantities: true,
+      showUnitPrices: true,
+      showLineTotals: true,
+      showJobDescription: true,
+    });
+    const { invoice } = await invoiceRepository.createStandaloneInvoice(
+      companyId,
+      { locationId, customerCompanyId },
+      "STANDALONE_ROUTE",
+    );
+    // Operator hides quantities on this one invoice.
+    await invoiceRepository.updateInvoice(
+      companyId,
+      invoice.id,
+      undefined,
+      { showQuantity: false },
+    );
+    const updated = await invoiceRepository.getInvoice(companyId, invoice.id);
+    const tenantSettings = await db
+      .select()
+      .from(companySettings)
+      .where(eq(companySettings.companyId, companyId))
+      .limit(1);
+    const policy = resolveInvoiceDisplayPolicy({
+      tenantSettings: tenantSettings[0] as any,
+      invoice: updated as any,
+    });
+    // Override wins on the one toggled flag; the rest still inherit.
+    expect(updated?.showQuantity).toBe(false);
+    expect(updated?.showLineItems).toBeNull();
+    expect(policy.showQuantities).toBe(false);
+    expect(policy.showLineItems).toBe(true);
+  });
+
+  it("PATCHing null clears an override and falls back to the tenant default", async () => {
+    await setTenantVisibility({
+      showLineItems: false,
+      showQuantities: true,
+      showUnitPrices: true,
+      showLineTotals: true,
+      showJobDescription: true,
+    });
+    const { invoice } = await invoiceRepository.createStandaloneInvoice(
+      companyId,
+      { locationId, customerCompanyId },
+      "STANDALONE_ROUTE",
+    );
+    // Operator overrides showLineItems to true (against tenant default).
+    await invoiceRepository.updateInvoice(
+      companyId,
+      invoice.id,
+      undefined,
+      { showLineItems: true },
+    );
+    const overridden = await invoiceRepository.getInvoice(companyId, invoice.id);
+    expect(overridden?.showLineItems).toBe(true);
+
+    // Operator clicks "Reset to defaults" — UI PATCHes null on the five flags.
+    await invoiceRepository.updateInvoice(
+      companyId,
+      invoice.id,
+      undefined,
+      {
+        showLineItems: null,
+        showQuantity: null,
+        showUnitPrice: null,
+        showLineTotals: null,
+        showJobDescription: null,
+      },
+    );
+    const cleared = await invoiceRepository.getInvoice(companyId, invoice.id);
+    expect(cleared?.showLineItems).toBeNull();
+
+    // Resolver now returns the tenant default (false for showLineItems).
+    const tenantSettings = await db
+      .select()
+      .from(companySettings)
+      .where(eq(companySettings.companyId, companyId))
+      .limit(1);
+    const policy = resolveInvoiceDisplayPolicy({
+      tenantSettings: tenantSettings[0] as any,
+      invoice: cleared as any,
+    });
+    expect(policy.showLineItems).toBe(false);
+  });
+
+  it("legacy invoices with stored booleans continue to render with their explicit values (no silent migration)", async () => {
+    // Simulate a pre-migration row that landed with explicit `false` on
+    // showLineItems. After the migration, that boolean must continue
+    // winning — the migration intentionally does NOT mass-NULL old data.
+    await setTenantVisibility({
+      showLineItems: true,
+      showQuantities: true,
+      showUnitPrices: true,
+      showLineTotals: true,
+      showJobDescription: true,
+    });
+    const { invoice } = await invoiceRepository.createStandaloneInvoice(
+      companyId,
+      { locationId, customerCompanyId },
+      "STANDALONE_ROUTE",
+    );
+    // Stamp an explicit boolean to simulate a legacy row.
+    await invoiceRepository.updateInvoice(
+      companyId,
+      invoice.id,
+      undefined,
+      { showLineItems: false },
+    );
+    const stamped = await invoiceRepository.getInvoice(companyId, invoice.id);
+    expect(stamped?.showLineItems).toBe(false);
+
+    const tenantSettings = await db
+      .select()
+      .from(companySettings)
+      .where(eq(companySettings.companyId, companyId))
+      .limit(1);
+    const policy = resolveInvoiceDisplayPolicy({
+      tenantSettings: tenantSettings[0] as any,
+      invoice: stamped as any,
+    });
+    expect(policy.showLineItems).toBe(false);
+  });
+
+  it("invoiceVisibilityDiffersFromTenant treats a NULL stored value as not-custom", async () => {
+    const tenant = {
+      invoiceShowLineItems: true,
+      invoiceShowQuantities: true,
+      invoiceShowUnitPrices: true,
+      invoiceShowLineTotals: true,
+      invoiceShowJobDescription: true,
+    };
+    // All five flags null on the invoice → inheriting → never custom.
+    expect(
+      invoiceVisibilityDiffersFromTenant(tenant, {
+        showLineItems: null,
+        showQuantity: null,
+        showUnitPrice: null,
+        showLineTotals: null,
+        showJobDescription: null,
+      } as any),
+    ).toBe(false);
+    // One flag carries an explicit boolean that DIFFERS from tenant → custom.
+    expect(
+      invoiceVisibilityDiffersFromTenant(tenant, {
+        showLineItems: false,
+        showQuantity: null,
+        showUnitPrice: null,
+        showLineTotals: null,
+        showJobDescription: null,
+      } as any),
+    ).toBe(true);
+    // Stored boolean that MATCHES tenant default → not custom (value-based
+    // contract from the spec).
+    expect(
+      invoiceVisibilityDiffersFromTenant(tenant, {
+        showLineItems: true,
+        showQuantity: null,
+        showUnitPrice: null,
+        showLineTotals: null,
+        showJobDescription: null,
+      } as any),
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. Unsupported features pinned to false (2026-05-06)
+// ---------------------------------------------------------------------------
+//
+// `showLogo` and `showCompanyWebsite` are part of the policy shape (the
+// schema columns + PUT payload still accept them — no data migration
+// risk for tenants that previously toggled them ON), but the underlying
+// features are not implemented. Until they are, the resolver pins both
+// to `false` so PDF / email / portal can never accidentally render an
+// empty logo placeholder or a missing-website line. The settings UI
+// also intentionally does NOT expose these toggles.
+
+describe("Unsupported features — showLogo / showCompanyWebsite pinned false", () => {
+  it("resolver returns false for showLogo regardless of tenant setting", () => {
+    const truePolicy = resolveInvoiceDisplayPolicy({
+      tenantSettings: { invoiceShowLogo: true },
+      invoice: null,
+    });
+    expect(truePolicy.showLogo).toBe(false);
+    const falsePolicy = resolveInvoiceDisplayPolicy({
+      tenantSettings: { invoiceShowLogo: false },
+      invoice: null,
+    });
+    expect(falsePolicy.showLogo).toBe(false);
+  });
+
+  it("resolver returns false for showCompanyWebsite regardless of tenant setting", () => {
+    const truePolicy = resolveInvoiceDisplayPolicy({
+      tenantSettings: { invoiceShowCompanyWebsite: true },
+      invoice: null,
+    });
+    expect(truePolicy.showCompanyWebsite).toBe(false);
+    const falsePolicy = resolveInvoiceDisplayPolicy({
+      tenantSettings: { invoiceShowCompanyWebsite: false },
+      invoice: null,
+    });
+    expect(falsePolicy.showCompanyWebsite).toBe(false);
+  });
+
+  it("Settings → Invoice Display UI source does not expose logo or website toggles", async () => {
+    // Source-pin guard: the Vitest environment is "node" with no DOM
+    // setup, so we can't render the React component. Reading the file
+    // string is the smallest safe regression check — if any future
+    // contributor re-introduces these toggles, the data-testid /
+    // user-facing label will reappear and this test will fail loudly.
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const source = await fs.readFile(
+      path.resolve(__dirname, "../client/src/pages/InvoiceDisplaySettingsPage.tsx"),
+      "utf8",
+    );
+    expect(source).not.toContain('testId="toggle-show-logo"');
+    expect(source).not.toContain('testId="toggle-show-company-website"');
+    expect(source).not.toMatch(/label="Show company logo"/);
+    expect(source).not.toMatch(/label="Show company website"/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. PATCH /api/invoices/:id Zod schema must accept null on the 5 flags
+// ---------------------------------------------------------------------------
+//
+// Regression context: server/routes/invoices.ts declares its OWN
+// `updateInvoiceSchema` (separate from the one in shared/schema.ts). On
+// 2026-05-06 the shared schema was updated to nullable; the route-local
+// copy was missed and continued rejecting `null` with
+// "Validation error: Expected boolean, received null". That broke the
+// "Reset to defaults" affordance on the invoice detail page (which
+// PATCHes null to clear per-invoice overrides). This source-pin guard
+// makes sure the route-local schema can never silently regress back to
+// boolean-only.
+
+describe("Regression: route-local invoice update schema accepts null on the 5 visibility flags", () => {
+  it("server/routes/invoices.ts declares each flag as nullable().optional()", async () => {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const source = await fs.readFile(
+      path.resolve(__dirname, "../server/routes/invoices.ts"),
+      "utf8",
+    );
+    // Crisp guard: the route file may legitimately contain a separate
+    // schema (e.g. createAtomicSchema) where these fields are creation-
+    // path booleans. Only the `updateInvoiceSchema` in this file is the
+    // PATCH validator. Both schemas live in the same file; we slice out
+    // the updateInvoiceSchema block by anchoring on its declaration and
+    // its `.strict()` terminator, then assert null support on the slice.
+    const start = source.indexOf("const updateInvoiceSchema = z.object({");
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf("}).strict();", start);
+    expect(end).toBeGreaterThan(start);
+    const block = source.slice(start, end);
+    for (const field of [
+      "showQuantity",
+      "showUnitPrice",
+      "showLineTotals",
+      "showLineItems",
+      "showJobDescription",
+    ]) {
+      // Each field must declare `.nullable()` somewhere on its line so
+      // PATCH null is accepted by the route's strict schema.
+      const lineRegex = new RegExp(`${field}\\s*:[^,\\n]*\\.nullable\\(\\)`);
+      expect(block).toMatch(lineRegex);
+    }
+    // Defensive cross-check: the same field names must NOT appear with a
+    // bare `z.boolean().optional()` (no nullable) inside the slice.
+    for (const field of [
+      "showQuantity",
+      "showUnitPrice",
+      "showLineTotals",
+      "showLineItems",
+      "showJobDescription",
+    ]) {
+      const bareLine = new RegExp(`${field}\\s*:\\s*z\\.boolean\\(\\)\\.optional\\(\\)`);
+      expect(block).not.toMatch(bareLine);
+    }
+  });
+
+  it("shared/schema.ts updateInvoiceSchema also declares the 5 flags as nullable().optional()", async () => {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const source = await fs.readFile(
+      path.resolve(__dirname, "../shared/schema.ts"),
+      "utf8",
+    );
+    const start = source.indexOf("export const updateInvoiceSchema = z.object({");
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf("});", start);
+    expect(end).toBeGreaterThan(start);
+    const block = source.slice(start, end);
+    for (const field of [
+      "showQuantity",
+      "showUnitPrice",
+      "showLineTotals",
+      "showLineItems",
+      "showJobDescription",
+    ]) {
+      const lineRegex = new RegExp(`${field}\\s*:[^,\\n]*\\.nullable\\(\\)`);
+      expect(block).toMatch(lineRegex);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. End-to-end: storage round-trips null on the 5 flags
+// ---------------------------------------------------------------------------
+//
+// Pins the storage half of the "Reset to defaults" contract. The
+// server/routes/invoices.ts PATCH handler hands `patch` to
+// `storage.updateInvoice(...)`; that method passes the patch straight to
+// Drizzle's `.set({...})`. With the columns nullable post-migration,
+// explicit null on these keys must round-trip back as null on read.
+
+describe("Reset to defaults — storage round-trips null", () => {
+  it("updateInvoice accepts null on all 5 visibility flags and getInvoice returns null", async () => {
+    const { invoice } = await invoiceRepository.createStandaloneInvoice(
+      companyId,
+      { locationId, customerCompanyId },
+      "STANDALONE_ROUTE",
+    );
+
+    // Stamp explicit overrides first (simulate legacy invoice).
+    await invoiceRepository.updateInvoice(
+      companyId,
+      invoice.id,
+      undefined,
+      {
+        showLineItems: true,
+        showQuantity: false,
+        showUnitPrice: true,
+        showLineTotals: false,
+        showJobDescription: true,
+      },
+    );
+    const stamped = await invoiceRepository.getInvoice(companyId, invoice.id);
+    expect(stamped?.showLineItems).toBe(true);
+    expect(stamped?.showQuantity).toBe(false);
+    expect(stamped?.showJobDescription).toBe(true);
+
+    // Reset (the exact payload the InvoiceDetailPage sends).
+    await invoiceRepository.updateInvoice(
+      companyId,
+      invoice.id,
+      undefined,
+      {
+        showJobDescription: null,
+        showLineItems: null,
+        showQuantity: null,
+        showUnitPrice: null,
+        showLineTotals: null,
+      },
+    );
+
+    // Refetch must observe the cleared overrides as raw null.
+    const cleared = await invoiceRepository.getInvoice(companyId, invoice.id);
+    expect(cleared?.showLineItems).toBeNull();
+    expect(cleared?.showQuantity).toBeNull();
+    expect(cleared?.showUnitPrice).toBeNull();
+    expect(cleared?.showLineTotals).toBeNull();
+    expect(cleared?.showJobDescription).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. Admin invoice detail page is the truth view (NOT a client-facing preview)
+// ---------------------------------------------------------------------------
+//
+// The Client Visibility settings affect ONLY client-facing surfaces (PDF,
+// invoice email render, customer portal). The admin invoice detail page
+// must never gate its rendering on the five visibility flags — operators
+// need to see the full invoice regardless of what the customer sees. A
+// future contributor adding `{policy.showLineItems && <LineItemsTable/>}`
+// or similar to the admin page would silently hide internal billing data
+// from staff. This guard pins that contract.
+
+describe("Admin InvoiceDetailPage does not gate rendering on client-facing visibility flags", () => {
+  it("admin invoice detail page does not conditionally render on the 5 flags", async () => {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const source = await fs.readFile(
+      path.resolve(__dirname, "../client/src/pages/InvoiceDetailPage.tsx"),
+      "utf8",
+    );
+    // Pattern that would gate JSX on a flag — e.g. `policy.showLineItems &&`,
+    // `invoice.showLineItems &&`, `serverVisibility.showLineItems &&`.
+    // We intentionally do NOT match references inside the
+    // ClientVisibilityCardV2 component (which legitimately reads these
+    // flags) — that component lives in this same file but uses local
+    // `draft.showLineItems` references, never `policy` / `invoice` /
+    // `serverVisibility` directly. So matching those three prefixes is
+    // a tight check.
+    const blockedPatterns = [
+      /policy\.showLineItems\s*&&/,
+      /policy\.showQuantit(y|ies)\s*&&/,
+      /policy\.showUnitPrice(s)?\s*&&/,
+      /policy\.showLineTotals\s*&&/,
+      /policy\.showJobDescription\s*&&/,
+      /invoice\.showLineItems\s*&&/,
+      /invoice\.showQuantity\s*&&/,
+      /invoice\.showUnitPrice\s*&&/,
+      /invoice\.showLineTotals\s*&&/,
+      /invoice\.showJobDescription\s*&&/,
+      /serverVisibility\.showLineItems\s*&&/,
+      /serverVisibility\.showQuantity\s*&&/,
+      /serverVisibility\.showUnitPrice\s*&&/,
+      /serverVisibility\.showLineTotals\s*&&/,
+      /serverVisibility\.showJobDescription\s*&&/,
+    ];
+    for (const pattern of blockedPatterns) {
+      expect(source).not.toMatch(pattern);
+    }
   });
 });

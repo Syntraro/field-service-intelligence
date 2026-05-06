@@ -771,6 +771,12 @@ export const stripeAdapter: PaymentProvider = {
       providerPaymentId: intent.id,
       publishableKey:
         input.source === "portal" ? process.env.STRIPE_PUBLISHABLE_KEY : undefined,
+      // 2026-05-05: portal payments need the connected-account id on
+      // the client so `loadStripe(key, { stripeAccount })` can fetch
+      // the Direct-Charges PaymentIntent. Without this the iframe
+      // sits on a 404 and `onReady` never fires.
+      providerAccountId:
+        input.source === "portal" ? input.providerAccountId : undefined,
     };
   },
 

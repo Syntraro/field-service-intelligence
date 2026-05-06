@@ -1,19 +1,25 @@
 /**
- * Invoice Display settings (2026-05-05)
+ * Invoice Display settings (2026-05-05; layout refactor 2026-05-06)
  *
  * Tenant-level visibility policy for customer-facing invoice surfaces:
  * PDF, invoice email, and the client portal invoice view. Visibility-only
- * — layout is fixed by Syntraro for consistency. Per-invoice flags
- * continue to override these defaults at the resolver level.
+ * — per-invoice flags continue to override these defaults at the resolver
+ * level.
  *
  * Talks to:
  *   GET /api/invoice-display-settings
  *   PUT /api/invoice-display-settings
  *
  * Mandatory invoice fields (company name, client name, invoice number,
- * issued + due dates, total, balance) are NOT exposed as editable
- * toggles — they appear as "Always shown" rows so the page makes the
- * canonical contract obvious.
+ * issued + due dates, total, balance) are enforced server-side and always
+ * render — they are intentionally NOT surfaced on this page. The canonical
+ * contract lives in `shared/invoiceDisplayPolicy.ts` + the renderers; the
+ * settings page does not need to advertise it.
+ *
+ * 2026-05-06 layout refactor — UI ONLY, no logic / field-name / wiring
+ * changes. Page is left-aligned (`w-full px-6 py-6`); cards live in a
+ * 2-column grid up top with the Default Client Message card spanning
+ * full width at the bottom.
  */
 
 import { useEffect, useState } from "react";
@@ -27,7 +33,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowLeft, Loader2, Lock } from "lucide-react";
+import { ArrowLeft, Loader2 } from "lucide-react";
 import {
   DEFAULT_TENANT_INVOICE_DISPLAY_SETTINGS,
   type TenantInvoiceDisplaySettings,
@@ -148,124 +154,168 @@ export default function InvoiceDisplaySettingsPage() {
     setForm((prev) => ({ ...prev, [key]: value }));
 
   return (
-    <div className="container mx-auto max-w-3xl py-6 space-y-4">
+    // 2026-05-06: left-aligned full-width wrapper. Replaces the previous
+    // `mx-auto max-w-6xl` (which made the page float in the middle of a
+    // wide content area). Padding mirrors the canonical settings sub-page
+    // chrome — same px / py as InvoiceRemindersSettingsPage's body.
+    <div className="w-full px-6 py-6 space-y-6">
+      {/* ── Header. */}
       <div>
         <Button variant="ghost" size="sm" asChild className="-ml-2 h-9">
           <Link href="/settings"><ArrowLeft className="h-4 w-4 mr-1" /> Settings</Link>
         </Button>
         <h1 className="text-2xl font-semibold tracking-tight mt-2">Invoice display</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Choose what appears on client-facing invoices. Layout is controlled by Syntraro for consistency.
+          Choose what appears on client-facing invoices.
         </p>
-        {/* 2026-05-06 tighten pass: clarify that tenant changes seed new
-            invoices only, never re-sync per-invoice settings already on
-            existing rows. Matches the create-only prefill contract. */}
+        {/* Tenant changes seed new invoices only — they never re-sync per-
+            invoice settings on existing rows. Matches the create-only
+            prefill contract enforced in server/storage/invoices.ts. */}
         <p className="text-xs text-muted-foreground mt-2">
           Changes apply to new invoices by default. Existing invoices keep their current invoice-level settings unless reset.
         </p>
       </div>
 
-      <SectionCard
-        title="Company information"
-        description="What appears in the sender block at the top of the invoice."
-      >
-        <LockedRow label="Company name" />
-        <ToggleRow
-          label="Show company logo"
-          checked={form.invoiceShowLogo}
-          onChange={(v) => set("invoiceShowLogo", v)}
-          testId="toggle-show-logo"
-        />
-        <ToggleRow
-          label="Show company address"
-          checked={form.invoiceShowCompanyAddress}
-          onChange={(v) => set("invoiceShowCompanyAddress", v)}
-          testId="toggle-show-company-address"
-        />
-        <ToggleRow
-          label="Show company phone"
-          checked={form.invoiceShowCompanyPhone}
-          onChange={(v) => set("invoiceShowCompanyPhone", v)}
-          testId="toggle-show-company-phone"
-        />
-        <ToggleRow
-          label="Show company email"
-          checked={form.invoiceShowCompanyEmail}
-          onChange={(v) => set("invoiceShowCompanyEmail", v)}
-          testId="toggle-show-company-email"
-        />
-        <ToggleRow
-          label="Show company website"
-          checked={form.invoiceShowCompanyWebsite}
-          onChange={(v) => set("invoiceShowCompanyWebsite", v)}
-          testId="toggle-show-company-website"
-        />
-        <ToggleRow
-          label="Show tax / HST number"
-          checked={form.invoiceShowTaxNumber}
-          onChange={(v) => set("invoiceShowTaxNumber", v)}
-          testId="toggle-show-tax-number"
-        />
-      </SectionCard>
+      {/* ── Top: 2-column grid of option cards.
+          LEFT  — Company information, Client & service information.
+          RIGHT — Invoice details, Line items & pricing.
+          Always-shown / locked rows have been removed from the UI in this
+          pass — mandatory rendering still happens server-side via the
+          resolver; the settings page no longer advertises it. Collapses
+          to one column below `lg`. */}
+      <div className="grid gap-6 lg:grid-cols-2">
+        {/* LEFT column */}
+        <div className="space-y-6">
+          <SectionCard
+            title="Company information"
+            description="What appears in the sender block at the top of the invoice."
+          >
+            {/* 2026-05-06: "Show company logo" and "Show company website"
+                toggles are intentionally NOT rendered. The app does not
+                yet support tenant logo upload or company website storage,
+                so exposing these toggles would be misleading. The
+                underlying fields stay in the schema and PUT payload (no
+                data migration); the resolver hardcodes both to `false`
+                until those features ship — see
+                shared/invoiceDisplayPolicy.ts. */}
+            <ToggleRow
+              label="Show company address"
+              checked={form.invoiceShowCompanyAddress}
+              onChange={(v) => set("invoiceShowCompanyAddress", v)}
+              testId="toggle-show-company-address"
+            />
+            <ToggleRow
+              label="Show company phone"
+              checked={form.invoiceShowCompanyPhone}
+              onChange={(v) => set("invoiceShowCompanyPhone", v)}
+              testId="toggle-show-company-phone"
+            />
+            <ToggleRow
+              label="Show company email"
+              checked={form.invoiceShowCompanyEmail}
+              onChange={(v) => set("invoiceShowCompanyEmail", v)}
+              testId="toggle-show-company-email"
+            />
+            <ToggleRow
+              label="Show tax / HST number"
+              checked={form.invoiceShowTaxNumber}
+              onChange={(v) => set("invoiceShowTaxNumber", v)}
+              testId="toggle-show-tax-number"
+            />
+          </SectionCard>
 
-      <SectionCard
-        title="Client & service information"
-        description="What appears in the bill-to block."
-      >
-        <LockedRow label="Client name" />
-        <ToggleRow
-          label="Show billing address"
-          checked={form.invoiceShowBillingAddress}
-          onChange={(v) => set("invoiceShowBillingAddress", v)}
-          testId="toggle-show-billing-address"
-        />
-        <ToggleRow
-          label="Show service address"
-          checked={form.invoiceShowServiceAddress}
-          onChange={(v) => set("invoiceShowServiceAddress", v)}
-          testId="toggle-show-service-address"
-        />
-        <ToggleRow
-          label="Show location name"
-          checked={form.invoiceShowLocationName}
-          onChange={(v) => set("invoiceShowLocationName", v)}
-          testId="toggle-show-location-name"
-        />
-      </SectionCard>
+          <SectionCard
+            title="Client & service information"
+            description="What appears in the bill-to block."
+          >
+            <ToggleRow
+              label="Show billing address"
+              checked={form.invoiceShowBillingAddress}
+              onChange={(v) => set("invoiceShowBillingAddress", v)}
+              testId="toggle-show-billing-address"
+            />
+            <ToggleRow
+              label="Show service address"
+              checked={form.invoiceShowServiceAddress}
+              onChange={(v) => set("invoiceShowServiceAddress", v)}
+              testId="toggle-show-service-address"
+            />
+            <ToggleRow
+              label="Show location name"
+              checked={form.invoiceShowLocationName}
+              onChange={(v) => set("invoiceShowLocationName", v)}
+              testId="toggle-show-location-name"
+            />
+          </SectionCard>
+        </div>
 
-      <SectionCard
-        title="Invoice details"
-        description="What appears in the meta block on the right side of the invoice header."
-      >
-        <LockedRow label="Invoice number" />
-        <LockedRow label="Issued date" />
-        <LockedRow label="Due date" />
-        <ToggleRow
-          label="Show job number"
-          checked={form.invoiceShowJobNumber}
-          onChange={(v) => set("invoiceShowJobNumber", v)}
-          testId="toggle-show-job-number"
-        />
-        <ToggleRow
-          label="Show invoice summary"
-          checked={form.invoiceShowSummary}
-          onChange={(v) => set("invoiceShowSummary", v)}
-          testId="toggle-show-summary"
-        />
-        <ToggleRow
-          label="Show job description"
-          checked={form.invoiceShowJobDescription}
-          onChange={(v) => set("invoiceShowJobDescription", v)}
-          testId="toggle-show-job-description"
-        />
-        <ToggleRow
-          label="Show client message"
-          checked={form.invoiceShowClientMessage}
-          onChange={(v) => set("invoiceShowClientMessage", v)}
-          testId="toggle-show-client-message"
-        />
-      </SectionCard>
+        {/* RIGHT column */}
+        <div className="space-y-6">
+          <SectionCard
+            title="Invoice details"
+            description="What appears in the meta block on the right side of the invoice header."
+          >
+            <ToggleRow
+              label="Show job number"
+              checked={form.invoiceShowJobNumber}
+              onChange={(v) => set("invoiceShowJobNumber", v)}
+              testId="toggle-show-job-number"
+            />
+            <ToggleRow
+              label="Show invoice summary"
+              checked={form.invoiceShowSummary}
+              onChange={(v) => set("invoiceShowSummary", v)}
+              testId="toggle-show-summary"
+            />
+            <ToggleRow
+              label="Show job description"
+              checked={form.invoiceShowJobDescription}
+              onChange={(v) => set("invoiceShowJobDescription", v)}
+              testId="toggle-show-job-description"
+            />
+            <ToggleRow
+              label="Show client message"
+              checked={form.invoiceShowClientMessage}
+              onChange={(v) => set("invoiceShowClientMessage", v)}
+              testId="toggle-show-client-message"
+            />
+          </SectionCard>
 
+          <SectionCard
+            title="Line items & pricing"
+            description="What appears in the line items table. Per-invoice overrides take precedence."
+          >
+            <ToggleRow
+              label="Show line item breakdown"
+              checked={form.invoiceShowLineItems}
+              onChange={(v) => set("invoiceShowLineItems", v)}
+              testId="toggle-show-line-items"
+            />
+            <ToggleRow
+              label="Show quantities"
+              checked={form.invoiceShowQuantities}
+              onChange={(v) => set("invoiceShowQuantities", v)}
+              testId="toggle-show-quantities"
+            />
+            <ToggleRow
+              label="Show unit prices"
+              checked={form.invoiceShowUnitPrices}
+              onChange={(v) => set("invoiceShowUnitPrices", v)}
+              testId="toggle-show-unit-prices"
+            />
+            <ToggleRow
+              label="Show line totals"
+              checked={form.invoiceShowLineTotals}
+              onChange={(v) => set("invoiceShowLineTotals", v)}
+              testId="toggle-show-line-totals"
+            />
+          </SectionCard>
+        </div>
+      </div>
+
+      {/* ── Bottom: Default client message spans the full content width
+          beneath the 2-column grid. Sits outside the grid so it doesn't
+          force one of the option columns to grow tall to balance it. */}
       <SectionCard
         title="Default client message"
         description="Used to prefill new invoices. Individual invoices can still be edited."
@@ -281,7 +331,7 @@ export default function InvoiceDisplaySettingsPage() {
             onChange={(e) => set("invoiceDefaultClientMessage", e.target.value)}
             disabled={!form.invoiceShowClientMessage}
             placeholder="Thanks for your business. Please remit payment by the due date."
-            rows={4}
+            rows={3}
             maxLength={2000}
           />
           <p className="text-xs text-muted-foreground">
@@ -290,38 +340,6 @@ export default function InvoiceDisplaySettingsPage() {
               : "Client message is currently turned off. Turn it on above to prefill new invoices."}
           </p>
         </div>
-      </SectionCard>
-
-      <SectionCard
-        title="Line items & pricing"
-        description="What appears in the line items table. Per-invoice overrides take precedence."
-      >
-        <LockedRow label="Total" />
-        <LockedRow label="Balance due" />
-        <ToggleRow
-          label="Show line item breakdown"
-          checked={form.invoiceShowLineItems}
-          onChange={(v) => set("invoiceShowLineItems", v)}
-          testId="toggle-show-line-items"
-        />
-        <ToggleRow
-          label="Show quantities"
-          checked={form.invoiceShowQuantities}
-          onChange={(v) => set("invoiceShowQuantities", v)}
-          testId="toggle-show-quantities"
-        />
-        <ToggleRow
-          label="Show unit prices"
-          checked={form.invoiceShowUnitPrices}
-          onChange={(v) => set("invoiceShowUnitPrices", v)}
-          testId="toggle-show-unit-prices"
-        />
-        <ToggleRow
-          label="Show line totals"
-          checked={form.invoiceShowLineTotals}
-          onChange={(v) => set("invoiceShowLineTotals", v)}
-          testId="toggle-show-line-totals"
-        />
       </SectionCard>
 
       {dirty && (
@@ -353,11 +371,18 @@ function SectionCard({
 }) {
   return (
     <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="text-base">{title}</CardTitle>
-        {description ? <CardDescription>{description}</CardDescription> : null}
+      {/* Canonical card title uses `text-section-title` (18/24/600) — see
+          tailwind.config.ts:70. Description uses `text-caption` for the
+          smaller secondary tone consistent with the rest of the app. */}
+      <CardHeader className="pb-2">
+        <CardTitle className="text-section-title">{title}</CardTitle>
+        {description ? (
+          <CardDescription className="text-caption">{description}</CardDescription>
+        ) : null}
       </CardHeader>
       <CardContent className="p-0">
+        {/* Subtle divider rows so visibility-toggle clusters stay scannable
+            without burning vertical height. */}
         <div className="divide-y divide-stone-100">{children}</div>
       </CardContent>
     </Card>
@@ -376,20 +401,10 @@ function ToggleRow({
   testId?: string;
 }) {
   return (
-    <label className="grid grid-cols-[1fr_auto] items-center gap-3 px-4 py-2.5">
+    <label className="grid grid-cols-[1fr_auto] items-center gap-3 px-4 py-1.5">
       <span className="text-[13px] font-medium text-slate-900">{label}</span>
       <Switch checked={checked} onCheckedChange={onChange} data-testid={testId} />
     </label>
   );
 }
 
-function LockedRow({ label }: { label: string }) {
-  return (
-    <div className="grid grid-cols-[1fr_auto] items-center gap-3 px-4 py-2.5 text-slate-500">
-      <span className="text-[13px] font-medium">{label}</span>
-      <span className="inline-flex items-center gap-1 text-xs">
-        <Lock className="h-3.5 w-3.5" /> Always shown
-      </span>
-    </div>
-  );
-}

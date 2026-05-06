@@ -8,6 +8,593 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### Invoice Client Visibility — Reset to defaults validation + showJobDescription round-trip (2026-05-06)
+
+Surgical fix for two coupled bugs that broke the "Reset to defaults" affordance on the invoice detail page.
+
+- **Bug 1 — route-local Zod schema rejected null.** `server/routes/invoices.ts:120` declares its OWN strict `updateInvoiceSchema` (separate from the canonical one in `shared/schema.ts`). When the shared schema was made nullable on 2026-05-06 to support the "Reset to defaults" PATCH, the route-local copy was missed and continued to reject null with `"Validation error: Expected boolean, received null"` for `showQuantity`, `showUnitPrice`, `showLineTotals`, `showLineItems`, `showJobDescription`. **Fix:** the five fields now declare `z.boolean().nullable().optional()` in the route-local schema as well. `showBalance` stays non-null (mandatory surface gate, not part of the tenant Invoice Display catalog).
+- **Bug 2 — `getInvoice` projection was missing `showJobDescription`.** `server/storage/invoices.ts::getInvoice` enumerates fields explicitly and was missing `showJobDescription` from the select. Every invoice read silently dropped the column, so:
+  - The InvoiceDetailPage's `inv.showJobDescription` was always `undefined`.
+  - Operator toggles on Job description couldn't round-trip — the Switch flipped, the PATCH succeeded, but the next read showed it inheriting again.
+  - The Custom badge for that one row never appeared because `rawInvoiceFlags.showJobDescription` was always null.
+  - The resolver's `pick(undefined, tenantFlag, ...)` accidentally produced the right answer for the inherit-from-tenant case but the wrong answer for explicit overrides.
+  **Fix:** added `showJobDescription: invoices.showJobDescription` to the projection.
+- **Audit conclusions (no change required):**
+  - Cache invalidation chain is correct. `InvoiceDisplaySettingsPage` invalidates `["/api/invoice-display-settings"]` on save; `InvoiceDetailPage` uses the same key for its `tenantInvoiceDisplay` query. `staleTime: 5min` + `refetchOnMount: true` (default) means the tenant query refreshes on next mount of the invoice page after settings change.
+  - Admin invoice detail page is the truth view, NOT a client-facing preview. No JSX in `client/src/pages/InvoiceDetailPage.tsx` gates rendering on the five visibility flags; all admin invoice content stays visible regardless of customer-facing visibility settings. The flags only affect the Switch UI inside `ClientVisibilityCardV2` and the resolved policy that flows to PDF / email / portal renderers.
+  - Card Custom-row + on-count logic is correct. Switch shows the resolved value. Per-row `Custom` badge appears only when the raw stored value is a real boolean AND differs from tenant default. Header `Custom` badge appears only when at least one row is custom. The `5 on` counter uses resolved values.
+- **Tests.** `tests/invoice-display-settings.test.ts` extended from 36 → 40 tests:
+  - Source-pin: `server/routes/invoices.ts::updateInvoiceSchema` declares `.nullable()` on each of the five flags (and does NOT declare any of them as bare `z.boolean().optional()`).
+  - Source-pin: `shared/schema.ts::updateInvoiceSchema` declares `.nullable()` on each of the five flags.
+  - Storage round-trip: `updateInvoice` with explicit nulls is followed by a `getInvoice` that returns null on all five fields (catches the missing-projection bug — the previous test suite passed even with `showJobDescription` dropped because no test asserted on that specific column post-update).
+  - Source-pin: `client/src/pages/InvoiceDetailPage.tsx` does not gate JSX rendering on `policy.show*`, `invoice.show*`, or `serverVisibility.show*` patterns (admin truth view contract).
+- **Verification.** `npm run check` clean. `npx vitest run tests/invoice-display-settings.test.ts` 40 / 40 pass. `npx vitest run tests/invoice-display-settings.test.ts tests/invoice-notes-canonical.test.ts tests/invoice-send-pre-dispatch-transition.test.ts` 65 / 65 pass. `npm run build` clean.
+- **Files affected.** `server/routes/invoices.ts` (route-local `updateInvoiceSchema` made null-aware on 5 visibility fields), `server/storage/invoices.ts::getInvoice` (added `showJobDescription` to the explicit select projection), `tests/invoice-display-settings.test.ts` (4 new tests).
+
+### Fixed
+
+#### Operator-visible orphan-charge recovery + persistent log surface bug (2026-05-06 PR4)
+
+When the Stripe webhook for a Collect Payment card charge detects that `sum(allocations) ≠ amount_charged`, the handler refuses to write a partial ledger and logs the mismatch as a `config_error`. PR4 makes that operator-visible end to end and fixes a pre-existing storage bug that had been silently dropping the persistent log row.
+
+- **Storage bug fix — partial unique index conflict.** `paymentWebhookEvents.dedupe_key` is a partial unique index (`WHERE dedupe_key IS NOT NULL`). The existing `onConflictDoUpdate({ target: dedupeKey })` form silently failed in Postgres with `there is no unique or exclusion constraint matching the ON CONFLICT specification` because partial indexes need an explicit predicate match. The `safeRecord` wrapper swallowed the error so production deliveries appeared to log fine — while in fact every dedupeKey-bearing row was being lost. Adding `targetWhere: sql\`dedupe_key IS NOT NULL\`` makes the upsert land. **This was a pre-existing 2026-04-22 PR1 bug** that meant the Payments dashboard "events requiring attention" banner was effectively counting nothing for actual webhook deliveries (only signature failures, which carry `dedupeKey: null`, were landing). Caught by the new orphan-recovery test suite.
+- **Enriched mismatch logging.** Every config_error branch in `handleManualAllocationsPaymentSucceeded` now emits structured `kind=… providerPaymentId=… chargeId=… customerCompanyId=… stripeCents=… allocationSumCents=… diffCents=… invoiceCount=…` — grep-friendly key=value pairs an operator can copy from the persisted row straight into Stripe Dashboard search. The matching stdout `[anomaly]` line carries the same payload as JSON. Branches covered: amount mismatch, missing/malformed metadata, invalid JSON, empty allocation array, bad allocation entry, invalid allocation amount.
+- **`METADATA_ALLOWLIST` extended.** `customerCompanyId`, `multiInvoiceMode`, `carrierInvoiceId`, `paymentProviderAccountId` are now persisted on the `payment_webhook_events.raw_metadata` JSONB so an operator can navigate from the dashboard banner to the affected customer / invoice set without an extra psql round-trip. Defense-in-depth allowlist still strips anything the calling code didn't pre-declare.
+- **Recovery runbook.** `docs/PAYMENTS_OPS_RECOVERY.md` (NEW) covers: how the mismatch happens, how to find the orphan Stripe charge from the structured log line + persisted row, three reconciliation options (refund at Stripe, manually record locally with `reference = chargeId`, escalate to engineering), and explicit "what NOT to do" anti-patterns (no direct psql inserts, no metadata replays, no partial refunds, no log row deletion).
+- **No schema changes.** The `payment_webhook_events` table + `getTenantWebhookAnomalySummary` helper + dashboard banner already exist (2026-04-22 PR1, 2026-05-04 PR8). PR4 unblocks them by fixing the upsert and enriching what gets persisted.
+- **Webhook contract preserved.** Stripe still gets a 200 ACK on every config_error path so the event isn't retried. The dispatcher still classifies these as `accepted`. No payment row is written. The `payment_webhook_events` row IS written (now actually) so the operator can act.
+- **Tests.** `tests/collect-payment-orphan-recovery.test.ts` (NEW, 7 cases): mismatch refuses to write payment row + allocations + balance moves; webhook still 200-ACKs (`result.failed.length === 0`, `result.accepted` carries the event); persisted row carries `outcome='config_error'` + the structured key=value error message + the allowlisted raw metadata; `getTenantWebhookAnomalySummary` picks it up; the missing-companyId branch still persists a row with provider ids for triage; the metadata redactor allowlist persists the new fields and strips unknown ones; recovery doc exists at the documented path with the expected sections. Existing payment suites stay green: **136 / 136 across 11 suites** (collect-payment-card, collect-payment, collect-payment-receipt, collect-payment-orphan-recovery, multi-invoice-payments, multi-invoice-payment-receipt, payment-application-service, payment-allocations, payment-provider-linked-guard, payment-disputes-webhook, payment-payouts-webhook).
+- **Files affected.** `server/storage/paymentWebhookEvents.ts` (upsert fix + allowlist extension), `server/services/payments/paymentApplicationService.ts` (enriched orphan-context logging across 6 config_error branches), `docs/PAYMENTS_OPS_RECOVERY.md` (NEW), `tests/collect-payment-orphan-recovery.test.ts` (NEW).
+- **Verification.** `npm run check` clean. `npx vitest run` across the 11 payment suites listed above: 136 / 136 pass.
+- **Limitations (intentional).** (1) The fix to `onConflictDoUpdate` only affects new rows from this point forward — historical events that were silently dropped between 2026-04-22 and now cannot be reconstructed. We did NOT attempt a backfill because the source-of-truth for those events lives at Stripe and an operator-driven backfill from `stripe.events.list` is out of scope. (2) The recovery runbook covers the 6 known config_error branches; novel divergence patterns (e.g. Stripe partial-capture on a flow that doesn't use manual capture) would surface as `transient_failure` rather than `config_error` and need a separate runbook section. (3) No automated alert routing yet — operators must check the Payments dashboard banner. Slack/PagerDuty integration is a follow-up.
+
+### Added
+
+#### Collect Payment becomes the single entry point — multi-invoice card via embedded Elements (2026-05-06 PR3)
+
+Replaces the modal vs. overflow-menu split. Collect Payment is now the only entry point for recording any payment from Invoice Detail. Manual methods (cash / cheque / e-transfer / debit / other) keep the existing `POST /api/payments` flow. Credit card now embeds Stripe Elements directly inside the same dialog and supports multi-invoice allocation: **one Stripe charge → one `payments` row → N `payment_allocations`**.
+
+- **New service: `paymentApplicationService.createCardIntentWithAllocations`.** Validates allocations (tenant + customer + payable status + amount ≤ balance + Stripe minimum + ≤10 allocations cap), creates a Stripe PaymentIntent for the SUM, and packs the per-invoice allocations into Stripe metadata as a tight tuple JSON `[["<uuid>","<dollars>"], …]`. Stripe's 500-char metadata-field limit caps us at ~10 allocations safely; a 480-char defensive guardrail surfaces an early 400 if the encoded payload would overflow.
+- **New webhook branch: `handleManualAllocationsPaymentSucceeded`.** Triggered when `event.metadata.multiInvoiceMode === "manual_allocations"`. Reads the explicit allocations from metadata, asserts `sum(allocations) === stripe.amount_charged`, then writes ONE `payments` row (`invoiceId = NULL`, `providerSource = "stripe"`, `method = "credit"`) plus N `payment_allocations` rows by reusing the canonical `applyMultiInvoiceAllocationsTx` — same on-disk shape as the existing portal Checkout Session multi-invoice path. Idempotency anchored by `payments_provider_event_id_uq`; sum mismatch surfaces as 200 ACK + `config_error` log without writing a partial ledger. Receipt mailer fires via the existing `sendMultiInvoicePaymentReceiptEmail({ tenantId, paymentId })` after commit.
+- **New route: `POST /api/payments/card-intent`.** Body: `{ customerCompanyId, allocations: [{invoiceId, amount}], currency? }`. Tenant-scoped, role-gated (`MANAGER_ROLES`), permission-gated (`payments.collect`), rate-limited (12/min/tenant — same cap as the existing single-invoice staff checkout). Returns the Elements-compatible `{ clientToken, providerPaymentId, publishableKey, prospectivePaymentId, totalAmount }`.
+- **Reused `EmbeddedStripeCardForm`** (extracted from `StaffTakeCardDialog`). Same `stripe.confirmPayment({ redirect: "if_required" })` contract, same webhook-authoritative posture (no UI ledger writes), same polling cadence (1500 / 3500 / 7500 ms) on success.
+- **`CollectPaymentDialog` redesign.** Removed the explanatory "Record a payment received outside Stripe…" text. Compact header, tighter form spacing, sticky footer, two-column method/date row, scrollable invoice list (max 240px), method-specific field gating (cheque/e-transfer/debit/other → reference + details; cash → details only; credit → embedded Stripe form, no reference, no details, no manual save buttons). Single primary "Continue" CTA in card mode mints the PaymentIntent; "Charge $X.XX" lives inside the form itself.
+- **Email-receipt guard.** `GET /api/invoices/:id/collect-payment-context` now pre-resolves the billing email via the same `recipientResolverService.getDefaultRecipients({ entityType: "payment_receipt" })` strategy the receipt mailer uses, and surfaces it as `billingEmail: string | null`. The dialog disables "Save and Email Receipt" + shows an inline amber footer note when null. The receipt mailer re-resolves at send time, so a stale check degrades gracefully.
+- **InvoiceDetailPage cleanup.** Removed the overflow `menu-item-take-card-payment` item, the `<StaffTakeCardDialog>` mount, and the `showTakeCardDialog` state. Collect Payment is the single CTA. The legacy `StaffTakeCardDialog.tsx` file remains in the repo as a reference but is no longer wired to the canonical surface.
+- **Stripe path is the canonical writer — verified, not assumed.** The new branch dispatches BEFORE `readTenantMetadata` so manual-allocations payments never fall through to the single-invoice path. The frontend NEVER POSTs to `/api/payments` for the card method (verified by source-pin test). Sum guard prevents a partial ledger on metadata drift. No new schema columns. No changes to the existing single-invoice or portal multi-invoice Stripe paths.
+- **Tests.** `tests/collect-payment-card.test.ts` (NEW, 22 cases): real-DB service tests (multi-invoice allocations sum correctly; over-balance / cross-customer / cross-tenant / empty / 11-allocation / sub-50¢ rejected), real-DB webhook tests (one payment + N allocations + balance updates, idempotency on replay, sum-mismatch refuses to write), source pins (overflow item gone, dialog hides reference/details in card mode, card path POSTs only to `/api/payments/card-intent`, billingEmail guard wired). Existing suites stay green: `collect-payment.test.ts` 20/20, `collect-payment-receipt.test.ts` 12/12, `multi-invoice-payments.test.ts` 19/19, `multi-invoice-payment-receipt.test.ts` 16/16, `payment-application-service.test.ts` 19/19, `payment-allocations.test.ts` 6/6, `payment-provider-linked-guard.test.ts` 8/8 — **117/117 across 8 suites**.
+- **Files affected.** `server/services/payments/paymentApplicationService.ts` (new service method + webhook branch), `server/routes/payments.ts` (new route + billingEmail extension), `client/src/components/invoice/CollectPaymentDialog.tsx` (full redesign + card mode), `client/src/components/invoice/EmbeddedStripeCardForm.tsx` (NEW), `client/src/pages/InvoiceDetailPage.tsx` (overflow item + StaffTakeCardDialog mount removed), `tests/collect-payment-card.test.ts` (NEW), `tests/collect-payment.test.ts` (assertions updated to reflect single-entry-point design). **No schema changes. Stripe webhook contract unchanged.**
+- **Verification.** `npm run check` clean. `npm run build` clean. 117 / 117 payment tests pass.
+- **Limitations (intentional).** (1) Card payments capped at 10 allocations per charge — Stripe metadata field limit. Operators with more invoices in one batch can use a manual method which has no cap. (2) Per-row amount edits disabled AFTER the PaymentIntent is minted — once Stripe has the snapshot, changing it would require re-minting. (3) Card receipts are emitted by the Stripe webhook automatically; no frontend wiring needed for those.
+
+#### Manual payment receipt emails wired to existing dispatcher (2026-05-06 PR2)
+
+Follow-up to the 2026-05-06 Collect Payment flow. The "Save and Email Receipt" button on `CollectPaymentDialog` now actually sends a receipt — reusing the canonical `emailDispatchService.sendMultiInvoicePaymentReceiptEmail` that powers the Stripe webhook receipt path. No fake delivery: the response surfaces accurate state and the UI mirrors it.
+
+- **Reused, not duplicated.** `POST /api/payments` now calls `emailDispatchService.sendMultiInvoicePaymentReceiptEmail({ tenantId, paymentId })` after the storage commit when `emailReceipt: true`. We deliberately picked the **multi-invoice** method even for single-allocation manual payments, because manual payments always write `payments.invoiceId = NULL` + ≥1 allocation rows — and `templateDataBuilder.buildPaymentReceiptTemplateDataByPaymentId` already handles both single-allocation and multi-allocation receipts cleanly. Calling the legacy `sendPaymentReceiptEmail({ invoiceId })` here would be wrong (it keys off `payments.invoiceId`, which is null on this path) so a source-pin test asserts that method is NOT invoked.
+- **Failure policy mirrors the Stripe webhook.** When the receipt service throws (Resend transport, template render, idempotency conflict), the route catches the error, logs a structured `manual_payment.receipt_send_failed` line, and returns `201` with `receiptEmailQueued: false`. The payment row + allocations + per-invoice balance updates are NEVER rolled back due to a receipt failure — the invoice is paid, the receipt can be re-sent later.
+- **Three distinct response reasons.** The response now reports `receiptEmailReason: "not_requested" | "no_recipient" | "send_failed" | null` so the UI can distinguish "user opted out", "we tried but the customer has no billing email on file", and "we tried and the email service rejected it". `receiptEmailMessageId` carries the Resend id on success; `receiptEmailError` carries the error message on `send_failed`.
+- **Frontend honesty.** `CollectPaymentDialog` now reads `receiptEmailQueued` directly. If the user clicked **Save and Email Receipt** and the backend confirmed the send → toast "Payment recorded · receipt emailed". If the send failed or no recipient was on file → destructive-variant toast "Payment saved, but receipt email was not sent" with a one-line reason hint. We never claim a send the backend didn't confirm.
+- **Stripe path unchanged.** `paymentApplicationService` and `stripeWebhook.ts` are untouched. `sendPaymentReceiptEmail` (the legacy 1:1 helper) and `sendMultiInvoicePaymentReceiptEmail` (the multi helper) keep their existing contracts. A source-pin test confirms the Stripe staff `/payments/checkout` route does NOT call any receipt-mailer (the webhook is still the canonical sender for Stripe payments).
+- **Tests.** `tests/collect-payment-receipt.test.ts` (NEW, 12 cases). Mounts the payments router behind a minimal Express harness with mocked storage + email service. Covers: `emailReceipt=false` does not dispatch; omitted field defaults to "not_requested"; `emailReceipt=true` single-allocation triggers exactly one send call with the new payment id; `emailReceipt=true` multi-allocation does the same (one call, not N); email throw does not roll back the payment; null return surfaces "no_recipient"; route distinguishes the three reason codes; legacy single method is NOT called; Stripe checkout route has no receipt wiring; dialog branches toast on `receiptEmailQueued`. Existing real-DB suite `tests/collect-payment.test.ts` stays green at 20/20 (no fixture changes were needed since the storage layer is unchanged on this path).
+- **Files affected.** `server/routes/payments.ts` (receipt dispatch + accurate response shape), `client/src/components/invoice/CollectPaymentDialog.tsx` (typed response + branched toast copy), `tests/collect-payment-receipt.test.ts` (new). **No schema changes. No new email templates. No Stripe SDK changes.**
+- **Verification.** `npm run check` clean. `npx vitest run tests/collect-payment.test.ts tests/collect-payment-receipt.test.ts tests/multi-invoice-payment-receipt.test.ts tests/multi-invoice-payments.test.ts tests/payment-application-service.test.ts tests/payment-allocations.test.ts` → 86 / 86 pass.
+- **Intentional limitations.** (1) The "Save and Email Receipt" path awaits the Resend call inline — slow Resend responses block the user-visible toast. The Stripe webhook does the same; we follow the established pattern. (2) When `receiptEmailReason: "send_failed"` lands, there's no automatic retry from the manual-payment surface. The operator can resend via the canonical email-history retry path on the invoice. (3) `receiptEmailQueued: true` reflects "Resend accepted the send and returned a message id" — final delivery is reported via Resend's webhook into the existing `email_deliveries` table; nothing new wired here.
+
+#### Provider-neutral Collect Payment flow on Invoice Detail (2026-05-06)
+
+Replaces the overflow-only "Take card payment" affordance with a Jobber-style multi-invoice payment collection workflow. Lets staff record cash, cheque, e-transfer, debit, externally processed card, or other manual payments — with one payment row applied across one or many of a customer's outstanding invoices, atomically.
+
+- **Frontend — InvoiceDetailPage primary CTA.** New green **Collect Payment** button surfaces in the invoice detail action bar whenever the invoice is payable (`!draft && !voided && !paid && balance > 0` — same predicate as the canonical server-side `canAcceptInvoicePayment`). The legacy overflow item is renamed to **Charge credit card (Stripe)** so the two paths are visually distinct: Collect Payment for everything else, the overflow item only when the operator wants to mount Stripe Elements directly.
+- **Frontend — `CollectPaymentDialog`.** New 3xl modal that shows: header "New Payment for {customer}", a green Total Payment summary at the top, payment method dropdown (cash / cheque / e-transfer / debit / credit / other) with method-specific reference label (e.g. "Cheque #" vs "E-transfer reference"), transaction date, optional reference, optional notes textarea, and an Outstanding Invoices section listing every UNPAID invoice for the source invoice's customer company. The source invoice is preselected at its full remaining balance; other invoices appear unchecked and disable their amount input until selected. Selecting an invoice defaults the amount to its current balance; deselecting clears it. Footer offers **Cancel / Save / Save and Email Receipt**. Validation is live: at least one selected, total > 0, no over-allocation, transaction date + method required.
+- **Backend — `GET /api/invoices/:invoiceId/collect-payment-context`.** Returns the data the modal needs in one round trip: source invoice id, customer company, all UNPAID invoices for that customer (filtered via the canonical `UNPAID_INVOICE_STATUSES` set + `balance > 0`, ordered by `dueDate`), aggregated account balance, supported method enum. Standalone-location invoices (no parent customer) get a single-row response so the dialog still renders.
+- **Backend — `POST /api/payments`.** New provider-neutral manual payment endpoint. Accepts `{ customerCompanyId, method, transactionDate, reference, notes, allocations: [{invoiceId, amount}], emailReceipt }`. Delegates to the new `paymentRepository.createManualMultiInvoicePayment(...)` storage method.
+- **Storage — `createManualMultiInvoicePayment`.** Single transaction: validates tenant ownership of every allocation invoice, validates all invoices belong to the same `customerCompanyId`, validates each invoice is `canAcceptInvoicePayment(...)`, validates each allocation is `> 0` and `≤ current balance`, sums allocations to derive the parent payment amount. Inserts ONE `payments` row with `invoiceId = NULL`, `providerSource = "manual"`. Inserts N `payment_allocations` rows in a single batch insert. Then per-invoice direct UPDATE — same in-tx pattern the Stripe multi-invoice webhook handler uses (`paymentApplicationService.applyMultiInvoiceAllocationsTx`): subtract `allocatedAmount` from `balance`, bump `amountPaid`, transition status to `paid` (balance ≤ 0) or `partial_paid` (balance > 0 and amountPaid > 0). The 2026-03-18 performance baseline holds — no per-line tax loops, no recalculation across the entire payment ledger; the math is closed-form per allocation.
+- **Stripe path is intentionally untouched.** No changes to `stripeAdapter.ts`, `paymentApplicationService.createCheckout`, the staff `POST /api/invoices/:invoiceId/payments/checkout` route, the portal `POST /api/portal/invoices/:invoiceId/payments/checkout` route, the multi-invoice batch checkout, or the `paymentApplicationService.applyMultiInvoiceAllocationsTx` webhook handler. The webhook is still the canonical writer for Stripe payments. `StaffTakeCardDialog` continues to mount inline Stripe Elements with the proven polling + invalidation contract added in the 2026-05-05 portal-pay fix.
+- **Manual payments surface in existing reads.** `payment_allocations.invoiceId` is indexed (`payment_allocations_invoice_idx`); `payment-allocations.test.ts` already verifies tenant scoping. Manual multi-invoice payments appear in the Payments dashboard via the existing `listOnlineTransactionsForCompany` LEFT JOIN (multi-invoice rows show with `invoiceNumber: null`, rendered as "Multi-invoice") and surface on each affected invoice's detail page via the existing payments-list query.
+- **Email receipt — explicit follow-up.** The request body accepts `emailReceipt: boolean` and the response echoes `receiptEmailRequested`. The actual mailer (`emailDispatchService.sendPaymentReceiptEmail`) is currently wired to the Stripe webhook code path; the response field `receiptEmailQueued: false` makes it explicit that no email is dispatched today. We deliberately do NOT fake delivery. Wiring the manual receipt is a follow-up.
+- **Tests.** `tests/collect-payment.test.ts` (NEW, 20 cases). Real-DB integration: one-payment-many-allocations atomicity, partial → `partial_paid`, full → `paid`, multi-invoice independent transitions, over-allocation rejected, cross-customer rejected (400), cross-tenant rejected (404), zero-amount rejected, empty allocations rejected. Source-pin layer: GET context endpoint shape, POST schema, Stripe checkout route preserved, dialog method-specific reference labels, source invoice preselected at full balance, validation messages, footer testids, query-key invalidation list, primary button predicate, overflow item renamed, dialog mounted with the canonical query keys. Existing payment suites stay green: `multi-invoice-payments.test.ts` 19/19, `payment-allocations.test.ts` 6/6, `payment-application-service.test.ts` 19/19, `payment-provider-linked-guard.test.ts` 8/8.
+- **Files affected.** `server/storage/payments.ts` (new method), `server/routes/payments.ts` (two new routes + imports), `client/src/components/invoice/CollectPaymentDialog.tsx` (new), `client/src/pages/InvoiceDetailPage.tsx` (primary button + overflow rename + dialog mount), `tests/collect-payment.test.ts` (new). `CHANGELOG.md`. **Schema unchanged.**
+- **Verification.** `npm run check` clean. `npm run build` clean. `npx vitest run tests/collect-payment.test.ts` → 20/20 pass. `npx vitest run tests/multi-invoice-payments.test.ts tests/payment-allocations.test.ts tests/payment-application-service.test.ts tests/payment-provider-linked-guard.test.ts` → 52/52 pass.
+
+### Fixed
+
+#### Invoice Client Visibility — auto-expand on legacy customs + remove unsupported toggles (2026-05-06)
+
+Surgical follow-up to the 2026-05-06 inheritance work. Behavior fixes only — no new schema, no new migration.
+
+- **Reported symptom.** "Tenant default changed to Show job description = OFF, but an existing invoice still shows it ON." The user sees the small card-level **Custom** badge in the collapsed header but not the actionable rows or the **Reset to defaults** button.
+- **Root cause.** Legacy data, not cache or resolver. The cache invalidation path is correct: `InvoiceDisplaySettingsPage` invalidates `["/api/invoice-display-settings"]` on save, which is the same TanStack Query key `InvoiceDetailPage` uses for its `tenantInvoiceDisplay` query — they share the singleton `queryClient` so the tenant query refreshes on next mount/focus. The resolver is also correct: `pick()` is null-aware. The actual issue is that invoices created BEFORE migration `2026_05_06_invoice_visibility_inherit.sql` carry explicit `true` on every visibility column (was `NOT NULL DEFAULT true`); after the migration, those rows still hold the explicit booleans and the resolver correctly treats them as deliberate overrides. The fix is UX: surface the **Reset to defaults** action so legacy invoices are one click away from inheriting.
+- **Auto-expand on first detection of overrides.** `ClientVisibilityCardV2` now expands itself the first tick `anyCustom` becomes true. After this initial expand the user retains chevron control — the card intentionally does NOT re-collapse when `anyCustom` flips to false (post-Reset, staying expanded gives visual confirmation that the Custom badges have cleared).
+- **Settings UI — unsupported toggles removed.** `Show company logo` and `Show company website` no longer appear under Settings → Invoices → Invoice Display. The underlying schema columns + PUT payload stay in place (no data migration risk for tenants that previously toggled them ON).
+- **Resolver pinned false for unsupported features.** `shared/invoiceDisplayPolicy.ts::resolveInvoiceDisplayPolicy` now hardcodes `showLogo: false` and `showCompanyWebsite: false` regardless of tenant setting. Every renderer (PDF / email / portal) consults the resolver, so the pin keeps customer-facing surfaces honest until the underlying logo-upload / company-website features ship. When those features land, swap each `false` back to the canonical `tenantOnly(...)` form.
+- **Tests.** `tests/invoice-display-settings.test.ts` extended from 33 → 36 tests. New section "Unsupported features — showLogo / showCompanyWebsite pinned false" covers: resolver returns `false` for both flags regardless of tenant setting; the settings page source does not contain the `toggle-show-logo` / `toggle-show-company-website` testids or the user-facing labels (source-pin since the Vitest env is `node` with no DOM setup).
+- **Verification.** `npm run check` clean. `npx vitest run tests/invoice-display-settings.test.ts` 36 / 36 pass. `npx vitest run tests/invoice-display-settings.test.ts tests/invoice-notes-canonical.test.ts tests/invoice-send-pre-dispatch-transition.test.ts` 61 / 61 pass. `npm run build` clean.
+- **Files affected.** `client/src/pages/InvoiceDetailPage.tsx` (auto-expand effect on `anyCustom`), `client/src/pages/InvoiceDisplaySettingsPage.tsx` (logo + website toggles removed; comment block explains why), `shared/invoiceDisplayPolicy.ts` (hardcoded false on `showLogo` / `showCompanyWebsite`), `tests/invoice-display-settings.test.ts` (3 new tests).
+
+#### Portal Pay: poll-until-applied + Stripe Link disabled (2026-05-05)
+
+Stripe Elements now successfully accepts portal card payments, but the portal was lying to customers about the result.
+
+**Root cause: portal payment recording is webhook-only, frontend declared success immediately.**
+
+After `stripe.confirmPayment` succeeded, `PortalPayInvoiceForm` fired `onSucceeded()` → `PortalInvoiceDetail` set `justPaid = true` → showed "Payment received. A receipt will be emailed to you." But the canonical writer (`paymentApplicationService.ts:1666-1710` for single-invoice, `:2096-2128` for multi-invoice) creates the payment row, allocation, balance update, status transition, AND receipt email **only when `payment_intent.succeeded` reaches the webhook handler** (`server/routes/stripeWebhook.ts`). In dev without Stripe CLI forwarding, or whenever webhook delivery lags, the customer sees a confirmed UI while the backend has done nothing — invoice still Awaiting Payment, no payment in the admin Payments list, no receipt.
+
+**Fix — client-side polling, webhook stays the canonical writer.**
+
+`PortalInvoiceDetail` now waits for the backend to actually commit before declaring success:
+
+1. New state: `awaitingApplication`, `pendingBalanceCents`, `applicationTimedOut`.
+2. The form's `onSucceeded` handler captures the current `invoice.balance` (in cents) and sets `awaitingApplication = true` instead of immediately flipping `justPaid`.
+3. A new `useEffect` polls `queryClient.invalidateQueries({ queryKey: invoiceQueryKey })` every 1500 ms while `awaitingApplication` is true.
+4. A second `useEffect` watches `data?.invoice.balance` and `data?.invoice.status`; when current cents fall below `pendingBalanceCents` OR status transitions to `paid` / `partial_paid`, `justPaid` flips and polling stops.
+5. After 30 s without a balance/status change, polling stops and `applicationTimedOut` flips. The customer sees an honest "Payment is still processing — your invoice will update once Stripe confirms it" panel with a hint to contact support if no receipt arrives in a few minutes.
+
+The webhook flow is untouched — it remains the only writer. The portal just observes the writer's effect. Idempotency stays at the webhook layer (`providerEventId` dedupe in `applyVerifiedWebhookBatch`); the polling loop never writes anything.
+
+**Render branches in the payment panel** (in priority order):
+- `justPaid` → "Payment received. A receipt will be emailed to you shortly." (we know the receipt is on its way because the canonical writer just ran).
+- `applicationTimedOut` → "Payment is still processing" + amber AlertTriangle.
+- `awaitingApplication` → "Processing your payment…" + spinner.
+- `intentError` → existing error + Try-again button.
+- `stripeLoadFailed` → existing fallback panel.
+- otherwise → Elements + PaymentElement form.
+
+**Stripe Link disabled in the PaymentElement.**
+
+Stripe Link's "save card with Stripe" model conflicts with the existing per-tenant Saved Cards feature — cards saved through Link don't populate the tenant's saved-cards list, so customers think "I saved my card" but on next visit the Saved Cards UI is empty. PaymentElement now mounts with `options={{ wallets: { link: 'never', applePay: 'auto', googlePay: 'auto' } }}`. Apple Pay / Google Pay stay on `auto` — they're transient wallets and don't create the cross-merchant identity confusion Link does.
+
+**What's NOT changed.**
+
+- Webhook handler (`server/routes/stripeWebhook.ts`) — still the canonical writer.
+- `paymentApplicationService` — payment row + allocation + balance update + status transition + `sendPaymentReceiptEmail` all unchanged.
+- Stripe adapter — `createCheckout` / `confirmIntent` / Connect Direct Charges flow unchanged.
+- Provider-neutral architecture preserved.
+- CSRF / token / session access unchanged.
+- No synchronous-finalize endpoint added (would race the webhook on idempotency, more risk than the polling pattern).
+- Localhost HTTP warning is a Stripe internal notice on `http://localhost`; production with a configured `APP_URL` / `BASE_URL` doesn't see it. No code change.
+
+**Files changed.**
+
+- `client/src/pages/portal/PortalPayInvoiceForm.tsx` — PaymentElement wallets options (Link off).
+- `client/src/pages/portal/PortalInvoiceDetail.tsx` — polling + watch effects, three new state variables, three new render branches, success copy softened to "A receipt will be emailed to you shortly".
+- `tests/portal-pay-inline-form.test.ts` — added 9 cases (40 total): Link off in PaymentElement options, polling state present, polling interval 1500 ms, timeout 30_000, balance/status watch logic, awaiting + timeout render branches, success copy update.
+
+**Operator note.** In dev, run `stripe listen --forward-to localhost:5000/api/webhooks/stripe` to deliver webhooks locally so the polling completes successfully. Without it, polling will time out and customers see the "still processing" branch — a true description of the state.
+
+#### Tracked labour decoupled from invoice line items (2026-05-05)
+
+Tracked labour / time entries no longer auto-create invoice line items on any path. Labour stays operational data on the Job and Invoice labour cards. To bill labour the user adds a line item by hand on the invoice. No tenant setting — the auto-add path is gone outright.
+
+- **Root cause.** `refreshInvoiceFromJob()` (server/storage/invoices.ts) called a private `addLaborLinesFromTimeEntries()` helper as Step 3b. That helper grouped billable, completed, uninvoiced `time_entries` rows by technician + type, ran them through `applyBillingRulesToEntries(...)`, INSERTed `lineItemType: "service"` / `source: "job"` invoice lines, and locked the entries (`time_entries.invoiced_at`, `locked_at`, `locked_by_invoice_id`, `billed_*_snapshot`). The same path ran whenever the user clicked "Refresh from job" OR when a fresh invoice was created from a job (the canonical creation flow calls `refreshInvoiceFromJob` once after the shell exists). Labour line items therefore appeared automatically.
+- **Removal.** The Step 3b call site is deleted from `refreshInvoiceFromJob`. The `addLaborLinesFromTimeEntries` private method body is fully removed; only a deletion-record comment remains. `getBillablePreviewForJob()` (the data source for the "Refresh from job" / "Create invoice from job" composition dialog) now hard-codes `labor: []`, `laborSubtotal: "0.00"`. The parallel preview service `server/services/jobBillablePreviewService.ts::getJobBillablePreview()` does the same — both surfaces return parts only.
+- **Schema unchanged.** `time_entries.invoiced_at`, `locked_at`, `locked_by_invoice_id`, `billed_minutes_snapshot`, `billed_rate_snapshot` columns stay on the table for historical rows but are NEVER written by new code.
+- **Frontend — InvoiceCompositionDialog.** The "Labor" section (with select-all, per-entry checkboxes, and totals) is removed. The dialog now shows parts only. Empty-state copy reads "No parts to bill on this job. Tracked labour is operational only — add labour line items manually on the invoice if you want to bill it." `selection.timeEntryIds` is no longer emitted from the client; the server schema still accepts the field for backward compat but ignores it.
+- **Performance baseline preserved.** `batchApplyLineTax()` and `recalculateInvoiceTotalsInTx()` are unchanged; `refreshInvoiceFromJob` still runs Step 4 (single recalc) once, so the 2026-03-18 performance hardening contract is intact.
+- **Tests.** `tests/labour-no-auto-lines.test.ts` (new, 19 cases) covers: `refreshInvoiceFromJob` creates ZERO labour-derived invoice lines when billable time entries exist; preserves existing manual line items; leaves time entries pristine (`invoicedAt` / `lockedAt` / `billedMinutesSnapshot` all NULL); `getBillablePreviewForJob` always returns empty `labor`. Source-pin coverage for: `addLaborLinesFromTimeEntries` is gone, no `applyBillingRulesToEntries(` call anywhere in the preview service, no `data-testid="section-labor"` in the dialog. All other relevant suites stay green: `lead-visits.test.ts` 28/28, `lead-visits-phase3.test.ts` 28/28, `lead-quote-conversion.test.ts` 18/18, `invoice-display-settings.test.ts` 33/33.
+
+#### Invoice tax selector now supports standalone tax rates (2026-05-05)
+
+Tenants with only standalone tax rates (e.g. just "HST 13%") can now apply tax to invoices without first having to bundle the rate into a tax group.
+
+- **Root cause.** The invoice tax popover (InvoiceDetailPage.tsx totals footer) queried `GET /api/tax/groups` only and rendered "No tax groups configured. Set up tax rates in Settings." when the result was empty — even when `GET /api/tax` had standalone rates available. The schema stores tax via `invoices.taxGroupId`; there is no `taxRateId` column. Standalone rates were therefore unreachable from the invoice surface.
+- **System wrapper-group convention (no schema change).** New helper `taxRepository.ensureSystemRateGroup(companyId, taxRateId)` find-or-creates a hidden `companyTaxGroups` row with the deterministic name `__sys_rate__:<rateId>` containing exactly that one rate. Idempotent: subsequent calls return the same row. The prefix is reserved — `POST /api/tax/groups` and `PUT /api/tax/groups/:id` reject any user-supplied name starting with `__sys_rate__:`.
+- **Apply path.** `POST /api/invoices/:id/apply-tax` now accepts `{ taxGroupId }` OR `{ taxRateId }` (mutually exclusive; sending both 400s; sending neither = no tax). When `taxRateId` is provided, the route resolves the wrapper group via `ensureSystemRateGroup` and delegates to the existing `applyTaxGroupToInvoice` path — so `batchApplyLineTax` + `invoiceTaxLines` snapshot semantics are unchanged.
+- **Frontend — popover UX.** `InvoiceDetailPage` now queries BOTH `/api/tax` and `/api/tax/groups`, splits user-created groups vs system wrappers client-side (filter on the `__sys_rate__:` prefix), and renders two sections in the popover: "Tax Groups" and "Tax Rates". Empty-state copy is branched: when both lists are empty it now says "No tax rates configured. Add a tax rate in Settings." When the invoice's taxGroupId points at a system wrapper, the visible label derives from the underlying rate (`HST (13%)`, never `__sys_rate__:<uuid> (13%)`).
+- **Frontend — Settings page.** `TaxBillingRulesPage.tsx` filters out system wrappers from the displayed tax-groups list so the auto-managed plumbing never clutters the user's Settings view.
+- **Tests.** Same `tests/labour-no-auto-lines.test.ts` file covers the tax fix end-to-end: real-DB `ensureSystemRateGroup` creates a hidden wrapper, is idempotent, returns null for a missing/cross-tenant rate; applying via the wrapper writes the canonical 13 % to `invoiceLines.taxRate` + `invoiceTaxLines` snapshot pointing at the underlying rate (not at the synthetic group). Source-pin coverage for: the new schema, the `ensureSystemRateGroup` helper, the create-tax-group prefix rejection, the popover's two-section render, the empty-state copy, the Settings filter.
+
+#### Canadian "Labour" spelling in visible UI (2026-05-05)
+
+Per spec, visible UI labels use Canadian English "Labour" everywhere. Internal field names (`laborCostPerHour`, `lineItemType`, JSDoc references) are intentionally NOT renamed to avoid churn.
+
+- `client/src/components/team-hub/CompensationTab.tsx`: "Labor cost / hour" → "Labour cost / hour"; the validation error "Labor cost must be a number with up to 2 decimals" → "Labour cost must be a number with up to 2 decimals".
+- All other UI surfaces already used "Labour" (JobDetailPage labour card, products-services category, etc.) so no other render strings changed.
+
+**Files affected (all three fixes).** `server/storage/invoices.ts`, `server/storage/tax.ts`, `server/services/jobBillablePreviewService.ts`, `server/routes/invoices.ts`, `server/routes/tax.ts`, `client/src/components/InvoiceCompositionDialog.tsx`, `client/src/pages/InvoiceDetailPage.tsx`, `client/src/pages/TaxBillingRulesPage.tsx`, `client/src/components/team-hub/CompensationTab.tsx`, `tests/labour-no-auto-lines.test.ts` (new).
+
+**Verification.** `npm run check` clean. `npm run build` clean. `npx vitest run tests/labour-no-auto-lines.test.ts tests/lead-visits.test.ts tests/lead-visits-phase3.test.ts tests/lead-quote-conversion.test.ts tests/invoice-display-settings.test.ts` → 126/126 pass.
+
+#### Invoice visibility inheritance + collapsed Client Visibility card (2026-05-06)
+
+Surgical follow-up to the 2026-05-05 Invoice Display Settings work.
+
+- **Root cause.** The five per-invoice visibility columns (`show_quantity`, `show_unit_price`, `show_line_totals`, `show_line_items`, `show_job_description`) were `NOT NULL DEFAULT true`. Every invoice — old or new — therefore carried explicit booleans, and the canonical resolver's `pick(invoiceFlag, tenantFlag, ...)` always won on the invoice side. Tenant Invoice Display defaults never reached PDF / email / portal renderers, and the invoice-level Client Visibility card flagged every invoice as fully "Custom" against tenant defaults.
+- **Schema fix — null = inherit tenant default.** Migration `migrations/2026_05_06_invoice_visibility_inherit.sql` drops `NOT NULL` and `DEFAULT` on the five flags. `shared/schema.ts` mirrors the new nullability. Existing rows are intentionally unchanged so legacy invoices keep rendering with their pre-migration explicit values; new invoices created via `createInvoiceShell` (job-source, standalone, atomic) leave these columns `NULL` and inherit. `show_balance` stays `NOT NULL DEFAULT true` — it gates the mandatory Balance-due surface and is not part of the tenant Invoice Display catalog.
+- **API surface — null clears an override.** `updateInvoiceSchema` (Zod) now accepts `boolean | null` on the five flags so `PATCH /api/invoices/:id` with `{ showLineItems: null, ... }` clears any per-invoice override. The "Reset to defaults" affordance on the invoice detail page emits exactly that payload.
+- **Resolver contract.** `shared/invoiceDisplayPolicy.ts::pick()` was already null-aware — its inheritance contract (`null/undefined` → tenant default; explicit boolean → override) is now load-bearing and documented as such.
+- **Invoice detail page — Client Visibility card.**
+  - **Effective values via the resolver.** `serverVisibility` now runs the raw invoice flags through `resolveInvoiceDisplayPolicy(...)` so the toggle Switches reflect what the customer will actually see — including tenant defaults when the invoice has no override.
+  - **Honest "Custom" indicators.** Per-row "Custom" badges and the card-level Custom badge now consult the RAW stored flags (`rawInvoiceFlags`). A `null` stored value is "inheriting" — never custom — even when the effective toggle position currently matches the tenant value. Stored booleans that match the tenant default are also not custom (value-based contract per spec).
+  - **Collapsed by default.** The card now ships collapsed; the header surfaces the on-count and a Custom / "Using invoice display defaults" hint. Click anywhere on the header (or the chevron) to expand. The card auto-expands while there are unsaved edits so an in-flight Save can never hide behind a collapsed header. New testids: `button-vis-toggle-collapse`, `vis-card-badge-custom`, `vis-card-badge-inherit`.
+  - **Reset behavior.** "Reset to defaults" now PATCHes `null` for all five flags through the existing `updateInvoiceFieldsMutation`. The card's expanded footer surfaces the button only when at least one row is custom — no clutter when the invoice is already inheriting.
+  - **Notes layout.** Notes / Payment History sit below the Client Visibility card in the right-rail JSX as before. With the card collapsed by default, they naturally move up the rail without any reordering.
+- **Tests.** `tests/invoice-display-settings.test.ts` extended from 27 → 33 tests. New section "Invoice visibility inheritance — null = use tenant default" covers: a freshly created invoice has `NULL` on the five columns; resolver inherits tenant defaults when invoice flags are `NULL`; explicit override always wins; `PATCH null` clears an override and the resolver falls back to tenant default; legacy rows with stored booleans behave as before; `invoiceVisibilityDiffersFromTenant` treats `NULL` as not-custom (and a stored boolean matching the tenant value as not-custom either).
+- **Verification.** Migration applied to dev DB. `npm run check` clean. `npx vitest run tests/invoice-display-settings.test.ts` 33 / 33 pass. `npx vitest run tests/invoice-display-settings.test.ts tests/invoice-notes-canonical.test.ts tests/invoice-send-pre-dispatch-transition.test.ts` 58 / 58 pass. `npm run build` clean.
+- **Files affected.** `migrations/2026_05_06_invoice_visibility_inherit.sql` (new), `shared/schema.ts` (5 columns nullable + Zod schema), `shared/invoiceDisplayPolicy.ts` (doc-comment refresh on `pick()`), `client/src/pages/InvoiceDetailPage.tsx` (resolver-backed `serverVisibility`, raw-flag-backed Custom logic, collapse-by-default card, reset PATCHes null), `tests/invoice-display-settings.test.ts` (6 new tests).
+
+#### Portal Pay form stuck on "Loading payment form…" + invoice page UX cleanup (2026-05-05)
+
+Customers who clicked the Pay Invoice email link landed on the portal invoice page and saw a Pay button that never enabled — `<PaymentElement>`'s `onReady` callback never fired. Root cause + UX cleanup shipped together.
+
+**Root cause: Stripe Connect Direct Charges + missing `stripeAccount` on the SDK loader.**
+
+The backend creates the PaymentIntent on the tenant's connected account (`stripe.paymentIntents.create(params, { stripeAccount: input.providerAccountId })` at `stripeAdapter.ts:763-766`). The returned `client_secret` belongs to the **connected** account. To fetch and confirm that intent, Stripe.js MUST be loaded with `loadStripe(publishableKey, { stripeAccount })`. Without it the SDK queries `/v1/payment_intents/<id>` on the platform account, hits a 404, and the iframe never resolves. `onReady` never fires; the Pay button stays disabled with "Loading payment form…" forever.
+
+The adapter's doc-comment at `stripeAdapter.ts:758-762` explicitly anticipated this ("Stripe.js loads with stripeAccount") but the response shape didn't carry `providerAccountId` to the frontend. Fixed by widening the response.
+
+Fix:
+
+- `server/services/payments/providers/types.ts` — added `providerAccountId?: string` to `CreateCheckoutResult`.
+- `server/services/payments/providers/stripeAdapter.ts:768-775` — populates `providerAccountId` on portal source. Staff source remains `undefined`.
+- `client/src/pages/portal/PortalInvoiceDetail.tsx` — `CheckoutResponse` interface gained `providerAccountId?: string`. `getStripePromise(publishableKey, stripeAccount?)` now passes `{ stripeAccount }` to `loadStripe` when supplied. The cache key changed to `\`${publishableKey}|${stripeAccount}\`` so different tenants on different connected accounts don't collide on the cached Stripe.js instance.
+
+**10s onReady timeout fallback.**
+
+`PortalPayInvoiceForm` adds a `READY_TIMEOUT_MS = 10_000` watchdog. If `onReady` doesn't fire within 10 seconds, an amber inline panel renders inside the form: "Payment form could not load. Refresh the page or try again." A new optional `onRetry` prop wires to a "Try again" button that the page implements as `setIntent(null); setIntentError(null)` — this re-fires the auto-create-intent useEffect with a fresh PaymentIntent (and new client secret), recovering from transient Stripe.js boot failures without a full page reload. The Pay button stays `disabled` while timed-out-and-not-yet-ready, matching the existing `canSubmit` gate.
+
+**UX layout cleanup.**
+
+The page repeated "Total" and "Balance Due" three places (top hero, totals card, payment panel). Reworked:
+
+- **Top card** now carries: invoice number; `Issued <date> · Due <date>` line; **Scope of Work** (promoted up from the bottom Notes/Terms block — customers want context for what they're paying for at the top); single-line **Amount Due**; PDF download button. The dual Total + giant Balance Due grid is gone, as is the customer-confusing "Open" status badge.
+- **Status badge default label** changed from `Open` to `Awaiting payment` in `portalUtils.ts::portalStatusBadge`. Back-office jargon is unhelpful to a customer scanning the page.
+- **Totals block** stays inline with the line items but no longer renders a "Balance Due" row when it equals Total (only renders when `amountPaid > 0`, i.e., a partial payment has been applied — the meaningful case).
+- **Notes/Terms block** at the bottom no longer renders Scope of Work (moved up). It still renders tenant Client-Message and QBO CustomerMemo notes when present.
+- **Payment panel** title changed from "Pay this invoice" to **"Payment"**. The previous `text-3xl font-bold` Balance hero treatment in the panel header is replaced with a single `Amount Due: $X.XX` row. The PaymentElement + Pay button remain. No repeated invoice status, no large duplicated balance.
+
+**Files changed.**
+
+- Backend: `server/services/payments/providers/types.ts`, `server/services/payments/providers/stripeAdapter.ts`.
+- Frontend: `client/src/pages/portal/PortalInvoiceDetail.tsx` (CheckoutResponse type, getStripePromise signature, top-card rewrite, totals consolidation, Notes block trim, payment-panel slim, onRetry wiring), `client/src/pages/portal/PortalPayInvoiceForm.tsx` (10s timeout fallback + onRetry prop), `client/src/pages/portal/portalUtils.ts` (default badge label).
+- Tests: `tests/portal-pay-inline-form.test.ts` rewritten to 31 cases covering onReady gate, timeout fallback, two-column layout, no-modal contract, providerAccountId threading, layout cleanup (Scope of Work in top card, Amount Due single-line, no balance hero, "Awaiting payment" label, totals balance row gate), and Stripe-load-failed fallback. `tests/portal-stripe-csp.test.ts` — relaxed the `loadStripe(...).catch(...)` regex to accept the new two-arg signature.
+
+**Tangential pre-existing fix.** `server/storage/invoices.ts:1373` had a `return (async () => {` IIFE wrapping the deprecated `__addLaborLinesFromTimeEntries_legacy_unreachable` stub but was missing the closing `})();`. esbuild's TS transform (used by Vitest) refused to parse the file, breaking every test that imported anywhere through `server/storage/invoices.ts`. Replaced the unclosed IIFE with the equivalent `private async` modifier on the method itself — same deprecated-unreachable contract, no unclosed paren. tsc had been silently lenient about this; esbuild caught it.
+
+No CSP changes. No backend route changes. No payment-provider logic changes (only the response shape widened to surface `providerAccountId`). Token / session invoice access unchanged. CSRF unchanged. Magic-link login flow unchanged.
+
+### Changed
+
+#### Timesheets — Day/Week header parity, total in week header, "General" relabel, flat General card (2026-05-05)
+
+UI consistency follow-up to the prior unified-header pass. Four targeted polish moves across Day View and Week View — same visual language, less duplication. **No data, route, or entry-behavior changes**; "Unbillable" is a display-label rename only and the underlying `categoryMap` enum still uses `general`.
+
+**Day View context header rebuilt to match Stack View.** `DaySummaryCard` was a `<Card>` wrapping a wrapping flex with multiple clusters. It's now the same plain container Stack View uses — `bg-white border border-slate-200 rounded-md px-4 py-3 flex items-center justify-between gap-3 flex-wrap` — with the same left/right structure:
+
+  * **Left:** `<User />` icon + `<Select>` tech dropdown.
+  * **Right:** tech name (`text-sm font-semibold text-slate-900`) · selected date (`text-xs text-slate-500 tabular-nums`) · category chips (On-site / Drive / General — same `CATEGORY_STYLE` chip styling, bumped `px-2` → `px-2.5` for parity) · optional Live badge · total time far-right (`text-sm font-semibold tabular-nums text-slate-900`).
+  * Removed the `<Card>` / `<CardContent>` wrapper, removed the legacy `lg` font on the total — total is `text-sm font-semibold` matching the right cluster's typography baseline. All `data-testid`s preserved (`day-summary-card`, `day-employee-select`, `day-category-strip`, `category-total-${cat}`, `day-live-badge`, `day-total`).
+
+**Week View context header gains week-total readout.** Stack View's context header already showed `Job Time` + `General Time` chips; it now also surfaces the week total — `text-sm font-semibold tabular-nums text-slate-900` — to the right of the chips. New testid `week-context-total` for future tests. The footer pill row is unchanged; the header total is the at-a-glance bottom-line read.
+
+**"Unbillable" → "General" relabel (display-only).** `DaySummaryCard.STRIP_SHORT.general` flipped from `"Unbillable"` to `"General"`. The chip's underlying category enum and `categoryMap` data are untouched (`categoryForType("admin") === "general"` still holds; `tests/timesheets-day-view.test.ts:1217` pins this and still passes). Day View's chip strip now reads consistently: On-site / Drive / General.
+
+**Day View General card flattened to one row per entry.** `JobTimeGroupCard.tsx` previously rendered the general variant as a card with a "General + Total" header bar plus body rows (each row separately showing start→end and duration). That doubled the bucket label between header and rows. Now the general variant collapses into a flat list of one-line rows:
+
+  * Outer card: `overflow-hidden rounded-md border border-slate-200 bg-white` with `data-testid="day-group-general"` and `data-variant="general"`. Same `${groupTestId}-rows` inner wrapper.
+  * Per-row layout: `<button>` with `flex items-center gap-3 px-3 py-2`. Children left-to-right: `General` label (`text-sm font-semibold text-slate-700`) · start→end time range (`font-mono tabular-nums`) · optional `Lock` indicator · duration far-right (`font-mono text-sm font-bold tabular-nums`, `animate-pulse text-emerald-600` when running).
+  * Click → `onEditEntry` (canonical edit modal). Lock indicator preserved. Duration animates when entry is running.
+  * Job variant is unchanged — same header (`#NUMBER — Location / summary`) + body via `TimeEntryRowCompact` rows. Mixed-type job rows still need the per-row chip to distinguish drive vs on-site, which is exactly what `TimeEntryRowCompact` provides.
+
+**Files changed.**
+
+  * `client/src/components/timesheets/DaySummaryCard.tsx` — restyled to match Stack View context header. Dropped `<Card>` / `<CardContent>` wrapper. Renamed `Unbillable` → `General`. Total demoted from `text-lg font-mono` to `text-sm font-semibold`.
+  * `client/src/components/timesheets/JobTimeGroupCard.tsx` — added a dedicated early-return branch for the general variant rendering flat one-row entries (with the `General` label inline preserving the source-pin test). Switched the import from `Briefcase` to `Lock`, added `format` / `parseISO` from date-fns and local `formatTime` / `formatDurationCompact` helpers (mirroring `TimeEntryRowCompact`'s helpers — same shape, just colocated for the general branch).
+  * `client/src/pages/timesheets/WeekStackPage.tsx` — added the week-total span at the right end of the context header's right cluster, after the chips.
+  * `tests/timesheets-day-view.test.ts` — updated one source-pin test (`JobTimeGroupCard passes hideTypeChip only for the General variant`) to reflect the new architecture: general variant no longer routes through `TimeEntryRowCompact`, so it doesn't pass `hideTypeChip`. The replacement assertion pins the absence of `hideTypeChip=` in `JobTimeGroupCard.tsx` and the continued presence of `<TimeEntryRowCompact>` for the job branch. The other `hideTypeChip` tests (which target `TimeEntryRowCompact.tsx`'s prop signature) are untouched and continue to pass — the prop is still defined there and would only be reused if a future caller wanted it.
+
+**Files NOT changed.**
+
+  * `client/src/components/timesheets/categoryMap.ts` — display-label rename was done at `DaySummaryCard.STRIP_SHORT`, not in the shared map. `categoryMap.CATEGORY_STYLE.general.label` still reads `"General"` (it already did). `categoryForType` enum unchanged.
+  * `client/src/components/timesheets/TimeEntryRowCompact.tsx` — `hideTypeChip` prop preserved (still exported with default `false`); job-variant rows still consume it in the default `false` mode (chip on).
+  * `client/src/App.tsx` — routing dispatcher unchanged.
+  * `tests/timesheets-week-stack.test.ts` (12 tests) and `tests/timesheets-week-timeline.test.ts` (97 tests) — unchanged. Both still pass.
+
+**Acceptance.**
+
+  * ✅ Day View header visually matches Week View header — same outer container, same left/right structure, same typography baseline.
+  * ✅ Week View header includes total week time on the far right (`text-sm font-semibold tabular-nums`).
+  * ✅ Day View summary chip says "General" — verified by inspection; `tests/timesheets-day-view.test.ts:1217` still asserts the underlying `categoryForType` enum is unchanged.
+  * ✅ Day View General entry card is one row per entry — flat `<button>` with the "General" label inline, no header bar, no separate body section. Source-pin test (line 1209) requiring `>General<` JSX text in `JobTimeGroupCard.tsx` continues to match (the inline label).
+  * ✅ No behavior regressions — entry click → edit modal preserved (general & job variants), lock-aware routing preserved, animate-pulse on running entries preserved.
+  * ✅ `npx tsc --noEmit` → 0 errors on touched files (unrelated pre-existing errors in `server/services/payments/paymentApplicationService.ts` and `client/src/pages/portal/PortalInvoiceDetail.tsx` are someone else's in-flight work).
+  * ✅ `npx vitest run tests/timesheets-day-view.test.ts tests/timesheets-week-stack.test.ts tests/timesheets-week-timeline.test.ts` → 244 / 244 pass (135 day-view + 12 stack + 97 timeline).
+
+#### Timesheets — control polish + unified context header (2026-05-05)
+
+UI consistency pass across both Timesheets surfaces (Stack View at `/timesheets` and Day View at `/timesheets?view=day`). No data, route, edit-behavior, or component-tree changes — purely visual restructuring of the controls row, an upgraded segmented toggle, a real-button Today, and a new shared "Timesheet Context Header" container on Stack View that mirrors what Day View already had. All 109 tests still pass.
+
+**Unified Timesheet Context Header (Stack View).** The technician selector used to float inline with the controls row, while Day View already showed it inside a clean header bar. That asymmetry is fixed: Stack View now wraps the technician dropdown in a dedicated card (`bg-white border border-slate-200 rounded-md px-4 py-3`) sitting directly under the controls row. Inside the card:
+
+  * **Left:** `<User />` icon + technician `<Select>` dropdown (same as before, just relocated).
+  * **Right (when a tech is selected):** technician display name (`text-sm font-semibold text-slate-900`) + week range (`text-xs text-slate-500 tabular-nums`) + two summary chips reusing the existing `SummaryPill` component — `Job Time` (blue) and `General Time` (green) drawn from `vm.weekTotals.{jobMinutes,generalMinutes}`. Same chip shape that lives in the weekly footer below; no new component.
+
+Day View's existing header inside the `DayView` component is unchanged — it already follows this pattern. The structural parity is achieved by lifting Stack View up to match.
+
+**Controls row reorganized — left-grouped nav, right-aligned CTA.** Was: prev/cal/next/today + toggle + tech-select + Add Entry, all in one wrapping flex with the tech selector consuming the row width. Now: `flex items-center justify-between gap-3 flex-wrap` — left side groups Prev / Calendar / Next / Today / Day|Week toggle (all interactive controls in one cluster), right side carries the green Add Entry primary CTA alone. Tech selector left this row entirely (it's in the Context Header below now).
+
+**Segmented Day / Week toggle — proper visual.** Both pages now share the same toggle DOM. Container: `inline-flex items-center rounded-md border border-slate-200 bg-slate-100 p-0.5`. Buttons: `px-3 py-1.5 text-sm font-medium rounded`. Active state: `bg-white text-slate-900 shadow-sm` plus `aria-current="page"` (no onClick — clicking the active is a no-op). Inactive state: `text-slate-500 hover:text-slate-700 hover:bg-slate-200 transition-colors`. The active option now reads as a clear "lifted card on a tinted track" instead of plain gray text. Per-page wiring:
+
+  * Stack View: Week active, Day click → `/timesheets?view=day&tech=<techId>` (preserves tech context when set).
+  * PayrollPage Day View: Day active, Week click → `/timesheets`.
+
+**Today button — real button affordance.** Was `<Button variant="outline" size="sm" className="h-8 text-xs">` which read as a faint inline link. Now a styled `<button>`: `px-3 py-1.5 rounded-md border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors`. Same on both pages. Reads unambiguously as a clickable button next to its prev/cal/next neighbors.
+
+**Hover micro-states added.**
+
+  * Prev/Next chevron buttons: `hover:bg-slate-100` (was relying on the ghost variant's default; explicit `slate-100` keeps the hover wash visible against the slate-50 page bg).
+  * Toggle inactive button: `hover:bg-slate-200` provides feedback before commit.
+  * Today: `hover:bg-slate-50 hover:border-slate-300` (already specified above).
+  * Add Entry: unchanged primary green CTA — already strong enough.
+
+**Aria labels added** to icon-only Prev/Next buttons (`Previous week` / `Next week` on Stack View; `Previous day` / `Next day` on Day View). Accessibility cleanup at no visual cost.
+
+**Files changed.**
+
+  * `client/src/pages/timesheets/WeekStackPage.tsx` — restructured controls row into `justify-between` left/right grouping, replaced the toggle and Today with the new styles, added the new Timesheet Context Header card containing the relocated tech selector + tech name + week range + chips. Reuses existing `SummaryPill` for the chips (no new component introduced). Added aria-labels to chevron buttons.
+  * `client/src/pages/PayrollPage.tsx` — moved the segmented toggle inside the existing `viewMode === "day"` controls row (was a sibling of the row), updated the toggle and Today button to the same shared styles, added aria-labels to chevron buttons. The `DayView` component (which renders the day's tech selector inline) is unchanged — Day View's structure already provides the equivalent of the new context header.
+
+**Files NOT changed.**
+
+  * `client/src/components/timesheets/{DayView,timeline/*,stack/*}.tsx` — unchanged.
+  * `client/src/App.tsx` — dispatcher unchanged.
+  * `tests/timesheets-week-stack.test.ts` — 12/12 still pass.
+  * `tests/timesheets-week-timeline.test.ts` — 97/97 still pass.
+
+**Acceptance.**
+
+  * ✅ Day View and Week View share the same header structure — Stack View now has a context header card matching Day View's existing internal header pattern.
+  * ✅ Technician selector appears inside a header container on both views (Day View: existing `DayView` internal header; Week View: new context-header card).
+  * ✅ No floating selector in Week View anymore.
+  * ✅ Day/Week toggle is a clear segmented control with `bg-white shadow-sm` active state on a `bg-slate-100` track, not plain text.
+  * ✅ Active state visually obvious on both pages.
+  * ✅ Today button styled as a proper button with border, bg, hover states.
+  * ✅ Controls feel interactive — `hover:bg-slate-100` on chevrons, `hover:bg-slate-200` on inactive toggle button, `hover:bg-slate-50 hover:border-slate-300` on Today.
+  * ✅ No functional regressions — Stack View entry clicks still deep-link into Day View at `?view=day&tech=...&date=...`, Add Entry button still routes to canonical Day View, Approve Week / Export / Timesheet Reports unchanged.
+  * ✅ `npx tsc --noEmit` → 0 errors on touched files (unrelated pre-existing portal-invoice errors are someone else's in-flight work).
+  * ✅ `npx vitest run tests/timesheets-week-stack.test.ts tests/timesheets-week-timeline.test.ts` → 109 / 109 pass.
+
+#### Timesheets — restored Day / Week toggle (2026-05-05)
+
+Surgical follow-up to the Stack View promotion. The earlier promotion task removed the Day/Week toggle from PayrollPage on the assumption that Day View would only be reached via Stack View entry clicks. That under-served users who wanted to switch back from Day View to Week View, or jump directly into Day View without picking an entry. This pass restores a visible toggle on **both** surfaces with consistent visuals.
+
+**Where the toggle lives.** Two places, identical pill design, opposite default-active state:
+
+  * **`WeekStackPage` (canonical Week View at `/timesheets`)** — toggle inserted between the date-nav group (Prev / Calendar / Next / Today) and the technician selector. **Week is active.** Clicking **Day** routes to `/timesheets?view=day&tech=<techId>` if a technician is selected (preserving context across the view switch), or `/timesheets?view=day` otherwise.
+  * **`PayrollPage` Day mode (rendered when `?view=day`)** — toggle appended to the day-controls row, after the Today button. **Day is active.** Clicking **Week** routes to `/timesheets`. Tech context resets to Stack View's default (first technician); the spec explicitly de-prioritized cross-view tech preservation here, and adding a `?tech=` reader to WeekStackPage was out of scope.
+
+**Visual.** A two-button segmented control wrapped in `flex items-center gap-1 rounded-md border bg-muted p-1`. Each button is `px-3 py-1 text-xs font-medium rounded transition-all`. Active state: `bg-background text-foreground shadow-sm` + `aria-current="page"`. Inactive state: `text-muted-foreground hover:text-foreground`. The active button is render-only (no onClick — clicking the active option would be a no-op). Both pages render the same DOM shape with `data-testid="timesheets-view-toggle"` and child `data-testid="view-toggle-day"` / `view-toggle-week` for future tests.
+
+**Routing flow.** No new routes. The existing wouter `TimesheetsRoute` dispatcher in `App.tsx` continues to do all the routing work — `?view=day` → PayrollPage, otherwise → WeekStackPage. Toggles just call `setLocation()` with the appropriate URL; the dispatcher swaps surfaces.
+
+**Date handling.** Per spec: do not over-engineer.
+
+  * **Week → Day:** the URL passed has no `date=` param. PayrollPage's existing initializer defaults `dayViewDate` to today (`format(new Date(), "yyyy-MM-dd")`) — the canonical fallback that was already in place for direct `/timesheets?view=day` deep-links.
+  * **Day → Week:** Stack View opens on the current week (today's Monday) — its own existing default, no special re-seeding.
+
+**Existing behavior preserved.** Stack View entry clicks still deep-link into Day View at `/timesheets?view=day&tech=...&date=...` (unchanged). PayrollPage Day View's `TimeEntryModal`, lock-override prompts, delete confirmations, Add Entry, Approve Week, Export, and Timesheet Reports buttons are all untouched. Sidebar Timesheets still routes to `/timesheets`.
+
+**Files changed.**
+
+  * `client/src/pages/timesheets/WeekStackPage.tsx` — added the segmented toggle JSX block between the date-nav group and the tech-selector group.
+  * `client/src/pages/PayrollPage.tsx` — added the segmented toggle JSX block at the end of the day-controls row, gated on `viewMode === "day"` so the dead week-mode branch doesn't render an irrelevant toggle.
+
+**Files NOT changed.**
+
+  * `client/src/App.tsx` — dispatcher unchanged. Same `TimesheetsRoute` selecting WeekStackPage vs PayrollPage by `?view=`.
+  * `client/src/components/timesheets/stack/buildWeekStackViewModel.ts` — adapter untouched.
+  * `client/src/components/timesheets/timeline/*` — unchanged.
+  * `tests/timesheets-week-stack.test.ts` — unchanged. 12/12 still pass.
+  * `tests/timesheets-week-timeline.test.ts` — unchanged. 97/97 still pass.
+
+**Acceptance.**
+
+  * ✅ Visible Day / Week toggle exists in the header on both surfaces.
+  * ✅ Week is active by default on `/timesheets` (Stack View).
+  * ✅ Day is active when on `/timesheets?view=day` (PayrollPage).
+  * ✅ Clicking Day from Week routes to canonical Day View on PayrollPage (preserves tech when set).
+  * ✅ Clicking Week from Day routes back to Stack View at `/timesheets`.
+  * ✅ Date handling: Week → Day defaults to today (existing PayrollPage initializer); Day → Week opens on current week.
+  * ✅ Entry click still opens Day View; Add Entry still works; Timesheet Reports / Export / Approve Week unchanged.
+  * ✅ No layout regressions, no duplicate Day View built — same canonical Day View on PayrollPage.
+  * ✅ `npx tsc --noEmit` → 0 errors on stack-view / PayrollPage / App files (unrelated pre-existing portal-invoice errors are someone else's in-flight work).
+  * ✅ `npx vitest run tests/timesheets-week-stack.test.ts tests/timesheets-week-timeline.test.ts` → 109 / 109 pass.
+
+#### Stack View promoted to canonical Timesheets (2026-05-05)
+
+The experimental `/timesheets/stack` layout becomes the primary weekly Timesheets surface. The old WeekTimeline-based week mode of PayrollPage is no longer reachable from active routing; PayrollPage is now exclusively the Day View host (deep-linked from Stack View entries via `?view=day&tech=...&date=...`).
+
+**Routing.**
+
+  * `/timesheets` now renders a small dispatcher (`TimesheetsRoute` in `App.tsx`). Default branch returns `<WeekStackPage />` (the canonical weekly review surface). When `?view=day` is present, the dispatcher returns `<PayrollPage />` so existing day-deep-links from Stack View entry clicks continue to land on the canonical Day View. The dispatcher uses wouter v3.3.5's `useSearch()` so query-string changes (e.g., navigating between days inside Day View) re-evaluate without route remounts.
+  * `/timesheets/stack` now `<Redirect to="/timesheets" />`. Bookmarks and external links to the experimental URL keep working.
+  * Sidebar Timesheets item already pointed to `/timesheets` — no change needed.
+
+**Stack View — chrome cleanup.**
+
+  * Removed the "STACK VIEW · EXPERIMENTAL" badge next to the page title.
+  * Removed the "Default View" header button (it linked back to the old PayrollPage week view, which no longer exists in active use).
+  * Renamed the "Reports" header button to **"Timesheet Reports"** for parity with the canonical PayrollPage label. Same target route (`/reports/timesheets`).
+  * Subtitle changed from "Stacked daily view for weekly review." → **"Weekly review of technician time entries."**
+  * File-header doc comment updated: page is no longer described as experimental; route comment notes the 2026-05-04 → 2026-05-05 promotion.
+
+**PayrollPage — toggle and Stack-View link removed.**
+
+  * Removed the "Stack View" header button that linked to `/timesheets/stack` (the redirect makes it redundant).
+  * Removed the Day/Week toggle button group at the top of the page. PayrollPage is now exclusively a Day View host; the only way to reach it under the new flow is via `?view=day` deep-links from Stack View. The Week mode JSX (the `viewMode === "week"` branch with `<WeekTimeline>`, the Unbillable pill, the read-only banner, etc.) is preserved verbatim for now — the `tests/timesheets-week-timeline.test.ts` source-pin assertions reference its presence, and removing the JSX would require a coordinated test migration. The branch is unreachable from active UI: the toggle is gone, and the route dispatcher only mounts PayrollPage when `?view=day`. A follow-up cleanup pass can delete the dead branch once the timeline tests are migrated.
+
+**Top action row (canonical Timesheets / Stack View) — final state.**
+
+  * Timesheet Reports
+  * Export
+  * Approve Week (or Approved badge when approved)
+  * Add Entry (the green primary button added in the prior pass; routes to canonical Day View for date pick)
+
+**Files changed.**
+
+  * `client/src/App.tsx` — added `useSearch` to wouter imports, added `TimesheetsRoute` dispatcher, swapped `/timesheets` to use the dispatcher, swapped `/timesheets/stack` to a `<Redirect to="/timesheets" />`. Both routes still wrapped in `<ProtectedRoute requireAdmin>`.
+  * `client/src/pages/timesheets/WeekStackPage.tsx` — removed badge, removed Default View button, renamed Reports → Timesheet Reports, updated subtitle and file-header doc.
+  * `client/src/pages/PayrollPage.tsx` — removed the "Stack View" header link, removed the Day/Week toggle UI block.
+
+**Files NOT changed.**
+
+  * `client/src/components/timesheets/stack/buildWeekStackViewModel.ts` — adapter untouched.
+  * `client/src/components/timesheets/timeline/{WeekTimeline,timeBlockAdapter}.tsx` — kept as-is. The Week Timeline component and its adapter remain in the tree so the week-timeline test suite (97 tests) continues to pass against their pure logic and against PayrollPage's still-present (now-unreachable) JSX.
+  * `client/src/components/AppSidebar.tsx` — sidebar Timesheets link already pointed at `/timesheets`.
+  * `tests/timesheets-week-stack.test.ts` (12 tests) and `tests/timesheets-week-timeline.test.ts` (97 tests) — both still pass without modification. The week-timeline source-pin assertions on PayrollPage's `viewMode === "week"` JSX continue to find the JSX (the branch is unreachable but the source survives).
+  * Server code untouched.
+
+**Acceptance.**
+
+  * ✅ `/timesheets` opens the stack weekly layout (dispatcher returns `<WeekStackPage />` when no `?view=day`).
+  * ✅ `/timesheets/stack` no longer acts as the primary route — redirects to `/timesheets`.
+  * ✅ Old weekly view (PayrollPage WeekTimeline mode) is removed from active use — no toggle button, no header link, only reachable by manual URL crafting that the dispatcher rejects.
+  * ✅ No "experimental" wording remains in the rendered UI ("Stack View · Experimental" badge gone, subtitle updated, file-header doc updated).
+  * ✅ No "Default View" button remains.
+  * ✅ Top action button reads "Timesheet Reports" (renamed from "Reports", same target route).
+  * ✅ Timesheet Reports button links to existing `/reports/timesheets` page.
+  * ✅ Export still works (unchanged: `GET /api/payroll/weekly.csv?weekStart=...`).
+  * ✅ Approve Week still works (unchanged: `POST /api/payroll/approve`).
+  * ✅ Day View / edit behavior preserved — Stack View entry clicks still route to `/timesheets?view=day&tech=...&date=...`, dispatcher mounts PayrollPage, Day View renders with `TimeEntryModal` and lock-override flows intact.
+  * ✅ Sidebar Timesheets navigates to `/timesheets`.
+  * ✅ `npx tsc --noEmit` → 0 errors on stack-view / PayrollPage / App.tsx files (unrelated pre-existing portal-invoice errors are someone else's in-flight work).
+  * ✅ `npx vitest run tests/timesheets-week-stack.test.ts tests/timesheets-week-timeline.test.ts` → 109 / 109 pass (12 stack + 97 timeline).
+
+#### Timesheets Day View — simplify General card (2026-05-05)
+
+The General group used to render duplicate hierarchy: card header `General` + per-row `General` chip pill + the time/duration row. The chip was redundant because the card header already labels the bucket. Now a General row is one compact line: `7:00 AM → 8:00 AM ... 1h`.
+
+**Implementation.** Added an opt-in `hideTypeChip?: boolean` prop (default `false`) to `TimeEntryRowCompact`. The category chip's `<span>` renders behind a `{!hideTypeChip && (...)}` guard. `JobTimeGroupCard` passes `hideTypeChip={variant === "general"}` — so:
+
+- General card: chip suppressed, only the card header reads "General".
+- Job cards: chip preserved (`Drive` / `On-site`) so a single card with mixed rows stays distinguishable.
+
+The chip lived inside the same `<button onClick={onEdit}>` that wraps the time range, so the whole-row click target and edit-on-click routing (`TimeEntryEditModal` for general entries, `JobSessionEditModal` for job-linked labor) are preserved unchanged. Delete behavior, locked-entry routing, clock-out action, chronological sorting, and the timeline rail are all untouched.
+
+**Files changed.**
+
+- `client/src/components/timesheets/TimeEntryRowCompact.tsx` — new `hideTypeChip` prop, conditional chip render, added `data-testid="day-entry-compact-edit-${id}"` on the click button and `data-testid="day-entry-compact-chip-${id}"` on the chip span.
+- `client/src/components/timesheets/JobTimeGroupCard.tsx` — pass `hideTypeChip={variant === "general"}` to each row.
+- `tests/timesheets-day-view.test.ts` — 7 new pins under "Day View — General card simplification": prop default, conditional chip render, JobTimeGroupCard wiring (general only), per-row chip testid still emitted, header label preserved, edit-on-click target preserved, Week/Stack untouched sentinel.
+
+244/244 timesheet tests pass (135 day-view, 97 week-timeline, 12 week-stack). Typecheck clean. No backend, schema, or API changes. Week View and Stack View are not touched — `hideTypeChip` lives on `TimeEntryRowCompact` only, which Week / Stack do not import.
+
+#### Timesheets Add Time Entry — minute editing + 12 PM default fix (2026-05-05)
+
+`SegmentedTimeInput` (in `client/src/components/timesheets/JobSessionCreateModal.tsx`) was committing the canonical value on every keystroke and `slice(0, 2)`-clamping mid-typing, so users could not select-all in the minute field and replace "89" with "30" — the input forced one-character-at-a-time editing. Hour 12 also defaulted to AM, requiring an extra click to flip to PM for noon entries.
+
+**Refactored to a draft + blur model.**
+
+- Hour and minute each maintain a local draft (`hourDraft` / `minuteDraft`) plus a focus flag (`hourFocused` / `minuteFocused`) while the user is typing. The input shows the draft when focused and the canonical-derived segment when not. Two `useEffect` hooks mirror external segment changes (parent autofill, duration sync, drive→onsite prefill) into the draft, so prefill keeps flowing through.
+- Commits happen only on `onBlur`. `handleHourBlur` / `handleMinuteBlur` parse + range-check the draft and either commit a clamped value or snap back to the previous good value (so out-of-range "89" reverts to the prior minute instead of trapping the user).
+- On focus, the input auto-selects (`e.currentTarget.select()`) so the user can immediately replace contents — fixes the "select-all and type 30" UX.
+- Hour-first defaults preserved: empty minute → "00", empty period → "AM" at commit time.
+- **12 → PM heuristic:** when canonical is still empty (`isFirstCommit = !value`) and the user types `12`, the period defaults to `"PM"` (noon). Once canonical exists, the user's explicit period sticks across subsequent hour edits — including switching to 12 AM (midnight). Only fires on the first commit.
+- Minute blank with hour set normalises to `"00"` and commits; minute blank with no hour leaves canonical empty.
+- Period toggle behavior unchanged (no-op when no hour set).
+
+**Files changed.**
+
+- `client/src/components/timesheets/JobSessionCreateModal.tsx` — `SegmentedTimeInput` rewritten with per-segment draft + focus state, blur-only commits, snap-back on out-of-range, 12 → PM first-commit heuristic, focus-auto-select.
+- `tests/timesheets-day-view.test.ts` — updated `handleHourChange` → `handleHourBlur` and `handleMinuteChange` → `handleMinuteBlur` pins; added 3 new pins: 12 → PM heuristic, draft+blur model presence, minute blank-→-"00" + out-of-range snap-back. Relaxed the prior "no draft model" sentinel (the segmented input intentionally uses `hourDraft` / `minuteDraft` now, while the deleted `parseTimeInput` / `formatTimeDisplay` and the old single-`draft` text-input pattern remain forbidden).
+
+237/237 timesheet tests pass (128 day-view, 97 week-timeline, 12 week-stack). No backend, schema, or API changes. No regression to autofill (End = Start + 60 on Start change), drive→onsite prefill, duration ↔ End sync, or the closed/invoiced confirmation gate.
+
+#### Portal invoice payment UX: inline two-column layout (2026-05-05)
+
+Replaced the `Pay Invoice button → confirmation modal → Pay Now` flow on `PortalInvoiceDetail` with a two-column page that mounts Stripe Elements inline on the right.
+
+**Layout.**
+
+- Desktop (`lg+`): `grid-cols-3` — left column (`col-span-2`) holds the existing invoice content (hero / status banner / line items / totals / payment history / notes); right column (`col-span-1`) holds a sticky `<aside>` (`lg:sticky lg:top-4`) with a payment card that shows balance + Stripe `<PaymentElement>` + Pay button.
+- Below `lg`: columns stack — payment panel renders inline beneath the invoice content. The previous fixed-bottom Pay button + confirmation modal are gone; the inline panel IS the Pay surface on every breakpoint.
+- Back link is unchanged. PDF download button still on the hero card. Token-only mode "Sign in to view all invoices" affordance preserved.
+
+**Stripe Elements gating.** `PortalPayInvoiceForm` now:
+
+- Renders `<PaymentElement onReady={() => setIsReady(true)} />` and tracks `isReady` in local state.
+- Computes `canSubmit = !!stripe && !!elements && isReady && !submitting`. The Pay button is `disabled={!canSubmit}` and the click handler short-circuits if `canSubmit` is false. This eliminates the "PaymentElement is not mounted" runtime overlay path that any modal-skipping click could trigger.
+- Pay button label: caller-supplied `amountLabel` ("Pay $567.50"). Pre-ready label is "Loading payment form…"; submitting label is "Processing…".
+- `confirmPayment` is wrapped in `try/catch` so a thrown rejection (rare — Stripe normally returns errors via `{ error }`) is surfaced inline rather than reaching Vite's runtime overlay. The `onCancel` prop is gone.
+- Stripe errors render inline in `<p data-testid="portal-pay-error" role="alert">`.
+
+**Auto-create PaymentIntent.** `PortalInvoiceDetail` mints the PaymentIntent eagerly via `useEffect` when the invoice is in a payable state (entitlement on, balance > 0, status ∈ awaiting_payment / sent / partial_paid). Guarded against re-fire while a request is in flight, when an intent already exists, after a prior error (caller can retry via the new "Try again" button), and after a successful payment (`justPaid`). The `?pay=1` deep-link auto-open code path is removed — the panel always renders inline now, so there's nothing to "auto-open".
+
+**Token + CSRF + load-failure preserved.** The `?t=` invoice-scoped access token is still threaded onto the checkout POST and the PDF download href. CSRF flows through `apiRequest` unchanged. The Stripe-load-failed graceful fallback (amber AlertTriangle panel with "Online payments are temporarily unavailable" copy) is preserved inside the new payment panel.
+
+**Files changed.**
+
+- `client/src/pages/portal/PortalPayInvoiceForm.tsx` — onReady gate, amountLabel prop, dropped onCancel, try/catch around confirmPayment, full-width Pay button.
+- `client/src/pages/portal/PortalInvoiceDetail.tsx` — dropped Dialog import + payModalOpen state + openPayModal/closePayModal helpers + autoOpenPay deep-link logic + sticky-mobile-Pay CTA + inline-desktop-Pay button. New auto-create-intent useEffect. Wrapped invoice content in two-column grid; new sticky `<aside>` payment panel. Dropped CreditCard import.
+- `tests/portal-pay-inline-form.test.ts` — new regression suite (15 cases) asserting onReady gate, amountLabel prop, no Dialog, no modal state, two-column layout, auto-create-intent guards, token threading on checkout + PDF, no onCancel, fallback panel preserved.
+
+**Existing test coverage retained.** `tests/portal-stripe-csp.test.ts` (10), `tests/portal-magic-link-email.test.ts` (12), `tests/portal-invoice-access-token.test.ts` (9), `tests/portal-batch-checkout.test.ts`, `tests/portal-payment-methods.test.ts`, `tests/email-sender-and-total.test.ts` (30), `tests/invoice-send-pre-dispatch-transition.test.ts` (4) — all unaffected; 122 total tests across these suites.
+
+No CSP changes. No backend route changes. No schema changes. No payment provider changes — `paymentApplicationService.createCheckout` and the Stripe adapter are untouched. Token / session invoice access unchanged. Magic-link login flow untouched.
+
+### Fixed
+
+#### "Failed to load Stripe.js" — CSP allowlist + graceful frontend fallback (2026-05-05)
+
+Customers clicking Pay Now on `PortalInvoiceDetail` hit a Vite runtime-overlay error: `[plugin:runtime-error-plugin] Failed to load Stripe.js`. Root cause was in two places.
+
+**A. CSP blocked the Stripe.js script load.** `server/index.ts:73-90` configured helmet's CSP with `scriptSrc: ['self', 'unsafe-inline', 'unsafe-eval']`, `connectSrc: ['self', '*.r2.cloudflarestorage.com']`, and `frameSrc: ['none']`. Stripe.js loads from `https://js.stripe.com/v3`, which the script-src directive rejected. Even if the script had loaded, `connect-src` would have blocked the PaymentIntent confirmation calls to `api.stripe.com`, and `frame-src: 'none'` would have blocked the Elements iframe.
+
+Fix — added Stripe's documented allowlist to the CSP directives:
+
+- `scriptSrc` += `https://js.stripe.com` (Stripe.js loader)
+- `connectSrc` += `https://api.stripe.com` (PaymentIntent confirmation)
+- `frameSrc` = `https://js.stripe.com`, `https://hooks.stripe.com` (Elements iframe + 3DS / SCA challenge frames). Replaced the prior `'none'` value, which was incompatible with any iframe-based payment flow.
+
+We did NOT add `https://maps.googleapis.com` (only required for Stripe's Address Element, which we don't use). Other CSP entries are unchanged.
+
+**B. Frontend ran `loadStripe()` without a fallback.** When the Stripe.js script is blocked (CSP, ad-blocker, network), `loadStripe()` returns a Promise that REJECTS. The rejection bubbled into `<Elements stripe={stripePromise}>` and Vite's runtime-error overlay surfaced the unhandled rejection. Customers saw the dev-mode overlay; production users would see a broken modal.
+
+Fix — three layers:
+
+1. `getStripePromise(publishableKey)` in both `PortalInvoiceDetail.tsx` and `PortalPaymentMethods.tsx` now wraps `loadStripe(...)` in `.catch(err => { console.error(...); return null; })`. The returned Promise can no longer reject — it resolves to `null` on script-load failure.
+2. `PortalInvoiceDetail` adds a `stripeLoadFailed` state. A `useEffect` awaits `stripePromise.then(stripe => !stripe && setStripeLoadFailed(true))` so the UI knows when load failed.
+3. The Pay modal renders a new `stripeLoadFailed` branch — an amber-icon panel with copy "Online payments are temporarily unavailable. We couldn't load the secure payment form. Please try again, or reply to your invoice email and we'll arrange another way to pay." plus a Close button. `data-testid="portal-stripe-load-failed"` for E2E coverage.
+
+This also covers the case where a tenant doesn't have `STRIPE_PUBLISHABLE_KEY` configured: the backend's `createCheckout` already returns 503 in that case, which surfaces through the existing `intentError` branch (no change needed).
+
+**Files changed.**
+
+- `server/index.ts` — added Stripe CSP allowlist entries (script/frame/connect).
+- `client/src/pages/portal/PortalInvoiceDetail.tsx` — `getStripePromise` catches load failures; new `stripeLoadFailed` state + Pay-modal fallback branch.
+- `client/src/pages/portal/PortalPaymentMethods.tsx` — `getStripePromise` catches load failures (same pattern).
+- `tests/portal-stripe-csp.test.ts` — new regression suite (10 cases): CSP contains Stripe domains in scriptSrc / frameSrc / connectSrc; frameSrc no longer locked to `'none'`; Stripe adapter still returns publishableKey on portal source; backend 503 path preserved; both portal pages catch loadStripe rejections.
+
+No CSP disable. No live/test keys hard-coded. No secret keys exposed to the frontend. Token / session invoice access unchanged. CSRF middleware unchanged. Provider-neutral payment architecture preserved (CSP allowlist is provider-specific by necessity — Stripe domains are in the directives, but the application code still reads the provider via `paymentResolver`).
+
+#### Portal access regressions: invoice-token bypass + magic-link email URL (2026-05-05)
+
+Two related portal regressions reported after the invoice-scoped access token shipped earlier today.
+
+**A. Pay Invoice email link still forced login.** Server-side token validation worked correctly — the bug was upstream of the page render. `client/src/App.tsx`'s `<PortalProtected>` guard wraps every portal route and redirects unauthenticated users to `/portal/login` BEFORE the inner page mounts. The token-mode bypass on `PortalInvoiceDetail` therefore never had a chance to run; the `?t=…` URL was being thrown away in the redirect.
+
+Fix: `PortalProtected` gained an `allowInvoiceToken?: boolean` prop. When set, the guard checks for a `?t=` query parameter on the current URL and, if present, renders children even without a portal session. The `/portal/invoices/:invoiceId` route is the only consumer — every other portal route still requires the magic-link session. Security: the bypass changes only the FRONTEND auth gate; every API call from the page still authenticates against the server's `requireInvoiceAccess` middleware (which validates the token's hash, expiry, and scope).
+
+**B. Magic-link email body had no working Sign In link.** Two compounding bugs:
+
+1. **`https://undefined/...` URL.** `server/routes/portal.ts:97-100` declared a local `BASE_URL` constant whose ternary parsed (per JS operator precedence) as `(BASE_URL || REPLIT_DEV_DOMAIN) ? https://${REPLIT_DEV_DOMAIN} : localhost`. Tenants with `BASE_URL` set but `REPLIT_DEV_DOMAIN` unset (most production deployments not on Replit) shipped Sign In emails pointing at `https://undefined/portal/verify?token=…`. Click went to a non-existent host.
+2. **No plaintext fallback.** The HTML body had only a styled `<a>` button, with no visible plaintext URL beneath it and no Resend `text` field. Plaintext-only and locked-down corporate clients showed an empty-looking email.
+
+Fix:
+
+- Removed the buggy local constant. `server/lib/portalUrls.ts::appBase()` is now exported and used by every portal URL builder. Two other call sites in `portal.ts` (`successUrl` / `cancelUrl` for multi-checkout) were also migrated to the canonical resolver. The resolver's precedence is `APP_URL → BASE_URL → REPLIT_DEV_DOMAIN → http://localhost:5000` and it never produces `undefined`.
+- The magic-link email body now emits a "If the button doesn't work, copy and paste this link" paragraph below the button with the URL printed verbatim.
+- Resend `text` field populated with the plaintext version (URL + 15-minute expiry note + privacy line). Plaintext-only readers now see a working link.
+
+**Files changed.**
+
+- `client/src/App.tsx` — `PortalProtected` gains `allowInvoiceToken?: boolean`; `/portal/invoices/:invoiceId` route opts in.
+- `server/lib/portalUrls.ts` — exported `appBase()` so other modules can use the canonical resolver.
+- `server/routes/portal.ts` — removed the buggy `BASE_URL` constant; all three sites (magic-link, multi-checkout success, multi-checkout cancel) now call `resolveAppBase()`. Added plaintext fallback paragraph + Resend `text` field.
+- `tests/portal-magic-link-email.test.ts` — new regression suite (12 cases): `appBase()` env precedence including the BASE_URL-only case; `buildPortalInvoiceUrl` token threading + URL encoding; magic-link email body uses APP_URL / BASE_URL correctly and never emits `https://undefined`; HTML contains visible plaintext URL fallback (href appears at least twice); Resend `text` field is populated; missing-contact path still returns generic 200 (no enumeration leak).
+
+No CSRF disable. No raw-ID exposure (token still required for unauthenticated invoice access). Magic-link login flow preserved; full portal sessions still gate every other portal route.
+
 #### Lead → Quote conversion follow-up (2026-05-05)
 
 Two surgical follow-ups to the Lead Visits Phase 2/3 work. Backend conversion logic is unchanged.
@@ -149,6 +736,197 @@ Leads can now carry scheduled onsite appointments before any quote or job exists
 - **No job lifecycle, job KPI, job report, or job billing surfaces touched.** No edits to `server/lib/visitPredicates.ts`. Lead visits are never observable to job-side feeds.
 
 ### Changed
+
+#### Stack View — declutter pass: global Add Entry, simplified footer, ordinal dates (2026-05-05)
+
+UI cleanup follow-up to the bottom-summary restructure. **No data, route, edit-behavior, ordering, or footer-approval changes.** `buildWeekStackViewModel.ts` is untouched; the 12 adapter tests still pass.
+
+**Per-day "+ Add Entry" — removed; replaced with one global button.** Each day column previously carried its own `+ Add Entry` text link in a dedicated `border-t` strip between the body and the daily summary footer. That strip is gone. Above the weekly grid, next to the technician selector, a single green primary button now lives:
+
+```jsx
+<Button size="sm" onClick={handleAddEntryGlobal} disabled={!techId}
+  className="h-8 bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600">
+  <Plus className="h-3.5 w-3.5 mr-1" />
+  Add Entry
+</Button>
+```
+
+Routes to `/timesheets?view=day&tech=<id>` with no `date` param so the canonical Day View opens on today and lets the user pick a date inside that flow. `Plus` lucide icon was re-added to imports (was previously dropped). Disabled when no technician is selected.
+
+**Day header — ordinal date format ("MON 4th").** Switched the date-fns format token from `"MMM d"` ("May 4") to `"do"` ("4th"). Weekday + ordinal day are now adjacent, inline on the same row:
+
+  * Weekday: `text-xs font-semibold uppercase tracking-wider text-slate-700` (was `text-[11px] text-slate-600`).
+  * Ordinal day: `text-slate-400` muted (unchanged tone).
+  * Issue indicator stays on the right edge when present.
+
+**Empty days — already blank.** "No entries" was removed in the prior pass; this pass just confirmed there's nothing left to render in the body when `day.rows.length === 0`. Footer still shows zeros for visual consistency across the seven columns.
+
+**Day body — minimum height bumped, breathing room added.**
+
+  * `min-h-[120px]` → `min-h-[300px]` so sparse days don't visually compress.
+  * Body wrapper now carries `pt-3 pb-3` so the first entry row sits a comfortable distance below the header border, and the daily summary footer sits a comfortable distance below the last row. The `flex-1 flex flex-col` keeps columns equalizing height across the grid row so all seven daily footers still align horizontally.
+
+**General Time row — subtle background.** Previously identical chrome to job rows (transparent bg, `hover:bg-slate-50`). Now `bg-slate-50` at rest and `hover:bg-slate-100` — one shade darker than job rows in both states. Visible distinction without a card frame, no badge, no extra labels. Per-row green dot still carries the kind marker.
+
+**Weekly footer — pills only.**
+
+  * Removed the stacked progress bar (`h-1` blue + green) entirely.
+  * Removed the `(NN%)` percent suffixes from the Job Time and General Time pills.
+  * Removed the `jobPct` / `genPct` Math.round calculations from the page (no longer consumed).
+  * Footer now reads as just: `WEEK TOTAL X:XX` (dark) · `● Job Time X:XX` (blue chip) · `● General Time X:XX` (green chip). The per-day footers already carry the daily Job/General split, so the week-level pill row is now a totals readout, not a duplicated proportion display.
+
+**Helper text trimmed.** The trailing italic line previously mentioned the per-column "+ Add Entry"; it now reads "Click a day header or any entry to edit in the canonical Day View."
+
+**Tailwind / structural deltas.**
+
+| Element | Before | After |
+|---|---|---|
+| Per-day Add Entry strip | `<div class="px-3 py-2 border-t border-slate-200">` wrapping a slate-600/slate-800 text link | **removed entirely** |
+| Global Add Entry button | n/a | `Button size="sm"` next to tech `Select`, `bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600` with leading `Plus` icon |
+| Day header weekday | `text-[11px] font-semibold uppercase tracking-wider text-slate-600` | `text-xs font-semibold uppercase tracking-wider text-slate-700` |
+| Day header date | `text-[11px] text-slate-400 {format(parseISO(day.date), "MMM d")}` ("May 4") | `text-slate-400 {format(parseISO(day.date), "do")}` ("4th"), inline with weekday |
+| Body min-height | `min-h-[120px]` | `min-h-[300px]` |
+| Body padding | none on wrapper | `pt-3 pb-3` |
+| General Time row bg | transparent · `hover:bg-slate-50` | `bg-slate-50 hover:bg-slate-100` |
+| Weekly progress bar | `h-1` blue+green stacked bar | **removed** |
+| Job/General weekly pills | `(NN%)` percent suffix | percent suffix removed |
+| `jobPct` / `genPct` derivations | Math.round of ratios | **removed** |
+| Trailing helper line | mentions "+ Add Entry" | mentions "day header or any entry" only |
+
+**Files changed.**
+
+  * `client/src/pages/timesheets/WeekStackPage.tsx` — see deltas above. `Plus` lucide import re-added. `DayStackCard` no longer takes an `onAddEntry` prop (cleanly removed since it had no remaining callers inside the column). Inner `EntryRow` and `DaySummaryLine` and outer query/wiring all unchanged.
+
+**Files NOT changed.**
+
+  * `client/src/components/timesheets/stack/buildWeekStackViewModel.ts` — adapter untouched.
+  * `tests/timesheets-week-stack.test.ts` — unchanged. 12/12 still pass.
+  * `client/src/App.tsx`, `client/src/pages/PayrollPage.tsx` — routing and canonical page untouched.
+  * Server code untouched.
+
+**Acceptance.**
+
+  * ✅ No `+ Add Entry` inside any day column.
+  * ✅ One green `Add Entry` button beside the technician selector.
+  * ✅ No "No entries" text anywhere.
+  * ✅ Footer has no progress bar.
+  * ✅ Footer has no percentages on Job Time / General Time pills.
+  * ✅ Day headers show "MON 4th", "TUE 5th", etc. (date-fns `do` token).
+  * ✅ General Time rows have a subtle `bg-slate-50` (`hover:bg-slate-100`).
+  * ✅ Sparse days no longer compressed — body `min-h-[300px]` with `pt-3 pb-3`.
+  * ✅ Daily footers stay aligned across all 7 columns (grid row + `flex-1` body).
+  * ✅ Bottom totals (Job Time / General Time / Total) unchanged in shape.
+  * ✅ Click → Day View behavior preserved (header click, row click, global Add Entry click all route to `/timesheets?view=day&...`).
+  * ✅ `npx tsc --noEmit` → 0 errors on stack-view files (unrelated pre-existing portal-invoice errors are someone else's in-flight work).
+  * ✅ `npx vitest run tests/timesheets-week-stack.test.ts` → 12 / 12 pass.
+
+#### Stack View — daily summary moved to bottom of column (2026-05-05)
+
+Structural UI shift on `/timesheets/stack`: the per-day summary (day total + Job Time + General Time) moved from the top of each column to a bottom-anchored footer that sits below the entries and below `+ Add Entry`. The top of each column now shows only the weekday and date — much cleaner first impression. **No data, route, edit-behavior, footer-approval, or chronological-ordering changes.** `buildWeekStackViewModel.ts` is untouched and the 12 adapter tests still pass.
+
+**New per-column structure (top to bottom).**
+
+  1. **Header** — weekday left, date right. `bg-slate-50 px-3 py-3 border-b border-slate-200`. Whole header still routes to canonical Day View on click. `hasIssue` warning sits inline next to the date so it doesn't take a separate row. The day total, Job Time line, and General Time line are gone from here.
+  2. **Body** — `flex-1 flex flex-col min-h-[120px]` with the existing chronological row list inside. Empty days render the body as a blank block — no more "No entries" centered label per spec. Body keeps stretching to equalize column heights via the parent grid row.
+  3. **+ Add Entry strip** — own `border-t border-slate-200` wrapper, sits between the body and the daily summary footer (was inside the body). Same subtle `text-slate-600 hover:text-slate-800` text link as the prior pass.
+  4. **Daily summary footer** — `bg-slate-50 border-t border-slate-200 px-3 py-3 space-y-1`. Three lines: blue-dot Job Time, green-dot General Time, then a `border-t pt-1.5 mt-1.5` divider, then a stronger Total row (`text-sm font-semibold text-slate-900` on both label and value). Times right-aligned via the same `grid grid-cols-[1fr_auto] gap-2` pattern entries use, so the daily summary times line up under the entry times above them.
+
+**Empty days reconciled.** Per spec, an empty day still shows the daily footer with `0:00 / 0:00 / 0:00`, no "No entries" text in the body. The `flex-1` body keeps the column extending to whatever the tallest column in the row is — so all seven daily footers always sit at the same y-position across the week.
+
+**Daily summary line — promoted.** `DaySummaryLine` was previously crammed into the header at `text-[11px]` with a flex+ml-auto layout. It now sits in the footer as `text-xs` with the same `grid grid-cols-[1fr_auto] items-baseline gap-2` layout entry rows use. Result: Job Time, General Time, and Total all share the same right-edge time column, alignment is perfect.
+
+**Weekly footer — bar thinned.** The page-wide stacked progress bar (blue Job + green General) was `h-2`; now `h-1`. Per-day footers carry the day-level Job/General split, so the weekly bar is now a glance-only signal — kept for the at-a-glance proportion read but no longer competing with the per-day footers for visual weight. `WEEK TOTAL` / `Job Time` / `General Time` pills above the bar are unchanged. No 40-hour target reintroduced.
+
+**Tailwind class deltas (key tokens).**
+
+| Element | Before | After |
+|---|---|---|
+| Header content | weekday + date · day total + Issue · `<DaySummaryLine job/>` + `<DaySummaryLine general/>` | weekday + date (with inline Issue) only |
+| Header padding | `px-3 py-2` | `px-3 py-3` |
+| Header border-b | `border-b border-slate-300` | `border-b border-slate-200` |
+| Body wrapper | `flex-1 flex flex-col min-h-[200px]` (with empty-state inside) | `flex-1 flex flex-col min-h-[120px]` (just rows; blank when empty) |
+| Empty-state label | `<span class="text-xs text-slate-400">No entries</span>` | **removed** |
+| Add Entry placement | inside body wrapper, `mt-auto` | sibling of body, own `border-t border-slate-200` strip |
+| Daily summary | inside header button | new bottom footer: `bg-slate-50 border-t border-slate-200 px-3 py-3 space-y-1` with Job Time + General Time + divider + Total |
+| `DaySummaryLine` layout | `flex items-center gap-1.5 text-[11px]` with `ml-auto` time | `grid grid-cols-[1fr_auto] gap-2 items-baseline text-xs` |
+| Weekly progress bar | `h-2` | `h-1` |
+
+**Files changed.**
+
+  * `client/src/pages/timesheets/WeekStackPage.tsx` — `DayStackCard` body restructured (header trimmed, body simplified, Add Entry promoted to sibling, new bottom summary footer added). `DaySummaryLine` switched to grid layout and sized up from text-[11px] to text-xs. Weekly progress bar thinned. Outer column wrapper, queries, view-model wiring all untouched.
+
+**Files NOT changed.**
+
+  * `client/src/components/timesheets/stack/buildWeekStackViewModel.ts` — adapter untouched.
+  * `tests/timesheets-week-stack.test.ts` — unchanged. Tests target the adapter, not the rendered DOM. 12/12 still pass.
+  * `client/src/App.tsx`, `client/src/pages/PayrollPage.tsx` — routing and canonical page untouched.
+  * Server code untouched.
+
+**Acceptance.**
+
+  * ✅ Day headers show only weekday + date.
+  * ✅ No day total at top; no Job Time / General Time in the top.
+  * ✅ Chronological rows remain in the body, unchanged ordering.
+  * ✅ Empty days render a blank body block (no "No entries" label).
+  * ✅ `+ Add Entry` sits between rows and the daily summary footer.
+  * ✅ Each day has bottom summary: Job Time → General Time → divider → Total. Total row is the visually strongest line in the footer.
+  * ✅ All seven daily footers align horizontally (column heights equalize via grid-row + `flex-1` body).
+  * ✅ "Unbilled" still gone (verified via grep).
+  * ✅ No drive/on-site rows; no target 40:00; no target percent.
+  * ✅ Existing click → Day View behavior preserved (header click, row click, Add Entry click all route to `/timesheets?view=day&...`).
+  * ✅ `npx tsc --noEmit` → 0 errors on stack-view files (unrelated pre-existing portal-invoice errors are someone else's in-flight work).
+  * ✅ `npx vitest run tests/timesheets-week-stack.test.ts` → 12 / 12 pass.
+
+#### Stack View — grid alignment + tighter dividers (2026-05-05)
+
+UI-only polish on `/timesheets/stack` to enforce vertical time-column alignment and apply a cleaner typography hierarchy. The chronological data flow, route, edit behavior, and footer summary logic are all unchanged. The 12 adapter tests still pass.
+
+**Time alignment — explicit 2-column grid.** Each entry row's outer layout switched from `flex items-baseline gap-2` (with `ml-auto` pinning the time) to `grid grid-cols-[1fr_auto] items-start gap-2`. The time now lives in its own auto-width column at the right edge of every row, so all times align in a single perfectly-vertical column down each day, regardless of left-content length. The left column is `min-w-0` so long location/summary strings can `line-clamp` instead of pushing the time off-screen.
+
+**Stronger dividers.** Inter-row separators bumped `divide-y divide-slate-100` → `divide-y divide-slate-200`. Header-to-body separator bumped `border-b border-slate-200` → `border-b border-slate-300`. The day-summary section now reads as a clearly distinct block above the entry list. Add Entry's top border bumped `border-t border-slate-100` → `border-t border-slate-200` and is now unconditional (was only drawn when rows existed); pinning it consistently keeps the column footer aligned across all 7 days even on empty days.
+
+**Typography — `leading-tight` everywhere.** Job number, location, summary, and General Time label all now use `leading-tight` instead of `leading-snug`. Tighter line height shaves a couple px per line, compounding nicely in the column. Time stays `text-sm font-semibold tabular-nums text-slate-900 leading-tight`.
+
+**General Time muted further.** Label color `text-slate-700` → `text-slate-600`. Visible but no longer competes with job rows (which keep `text-slate-700` on the `#number` line and on the location line). Green dot still carries the kind distinction. No bg, no badge, no subtitle.
+
+**+ Add Entry — promoted contrast.** `text-slate-400 hover:text-slate-700` → `text-slate-600 hover:text-slate-800`. More legible at rest, clearer hover state. Wrapper gained an unconditional `border-t border-slate-200` so the action sits on a defined ledge at the bottom of every column.
+
+**Tailwind class deltas (key tokens).**
+
+| Element | Before | After |
+|---|---|---|
+| Row outer layout | `flex items-baseline gap-2` (top line) + sibling stacked secondary lines | `grid grid-cols-[1fr_auto] items-start gap-2` (left content stack + right time column) |
+| Inter-row dividers | `divide-y divide-slate-100` | `divide-y divide-slate-200` |
+| Header→body divider | `border-b border-slate-200` | `border-b border-slate-300` |
+| Add Entry top border | conditional `border-t border-slate-100` (only when rows existed) | unconditional `border-t border-slate-200` |
+| Add Entry text | `text-slate-400 hover:text-slate-700` | `text-slate-600 hover:text-slate-800` |
+| General Time label | `text-sm font-medium text-slate-700` | `text-sm font-medium text-slate-600 leading-tight` |
+| Job number | `text-sm font-medium tabular-nums text-slate-700` | `… text-slate-700 leading-tight` |
+| Location | `pl-3.5 mt-0.5 text-sm text-slate-700 leading-snug break-words` | `pl-3.5 mt-0.5 text-sm text-slate-700 leading-tight break-words` |
+| Summary | `pl-3.5 mt-0.5 text-xs text-slate-500 leading-snug line-clamp-2 break-words` | `pl-3.5 mt-0.5 text-xs text-slate-500 leading-tight line-clamp-2 break-words` |
+| Time | `text-sm font-semibold tabular-nums text-slate-900` (in inner flex with `ml-auto`) | `text-sm font-semibold tabular-nums text-slate-900 leading-tight` (in its own grid column) |
+
+**Files changed.**
+
+  * `client/src/pages/timesheets/WeekStackPage.tsx` — only the row body wrapper, header `border-b` color, the `EntryRow` (both branches), and the Add Entry footer were touched.
+
+**Files NOT changed.**
+
+  * `client/src/components/timesheets/stack/buildWeekStackViewModel.ts` — adapter untouched.
+  * `tests/timesheets-week-stack.test.ts` — unchanged. 12/12 pass.
+  * `client/src/App.tsx`, `client/src/pages/PayrollPage.tsx` — routing and canonical page untouched.
+
+**Acceptance.**
+
+  * ✅ Continuous timeline feel — `divide-y divide-slate-200` hairlines between rows, no per-row card chrome (kept from prior pass).
+  * ✅ All times align in a single vertical column via `grid grid-cols-[1fr_auto] items-start`.
+  * ✅ Time visually dominant — `text-sm font-semibold tabular-nums text-slate-900`, only element with this combination in the row.
+  * ✅ General Time visible but quieter — slate-600 vs slate-700 on jobs, no subtitle.
+  * ✅ "Unbilled" label still removed (verified via grep — no occurrences).
+  * ✅ No drive/on-site breakdown anywhere.
+  * ✅ Columns connected — outer container + `border-r` between columns + bg-slate-50 header strip across all 7 (unchanged from prior pass).
+  * ✅ `npx tsc --noEmit` → 0 errors on stack-view files (unrelated pre-existing errors in `client/src/pages/portal/PortalInvoiceDetail.tsx` are in-flight work elsewhere).
+  * ✅ `npx vitest run tests/timesheets-week-stack.test.ts` → 12 / 12 pass.
 
 #### Stack View — UI density tightening (2026-05-04)
 

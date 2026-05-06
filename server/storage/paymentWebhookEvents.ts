@@ -38,6 +38,16 @@ const METADATA_ALLOWLIST = new Set<string>([
   "prospectivePaymentId",
   "refundLedgerId",
   "source",
+  // 2026-05-06 PR3 — Collect Payment dialog multi-invoice card path.
+  // These fields are needed on the persisted log row so an operator
+  // triaging a "config_error" / sum-mismatch event can navigate from
+  // the Payments dashboard banner straight to the Stripe charge + the
+  // affected customer + the affected invoice set without an extra
+  // psql round-trip.
+  "customerCompanyId",
+  "multiInvoiceMode",
+  "carrierInvoiceId",
+  "paymentProviderAccountId",
 ]);
 
 export function redactMetadataForLog(
@@ -129,11 +139,21 @@ export async function recordPaymentWebhookEvent(
     return;
   }
 
+  // 2026-05-06 PR4 — `payment_webhook_events.dedupe_key` is a PARTIAL
+  // unique index (`WHERE dedupe_key IS NOT NULL`). The previous
+  // `onConflictDoUpdate({ target })` form silently failed in Postgres
+  // with "there is no unique or exclusion constraint matching the
+  // ON CONFLICT specification" because partial indexes need an
+  // explicit predicate match. The `safeRecord` wrapper swallowed the
+  // error so deliveries appeared to log fine while in fact every
+  // dedupeKey-bearing row was being lost. Adding `targetWhere` makes
+  // Postgres recognize the partial index and the upsert lands.
   await db
     .insert(paymentWebhookEvents)
     .values(values)
     .onConflictDoUpdate({
       target: paymentWebhookEvents.dedupeKey,
+      targetWhere: sql`dedupe_key IS NOT NULL`,
       set: {
         outcome: values.outcome,
         httpStatus: values.httpStatus,

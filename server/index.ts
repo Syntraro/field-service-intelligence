@@ -69,21 +69,44 @@ app.use(express.urlencoded({ extended: true, limit: process.env.URLENCODED_LIMIT
 // Cookie parsing (required for httpOnly impersonation cookies)
 app.use(cookieParser());
 
-// Security headers with CSP enabled
+// Security headers with CSP enabled.
+//
+// 2026-05-05: Stripe.js domains added to script-src / frame-src /
+// connect-src. The Pay Invoice flow (PortalInvoiceDetail) calls
+// `loadStripe(publishableKey)` which fetches `https://js.stripe.com/v3`
+// and mounts Elements iframes. Without these allowlist entries the
+// browser blocks the script and Stripe surfaces "Failed to load
+// Stripe.js" — the bug that brought us here. The allowlist mirrors
+// Stripe's documented CSP guidance (https://docs.stripe.com/security/guide):
+//   • script-src  → https://js.stripe.com  (Stripe.js loader)
+//   • frame-src   → https://js.stripe.com  (Elements iframes)
+//                   https://hooks.stripe.com  (3DS / SCA challenge frames)
+//   • connect-src → https://api.stripe.com  (PaymentIntent confirmation calls)
+// We do NOT add `https://maps.googleapis.com` (only required for
+// Stripe's Address Element autocomplete, which we don't use).
 app.use(
   helmet({
     frameguard: { action: "deny" },
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"], // unsafe-eval needed for Vite in dev
+        scriptSrc: [
+          "'self'",
+          "'unsafe-inline'",
+          "'unsafe-eval'", // unsafe-eval needed for Vite in dev
+          "https://js.stripe.com",
+        ],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", "data:", "https:"],
-        connectSrc: ["'self'", "https://*.r2.cloudflarestorage.com"],
+        connectSrc: [
+          "'self'",
+          "https://*.r2.cloudflarestorage.com",
+          "https://api.stripe.com",
+        ],
         fontSrc: ["'self'", "data:"],
         objectSrc: ["'none'"],
         mediaSrc: ["'self'"],
-        frameSrc: ["'none'"],
+        frameSrc: ["https://js.stripe.com", "https://hooks.stripe.com"],
       },
     },
   })

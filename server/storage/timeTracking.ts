@@ -10,7 +10,7 @@
 
 import { db } from "../db";
 import { eq, and, sql, desc, isNull, isNotNull, lt, gte, or, asc, lte, inArray } from "drizzle-orm";
-import { activeWorkJobFilter } from "./jobFilters";
+import { activeJobFilter, activeWorkJobFilter } from "./jobFilters";
 import {
   workSessions,
   timeEntries,
@@ -861,16 +861,23 @@ export class TimeTrackingRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(technicianId, "technicianId");
 
-    // If jobId provided, validate it references an active open job
+    // 2026-05-05: manual admin entries may target completed/invoiced
+    // jobs (corrections + late labor). Soft-deleted/inactive jobs
+    // remain blocked. No job-status or invoice side effects.
+    // Aligns with the search filter that surfaces these jobs in the
+    // Add Time Entry modal's job picker (`getJobsFeed` uses
+    // `activeJobFilter`, not `activeWorkJobFilter`). Live-tech flows
+    // (`startTimeEntry`, `recordJobStatus`) keep the stricter
+    // `activeWorkJobFilter` so techs can't go en route on a closed job.
     if (options.jobId) {
       this.validateUUID(options.jobId, "jobId");
       const [targetJob] = await db
         .select({ id: jobs.id })
         .from(jobs)
-        .where(and(eq(jobs.id, options.jobId), eq(jobs.companyId, companyId), activeWorkJobFilter()))
+        .where(and(eq(jobs.id, options.jobId), eq(jobs.companyId, companyId), activeJobFilter()))
         .limit(1);
       if (!targetJob) {
-        throw this.notFoundError("Job not found or is closed/inactive");
+        throw this.notFoundError("Job not found or has been deleted");
       }
     }
 
@@ -958,16 +965,18 @@ export class TimeTrackingRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(timeEntryId, "timeEntryId");
 
-    // If jobId is being changed to a new job, validate it (read-only, safe outside tx)
+    // 2026-05-05: relax job-link validation to allow re-linking
+    // entries to completed/invoiced jobs (corrections flow). Only
+    // soft-deleted/inactive jobs are blocked.
     if (patch.jobId !== undefined && patch.jobId !== null) {
       this.validateUUID(patch.jobId, "jobId");
       const [targetJob] = await db
         .select({ id: jobs.id })
         .from(jobs)
-        .where(and(eq(jobs.id, patch.jobId), eq(jobs.companyId, companyId), activeWorkJobFilter()))
+        .where(and(eq(jobs.id, patch.jobId), eq(jobs.companyId, companyId), activeJobFilter()))
         .limit(1);
       if (!targetJob) {
-        throw this.notFoundError("Job not found or is closed/inactive");
+        throw this.notFoundError("Job not found or has been deleted");
       }
     }
 
@@ -1051,11 +1060,12 @@ export class TimeTrackingRepository extends BaseRepository {
       actingUserId: options?.actingUserId,
     });
 
-    // Verify job exists, belongs to company, and is active (2026-04-03)
+    // 2026-05-05: link-to-closed-job is allowed for corrections.
+    // Soft-deleted/inactive jobs remain blocked.
     const [job] = await db
       .select({ id: jobs.id })
       .from(jobs)
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), activeWorkJobFilter()))
+      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), activeJobFilter()))
       .limit(1);
 
     if (!job) {
@@ -1668,15 +1678,17 @@ export class TimeTrackingRepository extends BaseRepository {
       // Require reason if overriding lock
       requireOverrideReason(entry, options.overrideInvoiceLock, options.overrideReason);
 
-      // Validate jobId reassignment: job must belong to tenant AND be active (2026-04-03)
+      // 2026-05-05: manager reassign — allow re-linking to completed/
+      // invoiced jobs (corrections flow). Soft-deleted/inactive jobs
+      // remain blocked.
       if (patch.jobId !== undefined && patch.jobId !== null) {
         const [targetJob] = await tx
           .select({ id: jobs.id })
           .from(jobs)
-          .where(and(eq(jobs.id, patch.jobId), eq(jobs.companyId, companyId), activeWorkJobFilter()))
+          .where(and(eq(jobs.id, patch.jobId), eq(jobs.companyId, companyId), activeJobFilter()))
           .limit(1);
         if (!targetJob) {
-          throw this.notFoundError("Target job not found or is closed/inactive");
+          throw this.notFoundError("Target job not found or has been deleted");
         }
       }
 

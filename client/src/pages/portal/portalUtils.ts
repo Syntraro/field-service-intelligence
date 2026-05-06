@@ -95,7 +95,15 @@ export function portalStatusBadge(params: {
     case "draft":
       return { kind, label: "Draft", className: "bg-slate-100 text-slate-500 border-slate-200" };
     default:
-      return { kind, label: "Open", className: "bg-slate-100 text-slate-700 border-slate-200" };
+      // 2026-05-05: customer-facing label clarification. "Open" was
+      // ambiguous to the recipient (back-office jargon — they see "Open"
+      // and don't know if action is required). "Awaiting payment"
+      // unambiguously describes the customer's outstanding obligation.
+      return {
+        kind,
+        label: "Awaiting payment",
+        className: "bg-slate-100 text-slate-700 border-slate-200",
+      };
   }
 }
 

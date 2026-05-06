@@ -1,30 +1,27 @@
 /**
- * InvoiceCompositionDialog (2026-04-18 Phase 8)
+ * InvoiceCompositionDialog (2026-04-18 Phase 8 — 2026-05-05 labour removal)
  *
- * Canonical dialog for choosing which labor entries and job parts to
- * include when creating a new invoice from a job OR when refreshing an
- * existing draft invoice to add more remaining items.
+ * Canonical dialog for choosing which job parts to include when creating
+ * a new invoice from a job OR when refreshing an existing draft invoice
+ * to add more remaining items.
+ *
+ * 2026-05-05 — Tracked labour was removed from this dialog. Labour
+ * never auto-creates invoice line items. The dialog now shows parts
+ * only; users add labour manually on the invoice if they want to bill
+ * it. The labour selection section (with select-all + per-entry
+ * checkboxes) was deleted.
  *
  * Data source:
  *   GET /api/jobs/:jobId/billable-preview
- *     → eligible uninvoiced labor (billing-rules applied) +
- *       unallocated job parts (not on any sibling invoice).
+ *     → unallocated job parts (not on any sibling invoice).
+ *       The response still carries `labor: []` for backward compat;
+ *       the dialog ignores it.
  *
  * Submit modes:
  *   - mode="create"  → POST /api/invoices/from-job/:jobId
- *                       body: { markJobCompleted, selection }
+ *                       body: { markJobCompleted, selection: { partIds } }
  *   - mode="refresh" → POST /api/invoices/:invoiceId/refresh-from-job
- *                       body: { selection }
- *
- * UX:
- *   - Two collapsible sections (Labor, Parts) with select-all toggles.
- *   - Per-row checkbox + concise summary (date/tech/hrs/amount for labor;
- *     qty/price for parts).
- *   - Totals preview at the bottom (subtotal, selected count). Tax is
- *     computed server-side at create/refresh time via the canonical
- *     tax engine — this dialog shows the pre-tax subtotal only.
- *   - Empty state: when nothing is eligible, offers Cancel only with a
- *     friendly explanation.
+ *                       body: { selection: { partIds } }
  *
  * Guardrails:
  *   - Server is the source of truth. If a selection becomes stale
@@ -34,26 +31,14 @@
  */
 import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { format } from "date-fns";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Clock, Package, Loader2 } from "lucide-react";
+import { Package, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-
-interface LaborItem {
-  id: string;
-  startAt: string;
-  technicianId: string;
-  technicianName: string;
-  type: string;
-  billedMinutes: number;
-  billedRate: string;
-  billedAmount: string;
-}
 
 interface PartItem {
   id: string;
@@ -63,8 +48,13 @@ interface PartItem {
   lineSubtotal: string;
 }
 
+/**
+ * The server still returns `labor` + `laborSubtotal` for backward
+ * compat; both are always empty after 2026-05-05. The dialog ignores
+ * them.
+ */
 interface PreviewResponse {
-  labor: LaborItem[];
+  labor: never[];
   parts: PartItem[];
   laborSubtotal: string;
   partsSubtotal: string;
@@ -100,7 +90,6 @@ export function InvoiceCompositionDialog(props: Props) {
   const { open, onOpenChange, jobId, jobNumber, jobSummary, locationDisplayName } = props;
   const { toast } = useToast();
 
-  const [laborSelected, setLaborSelected] = useState<Set<string>>(new Set());
   const [partsSelected, setPartsSelected] = useState<Set<string>>(new Set());
 
   // Fetch billable preview whenever the dialog opens.
@@ -115,11 +104,10 @@ export function InvoiceCompositionDialog(props: Props) {
     staleTime: 5_000,
   });
 
-  // Default selection: everything eligible. Applied on first successful load.
+  // Default selection: every part. Applied on first successful load.
   const [seededFor, setSeededFor] = useState<string | null>(null);
   if (preview && seededFor !== jobId) {
     setSeededFor(jobId);
-    setLaborSelected(new Set(preview.labor.map((l) => l.id)));
     setPartsSelected(new Set(preview.parts.map((p) => p.id)));
   }
 
@@ -129,16 +117,8 @@ export function InvoiceCompositionDialog(props: Props) {
     onOpenChange(next);
   };
 
-  const laborItems = preview?.labor ?? [];
   const partsItems = preview?.parts ?? [];
 
-  const toggleLabor = (id: string) => {
-    setLaborSelected((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  };
   const togglePart = (id: string) => {
     setPartsSelected((prev) => {
       const next = new Set(prev);
@@ -146,28 +126,25 @@ export function InvoiceCompositionDialog(props: Props) {
       return next;
     });
   };
-  const allLaborSelected = laborItems.length > 0 && laborItems.every((l) => laborSelected.has(l.id));
   const allPartsSelected = partsItems.length > 0 && partsItems.every((p) => partsSelected.has(p.id));
-  const toggleAllLabor = () => {
-    setLaborSelected(allLaborSelected ? new Set() : new Set(laborItems.map((l) => l.id)));
-  };
   const toggleAllParts = () => {
     setPartsSelected(allPartsSelected ? new Set() : new Set(partsItems.map((p) => p.id)));
   };
 
-  // Live totals (pre-tax).
+  // Live totals (pre-tax). Parts only — labour is never billed via this dialog.
   const { selectedCount, subtotal } = useMemo(() => {
     let cents = 0;
     let count = 0;
-    for (const l of laborItems) if (laborSelected.has(l.id)) { cents += Math.round(parseFloat(l.billedAmount || "0") * 100); count++; }
     for (const p of partsItems) if (partsSelected.has(p.id)) { cents += Math.round(parseFloat(p.lineSubtotal || "0") * 100); count++; }
     return { selectedCount: count, subtotal: (cents / 100).toFixed(2) };
-  }, [laborItems, partsItems, laborSelected, partsSelected]);
+  }, [partsItems, partsSelected]);
 
   const mutation = useMutation({
     mutationFn: async (markJobCompleted: boolean) => {
+      // 2026-05-05: `timeEntryIds` is no longer sent. The server schema
+      // still accepts it for backward compat but ignores it; we don't
+      // emit it from this dialog.
       const selection = {
-        timeEntryIds: Array.from(laborSelected),
         partIds: Array.from(partsSelected),
       };
       if (props.mode === "create") {
@@ -207,7 +184,7 @@ export function InvoiceCompositionDialog(props: Props) {
   });
 
   const busy = mutation.isPending;
-  const hasAnyItems = laborItems.length + partsItems.length > 0;
+  const hasAnyItems = partsItems.length > 0;
   const canSubmit = hasAnyItems && selectedCount > 0 && !busy;
 
   return (
@@ -230,62 +207,18 @@ export function InvoiceCompositionDialog(props: Props) {
             </div>
           ) : !hasAnyItems ? (
             <div className="py-6 text-center text-sm text-muted-foreground" data-testid="composition-empty">
-              <p className="mb-1">Nothing new to bill on this job.</p>
+              <p className="mb-1">No parts to bill on this job.</p>
               <p className="text-xs">
-                All labor and parts on this job are either already invoiced or have been added to
-                another invoice.
+                All parts on this job are either already on an invoice or there are none recorded.
+                Tracked labour is operational only — add labour line items manually on the invoice
+                if you want to bill it.
               </p>
             </div>
           ) : (
             <>
-              {/* Labor section */}
-              <section data-testid="section-labor">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-                    <Clock className="h-4 w-4 text-slate-500" /> Labor
-                    <span className="text-xs font-normal text-muted-foreground">
-                      {laborItems.length > 0 ? `${laborItems.length} entries · $${preview!.laborSubtotal}` : "No eligible entries"}
-                    </span>
-                  </div>
-                  {laborItems.length > 0 && (
-                    <button
-                      type="button"
-                      className="text-xs text-primary hover:underline"
-                      onClick={toggleAllLabor}
-                      data-testid="button-toggle-all-labor"
-                    >
-                      {allLaborSelected ? "Deselect all" : "Select all"}
-                    </button>
-                  )}
-                </div>
-                {laborItems.length > 0 && (
-                  <div className="border rounded-md divide-y divide-slate-100">
-                    {laborItems.map((l) => {
-                      const checked = laborSelected.has(l.id);
-                      const hours = (l.billedMinutes / 60).toFixed(2);
-                      return (
-                        <label
-                          key={l.id}
-                          className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-slate-50"
-                          data-testid={`labor-row-${l.id}`}
-                        >
-                          <Checkbox checked={checked} onCheckedChange={() => toggleLabor(l.id)} />
-                          <div className="flex-1 min-w-0 text-xs">
-                            <div className="flex items-center gap-2 text-slate-900 font-medium">
-                              <span>{l.technicianName}</span>
-                              <span className="text-muted-foreground font-normal">· {l.type.replace(/_/g, " ")}</span>
-                            </div>
-                            <div className="text-muted-foreground">
-                              {format(new Date(l.startAt), "MMM d")} · {hours} hrs @ ${l.billedRate}/hr
-                            </div>
-                          </div>
-                          <div className="text-xs font-semibold tabular-nums">${l.billedAmount}</div>
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
-              </section>
+              {/* 2026-05-05: Labour section removed. Tracked labour
+                  never auto-creates invoice line items. Add labour
+                  manually on the invoice if you want to bill it. */}
 
               {/* Parts section */}
               <section data-testid="section-parts">
