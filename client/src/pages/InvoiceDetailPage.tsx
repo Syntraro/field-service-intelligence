@@ -1409,12 +1409,39 @@ export default function InvoiceDetailPage() {
   // ─────────────────────────────────────────────────────────────────
   const invoiceLineItemsAdapter = useMemo<LineItemsAdapter<InvoiceLine>>(() => ({
     surface: "invoice",
+    // 2026-05-07 Phase A — persisted detail page. Card renders
+    // always-visible rows with row-level actions; per-row methods
+    // below fan out to the existing mutation hooks. No global
+    // edit-mode UI on the card.
+    interactionMode: "persisted",
     showCost: false,
     showTax: false,
     allowReorder: true,
     allowEditExisting: true,
     emptyStateLabel: "No line items yet.",
     emptyStateCtaLabel: "Add line item",
+    addLine: async (draft) => {
+      await addLineMutation.mutateAsync(draft);
+    },
+    updateLine: async (serverId, draft) => {
+      await updateLineMutation.mutateAsync({ lineId: serverId, draft });
+    },
+    deleteLine: async (serverId) => {
+      await deleteLineMutation.mutateAsync(serverId);
+    },
+    reorderLines: async (orderedServerIds) => {
+      const orderData = orderedServerIds.map((id, i) => ({ id, lineNumber: i + 1 }));
+      if (orderData.length === 0) return;
+      await reorderLinesMutation.mutateAsync(orderData);
+    },
+    bulkAddLines: async (drafts) => {
+      // Mirror the legacy saveAll pattern — Promise.allSettled so a
+      // single rejection doesn't abort the rest. Each draft becomes
+      // one persisted row.
+      await Promise.allSettled(
+        drafts.map((draft) => addLineMutation.mutateAsync(draft)),
+      );
+    },
     hydrateDraft: (line) => hydrateDraft(line as unknown as Record<string, unknown>),
     resolveProduct: (line) =>
       line.productId

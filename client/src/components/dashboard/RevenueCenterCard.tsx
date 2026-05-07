@@ -24,6 +24,12 @@ import {
   DollarSign,
 } from "lucide-react";
 import { resolveDashboardNav } from "@/lib/dashboardNavigation";
+import {
+  CardShell,
+  CardShellHeader,
+  CardShellTitle,
+  CardShellAction,
+} from "@/components/ui/card";
 
 interface RevenueCenterCardProps {
   readyToInvoiceCount: number;
@@ -109,31 +115,36 @@ export function RevenueCenterCard({
   const visibleRows = rows.filter((r) => r.count > 0);
   const totalCount = visibleRows.reduce((acc, r) => acc + r.count, 0);
 
+  // 2026-05-07 Card canonicalization (Tier 1): outer chrome + header band
+  // routed through CardShell + CardShellHeader. Row internals (icon +
+  // label + description + count + chevron) intentionally untouched.
   return (
-    <div
-      className={`bg-white rounded-md border border-[#e2e8f0] flex flex-col ${className}`}
-      style={{ boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}
+    <CardShell
+      className={`flex flex-col ${className}`}
       data-testid="revenue-center-card"
     >
-      <header className="flex items-center justify-between px-4 py-2.5 border-b border-[#e2e8f0]">
+      <CardShellHeader>
         <div className="flex items-center gap-2 min-w-0">
-          <DollarSign className="h-3.5 w-3.5 text-[#76B054] shrink-0" />
-          <h3 className="text-sm font-semibold text-[#111827] truncate">Revenue Center</h3>
+          <CardShellTitle icon={DollarSign} iconColor="text-[#76B054]">
+            Revenue Center
+          </CardShellTitle>
           {totalCount > 0 && (
-            <span className="text-helper text-[#4b5563] tabular-nums shrink-0">
+            <span className="text-helper text-text-muted tabular-nums shrink-0">
               {totalCount} action{totalCount === 1 ? "" : "s"}
             </span>
           )}
         </div>
-        <button
-          type="button"
-          onClick={() => setLocation("/financials")}
-          className="text-helper font-semibold text-[#76B054] hover:underline shrink-0"
-          data-testid="revenue-center-view-financial"
-        >
-          Open financials
-        </button>
-      </header>
+        <CardShellAction>
+          <button
+            type="button"
+            onClick={() => setLocation("/financials")}
+            className="text-helper font-semibold text-[#76B054] hover:underline"
+            data-testid="revenue-center-view-financial"
+          >
+            Open financials
+          </button>
+        </CardShellAction>
+      </CardShellHeader>
 
       <div className="flex-1">
         {isLoading ? (
@@ -185,6 +196,6 @@ export function RevenueCenterCard({
           </ul>
         )}
       </div>
-    </div>
+    </CardShell>
   );
 }

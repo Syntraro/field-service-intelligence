@@ -177,6 +177,11 @@ export function createDraftInvoiceLineItemsAdapter(
 ): LineItemsAdapter<InvoiceLine> {
   return {
     surface: "invoice",
+    // 2026-05-07 Phase A — explicit declaration. Draft-invoice flow
+    // (NewInvoicePage) accumulates lines in a `serverItemsMirror`
+    // local state and POSTs them inline at invoice-create time,
+    // which requires the legacy edit-mode batch contract.
+    interactionMode: "batched",
     showCost: false,
     showTax: false,
     allowReorder: true,

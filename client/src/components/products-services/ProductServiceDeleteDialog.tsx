@@ -205,7 +205,7 @@ export function ImportDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[550px]">
         <DialogHeader>
-          <DialogTitle>Import Products & Services</DialogTitle>
+          <DialogTitle>Import Pricebook items</DialogTitle>
           <DialogDescription>Import from CSV file.</DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-4">

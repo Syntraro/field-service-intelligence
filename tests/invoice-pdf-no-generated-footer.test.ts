@@ -208,38 +208,63 @@ describe("invoicePdfService — footer contract", () => {
     expect(pdfSrc).toMatch(/thankYou[\s\S]+?align:\s*"center"/);
   });
 
-  it("includes the centred 'BUSINESS INFORMATION' label under the divider (uppercase, ACCENT)", () => {
-    // v2: label is uppercase + centred + uses the ACCENT color so it
-    // reads as a stacked block (label on its own line above the
-    // formatted tax registrations).
-    expect(pdfSrc).toMatch(/"BUSINESS INFORMATION"/);
-    expect(pdfSrc).toMatch(
-      /fontSize\(8\)\.fillColor\(ACCENT\)\.font\("Helvetica-Bold"\);\s*\n\s*doc\.text\("BUSINESS INFORMATION"[\s\S]+?align:\s*"center"/,
-    );
+  it("does NOT render a 'BUSINESS INFORMATION' heading anywhere in the footer (2026-05-07 narrow)", () => {
+    // The 2026-05-07 narrow simplification removes the heading entirely.
+    // Tax registrations now sit directly under the thank-you line, one
+    // line per registration, with the configured label as the prefix
+    // (no extra section title).
+    expect(codeOnly).not.toMatch(/"BUSINESS INFORMATION"/);
+    expect(codeOnly).not.toMatch(/Business Information/);
   });
 
-  it("Business Information renders ONLY when at least one tax registration exists", () => {
-    // The hasTaxRegs predicate gates the entire Business Information
-    // block — no blank label appears when the tenant has no
-    // registrations.
+  it("tax registration lines render directly under the thank-you, gated on policy.showTaxNumber", () => {
+    // The footer gathers tax-reg lines from `taxRegistrations` ONLY
+    // when `policy.showTaxNumber === true` AND the tenant has at
+    // least one registration with a non-empty number. Each survives
+    // through to a centred row in muted gray.
     expect(pdfSrc).toMatch(
-      /const hasTaxRegs\s*=\s*[\s\S]+?taxRegistrations\.some\(\(r\)\s*=>\s*\(r\.number\s*\?\?\s*""\)\.trim\(\)\.length\s*>\s*0\)/,
+      /const showTaxRegs\s*=\s*!!policy\.showTaxNumber;/,
     );
-    expect(pdfSrc).toMatch(/if\s*\(hasTaxRegs\)/);
+    expect(pdfSrc).toMatch(
+      /const taxRegLines:\s*string\[\]\s*=\s*showTaxRegs\s*&&\s*taxRegistrations[\s\S]+?\.filter\(\(s\)\s*=>\s*s\.length\s*>\s*0\)/,
+    );
+    expect(pdfSrc).toMatch(/if\s*\(regCount\s*>\s*0\)/);
+  });
+
+  it("tax-reg line label is taken from the registration row — never hardcoded HST", () => {
+    // The mapper uses `r.label` (configured by the tenant) and falls
+    // back to "Tax ID" only when the label is empty. No hardcoded
+    // "HST" string survives in the footer rendering path.
+    expect(pdfSrc).toMatch(
+      /const label\s*=\s*\(r\.label\s*\?\?\s*""\)\.trim\(\);[\s\S]+?return label\s*\?\s*`\$\{label\} # \$\{number\}`\s*:\s*`Tax ID # \$\{number\}`/,
+    );
+    // Negative pin: no `"HST"` string-literal fallback inside the
+    // mapper. (The tenant CAN configure a label of "HST" — that's
+    // data, not code — but the renderer doesn't synthesize it.)
+    const codeOnly = pdfSrc
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    expect(codeOnly).not.toMatch(/=\s*"HST"\s*[);,]/);
+    expect(codeOnly).not.toMatch(/`HST\s*#/);
   });
 
   it("footer Y coordinates sit INSIDE the bottom margin (no auto-pagination trigger)", () => {
-    // Bottom-up safe Ys for thank-you / Business Info label / Business
-    // Info value / divider. v2 stacks Business Information as TWO
-    // centred lines, so the footer band is taller (~45pt with tax
-    // regs vs. ~25pt without). Every line bottom stays clear of the
-    // PDFKit margin boundary (`pageH - 50`).
-    expect(pdfSrc).toMatch(/const thankYouY\s*=\s*pageH\s*-\s*65/);
-    expect(pdfSrc).toMatch(/const bizInfoLabelY\s*=\s*pageH\s*-\s*90/);
-    expect(pdfSrc).toMatch(/const bizInfoValueY\s*=\s*pageH\s*-\s*79/);
+    // 2026-05-07 narrow: bottom-up geometry anchored at
+    // `SAFE_LAST_TOP_Y = pageH - 65`. Lines stack upward — regs (when
+    // present) at the bottom, thank-you above the topmost reg, divider
+    // 6pt above thank-you. Each line bottom stays ≥ 4pt clear of the
+    // PDFKit margin boundary (`pageH - 50`) so PDFKit never auto-
+    // paginates a phantom trailing page.
+    expect(pdfSrc).toMatch(/const SAFE_LAST_TOP_Y\s*=\s*pageH\s*-\s*65/);
+    expect(pdfSrc).toMatch(/const TAX_REG_LINE_H\s*=\s*11/);
+    expect(pdfSrc).toMatch(/const THANK_YOU_LINE_H\s*=\s*11/);
+    // Thank-you sits one row above the topmost reg when regs exist;
+    // it occupies the bottom slot when there are no regs.
     expect(pdfSrc).toMatch(
-      /const dividerY\s*=\s*hasTaxRegs\s*\?\s*pageH\s*-\s*95\s*:\s*pageH\s*-\s*75/,
+      /const thankYouY\s*=\s*regCount\s*>\s*0\s*\?\s*firstRegY\s*-\s*THANK_YOU_LINE_H\s*:\s*SAFE_LAST_TOP_Y/,
     );
+    // Divider always 6pt above the thank-you.
+    expect(pdfSrc).toMatch(/const dividerY\s*=\s*thankYouY\s*-\s*6/);
   });
 
   it("uses bufferPages + switchToPage(lastPage) so the footer renders only on the LAST page", () => {

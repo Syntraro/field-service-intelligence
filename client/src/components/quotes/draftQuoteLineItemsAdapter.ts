@@ -116,6 +116,11 @@ export function createDraftQuoteLineItemsAdapter(
 ): LineItemsAdapter<QuoteLine> {
   return {
     surface: "quote",
+    // 2026-05-07 Phase A — explicit declaration. Draft-quote flow
+    // (CreateQuotePage) accumulates lines in a `serverItemsMirror`
+    // local state and POSTs them inline at quote-create time, which
+    // requires the legacy edit-mode batch contract.
+    interactionMode: "batched",
     showCost: false,
     showTax: false,
     allowReorder: false,

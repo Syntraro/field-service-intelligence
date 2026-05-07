@@ -201,6 +201,91 @@ export function blankDraft(options: BlankDraftOptions = {}): LineItemDraft {
 }
 
 // ============================================================================
+// Apply catalog item to existing draft (catalog change on an open form)
+// ============================================================================
+
+/**
+ * Patch a `LineItemDraft` when the user changes the saved item on an
+ * already-open form. Returns the fields to overwrite — pass to
+ * `setDraft((prev) => ({ ...prev, ...applyCatalogItemToDraft(prev, item) }))`
+ * (or merge equivalently in a state setter).
+ *
+ * The contract is intentionally aggressive: changing the saved item
+ * REPLACES every catalog-derived field on the draft. Only the user's
+ * current quantity is preserved; `lineSubtotal` / `lineTotal` are
+ * recomputed against the new rate.
+ *
+ * SCHEMA LIMITATION (2026-05-07).
+ *
+ *   The line tables (`invoice_lines`, `quote_lines`, `job_parts`)
+ *   each carry exactly ONE display-text column: `description`. There
+ *   is no separate `name` / `title` / `productName` column on any of
+ *   the three. The line's `description` field IS the row's primary
+ *   label (see `LineItemRow.tsx`'s display branch — it renders only
+ *   `displayLine.description`).
+ *
+ *   Therefore: when a saved catalog item is selected, this helper
+ *   stores the catalog ITEM NAME in `description` — that's the user-
+ *   facing label that appears on the row. The catalog item's
+ *   description text is intentionally NOT auto-populated into the
+ *   line; it's Pricebook-only metadata visible in Settings →
+ *   Pricebook. Surfacing it as a secondary row line would require
+ *   API joins on the three line-fetch routes plus a `LineItemRow`
+ *   layout extension; that is deferred as a follow-up. Until then,
+ *   users can manually type a custom description override into the
+ *   modal's "Description" field if they need a different line label.
+ *
+ *   Earlier helper revisions (2026-05-07 #1 + #2) tried to use the
+ *   catalog description as the line label when present — that
+ *   produced the "Window Cleaning shown as Full Service Cleaning"
+ *   regression because the catalog description text won the slot
+ *   meant for the item name. The contract here is now: NAME wins.
+ *
+ * Used by `<LineItemEditModal>`'s product selector (both the regular
+ * pick path AND the "Create '<name>'" mid-edit path — both flows
+ * route through here so behavior is identical).
+ *
+ * Note: this is distinct from `catalogItemToDraft` (which builds a
+ * fresh draft) and from `useLineItemsDrafts.defaultCarryOver` (which
+ * applies a different "preserve user overrides" rule for the
+ * batched-mode inline edit-cells path on draft entities). The
+ * persisted-mode modal needs the simpler always-overwrite rule
+ * because there's no separate "Save" gesture for the user to revert
+ * an unintended overwrite — clicking a different saved item is itself
+ * the explicit intent.
+ */
+export function applyCatalogItemToDraft(
+  prev: LineItemDraft,
+  item: CatalogItem,
+): Partial<LineItemDraft> {
+  // The line table's `description` column = the row's primary label.
+  // Always populate it with the catalog NAME on item-change. Per the
+  // SCHEMA LIMITATION docblock above, the catalog's `description`
+  // text is NOT folded into the line — that's Pricebook-only
+  // metadata.
+  const productName = (item.name ?? "").trim();
+  const description = productName || UNTITLED;
+
+  // Preserve user-entered quantity. Recompute the running subtotal so
+  // the form's Amount tile reads the correct qty × new-rate value
+  // immediately after the change.
+  const quantity = prev.quantity;
+  const unitPrice = toMoneyString(item.unitPrice, ZERO, 2);
+  const unitCost = toMoneyString(item.cost, ZERO, 2);
+  const subtotal = formatMoney(parseMoney(quantity) * parseMoney(unitPrice));
+
+  return {
+    productId: item.id,
+    productType: item.type === "service" ? "service" : "product",
+    description,
+    unitPrice,
+    unitCost,
+    lineSubtotal: subtotal,
+    lineTotal: subtotal,
+  };
+}
+
+// ============================================================================
 // Hydrate draft from a persisted row (server → editor)
 // ============================================================================
 

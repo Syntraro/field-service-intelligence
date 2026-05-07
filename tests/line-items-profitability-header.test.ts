@@ -104,9 +104,14 @@ describe("LineItemsCard — canonical profitability header", () => {
 
   it("ships stable test ids on the cluster + each metric tile", () => {
     expect(cardSrc).toMatch(/data-testid="text-line-items-metrics"/);
-    expect(cardSrc).toMatch(/testId="metric-full-line-revenue"/);
-    expect(cardSrc).toMatch(/testId="metric-profit"/);
-    expect(cardSrc).toMatch(/testId="metric-profit-margin"/);
+    // 2026-05-07 Tier 2: the metric tiles render through the canonical
+    // CardMetricBlock primitive, which forwards standard div attrs.
+    // The earlier local HeaderMetricBlock used a custom `testId` prop
+    // that mapped to data-testid; pins now match the standard
+    // `data-testid="…"` form.
+    expect(cardSrc).toMatch(/data-testid="metric-full-line-revenue"/);
+    expect(cardSrc).toMatch(/data-testid="metric-profit"/);
+    expect(cardSrc).toMatch(/data-testid="metric-profit-margin"/);
   });
 
   it("uses a single `revenue > 0` gate (the cluster shows on every surface that has lines)", () => {
@@ -134,7 +139,7 @@ describe("LineItemsCard — canonical profitability header", () => {
     // A nested guard around Profit / Margin would re-introduce the
     // hide-on-no-cost regression on Quote / Invoice surfaces.
     expect(cardSrc).toMatch(
-      /\{showMetrics\s*&&\s*\([\s\S]*?testId="metric-full-line-revenue"[\s\S]*?testId="metric-profit"[\s\S]*?testId="metric-profit-margin"[\s\S]*?\)\}/,
+      /\{showMetrics\s*&&\s*\([\s\S]*?data-testid="metric-full-line-revenue"[\s\S]*?data-testid="metric-profit"[\s\S]*?data-testid="metric-profit-margin"[\s\S]*?\)\}/,
     );
   });
 
@@ -164,11 +169,14 @@ describe("LineItemsCard — canonical profitability header", () => {
     expect(cardSrc.match(/valueClassName=\{profitToneClass\}/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
   });
 
-  it("Full Line Revenue tile uses the muted slate token (no green/red on revenue)", () => {
+  it("Full Line Revenue tile uses the canonical default value color (no green/red on revenue)", () => {
     // The revenue block does not pass valueClassName, so it falls
-    // through to the default text-slate-700.
+    // through to CardMetricBlock's default value class
+    // (`text-text-primary`). 2026-05-07 Tier 2: the previous
+    // hand-rolled fallback was `text-slate-700`; the canonical
+    // primitive resolves to `text-text-primary`.
     expect(cardSrc).toMatch(
-      /label="Full Line Revenue"[\s\S]{0,300}?testId="metric-full-line-revenue"/,
+      /label="Full Line Revenue"[\s\S]{0,300}?data-testid="metric-full-line-revenue"/,
     );
   });
 
@@ -182,8 +190,47 @@ describe("LineItemsCard — canonical profitability header", () => {
   });
 
   it("HeaderMetricBlock label uses the canonical 10px / uppercase / tracked / muted slate token", () => {
+    // The local META_LABEL_CLASS constant near the top of LineItemsCard
+    // still defines the 10px uppercase tracked label class for the
+    // card title row. CardMetricBlock's own label uses the same shape
+    // through a canonical token swap (text-text-muted) — this pin
+    // continues to match the constant declaration.
     expect(cardSrc).toMatch(
       /text-\[10px\]\s+font-bold\s+uppercase\s+tracking-\[0\.08em\]\s+text-slate-500/,
+    );
+  });
+
+  // 2026-05-07 Tier 2 pins ────────────────────────────────────────────
+
+  it("imports the canonical CardShell + CardMetricBlock primitives", () => {
+    expect(cardSrc).toMatch(/from\s+["']@\/components\/ui\/card["']/);
+    expect(cardSrc).toMatch(/\bCardShell\b/);
+    expect(cardSrc).toMatch(/\bCardShellHeader\b/);
+    expect(cardSrc).toMatch(/\bCardShellBody\b/);
+    expect(cardSrc).toMatch(/\bCardShellFooter\b/);
+    expect(cardSrc).toMatch(/\bCardMetricBlock\b/);
+  });
+
+  it("does NOT re-declare a local HeaderMetricBlock function", () => {
+    // CardMetricBlock fully replaces the previous private helper.
+    // A future refactor that re-introduces a local block would
+    // diverge from the canonical primitive.
+    expect(cardSrc).not.toMatch(/function\s+HeaderMetricBlock\b/);
+    expect(cardSrc).not.toMatch(/<HeaderMetricBlock\b/);
+  });
+
+  it("LINE_ITEM_COLUMNS arrays remain the single source of truth for header + body alignment", () => {
+    // 2026-05-03 alignment fix: BOTH the header CSS-grid template AND
+    // the body <colgroup> derive from the same `columns` array. A
+    // future refactor that hand-rolls grid-template-columns or omits
+    // the colgroup map would reintroduce header↔body drift.
+    expect(cardSrc).toMatch(/LINE_ITEM_COLUMNS_WITH_COST/);
+    expect(cardSrc).toMatch(/LINE_ITEM_COLUMNS_NO_COST/);
+    // Header consumes the spec via gridTemplate(columns).
+    expect(cardSrc).toMatch(/gridTemplateColumns:\s*gridTemplate\(columns\)/);
+    // Body consumes the same spec via the colgroup map.
+    expect(cardSrc).toMatch(
+      /<colgroup>\s*\{columns\.map\(\(c\)\s*=>\s*\(\s*<col\s+key=\{c\.key\}\s+style=\{\{\s*width:\s*colWidth\(c\.width\)/,
     );
   });
 });

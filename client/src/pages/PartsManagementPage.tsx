@@ -1,6 +1,8 @@
 /**
- * PartsManagementPage - Products & Services settings page
- * Uses standardized styling matching Jobs/Invoices pages
+ * PartsManagementPage - Pricebook settings page
+ * (UI label "Pricebook" — internal route /settings/products and DB
+ * table `items` retain their canonical names per CLAUDE.md.)
+ * Uses standardized styling matching Jobs/Invoices pages.
  * Phase: Consolidated header - toolbar handles title/actions, page provides workspace bg
  */
 import ProductsServicesManager from "@/components/ProductsServicesManager";

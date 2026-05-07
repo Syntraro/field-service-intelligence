@@ -10,6 +10,12 @@
 import { Link } from "wouter";
 import { ChevronRight, ExternalLink, Receipt, Users } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  CardShell,
+  CardShellHeader,
+  CardShellTitle,
+  CardShellAction,
+} from "@/components/ui/card";
 
 function formatCurrency(amount: number): string {
   if (!Number.isFinite(amount)) return "$0";
@@ -21,52 +27,24 @@ function formatCurrency(amount: number): string {
 }
 
 // ============================================================================
-// Shared chrome — matches FinancialDashboard.tsx CardHeader.
+// Shared local helpers
 // ============================================================================
+//
+// 2026-05-07 Card canonicalization (Tier 1): the previous local
+// `CardShell` function was removed. Outer chrome + header rhythm now
+// flow through the canonical CardShell / CardShellHeader / CardShellTitle
+// primitives in `@/components/ui/card`. The "View all" link styling is
+// preserved as a tiny helper so both cards keep an identical right
+// action.
 
-function CardShell({
-  title,
-  icon: Icon,
-  iconColor,
-  iconBg,
-  href,
-  children,
-  testId,
-}: {
-  title: string;
-  icon: React.ElementType;
-  iconColor: string;
-  iconBg: string;
-  href?: string;
-  children: React.ReactNode;
-  testId?: string;
-}) {
+function ViewAllLink({ href }: { href: string }) {
   return (
-    <div
-      className="bg-white dark:bg-gray-900 rounded-md overflow-hidden border border-[#e2e8f0] dark:border-gray-700"
-      style={{ boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}
-      data-testid={testId}
-    >
-      <div className="px-4 py-2.5 border-b border-[#e2e8f0] dark:border-gray-600 flex items-center justify-between">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className={`p-1.5 rounded-md ${iconBg} shrink-0`}>
-            <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
-          </div>
-          <h3 className="text-sm font-semibold text-[#111827] dark:text-gray-100 truncate">
-            {title}
-          </h3>
-        </div>
-        {href && (
-          <Link href={href}>
-            <a className="text-xs text-[#76B054] hover:underline inline-flex items-center gap-1 shrink-0 whitespace-nowrap">
-              View all
-              <ExternalLink className="h-3 w-3" />
-            </a>
-          </Link>
-        )}
-      </div>
-      {children}
-    </div>
+    <Link href={href}>
+      <a className="text-xs text-[#76B054] hover:underline inline-flex items-center gap-1 whitespace-nowrap">
+        View all
+        <ExternalLink className="h-3 w-3" />
+      </a>
+    </Link>
   );
 }
 
@@ -94,14 +72,19 @@ export function TopOutstandingInvoicesCard({
 }: TopOutstandingInvoicesCardProps) {
   const top = invoices.slice(0, 5);
   return (
-    <CardShell
-      title="Top outstanding invoices"
-      icon={Receipt}
-      iconColor="text-amber-600"
-      iconBg="bg-amber-100 dark:bg-amber-950/30"
-      href="/invoices?filter=outstanding"
-      testId="card-top-outstanding-invoices"
-    >
+    <CardShell data-testid="card-top-outstanding-invoices">
+      <CardShellHeader>
+        <CardShellTitle
+          icon={Receipt}
+          iconColor="text-amber-600"
+          iconBg="bg-amber-100 dark:bg-amber-950/30"
+        >
+          Top outstanding invoices
+        </CardShellTitle>
+        <CardShellAction>
+          <ViewAllLink href="/invoices?filter=outstanding" />
+        </CardShellAction>
+      </CardShellHeader>
       {isLoading ? (
         <div className="p-4 space-y-2">
           {[0, 1, 2, 3, 4].map((i) => (
@@ -185,14 +168,19 @@ export function TopCustomersOwingCard({
 }: TopCustomersOwingCardProps) {
   const top = customers.slice(0, 5);
   return (
-    <CardShell
-      title="Top customers owing"
-      icon={Users}
-      iconColor="text-blue-600"
-      iconBg="bg-blue-100 dark:bg-blue-950/30"
-      href="/clients"
-      testId="card-top-customers-owing"
-    >
+    <CardShell data-testid="card-top-customers-owing">
+      <CardShellHeader>
+        <CardShellTitle
+          icon={Users}
+          iconColor="text-blue-600"
+          iconBg="bg-blue-100 dark:bg-blue-950/30"
+        >
+          Top customers owing
+        </CardShellTitle>
+        <CardShellAction>
+          <ViewAllLink href="/clients" />
+        </CardShellAction>
+      </CardShellHeader>
       {isLoading ? (
         <div className="p-4 space-y-2">
           {[0, 1, 2, 3, 4].map((i) => (

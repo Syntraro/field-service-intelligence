@@ -20,6 +20,12 @@ import { useMemo } from "react";
 import { useLocation } from "wouter";
 import { FileText, ChevronRight, CheckCircle2, Clock } from "lucide-react";
 import { resolveDashboardNav } from "@/lib/dashboardNavigation";
+import {
+  CardShell,
+  CardShellHeader,
+  CardShellTitle,
+  CardShellAction,
+} from "@/components/ui/card";
 
 export interface DashboardQuotePreview {
   id: string;
@@ -143,31 +149,36 @@ export function QuotePipelineCard({
     awaitingApproval.count + draftReadyToSend.count + approvedNotConverted.count;
   const hasAny = totalCount > 0;
 
+  // 2026-05-07 Card canonicalization (Tier 1): outer chrome + header band
+  // routed through CardShell + CardShellHeader. Bucket internals (preview
+  // rows, smart-fill, "+N more" link) are intentionally untouched.
   return (
-    <div
-      className={`bg-white rounded-md border border-[#e2e8f0] flex flex-col ${className}`}
-      style={{ boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}
+    <CardShell
+      className={`flex flex-col ${className}`}
       data-testid="quote-pipeline-card"
     >
-      <header className="flex items-center justify-between px-4 py-2.5 border-b border-[#e2e8f0]">
+      <CardShellHeader>
         <div className="flex items-center gap-2 min-w-0">
-          <FileText className="h-3.5 w-3.5 text-teal-600 shrink-0" />
-          <h3 className="text-sm font-semibold text-[#111827] truncate">Quote Pipeline</h3>
+          <CardShellTitle icon={FileText} iconColor="text-teal-600">
+            Quote Pipeline
+          </CardShellTitle>
           {hasAny && (
-            <span className="text-helper text-[#4b5563] tabular-nums shrink-0">
+            <span className="text-helper text-text-muted tabular-nums shrink-0">
               {totalCount} open
             </span>
           )}
         </div>
-        <button
-          type="button"
-          onClick={() => setLocation("/quotes")}
-          className="text-helper font-semibold text-[#76B054] hover:underline shrink-0"
-          data-testid="quote-pipeline-view-all"
-        >
-          View all quotes
-        </button>
-      </header>
+        <CardShellAction>
+          <button
+            type="button"
+            onClick={() => setLocation("/quotes")}
+            className="text-helper font-semibold text-[#76B054] hover:underline"
+            data-testid="quote-pipeline-view-all"
+          >
+            View all quotes
+          </button>
+        </CardShellAction>
+      </CardShellHeader>
 
       <div className="flex-1">
         {isLoading ? (
@@ -227,7 +238,7 @@ export function QuotePipelineCard({
           </div>
         )}
       </div>
-    </div>
+    </CardShell>
   );
 }
 

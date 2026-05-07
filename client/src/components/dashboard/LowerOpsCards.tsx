@@ -18,6 +18,12 @@
 import { Link } from "wouter";
 import { Briefcase, Clock, ExternalLink, Users } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  CardShell,
+  CardShellHeader,
+  CardShellTitle,
+  CardShellAction,
+} from "@/components/ui/card";
 
 // ============================================================================
 // Helpers
@@ -32,55 +38,24 @@ function formatHours(minutes: number): string {
 }
 
 // ============================================================================
-// Shared card chrome — matches FinancialDashboard.tsx DashCard / CardHeader.
+// Shared local helpers
 // ============================================================================
+//
+// 2026-05-07 Card canonicalization (Tier 1): the previous local
+// `CardShell` function was removed. Outer chrome + header rhythm now
+// flow through the canonical CardShell / CardShellHeader / CardShellTitle
+// primitives in `@/components/ui/card`. The local "View report" link
+// styling is preserved as a tiny helper so both cards keep an
+// identical right-aligned action.
 
-function CardShell({
-  title,
-  icon: Icon,
-  iconColor,
-  iconBg,
-  href,
-  children,
-  testId,
-}: {
-  title: string;
-  icon: React.ElementType;
-  iconColor: string;
-  iconBg: string;
-  href?: string;
-  children: React.ReactNode;
-  testId?: string;
-}) {
+function ViewReportLink({ href }: { href: string }) {
   return (
-    // 2026-04-25 polish: `h-full` so siblings in the lower-cards grid
-    // stretch to a uniform height. Body padding tightened from py-3 to
-    // py-2.5 to match the header band's vertical rhythm.
-    <div
-      className="bg-white dark:bg-gray-900 rounded-md overflow-hidden border border-[#e2e8f0] dark:border-gray-700 flex flex-col h-full"
-      style={{ boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}
-      data-testid={testId}
-    >
-      <div className="px-4 py-2.5 border-b border-[#e2e8f0] dark:border-gray-600 flex items-center justify-between">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className={`p-1.5 rounded-md ${iconBg} shrink-0`}>
-            <Icon className={`h-3.5 w-3.5 ${iconColor}`} />
-          </div>
-          <h3 className="text-sm font-semibold text-[#111827] dark:text-gray-100 truncate">
-            {title}
-          </h3>
-        </div>
-        {href && (
-          <Link href={href}>
-            <a className="text-xs text-[#76B054] hover:underline inline-flex items-center gap-1 shrink-0 whitespace-nowrap">
-              View report
-              <ExternalLink className="h-3 w-3" />
-            </a>
-          </Link>
-        )}
-      </div>
-      <div className="px-4 py-2.5 flex-1">{children}</div>
-    </div>
+    <Link href={href}>
+      <a className="text-xs text-[#76B054] hover:underline inline-flex items-center gap-1 whitespace-nowrap">
+        View report
+        <ExternalLink className="h-3 w-3" />
+      </a>
+    </Link>
   );
 }
 
@@ -117,51 +92,61 @@ export function OpenCapacityCard({
 
   return (
     <CardShell
-      title="Open capacity today"
-      icon={Clock}
-      iconColor="text-emerald-600"
-      iconBg="bg-emerald-100 dark:bg-emerald-950/30"
-      href="/dispatch"
-      testId="card-open-capacity"
+      className="flex flex-col h-full"
+      data-testid="card-open-capacity"
     >
-      {isLoading ? (
-        <div className="space-y-2">
-          <Skeleton className="h-8 w-28" />
-          <Skeleton className="h-4 w-full" />
-          <Skeleton className="h-4 w-full" />
-          <Skeleton className="h-4 w-3/4" />
-        </div>
-      ) : (
-        <>
-          <div className="flex items-baseline gap-2 mb-3">
-            <span className="text-2xl font-bold text-[#111827] dark:text-gray-100 tabular-nums leading-none">
-              {formatHours(totalMinutes)}
-            </span>
-            <span className="text-xs text-slate-500">available</span>
+      <CardShellHeader>
+        <CardShellTitle
+          icon={Clock}
+          iconColor="text-emerald-600"
+          iconBg="bg-emerald-100 dark:bg-emerald-950/30"
+        >
+          Open capacity today
+        </CardShellTitle>
+        <CardShellAction>
+          <ViewReportLink href="/dispatch" />
+        </CardShellAction>
+      </CardShellHeader>
+      <div className="px-4 py-2.5 flex-1">
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-8 w-28" />
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-3/4" />
           </div>
-          {ranked.length === 0 ? (
-            <p className="text-xs text-slate-400 italic">
-              No team members have open availability today.
-            </p>
-          ) : (
-            <ul className="space-y-1">
-              {ranked.map((t) => (
-                <li
-                  key={t.id}
-                  className="flex items-center justify-between text-xs px-1.5 py-1 -mx-1.5 rounded hover:bg-[#F0F5F0] transition-colors"
-                >
-                  <span className="text-[#111827] dark:text-gray-100 truncate min-w-0 mr-2">
-                    {t.name}
-                  </span>
-                  <span className="text-[#4b5563] tabular-nums shrink-0 font-medium">
-                    {formatHours(t.availableMinutes)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
-      )}
+        ) : (
+          <>
+            <div className="flex items-baseline gap-2 mb-3">
+              <span className="text-2xl font-bold text-[#111827] dark:text-gray-100 tabular-nums leading-none">
+                {formatHours(totalMinutes)}
+              </span>
+              <span className="text-xs text-slate-500">available</span>
+            </div>
+            {ranked.length === 0 ? (
+              <p className="text-xs text-slate-400 italic">
+                No team members have open availability today.
+              </p>
+            ) : (
+              <ul className="space-y-1">
+                {ranked.map((t) => (
+                  <li
+                    key={t.id}
+                    className="flex items-center justify-between text-xs px-1.5 py-1 -mx-1.5 rounded hover:bg-[#F0F5F0] transition-colors"
+                  >
+                    <span className="text-[#111827] dark:text-gray-100 truncate min-w-0 mr-2">
+                      {t.name}
+                    </span>
+                    <span className="text-[#4b5563] tabular-nums shrink-0 font-medium">
+                      {formatHours(t.availableMinutes)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </div>
     </CardShell>
   );
 }
@@ -216,62 +201,72 @@ export function JobsSnapshotCard({
 
   return (
     <CardShell
-      title="Jobs snapshot"
-      icon={Briefcase}
-      iconColor="text-blue-600"
-      iconBg="bg-blue-100 dark:bg-blue-950/30"
-      href="/jobs"
-      testId="card-jobs-snapshot"
+      className="flex flex-col h-full"
+      data-testid="card-jobs-snapshot"
     >
-      {isLoading ? (
-        <div className="space-y-2">
-          <Skeleton className="h-8 w-20" />
-          {[0, 1, 2, 3].map((i) => (
-            <Skeleton key={i} className="h-5 w-full" />
-          ))}
-        </div>
-      ) : (
-        <>
-          <div className="flex items-baseline gap-2 mb-3">
-            <span className="text-2xl font-bold text-[#111827] dark:text-gray-100 tabular-nums leading-none">
-              {total}
-            </span>
-            <span className="text-xs text-slate-500">jobs today</span>
+      <CardShellHeader>
+        <CardShellTitle
+          icon={Briefcase}
+          iconColor="text-blue-600"
+          iconBg="bg-blue-100 dark:bg-blue-950/30"
+        >
+          Jobs snapshot
+        </CardShellTitle>
+        <CardShellAction>
+          <ViewReportLink href="/jobs" />
+        </CardShellAction>
+      </CardShellHeader>
+      <div className="px-4 py-2.5 flex-1">
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-8 w-20" />
+            {[0, 1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-5 w-full" />
+            ))}
           </div>
-          <ul className="space-y-1">
-            {rows.map((r) => (
-              <li key={r.label}>
-                <Link href={r.href}>
-                  <a
-                    className={`flex items-center justify-between text-xs px-1.5 py-1 -mx-1.5 rounded transition-colors ${
-                      r.urgent ? "hover:bg-red-50/60" : "hover:bg-[#F0F5F0]"
-                    }`}
-                  >
-                    <span
-                      className={
-                        r.urgent
-                          ? "text-red-600 font-medium"
-                          : "text-[#4b5563] dark:text-gray-300"
-                      }
-                    >
-                      {r.label}
-                    </span>
-                    <span
-                      className={`tabular-nums font-semibold ${
-                        r.urgent
-                          ? "text-red-700"
-                          : "text-[#111827] dark:text-gray-100"
+        ) : (
+          <>
+            <div className="flex items-baseline gap-2 mb-3">
+              <span className="text-2xl font-bold text-[#111827] dark:text-gray-100 tabular-nums leading-none">
+                {total}
+              </span>
+              <span className="text-xs text-slate-500">jobs today</span>
+            </div>
+            <ul className="space-y-1">
+              {rows.map((r) => (
+                <li key={r.label}>
+                  <Link href={r.href}>
+                    <a
+                      className={`flex items-center justify-between text-xs px-1.5 py-1 -mx-1.5 rounded transition-colors ${
+                        r.urgent ? "hover:bg-red-50/60" : "hover:bg-[#F0F5F0]"
                       }`}
                     >
-                      {r.value}
-                    </span>
-                  </a>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
+                      <span
+                        className={
+                          r.urgent
+                            ? "text-red-600 font-medium"
+                            : "text-[#4b5563] dark:text-gray-300"
+                        }
+                      >
+                        {r.label}
+                      </span>
+                      <span
+                        className={`tabular-nums font-semibold ${
+                          r.urgent
+                            ? "text-red-700"
+                            : "text-[#111827] dark:text-gray-100"
+                        }`}
+                      >
+                        {r.value}
+                      </span>
+                    </a>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
     </CardShell>
   );
 }

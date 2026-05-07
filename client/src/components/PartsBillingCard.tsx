@@ -21,14 +21,14 @@
  */
 import { useEffect, useState } from "react";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalFooter,
+  ModalPrimaryAction,
+  ModalSecondaryAction,
+} from "@/components/ui/modal";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -90,91 +90,105 @@ export function AddProductModal({
   };
 
   return (
-    <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
-      <DialogContent className="sm:max-w-md">
-        <form onSubmit={handleSubmit}>
-          <DialogHeader>
-            <DialogTitle>Add new product</DialogTitle>
-            <DialogDescription>
-              This item will be added to your Products & Services and linked to this line item.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
+    <ModalShell
+      open={open}
+      onOpenChange={(isOpen) => !isOpen && onClose()}
+      // 2026-05-07 canonicalization — was raw shadcn dialog primitives;
+      // now uses the canonical ModalShell/ModalHeader/ModalFooter set
+      // per modal taxonomy rule #4. Width matches the pre-migration
+      // `sm:max-w-md` (~448px) shape.
+      className="sm:max-w-md"
+    >
+      <form onSubmit={handleSubmit}>
+        <ModalHeader>
+          <ModalTitle>Add new product</ModalTitle>
+          <ModalDescription>
+            This item will be added to your Pricebook and linked to this line item.
+          </ModalDescription>
+        </ModalHeader>
+        <div className="px-5 py-4 space-y-4">
+          <div>
+            <Label>Name</Label>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+              data-testid="input-new-product-name"
+            />
+          </div>
+          <div>
+            <Label>Description (optional)</Label>
+            <Textarea
+              rows={2}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              data-testid="input-new-product-description"
+            />
+          </div>
+          <div className="grid grid-cols-3 gap-3">
             <div>
-              <Label>Name</Label>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                autoFocus
-                data-testid="input-new-product-name"
-              />
+              <Label>Type</Label>
+              <Select value={type} onValueChange={setType}>
+                <SelectTrigger data-testid="select-product-type">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="product">Product</SelectItem>
+                  <SelectItem value="service">Service</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
             <div>
-              <Label>Description (optional)</Label>
-              <Textarea
-                rows={2}
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                data-testid="input-new-product-description"
-              />
+              <Label>Unit Cost</Label>
+              <div className="relative">
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">$</span>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  placeholder="0.00"
+                  className="pl-6 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  value={cost || ""}
+                  onChange={(e) => setCost(e.target.value)}
+                  data-testid="input-new-product-cost"
+                />
+              </div>
             </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div>
-                <Label>Type</Label>
-                <Select value={type} onValueChange={setType}>
-                  <SelectTrigger data-testid="select-product-type">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="product">Product</SelectItem>
-                    <SelectItem value="service">Service</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Unit Cost</Label>
-                <div className="relative">
-                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">$</span>
-                  <Input
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    placeholder="0.00"
-                    className="pl-6 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                    value={cost || ""}
-                    onChange={(e) => setCost(e.target.value)}
-                    data-testid="input-new-product-cost"
-                  />
-                </div>
-              </div>
-              <div>
-                <Label>Unit Price</Label>
-                <div className="relative">
-                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">$</span>
-                  <Input
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    placeholder="0.00"
-                    className="pl-6 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                    value={price || ""}
-                    onChange={(e) => setPrice(e.target.value)}
-                    data-testid="input-new-product-price"
-                  />
-                </div>
+            <div>
+              <Label>Unit Price</Label>
+              <div className="relative">
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">$</span>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  placeholder="0.00"
+                  className="pl-6 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  value={price || ""}
+                  onChange={(e) => setPrice(e.target.value)}
+                  data-testid="input-new-product-price"
+                />
               </div>
             </div>
           </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose} data-testid="button-cancel-add-product">
-              Cancel
-            </Button>
-            <Button type="submit" disabled={isSaving || !name.trim()} data-testid="button-save-product">
-              {isSaving ? "Saving..." : "Save product"}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+        </div>
+        <ModalFooter>
+          <ModalSecondaryAction
+            type="button"
+            onClick={onClose}
+            data-testid="button-cancel-add-product"
+          >
+            Cancel
+          </ModalSecondaryAction>
+          <ModalPrimaryAction
+            type="submit"
+            disabled={isSaving || !name.trim()}
+            data-testid="button-save-product"
+          >
+            {isSaving ? "Saving..." : "Save product"}
+          </ModalPrimaryAction>
+        </ModalFooter>
+      </form>
+    </ModalShell>
   );
 }

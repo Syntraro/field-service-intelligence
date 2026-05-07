@@ -62,8 +62,8 @@ export function ProductsServicesToolbar({
           </Button>
         </Link>
         <div className="flex-1">
-          <h1 className="text-lg font-semibold text-foreground">Products & Services</h1>
-          <p className="text-sm text-muted-foreground">Manage your product and service catalog.</p>
+          <h1 className="text-lg font-semibold text-foreground">Pricebook</h1>
+          <p className="text-sm text-muted-foreground">Manage your saved products and services.</p>
         </div>
         <div className="flex items-center gap-2">
           <Link href="/settings/categories">

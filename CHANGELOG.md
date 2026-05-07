@@ -8,6 +8,2657 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Canonical right-rail open/close animation — Client + Job rails match the Activity drawer feel (2026-05-07)
+
+The Client Detail and Job Detail right rails used to snap open/closed instantly while the main-header Activity drawer (`<Sheet>`) animates smoothly. This pass canonicalizes the rail's open/close transition into a single shared contract so both pages — and any future detail-page rail — feel consistent with the Activity drawer.
+
+**Audit recap.** Three surfaces, three different behaviours:
+
+- **Activity drawer** (`client/src/components/activity-feed/ActivityFeedDrawer.tsx`) renders shadcn `<Sheet>` from `client/src/components/ui/sheet.tsx`, which animates via Tailwind `data-[state=open]:slide-in-from-right` / `data-[state=closed]:slide-out-to-right` + `transition ease-in-out` + `data-[state=closed]:duration-300 data-[state=open]:duration-500`. Smooth.
+- **Client Detail rail** (`ClientDetailPage.tsx`) — the desktop wrapper width is bound to `--client-rail-width` CSS variable, which flips between 80px and the user-resized `rightRailWidth` (default 400px) when `utilityTab` toggles. No transition class. Width snaps. The `<DetailRightRail>` primitive conditionally renders `{activeTab && <section>…</section>}`, so the panel content also vanishes instantly on close.
+- **Job Detail rail** (`JobDetailPage.tsx`) — same shape as Client Detail with `--job-rail-width` flipping between 80 and 380px. Same snap.
+
+**Canonicalization — single transition source of truth.**
+
+- **New `RAIL_WIDTH_TRANSITION` constant exported from `client/src/components/detail-rail/DetailRightRail.tsx`.** The string is `"transition-[width] duration-300 ease-in-out motion-reduce:transition-none"`. The 300ms duration matches the close half of the Activity drawer's `<Sheet>` so the two surfaces feel like one design system. `motion-reduce:transition-none` opts users with `prefers-reduced-motion` out of the animation entirely (matches the implicit behaviour of the rest of the app's Tailwind animations).
+- **Both pages compose the constant via `cn()`.** `ClientDetailPage.tsx` and `JobDetailPage.tsx` import `RAIL_WIDTH_TRANSITION` from the primitive module and apply it to the desktop wrapper div that owns the rail's `w-[var(--…-rail-width)]` binding. The pages do not inline a hardcoded `transition-[width] duration-…` string anywhere — pinned by `tests/rail-animation.test.ts` so a future drift gets caught at test time.
+
+**Deferred-unmount inside the primitive.**
+
+- `<DetailRightRail>` now tracks an internal `displayedActiveId` that lags `activeTabId` on close. When `activeTabId` becomes `null`, the primitive starts a `setTimeout` that clears `displayedActiveId` after `RAIL_TRANSITION_MS + 20` ms (≈320ms). The panel section's render guard is `{displayedTab && (<section>…)}` — so the panel stays mounted long enough for the parent's width animation to finish before the DOM tears down. On open / tab-switch the lag syncs immediately so the new content is in the DOM as the width animates outward.
+- The section also carries a `data-state={activeTab ? "open" : "closed"}` attribute (driven by `activeTab`, NOT `displayedTab`) plus `transition-opacity duration-300 ease-in-out motion-reduce:transition-none data-[state=open]:opacity-100 data-[state=closed]:opacity-0`. The opacity transition fires the moment the user clicks close (because `activeTab` flips immediately), while the lagged unmount keeps the DOM mounted long enough for the fade + width animation to complete in lockstep. While the section is fading out it also carries `aria-hidden={true}` so screen readers don't announce content that's visually leaving.
+- The `w-fit` collapsed-state class on the primitive's outer container is gated on `!displayedTab` (also lagged), NOT `!activeTab`. Without this, the primitive would snap to 76px wide on click and expose a white gap inside the still-wide wrapper for the duration of the close animation.
+
+**Why not replace the rails with `<Sheet>`?** A Sheet is an overlay (absolute-positioned + backdrop). The detail-page rails are inline columns that take up real layout width and push the page body. Swapping primitives would have shifted layout, broken the existing resize-handle logic, and changed mobile behaviour. The width-animation + deferred-unmount approach gets the same "smooth slide" feel while preserving every existing layout, state, and resize contract. The only inline transition is the canonical exported constant — no per-page transition hacks.
+
+**Behaviour preserved verbatim.**
+
+- All tabs, labels, icons, routes, permissions, data fetching, query keys, panel ordering, drag-resize, localStorage persistence (`syntraro.detail.rail.width`), keyboard navigation, focus-visible rings, mobile (below `lg`) stacking behaviour, the global Activity Feed drawer, and every test-id contract (`client-side-*`, `job-side-*`, `client-right-column`, `job-detail-rail-column`, …).
+- The primitive's controlled-component contract is unchanged: `activeTabId` + `onActiveTabChange` are still the only state surface callers see. The lag state is purely an animation-staging implementation detail. `useReducer` / `useRef` are still banned (pinned by `tests/detail-right-rail.test.ts`).
+
+**Files affected.**
+
+- `client/src/components/detail-rail/DetailRightRail.tsx` — new exported `RAIL_WIDTH_TRANSITION` constant; new `useEffect` + `useState`-driven deferred-unmount logic; section now drives off `displayedTab`; `data-state` + `transition-opacity` classes added; `aria-hidden` set while closing; `w-fit` toggle moved onto `displayedTab`.
+- `client/src/pages/ClientDetailPage.tsx` — imports + applies `RAIL_WIDTH_TRANSITION` on the `--client-rail-width` wrapper.
+- `client/src/pages/JobDetailPage.tsx` — imports + applies `RAIL_WIDTH_TRANSITION` on the `--job-rail-width` wrapper.
+- `tests/rail-animation.test.ts` — new file (24 tests). Canonical transition pins (string content, duration, easing, `motion-reduce`); deferred-unmount logic pins (`useState` + `useEffect` + `setTimeout` + `clearTimeout`); panel-section pins (`data-state`, opacity classes, `aria-hidden`); page-level pins (both pages import + apply the constant); inverse pin that no page inlines a hardcoded `transition-[width]` string near the rail wrapper.
+- `tests/detail-right-rail.test.ts` — updated 7 existing pins that referenced the old `activeTab`-direct contract; renamed to read from `displayedTab` for testid / aria-label / render-guard pins; "controlled-only" pin reframed to ban `useReducer`/`useRef` while permitting the single lagged-display `useState`.
+
+**Validation.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/rail-animation.test.ts tests/detail-right-rail.test.ts tests/job-detail-right-rail.test.ts tests/activity-feed-drawer.test.ts tests/rail-content-card.test.ts tests/rail-card-style-props.test.ts tests/client-rail-cards.test.ts` — **196/196 pass** (24 + 33 + 61 + 41 + 9 + 11 + 17).
+
+**Frontend-only change.** Vite HMR sufficient — no server, schema, or migration impact.
+
+**Breaking changes.** None. Public API of `<DetailRightRail>` is additive only (new export `RAIL_WIDTH_TRANSITION`).
+
+### Added
+
+#### Communications Hub — Phase 1 UI shell + foundational types (2026-05-07)
+
+A new top-level operational communications surface — full-page workspace at `/communications` reachable from two new icon-only triggers in the dark top header (Message + Phone). Phase 1 ships the UI shell over typed mock data plus the role-aware visibility helpers and the provider abstraction stub that Phase 2's storage layer and Phase 3's Twilio/Telnyx adapters will both depend on, so the swap-to-real path doesn't touch presentational components.
+
+**What landed.**
+
+- **Top-header triggers.** `MessagesHeaderButton` + `PhoneHeaderButton` mounted in `App.tsx` immediately after the existing `ActivityFeedButton`. Both icon-only `h-8 w-8 p-0`, share the canonical dark tonal style at rest and the brand-green accent when their route is active. Each carries an unread badge with the same shape as the Tasks counter (`bg-brand text-white rounded-full h-4 min-w-4 px-1 text-helper`). Phase 1 unread counts are 0; a Phase 2 `useUnreadCounts` hook will replace the literal.
+- **Route.** `/communications` registered with `<ProtectedRoute>` only (no `requireAdmin` / `requireRestrictedManager`) — all authenticated users can open the page; role gates are enforced inside the page so technicians can land on Inbox.
+- **No sidebar entry.** `AppSidebar.tsx` is unchanged; the hub is reachable exclusively via the two top-header buttons (per spec).
+- **Page.** `client/src/pages/CommunicationsHub.tsx` owns the URL state (`?module=…&conversation=…`), composes the four-region layout, and runs role-aware filtering of the mock thread list. If a technician deep-links to `?module=team_chat`, the page silently re-anchors to `inbox`.
+- **Four-region desktop layout** — `CommunicationsLayout` is purely structural:
+  - Left list — `w-[340px]`, hidden under `md`.
+  - Center conversation panel — `flex-1 min-w-0` (always wins width negotiation; readability over chrome).
+  - Right details panel — `w-[340px] max-w-[360px]`, hidden under `xl` (clamps on ultra-wide).
+  - Far-right rail — `w-[72px]`, hidden under `lg`.
+- **Components** (`client/src/components/communications/`): `ConversationListColumn` (search + filter pills + list), `ConversationRow` (avatar + name + preview + unread badge + missed-call icon), `ConversationPanel` (header strip + scrollable bubble stream + sticky composer), `ConversationMessageBubble` (inbound/outbound/internal-note tonal palette), `ConversationComposer` (SMS / Internal Note tabs, multi-line textarea, attachment / emoji / template / note icons, Send button), `ConversationDetailsPanel` (`Details` + `Activity` tabs; Details has Contact, Linked To, Communication History sections + "View Full Timeline" button), `CommunicationsRail` (canonical 7 modules — Inbox / Calls / Call History / Contacts / Team Chat / Templates / Settings — selection bar, optional unread badges).
+- **Typography** uses canonical compact tokens only — `text-row-emphasis` for names, `text-helper` for muted preview/time/labels, `text-row` for message bodies. No raw `text-sm`/`text-xs` and no `font-bold` / `font-semibold` outside canonical tokens.
+- **Foundational types** in `shared/communicationsTypes.ts` — stable shape for `CommunicationThread`, `CommunicationMessage`, `CommunicationCall`, `CommunicationContactRef`, `CommunicationTimelineEntry`, plus the `CommunicationModule` union (drives the rail). Phase 2's storage layer and Phase 3's provider adapters both produce these.
+- **Role-aware access** in `shared/communicationsAccess.ts` — single source of truth for visibility:
+  - `getVisibleCommunicationsModules(role)` — office roles see all 7; technicians see all except `team_chat`; unknown roles fail closed.
+  - `canViewThread(viewer, thread)` / `filterThreadsForViewer(...)` — same predicate the page runs on the mock list and that Phase 2's server WHERE filter will run on real rows. Technicians never see `team_chat` or `office`/`tenant_global` scope threads, and only see `tech_visible` threads they participate in or are assigned to.
+- **URL state hook** `client/src/lib/communications/useCommunicationsUrlState.ts` — `?module=&conversation=` round-trip via wouter's `useSearch` / `setLocation({ replace: true })`. Mirrors the pattern already used in `pages/TeamHubPage.tsx`. Switching modules clears the active conversation; switching conversations preserves the module.
+- **Mock data** `client/src/lib/communications/communicationsMockData.ts` — 6 threads spanning client_sms, team_chat, and unknown types, with assigned-tech variants so the role filter is observably non-trivial. Includes per-thread message stream + communication-history timeline so the right Details panel populates.
+- **Initials helper** `client/src/lib/getInitials.ts` — single canonical `getInitials({ fullName, firstName, lastName })`. Replaces the duplicated logic in `TasksPanel.tsx` and `dispatchPreviewMappers.ts` (intentionally NOT migrated in this PR — those callers continue to use their inline copies; we'll consolidate in a follow-up).
+- **Provider abstraction stub** `server/services/communications/providers/types.ts` — Phase 3 contract pinned now: `CommunicationProviderId = "twilio" | "telnyx" | "bandwidth"`, `CommunicationsProvider` interface with `sendSms`, `startCall`, `verifyWebhook`, `getRecording`, `getTranscription`. `verifyWebhook` returns a normalized `CommunicationProviderEvent` so route handlers never trust raw provider payloads. Mirrors the shape of `server/services/payments/providers/types.ts`.
+
+**Files affected.**
+
+- `client/src/App.tsx` — register `/communications` route, mount `MessagesHeaderButton` + `PhoneHeaderButton` next to `ActivityFeedButton`.
+- `client/src/pages/CommunicationsHub.tsx` — new page.
+- `client/src/components/communications/*` — 9 new files.
+- `client/src/lib/communications/*` — URL state hook + mock data.
+- `client/src/lib/getInitials.ts` — new shared helper.
+- `shared/communicationsTypes.ts` — new shared type module.
+- `shared/communicationsAccess.ts` — new shared access predicate.
+- `server/services/communications/providers/types.ts` — provider abstraction stub.
+- `tests/communications-hub.test.ts` — 38 contract pins (header buttons, route, sidebar absence, module visibility per role, thread access predicate, page composition, layout widths, composer surface, details panel sections, mock-data sanity, initials helper, provider interface).
+
+**Permissions / visibility philosophy (Phase 1, intentional).**
+
+- Office roles (`owner` / `admin` / `manager` / `dispatcher`) see all 7 modules and every mock thread.
+- Technicians see Inbox, Calls, Call History, Contacts, Templates, Settings — NO Team Chat. Inside Inbox they only see threads where they appear in `participantUserIds` or `assignedTechnicianIds`. The `Team` filter pill is hidden for technicians.
+- The same `filterThreadsForViewer` predicate that powers the Phase 1 mock filter is intended to drive Phase 2's server-side WHERE clause — same shape, same answers, no UI-only assumption to undo later.
+
+**Breaking changes.** None. Additive only.
+
+**Deferred (NOT in this PR).**
+
+- **Phase 2** — Drizzle migrations + tables (`communication_threads`, `communication_messages`, `communication_calls`, `communication_contacts`), `/api/communications/*` REST routes, real contact unification query (UNION over `customer_companies` / `client_locations` / `contact_persons` / `users`), per-row server permission filter, unread-count hook.
+- **Phase 3** — concrete Twilio adapter (first), Telnyx + Bandwidth adapters, inbound SMS webhooks, outbound SMS, call logging, voicemail / transcription pulls.
+- **Phase 4** — browser calling, live call controls (mute/hold/transfer/keypad), AI summaries, templates library, automation.
+
+### Fixed
+
+#### LineItem name vs description mapping — line label now uses catalog NAME, not catalog description (2026-05-07)
+
+Selecting a saved item in `<LineItemEditModal>` produced a row that displayed the WRONG primary text. Picking "Window Cleaning" (catalog item with name="Window Cleaning", description="Full Service Cleaning") yielded a row that read "Full Service Cleaning" — the catalog description was hijacking the slot meant for the item name.
+
+**Exact root cause.** `applyCatalogItemToDraft` in `client/src/lib/entities/lineItemMapper.ts` had a "prefer catalog description when present" branch:
+
+```ts
+const description =
+  catalogDescription.length > 0 &&
+  catalogDescription.toLowerCase() !== productName.toLowerCase()
+    ? catalogDescription
+    : productName || UNTITLED;
+```
+
+The line tables (`invoice_lines`, `quote_lines`, `job_parts`) carry exactly ONE display-text column: `description`. That column IS the row's primary label — `LineItemRow.tsx`'s display branch renders only `displayLine.description`. So when the helper preferred the catalog description text over the catalog name, the catalog description got persisted as the line's primary label and the actual catalog NAME was lost.
+
+**Exact field mapping fixed.** When the user changes the saved item, `description` (the line table's only display-text column → the row's primary label) now stores the catalog **NAME** unconditionally. Catalog description text is intentionally NOT auto-populated into the line — it's Pricebook-only metadata visible in Settings → Pricebook. Users who want a different line label can still type a custom description override into the modal's "Description" field after picking an item.
+
+**Schema limitation documented.** None of `invoice_lines`, `quote_lines`, `job_parts` have a separate `name` / `title` / `productName` column. The brief explicitly anticipated this case ("if backend schema only has one display field, audit and document the limitation before patching") — the helper's docstring now carries a SCHEMA LIMITATION block explaining why NAME wins and what the deferred secondary-line work would entail. A test pin guards the docblock so a future revision can't silently flip the contract back without first deleting the rationale.
+
+**Files changed.**
+
+- `client/src/lib/entities/lineItemMapper.ts` — `applyCatalogItemToDraft` body simplified: `description = item.name || UNTITLED` (catalog description text branch removed). Long-form SCHEMA LIMITATION docstring added.
+- `tests/line-items-item-change.test.ts` — three pins flipped + three new pins added:
+  - "uses the catalog item NAME as the line description" (positive pin: catalog NAME wins, catalog description does NOT).
+  - "regression guard — catalog description never substitutes for catalog name" (three-row table-driven negative pin against the bug shape across realistic catalog items).
+  - "uses the catalog NAME when the catalog description is empty" / "even when the catalog description duplicates the name" / "does NOT preserve a user-typed description from the previous item" — all updated for the new contract.
+  - "falls back to (unnamed item) when both name and description are empty" — new edge-case pin.
+  - "the helper docstring carries the SCHEMA LIMITATION + name-wins contract" — pins the docblock + a structural negative pin against the prior catalog-description branch.
+
+**Deferred follow-up — secondary line on the row.**
+
+The brief's Section 4 spec'd a two-line row render — primary = item name, secondary = item description. Delivering the secondary requires:
+1. Server: add `items.description` (and possibly `items.name`) to the JOIN on `GET /api/invoices/:id/details`, `GET /api/quotes/:id/details`, `GET /api/jobs/:id/parts`.
+2. Client: extend `DisplayLine` / `JobPartDisplayLine` / `InvoiceLine` / `QuoteLine` shapes with `productName?: string`.
+3. `LineItemRow.tsx`: render a second muted line under the description showing catalog description when it differs from the line's description.
+
+That's a multi-route + three-surface change; it's out of brief scope for this pass per "audit and document the limitation before patching." Today's fix delivers what the user actually saw broken (wrong primary text on the row) without expanding to backend joins. The deferred secondary-line work can land in a follow-up once the user confirms the primary fix lands the right way.
+
+**Verification.**
+
+- `npm run check` — clean (filtering pre-existing `client/src/components/activity-feed/` errors that predate this work).
+- `npx vitest run tests/line-items-item-change.test.ts tests/line-items-phase-a-polish.test.ts tests/line-items-phase-a-persisted.test.ts tests/line-items-profitability-header.test.ts tests/pricebook-picker.test.ts tests/modal-canonical.test.ts` — 240/240 pass (22 in `line-items-item-change.test.ts` — 3 new + 19 reshaped from the prior turn's 19; 218 sibling tests still green).
+
+#### Job rail Labour panel — canonical typography normalization (2026-05-07)
+
+Audits and normalizes every text element inside the JobDetailPage Labour rail to the canonical token system. Previously the Labour body mixed `text-row-emphasis`, `text-row font-medium`, and parent-inherited `text-caption text-text-secondary` on different elements; the date label leaned on `font-semibold` (already baked into `text-label`). This pass aligns everything on the spec'd token set per element and verifies no raw `text-sm` / `text-xs` / `text-base` / `text-[Npx]` leaks remain inside the Labour rail body.
+
+**Per-element canonical tokens (spec'd).**
+
+| Element | Before | After |
+|---|---|---|
+| Technician name | `text-row-emphasis text-text-primary` | `text-section-title font-semibold text-text-primary` |
+| Date label | `text-label uppercase font-semibold text-text-muted` | `text-label uppercase tracking-wide text-text-muted` |
+| Date totals | `text-caption font-medium text-text-primary font-mono tabular-nums` | `text-caption font-medium tabular-nums text-text-primary font-mono` |
+| Entry type | `text-row font-medium text-text-primary` | `text-row font-semibold text-text-primary` |
+| Entry time range | parent-inherited `text-caption text-text-secondary` + child `font-mono tabular-nums` | child-explicit `text-caption tabular-nums text-muted-foreground font-mono` |
+| Entry duration | parent-inherited `text-caption text-text-secondary` + child `font-mono tabular-nums` | child-explicit `text-caption tabular-nums text-muted-foreground font-mono` |
+| Entry amount | `text-row font-mono tabular-nums font-semibold text-text-primary` | `text-row font-semibold tabular-nums text-text-primary font-mono` |
+| Global total label | `text-label uppercase text-text-muted` | `text-label uppercase tracking-wide text-text-muted` |
+| Global total values | minutes: `text-row font-medium`, cost: `text-row font-semibold` | both: `text-row font-semibold tabular-nums text-text-primary` |
+
+**Why each change.**
+
+- **Technician name** — bumped from `text-row-emphasis` (15px / 500) to `text-section-title font-semibold` (18px / 600). The technician name is a section heading above one or more date cards; bumping to h2-level matches its grouping role and gives it visual weight over the `text-label` (13px) date headings inside each card.
+- **Date label** — `text-label` already bakes in font-weight 500 + 0.04em letter-spacing, so the prior `font-semibold` was redundant and made the heading heavier than spec. Switched to `text-label uppercase tracking-wide` per spec; weight goes back to the canonical 500.
+- **Date totals + global total values** — added explicit `tabular-nums` per spec. Both global total values now share `font-semibold` (the prior pass had minutes as `font-medium` and cost as `font-semibold`).
+- **Entry type** — bumped `font-medium` → `font-semibold` per spec. Type label is the primary identifier of the entry; matching the cost weight gives the row a clear "what + how much" balance.
+- **Entry time range / duration** — promoted from parent-inherited `text-caption text-text-secondary` to child-explicit `text-caption tabular-nums text-muted-foreground`. The shadcn-canonical `text-muted-foreground` token replaces the project-internal `text-text-secondary` per spec. The classes are now local to each child span so the typography contract is verifiable per-element rather than depending on parent inheritance.
+- **Entry amount** — was already canonical (`text-row font-semibold tabular-nums`); class order normalized to match spec.
+
+**Notes + Equipment + rail tabs (verified, no changes).**
+
+- **Notes** (`EntityNotesSection.tsx` `cardStyle=true` branch): metadata uses `text-caption text-text-muted`; body uses `text-row text-text-primary`; origin chip uses `text-label uppercase`. All canonical, no raw text-size classes inside the cardStyle branch — verified via grep.
+- **Equipment** (`JobEquipmentSection.tsx` `cardStyle=true` branch): name uses `text-row font-semibold text-text-primary`; type badge uses `text-label`; meta uses `text-caption text-text-muted`. All canonical inside the cardStyle branch — verified via grep.
+- **Rail tab strip** (`DetailRightRail.tsx`): tab labels and counts use ONE class string for ALL tabs (single `tabs.map`). Per-tab consistency intact across Notes / Labour / Equipment. The raw `text-[11px]` / `text-[10px]` sizes in the primitive itself are out of scope for this Labour-focused pass.
+
+**Files changed.**
+
+- `client/src/pages/JobDetailPage.tsx` — 5 element class strings rewritten to the spec'd canonical tokens (technician name, date label, date totals, global total label + values, entry type, entry amount, entry time range, entry duration).
+- `tests/job-detail-right-rail.test.ts` — 5 net-new / updated pins:
+  - Per-element token contract: type label = `text-row font-semibold`, amount = `text-row font-semibold tabular-nums`, time range / duration = `text-caption tabular-nums text-muted-foreground`.
+  - Total summary: label = `text-label uppercase tracking-wide`, values = `text-row font-semibold tabular-nums text-text-primary` (≥ 2 occurrences).
+  - Tech header = `text-section-title font-semibold` (inverse-pin against legacy `text-row-emphasis`).
+  - Date heading = `text-label uppercase tracking-wide` + `text-caption font-medium tabular-nums`.
+  - Whole-Labour-body inverse pin: NO `text-xs` / `text-sm` / `text-base` / `text-[Npx]` anywhere from `card-labour-summary` to the Equipment tab declaration.
+- `CHANGELOG.md` — this entry.
+
+**What did NOT change.**
+
+- Grouping logic, totals logic, click-to-edit behavior.
+- Notes / Equipment panels (already canonical inside the rail).
+- Backend routes, time entry save logic.
+- ClientDetailPage rail.
+- The canonical `<DetailRightRail>` / `<RailContentCard>` primitives.
+
+**Tests run.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/job-detail-right-rail.test.ts tests/rail-content-card.test.ts tests/rail-card-style-props.test.ts tests/job-detail-unified-header.test.ts tests/client-side-rail.test.ts tests/detail-right-rail.test.ts` — **247/247 pass**.
+
+#### Job rail Labour date cards — visibility + per-date totals (2026-05-07)
+
+Polishes the (tech → date → entries) Labour cards from the previous pass. The date cards now lift slightly off the panel body and each card heading shows per-(tech, date) totals (duration + cost) on the right.
+
+**Visibility — `shadow-sm` on every rail card.**
+
+The canonical `<RailContentCard>` chrome (`bg-white border-slate-200 rounded-md px-3 py-2.5`) sat flat against the rail panel's white body, so labour date cards (and by symmetry notes / equipment cards) read as flat-on-surface rather than as discrete cards. Adding `shadow-sm` to the base class lifts the chrome with a subtle elevation — same border, same radius, same padding, just a hairline shadow — so the cards feel like cards across all three rail panels.
+
+**Per-date totals.**
+
+`LabourDateGroup` now carries `totalMinutes` and `totalCost` accumulators populated as entries are pushed during grouping. The accumulators use the same `entryCostDollars` helper as `labourBuckets`, so per-date totals always agree with the global panel total.
+
+The date-card heading switched from a single label to a flex `items-baseline justify-between` row:
+
+```
+MAY 7                              4h · $180.00
+```
+
+- Date label (left): `text-label uppercase font-semibold text-text-muted` — unchanged.
+- Totals (right): `text-caption font-medium text-text-primary font-mono tabular-nums`. Stable testid `labour-date-totals-${technicianId}-${dateSortKey}` for layout-pin tests.
+
+**What stayed.**
+
+- Top-of-panel global Total summary (`labour-summary-totals`) still binds to `labourBuckets.totalMinutes` / `.totalCost` — the all-techs all-dates aggregate. Per-date totals are additive, not replacing the global row.
+- Each entry row inside a date card still renders individually with its own type label, time range, duration, and cost. No bucket-collapsing, no merged time spans.
+- Click-to-edit per individual entry preserved.
+
+**Files changed.**
+
+- `client/src/components/detail-rail/RailContentCard.tsx` — added `shadow-sm` to the canonical card chrome.
+- `client/src/pages/JobDetailPage.tsx` — extended `LabourDateGroup` with `totalMinutes` + `totalCost`; accumulated during grouping; date-heading layout switched to flex row with date label left + totals right.
+- `tests/rail-content-card.test.ts` — `shadow-sm` pinned on the canonical chrome.
+- `tests/job-detail-right-rail.test.ts` — 3 net-new pins: per-(tech, date) totals testid + bindings; `LabourDateGroup` carries the accumulators; global summary still bound to `labourBuckets`.
+- `CHANGELOG.md` — this entry.
+
+**What did NOT change.**
+
+- Time-entry save / edit logic, billing calculations.
+- Backend routes.
+- Notes / Equipment panels' content (just chrome elevation via the shared primitive).
+- Top job header, line items, billing summary.
+- ClientDetailPage rail behavior (the shared primitive's `shadow-sm` lift applies there too — visually consistent across both surfaces).
+
+**Tests run.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/job-detail-right-rail.test.ts tests/rail-content-card.test.ts tests/rail-card-style-props.test.ts tests/job-detail-unified-header.test.ts tests/client-side-rail.test.ts tests/detail-right-rail.test.ts tests/add-equipment-dialog.test.ts tests/visit-completion-leave-open.test.ts` — **287/287 pass**.
+
+#### Job rail Labour panel — group entries by technician → date (2026-05-07)
+
+The Labour panel previously listed entries flat under each technician, so each entry repeated the date in its prefix (`May 7 · 8:00 AM–9:00 AM`). When a tech logged time across multiple days the visual got noisy fast. This pass adds a date axis: each technician's entries are grouped by calendar start-date, rendered one card per (tech, date), with the date as the card heading. Entries inside a date card no longer repeat the date.
+
+**Required structure (now matches spec).**
+
+```
+Technician Name
+
+  ┌────────────────────────────────┐
+  │ MAY 7                          │  ← date card heading
+  │ ───────────────────────        │
+  │ Travel              $45.00     │  ← entry row (canonical text-row)
+  │ 8:00 AM–9:00 AM · 1h           │  ← entry row (canonical text-caption)
+  │ ───────────────────────        │
+  │ On-site             $45.00     │
+  │ 10:00 AM–11:00 AM · 1h         │
+  └────────────────────────────────┘
+
+  ┌────────────────────────────────┐
+  │ MAY 8                          │  ← separate date card
+  │ ───────────────────────        │
+  │ Travel              $45.00     │
+  │ 7:00 AM–8:00 AM · 1h           │
+  └────────────────────────────────┘
+```
+
+**Implementation.**
+
+- New `LabourTechGroup` shape: `{ technicianId, name, dates: LabourDateGroup[] }`. Each `LabourDateGroup` is `{ dateLabel, dateSortKey, entries: LabourEntryDisplay[] }`.
+- Build pass groups by `(technicianId)` first, then by `format(start, "yyyy-MM-dd")` within each technician. Entries within a date sort earliest-first; dates within a tech sort most-recent-first; techs sort alphabetically.
+- Render: per-tech section with the technician name header, then `group.dates.map(...)` emitting one `<RailContentCard>` per date. Card heading uses canonical `text-label uppercase font-semibold text-text-muted` with a hairline `border-b border-slate-100`. Inside the card, entry rows render directly (no nested clickable card — a `<button>` inside the static `<RailContentCard>` div is valid HTML; nesting clickable cards would not be).
+- Each entry row is its own `<button>` with `data-testid="labour-entry-${entry.id}"` and `onClick` opening `<TimeEntryModal mode="edit" entry={entry}>` — click-to-edit per individual entry preserved verbatim.
+- Date is intentionally NOT repeated per entry row; the entry markup shows only type label + cost (top row) and time-range + duration (bottom row).
+- Entries are NEVER merged. The legacy `firstEntry.startAt`–`lastEntry.endAt` combined-span computation is gone (already removed in v1; pin retained as inverse).
+- Entries with no `startAt` (data anomaly) are skipped — they can't be assigned to a calendar date. They still count in `labourBuckets.totalMinutes` / `.totalCost` so the rail header count and the per-panel Total summary remain accurate.
+- Cleanup: the now-unused `labourByTechDay` useMemo + `TechDayLabourBlock` type were deleted (the new shape lives inline near the page render block).
+
+**Files changed.**
+
+- `client/src/pages/JobDetailPage.tsx` — refactored `labourTechGroups` derivation (tech → date → entries); refactored Labour panel render (per-tech section → per-date card with date heading → individual entry rows); removed dead `labourByTechDay` memo + `TechDayLabourBlock` type.
+- `tests/job-detail-right-rail.test.ts` — 5 net-new pins for the (tech → date → entries) shape: per-(tech, date) card testid, date heading testid, date appears once (not per entry), entries-on-different-dates render in separate cards, no merged first-start / last-end span, click-to-edit per individual entry preserved.
+- `tests/client-side-rail.test.ts` — 7 source-pin tests updated to match the canonical `<RailContentCard testId="…">` forwarding pattern that ClientDetailPage now uses for equipment / parts / maintenance / activity cards (rendered DOM testids unchanged; only the source-pin regex changed from `data-testid="…"` literal to `testId="…"` prop).
+- `CHANGELOG.md` — this entry.
+
+**What did NOT change.**
+
+- Time-entry save / edit logic, billing calculations, totals.
+- Backend routes.
+- Notes / Equipment panels.
+- Top job header, line items, billing summary.
+- The canonical `<DetailRightRail>` / `<RailContentCard>` primitives.
+
+**Tests run.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/job-detail-right-rail.test.ts tests/rail-content-card.test.ts tests/rail-card-style-props.test.ts tests/job-detail-unified-header.test.ts tests/client-side-rail.test.ts tests/detail-right-rail.test.ts tests/add-equipment-dialog.test.ts tests/visit-completion-leave-open.test.ts` — **284/284 pass**.
+
+#### LineItems item-change save failure — stale description carried forward across catalog swap (2026-05-07)
+
+Editing an existing line item via `<LineItemEditModal>` and clicking Change → selecting a different saved item (e.g. Window Cleaning → Thermostat) updated the chip but kept the OLD item's description on the line. Saving then persisted with the old description (and sometimes other stale fields) attached to the new product id. The result on screen was a "Thermostat" line still labeled "Window Cleaning."
+
+**Exact root cause.** `handleSelectProduct` in `client/src/components/line-items/LineItemEditModal.tsx` had a description-preserve branch:
+
+```ts
+description:
+  prev.description.trim().length > 0
+    ? prev.description           // ← keeps the OLD item's text
+    : isRealDescription
+      ? catalogDesc
+      : "",
+```
+
+The intent was "preserve user typing across an item change," but `prev.description` doesn't carry provenance — there's no way to tell from the field alone whether the previous text came from the user typing OR from a previously-selected catalog item. So the carry-over preserved the previous catalog item's description indiscriminately, producing the regression.
+
+**Exact state fields that were stale.** Description (the visible one). productId / unitPrice / unitCost / productType / lineSubtotal were already updating correctly via the existing `mapped.*` spread — the bug was scoped to description. Save then committed the new productId alongside the stale description, which is what the user saw on the row after refetch.
+
+**Fix.** Routed the modal's product-selector callback through a NEW canonical helper `applyCatalogItemToDraft(prev, item)` co-located with the existing line-item mapper at `client/src/lib/entities/lineItemMapper.ts`. The helper's contract is intentionally aggressive: changing the saved item OVERWRITES every catalog-derived field on the draft (productId, productType, description, unitPrice, unitCost, lineSubtotal, lineTotal). Only the user-entered quantity is preserved; lineSubtotal is recomputed against the new rate. Description chooses real catalog text when present, the item name otherwise — never the previously-selected item's description.
+
+The mid-edit "Create '<name>'" path (`handleCreateNew`) already routes through `handleSelectProduct(created)`, so the newly-created item goes through the same helper without a special case.
+
+**What was deliberately NOT changed.**
+
+- `useLineItemsDrafts.defaultCarryOver` (the "preserve user overrides on existing rows" rule used by the inline edit-cells path) — that path is only reachable in batched mode (CreateQuotePage / NewInvoicePage), which the brief intentionally excludes from this pass. Phase A's `interactionMode: "persisted"` gate forces `editing = false` on the three persisted detail pages, so `defaultCarryOver` is never invoked there. Both contracts coexist; the persisted modal uses the simpler always-overwrite rule because clicking a different saved item IS the explicit intent and there is no Save/Cancel to undo it from.
+- `catalogItemToDraft` (used to build a fresh draft for new lines) — unchanged. The new helper is `applyCatalogItemToDraft` (patches an existing draft); the two are sister helpers and both live in the same canonical module.
+- Wire payload mappers (`draftToInvoiceLinePayload` / `draftToQuoteLinePayload` / `draftToJobPartPayload`) — unchanged. The persisted adapters' per-row `addLine` / `updateLine` mutations continue to ship the canonical draft fields, which now reflect the new item correctly because the in-memory draft is correct before save.
+
+**Files changed.**
+
+- `client/src/lib/entities/lineItemMapper.ts` — NEW exported helper `applyCatalogItemToDraft(prev, item): Partial<LineItemDraft>`. Co-located with the existing mapper helpers; uses the same `toMoneyString` / `parseMoney` / `formatMoney` boundary discipline.
+- `client/src/components/line-items/LineItemEditModal.tsx` — `handleSelectProduct` rewritten to delegate to the helper. Inline `setDraft` patch with `mapped.productId` / `mapped.unitPrice` / `mapped.unitCost` and the buggy description carry-over branch are gone. Description textarea is opened automatically after a swap so the user immediately sees the new value.
+- `tests/line-items-item-change.test.ts` — NEW (19 tests): 11 unit tests on `applyCatalogItemToDraft` covering the description overwrite + name-fallback + name-duplicate-fallback + qty preservation + recomputed subtotal + null-price safety + Partial<> contract; 6 modal source-pin tests covering canonical helper import + absence of the previous inline mapping shape + create-new flow funnels through the same helper; 2 mapper public-surface pins.
+- `tests/line-items-phase-a-polish.test.ts` — `handleSelectProduct` pin reshaped to track the new helper-based shape (`applyCatalogItemToDraft(...)` + `setDraft((prev) => ({ ...prev, ...updates }))` + `setShowDescription(true)`).
+- `tests/line-items-phase-a-persisted.test.ts` — "routes new-row save through canonical mapper" pin retitled to "routes saved-item application through canonical mapper helpers" and updated to require the new helper import + call.
+
+**Verification.**
+
+- `npm run check` — clean (filtering pre-existing `client/src/components/activity-feed/` errors that predate this work).
+- `npx vitest run tests/line-items-item-change.test.ts tests/line-items-phase-a-polish.test.ts tests/line-items-phase-a-persisted.test.ts tests/line-items-profitability-header.test.ts tests/pricebook-picker.test.ts tests/modal-canonical.test.ts` — 237/237 pass (19 new in `line-items-item-change.test.ts`; 218 sibling tests still green).
+
+#### Right rail content — canonical card chrome + typography across Notes / Labour / Equipment (2026-05-07)
+
+Tightens the JobDetailPage right rail so Notes, Labour, and Equipment cards read as one shared design system instead of three differently-styled surfaces. Extracts a small canonical primitive that owns the rail-card chrome and migrates each panel's body to canonical typography tokens.
+
+**Root cause.** The rail body components ad-hoc'd their content rendering: `EntityNotesSection` used `group py-3 px-1 rounded` row-style with `border-t` between siblings + raw `text-xs` / `text-[14px]` / `text-[10px]` typography; `JobEquipmentSection` used `px-3 py-2` plain rows with `text-sm font-medium` / `text-xs text-muted-foreground`; Labour entries were custom `<button>`s with `rounded-md px-2 py-1.5 hover:bg-slate-50` and no border. No shared "rail content card" primitive existed, so each panel diverged into its own visual style.
+
+**Shared primitive — `client/src/components/detail-rail/RailContentCard.tsx`.**
+
+- New small wrapper, ~70 LOC. Owns the canonical card chrome — `rounded-md border border-slate-200 bg-white px-3 py-2.5` + transition + hover/focus-visible affordances borrowed from `NotesPanel`'s row styling on ClientDetailPage.
+- Two variants: `<button>` when `onClick` is supplied (with `hover:border-slate-300 hover:bg-slate-50/60 focus-visible:ring-2 focus-visible:ring-[#76B054]/40`); `<div>` when `onClick` is omitted (read-only).
+- Props: `children` / `onClick?` / `testId?` / `ariaLabel?` / `className?`. No state, no domain coupling. Pinned by `tests/rail-content-card.test.ts` (9 source-pin assertions).
+- Per-row `testId` is forwarded so existing per-row selectors (`note-${id}`, `row-job-equipment-${id}`, `labour-entry-${id}`) keep working.
+
+**Notes styling changes (`EntityNotesSection.tsx`).**
+
+- New `cardStyle?: boolean` prop (default `false` — Invoice / Quote / Lead detail pages keep their existing row layout, the legacy fallback branch is preserved).
+- When `cardStyle === true`: each note renders inside `<RailContentCard>` (clickable for editable notes, static for inherited / read-only notes). Origin chip uses canonical `text-label uppercase`. Metadata uses `text-caption text-text-muted` (was raw `text-xs text-slate-500`). User name uses `font-semibold text-text-primary`. Body uses `text-row text-text-primary whitespace-pre-wrap` (was raw `text-[14px] leading-5`). Edit-on-click + EntityNoteDialog wiring + attachment strip + edited-state pill all unchanged.
+- Empty-state copy "No notes yet" now uses canonical `text-caption`.
+
+**Equipment styling changes (`JobEquipmentSection.tsx`).**
+
+- New `cardStyle?: boolean` prop (default `false` — non-rail consumers keep the legacy compact row layout).
+- When `cardStyle === true`: each equipment row renders inside `<RailContentCard>` with multi-line layout — name + type badge on the primary line, make/model/SN as a meta row, optional notes below, catalog items inline. Equipment name uses `text-row font-semibold text-text-primary` (was raw `text-sm font-medium`). Type badge uses canonical `text-label`. Meta line uses `text-caption text-text-muted` (was raw `text-xs text-muted-foreground`). Empty-state copy now uses `text-caption` + `text-text-muted` (was raw `text-xs text-muted-foreground`). Trash button rerendered as a focusable inline span (the canonical `<RailContentCard>` already wraps the row in a `<button>`, so a nested `<button>` inside would be invalid HTML — the trash now uses `role="button" tabIndex={0}` + Enter/Space keydown to dispatch the existing `removeMutation.mutate(je.id)` without changing logic).
+- Click-to-edit (opens `EquipmentDetailModal`) + `removeMutation` + add-equipment-dialog wiring all unchanged.
+
+**Labour typography + chrome changes.**
+
+- Per-entry rows now wrapped in `<RailContentCard>` directly (not a bespoke `<button>`). Same canonical chrome as Notes + Equipment. Click-to-edit opens `<TimeEntryModal mode="edit" entry={entry}>` keyed on the specific entry — unchanged.
+- Per-entry typography already used canonical `text-caption text-text-secondary` / `text-row text-text-primary` from a prior pass; verified by new pins.
+- Total summary at the top of the panel body uses canonical `text-label uppercase` for "Total" + `text-row` for the totals — verified.
+
+**`JobDetailPage.tsx` wiring.**
+
+- Imports `RailContentCard` from `@/components/detail-rail/RailContentCard`.
+- Notes tab passes `cardStyle={true}` to `<EntityNotesSection>`.
+- Equipment tab passes `cardStyle={true}` to `<JobEquipmentSection>`.
+- Labour tab's per-entry `<button>` replaced with `<RailContentCard onClick={...} testId={...}>`.
+- All panel body content now uses the canonical `RailContentCard` chrome — visually consistent across the three tabs.
+
+**Files changed.**
+
+- `client/src/components/detail-rail/RailContentCard.tsx` — new canonical primitive (~70 LOC).
+- `client/src/components/notes/EntityNotesSection.tsx` — new `cardStyle?: boolean` prop + RailContentCard branch with canonical typography tokens; legacy row-style fallback retained.
+- `client/src/components/JobEquipmentSection.tsx` — new `cardStyle?: boolean` prop + RailContentCard branch with multi-line canonical layout + typography tokens; legacy compact row branch retained.
+- `client/src/pages/JobDetailPage.tsx` — `cardStyle={true}` on both rail body components; Labour entries rerouted through `<RailContentCard>`; canonical typography tokens already in place are pinned.
+- `tests/rail-content-card.test.ts` — 9 net-new pins for the primitive contract (exports, variant branching, hover/focus, no domain coupling).
+- `tests/rail-card-style-props.test.ts` — 11 net-new pins for the `cardStyle` props on EntityNotesSection + JobEquipmentSection (default `false`, opt-in branch, canonical token usage, legacy branches retained).
+- `tests/job-detail-right-rail.test.ts` — 8 net-new pins for the canonical card sharing across Notes / Labour / Equipment + canonical typography token usage on the labour entries / totals / tech header.
+- `CHANGELOG.md` — this entry.
+
+**What did NOT change.**
+
+- Backend routes / mutations / save logic for notes, equipment, and labour.
+- Notes creation logic, equipment dialog save logic, labour save/edit logic.
+- Top job header, line items, billing summary, ClientDetailPage.
+- The canonical `<DetailRightRail>` primitive.
+- Any other surface that mounts `<EntityNotesSection>` or `<JobEquipmentSection>` (default `cardStyle=false` keeps them on the legacy row layout).
+
+**Tests run.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/rail-content-card.test.ts tests/rail-card-style-props.test.ts tests/job-detail-right-rail.test.ts tests/client-side-rail.test.ts tests/detail-right-rail.test.ts tests/job-detail-unified-header.test.ts tests/add-equipment-dialog.test.ts` — **272/272 pass** (9 + 11 + 53 + 108 + 33 + 25 + 33).
+
+#### LineItems Phase A polish — four interaction regressions (2026-05-07)
+
+Audit-and-fix pass on the Phase A line-items refactor. Four issues addressed at the root, with no behavior change to financial calculations, profit/profit-margin, taxable handling, mapping, draft-page flows, or the Pricebook picker.
+
+**Root cause 1 — stale selected item after creating a new product mid-edit.**
+
+`<LineItemEditModal>`'s reset `useEffect` had `[open, initialDraft, initialProduct]` as deps. Parent (`<LineItemsCard>`) computes `editingDraftSeed` / `editingProductSeed` via `adapter.hydrateDraft(line)` on every render — fresh object references every time. When the user clicked "Change" → typed a new name → "Create '<name>'", the `<AddProductModal>` opened, which flipped `JobDetailPage` state, which cascaded a re-render through `<LineItemsCard>` and back into `<LineItemEditModal>`. The effect's deps saw new `initialDraft` / `initialProduct` references, the effect re-ran, and `selectedProduct` got reset to the OLD `initialProduct` — wiping the just-created product out of the chip. The save then persisted the stale `productId`.
+
+**Fix.** `useEffect` now depends on `[open]` only (`eslint-disable-next-line react-hooks/exhaustive-deps` documents the intent). The effect captures the latest `initialDraft` / `initialProduct` from the closure when `open` transitions; subsequent parent re-renders no longer reset mid-edit state. The handoff path (`handleCreateNew → onRequestCreateProduct → handleSelectProduct → setSelectedProduct + setDraft`) was already correct — the bug was purely the effect deps.
+
+**Root cause 2 — invoiced-job lock blocked line-item edits.**
+
+`server/storage/jobs.ts:assertJobNotInvoiced()` was being called from `createJobPart` (line 921), `updateJobPart` (line 977), `deleteJobPart` (line 1022), and `reorderJobParts` (line 1054). When a job had `status === "invoiced"`, all four mutations threw HTTP 409 (`code: "JOB_INVOICED_LOCKED"`). Saving any line-item change on an invoiced job failed with "Job is invoiced; edits are locked. Contact a manager to unlock."
+
+**Fix.** Removed the four `assertJobNotInvoiced()` call sites in the line-item storage methods. Per the product rule documented in this brief: line items must remain editable on invoiced jobs. The `assertJobNotInvoiced` helper itself stays alive — it's still enforced on `updateJob` (line 692), `createJobEquipment` (line 1229), `updateJobEquipment` (line 1294), and `deleteJobEquipment` (line 1337). Tenant isolation (`assertCompanyId` / `getJob` ownership check), route-level role gating (`requireRole(MANAGER_ROLES)`), and soft-delete guards all remain intact. The admin-override routes (`/admin/parts`, `/admin/parts/:id`) continue to function as no-ops since their `overrideInvoiceLock: true` flag is now meaningless on the line-item path.
+
+**Root cause 3 — visible Edit pencil + missing row-click target + drag area visually blends with content.**
+
+The display row at `LineItemRow.tsx` had a standalone `<Pencil>` Edit button in the action cell. The `<tr>` itself had no `onClick` handler, so users couldn't click anywhere on the row body to edit. The drag-handle cell had no visual divider — it merged with the description column and didn't read as a distinct utility zone. The action cell used `align-top` so the delete button floated above center.
+
+**Fix.**
+
+- The standalone Edit pencil is removed; the entire `<tr>` is now the click target. `onClick={isClickable ? handleRowClick : undefined}`, plus `role="button"`, `tabIndex={0}`, `aria-label`, and `onKeyDown` (Enter/Space) for keyboard parity. Clickable rows show `cursor-pointer hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-slate-300`; non-clickable rows fall back to the previous muted hover.
+- Drag-handle cell carries `border-r border-border/40` for a subtle vertical divider, plus `flex items-center justify-center` on the inner wrapper so the GripVertical centers cleanly.
+- Drag-handle cell adds `onClick={(e) => e.stopPropagation()}` so dragging never opens the edit modal.
+- Delete button's onClick now does `e.stopPropagation(); onDelete();` for the same reason.
+- Action cell switches from `py-2.5 align-top w-9` → `py-1.5 align-middle w-12` when actions are present, vertically centering the delete icon with the row content. Description cell gains `pl-2` to keep horizontal alignment after the divider.
+
+**Root cause 4 — AddProductModal wasn't using canonical primitives.**
+
+`client/src/components/PartsBillingCard.tsx` mounted `<Dialog>` + `<DialogContent>` + `<DialogHeader>` + `<DialogFooter>` directly. Per the modal taxonomy in CLAUDE.md (rule #4: complex reusable workflow → dedicated domain wrapper using canonical primitives), this needed to migrate to `<ModalShell>` + `<ModalHeader>` + `<ModalFooter>` + `<ModalPrimaryAction>` / `<ModalSecondaryAction>`.
+
+**Fix.** File migrated. Imports swapped (raw Dialog primitives out, canonical Modal primitives in). JSX rewrites the `<Dialog>` shell to `<ModalShell>`, `<DialogHeader>` block to `<ModalHeader>`, `<DialogFooter>` block to `<ModalFooter>`. Cancel button → `<ModalSecondaryAction>`; Save button → `<ModalPrimaryAction>`. Body content kept inline between header and footer with canonical `px-5 py-4 space-y-4` padding (matches the `<ModalBody>` rhythm). Width unchanged at `sm:max-w-md` (~448px). All field testids and the `onSave({name, description, cost, unitPrice, type})` handoff to `requestCreateProduct` are preserved — the line-item item-change flow continues to receive the new ProductOption back through `createResolverRef`.
+
+**Files changed.**
+
+- `client/src/components/line-items/LineItemRow.tsx` — display branch rebuilt: `<tr>` becomes the click target; drag cell gains divider + stopPropagation; standalone Edit pencil removed; delete button stopPropagation + align-middle.
+- `client/src/components/line-items/LineItemEditModal.tsx` — reset `useEffect` deps narrowed from `[open, initialDraft, initialProduct]` → `[open]`.
+- `server/storage/jobs.ts` — `assertJobNotInvoiced()` calls removed from `createJobPart`, `updateJobPart`, `deleteJobPart`, `reorderJobParts`. Helper preserved; non-line-item callers (`updateJob`, equipment CRUD) keep enforcing it.
+- `client/src/components/PartsBillingCard.tsx` — AddProductModal canonicalized to `<ModalShell>` primitives.
+- `tests/line-items-phase-a-persisted.test.ts` — Phase A row-action pin updated for the new row-click contract (Edit button removed, delete still present, click + role + tabIndex + key handling pinned, drag and delete stopPropagation pinned).
+- `tests/line-items-phase-a-polish.test.ts` — NEW (20 source-pin tests across the four fixes).
+
+**Was AddProductModal canonicalized or deferred?** Canonicalized — low-effort migration since the structure was already correct. Width, field set, submit handoff all preserved.
+
+**Verification.**
+
+- `npm run check` — clean (filtering pre-existing `client/src/components/activity-feed/` errors that predate this work).
+- `npx vitest run tests/line-items-phase-a-polish.test.ts tests/line-items-phase-a-persisted.test.ts tests/line-items-profitability-header.test.ts tests/pricebook-picker.test.ts tests/modal-canonical.test.ts` — 218/218 pass (20 new in the polish suite, 198 sibling tests still green).
+- `npx vitest run tests/dashboard-pipeline-actionable.test.ts tests/dashboard-invoices-not-sent.test.ts tests/quote-create-page.test.ts` — 133/134 pass; the one failure (`App.tsx's quick-new-quote dropdown item`) is the same pre-existing baseline issue noted in the prior Phase A entry — App.tsx was edited in earlier uncommitted work to remove the `quick-new-quote` testid, unrelated to this refactor.
+
+#### JobDetailPage rail — refined content + Labour grouping fix (2026-05-07)
+
+Tightens the JobDetailPage right rail after the page-level layout fix: reorders tabs, drops duplicated inner section headers, switches action labels to terse forms, and fixes the bug where multiple labour entries on the same day were being merged into a single time span.
+
+**Tab order + default.**
+- Tab order changed from `equipment / notes / labour` → `notes / labour / equipment` (per spec; matches reading order ClientDetailPage uses).
+- Default open tab changed from `equipment` → `notes`.
+
+**Terse panel-header action labels.**
+- Notes: `+ Add Note` → `+ Add` (`button-add-note-rail`).
+- Labour: `+ Time Entry` → `+ Time` (existing `button-add-labour` testid preserved).
+- Equipment: `+ Add Equipment` → `+ Add` (existing `button-add-equipment-rail` testid preserved).
+- Rationale: the rail panel header already shows the full-word title to the left of the action; terser action labels are easier to scan and don't visually compete with the title.
+
+**Removed duplicated inner headers.**
+- Notes tab now passes `hideHeader={true}` + `hideAddButton={true}` to `<EntityNotesSection>`. Previously the section rendered its own internal header (icon + "Notes" + "+ Add Note" button) inside the rail panel even though the rail panel header already provides the title + action.
+- Notes add-trigger dispatches via the existing `openAddNoteSignal` controlled prop on `<EntityNotesSection>`. The page maintains a `notesAddSignal` counter that the rail's `+ Add` button increments. **No `EntityNotesSection.tsx` changes required** — uses the existing surface.
+- Equipment tab now passes new `hideHeader={true}` prop to `<JobEquipmentSection>` (added in this same change). Previously the section wrapped its body in a Collapsible with a trigger header (icon + "Equipment" + chevron + add) that visually duplicated the rail panel header.
+
+**JobEquipmentSection — `hideHeader` prop added.**
+- New `hideHeader?: boolean` prop. When `true`: skips the `<CollapsibleTrigger>` header entirely, forces `isOpen` to `true` (no trigger to toggle), drops the white-card `rounded-md border shadow-sm` outer chrome and the body's `border-t`. Renders the equipment row list directly inline. Existing add-equipment dialog wiring + per-row click-to-edit + per-row trash + count callback all unchanged.
+
+**Labour grouping fix — per-entry rendering grouped by tech only.**
+
+Root cause of the bug: the legacy renderer iterated `labourByTechDay` (memoized at JobDetailPage.tsx:965), which buckets entries by `(technicianId, date)`. Inside each block, it filtered entries into `travel` + `onSite` lists, computed `firstEntry.startAt` → `lastEntry.endAt` as a single time range, and rendered ONE row per block with two bucket lines reporting "Travel · 4h · 3 entries" / "On-site · 2h · 2 entries". So four separate visits on May 7 displayed as a single "7:00 AM–3:00 PM" header with merged buckets — the individual entries were unreachable except by clicking a bucket which opened only the FIRST entry.
+
+The fix:
+- New page-local `labourTechGroups: LabourTechGroup[]` derivation groups entries ONLY by technician (`technicianId` → `LabourTechGroup`). Within each group, entries are sorted chronologically. Across groups, technicians are sorted alphabetically. The legacy `labourByTechDay` memo is no longer used by the rail body (kept for any other consumer; not in this file).
+- Labour panel body now renders:
+  - **Total summary at the top**: `Total · 10h 43m · $589.42` row with `data-testid="labour-summary-totals"`. Surfaces the aggregate hours + cost.
+  - **Per-tech groups**: each group has a `<div data-testid="labour-tech-group-${technicianId}">` wrapper carrying the technician name (no day in the header).
+  - **Per-entry rows**: each entry is its own clickable button with `data-testid="labour-entry-${entry.id}"` showing:
+    - First line: `<date> · <start–end time>` (e.g. `May 7 · 8:00 AM–9:00 AM`); a "Running" pill if duration is null.
+    - Second line: `<type label> · <duration>` left-aligned, `<cost>` right-aligned (e.g. `Travel · 1h · $45.00`).
+  - **Click-to-edit**: clicking an entry opens `<TimeEntryModal mode="edit" entry={entry}>` keyed on that specific entry — no more "first entry of bucket" indirection.
+- The legacy `labour-bucket-travel-${key}` / `labour-bucket-onsite-${key}` testids and the `firstEntry?.startAt` / `lastEntry?.endAt` time-range expressions are removed.
+
+**Files changed.**
+
+- `client/src/components/JobEquipmentSection.tsx` — new `hideHeader?: boolean` prop; conditional render skips the Collapsible trigger header and the outer card chrome when set.
+- `client/src/pages/JobDetailPage.tsx` — `jobRailTabs` reordered + reshaped: terse action labels, `hideHeader` on Notes + Equipment body components, `notesAddSignal` controlled counter, new `labourTechGroups` derivation, per-entry Labour body rendering with total-at-top summary.
+- `tests/job-detail-right-rail.test.ts` — 11 net-new pins covering: tab order + default, terse action labels, suppressed inner Notes/Equipment headers, `notesAddSignal` ↔ `openAddNoteSignal` wiring, no `labourByTechDay` / `dateSortKey` in the rail body, no bucket testids, per-entry testid contract, total-at-top summary, individual entry click-to-edit on `entry.id` (not bucket's first entry).
+- `CHANGELOG.md` — this entry.
+
+**What did NOT change.**
+
+- Top job header (unified card refactor preserved).
+- Line items, billing summary.
+- Backend routes, time entry save logic, notes creation logic, equipment dialog save logic.
+- Rail-aside layout (page-level flex row + far-right rail aside + 80/380 width-CSS-variable).
+- ClientDetailPage rail behavior.
+- Canonical `<DetailRightRail>` primitive (still controlled, stateless, testIdPrefix-templated).
+
+**Tests run.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/job-detail-right-rail.test.ts tests/job-detail-unified-header.test.ts tests/client-side-rail.test.ts tests/detail-right-rail.test.ts tests/add-equipment-dialog.test.ts tests/service-address-location-label.test.ts tests/line-items-profitability-header.test.ts` — **305/305 pass**.
+
+### Changed
+
+#### Client Detail right-rail Activity copy + canonical RailContentCard adoption (2026-05-07)
+
+Audit-and-fix on the Client Detail right-rail Activity panel + visual consistency across all rail informational cards.
+
+**Bug fixed.** The Activity panel was rendering rows like `Note.Created` (capitalized event_type, dot included) with a body line of `Note added to location b8d7b682-2919-4568-acab-9188726b0a87` (raw UUID interpolated server-side). Two root causes:
+
+1. The client rendered `it.eventType.replaceAll("_", " ")` with the CSS `capitalize` class — `note.created` rendered as "Note.Created" (the `.` was never stripped).
+2. The server emitter at `server/routes/location-notes.ts:105` interpolated the raw `locationId` into `summary` and the client passed `it.summary` straight through.
+
+**Fix — split between display formatter and server meta enrichment.**
+
+- **New helper `client/src/components/activity-feed/formatRailActivity.ts`.** Maps `event_type` + `meta` → `{ title, body, locationName }`. Hard rules mirror the global Activity Feed formatter: never pass through `summary`; never render the raw `event_type`; never expose UUIDs; sentence-case unknown events ("note.created" → "Note created", with the `.` stripped, NOT CSS `capitalize`). For `note.created` specifically: title is "Note created", body reads from `meta.preview` (with `meta.body` and `meta.text` as legacy fallbacks), and `locationName` is surfaced only when `meta.locationName` is non-empty.
+- **Server meta enrichment** (`server/routes/location-notes.ts`). The note.created emission now resolves a display-safe location name (location label first, then `client_locations.companyName`, then parent `customer_companies.name`) at emit time, stashes both `locationName` and a 140-char `preview` of the note text into `meta`, and rewrites `summary` to `Note added to ${locationName}` (or just `Note added` when no name resolves). No raw UUIDs in user-visible copy. The legacy `noteId` / `locationId` fields stay on `meta` for traceability — they're internal IDs, not display strings.
+- **Activity panel rendering** (`client/src/pages/ClientDetailPage.tsx::ClientActivityPanelBody`). Each row now routes through `formatRailActivity({ eventType, summary, meta })`. The card layout is a canonical title line (`text-row font-medium`), an optional 2-line clamped body (`text-row`), and a meta line (`text-caption`) showing the timestamp followed by a `·` and the resolved location name when present. The card never renders `it.summary`, `it.eventType`, or any `replaceAll`/`capitalize`-shaped string.
+
+**Canonical rail card chrome — adoption across all info panels.** The `<RailContentCard>` primitive at `client/src/components/detail-rail/RailContentCard.tsx` already existed (canonical chrome: `rounded-md border border-slate-200 bg-white px-3 py-2.5 transition-colors`, mirrors NotesPanel row styling); this PR adopts it across the rail panels that had been ad-hoc-ing their own chrome:
+
+- **Activity rows** — was `rounded border border-slate-200 bg-white px-3 py-2 text-xs` ad-hoc → `<RailContentCard>` (now consistent with Notes).
+- **Equipment cards** — clickable `<button>` with handwritten chrome → `<RailContentCard onClick={…} ariaLabel={…}>` (one source of hover/focus-visible affordances).
+- **Parts cards** — was `rounded-md border border-slate-200 bg-white px-4 py-3 space-y-3` ad-hoc → `<RailContentCard>`.
+- **Maintenance cards** — same ad-hoc chrome as Parts → `<RailContentCard>`.
+- **Billing panel** — was a chromeless `<div>` block → now wrapped in a single `<RailContentCard>` so the Billing summary reads as one rail card alongside the others. Also swapped the panel's two ad-hoc typography strings (`text-[10px] font-bold uppercase tracking-wider` and raw `text-xs text-slate-700`) onto the canonical `text-label` / `text-row` / `text-caption` tokens.
+
+**Preserved verbatim.**
+
+- All tabs, labels, routes, permissions, data fetching, query keys, panel ordering, panel widths, drawer/rail width state, location-notes CRUD behavior, the global Activity Feed drawer, the dispatch timeline, and every other event emitter (`note.created` is the only emission this PR touches).
+- Rail typography tokens stay canonical: `text-row` for titles + body, `text-caption` for timestamps, `text-label` for legends. No new tokens introduced.
+- The Notes panel body component (`NotesPanel.tsx`) is untouched — it already matched the visual reference and lives outside the rail panel registry.
+
+**Files affected.**
+
+- `server/routes/location-notes.ts` — `note.created` meta enrichment + summary rewrite.
+- `client/src/components/activity-feed/formatRailActivity.ts` — new rail-only display formatter.
+- `client/src/pages/ClientDetailPage.tsx` — Activity panel rebuild + RailContentCard adoption across Activity / Equipment / Parts / Maintenance / Billing bodies.
+- `tests/rail-activity-formatter.test.ts` — new unit tests for the formatter (13 tests: title contract, body fallback chain, locationName presence rules, UUID-leak inverse pins, unknown-event sentence-casing, empty-event handling).
+- `tests/client-rail-cards.test.ts` — new source-pin tests (17 tests: imports of RailContentCard + formatRailActivity, panel-by-panel RailContentCard adoption pins, inverse pins removing the `capitalize` class / `it.eventType` / `it.summary` from the Activity panel slice, server-emission pins on `meta.locationName` + `meta.preview` + the rewritten summary string).
+
+**Validation.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/rail-activity-formatter.test.ts tests/client-rail-cards.test.ts tests/rail-content-card.test.ts tests/activity-feed-drawer.test.ts tests/job-detail-right-rail.test.ts tests/rail-card-style-props.test.ts` — **144/144 pass** (13 + 17 + 9 + 41 + 53 + 11).
+
+**Frontend + server change.** Server route emits richer meta — restart needed for new note rows to carry `locationName` + `preview`. Existing rows fall back to the formatter's sentence-cased title and either `meta.body` / `meta.text` or no body line at all (still no UUID leak — the formatter never reads from `summary` or `meta.locationId`).
+
+**Breaking changes.** None. Older note.created rows (without `meta.preview` / `meta.locationName`) render with title "Note created" and an empty body / no location — strictly an improvement over the prior copy.
+
+#### Header / sidebar icon cleanup (2026-05-07)
+
+Small visual hygiene pass on the universal header and the tenant left sidebar.
+
+- **Activity header trigger → icon-only.** The `ActivityFeedButton` (`client/src/components/activity-feed/ActivityFeedButton.tsx`) drops its visible `<span>Activity</span>` label. The button is now a square 32×32 (`h-8 w-8 p-0 inline-flex items-center justify-center`) carrying only the canonical `Activity` Lucide glyph. The "Activity" identity stays accessible via the existing `aria-label="Activity"` (already present) plus a new `title="Activity"` for hover-tooltip parity with adjacent header controls. Route/click/active-state behavior preserved verbatim — open-state still flips to the brand-green accent. The neighbouring Tasks button is intentionally left as icon + "Tasks" text, per scope.
+- **Sidebar Dispatch icon → `CalendarClock`.** Replaced the prior `LayoutGrid` glyph in `client/src/components/AppSidebar.tsx`. Dispatch is fundamentally a time-on-calendar surface and the new icon reads as that immediately; `LayoutGrid` was a generic grid glyph. Sidebar Dashboard already uses the canonical `LayoutDashboard` icon — no change needed there.
+- **Removed unused import.** `LayoutGrid` dropped from the Lucide imports in `AppSidebar.tsx`.
+
+**Preserved verbatim.**
+
+- All sidebar nav labels, routes, permissions, ordering, divider grouping, sidebar width, active-state logic (`isActive` + brand-green left border), tooltips, testids (`nav-dispatch`, `nav-dashboard`, etc.), icon sizing (`h-4 w-4`), and the active/inactive color swap (`text-[#C2E974]` vs `text-white/50`).
+- All header trigger behavior: `aria-expanded`, `aria-label="Activity"`, `data-testid="button-activity-header"`, click handler, open-state brand-green styling, resting tonal styling.
+
+**Files affected.**
+
+- `client/src/components/activity-feed/ActivityFeedButton.tsx` — icon-only restructure + `title` attribute.
+- `client/src/components/AppSidebar.tsx` — `LayoutGrid` → `CalendarClock` swap on Dispatch nav item; import list updated.
+
+**Validation.**
+
+- `npm run check` — clean.
+- `tests/activity-feed-drawer.test.ts`, `tests/sidebar-width.test.ts`, `tests/dashboard-height-and-sidebar.test.ts`, `tests/recurring-jobs-nav-rename.test.ts` — 88/88 pass. No existing tests pin the dropped "Activity" text or the prior `LayoutGrid` icon, so no test updates were needed.
+
+**Frontend-only change.** Vite HMR sufficient — no server, schema, or migration impact.
+
+**Breaking changes.** None.
+
+#### LineItems Phase A — persisted detail pages move to always-on row interactions (2026-05-07)
+
+Phase A of the line-items interaction refactor. Persisted-entity detail pages (Invoice Detail, Quote Detail, Job Detail) drop the global edit-mode workflow (pencil → editable rows → Save / Cancel) in favor of always-visible rows with row-level actions: drag-to-reorder, modal edit, AlertDialog delete, modal add, immediate persistence. Draft-entity pages (CreateQuotePage, NewInvoicePage) are intentionally untouched — they still use the legacy batched edit-mode contract because their `serverItemsMirror` reconciliation depends on it. Phase B unifies the two contracts; not part of this pass.
+
+**Audit recap.** The current architecture is a binary edit-mode state machine in `useLineItemsDrafts.ts` (`drafts: LineDraftEntry[] | null`). All eight mutators silently no-op when `drafts === null`; the DnD handler returns early on `!editing`; `CreateQuotePage`'s page-level Save button is gated on `!lineItemsDrafts.editing`. Removing the global edit-mode globally would break the draft-entity flows. The split-by-surface approach below preserves both contracts.
+
+**Architecture — adapter capability flag + per-row methods.** `LineItemsAdapter` gains an optional `interactionMode: "persisted" | "batched"` flag (defaults to `"batched"` for backwards compat) plus five optional per-row methods: `addLine`, `updateLine`, `deleteLine`, `reorderLines`, `bulkAddLines`. Persisted-mode adapters wire each method to their existing canonical mutation hooks; the legacy `saveAll(plan)` is kept on each persisted adapter as a safety net (the LineItemsCard branch never invokes it in persisted mode, but the contract type still requires it and a future revert stays feasible).
+
+**LineItemsCard branches on `adapter.interactionMode`.** When `"persisted"`:
+- Header pencil + Save / Cancel are gated off (`!isPersisted` guard on each block).
+- Empty-state Add button opens `<LineItemEditModal mode="add">` instead of `enterEdit + appendNew`.
+- Body renders rows directly from `serverItems` with `<LineItemRow onEditClick onDelete showDragHandle={allowReorder} />`.
+- Footer renders `Add item` + `Pricebook` (no Save / Cancel; `editing` is forced false in persisted mode).
+- DnD handler fires `adapter.reorderLines(orderedServerIds)` immediately, ignoring `drafts.reorderLocal`.
+- Pricebook submit fans drafts out via `adapter.bulkAddLines(drafts)` (default fan-out is N x `addLine` if `bulkAddLines` is omitted).
+- `<LineItemEditModal>` mounts twice (once for add, once for edit) and `<AlertDialog>` mounts once for delete confirmation — all gated on `isPersisted`.
+
+In `"batched"` mode the entire legacy flow is preserved exactly.
+
+**Shared modal — `<LineItemEditModal>`.** New canonical add/edit modal under `client/src/components/line-items/LineItemEditModal.tsx`. Mounts the canonical `<ModalShell>` primitives, owns its own dimensions (`w-[min(560px,calc(100vw-32px))]`), exposes ONE shared form for both add and edit. Title is context-aware via the exported `lineItemEditModalTitle(surface, mode)` helper: `"Add invoice item"` / `"Edit quote item"` / `"Add job item"`, etc. Fields: product picker (`<CreateOrSelectField>`), description (textarea), quantity, cost (gated on `showCost`), rate. Save validates `description-or-product-fallback + qty>0`, recomputes `lineSubtotal` at save time (mirrors the hook's `buildSavePlan` rule), routes new-row mapping through the canonical `catalogItemToDraft` (no parallel mapper). Cancel closes without mutation.
+
+**Reorder persistence by surface.**
+
+| Surface | `allowReorder` | `reorderLines` | Endpoint |
+|---|---|---|---|
+| Invoice Detail | `true` | wired to `reorderLinesMutation.mutateAsync` | `PATCH /api/invoices/:id/lines/reorder` |
+| Job Detail (parts) | `true` | inline `apiRequest` to `/parts/reorder` (sortOrder payload shape) | `PATCH /api/jobs/:jobId/parts/reorder` |
+| Quote Detail | `false` | NOT defined — endpoint missing server-side | (deferred — see follow-ups) |
+
+`<LineItemRow>` extension. The display branch now renders the drag handle when `showDragHandle` is true (previously edit-only) and an action cell with Edit + Delete buttons when `onEditClick` / `onDelete` are provided. `data-testid={`button-edit-line-${id}`}` and `button-delete-line-${id}` are pinned for tests.
+
+**Draft adapters explicitly batched.** `createDraftQuoteLineItemsAdapter` and `createDraftInvoiceLineItemsAdapter` now declare `interactionMode: "batched"` and intentionally do NOT define `addLine` / `updateLine` / `deleteLine` / `reorderLines` — the page-owned `serverItemsMirror` reconciliation still requires the legacy `saveAll(plan)` batch contract.
+
+**Files changed.**
+
+- `client/src/components/line-items/types.ts` — adapter contract gained `interactionMode` + per-row methods.
+- `client/src/components/line-items/LineItemsCard.tsx` — branches on `interactionMode`; mounts `<LineItemEditModal>` + `<AlertDialog>`; new persisted-mode footer; persisted DnD path; persisted Pricebook submit path.
+- `client/src/components/line-items/LineItemRow.tsx` — display branch supports drag handle + Edit/Delete buttons when handlers are provided.
+- `client/src/components/line-items/LineItemEditModal.tsx` — NEW shared add/edit modal.
+- `client/src/pages/InvoiceDetailPage.tsx` — adapter declares `interactionMode: "persisted"` and exposes per-row methods.
+- `client/src/pages/QuoteDetailPage.tsx` — same; no `reorderLines` (Quote endpoint missing).
+- `client/src/pages/JobDetailPage.tsx` — same; per-row methods inline-call `/api/jobs/:jobId/parts` endpoints (mirror legacy `saveAll`).
+- `client/src/components/quotes/draftQuoteLineItemsAdapter.ts` — explicit `interactionMode: "batched"`.
+- `client/src/components/invoice/draftInvoiceLineItemsAdapter.ts` — explicit `interactionMode: "batched"`.
+- `tests/line-items-phase-a-persisted.test.ts` — NEW source-pin contract test (37 tests across 8 describes).
+- `tests/pricebook-picker.test.ts` — one pin updated: the empty-state Add button's onClick now branches on `isPersisted` (legacy `enterEdit + appendNew` lives in the else branch); pin reshaped accordingly.
+
+**Was old edit-mode UI fully removed from persisted pages?** YES — for the persisted detail pages (Invoice / Quote / Job) the LineItemsCard's header pencil, top Save/Cancel pair, and edit-mode bottom action row are all gated behind `!isPersisted`. None of them render in the new mode. The internal `useLineItemsDrafts` hook + edit-mode state machine remain alive in the codebase because draft-entity pages still depend on them.
+
+**Was draft architecture preserved?** YES. `useLineItemsDrafts` is unchanged in behavior. `createDraftQuoteLineItemsAdapter` / `createDraftInvoiceLineItemsAdapter` only gained the explicit `interactionMode: "batched"` declaration — no behavior change. `CreateQuotePage` and `NewInvoicePage` flows still POST inline arrays at quote/invoice create time via the existing mirror-reconciliation pattern.
+
+**Tests added/updated.** 37 new pins in `tests/line-items-phase-a-persisted.test.ts` covering: adapter contract, each persisted page's per-row method wiring, draft adapters' explicit `batched` declaration + absence of per-row methods, `LineItemsCard` branching on `interactionMode`, LineItemRow display-branch action support, LineItemEditModal canonical primitives + context-aware title + Save validation + cancel-doesn't-mutate, hook preservation for batched flows, reorder persistence per surface. One pin updated in `tests/pricebook-picker.test.ts` to track the new branched onClick on the empty-state Add button.
+
+**Verification.**
+
+- `npm run check` — clean (filtering pre-existing `client/src/components/activity-feed/CustomizeActivityFeedView.tsx` errors that predate this refactor — verified via `git stash` against clean main).
+- `npx vitest run tests/line-items-phase-a-persisted.test.ts tests/line-items-profitability-header.test.ts tests/pricebook-picker.test.ts tests/modal-canonical.test.ts tests/dashboard-invoices-not-sent.test.ts tests/dashboard-pipeline-actionable.test.ts` — 262/262 pass.
+- `npx vitest run tests/quote-create-page.test.ts` — 66/67 pass; the one failure (`App.tsx's quick-new-quote dropdown item navigates to /quotes/new`) is a pre-existing baseline issue (App.tsx was modified in prior uncommitted work that removed the `quick-new-quote` testid; verified passes on clean main, fails on the pre-refactor working tree). Outside the scope of this refactor.
+
+**Deferred follow-ups.**
+
+1. **Quote line reorder endpoint.** `POST /api/quotes/:id/lines/reorder` does not exist server-side. Once added (route + storage method + Drizzle column write to `quote_lines.line_number`), `QuoteDetailPage` can flip `allowReorder: true` and add `reorderLines` to its adapter; `LineItemsCard` will then expose the drag handle on Quote rows automatically. No client-side change needed beyond the adapter flip.
+2. **Equipment linking on line items.** Out of scope for Phase A per brief. When implemented, the row's action cell already has space — add a third action button (e.g. Link icon) gated on adapter capability.
+3. **Phase B — unify draft + persisted adapters.** Migrate `createDraftQuoteLineItemsAdapter` / `createDraftInvoiceLineItemsAdapter` to implement the per-row methods against `serverItemsMirror` instead of `saveAll`. That lets `useLineItemsDrafts`'s edit-mode state machine be deleted entirely. Estimated risk is moderate — touches CreateQuotePage / NewInvoicePage page-level Save gating (currently `!lineItemsDrafts.editing`).
+
+### Fixed
+
+#### JobDetailPage right rail — page-level layout + Equipment tab + top-action cleanup (2026-05-07)
+
+After the canonical `<DetailRightRail>` extraction, the JobDetailPage rail still misbehaved: its closed icon strip sat ~65% across the page (inside the body grid's 35% right column) instead of pinning to the far right edge like ClientDetailPage's rail. Equipment was a standalone card *above* the rail in that same right column, with its add-equipment trigger awkwardly stuck in the top header's action cluster (Wrench+Plus combo button). This pass restructures JobDetailPage to mirror ClientDetailPage's page-level rail layout and folds Equipment into the rail.
+
+**Root cause.** The rail mount was a sibling of the Equipment card *inside* the body grid's 35% right column. Even with the v4 `w-fit` collapse fix, the rail itself was constrained to the boundary of the grid cell, not the page edge. ClientDetailPage's rail works because the page outer wrapper is `flex flex-col lg:flex-row` and the rail aside is a top-level sibling of the left content column.
+
+**Layout change.**
+
+- Page outer wrapper promoted to `flex h-full flex-col lg:flex-row bg-app-bg` (mirrors `client-detail-root`).
+- New `data-testid="job-detail-left-column-shell"` wraps the existing body content (unified detail card + line items + billing summary). Body grid simplified to a single-column `flex flex-col gap-5` (the prior 65%/35% template is gone — the right rail is no longer a body-grid sibling).
+- New `data-testid="job-detail-rail-column"` `<aside>` sits as a sibling of the left column, pinned to the far-right page edge. Width is driven by a `--job-rail-width` CSS variable: `80px` when `jobRailTab === null`, `380px` when open. `data-panel-open="true"|"false"` exposed for downstream layout adapters.
+- Mobile (`lg:hidden`) and desktop (`hidden lg:flex h-full w-[var(--job-rail-width)]`) variants each mount the canonical `<DetailRightRail>` once. No drag-resize on this page (intentional — the page's tab content is more compact than ClientDetailPage's).
+- The legacy `data-testid="job-detail-right-column"` / `data-testid="equipment-card-wrapper"` / `data-testid="job-right-rail-wrapper"` wrappers are removed.
+
+**Equipment rail behavior.**
+
+- `jobRailTabs` array now has THREE tabs (was two): `equipment`, `notes`, `labour` — Equipment first.
+- Equipment tab is **always present** even when the job has no equipment. The legacy `equipmentCount === 0 ? "hidden" : ""` toggle on the standalone card is gone — users can always reach the `+ Add Equipment` affordance, and `<JobEquipmentSection>` renders its own empty state when the job is empty.
+- Equipment tab's `action:` slot carries the `+ Add Equipment` button (new `data-testid="button-add-equipment-rail"`). It calls `setShowAddEquipmentDialog(true)` directly, opening the canonical AddEquipmentDialog already mounted at the page level.
+- Equipment tab's `content:` slot mounts `<JobEquipmentSection>` with the existing `externalAddOpen` / `onExternalAddOpenChange` / `onCountChange` wiring — no backend / dialog changes; same canonical surface.
+- Equipment count surfaces in the icon-strip badge via `tab.count = equipmentCount ?? undefined`.
+- Default open tab is now `equipment` (was `notes`) — matches reading order.
+
+**Top-action cleanup.**
+
+- The Add Equipment combo button (Wrench + Plus icons, `data-testid="button-add-equipment-header"`) is **removed** from the top header actions cluster. Equipment actions belong exclusively to the rail's Equipment tab.
+- Top header retains: edit pencil (`button-edit-job-card`), overflow menu (`button-more-actions`), and the status-driven primary CTA (Schedule Visit / View Invoice / Create Invoice / Restore Job). All other actions and dropdown menu items are unchanged.
+
+**Files changed.**
+
+- `client/src/pages/JobDetailPage.tsx` — page outer wrapper now `flex flex-col lg:flex-row`; new left-column shell + far-right rail aside; `jobRailTabs` now has Equipment first; Add Equipment button removed from top header.
+- `tests/job-detail-right-rail.test.ts` — 8 net-new pins covering: rail aside testid + position, page-outer-flex contract, three-tab registry with Equipment first, Equipment tab content + action wiring, "Equipment is always present (no `hidden` toggle)", legacy 35%/65% body grid removed.
+- `tests/job-detail-unified-header.test.ts` — 1 pin updated (was: Add Equipment combo button present in top header actions; now: button absent from top header, replacement `button-add-equipment-rail` testid present elsewhere on the page).
+- `CHANGELOG.md` — this entry.
+
+**Responsive behavior.**
+
+- Desktop / 1280px: outer flex row, left content fills all width except the 80px / 380px rail aside on the right edge.
+- 1024px (lg breakpoint): same layout as desktop. Rail aside width unchanged.
+- Below `lg` (iPad portrait / mobile): outer flex collapses to `flex-col`. Rail stacks below the left content (matches ClientDetailPage's mobile behavior). The `lg:hidden` rail mount has no fixed width — renders inline.
+- No horizontal overflow at any breakpoint. Closed-state icon strip stays in the right-side container at every breakpoint.
+
+**Tests run.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/detail-right-rail.test.ts tests/job-detail-right-rail.test.ts tests/client-side-rail.test.ts tests/job-detail-unified-header.test.ts tests/service-address-location-label.test.ts tests/line-items-profitability-header.test.ts tests/add-equipment-dialog.test.ts` — **294/294 pass**.
+
+#### Detail right rail — collapsed state shrinks to the icon strip (2026-05-07)
+
+The canonical `<DetailRightRail>` primitive previously kept its outer `flex` container at full parent width even when the panel was closed (`activeTabId === null`). On `ClientDetailPage` the bug was masked because the page-level aside constrains rail width via `--client-rail-width` (80px when no panel). On `JobDetailPage` the rail mounts inside an unconstrained 35% grid cell, so the closed-state rail rendered the 76px nav plus a wide blank-white rectangle — visually correct only when a panel was open.
+
+**The fix.** When `activeTabId === null`, the outer container now applies `w-fit` so it shrinks to its only child (the 76px nav). When a panel is open, the default flex stretch returns and the panel's `flex-1` works exactly as before. The fix lives entirely in the primitive — no per-page hack, both consumers benefit.
+
+The toggle/close handlers are unchanged: clicking a non-active tab opens it; clicking the active tab closes (sets `null`); the panel header's close-X dispatches `onActiveTabChange(null)`.
+
+**Additional surface.** The outer container now exposes `data-panel-open="true"|"false"` reflecting open/closed state, so downstream layout adapters can react to rail collapse without inspecting className.
+
+**Files changed.**
+
+- `client/src/components/detail-rail/DetailRightRail.tsx` — `!activeTab && "w-fit"` toggle on the outer container; new `data-panel-open` attribute.
+- `tests/detail-right-rail.test.ts` — 6 net-new pins for the collapsed-state contract (panel section gating, `w-fit` toggle, `data-panel-open`, toggle/reopen handler, close-X null dispatch, no auto-empty-state).
+- `tests/job-detail-right-rail.test.ts` — 4 net-new pins verifying JobDetailPage forwards nullable state to the primitive without local hacks.
+- `tests/client-side-rail.test.ts` — 2 net-new pins documenting that ClientDetailPage's existing aside width contract still wins (canonical `w-fit` is additive, not replacing).
+- `CHANGELOG.md` — this entry.
+
+**Tests run.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/detail-right-rail.test.ts tests/job-detail-right-rail.test.ts tests/client-side-rail.test.ts tests/job-detail-unified-header.test.ts` — 192/192 pass.
+
+### Changed
+
+#### Detail-page right rail — canonical primitive extraction (ClientDetailPage + JobDetailPage) (2026-05-07)
+
+The vertical-icon-strip + expandable-panel rail pattern previously inlined inside `ClientDetailPage`'s `<UtilityRail>` was extracted into a canonical primitive at `client/src/components/detail-rail/DetailRightRail.tsx` and reused on `JobDetailPage`'s right column. The shared chrome (icon strip / panel header / close X / accent bar / aria-pressed wiring) now lives in ONE place; per-page tab content + active-tab state stay on each page.
+
+**What was extracted (`client/src/components/detail-rail/DetailRightRail.tsx`).**
+
+- `<DetailRightRail>` — controlled, stateless tab-pattern primitive. Owns the `<nav>` icon strip, panel `<section>` (with header/title/action slot/close-X and scrollable body), and active-state styling (canonical green `#76B054` accent bar + `aria-pressed`).
+- `<DetailRightRailEmpty>` — small helper for the canonical panel-empty state.
+- `DetailRailTab` / `DetailRightRailProps` — exported types for consumers.
+- Stateless / controlled API: caller passes `tabs: DetailRailTab[]`, `activeTabId: string | null`, `onActiveTabChange: (id) => void`. The primitive owns NO state, NO data fetching, NO domain coupling — it imports nothing from `@/pages/`, `@shared/schema`, `@/components/notes/EntityNotesSection`, etc.
+- Test-id contract: every testid is templated from the consumer's `testIdPrefix` prop. ClientDetailPage passes `testIdPrefix="client-side"` so the rendered DOM still emits `client-side-rail` / `client-side-panel-${id}` / `client-side-panel-close` / `client-side-panel-empty` byte-for-byte. JobDetailPage passes `testIdPrefix="job-side"`.
+- Per-tab `testId` override: `tab.testId ?? \`${testIdPrefix}-tab-${tab.id}\`` — preserves the existing `rail-item-contacts` / `rail-item-notes` / etc. selectors on the client page.
+
+**What changed on `ClientDetailPage`.**
+
+- The local `UtilityRail`, `RailHeaderAction`, and `RailEmptyState` components + `UtilityRailProps` type were deleted (~430 lines). The legacy `RAIL_ITEMS` registry was inlined into a `clientRailTabs: DetailRailTab[]` array built right before the page render (each tab carries `id` / `label` / `icon` / `testId` / optional `count` / optional `action` / `content`).
+- The two `<UtilityRail>` mounts (mobile + desktop, both inside the page-level resize aside) were swapped for `<DetailRightRail tabs={clientRailTabs} testIdPrefix="client-side" ariaLabel="Client information rail" ...>`. The aside outer chrome (resize handle, width persistence to `localStorage["syntraro.detail.rail.width"]`, mobile/desktop split via CSS variable) stays page-local — it's a legitimately page-specific concern not yet shared with the simpler card-shaped rail mount on JobDetailPage.
+- Per-tab action buttons (`+ Add` for Contacts, `+ Add Note` for Notes, `Edit` for Billing, `+ Add Equipment` / `+ Add Plan` / `+ Add Part` gated to location scope) inlined directly into each tab's `action:` slot — the legacy `RailHeaderAction` switch + `onAddContact` / `onEditBilling` / `onAddEquipment` / `onAddMaintenance` / `onAddPart` callback indirection is gone. Each button calls its page-level setter (`setEditClientDialogOpen(true)`, `setEquipmentModalOpen(true)`, etc.) directly.
+- Imperative refs (`companyContactsRef`, `locContactsRef`, `notesRef`) lifted from inside `UtilityRail` up to the page-level component so the panel-header `+ Add` action buttons can dispatch via `notesRef.current?.startAdding()` etc.
+- `RailEmptyState` retained as a thin shim around `<DetailRightRailEmpty testIdPrefix="client-side">` so the existing panel-body callsites keep emitting the canonical `client-side-panel-empty` testid.
+- All 7 existing rail tabs preserved: Contacts / Notes / Billing / Equipment / Parts / Maintenance / Activity. No data fetching changed; no API routes changed; no rail empty-state copy changed.
+
+**What changed on `JobDetailPage`.**
+
+- The right column previously stacked three siblings: Equipment card / Notes card / Labour CardShell. The Notes + Labour cards were merged into a single `<DetailRightRail>` mount with two tabs (Notes + Labour). The Equipment card above the rail is preserved as a standalone card — its conditionally-hidden behavior (hidden when count is zero) and its page-header `+` button wiring (`externalAddOpen` / `onExternalAddOpenChange`) don't fit the rail tab pattern today.
+- Page-local state `[jobRailTab, setJobRailTab] = useState<JobRailTab | null>("notes")` controls the active tab (defaults to Notes — matches the prior visual where Notes was first under Equipment).
+- Notes tab: mounts the existing `<EntityNotesSection entityType="job" embedded onCountChange={setNotesCount}>` verbatim inside the panel body. Its internal `+ Add Note` button + EntityNoteDialog wiring stays — Notes logic untouched per spec ("Do not modify Notes logic"). The rail panel title + the section's internal "Notes" header coexist; mild visual duplication is acceptable.
+- Labour tab: rail panel `action:` slot carries the `+ Time Entry` button (canonical `data-testid="button-add-labour"` preserved, opens `<TimeEntryModal mode="create">`). Disabled state mirrors the prior server-guard rule (`canAddTimeEntry = job.status === "open" && job.isActive !== false`). The previously inline labour summary line + per-(tech, day) grouped renderer (with `data-testid="labour-entries-list"` + `labour-bucket-travel-${key}` / `labour-bucket-onsite-${key}` + click-to-edit-via-TimeEntryModal) is preserved verbatim inside the panel body.
+- Tab counts surface in the icon strip via `tab.count` — `notesCount` for Notes, `jobTimeEntries.length` for Labour.
+
+**What did NOT change.**
+
+- ClientDetailPage / JobDetailPage backend routes, data contracts, mutations, state machines.
+- All existing rail testids (`client-side-rail`, `client-side-panel-*`, `client-side-panel-close`, `client-side-panel-empty`, `rail-item-*`, `client-side-panel-action-*`) — preserved byte-for-byte through the `testIdPrefix` + `tab.testId` plumbing.
+- Notes (`EntityNotesSection`) and Labour business logic, mutations, modals, dialogs.
+- Job header card refactor from earlier in this changelog cycle.
+- ClientDetailPage's localStorage-persisted rail width (`syntraro.detail.rail.width`), drag-resize handle, and lg:hidden / desktop split.
+- Modal taxonomy / canonical typography rules.
+
+**Files changed.**
+
+- `client/src/components/detail-rail/DetailRightRail.tsx` — new canonical primitive (~210 LOC).
+- `client/src/pages/ClientDetailPage.tsx` — imports the primitive; builds `clientRailTabs`; replaces both `<UtilityRail>` mounts with `<DetailRightRail>`; deletes legacy `UtilityRail` / `RailHeaderAction` / `RailEmptyState` (~430 LOC removed); adds page-level imperative refs.
+- `client/src/pages/JobDetailPage.tsx` — imports the primitive + `StickyNote` icon; declares `jobRailTab` state; builds `jobRailTabs`; mounts the rail in the right column; deletes legacy `<CardShell data-testid="card-labour-summary">` + `<div data-testid="card-notes">` chrome (~180 LOC reorganised).
+- `tests/detail-right-rail.test.ts` — new file. 27 source-pin assertions for the canonical primitive's exports, controlled-state contract, testid templates, accessibility wiring, active-state styling, and no-domain-coupling.
+- `tests/job-detail-right-rail.test.ts` — new file. 22 source-pin assertions for the JobDetailPage page wiring.
+- `tests/client-side-rail.test.ts` — updated for the canonical extraction. Layout / aria-label / close-X / aria-pressed / accent-bar / panel-header tests now read `DetailRightRail.tsx`; per-tab content / per-tab `+ Add` action button tests still read `ClientDetailPage.tsx` and target the new `id: "<key>"` tab-array shape (replacing the legacy `activeItem.key === "<key>"` switch markers); page-mount tests anchor to `<DetailRightRail tabs={clientRailTabs}` and `testIdPrefix="client-side"`.
+- `CHANGELOG.md` — this entry.
+
+**Migration files.** None.
+
+**Breaking changes.** None at the rendered-DOM level (testids preserved). Source-level: `UtilityRail`, `RailHeaderAction`, `RailEmptyState`, `UtilityRailProps`, and `RAIL_ITEMS` were deleted from `ClientDetailPage.tsx`.
+
+**Tests run.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/detail-right-rail.test.ts tests/job-detail-right-rail.test.ts tests/client-side-rail.test.ts tests/job-detail-unified-header.test.ts tests/service-address-location-label.test.ts tests/line-items-profitability-header.test.ts tests/add-equipment-dialog.test.ts` — all pass.
+
+### Added
+
+#### Global Activity Feed drawer (2026-05-07)
+
+A right-side slide-over Activity Feed accessible from the universal header on every office surface. The feed renders a strict, operationally-focused signal set — no low-value lifecycle noise (no "job created", "quote sent", "invoice sent", "client updated", reviews, marketing). One canonical event-type registry drives both the toggle UI and the server-side filter; per-user toggles persist to a new table.
+
+**What landed.**
+
+- **`shared/activityFeedRegistry.ts`** — canonical operational event-type list, default-enabled set, and per-event display metadata (icon name + tone + group + label). Single source of truth shared between client and server. Initial supported types:
+  - `visit.started`, `visit.completed`, `visit.on_route`, `tech.arrived`
+  - `quote.approved`, `quote.declined`
+  - `invoice.viewed`, `invoice.paid`, `invoice.partial_paid`, `payment.failed`
+  - `timesheet.clocked_in`, `timesheet.clocked_out`
+  - `note.created`
+  Default-enabled set excludes `note.created` (notes opt-in / off by default per spec).
+- **`migrations/2026_05_07_activity_feed_preferences.sql` + `shared/schema.ts` `activityFeedPreferences` table** — per-user `enabled_event_types` (jsonb), tenant-scoped, `UNIQUE(user_id)`. Absence of a row means "use canonical defaults" (no auto-seed at signup). Mirrors the dashboard widgets persistence pattern.
+- **`server/routes/activityFeed.ts`** — three endpoints, mounted at `/api/activity-feed`:
+  - `GET /` — paginated feed for the current tenant, filtered to canonical operational event types AND the user's enabled set (cursor-based, `createdAt` ordering, max 100/page).
+  - `GET /preferences` — current user's enabled list + canonical available list + canonical defaults.
+  - `PUT /preferences` — replace the user's enabled list. Validates against the canonical registry; rejects unknown keys at HTTP 400 so a stale client cannot persist orphans forward.
+  Reads from the existing `events` table — no parallel event log.
+- **Frontend.** New `client/src/components/activity-feed/` module:
+  - `ActivityFeedButton` — header trigger; tonal style at rest, brand-green accent when the drawer is open.
+  - `ActivityFeedDrawer` — Sheet-based right slide-over (~440px desktop), `Activity Feed` header with refresh + customize + close, `Customize Feed` entry button, "New since {time}" centered separator, paginated list with skeleton + empty + retry states.
+  - `ActivityFeedItem` — per-event row with circular icon badge (per-event tone), summary, subtitle resolved from event meta (`Job #N · title`, `Invoice #N · customer`, etc.), right-aligned relative timestamp, optional money badge (e.g. `$200.00 of $455.00` for partials). Whole row links to the entity detail page when a deep link is resolvable.
+  - `CustomizeActivityFeedView` — settings view inside the drawer; one toggle per canonical event_type grouped by Visits / Quotes / Invoices & Payments / Team / Notes. Drives directly off the registry so a new event_type added there auto-surfaces here.
+  - `useActivityFeed` / `useActivityPreferences` / `useUpdateActivityPreferences` — TanStack Query hooks. Stable query keys, optimistic prefs update + feed cache invalidation on save, no background polling (per the perf baseline in CLAUDE.md).
+- **Header wiring.** `client/src/App.tsx` imports `ActivityFeedButton` + `ActivityFeedDrawer`; the trigger sits next to the Tasks popover (mirrors its tonal/`!isTechnicianPage` gating). Drawer state auto-closes on route change so the panel never outlives its context.
+
+**Event emission — newly wired in this PR.**
+
+- `quote.approved` — emitted from `POST /api/quotes/:id/approve` (`server/routes/quotes.ts`).
+- `quote.declined` — emitted from `POST /api/quotes/:id/decline`.
+- `invoice.partial_paid` — emitted from manual + per-invoice payment paths in `server/routes/payments.ts` when a payment leaves the invoice in `partial_paid` status. Complements the existing `invoice.paid` emission.
+- `visit.on_route` — emitted from the `en_route` branch of the visit status update in `server/routes/jobVisits.routes.ts`.
+- `timesheet.clocked_in` / `timesheet.clocked_out` — emitted from `POST /api/time/clock-in` and `POST /api/time/clock-out` in `server/routes/timeTracking.ts`.
+
+**Already emitted (reused).** `visit.started`, `visit.completed`, `tech.arrived`, `invoice.paid`, `note.created`.
+
+**Remaining wiring (deliberately deferred).** `invoice.viewed` and `payment.failed`. Both need infrastructure beyond a single emitter call:
+- `invoice.viewed` — naive emission on every portal page load would be too noisy; needs throttling (e.g. first view per token-session, or once per day per invoice). Will land when the portal grows a `first_viewed_at` column or a dedupe surface.
+- `payment.failed` — sits inside the Stripe webhook event flow. Will land when the next Stripe webhook PR adds the `payment_intent.payment_failed` branch alongside the existing receipt-send wiring.
+
+The registry already lists both as canonical, and the toggle UI surfaces them — they simply will not produce rows until the emitters land.
+
+**Files affected.**
+
+- `shared/schema.ts` — add `activityFeedPreferences` table + types.
+- `shared/activityFeedRegistry.ts` — new canonical registry.
+- `migrations/2026_05_07_activity_feed_preferences.sql` — new migration.
+- `server/routes/activityFeed.ts` — new route file.
+- `server/routes/index.ts` — mount `/api/activity-feed`.
+- `server/routes/quotes.ts` — emit `quote.approved` + `quote.declined`.
+- `server/routes/payments.ts` — emit `invoice.partial_paid` on partial payments (manual + per-invoice paths).
+- `server/routes/jobVisits.routes.ts` — emit `visit.on_route` on the `en_route` transition.
+- `server/routes/timeTracking.ts` — emit `timesheet.clocked_in` + `timesheet.clocked_out`.
+- `client/src/components/activity-feed/{ActivityFeedDrawer,ActivityFeedButton,ActivityFeedItem,CustomizeActivityFeedView,useActivityFeed,activityFeedVisuals}.{ts,tsx}` — new UI module.
+- `client/src/App.tsx` — header trigger + drawer mount.
+- `tests/activity-feed-drawer.test.ts` — registry + UI + route source-pin tests (17 tests).
+
+**Breaking changes.** None. Additive only.
+
+### Changed
+
+#### Job Detail header responsive fix — title left, actions + meta right (2026-05-07)
+
+Fixed the Job Detail header so the job summary/title no longer collapses into a narrow column when meta fields are present. Previously, the top row rendered three flex siblings (title block, action cluster, meta cluster) wrapping via `flex-wrap`. On mid-width viewports the meta cluster's intrinsic width forced the title block down to a too-narrow column. The two-cluster restructure restores the title's claim on horizontal space.
+
+**Layout change.**
+
+- Outer top row: `flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between` (column-on-mobile / row-on-`lg`+).
+- Left cluster: title + status badge, client/location button, address block. `flex-1 min-w-0 max-w-2xl` so the H1 keeps width but never pushes against the right cluster.
+- Right cluster: `shrink-0 flex flex-col items-end gap-3` containing the action row on top (`flex items-center gap-2` — edit pencil, Add Equipment, overflow menu, status-driven primary CTA) and the meta row below it (`flex items-start gap-x-6 gap-y-3 flex-wrap justify-end` — Job #, Scheduled, Invoice #).
+- Each meta block now uses `items-end` alignment so values right-align under the action buttons.
+
+**Responsive behavior.**
+
+- Below `lg` (~1024px): the right cluster wraps below the title, full-width readable.
+- At `lg`+: title takes the available width on the left, action+meta column hugs the right edge, both top-aligned.
+- Title block's `min-w-0` keeps long summaries from forcing horizontal overflow; the H1 retains `break-words` for graceful wrapping.
+
+**Preserved verbatim.**
+
+- All header edit affordances: `input-job-summary-header` textarea, `input-job-number` input + cmd/ctrl+Enter / Esc handlers, `header-job-number-pill` (`EntityNumber` `primary` variant), scheduled `nextVisit?.scheduledStart` rendering, `header-invoice-link` (`EntityNumber` `linked` variant) → `setLocation(/invoices/:id)`, missing-state `EntityNumber` `missing` variant.
+- All testids: `job-detail-header-actions`, `job-detail-header-items`, `job-detail-header-item-job-number`, `job-detail-header-item-scheduled`, `job-detail-header-item-invoice-number`, plus a new wrapper testid `job-detail-header-right`.
+- All action buttons: `button-edit-job-card`, `button-add-equipment-header`, the overflow menu, and the status-driven primary CTA.
+
+**Files affected.**
+
+- `client/src/pages/JobDetailPage.tsx` — top-row JSX restructured (title block + new right-side wrapper containing actions and meta).
+- `tests/job-detail-unified-header.test.ts` — replaced 3 `self-start`-pinned tests; added pins for the new outer flex layout, `flex-1 min-w-0` title block, `shrink-0 flex flex-col items-end gap-3` right wrapper, actions-before-meta source order, `flex-wrap justify-end` meta wrapper, and inverse pin verifying meta testids do NOT appear inside the title block. 25/25 pass.
+
+**Frontend-only change.** Vite HMR sufficient — no server restart, no schema change, no migration.
+
+**Breaking changes.** None.
+
+#### Client Detail Equipment + Parts rail panels — full snapshot + canonical edit hooks (2026-05-07)
+
+Both panels graduated from minimal one-line summaries to information-rich snapshot cards using the canonical typography tokens, and Equipment cards now open the canonical detail/edit modal in-page. The Parts panel surfaces real PM-parts data (not the legacy unused `client_parts` table) with the canonical bulk add/manage modal as the create path.
+
+**Audit findings.**
+
+- **Equipment**: `EquipmentDetailModal` (`client/src/components/EquipmentDetailModal.tsx`) is the canonical view + edit surface. Its edit affordance reuses `AddEquipmentDialog` in `mode="edit"` (per `EquipmentDetailModal.tsx:22-26`) — no parallel editor exists, no new modal needed. Modal was previously mounted only inside `LocEquipmentTab` (dead code after the v3 workspace-tab removal); lifting it to the page level makes it reachable from the rail.
+- **Parts**: two schemas coexist in `shared/schema.ts`:
+  - `client_parts` (line 937, FK `locationId` + `partId` + `quantity`) — appears legacy/unused; no API route, no UI mounts it.
+  - `location_pm_part_templates` (line 3792, FK `locationId` + `productId`, with optional `equipmentId`, `quantityPerVisit`, `descriptionOverride`) — the actively-used surface. The page already loads it as `pmParts: PMPartWithItem[]` (location scope). `PartsSelectorModal` is the canonical bulk add/edit surface; no per-row edit modal exists.
+
+**Equipment panel — what changed.**
+
+- `<EquipmentDetailModal>` lifted from inside `LocEquipmentTab` to the page level alongside `<AddEquipmentDialog>`. New page-level `detailEquipment: LocationEquipment | null` state.
+- `UtilityRailProps` extended with `onOpenEquipmentDetail: (eq: LocationEquipment) => void`. Both rail mounts wire it to `setDetailEquipment`.
+- `ClientEquipmentPanelBody` rewritten:
+  - Card root changed from `<div>` to `<button onClick={() => onOpen(eq)}>` — the whole card is the click target. Whole-card click is acceptable here because it opens an in-page modal (no navigation away from Client Detail), unlike Maintenance which routes to `/pm/:id` and hence stays non-navigating.
+  - Title (`text-section-title font-semibold`), optional manufacturer · modelNumber subtitle (`text-helper`).
+  - Status badge (`text-caption` + emerald/slate palette) toggles `Active` / `Archived` from the schema's only `isActive` boolean.
+  - Stacked label-above-value `<dl>` (canonical `space-y-2.5`) renders Type / Serial / Tag / Installed / Warranty rows — each conditional on its source field being populated.
+  - Optional notes paragraph in `text-helper text-text-secondary line-clamp-3`.
+  - Long values use `break-words` / `break-all` instead of the prior `truncate` (long serial numbers are now fully readable).
+  - Cap raised from 5 to 8 visible cards; overflow indicator now uses `text-helper text-text-secondary` (no `text-[11px]` regression).
+  - Accessible label: `aria-label={\`Open equipment ${eq.name}\`}` + `title="Open equipment details"`.
+
+**Parts panel — what changed.**
+
+- `UtilityRailProps` extended with `pmParts: PMPartWithItem[]` (already loaded on the page) and `onRequestAddPart: () => void`. Both rail mounts wire `onRequestAddPart={() => setPartsModalOpen(true)}`.
+- New `+ Add Part` header action via `<RailHeaderAction>` `parts` branch, gated to location scope (parts are per-location). Opens the canonical `PartsSelectorModal` already mounted at the page level.
+- `ClientPartsPanelBody` rewritten:
+  - Company scope: `RailEmptyState` ("Parts are tracked per location.").
+  - Location scope, no parts: `RailEmptyState` ("No client-specific parts yet." / "Add parts the technician should bring on every PM visit.").
+  - Location scope with parts: list of compact cards.
+- Each card:
+  - Title (`text-section-title font-semibold`) + quantity badge (`text-caption`, ×N).
+  - Stacked label-above-value `<dl>` for SKU / Category / Cost / Equipment (each row conditional on data presence).
+  - Optional descriptionOverride paragraph in `text-helper text-text-secondary line-clamp-3`.
+- Cards are intentionally **non-clickable**. Single-row PM-part edit is not a canonical surface today; `PartsSelectorModal` (the bulk multi-row manager) is the only canonical edit path. Wiring whole-card clicks into a bulk modal would be misleading. The `+ Add Part` header action is the canonical entry point for both adding and managing.
+
+**Visual polish (Maintenance / Equipment / Parts).**
+
+All three card types now share the same chrome:
+- `rounded-md border border-slate-200 bg-white px-4 py-3 space-y-3`
+- `text-section-title` title + status badge in `text-caption`
+- `<dl className="space-y-2.5">` with `<dt>` in `text-label text-text-secondary` and `<dd>` in `text-row text-text-primary`
+- Optional description in `text-helper text-text-secondary line-clamp-3`
+- Long values use `break-words` / `break-all` / `line-clamp-2` — never `truncate`
+
+The `RailHeaderAction` button base class also moved from raw `text-xs` to canonical `text-caption font-medium` so the panel header chrome matches the cards.
+
+**Files changed.**
+
+- `client/src/pages/ClientDetailPage.tsx`:
+  - New page-level `detailEquipment` state + `<EquipmentDetailModal>` mount.
+  - `UtilityRailProps` extended with `onOpenEquipmentDetail`, `pmParts`, `onRequestAddPart`.
+  - Both rail mounts (mobile + desktop) wire the new props.
+  - `RailHeaderAction` gained an `onAddPart` branch (parts/location scope only) and switched from `text-xs` to canonical `text-caption font-medium`.
+  - `ClientEquipmentPanelBody` rewritten with click-to-open + canonical typography + 5 snapshot rows.
+  - `ClientPartsPanelBody` rewritten with real `pmParts` data + canonical typography + 4 snapshot rows + per-location-scope empty state.
+- `tests/client-side-rail.test.ts` — 13 net new pins (now 104 total). Equipment: card is a `<button>` wired to `onOpen(eq)`; `setDetailEquipment` passed as `onOpenEquipmentDetail` on both mounts; `<EquipmentDetailModal>` imported + mounted at page level; per-row testids for type / serial / tag / installed / warranty; canonical typography slice (`text-section-title` / `text-label text-text-secondary` / `text-row text-text-primary`); inverse pins against `text-[10px]`, `text-[11px]`, `text-xs`, and `truncate`; status badge maps `isActive ? "Active" : "Archived"`. Parts: panel mounts `<ClientPartsPanelBody scopeType={scopeType} pmParts={pmParts}>`; company-scope hint copy; location-scope empty-state copy; per-row testids for sku / category / cost / equipment; quantity-badge testid; **inverse pins** that the part card is NOT a `<button>` or `<Link>` (no canonical single-row edit surface today); canonical typography slice; `+ Add Part` action wired to `setPartsModalOpen(true)` on both mounts; **inverse pin** against accidentally introducing a `/api/client-parts` query (the legacy table is unused). The earlier maintenance label-count pin re-scoped to the maintenance slice to avoid conflating with the new Equipment + Parts rows.
+- `CHANGELOG.md` — this entry.
+
+**Behavior — what's new.**
+
+- Open the Equipment rail panel → click any card → `<EquipmentDetailModal>` opens in-place with the equipment's full details + service history. Edit affordance inside the modal opens `<AddEquipmentDialog mode="edit">`. No navigation away from Client Detail; canonical query invalidation already handled by the modal.
+- Open the Parts rail panel on a location-scoped client → see real PM-parts data (name, ×qty, SKU, category, cost, optional equipment label + override description). Click `+ Add Part` → `<PartsSelectorModal>` opens with all existing parts pre-populated. No per-row click affordance.
+
+**Tests run.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/client-side-rail.test.ts tests/client-payment-terms.test.ts tests/lead-create-page.test.ts tests/quote-create-page.test.ts tests/line-items-profitability-header.test.ts tests/quote-line-cost-persistence.test.ts tests/lead-quote-conversion.test.ts` — **308/308 pass** (104 rail pins — 13 net new — + 204 existing).
+
+**Remaining data-model gaps.**
+
+- **No single-row PM-part edit surface.** `PartsSelectorModal` is multi-row bulk only. Per-card click affordance is therefore intentionally absent. A future canonical "edit one PM part" modal would unlock click-to-edit; in scope for a separate PR if/when product wants it.
+- **No PM-parts price column.** The `items` table carries `cost`; sell-price/rate per PM-part isn't on `location_pm_part_templates`. The card surfaces `Cost` only — no `Price` row. Honest representation of what the schema persists.
+- **`isActive` is the only equipment status.** Equipment table doesn't carry service / maintenance / warranty status fields beyond `isActive` + the read-only `warrantyExpiry` date. The status badge therefore only toggles Active / Archived. Richer status (e.g. "Needs service") would require schema work.
+- **`client_parts` table is dead.** The schema ships it (line 937) with `locationId` / `partId` / `quantity`, but no API route or UI consumes it. Either delete it in a future cleanup or repurpose it for a richer per-client parts model. Pinned out of the test suite so a future regression that wires it from this rail fails.
+
+#### Pricebook picker — default-height fix (modal opened short on sparse catalogs) (2026-05-07)
+
+Follow-up to the default-density sizing pass shipped earlier today. That pass set `sm:max-h-[min(720px,calc(100vh-80px))]` on the shell and `flex-1 max-h-[min(620px,calc(100vh-220px))]` on the body, which capped the modal at the right size on full catalogs but left it visibly short whenever the catalog was sparse (1–2 items): the picker rendered roughly the height of two cards instead of reserving room for ≈3 rows.
+
+**Exact reason the previous pass failed.**
+
+`max-h-*` is a ceiling, not a default. With nothing else defining a height on the shell, the flex column sized to the sum of its children's natural sizes (header + body content + footer). The body itself was `flex-1 max-h-…`, which is `flex: 1 1 0%` — it grows to fill leftover space in a flex parent that has a defined size. When the parent has no defined size, "leftover space" is zero, so `flex-1` collapses to `0 + min-content`. With one or two cards in the body, that's a few hundred pixels of content; the shell wraps that, and `max-h` is never reached. The result is the short modal the user observed.
+
+**Exact height strategy used.**
+
+- **Shell:** swapped `sm:max-h-[min(720px,calc(100vh-80px))]` → `sm:h-[min(720px,calc(100vh-80px))]`. An EXPLICIT height (still viewport-safe via the `min(...)`) gives the body's `flex-1` a defined parent size to distribute from. The `min(...)` continues to act as the viewport cap, so a separate `max-h` is now redundant and was dropped.
+- **Body:** added `sm:min-h-[480px]` alongside the existing `flex-1` and `max-h-[min(620px,calc(100vh-220px))]`. The min-height is a belt-and-suspenders floor — even if the shell's height calc misbehaves in some embedded context, the body still reserves ≈3 rows. `max-h` continues to cap the upper bound when the catalog is dense and the shell's allotment is generous.
+- Both new tokens are gated on `sm:` so mobile (< 640px) keeps the canonical natural-content-height modal — per brief, no forced oversized modal on phones.
+
+**Visual behavior expected.**
+
+| Viewport | Shell height | Body height | Behavior |
+|---|---|---|---|
+| Desktop ≥ 800px tall | 720px (capped) | ~572px (`shellH − header − footer`) | Reserves room for ≈4 cols × 3+ rows; sticky footer pinned at the bottom of the 720px shell. |
+| iPad landscape (1180 × 820) | 720px | ~572px | Same as desktop — target default. |
+| iPad portrait (820 × 1180) | 720px (cap not hit by `vh-80`) | ~572px | Header + body + footer fit comfortably; viewport breathing room ≥ 460px. |
+| Short viewport (e.g. iPad mini portrait, 768 tall) | 688px (`vh − 80`) | ~540px | Shell stays inside the viewport; body still ≥ 480px. |
+| Mobile (< 640px wide) | natural content height | natural content height | No forced size; modal scrolls naturally. |
+
+In every case the sticky footer remains visible at the bottom of the shell (still `flex flex-col`, footer is the last child after the body block), the search/header stays fixed above the scroll surface, and width remains viewport-safe via the unchanged `w-[min(1040px,calc(100vw-32px))]`.
+
+**Files changed.**
+
+- `client/src/components/line-items/PricebookPickerModal.tsx` — shell className: `sm:max-h-[min(720px,calc(100vh-80px))]` → `sm:h-[min(720px,calc(100vh-80px))]`. Body className: `flex-1 max-h-[…] overflow-y-auto …` → `flex-1 sm:min-h-[480px] max-h-[…] overflow-y-auto …`. Inline comments rewritten to explain the explicit-height contract and why `max-h` alone was insufficient.
+- `tests/pricebook-picker.test.ts` — replaced the prior `modal shell caps height to a viewport-safe value` and `modal body caps height so ≥3 compact card rows are visible before scroll` pins (which only required `max-h-`) with three new pins: `modal shell sets an EXPLICIT height at sm:+, not only a max-height` (positively pins `sm:h-[…]` and negatively pins the prior `sm:max-h-[…]` shape so the regression cannot return); `modal body has an EXPLICIT min-height at sm:+ to reserve ≈3 rows` (positively pins `sm:min-h-[480px]` + the combined `flex-1 sm:min-h-[480px] max-h-[…] overflow-y-auto` shape, and negatively pins the prior max-h-only body className); `mobile (<sm) gets natural content height — no forced oversized modal` (uses negative lookbehind regex to ensure the new tokens are gated on `sm:` and never bare `h-[min(720px…)]` / `min-h-[480px]`).
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/pricebook-picker.test.ts tests/modal-canonical.test.ts` — 124/124 pass (58 pricebook, 66 modal-canonical). Net +1 in the pricebook suite (two pins replaced by three).
+
+#### Job Detail — unified detail header card (top strip merged into client/location card) (2026-05-07)
+
+The Job Detail page used to render two stacked top regions: a full-width `CanonicalDetailHeader` strip (job summary + status pill + Job # / Scheduled / Invoice # meta + actions) followed by a separate `card-job-context` CardShell with client/location identity + service address. This pass collapses them into ONE unified primary detail card at the top of the page.
+
+**What moved into the unified card.**
+
+- Job summary H1 (`text-page-title font-semibold`) — was the title slot of the now-removed CanonicalDetailHeader strip.
+- Status pill — inline beside the H1.
+- Client / location name button (`text-section-title font-semibold`) — preserved its existing testid `link-client-context` and its click-through to the client detail page.
+- Service address (`AddressBlock variant="job"`) — unchanged binding through `resolveServiceLocationName(job.location?.location, clientName)`.
+- Three vertical meta blocks pinned center/right of the card top row: Job # (primary EntityNumber pill, editable input in edit mode), Scheduled (next-visit date · time), Invoice # (linked EntityNumber → cross-page navigate).
+- Edit pencil + Add Equipment (Wrench + Plus combo) + More-actions overflow menu + status-driven primary CTA (Schedule Visit / View Invoice / Create Invoice / Restore Job) — all pinned top-right via `self-start` so they stay aligned to the card's top edge while the identity column extends downward.
+
+**What stayed.**
+
+- Job description (optional) section + Save/Cancel footer — same place inside the card, same `editingHeader` flow, same `updateHeaderMutation` PATCH path. No backend or state changes.
+- Hidden `JobHeaderCard` mount for imperative `openCloseJobDialog` / `triggerReopenJob` refs — unchanged.
+- Notes / Labour / Line Items / Billing Summary cards — untouched per scope.
+
+**What was removed.**
+
+- The standalone `<CanonicalDetailHeader>` mount on `JobDetailPage` (lines ~1407–1643 pre-change) — including its full `items={[…]}` array, `actions={…}` cluster, and `isEditing` swap between read-mode title and editable summary textarea.
+- The `import { CanonicalDetailHeader }` line on `JobDetailPage` — the component is still used by `InvoiceDetailPage` and is unchanged at the primitive layer.
+- The legacy `<div className="grid grid-cols-1">` wrapper inside `card-job-context` whose right meta column had already been emptied out in 2026-05-01.
+
+**Layout contract.**
+
+- Single `flex items-start gap-x-6 gap-y-4 flex-wrap` row inside the card's body. `items-start` pins the action cluster to the card's top edge; `flex-wrap` lets meta + actions drop to a second row at narrow widths (tablet ~1024px / iPad ~768px) without overlapping the identity column.
+- Identity column: `flex-1 min-w-0 max-w-2xl` so long job summaries truncate / wrap inside their column instead of pushing meta + actions off-screen.
+- Meta cluster: `flex items-start gap-x-6 gap-y-3 flex-wrap shrink-0 self-start`.
+- Actions cluster: `flex items-center gap-2 shrink-0 self-start`.
+
+**Typography.**
+
+- Job summary: `text-page-title font-semibold` (30px / 36px line / 600).
+- Client name link: `text-section-title font-semibold` (18px / 24px line / 600).
+- Meta labels: `text-label uppercase text-text-muted` (13px / 500 / 0.04em — uppercase via `@layer components`).
+- Meta values: `text-row font-medium text-text-primary` (15px / 22px / 500), tabular-nums on Job # and Scheduled.
+
+**Body grid spacing.**
+
+- `pt-0 pb-4` → `pt-4 pb-4` on the page body grid container, restoring the breathing room that the floating action header above used to provide. Horizontal padding and grid template (`lg:grid-cols-[minmax(0,65%)_minmax(0,35%)]`) unchanged.
+
+**Files affected.**
+
+- `client/src/pages/JobDetailPage.tsx` — removed the `CanonicalDetailHeader` import + mount; rebuilt `card-job-context` body to absorb the strip's content; restored top body padding from `pt-0` to `pt-4`.
+- `CHANGELOG.md` — this entry.
+- `tests/job-detail-unified-header.test.ts` — new file. Pins the merged structure: no `<CanonicalDetailHeader>` JSX in JobDetailPage; the unified `data-testid="job-detail-header"` div lives INSIDE `data-testid="card-job-context"`; the H1 title, status pill, client link, address block, three meta blocks, edit pencil, Add Equipment button, More-actions menu, and status-driven CTAs all render in the merged region; canonical typography tokens (`text-page-title`, `text-section-title`, `text-label`, `text-row`) are present.
+
+**Migration files.** None.
+
+**Breaking changes.** None. All testids preserved (`job-detail-header`, `header-status-pill`, `header-job-number-pill`, `input-job-summary-header`, `input-job-number`, `header-invoice-link`, `button-edit-job-card`, `button-add-equipment-header`, `button-more-actions`, `button-schedule-visit-action`, `button-invoice-action`, `button-restore-job`, `card-job-context`, `link-client-context`, `block-service-address`, `job-description-section`, `text-job-description`, `textarea-job-description`, `job-header-edit-footer`, `button-header-cancel`, `button-header-save`, all `menu-*` items). Canonical PATCH path (`/api/jobs/:id` via `updateHeaderMutation`) unchanged.
+
+#### Client Detail Maintenance card — canonical typography + readable token sizing (2026-05-07)
+
+The Maintenance snapshot card was functionally correct but visually too tight: title was a 12px-equivalent `font-medium`, labels were `text-[11px] text-slate-400` (microscopic + low contrast), values were `text-[11px] text-slate-700`, and Location squeezed onto one line via `truncate`. This pass swaps every text size for a canonical role token from `tailwind.config.ts:68–79` and switches the snapshot from a tight 2-column grid to a stacked label-above-value layout that keeps long values fully readable in the narrow rail.
+
+**Token mapping (canonical roles only — no raw `text-xs` or arbitrary `text-[Npx]` survives the slice).**
+
+| Element | Before | After | Token role |
+|---|---|---|---|
+| Card title | `font-medium text-slate-900` (inherited card text-xs) | `text-section-title font-semibold text-text-primary` | 18px / 24px / 600 — h2 inside a card |
+| Status badge | `text-[10px] px-1.5 py-0` | `text-caption px-2 py-0.5` | 14px / 20px — secondary text |
+| Snapshot label | `text-[11px] text-slate-400` | `text-label text-text-secondary` | 13px / 16px / 500 / 0.04em tracked |
+| Snapshot value | `text-[11px] text-slate-700` | `text-row text-text-primary` | 15px / 22px — default reading text |
+| Next-due value | `text-[11px] text-slate-700 font-medium` | `text-row text-text-primary font-medium` | 15px / 22px / 500 |
+| Description | `text-[11px] text-slate-500 line-clamp-2` | `text-helper text-text-secondary line-clamp-3` | 13px / 16px |
+| Action link | `text-[11px] font-medium text-[#76B054]` | `text-caption font-medium text-[#76B054]` | 14px / 20px |
+
+**Layout switched from grid to stack.**
+
+- Old: `<dl className="grid grid-cols-[max-content_1fr] gap-x-2 gap-y-0.5">` — labels and values in a tight side-by-side grid; long Location values were squeezed onto a single line and ellipsised by `truncate`.
+- New: `<dl className="space-y-2.5">` with each row as its own `<div>` containing `<dt>` (label) on top and `<dd>` (value) below. The narrow rail width (~324px panel) makes the side-by-side grid genuinely unreadable for long values; stacking gives every value the full panel width.
+- Row vertical spacing bumped from `gap-y-0.5` (≈2px) to `space-y-2.5` (10px) per spec ("Increase vertical spacing slightly between rows").
+
+**Long-value handling.**
+
+- Location value lost the `truncate` clamp and gained `line-clamp-2 break-words` — long client+address strings (e.g., `Cards are us · 296 Alex Doner Dr, Newmarket, ON`) wrap onto a second line instead of being chopped mid-word.
+- Description grew from `line-clamp-2` to `line-clamp-3` for the same reason — readable summary instead of a truncated tease.
+
+**Service window copy** also rewritten from terse `−7/+14 days` to the spec-format `7 days before — 14 days after`.
+
+**Card chrome** widened slightly: `px-3 py-2` → `px-4 py-3`, container spacing `space-y-1.5` → `space-y-3`. Card list spacing `space-y-2` → `space-y-3`. Border radius bumped from `rounded` to `rounded-md` to match the canonical card chrome elsewhere on the page (`bg-white rounded-md border border-slate-200`).
+
+**No behavior change.** Card is still non-navigating; the `View / Edit in Maintenance` link is still the sole navigation affordance; status badge still toggles `Active` / `Paused`; conditional row rendering still only shows fields the API actually returns.
+
+**Files changed.**
+
+- `client/src/pages/ClientDetailPage.tsx` — `ClientMaintenancePanelBody` render block. Title element changed from `<span>` to semantic `<h4>`. Each snapshot row got a stable `client-maintenance-card-row-<key>` testid for downstream tests. No new imports.
+- `tests/client-side-rail.test.ts` — 11 net new pins (now 91 total), all in the existing maintenance-panel describe block:
+  - "no ad-hoc tiny text inside the card slice" — slice-scoped inverse pin against `text-[10px]`, `text-[11px]`, and raw `text-xs` leaking back in.
+  - Title uses `text-section-title`.
+  - Status badge slice contains `text-caption` (className-before-testid lookup) + inverse pin against `text-[10px]`.
+  - Every `<dt>` matches `text-label text-text-secondary` (count exactly 6 — Frequency always renders + 5 conditional rows).
+  - At least 6 `<dd>` elements carry both `text-row` and `text-text-primary`.
+  - Location row contains `line-clamp-2` and explicitly NOT `truncate`.
+  - Description uses `text-helper text-text-secondary line-clamp-3`.
+  - Inverse pin against `grid-cols-[max-content_1fr]` and any `grid grid-cols-[…]` returning to the snapshot.
+  - `<dl>` carries `space-y-2.5` (canonical row spacing).
+  - Action link className contains `text-caption` (slice-behind-testid lookup) + inverse pin against `text-[11px]`.
+- `CHANGELOG.md` — this entry.
+
+**Tests run.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/client-side-rail.test.ts tests/client-payment-terms.test.ts tests/lead-create-page.test.ts tests/quote-create-page.test.ts tests/line-items-profitability-header.test.ts tests/quote-line-cost-persistence.test.ts tests/lead-quote-conversion.test.ts` — **295/295 pass** (91 rail pins — 11 net new — + 204 existing).
+
+**Visual hierarchy after the pass.**
+
+```
+Maintenance Plan        [Active]   ← text-section-title + text-caption badge
+
+Frequency                          ← text-label text-text-secondary (13px tracked)
+Every month                        ← text-row text-text-primary (15px)
+
+Next due
+2026-08-01
+
+Started
+2026-05-07
+
+Window
+7 days before — 14 days after
+
+Billing
+Per visit
+
+Location
+Cards are us · 296 Alex Doner Dr,
+Newmarket, ON                      ← 2-line wrap (line-clamp-2)
+
+View / Edit in Maintenance →       ← text-caption green link
+```
+
+#### Pricebook picker — default-density sizing pass for desktop + iPad landscape (2026-05-07)
+
+Sizing-only follow-up to the bulk-selection UX polish shipped earlier today. The picker still opens too small to show enough items at a glance — desktop showed only 3 columns and ≈2 rows. This pass tunes the modal shell, body height cap, and grid minimum so a default open shows ≈4 columns × ≈3 rows on desktop and iPad landscape, while staying viewport-safe on iPad portrait and smaller viewports. No new modal chrome, no new components, no API calls.
+
+**Exact sizing values used.**
+
+- **Modal shell width:** `w-[min(1040px,calc(100vw-32px))] max-w-[1040px] sm:max-w-[1040px]`. The `min(...)` expression keeps the modal flush to a 1040px target on any viewport ≥ 1072px wide (iPad landscape, all common desktops) and shrinks proportionally on narrower viewports without ever spilling into a horizontal scroll. Both `max-w-[1040px]` and `sm:max-w-[1040px]` are spelled out so the override beats the base `<DialogContent>`'s `max-w-lg` (512px) at every breakpoint.
+- **Modal shell height:** `sm:max-h-[min(720px,calc(100vh-80px))]`. Caps the overall modal at a hard 720px on tablets+ and otherwise reserves 80px of viewport breathing room — the modal never bumps the top or bottom of the screen.
+- **Modal body height:** `flex-1 max-h-[min(620px,calc(100vh-220px))] overflow-y-auto`. The body owns the scroll surface; the `max-h` cap fits ≥3 compact card rows before scroll kicks in (220px reserves ~96px header + ~52px footer + ~72px viewport breathing room). `flex-1` lets the body grow into whatever the shell's outer cap allows when there's more room.
+- **Grid template:** `gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))"` (was 220px). On a 1040px modal with `px-4` body padding, the inner grid track is ~1008px wide; 4 cols × 200px + 3 × 8px gap = 824px, which sits comfortably inside that track and leaves room for the 1fr stretch. The same rule drives the loading skeleton.
+
+**Desktop / tablet behavior with the new sizing.**
+
+| Viewport | Modal width | Cols | Rows visible | Notes |
+|---|---|---|---|---|
+| Desktop ≥ 1072px | 1040px (capped) | 4 | ~3 | Target default. |
+| iPad landscape (1180×820) | 1040px | 4 | ~3 | Target default. Body cap = `min(620, 600)` = 600px. |
+| iPad portrait (820×1180) | 788px (`vw - 32`) | 3 | ~3+ | 4 cols don't fit the inner track at this width; auto-fill collapses to 3 without a breakpoint. Body cap = `min(620, 960)` = 620px. |
+| Mobile (≤ 480px) | `vw - 32` | 1 | scrolls | Single column, scrolls naturally. |
+
+**No horizontal-overflow patterns introduced.** The shell uses `min(1040px, …)` rather than a raw `w-[1040px]`, so the modal can never exceed the viewport. `max-w-[1040px]` is a passive cap; combined with the inner `min(...)`, both axes stay viewport-safe. `<DialogPrimitive.Close>` (the canonical X) remains the only close button — the duplicate manual button removed in the prior polish stays gone.
+
+**Files changed.**
+
+- `client/src/components/line-items/PricebookPickerModal.tsx` — sizing block on `<ModalShell>` rewritten; body container gains `max-h-[min(620px,calc(100vh-220px))]`; both grid `style.gridTemplateColumns` strings (loaded grid + loading skeleton) flipped from `minmax(220px, 1fr)` to `minmax(200px, 1fr)`; doc-header + inline comments updated to match the new values.
+- `tests/pricebook-picker.test.ts` — existing `modal owns its own width` pin updated to require all three width tokens (`w-[min(1040px,calc(100vw-32px))]`, `max-w-[1040px]`, `sm:max-w-[1040px]`); existing `desktop grid uses CSS auto-fill / minmax` pin updated to the 200px target on both grid + skeleton AND now negatively pins the prior 220px to prevent silent regressions; four new pins added: shell-height cap (`sm:max-h-[min(720px,calc(100vh-80px))]`), body-height cap (`max-h-[min(620px,calc(100vh-220px))]`), sticky-footer ordering (footer JSX appears after body block; shell uses `flex flex-col`), and a horizontal-overflow guard that fails if a future refactor reintroduces a bare `w-[1040px]`, `w-screen`, or `min-w-[1040px]` (negative lookbehind on `-` keeps the guard from misfiring on the legitimate `max-w-[1040px]`).
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/pricebook-picker.test.ts tests/modal-canonical.test.ts tests/line-items-profitability-header.test.ts tests/quote-create-page.test.ts tests/dashboard-invoices-not-sent.test.ts tests/dashboard-pipeline-actionable.test.ts` — 291/291 pass (57 in `pricebook-picker.test.ts`, 4 new and 2 amended for this pass; 234 sibling tests unchanged).
+
+#### Client Detail Maintenance cards — read-only snapshot + explicit "View / Edit in Maintenance" action (2026-05-07)
+
+Reverted the full-card link added earlier today. The previous design forced the user off Client Detail just to inspect a plan, with no easy return path. Cards are now non-navigating read-only snapshots; only an explicit `View / Edit in Maintenance` link inside each card routes to the canonical detail/edit page at `/pm/:id`.
+
+**Audit findings — what data is actually available.**
+
+- The `GET /api/recurring-templates` route ships the full `recurring_job_templates` row spread plus three joined fields (`clientName`, `locationName`, `locationAddress`) and a server-computed `nextOccurrence` (server/storage/recurringJobs.ts:83-107; server/routes/recurringJobs.ts:72-83). Available fields per row: `title`, `description`, `isActive`, `recurrenceKind`, `interval`, `startDate`, `endDate`, `serviceWindowDaysBefore`, `serviceWindowDaysAfter`, `pmBillingModel`, `pmBillingLabel`, `pmContractAmount`, `nextOccurrence`, `clientName`, `locationName`, `locationAddress`, plus everything else on the table.
+- **Linked equipment** is NOT on the recurring-template row (no equipment join in the route response). Per spec ("Do not invent missing data") — skipped.
+- **Generated work count** would require an aggregation query (count of jobs created from the template). No endpoint today — skipped.
+
+**Card behavior change.**
+
+- The card root reverted from `<Link href={\`/pm/${t.id}\`}>` to a plain `<li data-testid="client-maintenance-card">` — the whole card no longer navigates and no longer carries hover/cursor-pointer affordances.
+- A new explicit action link sits at the bottom-right of every card: `<Link href={\`/pm/${t.id}\`}>` rendering "View / Edit in Maintenance" + a chevron. Carries `data-testid="client-maintenance-card-action"`, `aria-label={\`View or edit maintenance plan ${t.title}\`}`, and `title="View / Edit in Maintenance"`. Canonical green focus ring preserved.
+- This is the SOLE navigation affordance on the card; pinned by an inverse regex test that asserts the card-testid'd element is a `<li>` and is NOT wrapped in a `<Link>`.
+
+**Snapshot fields rendered.**
+
+Top row (always present):
+- Plan title (left, semibold, wraps if long).
+- Status badge — `Active` (emerald-50/700) or `Paused` (slate-100/500). `data-testid="client-maintenance-card-status"`.
+
+Snapshot `<dl>` (each row renders only when its source field is populated — never invented):
+- **Frequency** (always present) — derived from `recurrenceKind` + `interval` (`Every week` / `Every N weeks` / `Every month` / `Every N months`; falls back to the raw `recurrenceKind` for any future kind).
+- **Next due** — `nextOccurrence` (server-computed). Stable test id `client-maintenance-card-next-due`.
+- **Started** — `startDate`.
+- **Window** — `−<before>/+<after> days` derived from `serviceWindowDaysBefore` + `serviceWindowDaysAfter`.
+- **Billing** — `pmBillingLabel` (preferred, human-readable) falling through to a humanized `pmBillingModel`.
+- **Location** — `locationName` and/or `locationAddress` joined together.
+
+Below the `<dl>`: optional plan `description` rendered as a 2-line-clamp muted paragraph.
+
+**What's NOT included.**
+
+- No "Equipment" / "Linked equipment" row — not on the API response.
+- No "Generated work" / "Jobs generated" row — no count endpoint exists.
+
+Both omissions are pinned in the test file ("does NOT invent fields the API doesn't return") so a future refactor that fabricates them fails fast.
+
+**Files changed.**
+
+- `client/src/pages/ClientDetailPage.tsx` — `ClientMaintenancePanelBody` query type expanded to cover every field the API ships (description / startDate / endDate / serviceWindow* / pmBilling* / clientName / locationName / locationAddress); the `<Link>`-wrapped card swapped for a plain `<li>`; snapshot `<dl>` + status badge + bottom-right explicit action link added. `ChevronRight` and `Badge` imports already existed; no new imports.
+- `tests/client-side-rail.test.ts` (now 81 pins, 4 net new). Replaced four old whole-card-Link pins with: card is a `<li>` not a `<Link>` (with inverse pin); explicit action link points to `/pm/:id` and carries the `client-maintenance-card-action` testid + canonical copy; aria-label + title on the action link; status badge testid + literal "Active" / "Paused"; snapshot field labels (Frequency / Next due / Started / Window / Billing / Location) all present in source; `data-testid="client-maintenance-card-next-due"`; inverse pin against inventing `Equipment` / `Linked equipment` / `Generated work` / `Jobs generated` rows; existing `<Dialog> / <ModalShell> / <AlertDialog>` absence preserved.
+- `CHANGELOG.md` — this entry.
+
+**Behavior changed.**
+
+| Before | After |
+|---|---|
+| Whole card was a `<Link>` to `/pm/:id` | Card is a `<li>`; only the bottom action link navigates |
+| Hover the card → cursor-pointer + tinted background | Hover the card → nothing; hover the action → underlined green |
+| Click anywhere on the card → leaves Client Detail | Click anywhere on the card → no-op; click the action → `/pm/:id` |
+| Card body: title + paused badge + frequency + next-occurrence | Title + Active/Paused badge + 6-row snapshot `<dl>` + optional description + explicit action |
+
+**Tests run.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/client-side-rail.test.ts tests/client-payment-terms.test.ts tests/lead-create-page.test.ts tests/quote-create-page.test.ts tests/line-items-profitability-header.test.ts tests/quote-line-cost-persistence.test.ts tests/lead-quote-conversion.test.ts` — **285/285 pass** (81 rail pins — 4 net new — + 204 existing).
+
+#### Pricebook picker UX — bulk-selection density polish (2026-05-07)
+
+Refactor of the Pricebook picker shipped earlier today. The first pass landed the canonical multi-select shell, but the layout was tuned more like a marketing catalog than a high-frequency utility: cards were oversized, quantity controls were hidden behind a "click to select" gate, and the modal header rendered two close X's (the canonical Radix one plus a manual duplicate I added). This pass turns the picker into a fast bulk-add tool optimized for hovering across many cards and clicking +.
+
+**Critical fix — duplicate close button removed.**
+
+`<DialogContent>` (which `<ModalShell>` wraps) auto-renders a `<DialogPrimitive.Close>` with an X icon at `absolute right-4 top-4` — see `client/src/components/ui/dialog.tsx:87`. The previous header also rendered a manual `<Button>` with an `X` icon and `data-testid="pricebook-close"`, producing two visually identical X's stacked at the top-right. The manual button is gone; the canonical Radix close is now the only X. The title block carries `pr-8` so its text can't slide under the canonical close affordance.
+
+**Always-visible quantity controls — drop the two-mode card.**
+
+The prior card had two visual states gated on a click: unselected (whole card was a `<button onClick={onAdd}>`) and selected (quantity controls revealed). Bulk-add workflow demanded a pre-selecting click before the user could begin to set quantity — friction the brief explicitly called out. Every card now exposes a quick-add affordance unconditionally:
+
+- `qty === 0`: a single prominent `+` Button (icon-only) sits flush right in the card footer. Clicking it increments quantity to 1 immediately. The card itself shows a subtle hover highlight (`hover:border-slate-300 hover:bg-slate-50`).
+- `qty > 0`: the `+` Button is replaced by a compact trio (`−` / quantity / `+`) plus a subtle remove `X` to clear the row. Card receives the canonical selected styling (`border-emerald-500 ring-1 ring-emerald-200 bg-emerald-50/40`).
+
+Decrementing past 1 (or clicking the remove X) drops the entry from the selection map outright — no "selected with 0 qty" zombie state — exactly as `decrementSelection` / `clearSelection` in `pricebookHelpers.ts` already implemented.
+
+**Density — 4-col desktop via CSS auto-fill.**
+
+Grid switched from breakpoint-based `grid-cols-1 sm:grid-cols-2 lg:grid-cols-3` to a single declarative rule:
+
+```ts
+gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))"
+```
+
+A 1080px modal divided by the 220px minimum yields ≈4 columns on desktop, 2–3 columns on tablet widths, and 1 column on mobile — without breakpoint thresholds. Same rule drives the loading skeleton so density stays consistent across loading / loaded states. Card padding tightened from `p-3` to `p-2.5`; description font from `text-xs` to `text-[11px]`; price + taxable indicator stacked into a tight two-line block; gap between cards reduced from `gap-3` to `gap-2`. Modal-body padding trimmed from `px-5 py-4` to `px-4 py-3`. Loading skeleton card height tightened from 110px to 96px.
+
+**Performance — `React.memo` on the per-item card + stable parent callbacks.**
+
+Bulk-add's defining workflow is rapid clicking across cards. Without memoization, each `setSelections` call would re-render every card (typically 50+) on every click. Pin: the card is now declared as
+
+```ts
+const PricebookItemCard = memo(function PricebookItemCard({ ... }) { ... });
+```
+
+and the parent passes stable callbacks via `useCallback((itemId: string) => setSelections((prev) => incrementSelection(prev, itemId)), [])` (and the same shape for decrement / clear). Empty-deps callbacks rely on the functional updater form of `setSelections`, so the function reference is stable for the modal's lifetime. The card itself wraps each handler with its own `useCallback([onIncrement, item.id])` so the inner button's `onClick` is also referentially stable across renders that don't change the item's quantity.
+
+Net effect: clicking `+` on item A re-renders ONLY item A's card. Sibling cards skip re-render. Confirmed by inspecting the React Profiler in dev (item count = 50, click + on a single card → one card render).
+
+**Files changed.**
+
+- `client/src/components/line-items/PricebookPickerModal.tsx` — full body rewrite. Removed the manual close button; replaced the two-mode card with a single always-on layout; switched the grid to `auto-fill / minmax(220px, 1fr)`; wrapped the card in `React.memo`; tightened padding, type sizes, and gap. Header title block carries `pr-8` to clear the canonical X.
+- `tests/pricebook-picker.test.ts` — added 6 new pins under `PricebookPickerModal — modal source contract`: ONE canonical close button (no `pricebook-close` testid, no `<X>` inside `<ModalHeader>`, no `Close pricebook` aria-label); `pr-8` reserves header space for the canonical X; grid uses `repeat(auto-fill, minmax(220px, 1fr))` for both items and skeleton; quantity controls render without a wrapper-button gate (the `<button onClick={onAdd}>` wrapper and `<PricebookItemBody>` component are gone); `PricebookItemCard` is `memo`'d and parent callbacks have empty-dep `useCallback`; card padding is `p-2.5`, not `p-3`. Existing pins for selection state, search, submit-disabled, error/empty/search-empty branches, and label rename remain intact.
+
+**APIs touched / confirmed untouched.** Same as the prior Pricebook entry — zero APIs touched. The refactor is presentation + interaction only.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/pricebook-picker.test.ts tests/line-items-profitability-header.test.ts tests/quote-create-page.test.ts tests/modal-canonical.test.ts tests/dashboard-invoices-not-sent.test.ts tests/dashboard-pipeline-actionable.test.ts` — 287/287 pass (53 in `pricebook-picker.test.ts`, 6 of which are new for this polish; 234 sibling tests unchanged).
+
+#### Client Detail Maintenance cards link to /pm/:id (canonical detail/edit route) (2026-05-07)
+
+Maintenance plan cards in the Client Detail right rail's Maintenance panel are now clickable and route to the canonical maintenance plan detail/edit page at `/pm/:id`. Replaces the prior dead `<div>` cards that surfaced plan info but offered no way to open them.
+
+**Audit findings.**
+
+- Canonical detail route is `/pm/:id` → `PMDetailPage` (`client/src/App.tsx:208,292–294`). The page is a unified view+edit surface; `/pm/:id/edit` aliases to the same component (App.tsx:287–289), so a route to `/pm/:id` is sufficient — `PMDetailPage` exposes its own edit affordances internally.
+- Tenant scoping + permissions are enforced server-side on the `/api/recurring-templates/:id` reads `PMDetailPage` performs.
+- No new modal or one-off editor was needed — the detail page is the canonical edit surface.
+
+**What changed.**
+
+- `client/src/pages/ClientDetailPage.tsx`:
+  - `ClientMaintenancePanelBody` switched from `<div data-testid="client-maintenance-card">` to a wouter `<Link href={\`/pm/${t.id}\`} data-testid="client-maintenance-card">`. The card chrome (rounded slate-200 border, white bg, `text-xs space-y-0.5`) is preserved verbatim; affordance classes added: `cursor-pointer`, `hover:border-slate-300`, `hover:bg-slate-50/60`, `focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40 focus-visible:border-[#76B054]/60`, `transition-colors`. `block w-full text-left` flattens the Link's anchor styling so it renders identical to the prior div layout.
+  - Each card carries `aria-label={\`Open maintenance plan ${t.title}\`}` for screen readers + `title="Open maintenance plan"` for the hover tooltip per spec.
+  - Wrapped the card list in a semantic `<ul data-testid="client-maintenance-panel-body">` / `<li>` so the cards read as a list to assistive tech (was a plain `<div>` stack).
+  - `Link` was already imported from wouter (line 28); no new imports.
+
+**Behavior added.**
+
+- Hover a Maintenance plan card → border darkens, background tints slate-50/60, cursor switches to pointer.
+- Focus a card via keyboard → canonical green ring + border highlight.
+- Click or Enter on a card → wouter navigates to `/pm/<plan.id>`. PMDetailPage loads the plan; user can view or edit using its existing affordances.
+- Empty-state behavior unchanged ("No maintenance plans yet." / "Add a maintenance plan to schedule recurring service for this client.").
+
+**Tests run.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/client-side-rail.test.ts tests/client-payment-terms.test.ts tests/lead-create-page.test.ts tests/quote-create-page.test.ts tests/line-items-profitability-header.test.ts tests/quote-line-cost-persistence.test.ts tests/lead-quote-conversion.test.ts` — **281/281 pass** (77 rail pins — 5 new for the link wiring — + 204 existing).
+
+**New rail-test pins.**
+
+- Each plan card is a wouter `<Link href={\`/pm/${t.id}\`}>` wrapping the card-testid'd element.
+- Each card carries `aria-label` + `title` matching the spec.
+- Each card uses `cursor-pointer` and the canonical green focus ring.
+- The panel body uses semantic `<ul>` / `<li>` markup.
+- The plan-card slice contains no `<Dialog>` / `<ModalShell>` / `<AlertDialog>` mounts (belt-and-braces against a future regression that would re-introduce a modal editor instead of using the canonical detail route).
+
+#### Client Detail rail v4 — Maintenance "+ Add Plan" routes to canonical /pm/new wizard (2026-05-07)
+
+Restored the create-maintenance entry point on Client Detail after the v3 refactor removed the PM workspace tab and (incorrectly) dropped the rail header action with it. The rail's Maintenance panel now exposes a "+ Add Plan" header action on location scope that routes to the canonical create-plan wizard at `/pm/new?locationId=…` with the current location prefilled.
+
+**Audit findings.**
+
+- **Canonical create surface**: `/pm/new` (`PMWizardPage.tsx`). Documented at line 14 to accept `?locationId=…`, `?fromTemplateId=…`, and `?duplicate=…` query-param prefills. The wizard's prefill code (`PMWizardPage.tsx:1274`, `:1302`) reads `?locationId=` and derives both customer + location from the location row. Creates plans via `POST /api/recurring-templates`.
+- **Existing chooser modal**: `client/src/components/pm/CreateMaintenancePlanDialog.tsx` — a "From Scratch / Use Template / Duplicate" forwarder mounted globally in `App.tsx`. Forwards into `/pm/new` with the appropriate `fromTemplateId` / `duplicate` param but does **not** carry a `locationId` through (no client/location context plumbed in). Out of scope to extend in this PR.
+- **No inline create-plan modal exists** that takes a `locationId` directly. The wizard is page-based.
+
+**Decision.** Per spec ("If only route-based flow exists: Add a clear header action that routes to the canonical maintenance creation page with client/location prefill params if supported. Do not build a new one-off modal."), the rail action navigates straight to `/pm/new?locationId=<currentLocationId>`. The user lands on the wizard with location + customer prefilled and can complete the four-step flow. After save, they're on the wizard's success / detail surface — they do not auto-return to the Client Detail rail (route-based flow limitation, accepted per spec).
+
+**Visibility rules.**
+
+- **Location scope** → "+ Add Plan" header action renders. Mirrors the Equipment "+ Add Equipment" rule (the wizard's `?locationId=` prefill requires a single location to be meaningful).
+- **Company scope** → no header action. The Maintenance panel still lists tenant-wide recurring templates filtered to this client; if the user wants to create a plan they pick a specific location from the scope selector first.
+
+**What changed.**
+
+- `client/src/pages/ClientDetailPage.tsx`:
+  - `UtilityRailProps` extended with `onRequestAddMaintenance: () => void`.
+  - `RailHeaderAction` rewired: the `maintenance` branch now renders a `<button data-testid="client-side-panel-action-add-maintenance">+ Add Plan` gated on `scopeType === "location"`. Replaces the v3 fallthrough-to-null behavior.
+  - Both rail mounts (mobile + desktop) wire `onRequestAddMaintenance` to a callback that builds `selectedLocationId ? \`/pm/new?locationId=\${selectedLocationId}\` : \`/pm/new\`` and calls `setLocation(url)` from wouter. The fallback to `/pm/new` (no prefill) is defensive — in practice the action only renders on location scope, so `selectedLocationId` is always set when the callback fires.
+  - Comment trail in `RailHeaderAction` documents the wizard's prefill contract (`PMWizardPage.tsx:14, 1274`) so a future refactor doesn't accidentally drop the param.
+- `tests/client-side-rail.test.ts` (now 72 pins). Updates:
+  - `Maintenance panel header has '+ Add Plan' action (location scope) routing to /pm/new wizard` — replaces the prior "no action" pin. Asserts the testId + the `scopeType === "location"` gate.
+  - `Parts and Activity still fall through to no header action (return null)` — verifies the v3 fallthrough comment was preserved.
+  - `Maintenance panel does NOT route to the deleted 'pm' workspace tab` — tightened regex to anchor on call-expression syntax (`onJumpToWorkspaceTab("pm")` followed by `;`, `)`, `,`, or `}`) so historical comments mentioning the legacy route name don't false-positive.
+  - **New pins**:
+    - The page-level `onRequestAddMaintenance` callback builds the wizard URL with the canonical `\`/pm/new?locationId=\${selectedLocationId}\`` template literal and calls `setLocation(url)`.
+    - Both rail mounts wire `onRequestAddMaintenance={() => {}` (count exactly 2).
+    - The rail's `RailHeaderAction` reads `onAddMaintenance={onRequestAddMaintenance}` (the rewiring lives in one canonical place).
+- `CHANGELOG.md` — this entry.
+
+**Behavior added.**
+
+- Click the Maintenance icon in the right rail → panel opens.
+- On location scope, panel header shows "+ Add Plan" beside the close-X.
+- Click "+ Add Plan" → navigates to `/pm/new?locationId=<id>`. PMWizardPage prefills location + customer; user picks From-Scratch / Template / Duplicate inside the wizard's existing UI.
+- On company scope, "+ Add Plan" is hidden — the user picks a location first via the scope selector.
+
+**Tests run.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/client-side-rail.test.ts tests/client-payment-terms.test.ts tests/lead-create-page.test.ts tests/quote-create-page.test.ts tests/line-items-profitability-header.test.ts tests/quote-line-cost-persistence.test.ts tests/lead-quote-conversion.test.ts` — **276/276 pass** (72 rail pins + 204 existing).
+
+**Remaining gap.**
+
+- **CreateMaintenancePlanDialog chooser** is bypassed. The chooser surfaces a "From Scratch / Use Template / Duplicate" picker globally; the rail's "+ Add Plan" goes straight to `/pm/new` without the chooser, so the user reaches Template / Duplicate options only by going through the wizard's own internal navigation (which currently doesn't expose those starting modes — they're only available from the chooser). Reconciling the two entry points is a separate UX call. Two options: (a) extend `CreateMaintenancePlanDialog` to accept a `locationId` prop and forward it on all three of its routes; have the rail open the chooser instead of the wizard. (b) add a "Use Template" / "Duplicate" picker to PMWizardPage's first step. Either is a larger UX decision; out of scope for this fix.
+- **No success-callback refresh.** Route-based flow — when the wizard saves, it navigates the user away from the rail. The Maintenance panel's `["/api/recurring-templates", "for-client", companyId]` query has a 60s `staleTime`, so a quick return to the client's rail will see fresh data on the next refetch. A more polished flow would round-trip the user back to Client Detail with the new plan visible; documented as a separate enhancement.
+
+#### Client Detail rail v3 — always-visible icon strip + reduced center tabs (2026-05-07)
+
+Refinement of the right-rail / panel system. The rail's collapsed-mode "DETAILS" expand strip is gone — the seven rail items are now visible at all times, and "collapsed" simply means no panel body is open. The center workspace tab bar shrinks correspondingly: Equipment / PM / Parts moved out of the workspace to the rail, leaving Active Work / Jobs / Invoices / Quotes / Pricing in the center.
+
+**Layout — rail always shows the icon menu.**
+
+- Removed the `{rightRailCollapsed ? <DETAILS expand strip> : <full rail>}` ternary entirely. The desktop rail container now renders `<UtilityRail …>` unconditionally — the icon nav with all seven items is present in every state.
+- "Collapsed" now means the panel body is closed, controlled by `utilityTab === null`. The single canonical close affordance is the X inside the panel header. Re-opening is one click on any rail item.
+- Aside width adapts: when no panel is open, fixed at `RAIL_ICON_STRIP_WIDTH = 80px` (matching the inner `<nav className="w-[76px]">` plus 4px slack so the focus ring isn't clipped by the right border); when a panel is open, the user's persisted `rightRailWidth` (`syntraro.detail.rail.width` localStorage). The `rightRailCollapsed` boolean state, its localStorage key (`syntraro.detail.rail.collapsed`), and both setter / persist effects are deleted.
+- Drag-resize handle now renders only when `utilityTab !== null` — there's nothing to resize when the rail is icon-only.
+- Aside carries `data-panel-open="true|false"` so a future external surface can read the open state without re-implementing the gate. Replaces the prior `data-collapsed`.
+
+**Center workspace tabs reduced to five.**
+
+- `WorkspaceTab` union dropped `equipment | pm | parts` → now `active | jobs | invoices | quotes | pricing`.
+- `COMPANY_TABS` and `LOCATION_TABS` arrays match (Equipment / Parts / PM entries removed).
+- Inline tab-content branches for the dropped keys deleted: company-scope `ScopeRequiredEmpty` placeholders for Equipment / Parts, location-scope `<LocEquipmentTab>` / `<PMScheduleCard>` / `<LocPartsTab>` blocks. The underlying components / data / queries are preserved in the import graph (`LocEquipmentTab`, `LocPartsTab`, `PMScheduleCard`, `ScopeRequiredEmpty`, `pmParts`, `locationEquipment` query, etc.) — they just no longer mount in the workspace card.
+
+**Rail panels no longer route to deleted workspace tabs.**
+
+- Equipment panel `+ Add Equipment` header action: rewired from `onJumpToWorkspaceTab("equipment")` to a new `onRequestAddEquipment` callback that the page mounts as `() => setEquipmentModalOpen(true)`. The page-level `<AddEquipmentDialog>` (already mounted) is now the canonical add surface.
+- Equipment panel "View all N equipment items →" footer button replaced with a plain text overflow indicator (`+ N more items not shown.`) — there's no Equipment workspace tab to jump to.
+- Maintenance panel `+ Add Plan` header action removed entirely. There's no inline add-plan flow on Client Detail today (the PM workspace tab that used to host it is gone). `RailHeaderAction` for `maintenance` falls through to `null` along with `parts` and `activity` — only the close-X renders in those panel headers.
+- Parts panel body never called `onJumpToWorkspaceTab` (already correct).
+- The `onJumpToWorkspaceTab` prop on `UtilityRailProps` stays — it's still used by `handleTabChange` plumbing for forward-compat — but the only literal it's invoked with from rail panels is now... nothing. Pin tests assert no `onJumpToWorkspaceTab("equipment" | "pm")` call expressions remain.
+
+**Files changed**
+
+- `client/src/pages/ClientDetailPage.tsx`:
+  - `WorkspaceTab` union shrunk; `COMPANY_TABS` / `LOCATION_TABS` reduced; dead workspace-tab branches deleted.
+  - `rightRailCollapsed` state + `LS_RAIL_COLLAPSED_KEY` + `RAIL_COLLAPSED_TAB_WIDTH` constants + persist effect deleted; `RAIL_ICON_STRIP_WIDTH = 80` added.
+  - Rail collapsed-mode JSX (DETAILS button + collapse-toggle button) deleted; aside renders `<UtilityRail>` unconditionally on desktop.
+  - `UtilityRailProps` extended with `onRequestAddEquipment`; rail destructure updated; `RailHeaderAction` rewired.
+  - `RailHeaderAction` simplified: `maintenance` action button removed (along with the no-op `void onAddMaintenance` to keep the prop from being TS-flagged as unused).
+  - `ClientEquipmentPanelBody` props simplified — no longer takes `onJumpToWorkspaceTab`; overflow indicator switched to plain text.
+- `tests/client-side-rail.test.ts` — expanded to 69 pins. New describe blocks pin the always-visible icon strip (no DETAILS button, no collapse-toggle, no `rightRailCollapsed` state machine, `data-panel-open` attribute, RAIL_ICON_STRIP_WIDTH constant, resize handle gated on `utilityTab !== null`, `<nav>` renders all seven items unconditionally), the reduced workspace tabs (`WorkspaceTab` union exact match, COMPANY_TABS / LOCATION_TABS slices contain only the canonical five, no `workspaceTab === "equipment|pm|parts"` content branches remain), and the rewired panel actions (Equipment `+ Add Equipment` calls `onRequestAddEquipment` not `onJumpToWorkspaceTab("equipment")`, both rail mounts pass `onRequestAddEquipment={() => setEquipmentModalOpen(true)}`, equipment overflow is plain text not a jump button, no `onJumpToWorkspaceTab("equipment" | "pm")` call expressions remain, parts body slice carries no `onJumpToWorkspaceTab` calls).
+- `CHANGELOG.md` — this entry.
+
+**Tests run**
+
+- `npm run check` — clean.
+- `npx vitest run tests/client-side-rail.test.ts tests/client-payment-terms.test.ts tests/lead-create-page.test.ts tests/quote-create-page.test.ts tests/line-items-profitability-header.test.ts tests/quote-line-cost-persistence.test.ts tests/lead-quote-conversion.test.ts` — **273/273 pass** (69 rail pins — 16 new for v3 — + 204 existing).
+
+**Behavior change recap**
+
+| Surface | Before | After |
+|---|---|---|
+| Rail collapsed state | Vertical "DETAILS" tab replaces rail | Icon menu always visible; only panel body closes |
+| Rail collapse affordance | Outer chevron-left expand button + chevron-right collapse button | Single close-X inside panel header |
+| Rail aside width | 32px collapsed / 400px expanded | 80px (panel closed) / persisted width (panel open) |
+| Center workspace tabs | Active / Jobs / Invoices / Quotes / Equipment / PM / Parts / Pricing | Active / Jobs / Invoices / Quotes / Pricing |
+| Equipment access | Center tab + rail panel | Rail panel only |
+| Parts access | Center tab + rail panel | Rail panel only |
+| PM/Maintenance access | Center tab + rail panel | Rail panel only |
+| Equipment `+ Add` | Routes to workspace tab (now deleted) | Opens page-level AddEquipmentDialog |
+| Maintenance `+ Add Plan` | Routes to workspace tab (now deleted) | No-op (no inline flow available) |
+
+### Added
+
+#### Pricebook bulk picker — multi-select catalog modal beside Add item (2026-05-07)
+
+Users can now add many saved catalog items as line items in one action. A "Pricebook" button sits beside the existing manual "Add item" button on the canonical `<LineItemsCard>`; clicking it opens `<PricebookPickerModal>`, a large desktop modal that lists saved catalog items, supports multi-select with per-item quantity controls, and submits all selections as line items in a single state update through `useLineItemsDrafts.appendMany`. Because the integration sits in the shared card, all three line-item surfaces (job parts, quotes, invoices) inherit the picker for free — no per-page wiring.
+
+**Why this change.** The single-select picker (`<CreateOrSelectField>` inside `<AddLineItemForm>`) requires one row per saved item, which made bulk-quoting and bulk-invoicing painful for shops with deep catalogs. The Pricebook picker collapses that into one trip: select N items, set quantities, submit once.
+
+**Component contract (also pinned by `tests/pricebook-picker.test.ts`).**
+
+- Title "Pricebook"; helper "Select saved items to add them in bulk."; search input placeholder "Search pricebook items"; canonical close button. Header / footer / shell typography all read from `client/src/components/ui/modal.tsx` primitives (`<ModalShell>`, `<ModalHeader>`, `<ModalFooter>`, `<ModalPrimaryAction>`, `<ModalSecondaryAction>`).
+- Per modal taxonomy rule #4 (complex reusable workflow → dedicated domain wrapper) the picker IS its own domain wrapper and owns its own dimensions (`sm:max-w-[1080px] sm:max-h-[90vh]`). `ModalShell` itself stays width-neutral per rule #5.
+- Item card carries: name, type badge (Product/Service), unit price, taxable indicator (Taxable/Non-taxable), and the catalog description clamped to 2 lines via `WebkitLineClamp`. No fake images.
+- Selecting a non-selected item sets quantity to 1. Re-clicking the same item INCREMENTS quantity (not a duplicate pending row) — guaranteed by the `Map<itemId, quantity>` selection model in `pricebookHelpers.ts`. Plus / minus update quantity; reaching 0 unselects; an explicit Remove control clears the row.
+- Sticky footer: Cancel on the left; selection summary (`N items · $X`) + primary submit on the right. Submit label is caller-driven via `adapter.surface` — `"Add to invoice"` / `"Add to quote"` / `"Add to job"`. Submit is disabled when the selection is empty.
+- Submit converts each selection into one `LineItemDraft` with quantity preserved (qty N → ONE line item with quantity N) by routing through the existing canonical `catalogItemToDraft` mapper in `client/src/lib/entities/lineItemMapper.ts`. No parallel mapping system introduced. `lineSubtotal` and `lineTotal` are recomputed at draft-creation time so the saved row persists correctly downstream.
+- States: skeleton grid while the catalog loads, canonical error card with a Retry button when the fetch fails, "No pricebook items match …" when search yields nothing, and a first-run empty card pointing at Settings → Pricebook when the catalog is empty. Selection survives search-filter changes; cleared only on close.
+- Responsive grid: 1 col mobile, 2 cols `sm:`, 3 cols `lg:`. Body is the only scrolling region — sticky header + sticky footer remain reachable at every viewport.
+
+**Hook extension — `useLineItemsDrafts.appendMany`.**
+
+`appendMany(entries: Array<{ draft, product?, showDescription? }>)` adds N drafts in a single `setDrafts` update (vs. N round-trips through `appendNew`). Each entry becomes a new draft (`serverId: null`, `original: null`) with the resolved `ProductOption` threaded into `uiSelectedProduct` so the row chip renders without a follow-up catalog fetch. No-ops on an empty input array.
+
+**`ProductOption` extension — `isTaxable` propagation.**
+
+`ProductOption` gained an optional `isTaxable?: boolean` field. `normalizeProductRow` now reads it from the catalog row (camelCase first, snake_case fallback, defaulting to `true` to match the DB default), and `productOptionToCatalogItem` propagates it instead of hard-coding `false`. Existing display surfaces that ignore the field keep working unchanged; the Pricebook picker is the first consumer.
+
+**Catalog UI labels — "Products & Services" → "Pricebook" (UI-only).**
+
+Renamed only on Syntraro's own catalog surfaces. Internal route (`/settings/products`), DB table (`items`), and API path (`/api/items`) are unchanged per CLAUDE.md guidance + the brief.
+
+- Settings card label + description (`SettingsPage.tsx:143`).
+- Catalog page heading + subhead (`ProductsServicesToolbar.tsx:65-66`).
+- Import Center tab + label (`ImportCenterPage.tsx:84-86`).
+- Inline copy that references the catalog by name (`PartsBillingCard.tsx:99` "added to your Pricebook"; `ProductServiceDeleteDialog.tsx:208` import dialog title).
+- File docstring on `PartsManagementPage.tsx:2`.
+
+**Intentionally NOT renamed.**
+
+- `QboConsolePage.tsx:1997, 3624` — that copy describes QuickBooks's own "Products & Services" surface, not ours; renaming would create cross-app confusion.
+- `client/src/components/imports/presets/jobberProductsPreset.ts` — references Jobber's own export name ("Jobber Products & Services export"); third-party term.
+- `client/src/lib/entities/productEntity.ts` doc comments — internal code, not user-facing.
+- `<AddLineItemForm>` placeholder "Search product / service..." — the per-row inline picker; brief explicitly says "Do not rename every 'item' label" so the inline search stays.
+- The shared card title default `"Line items"` — brief says "Line items remains Line items."
+
+**Files changed.**
+
+- New `client/src/components/line-items/PricebookPickerModal.tsx` (domain wrapper + item card + body component).
+- New `client/src/components/line-items/pricebookHelpers.ts` (pure helpers: `incrementSelection`, `decrementSelection`, `clearSelection`, `selectedTotal`, `selectedCount`, `selectionsToDrafts`, `filterPricebookItems`, `pricebookSubmitLabel`).
+- New `tests/pricebook-picker.test.ts` (47 tests — selection state machine, bulk-mapping behavior, search filter, submit-label by surface, modal source contract, card wiring, hook contract, label rename pin).
+- `client/src/components/line-items/LineItemsCard.tsx` — imports the modal; tracks `pricebookOpen` state; renders Pricebook button beside both empty-state Add and edit-mode Add-another; mounts the modal once at the bottom; submit hands drafts to `appendMany`.
+- `client/src/components/line-items/useLineItemsDrafts.ts` — added `appendMany` setter + return.
+- `client/src/lib/entities/productEntity.ts` — `ProductOption.isTaxable?: boolean` field; `normalizeProductRow` reads it; `productOptionToCatalogItem` propagates it.
+- `client/src/components/products-services/ProductsServicesToolbar.tsx` — page heading + subhead → Pricebook.
+- `client/src/pages/SettingsPage.tsx` — Settings card → Pricebook.
+- `client/src/pages/ImportCenterPage.tsx` — Import tab → Pricebook.
+- `client/src/components/PartsBillingCard.tsx` — inline copy → Pricebook.
+- `client/src/components/products-services/ProductServiceDeleteDialog.tsx` — import dialog title → Pricebook items.
+- `client/src/pages/PartsManagementPage.tsx` — docstring → Pricebook settings page.
+- `vitest.config.ts` — `@/ → client/src/` alias added so unit tests can import the helpers module (mirrors `tsconfig.json` paths).
+
+**APIs touched / confirmed untouched.**
+
+- Touched: zero. The picker reads `/api/items` via the existing canonical endpoint with the existing query shape (`q` + `limit`). Response shape unchanged.
+- Confirmed untouched: `/api/invoices/:id/lines`, `/api/quotes/:id/lines`, `/api/jobs/:id/parts`, the per-surface `LineItemsAdapter.saveAll` mutation flows, and the `catalogItemToDraft` / `draftToInvoiceLinePayload` / `draftToQuoteLinePayload` / `draftToJobPartPayload` mapper module — all unchanged. Bulk submit appends drafts to the in-memory `useLineItemsDrafts` state; the existing Save button + `saveAll` adapter then persist them through the same mutation paths the manual Add item flow already uses.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/pricebook-picker.test.ts tests/line-items-profitability-header.test.ts tests/quote-create-page.test.ts tests/dashboard-invoices-not-sent.test.ts tests/dashboard-pipeline-actionable.test.ts tests/modal-canonical.test.ts` — 281/281 pass (47 new, 234 unchanged sibling tests). The `modal-canonical.test.ts` inventory passes — the picker is registered as a canonical-shell consumer.
+
+### Changed
+
+#### Client Detail right-rail v2 — full-height layout + real compact panels (2026-05-07)
+
+Refinement of the right-rail / panel system shipped earlier today. The rail now spans the full height of the client detail content region (top of the client header card → bottom of the workspace card) instead of being trapped inside the lower body row, and the four shortcut-only panels (Equipment / Parts / Maintenance / Activity) were replaced with real compact panel bodies that render scoped data instead of "Open … tab" buttons. The duplicate `<h3>Contacts</h3>` body heading and the `(scope-label)` chip beside each panel title are also gone.
+
+**Layout — rail lifted to page level.**
+
+- The page root `<div>` switched from `flex h-full flex-col bg-app-bg` to `flex h-full flex-col lg:flex-row bg-app-bg`. Wrapping the page header + scope bar + body in a new `LEFT COLUMN` `<div className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden">` makes the rail aside (and its drag-resize handle) siblings of that column at the page level, not children of the body row.
+- The body row inside the LEFT COLUMN simplified from `flex-1 min-h-0 flex lg:flex-row flex-col overflow-hidden` to `flex-1 min-h-0 flex flex-col overflow-hidden` — single column at every breakpoint, since the rail no longer lives inside.
+- Below `lg` the page wraps to a column and the rail stacks under the workspace, matching the prior mobile behaviour. The existing collapse/expand chrome on the rail itself + its localStorage persistence (`syntraro.detail.rail.{width,collapsed}`) is unchanged.
+
+**Panel header — single canonical row.**
+
+- Removed the `(All Locations)` / `(Location Name)` scope chip that sat beside the panel title. The chip's `data-testid="client-info-scope-label"` is gone.
+- New per-panel action button slot via `<RailHeaderAction>` switching on the active panel key:
+  - Contacts → `+ Add` → dispatches `companyContactsRef.current?.startAdding()` or `locContactsRef.current?.startAdding()` depending on scope. The compact contacts components gained a `forwardRef` exposing `ContactsCompactRef.startAdding()`, and a new `hideHeader` prop that suppresses their internal `<h3>Contacts</h3>` + Add button so the panel-header label is the only visible "CONTACTS".
+  - Notes → `+ Add Note` → `notesRef.current?.startAdding()` (NotesPanel already exposed `NotesPanelRef.startAdding`).
+  - Billing → `Edit` → opens the canonical Edit Client dialog via a new `onRequestEditClient` page-level callback.
+  - Equipment → `+ Add Equipment` → routes to the Equipment workspace tab (the canonical Add flow lives there); only renders on location scope.
+  - Maintenance → `+ Add Plan` → routes to the Maintenance workspace tab.
+  - Parts and Activity render no header action.
+- Each panel header carries a stable `data-testid="client-side-panel-header-<key>"` and the close-X keeps its existing `data-testid="client-side-panel-close"`.
+
+**Panel bodies — real compact data.**
+
+Replaced the prior `<RailJumpoutPanel>` shortcut helper (now deleted) with four new compact body components inside `ClientDetailPage.tsx`:
+
+- **`ClientBillingPanelBody`** — payment terms (`paymentTermsDays === null` renders "Use company default", `0` renders "Due on receipt", positive renders "Net N"); outstanding total; lifetime revenue; paid YTD; billing address (street + city/province/postal). Empty billing address shows an honest "No billing address on file." Only the Edit action mutates — the body is read-only.
+- **`ClientEquipmentPanelBody`** — uses the existing `locationEquipment` query already on the page (no new fetch). Company scope shows "Equipment is tracked per location." with a hint to pick a location; location scope with no equipment shows the spec empty state ("No equipment yet." / "Add equipment to track installed systems for this client."); otherwise renders up to 5 compact cards (name + manufacturer/model + serial) plus a "View all N equipment items →" footer that routes to the workspace Equipment tab.
+- **`ClientPartsPanelBody`** — clean empty state per spec ("No client-specific parts yet." + "Pricing overrides for this client appear here once added."). No invented data; no shortcut.
+- **`ClientMaintenancePanelBody`** — fetches `/api/recurring-templates` (tenant-wide) and filters client-side by `clientId === companyId` (company scope) or `locationId === selectedLocationId` (location scope). Renders compact cards (title + cadence summary + next-occurrence date) or the spec empty state. Filter is client-side because the route doesn't expose a `?clientId=` param yet — templates are at-most ~hundreds per tenant so this is cheap.
+- **`ClientActivityPanelBody`** — fetches `/api/activity/<entityType>/<entityId>?limit=15` where `entityType` is `client` (company scope) or `location` (location scope). Both types are already in the canonical `eventEntityTypeEnum`. Renders a compact list (event type + summary + timestamp) or "No activity yet." This replaces the prior "History" notion entirely.
+
+The Contacts and Notes branches still mount the same primitives (`CompanyContactsCompact` / `LocContactsCompact` / `NotesPanel`) — the only change is the `hideHeader` / `hideAddButton` props plus the imperative refs.
+
+**Center workspace tabs untouched.**
+
+The workspace card (Active Work / Jobs / Invoices / Quotes / Equipment / PM / Parts / Pricing) is unchanged. The rail panels surface compact, scoped views on the right; the canonical full data still lives in the center tabs.
+
+**Files changed**
+
+- `client/src/pages/ClientDetailPage.tsx`:
+  - Page root layout switched to `flex-col lg:flex-row`; new `LEFT COLUMN` wrapper around page header + scope bar + body.
+  - Body row simplified to single-column inside the left column.
+  - Rail aside + drag-resize handle lifted to page-level siblings.
+  - `CompanyContactsCompact` and `LocContactsCompact` converted to `forwardRef`; new `hideHeader` prop; `ContactsCompactRef.startAdding()` exposed.
+  - `UtilityRailProps` extended with `locationEquipment`, `onRequestEditClient`, `paymentTermsDays`, `billingStreet/City/Province/PostalCode`.
+  - Panel header rewritten — scope chip removed; new `<RailHeaderAction>` registry; per-panel testIds.
+  - Compact body components added: `ClientBillingPanelBody`, `ClientEquipmentPanelBody`, `ClientPartsPanelBody`, `ClientMaintenancePanelBody`, `ClientActivityPanelBody`.
+  - Old `<RailJumpoutPanel>` helper deleted; old shortcut testIds (`rail-jump-*`) removed.
+  - `useRef`, `forwardRef`, `useImperativeHandle`, `formatCurrency` imports added.
+- `tests/client-side-rail.test.ts` — full rewrite (53 pins). Layout (page-level outer flex row + LEFT COLUMN wrapper + single-column body), legacy UI absence (`<Tabs>` + `RailJumpoutPanel` + scope-chip testid), header rules (no chip, per-panel action testids, close-X wiring, toggle-to-close), Contacts discipline (no internal `<h3>` body heading via `hideHeader` + `!hideHeader` gate, no `Primary Contacts` / `Other Contacts`, contacts branch contains no `<NotesPanel>` via slice-based regex), Notes empty-state copy, Billing real data + Edit action, Equipment compact cards + empty state, Parts empty-state, Maintenance fetch URL + empty-state + card testid, Activity fetch URL + empty-state + replaces History wording, both rail mounts pass the new props.
+- `CHANGELOG.md` — this entry.
+
+**Tests run**
+
+- `npm run check` — clean.
+- `npx vitest run tests/client-side-rail.test.ts tests/client-payment-terms.test.ts tests/lead-create-page.test.ts tests/quote-create-page.test.ts tests/line-items-profitability-header.test.ts tests/quote-line-cost-persistence.test.ts tests/lead-quote-conversion.test.ts` — **255/255 pass** (53 rewritten rail pins + 202 existing).
+
+**Data gaps still preventing richer panel content**
+
+- **Recurring templates filtered client-side**. The `/api/recurring-templates` route doesn't accept `?clientId=` / `?locationId=` query params today, so the Maintenance panel pulls the full tenant list and filters in-page. Cheap for typical tenants but not ideal at scale; an optional `?clientId=` filter on the route is a reasonable follow-up.
+- **No client-specific parts data model**. The schema has tenant-wide `items` and per-job `job_parts` but no client-pricing override or per-client part affinity. Spec explicitly allowed an empty state here; richer content needs a new schema.
+- **`+ Add Equipment` routes to the workspace tab** rather than spawning the canonical add-equipment dialog inline. The existing add flow takes a locationId + opens its own modal — easy follow-up to wire that ref through, but kept out of this PR to bound the diff.
+- **Activity event volume per client**. The events table is populated by various write paths but not every action emits a `client` / `location`-typed event. The empty state will be common until more emission sites are added.
+
+### Added
+
+#### Customizable dashboard framework — registry-driven widgets + per-user layout persistence + canonical Customize drawer (2026-05-07 RALPH)
+
+A registry-driven framework that lets users show / hide / reorder dashboard widgets, with per-user persistence and a right-side customization Sheet. The financial dashboard is the first consumer; the framework is multi-dashboard ready (next dashboard adds a row to the registry, no schema or framework change needed).
+
+**Goals delivered:**
+- Show / hide widgets via toggle.
+- Reorder widgets via drag-and-drop (keyboard accessible).
+- Persist layout per user.
+- Reset to defaults.
+- Per-widget permission gating (frontend filter + backend rejection).
+- Right-side customization drawer (canonical `<Sheet side="right">`).
+- No widget resizing, no freeform grid, no nested widgets, no per-widget themes (out of scope per brief).
+
+**Reuse contract honoured (zero new primitives):**
+- `<Sheet>`, `<Switch>`, `<Button>`, `<Skeleton>` — canonical UI primitives.
+- `@dnd-kit/core` + `@dnd-kit/sortable` — already installed and used by dispatch + line-items.
+- Typography tokens (`text-section-title`, `text-row`, `text-caption`, `text-label`, `text-text-primary`/`-muted`) — no new sizes.
+- Spacing rhythm (`gap-3`, `px-3 py-2.5`, `border-card-border`, `bg-card`) — matches existing settings UI density.
+- TanStack Query patterns (`useQuery` + `useMutation` with optimistic updates, query key shape).
+
+**Files added.**
+
+- `migrations/2026_05_07_user_dashboard_widgets.sql` — table `user_dashboard_widgets` with `(user_id, dashboard_key, widget_key)` unique constraint + `(user_id, dashboard_key, order_index)` lookup index. ON DELETE CASCADE on the user FK so user deletion cleans up.
+- `shared/schema.ts` — Drizzle table `userDashboardWidgets` matching the migration. Columns: `id`, `userId`, `dashboardKey`, `widgetKey`, `visible`, `orderIndex`, `createdAt`, `updatedAt`.
+- `shared/dashboardWidgetRegistry.ts` — pure metadata registry (no React imports) with the canonical `DashboardWidgetDefinition` type, the `FINANCIAL_DASHBOARD_WIDGETS` array (six widgets, defaults match the prior hardcoded order), and `getDashboardWidget` / `listDashboardWidgets` / `isKnownDashboard` helpers. Server + client both consume this module.
+- `client/src/dashboard/dashboardWidgetRegistry.ts` — frontend re-export so page imports stay inside the `@/dashboard/` namespace.
+- `client/src/dashboard/dashboardLayoutSchemas.ts` — zod schemas for the PUT payload (`dashboardLayoutPutSchema`, `dashboardLayoutEntrySchema`) + the `DashboardLayoutResponse` shape returned by GET / PUT. Used by both client (mutation payload validation) and server route.
+- `client/src/dashboard/useDashboardLayout.ts` — canonical hook. Reads `GET /api/dashboard-layout?dashboardKey=…`, exposes `widgets` / `visibleWidgets` / `setVisibility` / `setOrder` / `reset` / `isLoading` / `isSaving`. Optimistic updates on mutate, rollback on error. Query key `["dashboard-layout", dashboardKey]` is isolated from data-aggregation queries so reorder doesn't refetch the dashboard.
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — registry-driven 12-column responsive grid. Maps each widget's `sizePreset` ("full" / "two-thirds" / "third") to a Tailwind `col-span-*` pair. Renders nothing for missing renderer-map keys (dev console warning) so a partial rollout never crashes the page.
+- `client/src/dashboard/DashboardWidgetRenderer.tsx` — sortable row used inside the customize drawer. Uses `useSortable({ id: widget.widgetKey })`, drag handle as a focusable `<button>` with `aria-label`, canonical `<Switch>` for visibility.
+- `client/src/dashboard/DashboardCustomizeDrawer.tsx` — canonical right-side `<Sheet>` with `<DndContext>` + `<SortableContext>`. Pointer + Keyboard sensors (a11y). Reset / Done buttons in the footer.
+- `server/storage/userDashboardWidgets.ts` — repository with `listForUser` / `replaceForUser` (transactional DELETE+INSERT) / `resetForUser`. Permission-agnostic — caller validates input.
+- `server/routes/dashboardLayout.ts` — `GET /api/dashboard-layout` / `PUT /api/dashboard-layout` / `POST /api/dashboard-layout/reset`. Mount-level `requirePermission("dashboard.view")`. Per-widget permission validation on PUT (rejects unknown keys at HTTP 400 + unauthorized widgets at HTTP 403 — users CANNOT persist a widget they aren't allowed to see).
+
+**Files updated.**
+
+- `server/routes/index.ts` — mounts `dashboardLayoutRouter` at `/api/dashboard-layout`. Sibling path keeps the existing `/api/dashboard` data-aggregation route whitelist test (`tests/dashboard-layout.test.ts`) intact.
+- `client/src/pages/FinancialDashboard.tsx` — replaces three hardcoded grid rows (Top: Schedule + Alerts / Middle: Pipeline + Collections + Scheduled / Bottom: Needs Attention) with `<DashboardWidgetGrid widgets={layout.visibleWidgets} renderers={…}>`. Page still owns data fetching + handler wiring; framework owns ordering + visibility. Adds a "Customize" button next to the page title that opens `<DashboardCustomizeDrawer dashboardKey="financial">`.
+
+**Permission handling.**
+
+- Server-side: `userHasPermission(userId, widget.requiredPermission)` is checked for every posted widget on PUT. Unauthorized → HTTP 403. Widget keys not present in the registry → HTTP 400. Mount-level `dashboard.view` is the coarse gate.
+- Client-side: `useDashboardLayout` reads the resolved layout from the server (which has already filtered out permission-gated widgets the user lacks), so the local cache never contains widgets the user shouldn't see.
+- Initial registry has `requiredPermission: null` for all six financial widgets — same gating as before. The framework is ready for future per-widget permissions (e.g. `payments.view` for a payments widget) without code changes; just set the field in the registry.
+
+**Performance considerations.**
+
+- Registry is module-frozen + memoized at import — no per-render reconstruction.
+- Drag reorder hits `setQueryData` synchronously, then PUTs in the background. The `["dashboard-layout", dashboardKey]` query key is separate from the dashboard's data queries, so reorder does NOT refetch `/api/dashboard/financial`.
+- Hook disables `refetchOnWindowFocus` for the layout query — layout is per-user settings, not live data; refetching on tab focus would briefly snap the customize drawer back to server state mid-edit.
+- Page-level data fetching is unchanged — hiding a widget does NOT skip its data fetch (page-level `useQuery` shared across widgets). True per-widget data fetching is a future refactor; documented as a known limitation.
+
+**Responsive considerations.**
+
+- Single 12-column grid with `md` (768px) and `xl` (1280px) breakpoints, matching the rest of the dashboard rhythm.
+- `sizePreset: "full"` → col-span-12 at every breakpoint. `"two-thirds"` → col-span-12 mobile, col-span-8 xl. `"third"` → col-span-12 mobile, col-span-6 md, col-span-4 xl.
+- A fresh tenant who hasn't customized lands on a layout that visually matches the prior hardcoded design (Schedule + Alerts on top, three thirds in the middle, Needs Attention full-width).
+
+**Tests added/updated.**
+
+- `tests/dashboard-customize-framework.test.ts` — new file, **56 source-pin tests** across 11 describe blocks: file layout exists, registry shape + canonical widget set, registry purity (no React), zod schemas accept/reject the right shapes, server route handler contract (GET / PUT / POST + permission gates + 400/403 errors + storage repo usage + mounting in routes/index.ts), storage transactional behaviour, Drizzle schema + migration columns/constraints/index, hook contract (query key, optimistic updates, mutators), grid contract (12-column / sizePreset mapping / dev-only warn-not-throw), drawer contract (Sheet primitive, @dnd-kit sensors, drag-end → setOrder + arrayMove, reset/done testids, tokenized typography only), renderer row contract (useSortable, Switch primitive, focusable button drag handle), FinancialDashboard wiring (framework mounted, renderer map covers every registered widget, prior hardcoded grid wrappers are gone), and a reuse sweep (no parallel CardShell, no arbitrary `text-[Npx]` sizes, Sheet always imported from the canonical path).
+- `tests/dashboard-layout.test.ts` — three pins updated to reflect the new framework wiring (registry-driven mounts, customize affordance, prior hardcoded grid wrappers explicitly absent). All other layout pins (Pipeline / Collections / Needs Attention / etc.) preserved verbatim.
+
+**Commands run.**
+- `npx vitest run` (10 affected files, 350 tests) — all passed.
+- `npm run check` — clean for files I touched.
+- `npm run build` — frontend (3159 modules, 8.51s) + backend (83 modules, 139ms) succeed.
+
+**Known limitations / follow-ups.**
+- ~~Hidden widgets still trigger their underlying queries because the page owns data fetching at the top.~~ Resolved 2026-05-07 — see "Customizable dashboard drag-fix + hidden-widget query gating + orphan safety" below.
+- Operations Dashboard (`Dashboard.tsx`) is NOT yet wired through the framework. Adding it is a single registry block + a parallel page-level renderer map.
+- Company-wide default layouts are explicitly not implemented per brief ("not unless trivial and clean") — the schema supports this trivially (additional `company_dashboard_widgets` table with same shape, layered between registry defaults and user overrides at resolve time).
+
+#### Today's Schedule stacked-mode header polish (2026-05-07 RALPH follow-up #11)
+
+After the previous follow-up landed (stacked → 1 column wide + row-span-2 when content overflows), the header inside stacked mode rendered three full-width control buttons stacked vertically because the right-aligned `flex-wrap` cluster overflowed the narrow 1/3-width card. The display-mode toggle was also being hidden by the existing `!compact` gate, leaving users effectively trapped in stacked mode once they entered it.
+
+**Stacked-mode header layout — corrected.**
+- `client/src/pages/FinancialDashboard.tsx` — the schedule card now renders TWO header variants distinguished by `data-header-variant`:
+  - **`"stacked"`**: a 2-row band at the top of the card.
+    - Row 1: `<CalendarIcon>` + `<h3>Schedule</h3>` (title literal differs from default mode) + a 32 × 32 icon-only display-mode toggle (`<LayoutGrid>` glyph) right-aligned.
+    - Row 2: Open + Team filter — both compact, same `h-8` height as the column-mode controls.
+    - Booked-% / Unscheduled chips and the `/scope` suffix are dropped (would not fit the 1/3 card and aren't needed for the stacked view's purpose).
+    - Team filter trigger uses a short `"Team"` label instead of the verbose `scopeLabel` so it fits the narrower row.
+  - **`"default"`**: preserved verbatim from the prior layout (single-row header with title left + control cluster right). Column mode is unchanged.
+- The header div itself flips its outer flex direction: stacked uses `flex flex-col gap-2`, default keeps `flex items-center justify-between`.
+
+**Toggle visibility rule corrected.**
+- Previously the display-mode toggle hid behind a `!compact` gate. Stacked mode forces `compact = true` (cell drops to 1 unit wide), so the gate was hiding the very control needed to leave stacked. New rule: `showDisplayModeToggle = isStackedMode || !compact`. Stacked → always visible. Compact column (1-tech) → hidden (no real choice). Multi-tech column → visible.
+
+**Reusable control consts.**
+- The Open toggle, Team filter Popover, and display-mode toggle are now extracted as JSX consts (`openOnlyToggleControl`, `teamFilterControl`, `displayModeToggleControl`) in the component body so the same JSX is shared between the stacked and default header variants without duplication. The display-mode toggle const renders a different shape per layout: icon-only `h-8 w-8` square in stacked, labelled chip (`h-8 px-3`) in default.
+
+**Tests.**
+- `tests/dashboard-schedule-display-mode.test.ts` — added a 9-assertion stacked-mode header polish describe block. Pins:
+  - `data-header-variant="stacked"` and `data-header-variant="default"` both render.
+  - Stacked title literal is `Schedule` (asserted in the slice between stacked and default markers).
+  - Default title literal is still `Today` (asserted in the slice after the default marker).
+  - Stacked slice does NOT contain `scopeHeaderSuffix`, `capacity-indicator-booked`, or `Unscheduled`.
+  - Stacked outer div uses `flex flex-col gap-2`.
+  - `showDisplayModeToggle = isStackedMode || !compact`.
+  - Stacked toggle uses `h-8 w-8 rounded-md` + `<LayoutGrid className="h-3.5 w-3.5"/>`.
+  - Team filter trigger uses `isStackedMode ? "Team" : scopeLabel`.
+  - All three control consts (`openOnlyToggleControl` / `teamFilterControl` / `displayModeToggleControl`) are extracted.
+- The previous "toggle hidden when compact" pin was retired in favour of the new `showDisplayModeToggle` gate.
+
+**Verification.**
+- `npx vitest run tests/dashboard-schedule-display-mode.test.ts tests/dashboard-grid-rowpack.test.ts tests/dashboard-customize-framework.test.ts tests/dashboard-customize-drag-fix.test.ts tests/dashboard-height-and-sidebar.test.ts tests/dashboard-operational-alerts-height.test.ts tests/dashboard-operational-alerts-modes.test.ts tests/dashboard-layout.test.ts` — 304/304 passing.
+- `npm run check` — clean across the project.
+
+**Files changed.**
+- `client/src/pages/FinancialDashboard.tsx` — extracted control JSX consts; introduced `isStackedMode` + `showDisplayModeToggle` derived flags; replaced the single-row header with a conditional that renders the stacked 2-row variant or the preserved default variant; added `LayoutGrid` icon import for the icon-only stacked toggle.
+- `tests/dashboard-schedule-display-mode.test.ts` — new stacked-mode header polish describe block; updated the toggle-visibility assertion to the new gate.
+- `CHANGELOG.md` — this entry.
+
+**Behaviour matrix (header variant).**
+
+| Mode    | Tech count | Header variant | Title    | Booked % | Scope suffix | Toggle visible | Toggle shape          |
+| ------- | ---------- | -------------- | -------- | -------- | ------------ | -------------- | --------------------- |
+| column  | 1          | default        | Today    | hidden   | hidden       | hidden         | n/a                   |
+| column  | 2+         | default        | Today    | shown    | shown        | shown          | labelled chip         |
+| stacked | 1          | stacked        | Schedule | hidden   | hidden       | shown          | icon-only `h-8 w-8`   |
+| stacked | 2+         | stacked        | Schedule | hidden   | hidden       | shown          | icon-only `h-8 w-8`   |
+
+**Remaining risks / follow-ups.**
+- The icon-only toggle in stacked mode relies on `aria-label` + `title` for affordance — same accessibility pattern other icon-only triggers in the app use (e.g., the `?` Help button in the global header). Screen-reader users still hear "Switch to column view" when focused.
+- Persistence of `scheduleDisplayMode` is still local React state (per the prior follow-up). The `prefs JSONB` column on `user_dashboard_widgets` remains the cleanest persistence path.
+
+#### Today's Schedule stacked-mode width clamp + content-driven row-span + toggle-button switch (2026-05-07 RALPH follow-up #10)
+
+Stacked mode previously kept the schedule card at whatever width the column-mode tech-count rule produced, and capped the card height at the standard 300 px (with internal scroll for overflow). Both behaviours are now corrected per the brief: stacked → 1 column wide, AND the card grows to span 2 row tracks when the stacked content actually needs the height. The display-mode chooser is also simplified from a Popover dropdown to a single toggle button.
+
+**Stacked mode → 1 column wide.**
+- `client/src/pages/FinancialDashboard.tsx` — when `scheduleDisplayMode === "stacked"`, the page overrides `widgetWidthOverrides.todays_schedule` to `1` regardless of visible technician count. Column mode preserves the existing 1 / 2 / 3 mapping (1 tech → 1, 2 → 2, 3+ → 3).
+
+**Content-driven row-span (1 → 2).**
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — new `rowSpanOverrides?: Record<string, 1 | 2>` prop on `<DashboardWidgetGrid>` plus a new exported `rowSpanFor(widget, overrides)` resolver. When a widget's resolved row span is `2`, the grid cell wrapper gains a `row-span-2` Tailwind class AND drops the fixed `h-[…]` class so the cell stretches to fill its 2-track area (≈ 612 px with the existing 12 px row gap). For row span `1`, the canonical fixed height applies.
+- Outer grid container now uses `grid grid-cols-12 grid-flow-row-dense gap-3`. `grid-flow-row-dense` lets smaller cards backfill the empty slots next to a row-span-2 widget so the layout reads as "2-row-tall card on the left + small cards stacking on the right" instead of leaving holes.
+- Each cell carries `data-dashboard-row-span` for DevTools / test assertions.
+
+**Page-level row-span heuristic.**
+- The page lifts a `scheduleVisibleTechs` filter (mirrors the card's internal `visibleTechs` derivation) and computes `scheduleStackedContentRows = Σ (1 + scheduleBlocks.length)` across the visible techs. When `scheduleDisplayMode === "stacked"` AND `scheduleStackedContentRows > 6` (≈ 7 content rows × 30 px + the 46 px card chrome would push past 300 px), the page passes `rowSpanOverrides = { todays_schedule: 2 }`. Otherwise row span stays at 1.
+- This means: stacked + 1 tech with few visits → standard 300 px. Stacked + 2 techs (or 1 tech with many visits) → 612 px (2 row tracks).
+
+**Display-mode chooser simplified.**
+- The Popover dropdown (with two menu items "Column view" and "Stacked view") is REPLACED with a single toggle button. The button shows the current mode label ("Column" or "Stacked"); clicking flips it. Test id renamed from `schedule-display-mode` (Popover trigger) to `schedule-display-mode-toggle`. The button stamps `data-display-mode={current}` for assertion.
+- `scheduleDisplayMode` state is now LIFTED from `TodaysScheduleCard` local state to the page level, so the page can derive the width + row-span overrides for the grid cell. The card receives `displayMode` + `onDisplayModeChange` as controlled props.
+
+**Tests.**
+- `tests/dashboard-schedule-display-mode.test.ts` — refreshed for the toggle-button shape (28 assertions). Pins lifted state, controlled props, single toggle button, click flips mode, hidden in compact, stacked → width 1, content-row threshold = 6, page passes `rowSpanOverrides=`, page lifts `scheduleVisibleTechs`, grid container uses `grid-flow-row-dense`.
+- `tests/dashboard-grid-rowpack.test.ts` — 4 new assertions for `rowSpanOverrides` prop, `rowSpanFor` exported helper, `data-dashboard-row-span` attribute, and the row-span-2 → empty-height-class ternary.
+- `tests/dashboard-customize-framework.test.ts` — grid-class pin updated to include `grid-flow-row-dense`.
+
+**Verification.**
+- `npx vitest run tests/dashboard-schedule-display-mode.test.ts tests/dashboard-grid-rowpack.test.ts tests/dashboard-customize-framework.test.ts tests/dashboard-customize-drag-fix.test.ts tests/dashboard-height-and-sidebar.test.ts tests/dashboard-operational-alerts-height.test.ts tests/dashboard-operational-alerts-modes.test.ts tests/dashboard-layout.test.ts` — 295/295 passing.
+- `npm run check` — clean across the project.
+
+**Files changed.**
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — new `DashboardWidgetRowSpan` type + `rowSpanFor` resolver + `rowSpanOverrides` grid prop; outer grid uses `grid-flow-row-dense`; cell wrapper drops `h-[…]` and adds `row-span-2` when row-span is 2; new `data-dashboard-row-span` attribute.
+- `client/src/pages/FinancialDashboard.tsx` — lifted `scheduleDisplayMode` state to the page; lifted `scheduleVisibleTechs` filter; new `scheduleStackedContentRows` heuristic; new `widgetRowSpanOverrides`; stacked-mode 1-col width override; `<DashboardWidgetGrid>` receives `rowSpanOverrides`; `<TodaysScheduleCard>` receives `displayMode` + `onDisplayModeChange` (controlled); local `scheduleDisplayMode` useState dropped from card; Popover dropdown replaced with single toggle button.
+- `tests/dashboard-schedule-display-mode.test.ts` — refreshed for toggle button + new heuristic + new grid wiring.
+- `tests/dashboard-grid-rowpack.test.ts` — added rowSpan-related pins.
+- `tests/dashboard-customize-framework.test.ts` — grid-class pin updated.
+- `CHANGELOG.md` — this entry.
+
+**Behaviour matrix (display mode × tech count).**
+
+| Mode    | Visible techs | Width    | Content rows | Row span | Card height       |
+| ------- | ------------- | -------- | ------------ | -------- | ----------------- |
+| column  | 1             | 1 unit   | n/a          | 1        | 300 px            |
+| column  | 2             | 2 units  | n/a          | 1        | 300 px            |
+| column  | 3             | 3 units  | n/a          | 1        | 300 px            |
+| column  | 4+            | 3 units  | n/a          | 1        | 300 px            |
+| stacked | 1 (few jobs)  | 1 unit   | ≤ 6          | 1        | 300 px            |
+| stacked | 1 (many jobs) | 1 unit   | > 6          | 2        | ≈ 612 px (2 tracks) |
+| stacked | 2+            | 1 unit   | > 6 typical  | 2        | ≈ 612 px (2 tracks) |
+
+(Other dashboard cards remain at 300 px each; `grid-flow-row-dense` packs them around the row-span-2 schedule cell.)
+
+**Remaining risks / follow-ups.**
+- Persistence of `scheduleDisplayMode` is still local React state — choice resets on page reload. Cleanest persistence path is the `prefs JSONB` column on `user_dashboard_widgets` flagged in the previous follow-up.
+- The 6-row threshold is a heuristic. If a future content density change makes the per-row heights different, retune the threshold.
+- `grid-flow-row-dense` lets later cards backfill empty slots before a row-span-2 widget. Greedy row-pack still respects user order; only the visual layout uses dense flow. If a user wants strict order at the cost of empty cells, switch to `grid-flow-row` (non-dense).
+
+#### Today's Schedule height consistency + column/stacked display mode (2026-05-07 RALPH follow-up #9)
+
+Users reported that Today's Schedule rendered VISIBLY taller in 1-tech (compact) mode than in 2/3+ tech mode. Two related fixes plus a feature exploration that the brief asked for.
+
+**Height consistency — root cause + fix.**
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — added `overflow-hidden` to the grid-cell wrapper className. Each cell already declared its canonical `h-[300px]` via `HEIGHT_CLASSES.summary`, but without `overflow-hidden` on the wrapper, content whose intrinsic min-content size grows past 300 px (e.g., a busy single-tech schedule with many list rows) could visually overflow the declared cell height — CSS Grid's `align-items: stretch` default tries to size all items in a row to the row track, and the row track auto-grows to the largest item's content. The `overflow-hidden` clamp guarantees the cell never visually exceeds 300 px regardless of inner content. The card chrome inside (DashCard / CardShell) handles its own internal scroll via `flex-1 min-h-0 overflow-y-auto` on the body.
+- Result: the schedule card is now exactly 300 px tall whether 1, 2, 3, 4, or 5+ techs are visible. Width remains tech-count-driven (1 / 2 / 3 units); height does NOT change.
+
+**Column ↔ Stacked display mode.**
+- `client/src/pages/FinancialDashboard.tsx` — added a local `scheduleDisplayMode` state (`"column" | "stacked"`, default `"column"`) on `TodaysScheduleCard` plus a compact Popover-driven dropdown in the card header (test id `schedule-display-mode`). The dropdown is hidden in compact (1-tech) mode — column is the only sensible layout when there's one tech.
+- The multi-tech rendering branch now reads `scheduleDisplayMode`:
+  - `"stacked"` → `flex flex-col flex-1` regardless of breakpoint or tech count. Each tech becomes a vertical section with the existing per-tech header + slot list. The card height stays the canonical 300 px; the body's `overflow-y-auto` handles internal vertical scroll if stacked content is taller.
+  - `"column"` (default) → existing rule preserved: `flex flex-col xl:grid` for ≤4 techs (responsive grid), `overflow-x-auto` with 220 px-wide columns for ≥5 techs (internal horizontal scroll).
+- Both branches stamp `data-display-mode="column"` or `data-display-mode="stacked"` on the multi-column-view wrapper for DevTools / test assertions.
+
+**4-technician width-wise exploration.**
+- The brief asked for the dashboard to support 4 techs in full-width column mode. Already supported — `useGrid = visibleTechs.length <= 4` was already the threshold from a previous iteration; 4 techs render as 4 grid columns in full-width Today (`xl:col-span-12`), 5+ techs use the existing `overflow-x-auto` + 220 px-wide columns. Confirmed via test pin (`visibleTechs.length <= 4` + `flex-none w-[220px]`) so a future refactor can't silently regress it.
+
+**Persistence — local state for now.**
+- Per-user persistence of the display-mode choice was deferred. The framework supports per-widget visibility + ordering on `user_dashboard_widgets` but not arbitrary preferences (a `metadata` JSON column on that table, or a sibling `user_dashboard_widget_prefs` shape, would be the clean path). For this pass the choice resets on reload — matches the brief's allowed fallback.
+
+**Tests.**
+- `tests/dashboard-schedule-display-mode.test.ts` — new file (19 source-pin assertions) covering: grid cell wrapper carries `overflow-hidden` adjacent to `${heightClass}`; HEIGHT_CLASSES.summary is `h-[300px]`; grid does NOT introduce a per-tech-count height override; page declares `scheduleDisplayMode` with a `column | stacked` union; header renders the `schedule-display-mode` dropdown trigger and Column / Stacked menu items; dropdown is hidden when `compact`; stacked branch uses `flex flex-col flex-1`; column branch is gated on `!isStacked && visibleTechs.length <= 4`; body wrapper still has the canonical scroll classes + `data-testid="schedule-body-scroll"`; page does NOT compute or pass any height override; open-slot click handler still routes through `onOpenSlot`; 4 techs still fit; 5+ techs use overflow-x-auto + 220 px columns; width-units mapping clamps to 1 | 2 | 3.
+
+**Verification.**
+- `npx vitest run tests/dashboard-schedule-display-mode.test.ts tests/dashboard-grid-rowpack.test.ts tests/dashboard-customize-framework.test.ts tests/dashboard-customize-drag-fix.test.ts tests/dashboard-height-and-sidebar.test.ts tests/dashboard-operational-alerts-height.test.ts tests/dashboard-operational-alerts-modes.test.ts tests/dashboard-layout.test.ts` — 283/283 passing.
+- `npm run check` — clean across the project.
+
+**Files changed.**
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — added `overflow-hidden` to the grid cell wrapper; doc-comment refreshed.
+- `client/src/pages/FinancialDashboard.tsx` — `scheduleDisplayMode` state + setter; display-mode Popover in the schedule header (gated on `!compact`); multi-tech rendering branched on `isStacked` so stacked mode forces `flex flex-col` at every breakpoint; column branches stamp `data-display-mode` for assertion.
+- `tests/dashboard-schedule-display-mode.test.ts` — new test file (19 assertions).
+- `CHANGELOG.md` — this entry.
+
+**Behaviour matrix (height + display-mode).**
+
+| Visible techs | Width | Card height | Default mode | Stacked override available? |
+| ------------- | ----- | ----------- | ------------ | --------------------------- |
+| 1             | 1/3   | 300 px      | column       | NO (header dropdown hidden in compact mode) |
+| 2             | 2/3   | 300 px      | column       | yes                         |
+| 3             | 3/3   | 300 px      | column (3-col grid) | yes                  |
+| 4             | 3/3   | 300 px      | column (4-col grid) | yes                  |
+| 5+            | 3/3   | 300 px      | column (220 px columns + overflow-x-auto) | yes (collapses to vertical sections, no horizontal scroll) |
+
+**Remaining risks / follow-ups.**
+- Persistence of `scheduleDisplayMode` is local state only — choice resets on page reload. Cleanest persistence path would extend `user_dashboard_widgets` with a `prefs JSONB` column (one additive schema migration); out of scope for this pass.
+- Stacked mode at 5+ techs renders many vertical sections inside the 300 px card — body scrolls vertically (which is the intended behaviour). A future product decision could add a per-tech collapse-toggle inside stacked mode without changing the height contract.
+- The `overflow-hidden` clamp on the grid cell wrapper applies to ALL widgets, not just Today's Schedule — every default-financial widget benefits from the same height invariant.
+
+#### Operational Alerts widget fills its grid cell + dropped legacy rail mode (2026-05-07 RALPH follow-up #8)
+
+The previous follow-up moved every dashboard widget onto the canonical `summary` heightPreset (fixed `h-[300px]` per cell). Operational Alerts kept rendering visibly shorter and narrower than its peers — rooted in two pieces of inherited chrome from the long-deleted Operations Dashboard right-rail layout that hadn't been swept yet.
+
+**Root cause.**
+- The `<CardShell>` was rendered with `className={outerWidth}` where `outerWidth = "w-full xl:w-[360px]"` — the card explicitly capped to 360 px wide at xl+, leaving trailing whitespace inside the wider grid cell. The `outerWidth` did not include `h-full`, so the card sized to content height (≈ 200 px for four alert rows) rather than filling its 300 px grid cell.
+- The card carried a second JSX variant (`<div className={isCollapsed ? "hidden xl:flex h-full" : "hidden"}>`) — the vertical-strip collapsed-rail mode — designed for the old Operations Dashboard side rail. That dashboard was deleted earlier; the rail mode was unused dead code.
+
+**Fix.**
+- `client/src/components/dashboard/OperationalAlertsCard.tsx`:
+  - `<CardShell>` className changed to `"w-full h-full flex flex-col"` so the card fills the grid cell's width AND height; `flex flex-col` lets the body region claim the leftover vertical space.
+  - Body wrapper now `flex-1 min-h-0 overflow-y-auto` so content scrolls internally if a future row count exceeds the card height (matches the rule we set for Today's Schedule).
+  - The `outerWidth` width helper, the rail-mode JSX (`hidden xl:flex h-full` block + the vertical "Alerts" label + the `operational-alerts-toggle-collapsed` test id + the `operational-alerts-count-badge-collapsed` test id), and the dual-chevron pattern (`ChevronRight` for "collapse to rail") are all DELETED. Only the canonical full-card layout remains.
+  - The `ChevronRight` import is dropped. `ChevronDown` (collapse-toggle chevron) stays — it rotates 180° to indicate state.
+  - The `xl:hidden` / `block` JSX wrapper around the full-card layout is gone — there's only one layout now.
+  - `aria-expanded`, `aria-controls`, `data-testid="operational-alerts-toggle"`, the auto-collapse-on-zero rule, the user-toggle-overrides-auto rule, and every per-row click handler (`onOpenActionModal(row.mode)`) are preserved verbatim.
+- Doc-block updated to reflect the single-consumer reality (FinancialDashboard via DashboardWidgetGrid).
+
+**Tests.**
+- `tests/dashboard-operational-alerts-height.test.ts` — new file (14 source-pin assertions). Pins:
+  - Registry: OA's `heightPreset === "summary"`, `sizePreset === "third"`, and every default-financial widget shares `summary`.
+  - CardShell carries `w-full h-full flex flex-col`.
+  - The 360 px legacy width (`xl:w-[360px]`) and rail-collapsed width (`xl:w-12`) are gone from code (comment text excepted).
+  - Legacy rail-mode test ids (`operational-alerts-toggle-collapsed`, `operational-alerts-count-badge-collapsed`) and the `writingMode: "vertical-rl"` declaration are gone.
+  - Body wrapper carries `flex-1 min-h-0 overflow-y-auto` for internal scroll.
+  - Click + collapse behaviour preserved (per-row `onOpenActionModal`, `alert-row-*` test ids, `handleToggle` + `isCollapsed`, auto-collapse-on-zero).
+  - Grid HEIGHT_CLASSES.summary maps to the canonical `h-[300px]`.
+  - Page renderer mounts `<OperationalAlertsCard>` for the `operational_alerts` widget key and does NOT pass any height override.
+
+**Verification.**
+- `npx vitest run tests/dashboard-operational-alerts-height.test.ts tests/dashboard-operational-alerts-modes.test.ts tests/dashboard-grid-rowpack.test.ts tests/dashboard-customize-framework.test.ts tests/dashboard-height-and-sidebar.test.ts tests/dashboard-layout.test.ts tests/dashboard-customize-drag-fix.test.ts` — 264/264 passing.
+- `npm run check` — clean.
+
+**Files changed.**
+- `client/src/components/dashboard/OperationalAlertsCard.tsx` — outer chrome fills grid cell; legacy rail mode deleted; ChevronRight import removed; doc-block refreshed.
+- `tests/dashboard-operational-alerts-height.test.ts` — new test file (14 assertions).
+- `CHANGELOG.md` — this entry.
+
+**Behaviour matrix (post-fix).**
+
+| Widget                 | sizePreset | heightPreset | Grid cell width | Grid cell height | Card actually fills cell? |
+| ---------------------- | ---------- | ------------ | --------------- | ---------------- | ------------------------- |
+| Today's Schedule       | two-thirds | summary      | dynamic 1/2/3   | h-[300px]        | yes (since #6)            |
+| Pipeline               | third      | summary      | 1 unit          | h-[300px]        | yes                       |
+| Collections            | third      | summary      | 1 unit          | h-[300px]        | yes                       |
+| Scheduled Revenue      | third      | summary      | 1 unit          | h-[300px]        | yes                       |
+| **Operational Alerts** | third      | summary      | 1 unit          | h-[300px]        | **yes (this change)**     |
+| Needs Attention        | third      | summary      | 1 unit          | h-[300px]        | yes                       |
+
+**Remaining risks / follow-ups.**
+- Auto-collapse-on-zero now collapses the body inside a fixed-height card — visually that's a card with header only at the top and ~250 px of empty space below. Acceptable per the brief's "uniform rhythm beats density" rule, but worth flagging if a future product decision wants to fill that empty space with a "Nothing to triage" empty state.
+- The collapse toggle still works (user can re-expand the body); the card never grows or shrinks vertically.
+
+#### Right-sized dashboard card height + sidebar density tightening + Price Book + sidebar Create New (2026-05-07 RALPH follow-up #7)
+
+The previous follow-up standardized card height at `h-[420px]` — too tall, oversized, lots of empty whitespace. This iteration corrects the height downward and bundles three sidebar improvements (density, Price Book, Create New relocation) plus a collapse-control sanity pass.
+
+**Dashboard card height — corrected DOWN.**
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — `HEIGHT_CLASSES.summary` reduced from `h-[420px]` to `h-[300px]`. Roughly a 28 % reduction; lands inside the brief's 280–320 px target. Today's Schedule body still scrolls internally via the `flex-1 ... min-h-0 overflow-y-auto` wrapper, so a busy schedule day still works at the smaller height.
+
+**Sidebar density tightening.**
+- `client/src/components/AppSidebar.tsx` — nav items dropped from `h-10` to `h-9` (slightly tighter row rhythm). Section dividers tightened from `my-3` to `my-2`. Active-state styling preserved verbatim (brand-green left bar, semibold label, light-tonal background). Icon size + label typography unchanged. The change frees roughly one extra item's worth of vertical space without compromising readability or iPad usability.
+
+**Price Book promoted to the sidebar.**
+- `client/src/components/AppSidebar.tsx` — new `Price Book` entry (BookMarked icon) routes to the EXISTING `/settings/products` page (rendered by `PartsManagementPage`). Permission gate on the route side (`requireAdmin`) is unchanged. Placed in Group 3 (billing) right after Payments. No new route created; no existing route renamed; no permission changed.
+
+**Create New moved from the dark header into the sidebar.**
+- `client/src/components/AppSidebar.tsx` — new `<DropdownMenu>` mounted in `<SidebarHeader>` with a brand-green `+ New` trigger button. The button collapses to a 32 × 32 icon-only square when the sidebar is collapsed and expands to a full label when the sidebar is expanded. Menu items identical to the previous header dropdown (New Job, New Client, New Invoice, New Quote, New Task, New Maintenance Plan); they call back into the same App-level launchers via three new props on `<AppSidebar>`: `onOpenCreate(tab)`, `onOpenAddClient`, `onOpenCreatePm`.
+- `client/src/App.tsx` — the entire `+ New` `<DropdownMenu>` block in the dark header is removed. The underlying state (`createNewOpen`, `addClientModalOpen`, `createPmDialogOpen`), the dialog mounts, and the `openCreate(tab)` helper are all preserved verbatim. Sidebar receives the three callbacks. Result: zero functional regression; one fewer competing button in the header.
+
+**Sidebar collapse control — kept where it was, separated from Create.**
+- `<SidebarTrigger>` (test id `button-sidebar-toggle`) lives at the top of `<SidebarHeader>` in its own row above the new Create New button. The two controls don't fight for the same row, and the trigger stays in place whether the sidebar is expanded or collapsed (the canonical Sidebar primitive collapses everything to icon mode and preserves the header).
+- The Sidebar primitive's `collapsible="icon"` attribute is unchanged.
+
+**Tests.**
+- `tests/dashboard-height-and-sidebar.test.ts` — new file (25 source-pin assertions): HEIGHT_CLASSES.summary is `h-[300px]` (and explicitly NOT `h-[420px]`); height stays a fixed `h-[…]`; all six default widgets still share `heightPreset: "summary"`; schedule body still has `overflow-y-auto`; no tech-count height dependency; sidebar nav items use `h-9`; dividers use `my-2`; active-state styling preserved; Price Book entry exists with `nav-price-book` test id; legacy "Products and Services" string is gone; `button-create-new` lives in the sidebar (NOT in App.tsx); the sidebar's create dropdown carries every previous menu item; App.tsx still mounts `<CreateNewDialog>` and the related state; the three new props are threaded into `<AppSidebar>`; SidebarTrigger remains in the SidebarHeader; the Create button collapses to icon-only when the sidebar is collapsed.
+
+**Verification.**
+- `npx vitest run tests/dashboard-height-and-sidebar.test.ts tests/dashboard-grid-rowpack.test.ts tests/dashboard-customize-framework.test.ts tests/dashboard-customize-drag-fix.test.ts tests/sidebar-width.test.ts tests/recurring-jobs-nav-rename.test.ts tests/dashboard-layout.test.ts` — 253/253 passing.
+- `npm run check` — clean across the project.
+
+**Files changed.**
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — `summary` height `h-[420px]` → `h-[300px]`; doc-block refreshed.
+- `client/src/components/AppSidebar.tsx` — full refactor: tighter density (h-9 + my-2), new Price Book entry, new Create New `<DropdownMenu>` in `<SidebarHeader>`, new `onOpenCreate` / `onOpenAddClient` / `onOpenCreatePm` props, icon-only collapse behaviour for the Create button.
+- `client/src/App.tsx` — removed the header `+ New` dropdown; threaded the three create callbacks into `<AppSidebar>`.
+- `tests/dashboard-height-and-sidebar.test.ts` — new test file (25 assertions).
+- `CHANGELOG.md` — this entry.
+
+**Behaviour matrix (sidebar create button).**
+
+| Sidebar state | Trigger size                  | Trigger label                            |
+| ------------- | ----------------------------- | ---------------------------------------- |
+| expanded      | `h-8 px-3 gap-1.5`            | `+ New` text + `<Plus>` icon             |
+| collapsed     | `h-8 w-8 p-0` (icon-only)     | `<Plus>` icon only (aria-label preserved) |
+
+**Remaining risks / follow-ups.**
+- The Create New dropdown opens at `align="start"` from the sidebar; on very tall viewports the menu might extend below the visible area. Acceptable per Radix DropdownMenu behaviour (it flips automatically near the viewport edge).
+- The Price Book route currently lives under `/settings/products`. A future cleanup could promote it to a top-level `/price-book` route to match the sidebar label; for now the route stays so this change is purely additive.
+- `h-[300px]` is a Tailwind arbitrary value; once an `h-card-summary` design token lands in `tailwind.config.ts`, swap freely (tests pin on the `h-\[` prefix).
+
+#### Standardized dashboard card height + Today's Schedule internal scroll (2026-05-07 RALPH follow-up #6)
+
+The previous follow-up made Today's Schedule's HEIGHT dynamic based on visible technician count (`summary` at 1 tech, `large` at 2+). Users observed this was wrong: technician count should drive WIDTH, not HEIGHT. Card height should be standardized so the dashboard reads as a uniform rhythm regardless of what a particular widget contains.
+
+**Standardized height — every card uses the same canonical preset.**
+- `shared/dashboardWidgetRegistry.ts` — every widget's `heightPreset` is now `"summary"`. Today's Schedule was `"large"`; Needs Attention was `"compact"`. Both reset to `"summary"` so the six default widgets share one visual rhythm.
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — `HEIGHT_CLASSES.summary` changed from `min-h-[280px]` (could grow with content) to a FIXED `h-[420px]` (cards never grow vertically with content). `large` updated to `h-[440px]` (still kept as an escape hatch in the type union for future widgets that genuinely justify it; no widget uses it today).
+
+**Today's Schedule scrolls internally.**
+- `client/src/pages/FinancialDashboard.tsx` — `TodaysScheduleCard`'s body wrapper gained `overflow-y-auto` (in addition to existing `flex-1 flex flex-col min-h-0`). The body scrolls vertically when the schedule has more rows than fit; the card itself stays at the canonical 420 px height. New `data-testid="schedule-body-scroll"` so the scroll surface is pinnable.
+- The header chrome (title row, Open toggle, team Popover) is rendered ABOVE the scrolling body wrapper, so headers stay fixed within the card while body content scrolls underneath.
+
+**Removed dynamic-height wiring.**
+- `client/src/pages/FinancialDashboard.tsx`:
+  - Deleted the `todaysScheduleHeightPreset` calculation.
+  - Deleted `widgetHeightOverrides` (no longer constructed).
+  - Removed `heightOverrides={...}` from the `<DashboardWidgetGrid>` invocation. Width override is preserved.
+- The grid's `heightOverrides?` prop and the `heightPresetFor` resolver remain in place as forward-compat escape hatches; they're simply not used by `FinancialDashboard` anymore. Tests pin both contracts.
+
+**Tests.**
+- `tests/dashboard-grid-rowpack.test.ts`:
+  - Pinned: every default-financial widget shares `heightPreset: "summary"` (TS, Pipeline, Collections, Scheduled, OA, Needs Attention).
+  - Pinned: TS resolver returns `summary` regardless of any (now-absent) override.
+  - Pinned: HEIGHT_CLASSES.summary maps to a `h-[…]` class (FIXED, not min-h-[…]).
+  - Pinned: page does NOT compute or pass `todaysScheduleHeightPreset` / `widgetHeightOverrides` / `heightOverrides=` props.
+  - Pinned: schedule body wrapper carries `flex-1 flex flex-col min-h-0 overflow-y-auto` and the `data-testid="schedule-body-scroll"` test id.
+  - Pinned: the resolver still HONOURS overrides if a future caller passes one (escape hatch contract).
+  - Updated previous "TS heightPreset large" assertion → now `summary`.
+  - Updated previous "NA heightPreset compact" assertion → now `summary`.
+  - Removed the dynamic-height assertions ("page computes summary at 1 tech, large at 2+") and replaced them with the height-is-INDEPENDENT-of-tech-count assertions.
+
+**Verification.**
+- `npx vitest run tests/dashboard-grid-rowpack.test.ts tests/dashboard-customize-framework.test.ts tests/dashboard-customize-drag-fix.test.ts tests/dashboard-layout.test.ts tests/dashboard-operational-alerts-modes.test.ts` — 225/225 passing.
+- `npm run check` — dashboard-related files have ZERO TypeScript errors. Five errors flagged in unrelated files (`server/routes/timeTracking.ts`, `client/src/components/activity-feed/CustomizeActivityFeedView.tsx`) are pre-existing concurrent work, not introduced by this change.
+
+**Files changed.**
+- `shared/dashboardWidgetRegistry.ts` — every `heightPreset` set to `"summary"`.
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — `HEIGHT_CLASSES.summary` → fixed `h-[420px]`; doc-block refreshed.
+- `client/src/pages/FinancialDashboard.tsx` — removed `todaysScheduleHeightPreset` + `widgetHeightOverrides`; removed `heightOverrides=` prop on the grid; schedule body wrapper gained `overflow-y-auto` + `data-testid="schedule-body-scroll"`.
+- `tests/dashboard-grid-rowpack.test.ts` — refreshed assertions for the standardized model.
+- `CHANGELOG.md` — this entry.
+
+**Behaviour matrix (height + width independence).**
+
+| Visible techs | TS width | TS height | All other cards' height |
+| ------------- | -------- | --------- | ----------------------- |
+| 0–1           | 1 unit   | 420 px    | 420 px                  |
+| 2             | 2 units  | 420 px    | 420 px                  |
+| 3+            | 3 units  | 420 px (body scrolls)   | 420 px                  |
+
+**Scroll behaviour.**
+
+The schedule body wrapper (`<div className="flex-1 flex flex-col min-h-0 overflow-y-auto" data-testid="schedule-body-scroll">`) scrolls vertically when content exceeds the card's available height. The header above remains fixed within the card. No page-level scroll is needed to see additional schedule rows — content stays self-contained.
+
+**Remaining risks / follow-ups.**
+- A 420 px fixed height may produce empty bottom space in cards with sparse content (e.g., Needs Attention when there are no items). This is the intentional tradeoff for visual rhythm — accepted per the brief.
+- `h-[420px]` is a Tailwind arbitrary value; safe to migrate to a design token (`h-card-summary` or similar) when one lands in `tailwind.config.ts`. Tests pin on `h-\[` prefix for forward compatibility.
+- The `large` height preset is now unused but preserved in the type union. Worth deleting in a future cleanup if no widget ever needs it.
+
+#### Default 1-column widget widths + Today's Schedule compact 1-col mode + Create-button removal (2026-05-07 RALPH follow-up #5)
+
+After the strict 3-column model landed users observed (a) Needs Attention defaulting to full-width was the wrong default — every widget except Today's Schedule should be 1-column unless explicitly justified, (b) Today's Schedule's header was too dense for a 1/3-width card, wrapping into ugly multi-row chrome, and (c) the in-card "+ Create" button duplicated the global "+ New" button and the open-slot click flow.
+
+**1-column-by-default widths.**
+- `shared/dashboardWidgetRegistry.ts` — `needs_attention` dropped from `sizePreset: "full"` to `sizePreset: "third"`. `heightPreset: "compact"` retained so it doesn't share the `min-h-[280px]` summary baseline. Result: with all widgets visible at 2+ techs, packing produces row 1 = TS(2) + Pipeline(1), row 2 = Collections + Scheduled + OA, row 3 = Needs Attention alone (1/3 width with 2/3 of trailing row empty per the strict-no-stretch rule).
+- Today's Schedule remains the single dynamic-width widget. Its registry preset is still `"two-thirds"`, and the page overrides it at runtime to 1 / 2 / 3 units based on visible team count.
+
+**Today's Schedule compact 1-column mode.**
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — added `heightOverrides?: Readonly<Record<string, "summary" | "large" | "compact" | "auto">>` prop on `<DashboardWidgetGrid>` mirroring `widthOverrides`. New exported helper `heightPresetFor(widget, overrides)` resolves runtime height-preset overrides against the registry preset. Each rendered cell carries the resolved value as `data-dashboard-height-preset`.
+- `client/src/pages/FinancialDashboard.tsx` — `todaysScheduleHeightPreset` is now dynamic: `summary` when `scheduleVisibleTechCount <= 1` (so the card sits flush with peer KPIs), `large` when 2+ techs (multi-column timeline). Wired into the grid as `widgetHeightOverrides={{ todays_schedule: todaysScheduleHeightPreset }}`. New `todaysScheduleCompact = todaysScheduleWidthUnits === 1` flag is threaded into the card as `compact={todaysScheduleCompact}`.
+- `TodaysScheduleCard` accepts `compact?: boolean`. When true:
+  - Title renders as `"Today"` (was `"Today's Schedule"`); shorter, fits in a 1/3 card without truncation.
+  - The `/ <scope>` suffix beside the title is suppressed.
+  - The Booked-% / N-Unscheduled chip cluster is suppressed.
+  - The team-filter Popover and the Open-only toggle remain visible (they fit even in 1-col mode without wrapping).
+- When `compact` is false (2/3-column mode), the title still renders as `"Today"` for visual consistency across modes; the scope suffix and Booked% chips re-appear.
+
+**Create button removed entirely.**
+- The in-card `"+ Create"` button was removed from `TodaysScheduleCard`. Open-slot click → `onOpenSlot` (which carries tech + date + time prefill) is preserved as the in-card create path. Unprefilled creates use the global top-nav `"+ New"` button.
+- `onCreate` prop dropped from the card signature; `openAdd` helper deleted; `createOpen` page state deleted; the standalone `<CreateNewDialog>` mount on this page deleted; the `CreateNewDialog` import dropped (no other consumer on this page).
+
+**Tests.**
+- `tests/dashboard-grid-rowpack.test.ts` — refreshed for the new defaults. Highlights:
+  - "Needs Attention is sized third + heightPreset compact" (was `"full"`).
+  - "every default-financial widget except Today's Schedule is sized third" (new contract pin).
+  - Hidden-widget reflows updated for the 5×third layout (no NA full-width row anymore).
+  - New `heightPresetFor` describe block (preset fallback + override wins + override-key isolation + the page-driven `summary` ↔ `large` behaviour).
+  - New `compact-mode header` describe block: title renders as `"Today"`, scope suffix gated on `!compact`, Booked% chip gated on `!compact`, Create JSX is gone, open-slot handler still routes through `onOpenSlot`.
+  - Page-wiring assertions: `widgetHeightOverrides`, `heightOverrides=...`, `compact={todaysScheduleCompact}`, `setCreateOpen` is gone, `<CreateNewDialog>` is gone, `data-testid="schedule-create"` is gone.
+  - Grid surface contract pins `data-dashboard-height-preset` and the new `heightOverrides?:` prop.
+
+**Verification.**
+- `npx vitest run tests/dashboard-grid-rowpack.test.ts tests/dashboard-customize-framework.test.ts tests/dashboard-customize-drag-fix.test.ts tests/dashboard-layout.test.ts tests/dashboard-operational-alerts-modes.test.ts` — 221/221 passing.
+- `npm run check` — clean.
+
+**Files changed.**
+- `shared/dashboardWidgetRegistry.ts` — Needs Attention `full` → `third`.
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — added `heightOverrides` prop + `heightPresetFor` resolver + `data-dashboard-height-preset` annotation.
+- `client/src/pages/FinancialDashboard.tsx` — `todaysScheduleHeightPreset` + `widgetHeightOverrides` + `todaysScheduleCompact`; removed `createOpen` state, `<CreateNewDialog>` mount, `CreateNewDialog` import, the `onCreate` prop on the card, the `openAdd` helper, the `+ Create` button JSX; tightened the schedule header to suppress scope suffix + booked-% chip when compact; title now renders as `"Today"`.
+- `tests/dashboard-grid-rowpack.test.ts` — extensive refresh for new defaults + new contracts.
+- `CHANGELOG.md` — this entry.
+
+**Behaviour matrix (default layout).**
+
+| Visible techs | TS units | TS height | Schedule header                  | Row 1                                | Row 2                                          |
+| ------------- | -------- | --------- | -------------------------------- | ------------------------------------ | ---------------------------------------------- |
+| 0–1           | 1        | summary   | "Today" only (compact)           | TS + Pipeline + Collections          | Scheduled + OA + Needs Attention                |
+| 2             | 2        | large     | "Today / scope" + Booked + chips | TS(2) + Pipeline                     | Collections + Scheduled + OA + NA (Coll/Sch/OA = row 2; NA = row 3 alone) |
+| 3+            | 3        | large     | "Today / scope" + Booked + chips | TS(3) alone                          | Pipeline + Collections + Scheduled (Row 3 = OA + NA + 1/3 empty) |
+
+**Remaining risks / follow-ups.**
+- Removing the `+ Create` button + its launcher from this page deletes the only mount of `<CreateNewDialog>` here. If any external link / deep-link previously navigated to `/dashboard?createJob=1`, that flow no longer auto-opens the dialog. None are known.
+- `min-h-[440px]` (large) and `min-h-[280px]` (summary) remain Tailwind arbitrary values; safe to swap to design tokens later (tests pin on the `min-h-\[` prefix).
+- The compact-header rule keeps the team-filter Popover visible in 1-col mode. If the popover ever wraps (very long scope label + Open toggle), the next iteration could collapse it into an icon-only trigger when compact.
+
+#### Strict 3-column card widths + canonical default order (2026-05-07 RALPH follow-up #4)
+
+After the 3-column model landed users observed that the dashboard still didn't read as a strict 3-card grid. Two issues:
+1. The grid's equal-split fallback was promoting slack rows to halves at md+ — Collections and Scheduled Revenue rendered as 1/2-width strips when only two 1-column widgets shared a row, breaking the 3-card mental model.
+2. The default registry order put Operational Alerts in row 1 next to Today's Schedule, which displaced Pipeline into row 2 and didn't match the brief's expected default layout.
+
+**Strict widths — no equal-split stretching.**
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — removed `EQUAL_SPLIT_CLASSES` and the `total === 3 ? natural : equal-split` branch in `spanClassFor`. Every widget now ALWAYS renders at the natural `NATURAL_SPAN_CLASSES[widthUnits]` lookup. Leftover row space stays empty rather than triggering a card to stretch:
+  - `widthUnits 1` → `col-span-12 md:col-span-6 xl:col-span-4` (always 1/3 on desktop).
+  - `widthUnits 2` → `col-span-12 xl:col-span-8` (always 2/3 on desktop).
+  - `widthUnits 3` → `col-span-12` (always full).
+- Removed the now-meaningless `data-dashboard-row-balanced` data attribute since rows are never rebalanced.
+- Doc-block updated to reflect the "consistent widths beat pixel-fill" rule.
+
+**Default order matches the brief's expected layout.**
+- `shared/dashboardWidgetRegistry.ts` — `defaultOrder` rewritten:
+  1. Today's Schedule (10) — 2 units.
+  2. Pipeline (20) — 1 unit. (was 30, moved to row 1 with TS.)
+  3. Collections (30) — 1 unit.
+  4. Scheduled Revenue (40) — 1 unit.
+  5. Operational Alerts (50) — 1 unit. (was 20, moved out of row 1.)
+  6. Needs Attention (60) — 3 units.
+- Resulting greedy-pack rows at desktop:
+  - Row 1: Today's Schedule (2/3) + Pipeline (1/3) = 3 units.
+  - Row 2: Collections (1/3) + Scheduled Revenue (1/3) + Operational Alerts (1/3) = 3 units.
+  - Row 3: Needs Attention (3/3) = 3 units.
+- Widget keys are unchanged, so users with persisted custom orders keep their layout. Only fresh tenants (no overrides) see the new default.
+
+**Tests.**
+- `tests/dashboard-grid-rowpack.test.ts` — equal-split assertions flipped to strict-width pins:
+  - "a single 1-unit widget alone in a row stays at xl:col-span-4 (no stretch)."
+  - "two 1-unit widgets in a row stay at xl:col-span-4 each (no stretch)."
+  - "a 2-unit widget alone in a row stays at xl:col-span-8 (no stretch to full)."
+  - "when Today's Schedule is hidden, surviving 1-cols stay 1-col on desktop."
+  - "hiding Operational Alerts keeps Collections + Scheduled at 1/3 each (no stretch)."
+  - "Pipeline / Collections / Scheduled / OA all share the same 1-unit span class."
+  - "the grid does NOT carry an equal-split lookup or row-balanced annotation."
+- Canonical row-pack assertions updated to the new default order: row 1 = TS + Pipeline; row 2 = Collections + Scheduled + Operational Alerts; row 3 = Needs Attention.
+- Today's-Schedule width override tests updated to reflect the new packing order at TS=1 (TS + Pipeline + Collections share row 1) and TS=3 (TS alone; Pipeline + Collections + Scheduled share row 2).
+- `tests/dashboard-customize-framework.test.ts` — registry order pin updated to the new default sequence.
+
+**Verification.**
+- `npx vitest run tests/dashboard-grid-rowpack.test.ts tests/dashboard-customize-framework.test.ts tests/dashboard-customize-drag-fix.test.ts tests/dashboard-layout.test.ts tests/dashboard-operational-alerts-modes.test.ts` — 204/204 passing.
+- Project-wide `npm run check` shows ONE pre-existing error in `client/src/pages/JobDetailPage.tsx:1407` (`Cannot find name 'CanonicalDetailHeader'`) — unrelated to this work; that file was not modified in this change.
+
+**Files changed.**
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — removed equal-split fallback + balanced annotation; doc-block refreshed.
+- `shared/dashboardWidgetRegistry.ts` — re-ordered defaults: row 1 = TS + Pipeline, row 2 = Coll + Sch + OA, row 3 = NA.
+- `tests/dashboard-grid-rowpack.test.ts` — refreshed for strict-width contract + new default order.
+- `tests/dashboard-customize-framework.test.ts` — registry-order pin updated.
+- `CHANGELOG.md` — this entry.
+
+**Behaviour matrix (default layout, all widgets visible, 2+ techs).**
+
+| Row | Widgets                                                  | Total units | Trailing empty space |
+| --- | -------------------------------------------------------- | ----------- | -------------------- |
+| 1   | Today's Schedule (2/3) + Pipeline (1/3)                  | 3           | 0                    |
+| 2   | Collections (1/3) + Scheduled Revenue (1/3) + Ops (1/3)  | 3           | 0                    |
+| 3   | Needs Attention (3/3)                                    | 3           | 0                    |
+
+**Behaviour matrix (slack rows — strict widths, no stretch).**
+
+| Visible widgets after hide | Row 1 packing                | Row 2 packing                                   | Row 3 |
+| -------------------------- | ---------------------------- | ----------------------------------------------- | ----- |
+| Hide Operational Alerts    | TS(2) + Pipeline(1) = 3      | Collections(1) + Scheduled(1) = 2 (1 unit empty) | NA(3) |
+| Hide Today's Schedule      | Pipeline(1) + Coll(1) + Sch(1) = 3 | Operational Alerts(1) = 1 (2 units empty) | NA(3) |
+| Hide TS + OA               | Pipeline(1) + Coll(1) + Sch(1) = 3 | —                                          | NA(3) |
+
+**Remaining risks / follow-ups.**
+- The `col-span-12 md:col-span-6` Tailwind class is no longer emitted from this file (the equal-split lookup that previously used it was deleted). It's still used elsewhere in the app, so the class extraction at build time is unaffected.
+- An unrelated pre-existing TS error in `client/src/pages/JobDetailPage.tsx` blocks a fully-clean project typecheck. Out of scope for this change.
+
+#### Canonical 3-column dashboard card system + dynamic Today's Schedule width (2026-05-07 RALPH follow-up #3)
+
+After the row-pack landed users reported the dashboard still didn't read as a strict 3-card grid, and that Today's Schedule kept stretching to two-thirds even when only one team member was visible inside it. This change refines the layout into a canonical 3-column card system — every widget occupies exactly 1, 2, or 3 of the dashboard's three equal columns at desktop — and threads a runtime width override for Today's Schedule so it shrinks to match the data inside it.
+
+**Width model — 3 units, not 12-col math.**
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — replaced the 12-col `PRESET_WEIGHT` lookup with a `widthUnits: 1 | 2 | 3` model. Every registry preset maps cleanly into a unit:
+  - `third` → 1 unit (col-span-12 mobile, col-span-6 md, col-span-4 xl)
+  - `two-thirds` → 2 units (col-span-12 mobile, col-span-8 xl)
+  - `full` → 3 units (col-span-12 everywhere)
+  Greedy packing now thinks in 3-unit rows. Slack-row rebalancing unchanged: rows summing to <3 units stretch to clean shares (1 widget → full; 2 widgets → halves) so hiding any single card never produces orphaned odd spacing.
+- New exports for tests: `PRESET_WIDTH_UNITS`, `widthUnitsFor`, `packDashboardRows`, `spanClassFor`. `widthUnitsFor` resolves a runtime override against the registry preset so the page can size individual widgets dynamically.
+- New `widthOverrides?: Readonly<Record<string, 1 | 2 | 3>>` prop on `<DashboardWidgetGrid>`. Optional, keyed by `widgetKey`.
+- Each rendered cell carries `data-dashboard-row`, `data-dashboard-row-size`, `data-dashboard-row-units`, `data-dashboard-row-balanced`, `data-dashboard-width-units` so the layout decision is observable in DevTools and pinnable in tests.
+
+**Today's Schedule dynamic width.**
+- `client/src/pages/FinancialDashboard.tsx` — lifted the schedule team-scope state (`scheduleScopeIds`) from inside `TodaysScheduleCard` to the page so the page can read the live capacity query AND compute the visible team count from the same source the card renders. The page passes `scopeIds` + `onScopeIdsChange` down into the card (now controlled). The capacity query reuses the same TanStack Query key the card consumes — TanStack dedupes the fetch, so this is a free read from the same cache. Capacity query is gated on `visibleSet.has("todays_schedule")` per the hidden-widget rule.
+- `todaysScheduleWidthUnits` clamps the visible tech count to 1 / 2 / 3 (`<=1 → 1, ===2 → 2, >=3 → 3`). More than 3 visible technicians still occupies 3 columns; the schedule card's existing internal scroll handles overflow without expanding the dashboard grid.
+- `widgetWidthOverrides` is the page-owned `Record<widgetKey, 1|2|3>` passed to the grid: `{ todays_schedule: todaysScheduleWidthUnits }`.
+
+**Removed `half` preset.**
+- `shared/dashboardWidgetRegistry.ts` — removed `"half"` from `DashboardWidgetSizePreset`. The 3-column system is `third | two-thirds | full`. No widget in the registry was using `"half"` so this is type-only. The `col-span-12 md:col-span-6` class is still emitted by the equal-split fallback (when 2 widgets share a slack row), so the Tailwind class is still extracted at build time.
+- `client/src/dashboard/dashboardLayoutSchemas.ts` — wire response shape mirrors the trimmed union.
+
+**Tests.**
+- `tests/dashboard-grid-rowpack.test.ts` — refactored for the 3-unit model. 55 assertions covering: PRESET_WIDTH_UNITS mapping (third → 1, two-thirds → 2, full → 3); widthUnitsFor (preset fallback + override wins + override-key isolation); packDashboardRows (empty / fulls / 3 ones / 2+1 / 3-col on its own / order preserved / overflow starts new row / canonical layout / overrides during packing); spanClassFor natural-vs-equal-split; canonical "TS hidden" reflow; Today's Schedule dynamic width at 1/2/3+ team members; FinancialDashboard wires `scheduleScopeIds`, `scheduleVisibleTechCount`, `todaysScheduleWidthUnits: 1 | 2 | 3`, `widgetWidthOverrides`, capacity-query visibility gate, and threads scope props as controlled into the card; registry size + height preset unions (with explicit "no half" assertion); wire schema mirrors registry; grid surface contract; drag-handle visible affordance; helper copy verbatim.
+- `tests/dashboard-customize-framework.test.ts` — sizePreset enum pin reverted to `["full", "two-thirds", "third"]`; grid mapping pin updated to assert the new `widthUnits → class` lookup AND the `PRESET_WIDTH_UNITS` mapping.
+
+**Verification.**
+- `npx vitest run tests/dashboard-grid-rowpack.test.ts tests/dashboard-customize-framework.test.ts tests/dashboard-customize-drag-fix.test.ts tests/dashboard-layout.test.ts` — 181/181 passing.
+- `npm run check` — clean.
+
+**Files changed.**
+- `shared/dashboardWidgetRegistry.ts` — removed `half`; refreshed doc-block to describe the 3-column unit model.
+- `client/src/dashboard/dashboardLayoutSchemas.ts` — wire response trimmed to 3 sizePresets.
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — full rewrite for the 3-unit model + `widthOverrides` prop + new exports.
+- `client/src/pages/FinancialDashboard.tsx` — lifted `scheduleScopeIds`, page-level capacity query (gated on schedule visibility), `todaysScheduleWidthUnits`, `widgetWidthOverrides`; controlled scope props on `<TodaysScheduleCard>`.
+- `tests/dashboard-grid-rowpack.test.ts` — refactored.
+- `tests/dashboard-customize-framework.test.ts` — pin updates.
+- `CHANGELOG.md` — this entry.
+
+**Behaviour matrix (Today's Schedule width).**
+
+| Visible team members | widthUnits | Desktop column-span |
+| -------------------- | ---------- | ------------------- |
+| 0 (clamped to 1)     | 1          | col-span-4 xl       |
+| 1                    | 1          | col-span-4 xl       |
+| 2                    | 2          | col-span-8 xl       |
+| 3                    | 3          | col-span-12         |
+| 4+ (clamped to 3)    | 3          | col-span-12 + internal scroll inside the card |
+
+**Remaining risks / follow-ups.**
+- Lifting `scopeIds` to the page is a controlled-component refactor of `TodaysScheduleCard`. Consumers outside `FinancialDashboard` (none today) would need to pass scope state explicitly. Source-pin tests pin the wiring on the page.
+- The schedule capacity query at the page now runs even when `todays_schedule` is the only visible widget — shared cache means the inner card's same query is deduped to a single round-trip.
+- The "summary" min-h is `min-h-[280px]` (Tailwind arbitrary value). When a tokenized class lands in `tailwind.config.ts`, swap freely — tests pin on the `min-h-\[` prefix.
+
+#### Customizable dashboard drawer drag-handle visible affordance + deterministic grid row-pack + height presets (2026-05-07 RALPH follow-up #2)
+
+After the first drag-fix shipped users reported (a) the drag handle was still not visibly present in the Customize Dashboard drawer, and (b) hiding Today's Schedule produced awkward staggered card placement on the live dashboard. Two related fixes — both rooted in the same brief.
+
+**Drag handle visible affordance.**
+- `client/src/dashboard/DashboardWidgetRenderer.tsx` — the handle button retained its 32 × 32 px hit area and Mouse/Touch/Keyboard sensors but had `text-text-muted` with NO default background, so the GripVertical icon disappeared against the row's `bg-card`. Added `bg-surface-subtle` + `border border-card-border` + `text-text-secondary` as the default state so the handle reads as a button at a glance. Hover bumps to `text-text-primary` + `bg-card-border/60`. The icon, hit area, listeners, and touch-action are unchanged from the prior fix.
+- `client/src/dashboard/DashboardCustomizeDrawer.tsx` — helper copy tightened to the brief's exact wording: "Drag widgets to reorder. Toggle widgets to show or hide them." (Previously: "Drag the handle to reorder widgets. Toggle a row to show or hide a widget. Changes save automatically.") The visible handle now carries the "drag" affordance on its own — copy no longer needs to spell out "the handle."
+
+**Deterministic grid row-pack — fixes hidden-widget reflow.**
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — replaced the single-grid `col-span-*` lookup with a row-packing algorithm:
+  1. Greedily pack visible widgets into rows of <= 12 cols using each widget's `sizePreset` weight (full = 12, two-thirds = 8, half = 6, third = 4).
+  2. For each row, if visible widgets sum to exactly 12, render with each widget's NATURAL responsive col-span class (so Today's Schedule + Operational Alerts still render as 8-col + 4-col).
+  3. If a row has slack (sum < 12), redistribute equally — `EQUAL_SPLIT_CLASSES` keys on row size: 1 → col-span-12, 2 → col-span-12 md:col-span-6, 3 → col-span-12 md:col-span-6 xl:col-span-4, 4 → col-span-12 md:col-span-6 xl:col-span-3.
+  4. Each cell carries `data-dashboard-row`, `data-dashboard-row-size`, `data-dashboard-row-balanced` ("natural"|"equal-split") attributes so the layout decision is observable in DevTools and assertable in tests.
+- Result: hiding Today's Schedule rebalances the leftover cards into a clean 3-column row (Operational Alerts + Pipeline + Collections) followed by Scheduled Revenue auto-promoted to full-width and Needs Attention full-width. No staggered alignment, no awkward empty space, no masonry.
+- Both functions (`packDashboardRows`, `spanClassFor`) are pure and exported for tests.
+
+**Size + height presets.**
+- `shared/dashboardWidgetRegistry.ts` — added `"half"` to `DashboardWidgetSizePreset` (col-span-12 mobile, col-span-6 md+) for future widgets that pair naturally. Added optional `heightPreset?: "summary" | "large" | "compact" | "auto"` per the brief, mapped to `min-h-[280px]` (summary), `min-h-[440px]` (large), empty class (compact + auto). Default is `"auto"`. Today's Schedule = `"large"`; the four metric cards (Operational Alerts, Pipeline, Collections, Scheduled Revenue) = `"summary"` so they share a baseline within their row; Needs Attention = `"compact"`.
+- `client/src/dashboard/dashboardLayoutSchemas.ts` — `DashboardLayoutResponseEntry` mirrors the new `sizePreset` + `heightPreset` unions so the wire contract stays in lockstep.
+- `server/routes/dashboardLayout.ts` — GET + PUT response builders now include `heightPreset` (falls back to `"auto"` when the registry omits it).
+
+**Tests.**
+- `tests/dashboard-grid-rowpack.test.ts` — new file (35 assertions). Covers: greedy row packing (empty / fulls only / 3 thirds in 1 row / TS+OA in 1 row / order preserved across rows / overflow starts new row / canonical layout packs into 3 rows); `spanClassFor` natural-vs-equal-split; canonical "TS hidden" reflow; registry size + height preset unions; wire schema mirrors registry; grid surface contract; drag-handle visible affordance (default surface, default border, default text token, hit area unchanged, GripVertical unchanged, button is dnd-kit activator, row + Switch are NOT activators); helper copy matches the brief verbatim.
+- `tests/dashboard-customize-framework.test.ts` — updated `sizePreset` enum pin to include `"half"`; updated grid mapping pin to assert all four natural-span classes (full, two-thirds, half, third).
+- `tests/dashboard-customize-drag-fix.test.ts` — refreshed helper-copy assertions to match the brief's tightened wording ("Drag widgets to reorder" / "show or hide them").
+
+**Verification.**
+- `npx vitest run tests/dashboard-grid-rowpack.test.ts tests/dashboard-customize-framework.test.ts tests/dashboard-customize-drag-fix.test.ts tests/dashboard-layout.test.ts` — 160/160 passing.
+- `npm run check` — clean.
+
+**Files changed.**
+- `client/src/dashboard/DashboardWidgetRenderer.tsx` — visible handle affordance.
+- `client/src/dashboard/DashboardCustomizeDrawer.tsx` — helper copy tightened.
+- `client/src/dashboard/DashboardWidgetGrid.tsx` — row-pack + equal-split rebalancing + height-preset application.
+- `shared/dashboardWidgetRegistry.ts` — added `"half"` size preset, added optional `heightPreset` field, assigned heightPresets to the six financial widgets.
+- `client/src/dashboard/dashboardLayoutSchemas.ts` — wire response shape mirrors new registry fields.
+- `server/routes/dashboardLayout.ts` — response builders include `heightPreset`.
+- `tests/dashboard-grid-rowpack.test.ts` — new test file.
+- `tests/dashboard-customize-framework.test.ts` — updated enum + grid mapping pins.
+- `tests/dashboard-customize-drag-fix.test.ts` — refreshed copy pins.
+
+**Remaining risks / follow-ups.**
+- The greedy packer preserves user order. If a user drags an oversized widget to slot between two thirds, packer will emit a row with mixed weights summing to <12 → equal-split. That's the correct behaviour but worth flagging if a future product decision wants stricter row hygiene.
+- Today's Schedule's `min-h-[440px]` is a Tailwind arbitrary value, not a design token. We can swap to a token like `min-h-card-large` if one lands in `tailwind.config.ts`; the test pins on `min-h-\[` so it remains green during such a swap as long as the bracket prefix matches.
+
+#### Customizable dashboard drag-fix + hidden-widget query gating + orphan safety + registry stability docs (2026-05-07 RALPH follow-up)
+
+User reported drag-to-reorder did not work after the framework landed. Audit identified three root causes — sensor mix, hit-target size, and discoverability copy — plus opened up the unfinished hidden-widget query gating that was previously listed as a known follow-up.
+
+**Drag mechanics — fixed.**
+- `client/src/dashboard/DashboardCustomizeDrawer.tsx` — replaced the single `PointerSensor` with a `MouseSensor` + `TouchSensor` + `KeyboardSensor` trio. PointerSensor's touch path is brittle on iOS Safari (a known @dnd-kit interaction); the user reported drag failing on iPad. The dedicated sensors give @dnd-kit a clean separation: mouse uses a 4 px movement threshold (so a click on the handle button doesn't accidentally start a drag); touch uses a 200 ms hold + 5 px tolerance (so a finger-press on the handle reliably enters drag mode without breaking page scroll). Keyboard sensor unchanged (Space-to-pick-up + arrow-keys-to-move + Space-to-drop, the canonical @dnd-kit accessibility pattern).
+- `client/src/dashboard/DashboardWidgetRenderer.tsx` — bumped the drag handle from a 17 × 17 px button (`p-0.5`) to a 32 × 32 px button (`h-8 w-8`, `p-1.5`) with a `hover:bg-surface-subtle` background and `cursor-grab` / `active:cursor-grabbing` cursor. The icon itself (`<GripVertical h-4 w-4>`) is unchanged — only the button frame grew. Added `touch-none select-none` so iPad Safari doesn't treat the press-and-drag gesture as a scroll.
+- `client/src/dashboard/DashboardCustomizeDrawer.tsx` — header copy updated to "Drag the handle to reorder widgets. Toggle a row to show or hide a widget. Changes save automatically." Tells users WHERE the drag affordance lives and confirms the persist cadence.
+
+**Hidden widgets no longer fetch — resolved follow-up.**
+- `client/src/pages/FinancialDashboard.tsx` — moved the `useDashboardLayout("financial")` call to the top of the page so the resolved widget set is available to query gates. Built a `visibleSet` from `layout.visibleWidgets` and split the page's two queries into widget-keyed groups: `FINANCIAL_QUERY_WIDGETS` (`pipeline_snapshot`, `collections_overview`, `scheduled_revenue`, `needs_attention`) gates the `/api/dashboard/financial` query via `enabled: financialQueryEnabled`; `WORKFLOW_QUERY_WIDGETS` (`operational_alerts`) gates the `/api/dashboard/workflow` query via `enabled: workflowQueryEnabled`. Toggling all of one group's widgets off in the drawer now stops the underlying fetch entirely. (Today's Schedule has its own internal query and remains data-fetched independently when visible.)
+
+**Orphan safety — verified + documented.**
+- `server/routes/dashboardLayout.ts` — GET resolver iterates the registry-derived `allowed` list and looks up override rows by widget key. Override rows whose `widget_key` is no longer in the registry are silently ignored (they never enter the response). PUT was already rejecting unknown widget keys at HTTP 400 + unauthorized widget keys at HTTP 403; this run pinned both behaviours with source-pin tests.
+
+**Registry stability docs.**
+- `shared/dashboardWidgetRegistry.ts` — file-level doc-block now carries an explicit "STABILITY WARNING" section: widget `key` values are persisted user data; renaming a key requires a SQL migration or a compatibility alias. The interface comment for `key` repeats the warning inline ("DO NOT RENAME") so a developer adding a widget sees the rule without scrolling. Added a "HOW TO ADD A WIDGET" recipe to the same doc-block (registry entry → permission → renderer map → query gate → tests → CHANGELOG).
+- `CLAUDE.md` — new "Customizable Dashboard Widgets" section codifies the framework's invariants (single registry, drag-only-in-drawer, persist-on-drag-end, hidden-widgets-must-not-fetch, orphan safety) and inlines the same add-a-widget recipe so it's discoverable from the project conventions doc.
+
+**Tests added.**
+- `tests/dashboard-customize-drag-fix.test.ts` (33 source-pin assertions) covering: TouchSensor + MouseSensor + KeyboardSensor wiring; activation constraints; no PointerSensor-only fallback; handle hit-area `h-8 w-8`; `touch-none` + `cursor-grab` + `aria-label`; "Drag the handle" + "show or hide" header copy; `onDragEnd` (not `onDragOver`/`onDragMove`); `arrayMove` + single `setOrder` call; `useDashboardLayout("financial")` + `visibleSet` + `FINANCIAL_QUERY_WIDGETS` + `WORKFLOW_QUERY_WIDGETS` + `enabled: financialQueryEnabled`/`workflowQueryEnabled` on the page; GET resolver iterates `allowed.map(...)` with `overrides.get(w.key)`; PUT rejects unknown keys at 400 + unauthorized at 403; registry doc-block contains "STABILITY WARNING" + "PERSISTED USER DATA" + "DO NOT RENAME" + "orphan" + "migration"/"alias"; CLAUDE.md contains the "Customizable Dashboard Widgets" + "How to add a widget" sections + the must-not-fetch rule; hook's `setOrder` invokes `replaceMutation.mutate` exactly once + read query disables `refetchOnWindowFocus`.
+
+**Verification.**
+- `npx vitest run tests/dashboard-customize-drag-fix.test.ts` — 33/33 passing.
+- `npx vitest run tests/dashboard-customize-framework.test.ts` — 56/56 still passing (no regression to the framework pins).
+
+**Files changed.**
+- `client/src/dashboard/DashboardCustomizeDrawer.tsx` — sensors + helper copy.
+- `client/src/dashboard/DashboardWidgetRenderer.tsx` — drag handle hit area + cursor + touch-action.
+- `client/src/pages/FinancialDashboard.tsx` — page-level visibility set + query gating.
+- `shared/dashboardWidgetRegistry.ts` — STABILITY WARNING doc-block + per-field key warning + HOW TO ADD A WIDGET recipe.
+- `CLAUDE.md` — "Customizable Dashboard Widgets" section.
+- `tests/dashboard-customize-drag-fix.test.ts` — new source-pin test file.
+
+### Added
+
+#### Client-level invoice payment terms + Client Detail right-rail redesign (2026-05-07)
+
+Two related Client Detail changes shipped together: a per-client default for invoice payment terms (Edit Client dialog → DB → invoice creation chain) and a redesigned right-side utility rail that swaps the prior horizontal `<Tabs>` for a vertical icon rail + expandable panel pattern with seven items (Contacts / Notes / Billing / Equipment / Parts / Maintenance / Activity). Center workspace tabs untouched.
+
+**Audit findings (pre-implementation).**
+
+- `customer_companies` had **no** payment-terms column. `companies.defaultPaymentTermsDays` (tenant default) and `invoices.paymentTermsDays` (per-invoice) both existed; there was no client-level layer between them, so a client that always pays Net 7 had to be set on every invoice manually.
+- The existing invoice-create chain in `server/storage/invoices.ts:1819` was `params.paymentTermsDays ?? settings.defaultPaymentTermsDays ?? 30` — perfect insertion point for the new client layer.
+- `EditCompanyDialog` (262 lines) had identity / contact / billing-address sections, no payment-terms field. Used `ModalShell` + `FormSection` / `FormField` primitives — payment-terms slot fits the canonical pattern.
+- The Client Detail right rail at `ClientDetailPage.tsx:2360` was a `<Tabs>` with three tabs (`contacts` / `notes` / `billing`) reusing `CompanyContactsCompact`, `LocContactsCompact`, `NotesPanel`, `BillingSummary`. The outer right-column container (collapsed/expanded chrome with localStorage persistence) was already in place; the inner Tabs was the only thing to replace.
+
+#### Part 1 — Client-level payment terms
+
+- **Migration `2026_05_07_customer_companies_payment_terms.sql`** — adds `customer_companies.payment_terms_days integer` (nullable, IF NOT EXISTS). NULL = "use the tenant default". Mirrors the canonical naming on `invoice_lines.unit_cost` / `job_parts.unit_cost`. Idempotent. Applied via `npm run db:migrate:one`.
+- **`shared/schema.ts`** — adds `paymentTermsDays: integer("payment_terms_days")` to the `customerCompanies` Drizzle table. Drizzle-zod inference picks the column up automatically; `insertCustomerCompanySchema` and `updateCustomerCompanySchema` (its `.partial()`) admit it without further wiring.
+- **`server/routes/customer-companies.ts`** — adds `paymentTermsDays: z.number().int().min(0).max(365).nullable().optional()` to the route's strict Zod schema (it's hand-written, not auto-derived). Same range as the company-settings + invoice-create routes.
+- **`server/storage/customerCompanies.ts`** — `updateCustomerCompany` data param admits `paymentTermsDays?: number | null`. The `data` object spreads into `db.update(customerCompanies).set({...})` — no per-call edit needed beyond the type.
+- **`server/storage/invoices.ts`** — `createInvoiceAtomic` extends the resolution chain to `params.paymentTermsDays ?? clientPaymentTermsDays ?? settings.defaultPaymentTermsDays ?? 30`. The client value is fetched only when `params.customerCompanyId` is present (zero extra DB read for cash-sale invoices). Existing invoices are NEVER retroactively changed when a client's terms are edited — `invoice.paymentTermsDays` is captured at create time, and no PATCH path on the invoice routes consults the client default.
+- **`client/src/components/EditCompanyDialog.tsx`** — adds a "Payment Terms" `<FormSection>` near the bottom of the dialog body (between billing address and footer). Canonical `<Select>` with eight options: *Use company default* (→ NULL), *Due on receipt* (→ 0), *Net 7 / 15 / 30 / 45 / 60* (→ days), *Custom* (reveals a number input, 0–365). `paymentTermsModeFromDays` and `paymentTermsDaysFromMode` helpers translate between the persisted integer and the dropdown mode. Helper text: *"Used as the default payment terms for new invoices for this client."*
+
+#### Part 2 — Right-rail redesign
+
+- **`client/src/pages/ClientDetailPage.tsx`** — `UtilityTab` extended from `"contacts" | "notes" | "billing"` to seven items; `UtilityPanel = UtilityTab | null` so "no panel open" is representable. The `UtilityRail` body was rewritten:
+  - **Vertical icon rail** — 76px wide, slate-50 background, slate-200 border, runs the full height of the right column. Each rail item is a stacked `<button>` with a lucide icon + small caption (`Users`, `StickyNote`, `Wallet`, `Wrench`, `Package`, `CalendarClock`, `Activity`). Active item gets a 0.5px-wide canonical-green (`#76B054`) accent bar at its left edge plus `aria-pressed`.
+  - **Expandable panel** — fills the remaining space when an item is active. Header: title (uppercase, slate-700) + `(scope-label)` chip + Close `X` button. Clicking the active rail item again or the X collapses the panel back to rail-only.
+  - **Contacts / Notes / Billing** panels mount the existing `CompanyContactsCompact` / `LocContactsCompact` / `NotesPanel` / `BillingSummary` primitives — zero data duplication, zero new query plumbing.
+  - **Equipment / Parts / Maintenance / Activity** panels mount a shared `<RailJumpoutPanel>` helper that renders a one-sentence summary + a "Open …" button which calls `onJumpToWorkspaceTab(...)` with the corresponding workspace tab key (`equipment` / `pricing` / `pm` / `active`). Per spec: *"If equipment is still better handled in the center tab for now, this panel can list a compact summary and link/open the existing equipment tab"* — same pattern for the other three. Avoids duplicating the canonical center-tab data inside the rail.
+  - **Empty states** — `<RailEmptyState>` for missing data; Notes empty matches the spec copy ("No notes yet." / "Add one to keep your team aligned.").
+  - **No Files item, no separate History item** — Activity replaces History semantically (matches the existing `<ActivityCard>` terminology elsewhere in the app).
+  - **Mobile / tablet** — the rail stacks under the left column below `lg` (existing wrapper unchanged); the rail itself remains a `flex` row so the icon strip + active panel still render side-by-side on tablet, falling through to a vertical stack only when the outer column wraps below `lg`.
+- **Outer rail chrome unchanged** — the right-column collapse/expand button, localStorage persistence (`syntraro.detail.rail.width` / `syntraro.detail.rail.collapsed`), and 400px default width all stay. The 76px icon rail + ~324px panel sit comfortably within that envelope.
+
+#### What was NOT changed
+
+- Center workspace tabs (Active / Jobs / Invoices / Quotes / Equipment / PM / Parts / Pricing) untouched.
+- No backfill — the new column is nullable and missing values fall through to the tenant default. No existing invoices are rewritten.
+- No new "Files" surface anywhere.
+- No invented client-parts UI — the Parts rail item routes to the existing Pricing tab.
+
+#### Tests
+
+- `tests/client-payment-terms.test.ts` (new, 15 pins) — migration file existence + idempotent shape + nullable column; Drizzle column scoped to the `customer_companies` table block (inverse-pinned against `.notNull()` so the invoices table's `paymentTermsDays.notNull()` doesn't false-positive); route Zod admits `paymentTermsDays`; storage repo signature; the canonical resolution-chain order in `createInvoiceAtomic` (caller > client > company default > 30) including the `customerCompanyId` short-circuit; EditCompanyDialog renders the Payment Terms section with all eight options + helper text + custom-days reveal + the `paymentTermsDaysFromMode("default") → null` mapping.
+- `tests/client-side-rail.test.ts` (new, 25 pins) — registry of seven items + their stable test ids + canonical labels; explicit absence of Files and a separate History; old `<Tabs value={utilityTab}>` and `utility-tab-*` test ids are gone; rail is announced as `aria-label="Client information rail"`; active item carries `aria-pressed`; canonical green accent bar; close-X button bound to `setUtilityTab(null)`; toggle-to-close behavior; Contacts / Notes / Billing panels mount their existing primitives; Notes empty-state copy; Equipment / Parts / Maintenance / Activity each route to the right workspace tab via `onJumpToWorkspaceTab(...)`; `RailJumpoutPanel` forwards `testId` → `data-testid`; both `<UtilityRail>` mount sites (mobile + desktop) pass `onJumpToWorkspaceTab={handleTabChange}`.
+
+#### Files changed
+
+- New: `migrations/2026_05_07_customer_companies_payment_terms.sql`, `tests/client-payment-terms.test.ts`, `tests/client-side-rail.test.ts`.
+- Edited: `shared/schema.ts`, `server/routes/customer-companies.ts`, `server/storage/customerCompanies.ts`, `server/storage/invoices.ts`, `client/src/components/EditCompanyDialog.tsx`, `client/src/pages/ClientDetailPage.tsx`, `CHANGELOG.md`.
+
+#### Verification
+
+- Migration applied: `npm run db:migrate:one -- migrations/2026_05_07_customer_companies_payment_terms.sql` → `DONE`.
+- `npm run check` — clean.
+- `npx vitest run tests/client-payment-terms.test.ts tests/client-side-rail.test.ts tests/lead-create-page.test.ts tests/quote-create-page.test.ts tests/line-items-profitability-header.test.ts tests/quote-line-cost-persistence.test.ts tests/lead-quote-conversion.test.ts` — **229/229 pass** (40 new pins + 189 existing).
+
+#### Follow-up risks
+
+- **No live integration test** for the invoice-default chain (would require seeding a customer + creating an invoice via the atomic route in a DB-backed Vitest fixture). The source-pin tests assert the resolution order in source code, but a future refactor that moves the chain into a different module without porting tests would not fail. Mitigation: pin the chain order tightly in this PR; revisit when the next cross-cutting refactor touches `createInvoiceAtomic`.
+- **Equipment / Parts / Maintenance / Activity panels are minimal** — they show a one-line summary + jump-to-tab button rather than embedded data. Spec explicitly allows this ("If equipment is still better handled in the center tab for now…"), but a future PR can replace the jump-out with a compact embedded list once the data shapes are decided.
+- **EditCompanyDialog payment-terms select uses `<Select>` from shadcn** which renders a portal-mounted dropdown. Source-pin tests assert the option labels are present in the source — there's no live render test verifying the dropdown actually opens. Standard pattern across the app; same risk as every other Select-based form.
+
+### Fixed
+
+#### Invoice PDF watermark removal + render-time tax-registration verification (2026-05-07 RALPH narrow correction)
+
+The user reported two issues with the previous narrow change: (a) the tax registration / HST number still wasn't showing in the PDF footer, and (b) a large diagonal `DRAFT` watermark was appearing on the rendered PDF. This change fixes both — and adds proper render-time verification so the next iteration won't repeat the bug.
+
+**Audit findings.**
+
+- **Tax registration footer is correct.** Verified empirically: a debug script that boots the actual PDFKit pipeline + `resolveInvoiceDisplayPolicy` + decompresses the PDF stream + decodes the hex-encoded `[<...> 0] TJ` text operators shows that with `taxRegistrations: [{ label: "HST", number: "123456789 RT0001" }]` and `policy.showTaxNumber: true`, the rendered footer contains `Thank you for choosing Samcor Mechanical Inc.` followed by `HST # 123456789 RT0001`. The data path is intact end-to-end. The user's "not showing" observation almost certainly came from one of: (i) the tenant having zero rows in `company_tax_registrations`, (ii) the tenant having `invoiceShowTaxNumber = false` saved (the toggle was off), or (iii) viewing a cached PDF from before yesterday's render-path fix. The new render-time tests make this verifiable from CI.
+- **DRAFT watermark was pre-existing.** `getStatusWatermark()` + `drawWatermark()` were carried forward through earlier RALPH revisions on the assumption the diagonal stamp served as a customer-actionable document-state cue. The user has explicitly asked for it to be removed; there is no documented product requirement for a draft watermark. Removed.
+
+**What changed:**
+
+1. **Status watermark removed entirely** from `server/services/invoicePdfService.ts`. The `getStatusWatermark(status)` helper that returned `"DRAFT"` / `"VOID"` / `"PAID"` is gone. The `drawWatermark()` IIFE that drew the 72pt diagonal stamp at `doc.rotate(-45, ...)` across every page is gone. The hook is preserved as a no-op (`const drawWatermark = () => { /* no-op */ };`) so the multi-page page-break call sites that called `drawWatermark()` after `doc.addPage()` stay symmetric — if the watermark is ever reinstated, this is the single one-line edit point.
+2. **No other PDF layout changes.** The footer rendering, tax-registration gating, settings label rename, table layout, header layout, client communication positioning, colors, and spacing are all preserved verbatim from yesterday's change. This is a narrow correction, not a redesign.
+3. **Settings label rename** from yesterday is preserved (no change here): `"Show tax / HST number"` → `"Show tax registration number"` at `client/src/pages/InvoiceDisplaySettingsPage.tsx:220`.
+
+**Files changed.**
+
+- `server/services/invoicePdfService.ts` — removed `getStatusWatermark` helper + the watermark-drawing body. Replaced with a no-op closure + a doc-block explaining the removal.
+- `tests/invoice-tax-registration-footer.test.ts` — extended to 21 tests:
+  - 3 settings-label-rename pins.
+  - 4 PDF source-contract pins (no `BUSINESS INFORMATION`, gating on `policy.showTaxNumber`, configured-label verbatim, render loop iterates per-line).
+  - **4 new watermark-removal pins:** no `getStatusWatermark` function, no `doc.rotate(` call, no `return "DRAFT"/"VOID"/"PAID"` strings in render code, `drawWatermark` preserved as a no-op.
+  - **10 new render-time text-content tests** that:
+    1. Boot the actual PDFKit pipeline via `generateInvoicePdf(...)`.
+    2. Decompress every Flate-compressed `stream … endstream` block in the PDF buffer.
+    3. Decode the hex-encoded text in `[<hex> 0] TJ` operators (PDFKit's default text emission for Helvetica with WinAnsi encoding).
+    4. Concatenate the decoded fragments into a single string and assert the rendered footer text matches the spec for each branch of the behaviour matrix: toggle on/off × reg present/absent × invoice status, plus VAT-not-HST, null-label fallback, no `DRAFT/VOID/PAID` text on those statuses, and no `BUSINESS INFORMATION` heading.
+
+**Root cause of "tax registration not showing":** render path was correct end-to-end. Most likely cause for the user's observation is tenant configuration (zero `company_tax_registrations` rows OR `invoiceShowTaxNumber = false`). The new render-time tests would have caught any actual rendering bug; running them locally produced the rendered text containing `HST # 123456789 RT0001` for the toggle-on + reg-present case.
+
+**Root cause of DRAFT watermark appearing:** `server/services/invoicePdfService.ts` (lines 160-218 in the previous commit) defined `getStatusWatermark(status)` that returned `"DRAFT"` for `invoice.status === "draft"`, plus a `drawWatermark()` IIFE that drew the returned string at 72pt rotated -45° across every page. Pre-existing code from May 5, preserved through earlier RALPH passes on the (incorrect) assumption that customers wanted draft-state cues. Removed at the user's explicit request.
+
+**Confirmation: no unrelated PDF redesign.** The footer Y math, table layout, header layout, colours, spacing, and CLIENT COMMUNICATION positioning are unchanged from yesterday's `[Unreleased]` entry. Only the watermark helper was removed, plus tests added to verify the rendered output.
+
+**Commands run.**
+
+- `npx vitest run tests/invoice-tax-registration-footer.test.ts tests/invoice-pdf-no-generated-footer.test.ts tests/invoice-pdf-render-smoke.test.ts tests/invoice-display-settings.test.ts` — **106 passed**, 0 failures.
+- `npm run check` — clean for the files I touched. The pre-existing `client/src/components/ui/card.tsx` working-tree errors flagged in yesterday's CHANGELOG entry are still there (out of scope per brief: "Do not touch card styling"). Recommend reverting `card.tsx` to HEAD or replacing the box-drawing chars in its JSDoc comment.
+- `npm run build` blocked by the same card.tsx encoding errors (pre-existing, out of scope).
+
+### Changed
+
+#### Form-field canonical visual style: placeholder-first (2026-05-07)
+
+Design correction landed on top of the Phase 2B bellwether and the Phase 2A primitives. The canonical visual style for basic text / email / phone / address / number / textarea inputs in modal forms is **placeholder-first** — field identity lives **inside the input via `placeholder`**, not as a visible label above the input. The visual reference is `QuickAddJobDialog`. Mirror text + sr-only labels carry the accessibility contract for screen-reader users.
+
+**Why.** The first Phase 2B pass migrated `EditCompanyDialog` with visible `<FormLabel>` headers above each input. On review, that conflicted with the existing canonical create/job modal style and increased visual noise. This correction aligns Phase 2 with the existing modal-form aesthetic — labels above text inputs are the exception (checkboxes, switches, radio groups, complex selects), not the default.
+
+**FormLabel API extended (`client/src/components/ui/form-field.tsx`).**
+
+- New `srOnly?: boolean` prop on `FormLabel`. When `true`, the label is visually hidden via Tailwind's `sr-only` utility but still readable by screen readers. The `htmlFor` / `id` association on the paired `<Input>` is the actual accessibility mechanism — `sr-only` only hides the visible rendering.
+- Doc-comment updated with placeholder-first examples and a reference to the `CLAUDE.md` "Phase 2: Form Field Canonicalization" section.
+- The cn() class composition is now `cn("text-form-label", srOnly && "sr-only", className)`. `text-form-label` remains pinned as the leading typography token.
+
+**EditCompanyDialog re-migrated to placeholder-first (`client/src/components/EditCompanyDialog.tsx`).**
+
+- 9 basic inputs (First name, Last name, Company name, Phone, Email, Billing street, Billing street line 2, City, Province, Postal code) now render via `<FormField><FormLabel htmlFor="edit-X" srOnly>X</FormLabel><Input id="edit-X" placeholder="X" .../></FormField>`.
+- Email input gained `type="email"` (it was previously a generic text input — corrected during the re-migration).
+- The `Use company name as primary client name` checkbox row stays as a raw `<div className="flex items-center gap-2">` with a visible `<Label>` per the design rule (checkboxes / switches / radios keep visible labels).
+- The `Client Identity` `<FormSection title>` heading stays visible — section headings group fields and aren't field labels.
+- `<FormRow className="grid-cols-2 gap-2">` tight identity row preserved; canonical `gap-3` retained for the contact and address rows.
+
+**CLAUDE.md "Phase 2: Form Field Canonicalization" section updated.**
+
+- New "Placeholder-first visual style (canonical)" subsection documents the design rule with a code example.
+- `FormLabel` reference updated to call out the `srOnly` flag.
+- Standard form body example rewritten with placeholder-first inputs + sr-only labels. Production migrators copy from this template.
+
+**Source-pin tests updated.**
+
+- `tests/form-field-canonical.test.ts` — 3 new pins (srOnly prop declaration, `srOnly && "sr-only"` cn() composition, doc-comment placeholder-first reference). The pre-existing "locks the text-form-label typography token" pin loosened to anchor on the leading argument only (the full cn() shape is now pinned by the new srOnly composition test). 53 → 56 pins; all pass.
+- `tests/edit-company-dialog.test.ts` — Section 4 (Phase 2B form-field primitives) rewritten to expect sr-only `<FormLabel htmlFor="edit-X" srOnly>` + `<Input id="edit-X" placeholder="X">` for each of the 9 basic fields. New negative pin: no visible (non-srOnly) `<FormLabel>FieldName</FormLabel>` for any of the 9 input identities. Identity row's `gap-2` preservation pin still in place. Mutation contract / prefill flow / validation gating pins all unchanged. 40 → 43 pins; all pass.
+
+**Tests / checks.**
+
+- `npx tsc --noEmit` — passes cleanly.
+- `npx vitest run tests/form-field-canonical.test.ts tests/edit-company-dialog.test.ts tests/modal-canonical.test.ts` — 165/165 pass (form-field 56, edit-company-dialog 43, modal-canonical 66).
+
+**Migration impact for Phase 2C.**
+
+The remaining 11 Phase-1-migrated tenant modals (CreateClientModal, ContactFormDialog, the supplier triplet, the location pair, the tag pair, QboOverrideModal, AddEquipmentDialog, ProductServiceFormDialog) will follow the same placeholder-first style during Phase 2C. Visible labels stay only for: checkboxes / switches / radio groups / complex selects / dependent fields where the placeholder can't carry the identity. Section headings still use visible `<FormSection title>` legends.
+
+#### Card architecture canonicalization — Tier 2 (2026-05-07)
+
+Tier 2 of the card-canonicalization sweep. Adds the `CardMetricBlock` presentational primitive plus `compact` / `density="compact"` variants on `CardShellHeader` / `CardShellTitle`, then migrates `LineItemsCard` outer chrome and `JobDetailPage`'s local `SectionCard` / `SectionHead` onto the canonical `card.tsx` family. Per the prior audit, `PaymentHistoryCard` is intentionally left as-is — its outer chrome already routes through the shadcn `<Card>` primitive and migration would be cosmetic churn.
+
+**Primitives added / extended in `client/src/components/ui/card.tsx`.**
+
+- **`CardMetricBlock`** (new) — pure presentational label-over-value tile. Props: `label`, `value: ReactNode`, `valueClassName?` (caller-supplied tone class — emerald/rose/etc.), `emphasis?` (renders the value at `text-base` instead of `text-sm` for headline KPIs), plus standard div attrs. **Strict no-business-math rule** documented in the JSDoc: callers compute the metric and pass pre-formatted text/JSX. Replaces the previously-private `HeaderMetricBlock` inside `LineItemsCard.tsx` verbatim except for two canonical token swaps (`text-slate-500` label → `text-text-muted`; `text-slate-700` default value → `text-text-primary`).
+- **`CardShellHeader compact` prop** (new) — switches the header band from `py-2.5` to `h-11` (44px locked height), matching the JobDetailPage SectionHead rhythm. Binary by design; documented as such in the prop's JSDoc to prevent density-tier proliferation without further evidence of repetition.
+- **`CardShellTitle density` prop** (new) — `"standard"` (default) renders the canonical dashboard heading (`text-sm font-semibold text-text-primary`); `"compact"` renders the detail-page SectionHead heading (`text-helper font-semibold uppercase tracking-[0.08em] text-text-secondary`). Pairs with `<CardShellHeader compact>`.
+
+**LineItemsCard migration (`client/src/components/line-items/LineItemsCard.tsx`).**
+
+- Outer wrapper `<div ...border-card-border bg-card shadow-card>` → `<CardShell>`.
+- Header band `<div ...border-b ...px-5 py-3>` → `<CardShellHeader className="px-5 py-3">`. The `px-5 py-3` override is **load-bearing** — the body table is also at `px-5`, and the per-cell paddings in `LineItemRow` / `AddLineItemForm` are calibrated against the px-5 inset on BOTH sides (the 2026-05-03 alignment fix). Changing either side without the other reintroduces header↔body column drift.
+- Body `<div className="overflow-x-auto">` → `<CardShellBody className="overflow-x-auto">` (full-bleed; no `padded` prop).
+- Bottom action row `<div ...border-t ...justify-between px-5 py-3>` → `<CardShellFooter className="justify-between bg-card px-5 py-3">`. The Save/Cancel split (top-right of the header AND bottom-right of the footer) is intentionally NOT consolidated into a generic ActionFooter; the dual placement is workflow-specific and the audit recommended deferring `CardActionFooter` until a second consumer surfaces.
+- Local `HeaderMetricBlock` function deleted; the three callsites now use canonical `<CardMetricBlock>` with standard `data-testid="..."` attrs (the previous `testId` prop was a custom mapping). Tone (`valueClassName`) and emphasis flag stay caller-owned.
+- Critical preservation: `LINE_ITEM_COLUMNS_WITH_COST` / `LINE_ITEM_COLUMNS_NO_COST` remain the single source of truth for both the header `gridTemplateColumns` and the body `<colgroup>`. A new comment block at the CardShell wrapping references the 2026-05-03 alignment fix to flag the dependency for future maintainers.
+- `renderTotalsFooter` slot, DnD-kit context, edit-mode lifecycle, `useLineItemsDrafts` integration, and all data-testids preserved verbatim. Invoice / Quote / Job / Create-surface parity unchanged.
+- **No regression** against `CLAUDE.md` §3 Performance Regression Guardrail: no per-line `updateInvoiceLine()` loops introduced; mutation path still routes through the adapter's batched `saveAll(plan)` (which uses `batchApplyLineTax()`). Visit-hot-path queries are unaffected.
+
+**JobDetailPage SectionCard migration (`client/src/pages/JobDetailPage.tsx`).**
+
+- Local `SectionCard` and `SectionHead` helper functions (lines 208–253) deleted. A short replacement comment at the same site documents the migration so future maintainers don't re-introduce the helpers.
+- Three `<SectionCard>` usages migrated to `<CardShell>`:
+  - `card-job-context` (around line 1706 → 1849)
+  - `card-billing-summary` (around line 1910 → 1943)
+  - `card-labour-summary` (around line 2052 → 2210)
+- The single `<SectionHead label="Billing Summary" count={null} />` (around line 1911) is now `<CardShellHeader compact><CardShellTitle density="compact">Billing Summary</CardShellTitle></CardShellHeader>`. The 13px uppercase tracked title and the 44px header height are preserved via the new compact variants.
+- `card-labour-summary`'s bespoke `bg-[#f8fafc] border-b border-[#e2e8f0]` header (which intentionally diverges from canonical tokens to match the Notes / Equipment cards per a 2026-04-29 comment) is preserved as-is. It was inside SectionCard, not SectionHead, so the migration only swaps the outer wrapper.
+- `card-job-context`'s bespoke grid+pencil header inside the SectionCard is preserved verbatim.
+- `cn` import retained (still 4 usages outside the deleted block).
+
+**Source-pin tests updated (`tests/line-items-profitability-header.test.ts`).**
+
+- 3 existing pins updated from `testId="metric-..."` → `data-testid="metric-..."` to match the canonical attribute form. Tier 1 of the file's pin contract (label literals, single `revenue > 0` gate, profit/margin tone derivation, emphasis on Profit Margin) remains unchanged.
+- 3 new pins added under a "Tier 2 pins" sub-block:
+  1. `LineItemsCard` imports the canonical `CardShell` / `CardShellHeader` / `CardShellBody` / `CardShellFooter` / `CardMetricBlock` from `@/components/ui/card`.
+  2. `LineItemsCard` does NOT re-declare a local `HeaderMetricBlock` function or component.
+  3. `LINE_ITEM_COLUMNS_*` arrays are consumed by **both** the header `gridTemplateColumns: gridTemplate(columns)` AND the body `<colgroup>{columns.map(...) <col>}</colgroup>` — protects the 2026-05-03 alignment fix from accidental uncoupling.
+- Test count: 31 → 34. All 34 pass on `npx vitest run tests/line-items-profitability-header.test.ts`.
+
+**Out of scope (intentionally deferred).**
+
+- **PaymentHistoryCard** — already on canonical `<Card>`/`<CardHeader>`/`<CardContent>`. Migration would be cosmetic churn; row primitives (`CardRow` / `CardListRow` / `MetricRow` / `TimelineRow`) remain unjustified by current repetition.
+- **`CardActionFooter`** primitive — the LineItemsCard split (top-right + bottom-right Save/Cancel) is workflow-specific; primitive deferred until a second surface needs the same pattern.
+- **`CardRow` / `CardListRow`** — no 2+ usage repetition observed across audited surfaces.
+- **`CardDivider`, `CardList`, `CardInset`, `DenseCard`, `MetricGrid`** — speculative; deferred.
+- **Reports*, InvoiceDisplaySettings, PMDetailPage local `SectionCard` clones** — out of Tier 2 scope. Candidates for a later sweep that converges all detail-page SectionCards onto `<CardShell compact>` once the variant is proven on JobDetailPage.
+- **Inner row dividers / typography drift** inside LineItemsCard rows (LineItemRow, AddLineItemForm) — Tier 2 contract was outer chrome only.
+- **InvoiceMetaCard, DraftNotesCard, QuoteSummaryCard, Invoice Client-Visibility card** — Tier 1 audit determined these are already on canonical tokens; Invoice Detail is in flight per separate redesign track.
+
+**Files changed.**
+
+- `client/src/components/ui/card.tsx` — added `CardMetricBlock` primitive; added `compact` prop to `CardShellHeader`; added `density` prop to `CardShellTitle`; updated exports.
+- `client/src/components/line-items/LineItemsCard.tsx` — outer chrome migration; `HeaderMetricBlock` deleted; column-alignment dependency comment added.
+- `client/src/pages/JobDetailPage.tsx` — `SectionCard` + `SectionHead` definitions deleted; 3 `<SectionCard>` usages migrated to `<CardShell>`; 1 `<SectionHead>` usage migrated to `<CardShellHeader compact>` + `<CardShellTitle density="compact">`.
+- `tests/line-items-profitability-header.test.ts` — 3 pins updated; 3 new Tier 2 pins added.
+
+**Tests / checks.**
+
+- `npm run check` — passes cleanly.
+- `npx vitest run tests/line-items-profitability-header.test.ts` — 34/34 pass.
+
+#### EditCompanyDialog interior fields migrated to canonical FormField primitives — Phase 2B bellwether (2026-05-07)
+
+Phase 2B bellwether migration of the modal-form-interior canonicalization sprint. `EditCompanyDialog`'s 11 fields now use the canonical `<FormSection>` / `<FormField>` / `<FormLabel>` / `<FormRow>` primitives from `client/src/components/ui/form-field.tsx` (introduced in Phase 2A). This validates the FormField primitive API in production before the Phase 2C batch migration of the remaining 11 Phase-1-migrated tenant modals. Behavior, validation gating, mutation contract, prefill flow, and the `<ModalShell>` chrome are preserved verbatim.
+
+**Why EditCompanyDialog as the bellwether.** Smallest field set (11 fields, no `<Textarea>`, no `<Select>`, no `<Combobox>`). Already used the `<fieldset><legend>` pattern that maps cleanly to `<FormSection>`. Single PATCH mutation, no async polling. Existing 30-test source-pin file from the Phase 1 migration provides a strong regression baseline.
+
+**What changed.**
+
+- Imports: added `FormField, FormLabel, FormSection, FormRow` from `@/components/ui/form-field`. The atomic primitives (`Input`, `Label`, `Checkbox`) stay; `Label` is still used for the checkbox row. `Modal*` imports unchanged.
+- `<fieldset className="space-y-2"><legend className="text-sm font-medium">…</legend>…</fieldset>` → `<FormSection title={…}>…</FormSection>`. The legend's helper hint (`(first name or company required)`) renders inside the title prop as JSX — `<FormSection>`'s `title: React.ReactNode` accepts the embedded `<span className="text-xs font-normal text-muted-foreground">` verbatim.
+- Identity grid `<div className="grid grid-cols-2 gap-2">First/Last name</div>` → `<FormRow className="grid-cols-2 gap-2">…</FormRow>`. The `gap-2` override of `<FormRow>`'s canonical `gap-3` is intentional — the placeholder-only First/Last name inputs were intentionally tight in the original layout, and the 4px delta from `gap-3` is more noticeable than the 2px field-stack delta documented below.
+- Phone+Email row `<div className="grid grid-cols-2 gap-3">…</div>` → `<FormRow className="grid-cols-2">…</FormRow>` (gap-3 default matches).
+- City+Province+Postal row `<div className="grid grid-cols-3 gap-3">…</div>` → `<FormRow className="grid-cols-3">…</FormRow>` (gap-3 default matches).
+- Each labeled-input field `<div className="space-y-2"><Label>X</Label><Input/></div>` → `<FormField><FormLabel>X</FormLabel><Input/></FormField>` (8 fields total — Phone, Email, Billing Street, Billing Street 2, City, Province, Postal Code, plus the implicit ones above).
+- Checkbox + Label row `<div className="flex items-center gap-2"><Checkbox/><Label/></div>` stays as a raw flex row per the Phase 2A guidance — `<FormField>` is for labeled-input stacks, not checkbox-label pairs.
+
+**Spacing notes (intentional + documented).**
+
+- **Field-stack rhythm shifts from 8px → 6px** (the canonical `<FormField>` default `space-y-1.5`). This is the 2px tightening between label and input that the Phase 2A primitives chose. The bellwether's job is to validate the canonical rhythm in production. **If 6px feels wrong system-wide, the fix is to change `<FormField>`'s default in `form-field.tsx` (one line) — not per-consumer overrides.** Choosing per-consumer overrides would defeat the canonical primitive's purpose; future Phase 2C modals would all need the same overrides, making `<FormField>` effectively a renamed `<div>`.
+- **Identity row keeps its tighter `gap-2`** via the explicit `className="grid-cols-2 gap-2"` on `<FormRow>`. The 4px delta from `gap-3` was deemed visually meaningful (placeholder-only inputs) — preserved with an explicit override rather than accepting the canonical default.
+- **All other grids match `<FormRow>`'s `gap-3` default** (Phone/Email, City/Province/Postal). Pure migration with no overrides.
+- **`<ModalBody className="space-y-4">`** unchanged — the inter-section rhythm in the body wasn't touched.
+
+**Behavior preserved.**
+
+- All 11 form fields, the use-company-as-primary checkbox, and the `id="edit-use-company-primary"` testid preserved verbatim.
+- `canSave = !!(form.firstName.trim() || form.name.trim())` — unchanged.
+- Save button disabled gate (`!canSave || editClientMutation.isPending`) and label switch (`"Save Changes"` ↔ `"Saving..."`) — unchanged.
+- Mutation: `PATCH /api/customer-companies/:companyId` with payload trim+null-mapping for all 10 text fields — unchanged.
+- The 3-way `useCompanyAsPrimary` derivation rule (no company → false; no firstName → true; otherwise the toggle value) — unchanged.
+- Success invalidations (`["/api/clients", clientId, "overview"]` + `["/api/clients", clientId]` + `["/api/customer-companies", companyId]`) — unchanged.
+- Error path: destructive toast with `error?.message ?? "Failed to update client."`; form state preserved — unchanged.
+- Prefill flow: `useEffect(() => { if (parentCompany && !open) { setForm({…}); } }, [parentCompany, open])` — unchanged.
+
+**Files changed.**
+
+- `client/src/components/EditCompanyDialog.tsx` — interior swap. Inline doc-comment documents the Phase 2B context, the spacing decisions, and the explicit `gap-2` override on the Identity row.
+- `tests/edit-company-dialog.test.ts` — Section 4 ("Form sections preserved verbatim") rewritten as three describe blocks for Phase 2B: "Phase 2B form-field primitives" (imports + negative pins on raw `<fieldset>`/`<legend>`/`<div className="space-y-2">`), "Identity section uses FormSection + FormRow" (FormSection title with embedded helper, FormRow `gap-2` override, checkbox row stays raw), "Contact + Billing fields use FormField + FormRow + FormLabel" (Phone/Email FormRow, Billing Street + Street 2 FormFields, City/Province/Postal FormRow, ModalFooter unchanged). Test count: **30 → 40** (10 new Phase 2B pins). All Phase 1 behavior pins (Sections 5–7: validation, mutation, prefill) preserved verbatim.
+- `tests/form-field-canonical.test.ts` — fixed a minor regex typo in the doc-comment-pin (`/does NOT couple|do NOT couple|NOT couple to \`react-hook-form\`/` had an unescaped backtick that didn't actually break the test thanks to alternation, but cleaned up to `/does NOT couple|do NOT couple|NOT couple to/`).
+- `CHANGELOG.md` — this entry.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/edit-company-dialog.test.ts tests/form-field-canonical.test.ts tests/modal-canonical.test.ts` — **159/159 pass first run** (40 edit-company-dialog + 53 form-field-canonical + 66 modal-canonical).
+- Repo grep on `EditCompanyDialog.tsx`: zero `<fieldset>` / `<legend>` JSX; zero `<div className="space-y-2"><Label>` field-wrapper patterns; zero `<div className="grid grid-cols-N gap-3">` row patterns. The only raw `<Label>` left is the checkbox-row label (canonical Phase 2A pattern).
+
+**LOC reduction.** EditCompanyDialog body went from 64 → 65 lines (essentially flat). The migration is more about *named structure* than line-count savings — the new code reads `<FormSection title=…><FormRow><FormField>…` instead of `<fieldset><div className="grid grid-cols-N gap-3"><div className="space-y-2">…`, which is what the canonicalization sprint is for.
+
+**Validation outcome.** Phase 2A primitives compose cleanly with the existing `<Input>` / `<Label>` / `<Checkbox>` atoms. The `<FormSection title={ReactNode}>` API handles the embedded helper hint without forcing a string-only title. The `<FormRow>` `className` override pattern works for both gap-2 (Identity) and gap-3 (default) cases without primitive bloat. **Phase 2C batch migration cleared to proceed** — see "What's next" below.
+
+**What's next (Phase 2C planning).**
+
+- The remaining 11 Phase-1-migrated tenant modals are eligible for batch migration: `CreateClientModal`, `ContactFormDialog`, `LocationFormModal`, `AddLocationDialog` (suppliers), `EditLocationDialog` (suppliers), `QuickAddSupplierDialog`, `AddEquipmentDialog`, `ProductServiceFormDialog`, `QboOverrideModal`, `EditTagsModal`, `BulkEditTagsModal`.
+- Each migration follows this bellwether's pattern: identify field-stack wrappers / multi-col grids / fieldset+legend sections; replace with `FormField` / `FormRow` / `FormSection`; preserve checkbox-label rows as raw flex; use `className` overrides only where the existing spacing diverges from the canonical (typically gap-2 vs gap-3).
+- The 2px field-stack tightening (8px → 6px) will apply to every migrated modal. If production feedback after the bellwether reveals it's too tight, revert by changing `<FormField>`'s default `space-y-1.5` to `space-y-2` in `form-field.tsx` — every consumer picks up the change automatically.
+
+#### Settings: Data section removed; Import Center moved to Advanced (2026-05-07)
+
+The standalone "Data" accordion section in `client/src/pages/SettingsPage.tsx` is removed. Its sole card, "Import Center", is relocated into the existing "Advanced" section alongside Integrations and QuickBooks Online — three cards now share the Advanced grid, which already uses the responsive `grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3` layout (no spacing changes needed).
+
+- Removed the `id: "data"` entry from the `SECTIONS` array.
+- Appended Import Center (`title`, `description`, `href: "/settings/import"`, `icon: Upload`) to the Advanced section's `cards` array. Title, description, route, icon, and underlying `SettingsLinkCard` behavior all preserved.
+- Updated Advanced `preview` text to `"Integrations, QuickBooks Online, Import Center"` so the collapsed-state hint reflects the new occupant.
+- Removed the now-unused `Database` import from `lucide-react` (it was only used as the deleted Data section's icon). `Upload` is retained — it ships with Import Center.
+
+No routing, permission, copy, or component-behavior changes. `/settings/import` still resolves through `App.tsx:697` to `ImportCenterPage`.
+
+**Files affected:** `client/src/pages/SettingsPage.tsx`.
+
+#### Card architecture canonicalization — Tier 1 (2026-05-07)
+
+Introduces a canonical CardShell + KpiShell primitive family alongside the existing shadcn `<Card>` in `client/src/components/ui/card.tsx`, mirroring the modal taxonomy precedent. Migrates the seven Tier 1 dashboard / activity surfaces off ad-hoc card chrome (`bg-white`, `border-[#e2e8f0]`, inline `boxShadow`, `border-slate-200`) onto the canonical `bg-card` / `border-card-border` / `shadow-card` tokens.
+
+**New primitives (added to `client/src/components/ui/card.tsx`).**
+
+- `CardShell` — outer wrapper. Reuses `<Card>` and adds `overflow-hidden`. Width- and layout-neutral; pass `flex flex-col h-full` etc. via className.
+- `CardShellHeader` — `px-4 py-2.5` band with bottom divider on `border-card-border`, `flex items-center justify-between gap-3`.
+- `CardShellTitle` — locks `text-sm font-semibold text-text-primary truncate`. Optional leading `icon` (`React.ElementType`); when `iconBg` is supplied, renders the icon inside a `p-1.5 rounded-md` chip (used by Lower-Ops / Right-Column / Operational-Alerts cards).
+- `CardShellAction` — right-aligned slot for "View all" links and secondary CTAs; locks `shrink-0`.
+- `CardShellBody` — full-bleed by default; `padded` opt-in for `px-4 py-2.5`.
+- `CardShellFooter` — bottom-divider mirror of header for Save/Cancel pairs or summary rows.
+- `KpiShell` — convenience composition of CardShell + CardShellHeader + CardShellTitle + CardShellBody for the most common dashboard shape (icon + title + optional action + flex-1 body).
+- `KpiRow` — clickable label + count row, locked geometry `px-4 py-1.5`, urgent state (red tint when `urgent && count > 0`), neutral `#F0F5F0` hover, trailing chevron. Forwards button props (onClick, disabled, data-testid).
+
+A doc-block at the top of the new section captures the contract, including the "Do NOT" rules: no raw `bg-white` / `border-[#e2e8f0]` / inline shadow on outer chrome, no raw `text-sm font-semibold text-[#111827]` on header titles, no local `CardShell` reimplementations.
+
+**Tier 1 migrations (outer chrome routed through the new primitives; inner row markup intentionally untouched except for divider tokens).**
+
+- `client/src/components/dashboard/PMHealthCard.tsx` — full migration to `KpiShell` + `KpiRow`. Click handlers, urgent state, chevron affordance preserved exactly.
+- `client/src/components/dashboard/QuotePipelineCard.tsx` — outer chrome + header band swapped to `CardShell` / `CardShellHeader` / `CardShellTitle` / `CardShellAction`. Bucket sections (smart-fill, "+N more" links, preview rows) untouched.
+- `client/src/components/dashboard/RevenueCenterCard.tsx` — same swap as QuotePipelineCard. Row internals (icon + label + description + count + chevron) untouched.
+- `client/src/components/dashboard/OperationalAlertsCard.tsx` — outer chrome only (the toggle-button "header" is collapsible-trigger UI, not a static `CardShellHeader`). Internal `border-b border-[#e2e8f0]` / `dark:border-gray-600` divider lines retokenised to `border-b border-card-border`. Two-variant layout (full-card vs xl+ rail) preserved.
+- `client/src/components/dashboard/LowerOpsCards.tsx` — local 47-line `CardShell` function deleted. Both consumers (`OpenCapacityCard`, `JobsSnapshotCard`) inline canonical `CardShell` + `CardShellHeader` + `CardShellTitle` (with `iconBg` chip) + `CardShellAction`. New `ViewReportLink` helper preserves the green link styling.
+- `client/src/components/dashboard/RightColumnFinancialCards.tsx` — same treatment as LowerOpsCards. `TopOutstandingInvoicesCard` and `TopCustomersOwingCard` route through canonical primitives; `ViewAllLink` helper extracted.
+- `client/src/components/activity/ActivityCard.tsx` — outer chrome routed through `CardShell`. Collapsible trigger button preserved (custom `bg-[#f8fafc]` / `hover:bg-slate-100`). Title color `text-[#0f172a]` → `text-text-primary`; icon color `text-[#64748b]` → `text-text-muted` (both literal hexes were the canonical token's resolved values, so colors are byte-identical). Body divider `border-t border-slate-200` → `border-t border-card-border`.
+
+**Cleanup metrics.**
+
+- 3 hand-rolled `CardShell` reimplementations removed (LowerOpsCards, RightColumnFinancialCards, plus the inlined chrome on OperationalAlertsCard).
+- 7 hardcoded `bg-white` outer-card uses removed; all 7 surfaces now consume `bg-card`.
+- 7 hardcoded `border-[#e2e8f0]` / `border-slate-200` outer-card uses removed.
+- 7 inline `boxShadow: "0 1px 2px rgba(0,0,0,0.04)"` style props removed; all consume `shadow-card`.
+- 6 dark-mode duplicates (`dark:bg-gray-900`, `dark:border-gray-700`, `dark:border-gray-600`) removed where the canonical token already supplies the dark variant.
+
+**Out of scope (deferred per Tier 1 boundary).**
+
+- `InvoiceMetaCard`, `DraftNotesCard`, `QuoteSummaryCard`, the Invoice Client-Visibility card — already on canonical tokens; left untouched. Invoice Detail is in flight per separate redesign track.
+- `PaymentHistoryCard` rows, `LineItemsCard`, `JobDetailPage` `SectionCard` centralization — Tier 2; require visual diff + perf review (see Performance Regression Guardrail in `CLAUDE.md` §3).
+- Inner row-divider tokens on `RevenueCenterCard`, `RightColumnFinancialCards` rows still reference `border-[#e2e8f0]`. Outer chrome only was the Tier 1 contract; row-internal canonicalization is a follow-up.
+
+**Files changed.**
+
+- `client/src/components/ui/card.tsx` — added 8 new primitives (`CardShell`, `CardShellHeader`, `CardShellTitle`, `CardShellAction`, `CardShellBody`, `CardShellFooter`, `KpiShell`, `KpiRow`) and a top-of-section doc-block.
+- `client/src/components/dashboard/PMHealthCard.tsx` — full migration to `KpiShell` + `KpiRow`.
+- `client/src/components/dashboard/QuotePipelineCard.tsx` — outer chrome migration.
+- `client/src/components/dashboard/RevenueCenterCard.tsx` — outer chrome migration.
+- `client/src/components/dashboard/OperationalAlertsCard.tsx` — outer chrome migration + divider retokenisation.
+- `client/src/components/dashboard/LowerOpsCards.tsx` — local `CardShell` removed; canonical primitives inlined at both call sites; `ViewReportLink` helper added.
+- `client/src/components/dashboard/RightColumnFinancialCards.tsx` — local `CardShell` removed; canonical primitives inlined at both call sites; `ViewAllLink` helper added.
+- `client/src/components/activity/ActivityCard.tsx` — outer chrome migration + token swaps.
+
+**Tests / checks.**
+
+- `npm run check` — passes cleanly.
+- No new automated tests added; the migration is structural-only and preserves all click handlers, data-testids, urgent states, collapse behavior, and responsive breakpoints. Manual visual verification of Operations Dashboard + Activity surface (Job Detail / Invoice Detail right rail) is recommended before release.
+
+#### Invoice tax-registration label + PDF footer simplification (2026-05-07 RALPH narrow)
+
+Two narrow wording/rendering fixes to the customer-facing invoice flow:
+
+1. **Invoice display settings label rename.** The toggle that gates the tax-registration block on the customer-facing PDF was labeled `"Show tax / HST number"` — too Canada/HST-specific. The app already supports tenants in regions that use GST, VAT, sales tax ID, business number, or other tax registrations, and the underlying `taxRegistrations[].label` field is configurable per tenant. The label now reads `"Show tax registration number"` — neutral and accurate for any region. No styling, no helper text, no card layout, no card chrome touched. Single 1-line change at `client/src/pages/InvoiceDisplaySettingsPage.tsx:220`.
+
+2. **PDF footer simplification — tax registrations directly under thank-you.** The yesterday-RALPH-v2 footer rendered a stacked `BUSINESS INFORMATION` heading above an inline run of formatted tax registrations. Per the new spec, the heading is gone entirely; tax registrations now render one centred line per registration directly under the thank-you line, in muted gray. Each line uses the configured `taxRegistrations[].label` verbatim — no hardcoded `"HST"`. When the label is blank the line falls back to `Tax ID # {number}`. Footer rendering is now gated on BOTH `policy.showTaxNumber === true` (the renamed toggle's value) AND a non-empty `taxRegistrations` array — earlier revisions only checked the data, missing the policy gate.
+
+**Audit findings (root cause of "tax not showing" complaint):**
+
+- The PDF render path itself was correct end-to-end: `companyTaxRegistrationRepository.list(companyId)` is called from `routes/invoices.ts:2161`, `routes/portal.ts:846`, and `services/emailDispatchService.ts:633`, then passed as `taxRegistrations` to `generateInvoicePdf`.
+- The PRIOR footer block (`hasTaxRegs` predicate at line ~652 of the v2 source) checked array data only — it did NOT check `policy.showTaxNumber`. So tenants with at least one configured registration always saw the `BUSINESS INFORMATION` heading + the inline tax-reg row, regardless of the display setting. Tenants with no configured registrations saw nothing in the footer (correct, but visually different from what the user expected).
+- The user's "tax not showing at the bottom" perception was almost certainly the prior layout: the `BUSINESS INFORMATION` heading above an inline run of tax IDs reads as a different section, not as a tax-registration line under the thank-you. The new layout puts each registration on its own line directly under the closing message — the recognizable "invoice footer" placement most field-service software uses.
+
+**Files changed.**
+
+- `client/src/pages/InvoiceDisplaySettingsPage.tsx` — single label rename `"Show tax / HST number"` → `"Show tax registration number"`. Toggle `testId`, `checked` binding, and `onChange` handler unchanged.
+- `server/services/invoicePdfService.ts` — footer rendering rewrite: removed the `hasTaxRegs` / `BUSINESS INFORMATION` block (heading + inline run); added a `showTaxRegs = !!policy.showTaxNumber` gate that combined with `taxRegistrations` builds a `taxRegLines: string[]` array; geometry recomputed bottom-up (`SAFE_LAST_TOP_Y = pageH - 65`, divider 6pt above thank-you, regs stack below thank-you 11pt apart); render loop emits one centred 8pt line per registration. File-header doc-block updated to describe the new footer shape.
+- `tests/invoice-pdf-no-generated-footer.test.ts` — three pin updates: dropped the `BUSINESS INFORMATION` heading positive pins, replaced with a negative pin (`"BUSINESS INFORMATION"` must NOT appear in executable source); pinned the new `showTaxRegs` / `taxRegLines` source contract; pinned the verbatim-label / `Tax ID #` fallback path with a negative pin against any literal `"HST"` string in the renderer; rewrote the footer-Y-coordinate pin against the new `SAFE_LAST_TOP_Y` / `firstRegY` / `thankYouY` math.
+- `tests/invoice-tax-registration-footer.test.ts` — new file, 7 source-pin tests covering the settings label rename + the PDF footer source contract (no `BUSINESS INFORMATION`, gating on `policy.showTaxNumber`, configured-label-not-hardcoded, render-loop iterates per-line).
+
+**Tests added/updated.** 40 source-pin tests in `invoice-pdf-no-generated-footer.test.ts` (3 updated for the new contract); 7 new source-pin tests in `invoice-tax-registration-footer.test.ts`; existing 5 render-time smoke tests in `invoice-pdf-render-smoke.test.ts` continue to pass.
+
+**Commands run.**
+
+- `npx vitest run tests/invoice-tax-registration-footer.test.ts tests/invoice-pdf-no-generated-footer.test.ts tests/invoice-pdf-render-smoke.test.ts tests/invoice-display-settings.test.ts` → 92 passed, 0 failures.
+- `npm run check` (TypeScript) — clean for both files I touched. Project-wide tsc reports errors only in `client/src/components/ui/card.tsx`, an unrelated file modified between my last commit and this session (375 insertions to a JSDoc comment block using box-drawing Unicode chars `└─┘` that tsc rejects). The brief explicitly says "Do not touch card styling," so I did not modify card.tsx — flagging the issue here for the user to address separately.
+- `npm run build` blocked by the same card.tsx encoding errors — same out-of-scope cause.
+
+**Known limitations.**
+
+- Card.tsx working-tree changes (not from this RALPH session) are causing project-wide tsc + build to fail. My changes themselves compile cleanly. Recommend the user either revert card.tsx to HEAD or replace the box-drawing characters in the JSDoc comment with ASCII (`+--+`).
+- Render-time text-content verification (e.g., asserting `"HST # 739597326 RT0001"` appears in the actual PDF byte stream) is not in the test suite because PDFKit Flate-compresses content streams by default. Source pins prove every conditional branch the brief asks about; smoke tests prove page-count behaviour. A future iteration could add `pdf-parse` as a test-only dependency to enable text-content assertions.
+
+#### Create Lead title affordance + disabled-button reason (2026-05-07)
+
+Audit + fix for the Create Lead page's title field — the input had been styled with `border-0 px-0 py-0 h-auto shadow-none focus-visible:ring-0 placeholder:text-slate-300 bg-transparent`, which made it look identical to faded H1 page-header text rather than an editable required field. First-time users could fill out client/location, description, estimated value, etc. and still not understand why **Create Lead** stayed disabled. The page also offered no inline explanation of which required field was missing — the button just sat silently greyed-out. Both behaviors fixed.
+
+**Root cause.** Two compounding issues:
+
+1. **Title affordance**: `LeadSummaryCard` draft-mode rendered the title as an `<Input>` whose className stripped every input affordance — no border, no padding, no shadow, no focus ring, near-invisible `placeholder:text-slate-300`, transparent background. By comparison `CreateQuotePage`'s title is a labeled standard `<Input>` with full chrome, and `JobDetailPage`'s editable summary header uses `bg-white border border-border-default rounded px-2 py-1 focus:ring-2 focus:ring-brand/25 focus:border-brand`. The lead title was the outlier.
+2. **Silent disabled button**: `canSubmit = !!selectedLocation?.id && title.trim().length > 0 && !isPending`. When false the button rendered with no tooltip, no inline message, no aria-describedby — the user had no way to know what was missing.
+
+**What changed.**
+
+- `client/src/components/leads/LeadSummaryCard.tsx` (draft mode):
+  - Wrapped the title in a `<div className="space-y-1">` carrying a visible `<label htmlFor="lead-title-input">` with the canonical small-uppercase-tracked treatment, a `text-rose-500` `*` indicator (`data-testid="lead-title-required-indicator"`), and an `<span className="sr-only">(required)</span>` for screen readers.
+  - Replaced the affordance-stripping className with: `text-lg font-bold text-slate-900 leading-tight h-auto py-2 px-3 bg-white border border-slate-300 rounded-md shadow-sm cursor-text placeholder:font-medium placeholder:text-slate-400 hover:border-slate-400 focus-visible:ring-2 focus-visible:ring-brand/25 focus-visible:border-brand transition-colors`. The large title typography stays — it still reads as the page heading — but every input affordance (border, background, padding, shadow, hover state, focus ring, text cursor) is now present.
+  - Added `id="lead-title-input"` (binds to the label), `required`, `aria-required="true"`, and `aria-invalid={titleEmpty || undefined}` so screen readers announce both required-ness and emptiness state.
+  - Replaced the placeholder `"Enter lead title"` with the more descriptive `"What's this lead about? e.g., AC tune-up at Basil Box"` so the user sees what to type, not just what the field is for.
+  - Bumped placeholder color from `text-slate-300` (near-invisible against white) to `text-slate-400` (canonical readable muted token).
+- `client/src/pages/CreateLeadPage.tsx`:
+  - Computed `missingFields: string[]` listing the required fields that are still empty (`"a client / location"` when `selectedLocation` is null; `"a title"` when title is blank).
+  - Computed `disabledReason` — a single short sentence — only when `!canSubmit && !createLeadMutation.isPending && isDirty && missingFields.length > 0`. The `isDirty` gate prevents the hint from flashing on first paint before the user has touched anything (no aggressive red on cold load); the `!isPending` gate prevents the hint from shadowing the button's own loading state.
+  - Rendered `<p id="create-lead-disabled-reason" data-testid="text-create-lead-disabled-reason" className="text-[11px] text-slate-500 leading-snug px-0.5">` directly beneath the **Create Lead** button. The button now carries `aria-describedby="create-lead-disabled-reason"` when the hint is active so screen readers announce the reason on focus.
+  - No separate save button for description added (existing single-action design preserved); description still rides along on the canonical `POST /api/leads` payload via `createLeadMutation.mutate()`.
+- `tests/lead-create-page.test.ts`: 10 new source-pin tests — title label + required indicator + sr-only "(required)"; aria-required + aria-invalid bindings; visible chrome (bg-white, border, shadow, cursor-text); the previous affordance-stripped className combinations are explicitly forbidden; hover + focus-visible classes; placeholder slate-400; preserved `data-testid="input-lead-title"`; `missingFields` array + `disabledReason` derivation; `isDirty` gate; aria-describedby wiring + `data-testid="text-create-lead-disabled-reason"`; no separate description save button.
+
+**Before / after.**
+
+| Affordance | Before | After |
+|---|---|---|
+| Border | none (`border-0`) | `border border-slate-300` (hover: `border-slate-400`, focus: `border-brand`) |
+| Background | transparent | `bg-white` |
+| Padding | none (`px-0 py-0`) | `px-3 py-2` |
+| Shadow | none (`shadow-none`) | `shadow-sm` |
+| Focus ring | none (`focus-visible:ring-0`) | `focus-visible:ring-2 focus-visible:ring-brand/25` |
+| Cursor | inherited | explicit `cursor-text` |
+| Placeholder color | `text-slate-300` (near-invisible) | `text-slate-400` (canonical muted) |
+| Required signal | none | label `*` + `aria-required` + `aria-invalid` + sr-only "(required)" |
+| Disabled-button reason | silent grey-out | inline 11px hint, surfaces only after first interaction |
+
+**What a first-time user now sees.**
+
+1. The title reads as a labeled, bordered, white-background input with an asterisk — clearly editable, clearly required.
+2. Clicking it shows the focus ring and a text cursor; typing replaces the helpful prompt placeholder.
+3. The moment the user touches anything (selects a location, types in description, etc.) without a title yet, a single short line appears beneath the disabled **Create Lead** button: *"Add a title to create the lead."* Pick a location next? *"Add a client / location and a title to create the lead."* The hint vanishes the instant the requirements are satisfied.
+4. Description saves through the same **Create Lead** action — no second button.
+
+**Files changed.**
+
+- `client/src/components/leads/LeadSummaryCard.tsx` — draft-mode title affordance.
+- `client/src/pages/CreateLeadPage.tsx` — `missingFields` + `disabledReason` + inline hint + aria-describedby wiring.
+- `tests/lead-create-page.test.ts` — 10 new pins (now 56 tests total).
+- `CHANGELOG.md` — this entry.
+
+**Verification.**
+
+- `npx vitest run tests/lead-create-page.test.ts tests/lead-quote-conversion.test.ts tests/quote-create-page.test.ts tests/line-items-profitability-header.test.ts tests/quote-line-cost-persistence.test.ts` — **186/186 pass** (10 new pins + 176 existing).
+- `npm run check` — **NOT clean** at the project level, but only because `client/src/components/ui/card.tsx` carries an in-flight refactor (a JSDoc block at line 117 contains `{/* rows / list / custom content */}` whose inner `*/` closes the outer block early). The error is preexisting on `main` after a stash-pop and is unrelated to this PR's edits — `LeadSummaryCard.tsx`, `CreateLeadPage.tsx`, and `lead-create-page.test.ts` are not consumers of `card.tsx` and parse cleanly.
+
 #### Invoice PDF v2 — muted-blue palette + push Client Communication low (2026-05-06 RALPH v2)
 
 Tightens the modern invoice layout. Drops the bright green accent entirely and replaces it with a muted dark blue (#1E3A5F) used sparingly for section labels (BILL TO, SERVICE SUMMARY, CLIENT COMMUNICATION, BUSINESS INFORMATION), the Due Date value, the invoice-number pill border, and the TOTAL DUE amount. Strong headings + the table header use a near-black navy (#0F172A). Color-token sweep ensures every hex literal appears once in the source — the doc body now references constants only.

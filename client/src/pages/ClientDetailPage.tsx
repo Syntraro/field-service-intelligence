@@ -24,7 +24,7 @@
  * Route: /clients/:clientId
  * URL params: ?scope=company|location&location=<id>&tab=<workspaceTab>
  */
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import { useParams, useLocation, useSearch, Link } from "wouter";
 import { useQuery, useMutation, keepPreviousData } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,10 @@ import {
   Wrench, Receipt, Phone, Mail, Star, Trash2, Pencil,
   Clock, Package, Tag, Building2, AlertTriangle, Archive, Loader2,
   ChevronLeft, ChevronRight, ChevronDown, Check,
+  // 2026-05-07 right-rail icons (Contacts / Notes / Billing / Equipment /
+  // Parts / Maintenance / Activity). Wrench + Package already imported
+  // above for other surfaces; reused unchanged.
+  Users, StickyNote, Wallet, CalendarClock, Activity, X,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -51,6 +55,24 @@ import {
   Popover, PopoverTrigger, PopoverContent,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+// 2026-05-07: canonical right-rail primitive. Owns the icon strip +
+// expandable panel chrome shared with JobDetailPage / future Invoice
+// + Quote detail surfaces. Per-tab body content + the page-level
+// width/resize/localStorage state stay here in the page; the primitive
+// is purely presentational.
+import {
+  DetailRightRail,
+  DetailRightRailEmpty,
+  RAIL_WIDTH_TRANSITION,
+  type DetailRailTab,
+} from "@/components/detail-rail/DetailRightRail";
+// 2026-05-07 RALPH — canonical rail card primitive (shared chrome:
+// border / radius / padding / hover) + the rail Activity formatter
+// that maps event_type + meta to user-facing copy. Replaces the ad
+// hoc card chrome each rail panel had been duplicating, and stops
+// the Activity panel from rendering raw UUIDs / "Note.Created".
+import { RailContentCard } from "@/components/detail-rail/RailContentCard";
+import { formatRailActivity } from "@/components/activity-feed/formatRailActivity";
 // 2026-04-26: Routed through the canonical CreateNewDialog (Job tab). The
 // `preselectedLocationId` contract maps one-for-one onto CreateNewDialog's
 // `jobPreselectedLocationId`, so the client-scoped create still keeps its
@@ -80,6 +102,7 @@ import LocPricingTab from "@/components/LocPricingTab";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
+import { formatCurrency } from "@/lib/formatters";
 import type {
   Client, CustomerCompany, Job, Invoice, ClientContact, ClientTag, Quote,
   LocationEquipment, LocationPMPartTemplate,
@@ -96,25 +119,42 @@ import { UNPAID_INVOICE_STATUSES } from "@shared/invoiceStatus";
 /** Scope model: company overview or a specific location */
 type ScopeType = "company" | "location";
 
-/** Workspace tabs — operational only. Contacts / Notes / Billing live
- *  in the right utility rail, not here (drift correction 2026-04-18). */
+/** Workspace tabs — operational only. Contacts / Notes / Billing /
+ *  Equipment / Parts / Maintenance / Activity live in the right
+ *  utility rail, not here. 2026-05-07 v3: dropped `equipment`, `pm`,
+ *  `parts` from this union — the rail is now the canonical access
+ *  point for those surfaces, and keeping center tabs for them was
+ *  pure duplication. The underlying components / data / queries are
+ *  preserved (see `LocEquipmentTab`, `LocPartsTab`, `<PMScheduleCard>`)
+ *  so a future surface can re-mount them, but they no longer appear
+ *  in the workspace tab bar. */
 type WorkspaceTab =
   | "active"
   | "jobs"
   | "invoices"
   | "quotes"
-  | "equipment"
-  | "pm"
-  | "parts"
   | "pricing";
 
-/** Utility-rail tabs in the right sidebar (Contacts / Notes / Billing).
- *  2026-05-02 layout simplification: the "fields" tab (canonical
- *  Reference-Fields surface from Phase 2b) was removed from this rail.
- *  Reference-field DATA and APIs are untouched — the section is no
- *  longer surfaced in this right-side panel, but is still readable /
- *  writable from any other Reference-Fields mount in the app. */
-type UtilityTab = "contacts" | "notes" | "billing";
+/** Utility-rail panels in the right sidebar.
+ *  2026-05-02: dropped the "fields" tab (Reference-Fields). Data + APIs
+ *  unchanged — the section is just no longer surfaced here.
+ *  2026-05-07: layout switched from a horizontal `<Tabs>` row to a
+ *  vertical icon rail + expandable panel. Items extended to cover the
+ *  full client surface (was contacts/notes/billing); Equipment / Parts /
+ *  Maintenance show a compact summary that links to the corresponding
+ *  workspace tab (per spec — no duplicated data). Activity replaces
+ *  the prior "history" notion. Files is intentionally omitted.
+ *  `null` → no panel open (rail-only display). */
+type UtilityTab =
+  | "contacts"
+  | "notes"
+  | "billing"
+  | "equipment"
+  | "parts"
+  | "maintenance"
+  | "activity";
+
+type UtilityPanel = UtilityTab | null;
 
 // ContactScope type and STANDARD_CONTACT_ROLES imported from @/components/ContactFormDialog
 
@@ -188,12 +228,9 @@ const COMPANY_TABS: { key: WorkspaceTab; label: string }[] = [
   { key: "jobs", label: "Jobs" },
   { key: "invoices", label: "Invoices" },
   { key: "quotes", label: "Quotes" },
-  { key: "equipment", label: "Equipment" },
-  { key: "parts", label: "Parts" },
   // 2026-05-02: Pricing tab. The endpoint is location-keyed, so this
-  // company-scope position renders ScopeRequiredEmpty (same pattern as
-  // Equipment / Parts). Listed here only so the tab bar shape stays
-  // stable across scope toggles.
+  // company-scope position renders ScopeRequiredEmpty. Listed here
+  // only so the tab bar shape stays stable across scope toggles.
   { key: "pricing", label: "Pricing" },
 ];
 
@@ -202,9 +239,6 @@ const LOCATION_TABS: { key: WorkspaceTab; label: string }[] = [
   { key: "jobs", label: "Jobs" },
   { key: "invoices", label: "Invoices" },
   { key: "quotes", label: "Quotes" },
-  { key: "equipment", label: "Equipment" },
-  { key: "pm", label: "PM" },
-  { key: "parts", label: "Parts" },
   { key: "pricing", label: "Pricing" },
 ];
 
@@ -399,7 +433,10 @@ export default function ClientDetailPage() {
   const [scopeType, setScopeType] = useState<ScopeType>("company");
   const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null);
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("active");
-  const [utilityTab, setUtilityTab] = useState<UtilityTab>("contacts");
+  // 2026-05-07: `utilityTab` now models the active SIDE PANEL — null
+  // means rail-only (no panel open). Defaults to "contacts" so the
+  // page reads with a meaningful initial panel rather than empty space.
+  const [utilityTab, setUtilityTab] = useState<UtilityPanel>("contacts");
   const [locationSearch, setLocationSearch] = useState("");
 
   // 2026-05-02 layout refactor: the persistent left "Locations" rail
@@ -444,11 +481,15 @@ export default function ClientDetailPage() {
   const RAIL_MIN_WIDTH = 300;
   const RAIL_MAX_WIDTH_PX = 520;
   const RAIL_MAX_WIDTH_RATIO = 0.45;
-  const RAIL_COLLAPSED_TAB_WIDTH = 32;
+  // 2026-05-07 v3: width of the rail when no panel is open (icon nav
+  // only). Matches the inner <UtilityRail>'s `<nav className="w-[76px]">`
+  // + a small slack so the right border doesn't clip the focus ring.
+  const RAIL_ICON_STRIP_WIDTH = 80;
   const LS_RAIL_WIDTH_KEY = "syntraro.detail.rail.width";
-  const LS_RAIL_COLLAPSED_KEY = "syntraro.detail.rail.collapsed";
 
-  const [rightRailCollapsed, setRightRailCollapsed] = useState(false);
+  // 2026-05-07 v3: rail-collapsed boolean state retired alongside the
+  // "DETAILS" expand strip. The rail is always visible; "collapsed"
+  // now means panel-closed, expressed via `utilityTab === null`.
   const [rightRailWidth, setRightRailWidth] = useState<number>(RAIL_DEFAULT_WIDTH);
   const [rightRailHydrated, setRightRailHydrated] = useState(false);
   useEffect(() => {
@@ -460,8 +501,6 @@ export default function ClientDetailPage() {
           setRightRailWidth(parsed);
         }
       }
-      const rawCollapsed = localStorage.getItem(LS_RAIL_COLLAPSED_KEY);
-      if (rawCollapsed === "1" || rawCollapsed === "true") setRightRailCollapsed(true);
     } catch { /* noop */ }
     setRightRailHydrated(true);
   }, []);
@@ -469,10 +508,6 @@ export default function ClientDetailPage() {
     if (!rightRailHydrated) return;
     try { localStorage.setItem(LS_RAIL_WIDTH_KEY, String(rightRailWidth)); } catch { /* noop */ }
   }, [rightRailWidth, rightRailHydrated]);
-  useEffect(() => {
-    if (!rightRailHydrated) return;
-    try { localStorage.setItem(LS_RAIL_COLLAPSED_KEY, rightRailCollapsed ? "1" : "0"); } catch { /* noop */ }
-  }, [rightRailCollapsed, rightRailHydrated]);
 
   const handleRailPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -585,6 +620,23 @@ export default function ClientDetailPage() {
   const [editClientTagsOpen, setEditClientTagsOpen] = useState(false);
   const [equipmentModalOpen, setEquipmentModalOpen] = useState(false);
   const [partsModalOpen, setPartsModalOpen] = useState(false);
+  // 2026-05-07: page-level mount of the canonical EquipmentDetailModal
+  // so the right-rail Equipment panel can open it on card click.
+  // Previously this state lived inside `LocEquipmentTab` (now dead
+  // code after the v3 workspace-tab refactor); lifting it here keeps
+  // the modal reachable from the rail without duplicating the
+  // editor.
+  const [detailEquipment, setDetailEquipment] = useState<LocationEquipment | null>(null);
+
+  // 2026-05-07 canonical rail extraction: imperative refs for rail
+  // panel header `+ Add` buttons. Body components own the dialogs;
+  // the panel header dispatches via these refs so there's a single
+  // canonical add affordance per panel. Lifted from the prior local
+  // `UtilityRail` body so the canonical `<DetailRightRail>` primitive
+  // stays presentation-only.
+  const companyContactsRef = useRef<ContactsCompactRef | null>(null);
+  const locContactsRef = useRef<ContactsCompactRef | null>(null);
+  const notesRef = useRef<NotesPanelRef | null>(null);
 
   // Delete dialog state
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -1078,8 +1130,251 @@ export default function ClientDetailPage() {
     : (selectedLoc ? locationDisplayName(selectedLoc) : "");
   const scopeTags = scopeType === "company" ? companyTags : locationTags;
 
+  // 2026-05-07 canonical rail extraction: per-tab `+ Add` buttons share
+  // a single hover/focus class so the canonical primitive's panel
+  // header carries one consistent affordance. Pulled inline here (was
+  // a private const inside the legacy `RailHeaderAction` component)
+  // so the action JSX in `clientRailTabs` below can reuse it without
+  // re-introducing a parallel component.
+  const RAIL_ACTION_BTN_CLASS =
+    "inline-flex items-center gap-1 h-7 px-2 rounded text-caption font-medium text-slate-700 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40";
+
+  // 2026-05-07 canonical rail extraction: build the seven canonical
+  // rail tabs in a single place. Each tab carries its `id` (matches the
+  // legacy `UtilityPanel` enum), `label`, `icon`, the existing static
+  // `testId` (so `rail-item-*` selectors continue to render byte-for-
+  // byte), an optional `action` JSX (the panel-header `+ Add` /
+  // `Edit` button), and the panel `content` JSX. This is the single
+  // place that maps page state into the canonical rail; the legacy
+  // `UtilityRail`, `RailHeaderAction`, and `RailEmptyState` components
+  // are removed.
+  const ownerCompanyId = client.companyId || "";
+  const billingPanelData = {
+    lifetimeRevenue,
+    paidYtd,
+    outstanding: outstandingInvoices,
+    aging: agingBuckets,
+  };
+  const billingFields = {
+    paymentTermsDays: (parentCompany as any)?.paymentTermsDays ?? null,
+    billingStreet: parentCompany?.billingStreet ?? null,
+    billingCity: parentCompany?.billingCity ?? null,
+    billingProvince: parentCompany?.billingProvince ?? null,
+    billingPostalCode: parentCompany?.billingPostalCode ?? null,
+  };
+  const onRequestAddMaintenance = () => {
+    // 2026-05-07 v4: route to the canonical create-plan wizard.
+    // PMWizardPage reads `?locationId=…` and derives the customer
+    // from the location row, so no separate `?clientId=` is needed.
+    const url = selectedLocationId
+      ? `/pm/new?locationId=${selectedLocationId}`
+      : `/pm/new`;
+    setLocation(url);
+  };
+  const clientRailTabs: DetailRailTab[] = [
+    {
+      id: "contacts",
+      label: "Contacts",
+      icon: Users,
+      testId: "rail-item-contacts",
+      action: (
+        <button
+          type="button"
+          onClick={() => {
+            if (scopeType === "company") companyContactsRef.current?.startAdding();
+            else locContactsRef.current?.startAdding();
+          }}
+          className={RAIL_ACTION_BTN_CLASS}
+          data-testid="client-side-panel-action-add-contact"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add
+        </button>
+      ),
+      content: scopeType === "company" ? (
+        <CompanyContactsCompact
+          ref={companyContactsRef}
+          hideHeader
+          companyContacts={clientLevelContacts}
+          locationContacts={allLocationContacts}
+          locations={locations}
+          companyId={companyId}
+        />
+      ) : selectedLoc && selectedLocationId ? (
+        <LocContactsCompact
+          ref={locContactsRef}
+          hideHeader
+          locationContacts={locContacts}
+          companyContacts={locCompanyContacts}
+          locationId={selectedLocationId}
+          parentCompanyId={companyId}
+          locations={locations}
+          allLocationContacts={allLocationContacts}
+        />
+      ) : (
+        <DetailRightRailEmpty message="No contacts." testIdPrefix="client-side" />
+      ),
+    },
+    {
+      id: "notes",
+      label: "Notes",
+      icon: StickyNote,
+      testId: "rail-item-notes",
+      action: (
+        <button
+          type="button"
+          onClick={() => notesRef.current?.startAdding()}
+          className={RAIL_ACTION_BTN_CLASS}
+          data-testid="client-side-panel-action-add-note"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add Note
+        </button>
+      ),
+      content: scopeType === "company" && companyId ? (
+        <NotesPanel ref={notesRef} scope="company" companyId={companyId} hideAddButton />
+      ) : scopeType === "location" && selectedLocationId ? (
+        <NotesPanel
+          ref={notesRef}
+          scope="location"
+          companyId={ownerCompanyId}
+          locationId={selectedLocationId}
+          hideAddButton
+        />
+      ) : (
+        <DetailRightRailEmpty
+          message="No notes yet."
+          hint="Add one to keep your team aligned."
+          testIdPrefix="client-side"
+        />
+      ),
+    },
+    {
+      id: "billing",
+      label: "Billing",
+      icon: Wallet,
+      testId: "rail-item-billing",
+      action: (
+        <button
+          type="button"
+          onClick={() => setEditClientDialogOpen(true)}
+          className={RAIL_ACTION_BTN_CLASS}
+          data-testid="client-side-panel-action-edit-billing"
+        >
+          <Pencil className="h-3.5 w-3.5" />
+          Edit
+        </button>
+      ),
+      content: (
+        <ClientBillingPanelBody
+          billing={billingPanelData}
+          paymentTermsDays={billingFields.paymentTermsDays}
+          billingStreet={billingFields.billingStreet}
+          billingCity={billingFields.billingCity}
+          billingProvince={billingFields.billingProvince}
+          billingPostalCode={billingFields.billingPostalCode}
+        />
+      ),
+    },
+    {
+      id: "equipment",
+      label: "Equipment",
+      icon: Wrench,
+      testId: "rail-item-equipment",
+      // 2026-05-07: location-scope only — at company scope there's no
+      // single location to scope an equipment add to, so the affordance
+      // hides (mirrors the prior RailHeaderAction switch).
+      action: scopeType === "location" ? (
+        <button
+          type="button"
+          onClick={() => setEquipmentModalOpen(true)}
+          className={RAIL_ACTION_BTN_CLASS}
+          data-testid="client-side-panel-action-add-equipment"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add Equipment
+        </button>
+      ) : null,
+      content: (
+        <ClientEquipmentPanelBody
+          scopeType={scopeType}
+          equipment={locationEquipment}
+          onOpen={setDetailEquipment}
+        />
+      ),
+    },
+    {
+      id: "parts",
+      label: "Parts",
+      icon: Package,
+      testId: "rail-item-parts",
+      action: scopeType === "location" ? (
+        <button
+          type="button"
+          onClick={() => setPartsModalOpen(true)}
+          className={RAIL_ACTION_BTN_CLASS}
+          data-testid="client-side-panel-action-add-part"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add Part
+        </button>
+      ) : null,
+      content: <ClientPartsPanelBody scopeType={scopeType} pmParts={pmParts} />,
+    },
+    {
+      id: "maintenance",
+      label: "Maintenance",
+      icon: CalendarClock,
+      testId: "rail-item-maintenance",
+      action: scopeType === "location" ? (
+        <button
+          type="button"
+          onClick={onRequestAddMaintenance}
+          className={RAIL_ACTION_BTN_CLASS}
+          data-testid="client-side-panel-action-add-maintenance"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add Plan
+        </button>
+      ) : null,
+      content: (
+        <ClientMaintenancePanelBody
+          companyId={companyId ?? null}
+          locationId={selectedLocationId}
+          scopeType={scopeType}
+        />
+      ),
+    },
+    {
+      id: "activity",
+      label: "Activity",
+      icon: Activity,
+      testId: "rail-item-activity",
+      content: (
+        <ClientActivityPanelBody
+          scopeType={scopeType}
+          customerCompanyId={companyId ?? null}
+          locationId={selectedLocationId}
+        />
+      ),
+    },
+  ];
+
   return (
-    <div className="flex h-full flex-col bg-app-bg" data-testid="client-detail-root">
+    // 2026-05-07: page-level layout switches from a single vertical
+    // column to an outer horizontal row so the right utility region
+    // can span the full content height (top of the client header
+    // card → bottom of the workspace card). Below `lg` the row
+    // wraps to a column and the rail stacks under the workspace,
+    // matching the prior mobile behaviour. The existing
+    // collapse/expand chrome on the rail itself is preserved
+    // unchanged.
+    <div
+      className="flex h-full flex-col lg:flex-row bg-app-bg"
+      data-testid="client-detail-root"
+    >
+      {/* ── LEFT COLUMN: page header + scope bar + workspace body ── */}
+      <div className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden">
 
       {/* ═══ PAGE HEADER: IDENTITY + CREATE ACTIONS + KPI + OVERFLOW ═══
            Create actions (Job / Quote / Invoice) live directly under the
@@ -1475,13 +1770,14 @@ export default function ClientDetailPage() {
             tell the user which location is selected. */}
       </div>
 
-      {/* ═══ BODY — workspace (main) | right rail (Client Information) ═══
-           Two-column layout. Left column is the unified workspace card
-           (tabs: Active Work / Jobs / Invoices / Quotes / Equipment /
-           PM / Parts). Right column is the utility rail. The persistent
-           left "Locations" rail was removed on 2026-05-02; navigation
-           between scopes now goes through the scope bar above. */}
-      <div className="flex-1 min-h-0 flex lg:flex-row flex-col overflow-hidden" data-testid="client-detail-body">
+      {/* ═══ BODY — workspace card + recent activity (LEFT-COLUMN portion only) ═══
+           2026-05-07: the right utility rail was lifted to the page-
+           level outer flex row above, so the body here is now a
+           single-column workspace area. The rail spans the full
+           page-content height (top of the client header card →
+           bottom of the workspace card), no longer trapped beside
+           only the lower body. */}
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden" data-testid="client-detail-body">
 
         {/* ── WORKSPACE SCROLL AREA — workspace card + recent activity ── */}
         <div className="flex-1 min-w-0 lg:min-h-0 lg:overflow-y-auto p-4 space-y-3">
@@ -1614,25 +1910,13 @@ export default function ClientDetailPage() {
                         {workspaceTab === "jobs" && <ClientAllJobsTab jobs={companyJobs} locations={locations} onNavigate={setLocation} />}
                         {workspaceTab === "invoices" && <ClientAllInvoicesTab invoices={allInvoices} locations={locations} onNavigate={setLocation} />}
                         {workspaceTab === "quotes" && <ClientAllQuotesTab quotes={clientQuotes} locations={locations} onNavigate={setLocation} />}
-                        {/* 2026-05-02: Equipment + Parts are inherently
-                            location-scoped — surface a nudge to pick a
-                            specific location rather than fabricating a
-                            cross-location aggregate. The scope selector
-                            is the canonical place to switch. */}
-                        {workspaceTab === "equipment" && (
-                          <ScopeRequiredEmpty
-                            icon={<Wrench className="h-5 w-5 text-slate-400" />}
-                            title="Equipment is per-location"
-                            description="Pick a specific location from the scope selector above to view or add equipment."
-                          />
-                        )}
-                        {workspaceTab === "parts" && (
-                          <ScopeRequiredEmpty
-                            icon={<Package className="h-5 w-5 text-slate-400" />}
-                            title="Parts templates are per-location"
-                            description="Pick a specific location from the scope selector above to manage PM parts."
-                          />
-                        )}
+                        {/* 2026-05-07 v3: Equipment + Parts + PM tabs
+                            removed from the workspace bar. The right
+                            utility rail is the canonical access point
+                            for those surfaces. Underlying
+                            ScopeRequiredEmpty / LocEquipmentTab /
+                            LocPartsTab / PMScheduleCard components are
+                            preserved for future surfaces. */}
                         {workspaceTab === "pricing" && (
                           <ScopeRequiredEmpty
                             icon={<Receipt className="h-5 w-5 text-slate-400" />}
@@ -1656,27 +1940,7 @@ export default function ClientDetailPage() {
                         {workspaceTab === "jobs" && <LocJobsTab jobs={locJobs} onNavigate={setLocation} />}
                         {workspaceTab === "invoices" && <LocInvoicesTab invoices={locInvoices} onNavigate={setLocation} />}
                         {workspaceTab === "quotes" && <LocQuotesTab quotes={locQuotes} onNavigate={setLocation} />}
-                        {workspaceTab === "equipment" && (
-                          <LocEquipmentTab
-                            equipment={locationEquipment}
-                            locationId={selectedLocationId!}
-                            onAdd={() => setEquipmentModalOpen(true)}
-                            onDelete={(eqId) => deleteEquipmentMutation.mutate(eqId)}
-                          />
-                        )}
-                        {workspaceTab === "pm" && (
-                          <PMScheduleCard
-                            locationId={selectedLocationId!}
-                            locationName={locationDisplayName(selectedLoc)}
-                            companyId={client.companyId || ""}
-                            clientId={companyId || undefined}
-                            open={true}
-                            onOpenChange={() => {}}
-                          />
-                        )}
-                        {workspaceTab === "parts" && (
-                          <LocPartsTab pmParts={pmParts} onAdd={() => setPartsModalOpen(true)} />
-                        )}
+                        {/* 2026-05-07 v3: Equipment / PM / Parts moved to the right utility rail. */}
                         {workspaceTab === "pricing" && (
                           <LocPricingTab locationId={selectedLocationId!} onNavigate={setLocation} />
                         )}
@@ -1701,11 +1965,19 @@ export default function ClientDetailPage() {
                 )}
         </div>
 
+      </div>
+      {/* ═══ /BODY (left-column workspace) ═══ */}
+
+      </div>
+      {/* ═══ /LEFT COLUMN (page header + scope bar + body) ═══ */}
+
       {/* ═══ DRAG-RESIZE HANDLE (between center workspace and right rail) ═══
-           Desktop only, hidden when the rail is collapsed. Width control
-           is a vertical line with a wider invisible hit target for
-           forgiving drags. Keyboard accessibility via arrow keys. */}
-      {!rightRailCollapsed && (
+           Desktop only. Only renders when a panel is open — there's
+           nothing to resize when the rail is showing only the icon
+           strip. Width control is a vertical line with a wider
+           invisible hit target for forgiving drags. Keyboard
+           accessibility via arrow keys. */}
+      {utilityTab !== null && (
         <div
           role="separator"
           aria-orientation="vertical"
@@ -1734,125 +2006,72 @@ export default function ClientDetailPage() {
            Sibling of the left page column, not a child of anything in
            it. Its top edge starts at the top of the page-content area,
            so it spans [page header + body] as one continuous column.
-           Width and collapse state persist via the canonical
-           `syntraro.detail.rail.{width,collapsed}` localStorage keys —
-           same keys used by DetailPageShell, so preferences carry over
-           between Client Detail and Job / Invoice / Quote detail pages. */}
+           2026-05-07 v3: the prior "DETAILS" collapsed strip is gone —
+           the icon rail itself is always visible. Aside width:
+             - panel open  → user-resized `rightRailWidth` (persisted)
+             - panel closed → fixed RAIL_ICON_STRIP_WIDTH (icon nav only) */}
       <aside
         className={cn(
           "relative lg:shrink-0 lg:h-full flex flex-col bg-white",
           "border-t lg:border-t-0 lg:border-l border-slate-200",
         )}
         style={{
-          width: rightRailCollapsed
-            ? `${RAIL_COLLAPSED_TAB_WIDTH}px`
-            : undefined,
-          // Inline width via style so we don't need arbitrary Tailwind
-          // class values for every possible pixel count.
-          ...(rightRailCollapsed
-            ? {}
-            : { ["--client-rail-width" as any]: `${rightRailWidth}px` }),
+          ["--client-rail-width" as any]: `${
+            utilityTab === null ? RAIL_ICON_STRIP_WIDTH : rightRailWidth
+          }px`,
         }}
         data-testid="client-right-column"
-        data-collapsed={rightRailCollapsed ? "true" : "false"}
+        data-panel-open={utilityTab === null ? "false" : "true"}
       >
-        {/* Below lg: rail stacks under the left column; always show full
-            content regardless of the desktop collapse flag. */}
+        {/* 2026-05-07 canonical rail extraction: both mobile (below lg)
+            and desktop (lg+) mount the canonical `<DetailRightRail>`
+            primitive. The outer aside still owns the resize / width
+            persistence (page-specific concern); the primitive owns the
+            icon-strip + panel chrome. `testIdPrefix="client-side"`
+            preserves the rendered DOM contract: `client-side-rail`,
+            `client-side-panel-${id}`, `client-side-panel-close`,
+            `client-side-panel-empty` all render byte-for-byte the
+            same. Per-tab `rail-item-*` testIds come from `tab.testId`. */}
         <div className="lg:hidden">
-          <UtilityRail
-            utilityTab={utilityTab}
-            setUtilityTab={setUtilityTab}
-            scopeType={scopeType}
-            companyId={companyId}
-            selectedLoc={selectedLoc}
-            selectedLocationId={selectedLocationId}
-            clientLevelContacts={clientLevelContacts}
-            allLocationContacts={allLocationContacts}
-            locations={locations}
-            locContacts={locContacts}
-            locCompanyContacts={locCompanyContacts}
-            ownerCompanyId={client.companyId || ""}
-            scopeLabel={scopeEntityName}
-            billing={{
-              lifetimeRevenue,
-              paidYtd,
-              outstanding: outstandingInvoices,
-              aging: agingBuckets,
-            }}
+          <DetailRightRail
+            tabs={clientRailTabs}
+            activeTabId={utilityTab}
+            onActiveTabChange={(id) => setUtilityTab(id as UtilityPanel)}
+            testIdPrefix="client-side"
+            ariaLabel="Client information rail"
           />
         </div>
 
-        {/* Desktop: either the expand-edge-tab (collapsed) or the
-            full rail content + collapse button (expanded). */}
-        {rightRailCollapsed ? (
-          <button
-            type="button"
-            onClick={() => setRightRailCollapsed(false)}
-            className={cn(
-              "hidden lg:flex h-full w-full flex-col items-center justify-center gap-2",
-              "text-slate-700 hover:bg-slate-50 transition-colors",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 focus-visible:ring-inset",
-            )}
-            aria-label="Expand utility rail"
-            title="Expand"
-            data-testid="client-right-column-expand"
-          >
-            <ChevronLeft className="h-4 w-4" />
-            <span
-              className="select-none text-[11px] font-bold uppercase tracking-[0.18em]"
-              style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}
-            >
-              Details
-            </span>
-          </button>
-        ) : (
-          <div
-            className="hidden lg:flex h-full w-[var(--client-rail-width)] flex-col relative"
-          >
-            <button
-              type="button"
-              onClick={() => setRightRailCollapsed(true)}
-              className={cn(
-                "absolute top-1.5 right-1.5 z-20",
-                "h-6 w-6 flex items-center justify-center rounded-md",
-                "text-slate-700 hover:text-slate-950",
-                "bg-white/95 hover:bg-white border border-slate-300 hover:border-slate-400",
-                "shadow-sm backdrop-blur-[1px] transition-colors",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300",
-              )}
-              aria-label="Collapse utility rail"
-              title="Collapse"
-              data-testid="client-right-column-collapse"
-            >
-              <ChevronRight className="h-3.5 w-3.5" />
-            </button>
-            <UtilityRail
-              utilityTab={utilityTab}
-              setUtilityTab={setUtilityTab}
-              scopeType={scopeType}
-              companyId={companyId}
-              selectedLoc={selectedLoc}
-              selectedLocationId={selectedLocationId}
-              clientLevelContacts={clientLevelContacts}
-              allLocationContacts={allLocationContacts}
-              locations={locations}
-              locContacts={locContacts}
-              locCompanyContacts={locCompanyContacts}
-              ownerCompanyId={client.companyId || ""}
-              scopeLabel={scopeEntityName}
-              billing={{
-                lifetimeRevenue,
-                paidYtd,
-                outstanding: outstandingInvoices,
-                aging: agingBuckets,
-              }}
-            />
-          </div>
-        )}
+        {/* 2026-05-07 v3: the rail is ALWAYS visible on desktop. The
+            prior `rightRailCollapsed` mode (vertical "DETAILS" expand
+            tab) is gone — the user keeps the seven rail items in
+            view at all times. "Collapsed" now simply means no panel
+            body is open (controlled by `utilityTab === null`); the
+            close-X inside the panel header is the single canonical
+            collapse affordance. */}
+        {/* 2026-05-07 RALPH — `RAIL_WIDTH_TRANSITION` animates this
+            wrapper's `width` whenever `--client-rail-width` flips
+            (panel open ↔ closed, or drag-resize). Matches the close
+            duration of the main-header Activity drawer (`<Sheet>`
+            300ms) so the two surfaces feel consistent. The
+            primitive's deferred-unmount logic keeps the panel content
+            mounted long enough for this width animation to complete
+            before the section disappears from the DOM. */}
+        <div
+          className={cn(
+            "hidden lg:flex h-full w-[var(--client-rail-width)] flex-col relative",
+            RAIL_WIDTH_TRANSITION,
+          )}
+        >
+          <DetailRightRail
+            tabs={clientRailTabs}
+            activeTabId={utilityTab}
+            onActiveTabChange={(id) => setUtilityTab(id as UtilityPanel)}
+            testIdPrefix="client-side"
+            ariaLabel="Client information rail"
+          />
+        </div>
       </aside>
-
-      </div>
-      {/* ═══ /BODY ═══ */}
 
       {/* ── Dialogs ── */}
       <CreateNewDialog
@@ -2070,6 +2289,17 @@ export default function ClientDetailPage() {
           onOpenChange={setEquipmentModalOpen}
         />
       )}
+
+      {/* 2026-05-07: page-level Equipment Detail modal. Opened from
+          the right-rail Equipment panel's card-click handler. The
+          modal's edit affordance reuses AddEquipmentDialog in
+          mode="edit" (see EquipmentDetailModal.tsx:22-26) — no
+          parallel editor introduced. */}
+      <EquipmentDetailModal
+        open={!!detailEquipment}
+        onOpenChange={(open) => { if (!open) setDetailEquipment(null); }}
+        equipment={detailEquipment}
+      />
     </div>
   );
 }
@@ -2095,14 +2325,24 @@ function MetadataSection({ title, icon, children }: { title: string; icon?: Reac
  *  2026-05-02 unification: edit / add both go through the canonical
  *  ContactFormDialog. Roles are managed inside the modal's right-column
  *  Locations & Roles picker — no separate roles modal is mounted. */
-function CompanyContactsCompact({
-  companyContacts, locationContacts, locations, companyId,
-}: {
+// 2026-05-07: ref handle so the right-rail Contacts panel header's
+// "+ Add" button can imperatively open the ContactFormDialog without
+// duplicating its internal state.
+export interface ContactsCompactRef {
+  startAdding: () => void;
+}
+
+const CompanyContactsCompact = forwardRef<ContactsCompactRef, {
   companyContacts: (ClientContact & { assignmentCount?: number })[];
   locationContacts: ClientContact[];
   locations: Client[];
   companyId?: string;
-}) {
+  /** 2026-05-07: when true, suppress the internal `<h3>Contacts</h3>`
+   *  + Add button. The right-rail panel header owns both. */
+  hideHeader?: boolean;
+}>(function CompanyContactsCompact({
+  companyContacts, locationContacts, locations, companyId, hideHeader,
+}, ref) {
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<ClientContact | null>(null);
 
@@ -2157,18 +2397,28 @@ function CompanyContactsCompact({
     }
   }, [companyId]);
 
+  // Imperative startAdding for the right-rail panel header.
+  useImperativeHandle(ref, () => ({
+    startAdding: () => {
+      setEditingContact(null);
+      setContactDialogOpen(true);
+    },
+  }), []);
+
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold text-slate-700">Contacts</h3>
-        <button
-          className="flex items-center gap-0.5 text-xs text-primary hover:text-primary/80 transition-colors"
-          onClick={() => { setEditingContact(null); setContactDialogOpen(true); }}
-          data-testid="company-contacts-add"
-        >
-          <Plus className="h-3.5 w-3.5" /><span>Add</span>
-        </button>
-      </div>
+      {!hideHeader && (
+        <div className="flex items-center justify-between">
+          <h3 className="text-xs font-semibold text-slate-700">Contacts</h3>
+          <button
+            className="flex items-center gap-0.5 text-xs text-primary hover:text-primary/80 transition-colors"
+            onClick={() => { setEditingContact(null); setContactDialogOpen(true); }}
+            data-testid="company-contacts-add"
+          >
+            <Plus className="h-3.5 w-3.5" /><span>Add</span>
+          </button>
+        </div>
+      )}
       {companyContacts.length === 0 ? (
         <p className="text-xs text-muted-foreground">No contacts yet.</p>
       ) : (
@@ -2194,7 +2444,7 @@ function CompanyContactsCompact({
       />
     </div>
   );
-}
+});
 
 /** Location contacts — shows contacts linked to the selected location.
  *  2026-05-02 unification: Add / Edit both open the canonical
@@ -2204,10 +2454,7 @@ function CompanyContactsCompact({
  *  legacy "Assign Existing" picker is gone — to add an existing
  *  company contact to this location, edit the contact (or its
  *  duplicate-detection cascade matches by email/name on Add). */
-function LocContactsCompact({
-  locationContacts, companyContacts, locationId, parentCompanyId,
-  locations, allLocationContacts,
-}: {
+const LocContactsCompact = forwardRef<ContactsCompactRef, {
   locationContacts: (ClientContact & { contactPersonId?: string })[];
   companyContacts: ClientContact[];
   locationId: string;
@@ -2218,7 +2465,13 @@ function LocContactsCompact({
   /** Every location-contact across this client — required so the modal
    *  can pre-check the contact's other locations on Edit. */
   allLocationContacts: ClientContact[];
-}) {
+  /** 2026-05-07: when true, suppress the internal `<h3>Contacts</h3>`
+   *  + Add button. The right-rail panel header owns both. */
+  hideHeader?: boolean;
+}>(function LocContactsCompact({
+  locationContacts, companyContacts, locationId, parentCompanyId,
+  locations, allLocationContacts, hideHeader,
+}, ref) {
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
   // The contact being edited. Always a person row (id = contactPersonId).
   const [editingContact, setEditingContact] = useState<ClientContact | null>(null);
@@ -2268,18 +2521,28 @@ function LocContactsCompact({
     setContactDialogOpen(true);
   };
 
+  // Imperative startAdding for the right-rail panel header.
+  useImperativeHandle(ref, () => ({
+    startAdding: () => {
+      setEditingContact(null);
+      setContactDialogOpen(true);
+    },
+  }), []);
+
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold text-slate-700">Contacts</h3>
-        <button
-          className="flex items-center gap-0.5 text-xs text-primary hover:text-primary/80 transition-colors"
-          onClick={() => { setEditingContact(null); setContactDialogOpen(true); }}
-          data-testid="loc-contacts-add"
-        >
-          <Plus className="h-3.5 w-3.5" /><span>Add</span>
-        </button>
-      </div>
+      {!hideHeader && (
+        <div className="flex items-center justify-between">
+          <h3 className="text-xs font-semibold text-slate-700">Contacts</h3>
+          <button
+            className="flex items-center gap-0.5 text-xs text-primary hover:text-primary/80 transition-colors"
+            onClick={() => { setEditingContact(null); setContactDialogOpen(true); }}
+            data-testid="loc-contacts-add"
+          >
+            <Plus className="h-3.5 w-3.5" /><span>Add</span>
+          </button>
+        </div>
+      )}
       {locationContacts.length === 0 ? (
         <p className="text-xs text-muted-foreground">No contacts assigned.</p>
       ) : (
@@ -2305,110 +2568,673 @@ function LocContactsCompact({
       />
     </div>
   );
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Rail panel body type alias (2026-05-07 canonical rail extraction)
+// ═══════════════════════════════════════════════════════════════════════════════
+// The legacy `UtilityRail` / `RailHeaderAction` / `RailEmptyState` and
+// the `UtilityRailProps` type were removed when the canonical
+// `<DetailRightRail>` primitive (`@/components/detail-rail/DetailRightRail`)
+// took over the rail chrome. The per-tab body components below
+// (`ClientBillingPanelBody`, `BillingSummary`, etc.) still need a stable
+// shape for the billing aggregates, so we keep just that one type alias
+// here.
+
+export interface RailBillingShape {
+  lifetimeRevenue: number;
+  paidYtd: number;
+  outstanding: { count: number; total: number; overdueTotal: number };
+  aging: { current: number; d30: number; d60: number; d90: number };
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Utility Rail — right-side card with Contacts / Notes / Billing tabs
-// ═══════════════════════════════════════════════════════════════════════════════
-// Reuses canonical CompanyContactsCompact, LocContactsCompact, NotesPanel.
-// Billing aggregates are derived in the parent page from already-loaded
-// invoices (no new queries).
+// 2026-05-07 canonical rail extraction: legacy `UtilityRail`,
+// `RailHeaderAction`, and `UtilityRailProps` removed. The chrome (icon
+// strip + panel header + close X) is rendered by `<DetailRightRail>`
+// from `@/components/detail-rail/DetailRightRail`; per-tab `+ Add`
+// buttons are inlined inside the `clientRailTabs` array constructed in
+// the page render. The per-tab body components below remain unchanged
+// — they're domain-specific and stay on this page.
+//
+// `RailEmptyState` is kept as a thin shim around the canonical
+// `<DetailRightRailEmpty>` so the existing panel-body call sites
+// (Equipment / Parts / Maintenance / Activity empty states) keep
+// rendering the canonical empty-state DOM (testid
+// `client-side-panel-empty`) without rewriting six callsites. New code
+// should call `<DetailRightRailEmpty testIdPrefix="client-side">`
+// directly.
+function RailEmptyState({ message, hint }: { message: string; hint?: string }) {
+  return (
+    <DetailRightRailEmpty
+      message={message}
+      hint={hint}
+      testIdPrefix="client-side"
+    />
+  );
+}
 
-type UtilityRailProps = {
-  utilityTab: UtilityTab;
-  setUtilityTab: (t: UtilityTab) => void;
+// ── Compact panel bodies ──────────────────────────────────────────────
+
+interface ClientBillingPanelBodyProps {
+  billing: RailBillingShape;
+  paymentTermsDays: number | null;
+  billingStreet: string | null;
+  billingCity: string | null;
+  billingProvince: string | null;
+  billingPostalCode: string | null;
+}
+
+function ClientBillingPanelBody({
+  billing,
+  paymentTermsDays,
+  billingStreet,
+  billingCity,
+  billingProvince,
+  billingPostalCode,
+}: ClientBillingPanelBodyProps) {
+  const termsLabel =
+    paymentTermsDays === null
+      ? "Use company default"
+      : paymentTermsDays === 0
+        ? "Due on receipt"
+        : `Net ${paymentTermsDays}`;
+  const billingLine1 = billingStreet?.trim() || null;
+  const billingLine2 = [billingCity, billingProvince, billingPostalCode]
+    .filter((v) => v && v.trim().length > 0)
+    .join(", ") || null;
+  // 2026-05-07 RALPH — Billing is a single info block (not a list of
+  // entities), so we render exactly one canonical RailContentCard
+  // wrapping both the metric rows and the billing address. Same chrome
+  // as the Equipment / Parts / Maintenance / Activity rows.
+  return (
+    <RailContentCard
+      testId="client-billing-panel-body"
+      className="space-y-4 text-sm"
+    >
+      <dl className="space-y-1.5 text-xs">
+        <DetailRow label="Payment terms" value={termsLabel} />
+        <DetailRow label="Outstanding" value={formatCurrency(billing.outstanding.total)} />
+        <DetailRow label="Lifetime revenue" value={formatCurrency(billing.lifetimeRevenue)} />
+        <DetailRow label="Paid YTD" value={formatCurrency(billing.paidYtd)} />
+      </dl>
+      <div className="pt-3 border-t border-slate-100 space-y-1">
+        <span className="text-label text-text-secondary">
+          Billing address
+        </span>
+        {billingLine1 || billingLine2 ? (
+          <div className="text-row text-text-primary">
+            {billingLine1 && <div>{billingLine1}</div>}
+            {billingLine2 && <div>{billingLine2}</div>}
+          </div>
+        ) : (
+          <p className="text-caption text-text-secondary italic">No billing address on file.</p>
+        )}
+      </div>
+    </RailContentCard>
+  );
+}
+
+interface ClientEquipmentPanelBodyProps {
   scopeType: ScopeType;
-  companyId?: string;
-  selectedLoc: Client | null;
-  selectedLocationId: string | null;
-  clientLevelContacts: (ClientContact & { assignmentCount?: number })[];
-  allLocationContacts: ClientContact[];
-  locations: Client[];
-  locContacts: (ClientContact & { contactPersonId?: string })[];
-  locCompanyContacts: ClientContact[];
-  ownerCompanyId: string;
-  // 2026-05-02 layout refactor: short label rendered next to "Client
-  // Information" in the rail header, e.g. "All Locations" or the
-  // selected location's display name.
-  scopeLabel: string;
-  billing: {
-    lifetimeRevenue: number;
-    paidYtd: number;
-    outstanding: { count: number; total: number; overdueTotal: number };
-    aging: { current: number; d30: number; d60: number; d90: number };
-  };
-};
+  equipment: LocationEquipment[];
+  // 2026-05-07: card-click handler — opens the canonical
+  // EquipmentDetailModal mounted at the page level.
+  onOpen: (eq: LocationEquipment) => void;
+}
 
-function UtilityRail(props: UtilityRailProps) {
-  const {
-    utilityTab, setUtilityTab, scopeType, companyId,
-    selectedLoc, selectedLocationId, clientLevelContacts,
-    allLocationContacts, locations, locContacts, locCompanyContacts,
-    ownerCompanyId, scopeLabel, billing,
-  } = props;
+function ClientEquipmentPanelBody({
+  scopeType,
+  equipment,
+  onOpen,
+}: ClientEquipmentPanelBodyProps) {
+  if (scopeType === "company") {
+    return (
+      <RailEmptyState
+        message="Equipment is tracked per location."
+        hint="Pick a specific location to view its equipment."
+      />
+    );
+  }
+  if (equipment.length === 0) {
+    return (
+      <RailEmptyState
+        message="No equipment yet."
+        hint="Add equipment to track installed systems for this client."
+      />
+    );
+  }
+  // 2026-05-07: full equipment list, expanded snapshot per card.
+  // Capped at 8 to keep the panel reasonable; overflow indicator
+  // matches the Maintenance card pattern.
+  const visible = equipment.slice(0, 8);
+  const overflow = equipment.length - visible.length;
+  return (
+    <ul className="space-y-3 list-none p-0 m-0" data-testid="client-equipment-panel-body">
+      {visible.map((eq) => {
+        const subtitleParts = [eq.manufacturer, eq.modelNumber].filter(
+          (s): s is string => !!s && s.trim().length > 0,
+        );
+        const subtitle = subtitleParts.length > 0 ? subtitleParts.join(" · ") : null;
+        // The schema's `isActive` flag (notNull, default true) is the
+        // only "status" the equipment table carries today — surfaced
+        // here as Active / Archived. Service/install/warranty
+        // statuses don't exist on this row.
+        const statusLabel = eq.isActive ? "Active" : "Archived";
+        const statusBadgeClass = eq.isActive
+          ? "text-caption px-2 py-0.5 bg-emerald-50 text-emerald-700 border-emerald-200 shrink-0"
+          : "text-caption px-2 py-0.5 bg-slate-100 text-slate-600 border-slate-200 shrink-0";
+        return (
+          <li key={eq.id}>
+            <RailContentCard
+              onClick={() => onOpen(eq)}
+              ariaLabel={`Open equipment ${eq.name}`}
+              testId="client-equipment-card"
+              className="space-y-3"
+            >
+              {/* Top row: name (+ optional manufacturer/model subtitle)
+                  on the left, status pill on the right. */}
+              <div className="flex items-start justify-between gap-3 min-w-0">
+                <div className="min-w-0">
+                  <h4 className="text-section-title font-semibold text-text-primary break-words">
+                    {eq.name}
+                  </h4>
+                  {subtitle && (
+                    <p className="text-helper text-text-secondary mt-0.5 break-words">
+                      {subtitle}
+                    </p>
+                  )}
+                </div>
+                <Badge
+                  variant="outline"
+                  className={statusBadgeClass}
+                  data-testid="client-equipment-card-status"
+                >
+                  {statusLabel}
+                </Badge>
+              </div>
+
+              {/* Stacked label-above-value snapshot. Each row only
+                  renders when its source field is populated — never
+                  invented. */}
+              <dl className="space-y-2.5">
+                {eq.equipmentType && (
+                  <div data-testid="client-equipment-card-row-type">
+                    <dt className="text-label text-text-secondary">Type</dt>
+                    <dd className="text-row text-text-primary">{eq.equipmentType}</dd>
+                  </div>
+                )}
+                {eq.serialNumber && (
+                  <div data-testid="client-equipment-card-row-serial">
+                    <dt className="text-label text-text-secondary">Serial</dt>
+                    <dd className="text-row text-text-primary break-all">{eq.serialNumber}</dd>
+                  </div>
+                )}
+                {eq.tagNumber && (
+                  <div data-testid="client-equipment-card-row-tag">
+                    <dt className="text-label text-text-secondary">Tag</dt>
+                    <dd className="text-row text-text-primary">{eq.tagNumber}</dd>
+                  </div>
+                )}
+                {eq.installDate && (
+                  <div data-testid="client-equipment-card-row-installed">
+                    <dt className="text-label text-text-secondary">Installed</dt>
+                    <dd className="text-row text-text-primary">{eq.installDate}</dd>
+                  </div>
+                )}
+                {eq.warrantyExpiry && (
+                  <div data-testid="client-equipment-card-row-warranty">
+                    <dt className="text-label text-text-secondary">Warranty</dt>
+                    <dd className="text-row text-text-primary">{eq.warrantyExpiry}</dd>
+                  </div>
+                )}
+              </dl>
+
+              {/* Optional notes — canonical helper token, capped at
+                  3 lines so the card stays compact. */}
+              {eq.notes && eq.notes.trim().length > 0 && (
+                <p className="text-helper text-text-secondary line-clamp-3">
+                  {eq.notes}
+                </p>
+              )}
+            </RailContentCard>
+          </li>
+        );
+      })}
+      {overflow > 0 && (
+        <li
+          className="text-helper text-text-secondary px-1 py-1"
+          data-testid="client-equipment-panel-overflow"
+        >
+          + {overflow} more {overflow === 1 ? "item" : "items"} not shown.
+        </li>
+      )}
+    </ul>
+  );
+}
+
+interface ClientPartsPanelBodyProps {
+  scopeType: ScopeType;
+  pmParts: PMPartWithItem[];
+}
+
+function ClientPartsPanelBody({ scopeType, pmParts }: ClientPartsPanelBodyProps) {
+  // 2026-05-07: client-specific parts surface real PM-parts data
+  // (`location_pm_part_templates` joined with `items`). The data
+  // model is genuinely per-location — the legacy `client_parts`
+  // table at shared/schema.ts:937 is unused in current flows.
+  // Single-row part editing is NOT a canonical surface today;
+  // PartsSelectorModal (the bulk add/manage modal mounted at the
+  // page level) is the only canonical edit path. Cards are
+  // therefore non-clickable; the header `+ Add Part` button opens
+  // the canonical modal which surfaces ALL existing parts and lets
+  // the user add/remove rows in one place.
+  if (scopeType === "company") {
+    return (
+      <RailEmptyState
+        message="Parts are tracked per location."
+        hint="Pick a specific location to view its PM parts."
+      />
+    );
+  }
+  if (pmParts.length === 0) {
+    return (
+      <RailEmptyState
+        message="No client-specific parts yet."
+        hint="Add parts the technician should bring on every PM visit."
+      />
+    );
+  }
+  return (
+    <ul className="space-y-3 list-none p-0 m-0" data-testid="client-parts-panel-body">
+      {pmParts.map((p) => (
+        <li key={p.id}>
+        <RailContentCard
+          testId="client-parts-card"
+          className="space-y-3"
+        >
+          {/* Top row: part name + quantity badge. */}
+          <div className="flex items-start justify-between gap-3 min-w-0">
+            <h4 className="text-section-title font-semibold text-text-primary break-words min-w-0">
+              {p.itemName ?? "Unknown part"}
+            </h4>
+            <Badge
+              variant="outline"
+              className="text-caption px-2 py-0.5 bg-slate-50 text-slate-700 border-slate-200 shrink-0"
+              data-testid="client-parts-card-quantity"
+            >
+              ×{p.quantityPerVisit}
+            </Badge>
+          </div>
+
+          {/* Stacked label-above-value snapshot. Each row renders
+              only when its source field is populated. */}
+          <dl className="space-y-2.5">
+            {p.itemSku && (
+              <div data-testid="client-parts-card-row-sku">
+                <dt className="text-label text-text-secondary">SKU</dt>
+                <dd className="text-row text-text-primary break-all">{p.itemSku}</dd>
+              </div>
+            )}
+            {p.itemCategory && (
+              <div data-testid="client-parts-card-row-category">
+                <dt className="text-label text-text-secondary">Category</dt>
+                <dd className="text-row text-text-primary">{p.itemCategory}</dd>
+              </div>
+            )}
+            {p.itemCost && (
+              <div data-testid="client-parts-card-row-cost">
+                <dt className="text-label text-text-secondary">Cost</dt>
+                <dd className="text-row text-text-primary">
+                  {formatCurrency(p.itemCost)}
+                </dd>
+              </div>
+            )}
+            {p.equipmentLabel && (
+              <div data-testid="client-parts-card-row-equipment">
+                <dt className="text-label text-text-secondary">Equipment</dt>
+                <dd className="text-row text-text-primary line-clamp-2 break-words">
+                  {p.equipmentLabel}
+                </dd>
+              </div>
+            )}
+          </dl>
+
+          {/* Optional override description — canonical helper token. */}
+          {p.descriptionOverride && p.descriptionOverride.trim().length > 0 && (
+            <p className="text-helper text-text-secondary line-clamp-3">
+              {p.descriptionOverride}
+            </p>
+          )}
+        </RailContentCard>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+interface ClientMaintenancePanelBodyProps {
+  companyId: string | null;
+  locationId: string | null;
+  scopeType: ScopeType;
+}
+
+function ClientMaintenancePanelBody({
+  companyId,
+  locationId,
+  scopeType,
+}: ClientMaintenancePanelBodyProps) {
+  // 2026-05-07: filter the tenant-wide recurring-templates feed
+  // client-side by clientId / locationId. The `?clientId=` query
+  // param doesn't exist server-side today; client-side filtering is
+  // cheap because templates are at-most ~hundreds per tenant.
+  // Type covers every field the GET `/api/recurring-templates` route
+  // ships (full row + joined client/location names + computed
+  // `nextOccurrence`). Optional unused fields stay typed so a future
+  // refactor that wants to surface them doesn't have to re-derive
+  // the shape.
+  const { data: templates = [], isLoading } = useQuery<
+    Array<{
+      id: string;
+      title: string;
+      description: string | null;
+      clientId: string | null;
+      locationId: string | null;
+      isActive: boolean;
+      jobType: string;
+      recurrenceKind: string;
+      interval: number;
+      startDate: string | null;
+      endDate: string | null;
+      serviceWindowDaysBefore: number | null;
+      serviceWindowDaysAfter: number | null;
+      pmBillingModel: string | null;
+      pmBillingLabel: string | null;
+      pmContractAmount: string | null;
+      // Joined fields (server adds these on top of the table row).
+      clientName: string | null;
+      locationName: string | null;
+      locationAddress: string | null;
+      nextOccurrence: string | null;
+    }>
+  >({
+    queryKey: ["/api/recurring-templates", "for-client", companyId],
+    queryFn: () => apiRequest("/api/recurring-templates"),
+    enabled: Boolean(companyId),
+    staleTime: 60_000,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="py-6 flex justify-center" data-testid="client-maintenance-loading">
+        <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
+      </div>
+    );
+  }
+
+  const matching = templates.filter((t) => {
+    if (scopeType === "location") {
+      return locationId && t.locationId === locationId;
+    }
+    return t.clientId === companyId;
+  });
+
+  if (matching.length === 0) {
+    return (
+      <RailEmptyState
+        message="No maintenance plans yet."
+        hint="Add a maintenance plan to schedule recurring service for this client."
+      />
+    );
+  }
+
+  // 2026-05-07: non-navigating snapshot cards. The whole-card link
+  // was reverted — users were leaving Client Detail just to inspect
+  // a plan, with no easy return path. Cards now show an
+  // information-rich read-only summary; an explicit
+  // "View / Edit in Maintenance" link inside each card navigates to
+  // the canonical detail/edit page at `/pm/:id` (App.tsx:292 →
+  // `PMDetailPage`, the unified view+edit surface). All snapshot
+  // fields render only when present — never invented.
+  //
+  // 2026-05-07 (v2 typography pass): every text size on the card is
+  // a canonical role token from `tailwind.config.ts:68-79`:
+  //   - text-section-title → card title (18px/24px/600)
+  //   - text-caption       → status badge body (14px/20px)
+  //   - text-label         → metadata labels (13px/16px/500 tracked)
+  //   - text-row           → metadata values (15px/22px) — DARKER + larger
+  //   - text-helper        → optional description body (13px/16px)
+  //   - text-caption       → action-link copy (14px/20px)
+  // Snapshot is a stacked label-above-value layout (per spec — narrow
+  // panel column, label/value column would squeeze long values).
+  return (
+    <ul className="space-y-3 list-none p-0 m-0" data-testid="client-maintenance-panel-body">
+      {matching.map((t) => {
+        const cadence =
+          t.recurrenceKind === "weekly"
+            ? `Every ${t.interval > 1 ? `${t.interval} weeks` : "week"}`
+            : t.recurrenceKind === "monthly"
+              ? `Every ${t.interval > 1 ? `${t.interval} months` : "month"}`
+              : t.recurrenceKind;
+        const billingLine =
+          t.pmBillingLabel ||
+          (t.pmBillingModel
+            ? t.pmBillingModel.replaceAll("_", " ")
+            : null);
+        const serviceWindow =
+          t.serviceWindowDaysBefore !== null && t.serviceWindowDaysAfter !== null
+            ? `${t.serviceWindowDaysBefore} days before — ${t.serviceWindowDaysAfter} days after`
+            : null;
+        const locationLine = [t.locationName, t.locationAddress]
+          .filter((s): s is string => !!s && s.trim().length > 0)
+          .join(" · ") || null;
+        return (
+          <li key={t.id}>
+          <RailContentCard
+            testId="client-maintenance-card"
+            className="space-y-3"
+          >
+            {/* Top: name + status badge — important info first. */}
+            <div className="flex items-start justify-between gap-3 min-w-0">
+              <h4 className="text-section-title font-semibold text-text-primary min-w-0 break-words">
+                {t.title}
+              </h4>
+              <Badge
+                variant="outline"
+                className={
+                  t.isActive
+                    ? "text-caption px-2 py-0.5 bg-emerald-50 text-emerald-700 border-emerald-200 shrink-0"
+                    : "text-caption px-2 py-0.5 bg-slate-100 text-slate-600 border-slate-200 shrink-0"
+                }
+                data-testid="client-maintenance-card-status"
+              >
+                {t.isActive ? "Active" : "Paused"}
+              </Badge>
+            </div>
+
+            {/* Stacked label-above-value snapshot. Narrow panel width
+                makes a tight 2-column grid squeeze long values
+                (especially Location); stacking keeps every value
+                fully readable. Each row renders only when its source
+                field is populated — no fabricated values. */}
+            <dl className="space-y-2.5">
+              <div data-testid="client-maintenance-card-row-frequency">
+                <dt className="text-label text-text-secondary">Frequency</dt>
+                <dd className="text-row text-text-primary">{cadence}</dd>
+              </div>
+              {t.nextOccurrence && (
+                <div data-testid="client-maintenance-card-row-next-due">
+                  <dt className="text-label text-text-secondary">Next due</dt>
+                  <dd
+                    className="text-row text-text-primary font-medium"
+                    data-testid="client-maintenance-card-next-due"
+                  >
+                    {t.nextOccurrence}
+                  </dd>
+                </div>
+              )}
+              {t.startDate && (
+                <div data-testid="client-maintenance-card-row-started">
+                  <dt className="text-label text-text-secondary">Started</dt>
+                  <dd className="text-row text-text-primary">{t.startDate}</dd>
+                </div>
+              )}
+              {serviceWindow && (
+                <div data-testid="client-maintenance-card-row-window">
+                  <dt className="text-label text-text-secondary">Window</dt>
+                  <dd className="text-row text-text-primary">{serviceWindow}</dd>
+                </div>
+              )}
+              {billingLine && (
+                <div data-testid="client-maintenance-card-row-billing">
+                  <dt className="text-label text-text-secondary">Billing</dt>
+                  <dd className="text-row text-text-primary capitalize">{billingLine}</dd>
+                </div>
+              )}
+              {locationLine && (
+                <div data-testid="client-maintenance-card-row-location">
+                  <dt className="text-label text-text-secondary">Location</dt>
+                  <dd className="text-row text-text-primary line-clamp-2 break-words">
+                    {locationLine}
+                  </dd>
+                </div>
+              )}
+            </dl>
+
+            {/* Optional plan description — canonical helper token,
+                muted color, capped at 3 lines so the card stays
+                compact while still being readable. */}
+            {t.description && t.description.trim().length > 0 && (
+              <p className="text-helper text-text-secondary line-clamp-3">
+                {t.description}
+              </p>
+            )}
+
+            {/* Bottom-right action — the only navigation affordance
+                on the card. Canonical caption-size copy + canonical
+                green focus ring. */}
+            <div className="pt-1 flex justify-end">
+              <Link
+                href={`/pm/${t.id}`}
+                aria-label={`View or edit maintenance plan ${t.title}`}
+                title="View / Edit in Maintenance"
+                className="inline-flex items-center gap-1 text-caption font-medium text-[#76B054] hover:text-[#5e9043] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40 rounded px-1 py-0.5"
+                data-testid="client-maintenance-card-action"
+              >
+                View / Edit in Maintenance
+                <ChevronRight className="h-3.5 w-3.5" />
+              </Link>
+            </div>
+          </RailContentCard>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+interface ClientActivityPanelBodyProps {
+  scopeType: ScopeType;
+  customerCompanyId: string | null;
+  locationId: string | null;
+}
+
+function ClientActivityPanelBody({
+  scopeType,
+  customerCompanyId,
+  locationId,
+}: ClientActivityPanelBodyProps) {
+  // entityType "client" → customer_company id; "location" → client_location id.
+  // (The events table uses `entity_type IN (... 'client', 'location' ...)`.)
+  const entityType: "client" | "location" =
+    scopeType === "location" ? "location" : "client";
+  const entityId =
+    scopeType === "location" ? locationId : customerCompanyId;
+
+  const { data: feed, isLoading } = useQuery<{
+    items: Array<{
+      id: string;
+      eventType: string;
+      // `summary` is intentionally NOT consumed for display — server
+      // emitters historically interpolated raw UUIDs into it. Rail
+      // copy is rebuilt from `eventType` + `meta` via formatRailActivity.
+      summary: string | null;
+      meta: Record<string, unknown> | null;
+      createdAt: string;
+    }>;
+  }>({
+    queryKey: ["/api/activity", entityType, entityId, "rail"],
+    queryFn: () =>
+      apiRequest(`/api/activity/${entityType}/${entityId}?limit=15`),
+    enabled: Boolean(entityId),
+    staleTime: 30_000,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="py-6 flex justify-center" data-testid="client-activity-loading">
+        <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
+      </div>
+    );
+  }
+
+  const items = feed?.items ?? [];
+  if (items.length === 0) {
+    return <RailEmptyState message="No activity yet." />;
+  }
 
   return (
-    <div className="h-full flex flex-col overflow-hidden bg-white" data-testid="client-utility-rail">
-      {/* 2026-05-02 layout refactor: title bar identifying the rail as
-          the right-side "Client Information" panel. Includes the
-          current scope so the user always knows whether they're
-          looking at company-level info or location-specific info. */}
-      <div className="px-3 py-2 border-b border-slate-200 flex items-center gap-2 min-w-0">
-        <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600 flex-shrink-0">Client Information</span>
-        <span className="text-[11px] text-slate-500 truncate" data-testid="client-info-scope-label">({scopeLabel})</span>
-      </div>
-      <Tabs value={utilityTab} onValueChange={(v) => setUtilityTab(v as UtilityTab)} className="flex-1 min-h-0 flex flex-col">
-        <TabsList className="w-full h-auto bg-slate-50 rounded-none border-b border-slate-200 p-0 justify-start">
-          {(["contacts", "notes", "billing"] as UtilityTab[]).map(k => (
-            <TabsTrigger
-              key={k}
-              value={k}
-              className="flex-1 rounded-none px-2 py-1.5 text-xs font-medium capitalize data-[state=active]:bg-white data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-[#76B054] data-[state=active]:text-[#76B054]"
-              data-testid={`utility-tab-${k}`}
+    <ul
+      className="space-y-2 list-none p-0 m-0"
+      data-testid="client-activity-panel-body"
+    >
+      {items.map((it) => {
+        // 2026-05-07 RALPH — user-facing copy is rebuilt from
+        // event_type + meta. Never render the raw event_type
+        // ("Note.Created") or the server summary (which used to
+        // interpolate raw locationId UUIDs).
+        const display = formatRailActivity({
+          eventType: it.eventType,
+          summary: it.summary,
+          meta: it.meta,
+        });
+        const timestamp = format(
+          new Date(it.createdAt),
+          "MMM d, yyyy h:mm a",
+        );
+        const metaLine = display.locationName
+          ? `${timestamp} · ${display.locationName}`
+          : timestamp;
+        return (
+          <li key={it.id}>
+            <RailContentCard
+              testId="client-activity-row"
+              className="space-y-1"
             >
-              {k}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-
-        <TabsContent value="contacts" className="m-0 p-3">
-          {scopeType === "company" ? (
-            <CompanyContactsCompact
-              companyContacts={clientLevelContacts}
-              locationContacts={allLocationContacts}
-              locations={locations}
-              companyId={companyId}
-            />
-          ) : selectedLoc && selectedLocationId ? (
-            <LocContactsCompact
-              locationContacts={locContacts}
-              companyContacts={locCompanyContacts}
-              locationId={selectedLocationId}
-              parentCompanyId={companyId}
-              locations={locations}
-              allLocationContacts={allLocationContacts}
-            />
-          ) : (
-            <p className="text-xs text-slate-400">No contacts.</p>
-          )}
-        </TabsContent>
-
-        <TabsContent value="notes" className="m-0 p-3">
-          {scopeType === "company" && companyId ? (
-            <NotesPanel scope="company" companyId={companyId} hideAddButton={false} />
-          ) : scopeType === "location" && selectedLocationId ? (
-            <NotesPanel scope="location" companyId={ownerCompanyId} locationId={selectedLocationId} hideAddButton={false} />
-          ) : (
-            <p className="text-xs text-slate-400">No notes.</p>
-          )}
-        </TabsContent>
-
-        {/* Billing — derived from already-loaded invoices; same data in both scopes. */}
-        <TabsContent value="billing" className="m-0 p-3">
-          <BillingSummary billing={billing} />
-        </TabsContent>
-      </Tabs>
-    </div>
+              <div
+                className="text-row font-medium text-text-primary"
+                data-testid="client-activity-row-title"
+              >
+                {display.title}
+              </div>
+              {display.body && (
+                <div
+                  className="text-row text-text-primary line-clamp-2 break-words"
+                  data-testid="client-activity-row-body"
+                >
+                  {display.body}
+                </div>
+              )}
+              <div
+                className="text-caption text-text-secondary"
+                data-testid="client-activity-row-meta"
+              >
+                {metaLine}
+              </div>
+            </RailContentCard>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -2421,7 +3247,7 @@ function DetailRow({ label, value }: { label: string; value: React.ReactNode }) 
   );
 }
 
-function BillingSummary({ billing }: { billing: UtilityRailProps["billing"] }) {
+function BillingSummary({ billing }: { billing: RailBillingShape }) {
   const { outstanding, lifetimeRevenue, paidYtd, aging } = billing;
   return (
     <div className="text-xs space-y-3">

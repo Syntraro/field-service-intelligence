@@ -1,3 +1,37 @@
+/**
+ * AppSidebar — tenant left navigation (2026-05-07 RALPH).
+ *
+ * Density notes
+ * -------------
+ *   • Nav items: h-9 (was h-10) for slightly tighter vertical rhythm.
+ *   • Section dividers: my-2 (was my-3) to match the tighter item
+ *     height and let more nav items fit above the fold.
+ *   • Active state, focus state, and tooltip trigger from the
+ *     canonical SidebarMenuButton — no per-item style drift.
+ *
+ * Create New
+ * ----------
+ * The global "+ New" entry now lives at the TOP of the sidebar
+ * instead of the dark header bar. The header still owns search,
+ * activity, tasks, help, and the more-menu — moving create here
+ * frees the header for utility controls and gives the action a
+ * permanent, predictable home. The trigger opens a DropdownMenu
+ * that calls back into the App-level handlers (`onOpenCreate`,
+ * `onOpenAddClient`, `onOpenCreatePm`) so all the underlying
+ * launchers (CreateNewDialog, CreateClientModal, the /invoices/new
+ * + /quotes/new routes, CreateMaintenancePlanDialog) stay exactly
+ * where they were mounted.
+ *
+ * Collapse control
+ * ----------------
+ * `<SidebarTrigger>` lives in the SidebarHeader at the very top of
+ * the sidebar — same canonical primitive as before, unchanged
+ * height (32 px). It sits ABOVE the Create New action so the two
+ * controls don't fight for the same row, and so the trigger stays
+ * in the same place whether the sidebar is expanded or collapsed
+ * (the canonical Sidebar primitive collapses to icon mode and
+ * preserves the header).
+ */
 import {
   LayoutDashboard,
   ClipboardList,
@@ -5,13 +39,19 @@ import {
   FileText,
   ShieldAlert,
   Clock,
-  Package,
   Receipt,
   Building2,
   FileCheck,
-  LayoutGrid,
+  // 2026-05-07 RALPH — Dispatch nav now uses CalendarClock (was
+  // LayoutGrid). Dispatch is fundamentally a time-on-calendar surface,
+  // and CalendarClock reads as that immediately. LayoutGrid was a
+  // generic "grid" glyph that didn't carry the same meaning.
+  CalendarClock,
   Wrench,
   CreditCard,
+  Plus,
+  CheckSquare,
+  BookMarked,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
@@ -25,14 +65,42 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarTrigger,
+  useSidebar,
 } from "@/components/ui/sidebar";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import type { CreateNewTab } from "@/components/CreateNewDialog";
+
 interface AppSidebarProps {
   onDashboardClick?: () => void;
+  /** Opens the canonical CreateNewDialog at the requested tab.
+   *  Mounted in App.tsx; the sidebar just triggers it. */
+  onOpenCreate?: (tab: CreateNewTab) => void;
+  /** Opens CreateClientModal. Distinct flow (different modal). */
+  onOpenAddClient?: () => void;
+  /** Opens CreateMaintenancePlanDialog. */
+  onOpenCreatePm?: () => void;
 }
 
-export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
+export function AppSidebar({
+  onDashboardClick,
+  onOpenCreate,
+  onOpenAddClient,
+  onOpenCreatePm,
+}: AppSidebarProps) {
   const [location, setLocation] = useLocation();
   const { user } = useAuth();
+  // `state` is "expanded" | "collapsed" — used to swap the Create New
+  // button between an icon-only square (collapsed) and a full label
+  // (expanded). The canonical Sidebar primitive owns the state.
+  const { state: sidebarState } = useSidebar();
+  const isCollapsed = sidebarState === "collapsed";
 
   const menuItems = [];
 
@@ -65,7 +133,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
     // else. Routes + auth guards on /tech/* are unchanged.
     menuItems.push({
       title: "Dispatch",
-      icon: LayoutGrid,
+      icon: CalendarClock,
       href: "/dispatch",
       isActive: location === "/dispatch",
       testId: "nav-dispatch"
@@ -75,16 +143,16 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
     // divider line renders ABOVE that item via the JSX below).
     //
     //   Group 1 (no leading divider) — Dashboard, Dispatch.
-    //   Group 2 — Leads → Quotes → Jobs → Recurring Jobs.
+    //   Group 2 — Leads → Quotes → Jobs → Maintenance.
     //                       (sales pipeline + work backlog)
-    //   Group 3 — Invoices, Payments.       (billing + collections)
+    //   Group 3 — Invoices, Payments, Price Book.   (billing)
     //   Group 4 — Clients, Suppliers.       (relationships)
     //   Group 5 — Timesheets, Reports.      (back office)
     //
     // Routes / labels / icons / role-gating preserved EXACTLY — only
     // ordering + which items carry `isDivider: true` changed.
 
-    // --- Group 2 leader: Leads → Quotes → Jobs → Recurring Jobs ---
+    // --- Group 2 leader: Leads → Quotes → Jobs → Maintenance ---
     menuItems.push({
       title: "Leads",
       icon: Users,
@@ -121,7 +189,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       hoverText: "Maintenance"
     });
 
-    // --- Group 3 leader: Invoices → Payments (billing) ---
+    // --- Group 3 leader: Invoices → Payments → Price Book (billing) ---
     menuItems.push({
       title: "Invoices",
       icon: Receipt,
@@ -144,6 +212,22 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
         hoverText: "Online payments, payouts, and disputes"
       });
     }
+    // 2026-05-07 RALPH: Price Book promoted from Settings to the main
+    // sidebar so users don't have to dig through Settings to find it.
+    // Route is the EXISTING `/settings/products` entry — unchanged
+    // permission gate (`requireAdmin` on the route side). Label
+    // shortened to "Price Book" because that's how contractors talk
+    // about it in the field.
+    menuItems.push({
+      title: "Price Book",
+      icon: BookMarked,
+      href: "/settings/products",
+      isActive:
+        location === "/settings/products" ||
+        location.startsWith("/settings/products/"),
+      testId: "nav-price-book",
+      hoverText: "Catalogue of priced products and services"
+    });
 
     // --- Group 4 leader: Clients → Suppliers (relationships) ---
     menuItems.push({
@@ -178,7 +262,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       isActive: location === "/reports" || location.startsWith("/reports/"),
       testId: "nav-reports"
     });
-    
+
     // Platform admin gets the Support Console
     if (user?.role === "platform_admin") {
       menuItems.push({
@@ -207,9 +291,87 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
   // not color.
   return (
     <Sidebar collapsible="icon" className="bg-sidebar text-sidebar-foreground" style={{ borderRight: 'none' }}>
-      {/* Sidebar collapse/expand toggle */}
-      <SidebarHeader className="px-2 py-2">
-        <SidebarTrigger data-testid="button-sidebar-toggle" className="text-white/50 hover:text-white/90 hover:bg-white/[0.08] h-8 w-8" />
+      {/* Sidebar collapse/expand toggle. Lives in its own row so it
+          doesn't fight with the Create New action below. */}
+      <SidebarHeader className="px-2 py-2 gap-2">
+        <SidebarTrigger
+          data-testid="button-sidebar-toggle"
+          className="text-white/50 hover:text-white/90 hover:bg-white/[0.08] h-8 w-8"
+        />
+        {/* 2026-05-07 RALPH — Create New action lives in the sidebar
+            now. Always visible (icon-only when sidebar is collapsed,
+            full label when expanded). Opens a dropdown that mirrors
+            the previous header dropdown so every flow it routed to
+            (job, client, invoice, quote, task, PM plan) is preserved. */}
+        {onOpenCreate && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                size="sm"
+                data-testid="button-create-new"
+                title="Create New"
+                aria-label="Create New"
+                className={
+                  isCollapsed
+                    ? "h-8 w-8 p-0 inline-flex items-center justify-center bg-brand hover:bg-brand-hover text-white"
+                    : "h-8 px-3 gap-1.5 text-sm text-white font-medium bg-brand hover:bg-brand-hover justify-center"
+                }
+              >
+                <Plus className="h-4 w-4" />
+                {!isCollapsed && <span>New</span>}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" sideOffset={8} className="w-48">
+              <DropdownMenuItem
+                data-testid="quick-new-job"
+                onClick={() => onOpenCreate("job")}
+              >
+                <ClipboardList className="h-4 w-4 mr-2" />
+                New Job
+              </DropdownMenuItem>
+              {onOpenAddClient && (
+                <DropdownMenuItem
+                  data-testid="quick-new-client"
+                  onClick={onOpenAddClient}
+                >
+                  <Users className="h-4 w-4 mr-2" />
+                  New Client
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem
+                data-testid="quick-new-invoice"
+                onClick={() => setLocation("/invoices/new")}
+              >
+                <Receipt className="h-4 w-4 mr-2" />
+                New Invoice
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                data-testid="quick-new-quote"
+                onClick={() => setLocation("/quotes/new")}
+              >
+                <FileText className="h-4 w-4 mr-2" />
+                New Quote
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                data-testid="quick-new-task"
+                onClick={() => onOpenCreate("task")}
+              >
+                <CheckSquare className="h-4 w-4 mr-2" />
+                New Task
+              </DropdownMenuItem>
+              {onOpenCreatePm && (
+                <DropdownMenuItem
+                  data-testid="quick-new-pm"
+                  onClick={onOpenCreatePm}
+                >
+                  <Wrench className="h-4 w-4 mr-2" />
+                  New Maintenance Plan
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
@@ -218,7 +380,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
               {menuItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   {(item as any).isDivider && (
-                    <div className="mx-2 my-3 border-t border-white/10" />
+                    <div className="mx-2 my-2 border-t border-white/10" />
                   )}
                   {item.href ? (
                     <SidebarMenuButton
@@ -226,7 +388,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
                       isActive={item.isActive}
                       tooltip={item.title}
                       data-testid={item.testId}
-                      className="h-10 gap-1 px-1.5 text-white/70 hover:text-white hover:bg-white/[0.08] data-[active=true]:bg-white/[0.16] data-[active=true]:text-white data-[active=true]:font-semibold data-[active=true]:border-l-[3px] data-[active=true]:border-l-[#76B054]"
+                      className="h-9 gap-1 px-1.5 text-white/70 hover:text-white hover:bg-white/[0.08] data-[active=true]:bg-white/[0.16] data-[active=true]:text-white data-[active=true]:font-semibold data-[active=true]:border-l-[3px] data-[active=true]:border-l-[#76B054]"
                     >
                       <Link href={item.href} title={(item as any).hoverText}>
                         <item.icon className={`h-4 w-4 ${item.isActive ? "text-[#C2E974]" : "text-white/50"}`} />
@@ -240,7 +402,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
                       tooltip={item.title}
                       title={(item as any).hoverText}
                       data-testid={item.testId}
-                      className="h-10 gap-1 px-1.5 text-white/70 hover:text-white hover:bg-white/[0.08] data-[active=true]:bg-white/[0.16] data-[active=true]:text-white data-[active=true]:font-semibold data-[active=true]:border-l-[3px] data-[active=true]:border-l-[#76B054]"
+                      className="h-9 gap-1 px-1.5 text-white/70 hover:text-white hover:bg-white/[0.08] data-[active=true]:bg-white/[0.16] data-[active=true]:text-white data-[active=true]:font-semibold data-[active=true]:border-l-[3px] data-[active=true]:border-l-[#76B054]"
                     >
                       <item.icon className={`h-4 w-4 ${item.isActive ? "text-[#C2E974]" : "text-white/50"}`} />
                       <span>{item.title}</span>

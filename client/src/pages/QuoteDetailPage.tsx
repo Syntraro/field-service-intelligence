@@ -491,12 +491,32 @@ export default function QuoteDetailPage() {
   // Invoice; failures stay toasted by the per-mutation onError.
   const quoteLineItemsAdapter = useMemo<LineItemsAdapter<QuoteLine>>(() => ({
     surface: "quote",
+    // 2026-05-07 Phase A — persisted detail page. allowReorder
+    // intentionally false: `/api/quotes/:id/lines/reorder` does NOT
+    // exist server-side. The card hides the drag handle when
+    // allowReorder=false, and reorderLines is omitted entirely.
+    // Adding the endpoint is a deferred follow-up.
+    interactionMode: "persisted",
     showCost: false,
     showTax: false,
     allowReorder: false,
     allowEditExisting: true,
     emptyStateLabel: "No line items yet.",
     emptyStateCtaLabel: "Add line item",
+    addLine: async (draft) => {
+      await addLineMutation.mutateAsync(draft);
+    },
+    updateLine: async (serverId, draft) => {
+      await updateLineMutation.mutateAsync({ lineId: serverId, draft });
+    },
+    deleteLine: async (serverId) => {
+      await deleteLineMutation.mutateAsync(serverId);
+    },
+    bulkAddLines: async (drafts) => {
+      await Promise.allSettled(
+        drafts.map((draft) => addLineMutation.mutateAsync(draft)),
+      );
+    },
     hydrateDraft: (line) => hydrateDraft(line as unknown as Record<string, unknown>),
     resolveProduct: (line) =>
       line.productId

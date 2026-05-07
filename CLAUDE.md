@@ -246,6 +246,116 @@ Pick the modal primitive by intent, not by visual. There are exactly five catego
 
 When adding a new dialog/modal, classify against rules 1–4 first and reach for the existing primitive. Only build a new domain wrapper when the workflow is genuinely reusable across pages. Width/sizing concerns live at the domain-wrapper or callsite layer, never inside `ModalShell`.
 
+### Phase 2: Form Field Canonicalization
+
+The Phase 1 modal-shell sweep standardized modal **wrappers**. Phase 2 standardizes the **interior** of modal forms — labels, inputs, helper/error text, field stacks, multi-column rows, and section grouping. The canonical primitives live in `client/src/components/ui/form-field.tsx`:
+
+- **`<FormField>`** — single-field wrapper with `space-y-1.5` between label, input, and helper/error.
+- **`<FormLabel required? srOnly?>`** — composes the existing `<Label>` primitive with the `text-form-label` typography lock + an optional destructive `*` for required fields. The asterisk is `aria-hidden` because the required state should be communicated semantically on the input itself. The `srOnly` flag visually hides the label (Tailwind `sr-only`) while keeping it readable by screen readers — use this for the canonical placeholder-first pattern below.
+- **`<FormHelperText>`** — hint/instruction line below an input. Bakes `text-xs text-muted-foreground`.
+- **`<FormErrorText>`** — validation error line below an input. Bakes `text-xs text-destructive` and carries `role="alert"` so screen readers announce the error when it appears.
+- **`<FormSection title="">`** — `<fieldset>` + `<legend>` for grouped fields. Legend bakes `text-sm font-medium`. No borders unless added via `className`.
+- **`<FormRow>`** — grid wrapper for multi-column layouts. Defaults to `grid gap-3`. The caller supplies `grid-cols-2` / `grid-cols-3` via `className`.
+
+Use these **inside migrated modal forms** that consume `<ModalBody>`. Do not use ad hoc `text-xs` / `text-sm font-medium` / hardcoded pixel sizes for label, helper, or error text in modal forms.
+
+**Placeholder-first visual style (canonical).** In modal forms, basic text / email / phone / address / number / textarea inputs render their identity **inside the field via `placeholder`** — not as a visible label above the input. The visual reference is `QuickAddJobDialog`: field identity inside the box, no header above each text box.
+
+- For these input types, render `<FormLabel htmlFor="..." srOnly>...</FormLabel>` so the label is hidden visually but still announced by screen readers when the input receives focus. The `htmlFor` / `id` association is the actual a11y mechanism.
+- Mirror the placeholder text in the sr-only label so screen-reader users get the same identity sighted users see.
+- Helper text and error text below the input may stay visible.
+- **Keep visible labels** for checkboxes, switches, radio groups, and complex selects — the field identity can't live in a placeholder for those.
+- **`<FormSection title="...">`** legends remain visible — section headings group related fields and are not field identities.
+
+```tsx
+{/* Canonical placeholder-first text input */}
+<FormField>
+  <FormLabel htmlFor="phone" srOnly>Phone</FormLabel>
+  <Input id="phone" placeholder="Phone" value={phone} onChange={...} />
+</FormField>
+
+{/* Visible label retained for a checkbox row */}
+<div className="flex items-center gap-2">
+  <Checkbox id="opt-in" checked={...} onCheckedChange={...} />
+  <Label htmlFor="opt-in">Send me marketing emails</Label>
+</div>
+```
+
+**Framework-agnostic.** These primitives compose the existing `<Label>`, `<Input>`, `<Textarea>`, `<Select>`, `<Checkbox>`, `<Switch>` primitives without coupling to `react-hook-form`. The 12 Phase-1-migrated tenant modals all use `useState` directly; the FormField primitives slot in without a state-library refactor. If a future modal uses `react-hook-form` (via the shadcn `<Form>` wrapper in `@/components/ui/form`), these primitives still compose cleanly inside its `<FormItem>` slots.
+
+**What stays as-is.**
+- `<Label>`, `<Input>`, `<Textarea>`, `<Select>`, `<Checkbox>`, `<Switch>` — already canonical at the atomic layer; FormField primitives compose them, not replace them.
+- `<ModalShell>` / `<ModalHeader>` / `<ModalTitle>` / `<ModalBody>` / `<ModalFooter>` — Phase 1 primitives unchanged.
+- The existing shadcn `<Form>` family in `@/components/ui/form` — kept available for callers that want react-hook-form integration.
+
+**What NOT to do.**
+- Do NOT globally refactor `<Label>` / `<Input>` to bake more classes — those primitives are correct as-is; the drift was in field *layout* and *helper/error text patterns*, which is what FormField targets.
+- Do NOT add new typography tokens. Every typography lock here references an existing token (`text-form-label`, `text-xs`, `text-muted-foreground`, `text-destructive`).
+- Do NOT couple FormField primitives to `react-hook-form`. They stay framework-agnostic.
+- Do NOT bake `grid-cols-N` into `<FormRow>`. Callers supply the column count via `className`.
+- Do NOT impose a fieldset border on `<FormSection>`. Tailwind's preflight resets fieldset borders to 0 — keep that default.
+
+**Migration plan.**
+- **Phase 2A** (this PR): primitives only. No modal changes. Pinned by `tests/form-field-canonical.test.ts`.
+- **Phase 2B** (next): bellwether migration on `EditCompanyDialog` — smallest field set, no `<Textarea>` / `<Select>`, already uses `<fieldset><legend>` so the swap is mostly cosmetic. Land + visual diff before continuing.
+- **Phase 2C**: batch the remaining 11 migrated modals in 3 clusters (client → location → other), once Phase 2B validates the pattern in production.
+
+**Standard form body** (placeholder-first text inputs + sr-only labels):
+
+```tsx
+<ModalBody className="space-y-4">
+  <FormSection title="Client Identity (first name or company required)">
+    <FormRow className="grid-cols-2">
+      <FormField>
+        <FormLabel htmlFor="first" srOnly>First name</FormLabel>
+        <Input id="first" placeholder="First name" value={...} onChange={...} />
+      </FormField>
+      <FormField>
+        <FormLabel htmlFor="last" srOnly>Last name</FormLabel>
+        <Input id="last" placeholder="Last name" value={...} onChange={...} />
+      </FormField>
+    </FormRow>
+    <FormField>
+      <FormLabel htmlFor="company" srOnly>Company name</FormLabel>
+      <Input id="company" placeholder="Company name" value={...} onChange={...} />
+    </FormField>
+  </FormSection>
+
+  <FormField>
+    <FormLabel htmlFor="email" srOnly>Email</FormLabel>
+    <Input id="email" type="email" placeholder="Email" value={email} onChange={...} />
+    {emailError ? (
+      <FormErrorText>{emailError}</FormErrorText>
+    ) : (
+      <FormHelperText>Used for invoices and notifications</FormHelperText>
+    )}
+  </FormField>
+</ModalBody>
+```
+
+Custom layouts are still allowed when the body has its own padding/scrolling concerns (e.g., `ContactFormDialog`'s 2-section flex layout, `EditTagsModal`'s tag-chip + search structure). In those cases the body owns its own structure, but individual fields inside should still use `<FormField>` / `<FormLabel>` / `<FormHelperText>` / `<FormErrorText>` where practical.
+
+## Customizable Dashboard Widgets (2026-05-07 framework)
+
+The dashboard pages (currently `FinancialDashboard`) are driven by a per-user widget framework with **one canonical registry** at `shared/dashboardWidgetRegistry.ts`. Visibility + ordering are persisted to `user_dashboard_widgets` and edited via the right-side customize drawer.
+
+**Architecture rules:**
+- The registry is the SINGLE source of truth for which widgets exist, their default order, default visibility, required permission, and column-span. No hardcoded widget order anywhere else.
+- Widget `key` values are PERSISTED user data — see the file-level "STABILITY WARNING" in the registry. Renaming a key requires a SQL migration or a compatibility alias.
+- Drag-to-reorder lives ONLY inside `DashboardCustomizeDrawer.tsx`. The live grid (`DashboardWidgetGrid.tsx`) is presentation-only.
+- Persistence happens once on drag-end and once per toggle — not on drag-over. Optimistic update + rollback on error.
+- Hidden widgets MUST NOT mount or fetch. Page-level queries gate on `enabled: visibleSet.has(widgetKey)` so toggling a widget off in the drawer also stops its data load.
+- Orphan persisted rows (a `widget_key` that no longer exists in the registry) are silently ignored by the GET resolver — it iterates the registry, not the override rows. `PUT` rejects unknown keys at HTTP 400 so a stale client cannot persist orphans forward.
+- Permissions are enforced in TWO places: the GET resolver filters out widgets the user lacks, and the PUT handler rejects unauthorized widget keys at HTTP 403.
+
+**How to add a widget (canonical recipe):**
+1. Append a `DashboardWidgetDefinition` to the appropriate `*_DASHBOARD_WIDGETS` array in `shared/dashboardWidgetRegistry.ts`. Pick a stable snake_case `key`. Set `defaultOrder` to the next free slot (existing rows are spaced by 10).
+2. If the widget is permission-gated, set `requiredPermission` to the canonical permission key (e.g. `"finance.view"`). The server filters it out for users without that permission.
+3. On the page (e.g. `FinancialDashboard.tsx`), add the renderer entry to the `Record<widgetKey, ReactNode>` map. The page owns data-fetching for each widget.
+4. If the widget triggers an expensive query, gate it on visibility: `useQuery({ ..., enabled: visibleSet.has("widget_key") })`. Hidden widgets MUST NOT fetch.
+5. Add a registry-pin assertion to `tests/dashboard-customize-framework.test.ts` for the new key, sizePreset, and permission.
+6. Update `CHANGELOG.md` under `[Unreleased]`.
+
 ## Common Development Tasks
 
 ### Adding a New Database Table

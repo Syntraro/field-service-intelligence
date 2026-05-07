@@ -11,6 +11,15 @@ import { clientNotesRepository } from "../storage/clientNotes";
 import { noteAttachmentRepository } from "../storage/noteAttachments";
 import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
+// 2026-05-07 RALPH — note.created activity rows used to interpolate the
+// raw locationId UUID into both `summary` and the meta payload, leaving
+// the rail Activity panel rendering "Note added to location <uuid>".
+// We resolve a display name at emit time so the rail and the global
+// Activity Feed can both render user-facing copy without any client-
+// side ID parsing or UUID fallbacks.
+import { db } from "../db";
+import { clientLocations, customerCompanies } from "@shared/schema";
+import { and, eq } from "drizzle-orm";
 
 const router = Router();
 
@@ -96,14 +105,48 @@ router.post(
       );
     }
 
-    // Phase 4B.1: Emit note.created milestone event
+    // 2026-05-07 RALPH — emit note.created with display-safe meta so the
+    // rail Activity panel + global Activity Feed never render raw UUIDs.
+    // Resolve the location's display name (location label first, parent
+    // customer-company name as fallback). Truncated note preview is
+    // stashed under `meta.preview` to match the canonical Activity Feed
+    // formatter contract (formatActivityEvent.ts:179-182).
+    const [loc] = await db
+      .select({
+        location: clientLocations.location,
+        companyName: clientLocations.companyName,
+        parentName: customerCompanies.name,
+      })
+      .from(clientLocations)
+      .leftJoin(customerCompanies, eq(clientLocations.parentCompanyId, customerCompanies.id))
+      .where(and(eq(clientLocations.id, locationId), eq(clientLocations.companyId, companyId)))
+      .limit(1);
+    const locationName =
+      loc?.location?.trim() ||
+      loc?.companyName?.trim() ||
+      loc?.parentName?.trim() ||
+      null;
+    const NOTE_PREVIEW_MAX = 140;
+    const preview =
+      body.noteText.length > NOTE_PREVIEW_MAX
+        ? `${body.noteText.slice(0, NOTE_PREVIEW_MAX - 1)}…`
+        : body.noteText;
+
     const ctx = getQueryCtx(req);
     logEventAsync(ctx, {
       eventType: "note.created",
       entityType: "location",
       entityId: locationId,
-      summary: `Note added to location ${locationId}`,
-      meta: { noteId: created.id, locationId },
+      // Summary kept for legacy readers, but no UUIDs in user-visible
+      // copy. The rail panel and Activity Feed both build display copy
+      // from `event_type` + `meta` and ignore `summary`.
+      summary: locationName ? `Note added to ${locationName}` : "Note added",
+      meta: {
+        noteId: created.id,
+        locationId,
+        locationName,
+        preview,
+      },
     });
 
     // Return note with attachments

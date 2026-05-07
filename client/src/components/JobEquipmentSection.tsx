@@ -16,6 +16,10 @@ import type { LocationEquipment, JobEquipment } from "@shared/schema";
 import EquipmentCatalogItemsSection from "./EquipmentCatalogItemsSection";
 import { EquipmentDetailModal } from "./EquipmentDetailModal";
 import { AddEquipmentDialog } from "./AddEquipmentDialog";
+// 2026-05-07: canonical rail-content card primitive used by the
+// `cardStyle` opt-in below. Keeps Equipment cards visually consistent
+// with Notes / Labour cards in the JobDetailPage right rail.
+import { RailContentCard } from "./detail-rail/RailContentCard";
 
 interface JobEquipmentWithDetails extends JobEquipment {
   equipment: LocationEquipment;
@@ -27,6 +31,27 @@ interface JobEquipmentSectionProps {
   defaultOpen?: boolean;
   /** When true, hides the internal "+ Add Equipment" button (parent controls it) */
   hideAddButton?: boolean;
+  /**
+   * 2026-05-07: when true, hides the entire Collapsible trigger header
+   * (icon + "Equipment" + chevron + add button) and renders the
+   * equipment rows directly inline. Used by the Job Detail right rail
+   * where the rail panel header already provides the title + action;
+   * the section's own header would visually duplicate it.
+   *
+   * When `hideHeader` is set, the body is always expanded (`isOpen` is
+   * forced to true) since there's no trigger to toggle it.
+   */
+  hideHeader?: boolean;
+  /**
+   * 2026-05-07: when true, each equipment row renders inside the
+   * canonical `<RailContentCard>` (border + radius + padding + hover)
+   * with canonical typography tokens. Multi-line layout: name + type
+   * badge on top, make/model/SN as a meta row, optional notes below.
+   * Used by JobDetailPage's right-rail Equipment tab so Equipment
+   * cards visually match Notes cards. Default `false` keeps the
+   * legacy compact row layout for any other consumer.
+   */
+  cardStyle?: boolean;
   /** External control: when set to true, opens the add equipment dialog */
   externalAddOpen?: boolean;
   /** Callback when the externally-triggered dialog closes */
@@ -65,9 +90,12 @@ const LEGACY_TYPE_LABELS: Record<string, string> = {
   other: "Other",
 };
 
-export default function JobEquipmentSection({ jobId, locationId, defaultOpen = false, hideAddButton = false, externalAddOpen, onExternalAddOpenChange, onCountChange }: JobEquipmentSectionProps) {
+export default function JobEquipmentSection({ jobId, locationId, defaultOpen = false, hideAddButton = false, hideHeader = false, cardStyle = false, externalAddOpen, onExternalAddOpenChange, onCountChange }: JobEquipmentSectionProps) {
   const { toast } = useToast();
-  const [isOpen, setIsOpen] = useState(defaultOpen);
+  // 2026-05-07: when `hideHeader` is set the trigger that toggles
+  // `isOpen` doesn't render, so force the body open. Without this the
+  // body would stay collapsed under whatever `defaultOpen` was passed.
+  const [isOpen, setIsOpen] = useState(hideHeader || defaultOpen);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   // Sync external add-dialog control into internal state
   useEffect(() => {
@@ -187,34 +215,43 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
   }
 
   return (
-    <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden" data-testid="card-job-equipment">
+    <div
+      className={
+        hideHeader
+          ? "bg-white"
+          : "bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden"
+      }
+      data-testid="card-job-equipment"
+    >
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-        <CollapsibleTrigger asChild>
-          <button className="w-full flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] hover:bg-slate-100 transition-colors" data-testid="trigger-equipment">
-            <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
-              <Wrench className="h-4 w-4 text-[#64748b]" />
-              Equipment
-            </span>
-            <div className="flex items-center gap-2">
-              {!hideAddButton && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-6 w-6"
-                  disabled={!locationId}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setIsAddDialogOpen(true);
-                  }}
-                  data-testid="button-add-job-equipment"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                </Button>
-              )}
-              {isOpen ? <ChevronDown className="h-4 w-4 text-slate-400 shrink-0" /> : <ChevronRight className="h-4 w-4 text-slate-400 shrink-0" />}
-            </div>
-          </button>
-        </CollapsibleTrigger>
+        {!hideHeader && (
+          <CollapsibleTrigger asChild>
+            <button className="w-full flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] hover:bg-slate-100 transition-colors" data-testid="trigger-equipment">
+              <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
+                <Wrench className="h-4 w-4 text-[#64748b]" />
+                Equipment
+              </span>
+              <div className="flex items-center gap-2">
+                {!hideAddButton && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6"
+                    disabled={!locationId}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsAddDialogOpen(true);
+                    }}
+                    data-testid="button-add-job-equipment"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </Button>
+                )}
+                {isOpen ? <ChevronDown className="h-4 w-4 text-slate-400 shrink-0" /> : <ChevronRight className="h-4 w-4 text-slate-400 shrink-0" />}
+              </div>
+            </button>
+          </CollapsibleTrigger>
+        )}
         <CollapsibleContent>
           {/* 2026-04-29 final polish: body padding tightened from
               `px-4 pb-4 pt-3` → `px-3 pb-3 pt-1` to match the Notes
@@ -223,19 +260,110 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
               one inline meta line ("Model: X · S/N: Y") instead of
               three stacked rows. Click-to-open detail and trash-to-
               remove behavior preserved. */}
-          <div className="border-t border-slate-200 px-3 pb-3 pt-1">
+          <div className={hideHeader ? "px-1 pb-1 pt-1" : "border-t border-slate-200 px-3 pb-3 pt-1"}>
             {!locationId ? (
-              <div className="text-center py-4 text-muted-foreground">
+              <div className="text-center py-4 text-text-muted">
                 <Info className="h-6 w-6 mx-auto mb-2 opacity-50" />
-                <p className="text-xs">No location assigned to this job.</p>
+                <p className="text-caption">No location assigned to this job.</p>
               </div>
             ) : jobEquipment.length === 0 ? (
-              <div className="text-center py-4 text-muted-foreground">
+              <div className="text-center py-4 text-text-muted">
                 <Wrench className="h-6 w-6 mx-auto mb-2 opacity-50" />
-                <p className="text-xs">No equipment linked to this job.</p>
-                <p className="text-xs mt-1">Use the + button to link or create equipment.</p>
+                <p className="text-caption">No equipment linked to this job.</p>
+                <p className="text-caption mt-1">Use the + button to link or create equipment.</p>
+              </div>
+            ) : cardStyle ? (
+              // 2026-05-07: canonical rail card style — each equipment
+              // row renders inside `<RailContentCard>` with canonical
+              // typography tokens. Multi-line: name + type badge on
+              // top, make/model/SN meta line, optional notes, catalog
+              // items inline. Trash + click-to-edit affordances are
+              // unchanged.
+              <div className="space-y-2" data-testid="card-equipment-list">
+                {jobEquipment.map(je => {
+                  const eq = je.equipment;
+                  const metaParts: string[] = [];
+                  if (eq?.manufacturer) metaParts.push(`Make: ${eq.manufacturer}`);
+                  if (eq?.modelNumber) metaParts.push(`Model: ${eq.modelNumber}`);
+                  if (eq?.serialNumber) metaParts.push(`S/N: ${eq.serialNumber}`);
+                  return (
+                    <RailContentCard
+                      key={je.id}
+                      onClick={() => eq && setDetailEquipment(eq)}
+                      testId={`row-job-equipment-${je.id}`}
+                      ariaLabel={`Open equipment ${eq?.name ?? "details"}`}
+                    >
+                      {/* Primary row: name + type badge + remove */}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Wrench className="h-3.5 w-3.5 text-text-secondary shrink-0" />
+                          <span className="text-row font-semibold text-text-primary truncate">
+                            {eq?.name ?? "Unknown equipment"}
+                          </span>
+                          {eq?.equipmentType && (
+                            <Badge
+                              variant="secondary"
+                              className="text-label px-1.5 py-0 shrink-0"
+                            >
+                              {getEquipmentTypeLabel(eq.equipmentType)}
+                            </Badge>
+                          )}
+                        </div>
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            removeMutation.mutate(je.id);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              removeMutation.mutate(je.id);
+                            }
+                          }}
+                          aria-disabled={removeMutation.isPending}
+                          aria-label="Remove equipment"
+                          className="h-6 w-6 shrink-0 inline-flex items-center justify-center rounded text-text-secondary hover:text-destructive hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40 cursor-pointer"
+                          data-testid={`button-remove-job-equipment-${je.id}`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </span>
+                      </div>
+                      {/* Secondary meta: make / model / S/N + optional notes */}
+                      {(metaParts.length > 0 || je.notes) && (
+                        <div className="mt-1 pl-[22px] space-y-0.5">
+                          {metaParts.length > 0 && (
+                            <div className="text-caption text-text-muted">
+                              {metaParts.join(" · ")}
+                            </div>
+                          )}
+                          {je.notes && (
+                            <div className="text-caption text-text-secondary">
+                              {je.notes}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {/* Catalog items per equipment */}
+                      <div
+                        className="mt-2 pl-[22px]"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <EquipmentCatalogItemsSection
+                          equipmentId={je.equipmentId}
+                          readOnly
+                        />
+                      </div>
+                    </RailContentCard>
+                  );
+                })}
               </div>
             ) : (
+              // Legacy compact row layout retained for any consumer
+              // that doesn't opt into `cardStyle`.
               <div className="divide-y divide-slate-200 -mx-3">
                 {jobEquipment.map(je => {
                   const eq = je.equipment;

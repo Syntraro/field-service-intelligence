@@ -178,20 +178,50 @@ function renderSaved(lead: LeadSummaryShape) {
 }
 
 // ── Draft-mode body — same chrome, editable affordances ──
+//
+// 2026-05-07 affordance fix: the title used to render with `border-0
+// px-0 py-0 shadow-none focus-visible:ring-0 placeholder:text-slate-300
+// bg-transparent`, which made it visually equivalent to faded H1 chrome
+// — first-time users couldn't tell it was an input. The field is now
+// chrome-bearing (label + required marker, subtle border + bg, visible
+// focus ring) but keeps the same large title typography so it still
+// reads as the page heading. Mirrors the canonical pattern Job Detail
+// uses for its editable summary header.
 
 function renderDraft(props: DraftProps) {
   const sourceType = props.sourceType ?? "office";
+  const titleEmpty = props.title.trim().length === 0;
   return (
     <>
-      <Input
-        value={props.title}
-        onChange={(e) => props.onTitleChange(e.target.value)}
-        placeholder="Enter lead title"
-        maxLength={500}
-        className="text-lg font-bold text-slate-900 leading-tight border-0 px-0 py-0 h-auto shadow-none focus-visible:ring-0 placeholder:font-bold placeholder:text-slate-300 bg-transparent"
-        data-testid="input-lead-title"
-      />
-      <div className="flex items-center gap-2 mt-1 flex-wrap">
+      <div className="space-y-1">
+        <label
+          htmlFor="lead-title-input"
+          className="text-[11px] font-semibold uppercase tracking-wide text-slate-600 flex items-center gap-1"
+        >
+          Title
+          <span
+            aria-hidden="true"
+            className="text-rose-500"
+            data-testid="lead-title-required-indicator"
+          >
+            *
+          </span>
+          <span className="sr-only">(required)</span>
+        </label>
+        <Input
+          id="lead-title-input"
+          value={props.title}
+          onChange={(e) => props.onTitleChange(e.target.value)}
+          placeholder="What's this lead about? e.g., AC tune-up at Basil Box"
+          maxLength={500}
+          required
+          aria-required="true"
+          aria-invalid={titleEmpty || undefined}
+          className="text-lg font-bold text-slate-900 leading-tight h-auto py-2 px-3 bg-white border border-slate-300 rounded-md shadow-sm cursor-text placeholder:font-medium placeholder:text-slate-400 hover:border-slate-400 focus-visible:ring-2 focus-visible:ring-brand/25 focus-visible:border-brand transition-colors"
+          data-testid="input-lead-title"
+        />
+      </div>
+      <div className="flex items-center gap-2 mt-2 flex-wrap">
         <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold uppercase tracking-wide bg-slate-100 text-slate-500">
           Draft
         </span>

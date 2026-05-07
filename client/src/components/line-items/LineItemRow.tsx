@@ -23,6 +23,7 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { format } from "date-fns";
 import { GripVertical, Pencil, Plus, Trash2 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -74,6 +75,15 @@ export interface LineItemRowProps {
   onDelete?: () => void;
   /** Optional: opens the canonical Add Product modal. */
   onRequestCreateProduct?: (name: string) => Promise<ProductOption | null>;
+  /**
+   * 2026-05-07 Phase A — display-mode row actions for persisted-mode
+   * LineItemsCard. When `isEditing=false` AND `onEditClick` is
+   * supplied, the rightmost cell renders an Edit button (and a
+   * Delete button if `onDelete` is also supplied) in place of the
+   * empty trailing cell. Drag handle becomes interactive whenever
+   * `showDragHandle` is true and the row is in display mode.
+   */
+  onEditClick?: () => void;
 }
 
 export function LineItemRow({
@@ -90,6 +100,7 @@ export function LineItemRow({
   onChangeShowDescription,
   onDelete,
   onRequestCreateProduct,
+  onEditClick,
 }: LineItemRowProps) {
   const sortable = useSortable({ id: clientKey });
   const style = {
@@ -133,15 +144,64 @@ export function LineItemRow({
   //   - amount (semibold subtotal)    → text-slate-900
   //   - date subline (intentionally muted) → text-muted-foreground
   if (!displayLine) return null;
+  // 2026-05-07 Phase A polish — interaction model:
+  //   • The whole row is the click target for Edit. Clicking anywhere
+  //     in the row's middle cells opens <LineItemEditModal>.
+  //   • Drag-handle cell stops propagation so dragging never opens
+  //     the modal. It also carries a `border-r` divider so users see
+  //     the drag zone as a distinct utility column.
+  //   • Delete button stops propagation for the same reason.
+  //   • The standalone Edit pencil is gone — the row click replaces it.
+  const isClickable = !!onEditClick;
+  const showActionCell = !!onDelete; // Edit lives on the row, not in the cell.
+  const handleRowClick = onEditClick;
+  const handleRowKeyDown = (e: React.KeyboardEvent<HTMLTableRowElement>) => {
+    if (!onEditClick) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onEditClick();
+    }
+  };
   return (
     <tr
       ref={sortable.setNodeRef}
       style={style}
       data-testid={`row-line-item-${displayLine.id}`}
-      className={`border-b border-border/50 hover:bg-muted/50 ${sortable.isDragging ? "bg-muted" : ""}`}
+      onClick={isClickable ? handleRowClick : undefined}
+      onKeyDown={isClickable ? handleRowKeyDown : undefined}
+      role={isClickable ? "button" : undefined}
+      tabIndex={isClickable ? 0 : undefined}
+      aria-label={isClickable ? `Edit line item ${displayLine.description}` : undefined}
+      className={cn(
+        "border-b border-border/50 transition-colors",
+        sortable.isDragging && "bg-muted",
+        isClickable
+          ? "cursor-pointer hover:bg-slate-50 focus-visible:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-slate-300"
+          : "hover:bg-muted/50",
+      )}
     >
-      <td className="py-2.5 pr-2 align-top w-8" />
-      <td className="py-2.5 pr-3 align-top">
+      <td
+        className={cn(
+          "py-2.5 pr-2 align-top w-8",
+          showDragHandle && "border-r border-border/40",
+        )}
+        // Drag-cell click MUST NOT propagate to the row — otherwise
+        // mousedown to start a drag would also flip the modal open.
+        onClick={(e) => e.stopPropagation()}
+      >
+        {showDragHandle && (
+          <div
+            className="flex items-center justify-center cursor-grab active:cursor-grabbing touch-none text-muted-foreground hover:text-foreground"
+            {...sortable.attributes}
+            {...sortable.listeners}
+            data-testid={`drag-handle-${clientKey}`}
+            aria-label="Reorder line item"
+          >
+            <GripVertical className="h-4 w-4" />
+          </div>
+        )}
+      </td>
+      <td className="py-2.5 pr-3 pl-2 align-top">
         <div className="flex items-center gap-2">
           <div className="text-xs font-medium text-slate-900">{displayLine.description}</div>
         </div>
@@ -162,7 +222,32 @@ export function LineItemRow({
       <td className="py-2.5 pl-3 pr-1 text-right align-top text-xs font-semibold text-slate-900 w-[110px]">
         {formatCurrency(displayLine.lineSubtotal)}
       </td>
-      <td className="py-2.5 pl-1 pr-2 align-top w-9" />
+      <td
+        className={cn(
+          "align-middle text-right",
+          showActionCell ? "py-1.5 pl-1 pr-2 w-12" : "py-2.5 pl-1 pr-2 w-9",
+        )}
+      >
+        {showActionCell && (
+          <div className="flex items-center justify-end">
+            {onDelete && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-rose-500 hover:bg-rose-50 hover:text-rose-600"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete();
+                }}
+                aria-label="Delete line item"
+                data-testid={`button-delete-line-${displayLine.id}`}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            )}
+          </div>
+        )}
+      </td>
     </tr>
   );
 }

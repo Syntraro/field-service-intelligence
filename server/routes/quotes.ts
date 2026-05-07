@@ -948,6 +948,19 @@ router.post("/:id/approve", requireRole(MANAGER_ROLES), asyncHandler(async (req:
     action: "approved",
   }).catch((err) => console.error("Failed to emit quote approved notification:", err));
 
+  // Activity Feed event — operational signal for office staff.
+  logEventAsync(getQueryCtx(req), {
+    eventType: "quote.approved",
+    entityType: "quote",
+    entityId: quoteId,
+    summary: `Quote #${quote.quoteNumber ?? quoteId} approved`,
+    meta: {
+      quoteNumber: quote.quoteNumber,
+      customerName,
+      total: quote.total,
+    },
+  });
+
   res.json(updated);
 }));
 
@@ -998,6 +1011,19 @@ router.post("/:id/decline", requireRole(MANAGER_ROLES), asyncHandler(async (req:
       action: "declined",
       err,
     });
+  });
+
+  // Activity Feed event — operational signal for office staff.
+  logEventAsync(getQueryCtx(req), {
+    eventType: "quote.declined",
+    entityType: "quote",
+    entityId: quoteId,
+    summary: `Quote #${quote.quoteNumber ?? quoteId} declined`,
+    meta: {
+      quoteNumber: quote.quoteNumber,
+      customerName,
+      total: quote.total,
+    },
   });
 
   res.json(updated);

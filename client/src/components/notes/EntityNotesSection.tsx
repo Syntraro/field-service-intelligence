@@ -33,6 +33,10 @@ import { Card } from "@/components/ui/card";
 import { MessageSquare } from "lucide-react";
 import { EntityNoteDialog, type ExistingEntityNote } from "./EntityNoteDialog";
 import { NoteAttachmentStrip } from "@/components/attachments/NoteAttachmentStrip";
+// 2026-05-07: canonical rail-content card primitive used by the
+// `cardStyle` opt-in below. Keeps the rail-card chrome consistent
+// across JobDetailPage's Notes / Equipment / Labour panels.
+import { RailContentCard } from "@/components/detail-rail/RailContentCard";
 
 /** Attachment metadata returned from any of the three backends. */
 interface NoteAttachment {
@@ -127,6 +131,18 @@ interface EntityNotesSectionProps {
   /** Quote-section parity: parent can bump this number to programmatically open the
    *  add-note dialog (e.g. from a sidebar "+" button). Optional everywhere. */
   openAddNoteSignal?: number;
+  /**
+   * 2026-05-07 — when true, each note renders inside the canonical
+   * `<RailContentCard>` (border + radius + padding + hover affordance)
+   * with canonical typography tokens for metadata / body / origin
+   * chip. Used by JobDetailPage's right-rail Notes tab so the note
+   * cards visually match Equipment + Labour cards.
+   *
+   * Default `false` keeps the legacy row-style rendering used by
+   * Invoice / Quote / Lead detail pages — those surfaces aren't
+   * inside a rail panel and the row layout reads correctly there.
+   */
+  cardStyle?: boolean;
 }
 
 function originChipLabel(origin: NoteOrigin | undefined): string | null {
@@ -204,6 +220,7 @@ export function EntityNotesSection({
   hideHeader = false,
   showCount = true,
   openAddNoteSignal,
+  cardStyle = false,
 }: EntityNotesSectionProps) {
   // Canonical dialog: `editingNote === null` with `dialogOpen === true` → create mode;
   // `editingNote` set → edit mode. Single modal instance handles both.
@@ -281,17 +298,115 @@ export function EntityNotesSection({
   const body = (
     <div className={embedded ? "px-3 pb-3 pt-1" : "border-t px-3 pb-3 pt-2"}>
       {isLoading ? (
-        <p className="text-xs text-muted-foreground">Loading notes...</p>
+        <p className="text-helper text-text-muted">Loading notes...</p>
       ) : notes.length === 0 ? (
-        <div className="text-center py-3 text-muted-foreground">
+        <div className="text-center py-3 text-text-muted">
           <MessageSquare className="h-5 w-5 mx-auto mb-1 opacity-50" />
-          <p className="text-xs">No notes yet</p>
+          <p className="text-caption">No notes yet</p>
         </div>
       ) : (
-        <div className="space-y-0">
+        // 2026-05-07: when `cardStyle` is set the per-note rendering
+        // switches to the canonical `<RailContentCard>` chrome with
+        // canonical typography tokens. The default (legacy) branch
+        // preserves the prior row-style layout so Invoice / Quote /
+        // Lead detail pages — which mount this section outside a rail
+        // panel — read unchanged.
+        <div className={cardStyle ? "space-y-2" : "space-y-0"}>
           {notes.map((note, idx) => {
             const canEdit = isOwnedRowEditable(note, entityType);
             const chipLabel = originChipLabel(note.origin);
+            const noteBody = (
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className={
+                      cardStyle
+                        ? "text-caption text-text-muted"
+                        : "text-xs text-slate-500"
+                    }
+                  >
+                    <span
+                      className={
+                        cardStyle
+                          ? "font-semibold text-text-primary"
+                          : "font-semibold text-slate-700"
+                      }
+                    >
+                      {note.userName}
+                    </span>
+                    {" · "}
+                    {format(new Date(note.createdAt), "MMM d, h:mm a")}
+                    {note.updatedAt && note.updatedAt !== note.createdAt && (
+                      <span
+                        className={
+                          cardStyle
+                            ? "ml-1 text-caption text-text-disabled"
+                            : "ml-1 text-xs text-slate-400"
+                        }
+                      >
+                        (edited)
+                      </span>
+                    )}
+                  </span>
+                  {chipLabel && (
+                    <span
+                      className={
+                        cardStyle
+                          ? "text-label uppercase font-medium px-1.5 py-0.5 rounded bg-slate-100 text-text-secondary shrink-0"
+                          : "text-[10px] uppercase tracking-wide font-medium px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0"
+                      }
+                      data-testid={`note-origin-${note.id}`}
+                    >
+                      {chipLabel}
+                    </span>
+                  )}
+                </div>
+                <p
+                  className={
+                    cardStyle
+                      ? "text-row text-text-primary whitespace-pre-wrap mt-1"
+                      : "text-[14px] leading-5 whitespace-pre-wrap mt-0.5 text-slate-800"
+                  }
+                >
+                  {note.noteText}
+                </p>
+
+                {note.attachments && note.attachments.length > 0 && (
+                  // Stop clicks inside the attachment strip (thumbnail → lightbox,
+                  // chip → file open) from bubbling up to the note-edit handler.
+                  <div
+                    className={cardStyle ? "mt-2" : "mt-1.5"}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <NoteAttachmentStrip attachments={note.attachments} />
+                  </div>
+                )}
+              </>
+            );
+
+            if (cardStyle) {
+              // Clickable canonical card for editable notes; static
+              // canonical card for inherited (read-only) notes.
+              return canEdit ? (
+                <RailContentCard
+                  key={note.id}
+                  onClick={() => openEdit(note)}
+                  testId={`note-${note.id}`}
+                  ariaLabel="Edit note"
+                >
+                  {noteBody}
+                </RailContentCard>
+              ) : (
+                <RailContentCard
+                  key={note.id}
+                  testId={`note-${note.id}`}
+                >
+                  {noteBody}
+                </RailContentCard>
+              );
+            }
+
+            // Legacy row-style fallback (Invoice / Quote / Lead).
             return (
               <div
                 key={note.id}
@@ -307,33 +422,7 @@ export function EntityNotesSection({
                 className={`group py-3 px-1 rounded transition-colors ${canEdit ? "cursor-pointer hover:bg-slate-50" : "cursor-default"} ${idx > 0 ? "border-t border-slate-200" : ""}`}
                 data-testid={`note-${note.id}`}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs text-slate-500">
-                    <span className="font-semibold text-slate-700">{note.userName}</span>
-                    {" · "}
-                    {format(new Date(note.createdAt), "MMM d, h:mm a")}
-                    {note.updatedAt && note.updatedAt !== note.createdAt && (
-                      <span className="ml-1 text-xs text-slate-400">(edited)</span>
-                    )}
-                  </span>
-                  {chipLabel && (
-                    <span
-                      className="text-[10px] uppercase tracking-wide font-medium px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0"
-                      data-testid={`note-origin-${note.id}`}
-                    >
-                      {chipLabel}
-                    </span>
-                  )}
-                </div>
-                <p className="text-[14px] leading-5 whitespace-pre-wrap mt-0.5 text-slate-800">{note.noteText}</p>
-
-                {note.attachments && note.attachments.length > 0 && (
-                  // Stop clicks inside the attachment strip (thumbnail → lightbox,
-                  // chip → file open) from bubbling up to the note-edit handler.
-                  <div className="mt-1.5" onClick={(e) => e.stopPropagation()}>
-                    <NoteAttachmentStrip attachments={note.attachments} />
-                  </div>
-                )}
+                {noteBody}
               </div>
             );
           })}

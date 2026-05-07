@@ -178,6 +178,18 @@ import { CreateNewDialog, type CreateNewTab } from "@/components/CreateNewDialog
 import CreateMaintenancePlanDialog from "@/components/pm/CreateMaintenancePlanDialog";
 import UniversalSearch from "@/components/UniversalSearch";
 import { TasksPanel, useActiveTaskCount } from "@/components/tasks/TasksPanel";
+// 2026-05-07: Global Activity Feed drawer + header trigger. Single source
+// for operational events (visit, payment, quote response). Reads from
+// the canonical events table; preferences are per-user.
+import { ActivityFeedDrawer } from "@/components/activity-feed/ActivityFeedDrawer";
+import { ActivityFeedButton } from "@/components/activity-feed/ActivityFeedButton";
+// 2026-05-07 Communications Hub — top-header triggers + page route.
+// Both buttons sit immediately after the ActivityFeedButton in the dark
+// header; clicking either deep-links into /communications with the
+// matching ?module= query param.
+import { MessagesHeaderButton } from "@/components/communications/MessagesHeaderButton";
+import { PhoneHeaderButton } from "@/components/communications/PhoneHeaderButton";
+import CommunicationsHub from "@/pages/CommunicationsHub";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
 import { useState, useEffect } from "react";
@@ -264,6 +276,16 @@ function Router() {
       <Route path="/dispatch">
         <ProtectedRoute requireAdmin>
           <DispatchBoard />
+        </ProtectedRoute>
+      </Route>
+      {/* 2026-05-07 Communications Hub Phase 1 — full-page workspace.
+          All authenticated users may open the page; role-aware visibility
+          for modules + threads is enforced inside the page via
+          `getVisibleCommunicationsModules` + `filterThreadsForViewer`
+          (see `shared/communicationsAccess.ts`). */}
+      <Route path="/communications">
+        <ProtectedRoute>
+          <CommunicationsHub />
         </ProtectedRoute>
       </Route>
       {/* /calendar route removed 2026-04-10: duplicate of /dispatch, zero navigation entries */}
@@ -910,6 +932,13 @@ function AppContent() {
   // do not interfere with one another. No backend/query dependency.
   const [helpPopoverOpen, setHelpPopoverOpen] = useState(false);
   useEffect(() => { setHelpPopoverOpen(false); }, [location]);
+  // 2026-05-07: Global Activity Feed drawer state. Mirrors the
+  // route-change-close pattern of Tasks/Help so navigating away never
+  // leaves the drawer mounted with stale context. The drawer itself is
+  // accessible from every office surface (technician pages keep their
+  // own UI and don't surface this trigger — see `!isTechnicianPage`).
+  const [activityFeedOpen, setActivityFeedOpen] = useState(false);
+  useEffect(() => { setActivityFeedOpen(false); }, [location]);
   // 2026-05-03 platform-auth-leak fix: gate `/api/tasks` query on
   // `Boolean(user?.id)` so the request never fires for unauthenticated
   // visitors (e.g. an incognito user direct-navigating to
@@ -1120,6 +1149,33 @@ function AppContent() {
           {/* Right: Tasks popover + Quick Create dropdown + More menu */}
           {!isTechnicianPage && (
             <div className="flex items-center gap-3 shrink-0">
+              {/* 2026-05-07 — Global Activity Feed trigger. Sits next to
+                  Tasks because both surface time-sensitive operational
+                  signal. Active state uses the brand green so the open
+                  drawer reads as anchored to this trigger. */}
+              <ActivityFeedButton
+                open={activityFeedOpen}
+                onClick={() => setActivityFeedOpen((prev) => !prev)}
+              />
+
+              {/* 2026-05-07 — Communications Hub triggers. Two icon-only
+                  buttons sit immediately after the Activity trigger.
+                  `MessagesHeaderButton` opens the hub at the inbox view;
+                  `PhoneHeaderButton` deep-links into ?module=calls.
+                  Both share the same compact tonal style as Activity /
+                  Tasks / Help. Phase 1 unread counts are 0 (mocked); a
+                  Phase 2 hook will replace the literals. */}
+              <MessagesHeaderButton
+                active={location.startsWith("/communications") && !location.includes("module=calls")}
+                unreadCount={0}
+                onClick={() => setLocation("/communications")}
+              />
+              <PhoneHeaderButton
+                active={location.startsWith("/communications") && location.includes("module=calls")}
+                unreadCount={0}
+                onClick={() => setLocation("/communications?module=calls")}
+              />
+
               {/* 2026-04-15 — Tasks global popover. Relocated from the
                   Dashboard right-sidebar card; accessible from every
                   office surface. Trigger mirrors the compact height/
@@ -1171,56 +1227,19 @@ function AppContent() {
                 </PopoverContent>
               </Popover>
 
-              {/* Quick Create dropdown — replaces slide-over drawer for top-level menu */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  {/* 2026-04-29 Color Phase 2: replaced inline `#76B054` /
-                      onMouseEnter/Leave JS swap with the canonical brand
-                      tokens via `bg-brand hover:bg-brand-hover`. */}
-                  <Button
-                    size="sm"
-                    data-testid="button-create-new"
-                    className="gap-1.5 h-8 px-3 text-sm text-white font-medium bg-brand hover:bg-brand-hover"
-                  >
-                    <Plus className="h-4 w-4" />
-                    <span>New</span>
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" sideOffset={8} className="w-48">
-                  <DropdownMenuItem data-testid="quick-new-job" onClick={() => openCreate("job")}>
-                    <ClipboardList className="h-4 w-4 mr-2" />
-                    New Job
-                  </DropdownMenuItem>
-                  <DropdownMenuItem data-testid="quick-new-client" onClick={() => setAddClientModalOpen(true)}>
-                    <Users className="h-4 w-4 mr-2" />
-                    New Client
-                  </DropdownMenuItem>
-                  <DropdownMenuItem data-testid="quick-new-invoice" onClick={() => setLocation("/invoices/new")}>
-                    <Receipt className="h-4 w-4 mr-2" />
-                    New Invoice
-                  </DropdownMenuItem>
-                  {/* 2026-05-06: navigates to the full-page /quotes/new flow. */}
-                  <DropdownMenuItem data-testid="quick-new-quote" onClick={() => setLocation("/quotes/new")}>
-                    <FileText className="h-4 w-4 mr-2" />
-                    New Quote
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem data-testid="quick-new-task" onClick={() => openCreate("task")}>
-                    <CheckSquare className="h-4 w-4 mr-2" />
-                    New Task
-                  </DropdownMenuItem>
-                  <DropdownMenuItem data-testid="quick-new-pm" onClick={() => setCreatePmDialogOpen(true)}>
-                    <Wrench className="h-4 w-4 mr-2" />
-                    New Maintenance Plan
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              {/* 2026-05-07 RALPH: the global "+ New" dropdown was
+                  moved from this header into the left sidebar. The
+                  header now owns search, activity, tasks, help, and
+                  the more-menu — Create lives at the top of the
+                  sidebar so it has a permanent, predictable home and
+                  doesn't fight for header space. See AppSidebar.tsx
+                  for the canonical mount. */}
 
-              {/* 2026-04-15 — Help global popover. Sits between the New
-                  dropdown and the More menu so it reads as a utility
-                  control, not a primary action. Trigger mirrors the
-                  Tasks button's tonal style for header consistency;
-                  the panel itself is the same 380px card geometry. */}
+              {/* 2026-04-15 — Help global popover. Sits between Tasks
+                  and the More menu so it reads as a utility control,
+                  not a primary action. Trigger mirrors the Tasks
+                  button's tonal style for header consistency; the
+                  panel itself is the same 380px card geometry. */}
               <Popover open={helpPopoverOpen} onOpenChange={setHelpPopoverOpen}>
                 <PopoverTrigger asChild>
                   <Button
@@ -1302,7 +1321,12 @@ function AppContent() {
         {/* 2026-04-29 Color Phase 2: shell wrapper bg moved from inline
             `#222b36` to the canonical `bg-sidebar-bg` token. */}
         <div className="flex flex-1 overflow-hidden bg-sidebar-bg">
-          <AppSidebar onDashboardClick={handleDashboardClick} />
+          <AppSidebar
+            onDashboardClick={handleDashboardClick}
+            onOpenCreate={openCreate}
+            onOpenAddClient={() => setAddClientModalOpen(true)}
+            onOpenCreatePm={() => setCreatePmDialogOpen(true)}
+          />
           <div className="flex flex-col flex-1 overflow-hidden">
             <ImpersonationBanner />
             {/* 2026-04-29: `<SubscriptionBanner />` removed — its trial
@@ -1345,6 +1369,10 @@ function AppContent() {
       />
       <TimezoneSetupDialog />
       <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} />
+      {/* 2026-05-07: Global Activity Feed drawer mount. Accessible from
+          every office surface via the header trigger; technician pages
+          do not surface the trigger so the drawer never opens there. */}
+      <ActivityFeedDrawer open={activityFeedOpen} onOpenChange={setActivityFeedOpen} />
     </SidebarProvider>
   );
 }

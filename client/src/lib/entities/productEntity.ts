@@ -51,6 +51,15 @@ export interface ProductOption {
    * to whatever default the surface uses.
    */
   estimatedDurationMinutes?: number | null;
+  /**
+   * 2026-05-07: taxable indicator surfaced for the Pricebook bulk picker.
+   * Optional — older callers that ignore it keep working. The DB column
+   * (`items.is_taxable`) defaults true; we propagate that default here when
+   * the row is missing the field. Display-only on existing surfaces; the
+   * canonical line-item mapper still uses the catalog `isTaxable` flag
+   * only when constructing fresh drafts via `productOptionToCatalogItem`.
+   */
+  isTaxable?: boolean;
 }
 
 // ── Search ──
@@ -233,6 +242,15 @@ export function normalizeProductRow(r: any): ProductOption {
     estimatedDurationMinutes: Number.isFinite(parsedDuration as number)
       ? (parsedDuration as number)
       : null,
+    // 2026-05-07: propagate `isTaxable` for the Pricebook picker badge.
+    // Reads camelCase first, falls back to snake_case. DB default is
+    // true; treat missing/null as true to match.
+    isTaxable:
+      typeof r.isTaxable === "boolean"
+        ? r.isTaxable
+        : typeof r.is_taxable === "boolean"
+          ? r.is_taxable
+          : true,
   };
 }
 
@@ -309,7 +327,11 @@ export function productOptionToCatalogItem(p: ProductOption): CatalogItem {
     description: p.description ?? null,
     cost: p.cost,
     unitPrice: p.unitPrice,
-    isTaxable: false,
+    // 2026-05-07: was hard-coded false; now propagates the catalog flag
+    // when the ProductOption carries it (Pricebook picker normalization
+    // surfaces `isTaxable`). Older callers that build a ProductOption
+    // without the flag still see the historical `false` default.
+    isTaxable: p.isTaxable ?? false,
     taxCode: null,
     category: p.category ?? null,
     isActive: true,

@@ -23,6 +23,10 @@ import {
   RotateCcw,
   Send,
   Wrench,
+  // 2026-05-07: rail tab icons. StickyNote for Notes (matches
+  // ClientDetailPage's rail), Clock already imported above for the
+  // Labour summary (reused as the Labour tab icon).
+  StickyNote,
 } from "lucide-react";
 import { formatCurrency } from "@/lib/formatters";
 import { useJobVisits } from "@/hooks/useJobVisits";
@@ -79,8 +83,28 @@ import { SendCommunicationModal } from "@/components/communication/SendCommunica
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { StatusPill, statusToVariant } from "@/components/ui/status-pill";
-// 2026-05-01 canonical compact header — single owner for Job/Invoice/Quote detail headers.
-import { CanonicalDetailHeader } from "@/components/detail/CanonicalDetailHeader";
+import {
+  CardShell,
+  CardShellHeader,
+  CardShellTitle,
+} from "@/components/ui/card";
+// 2026-05-07: standalone CanonicalDetailHeader strip removed from this
+// page. Job summary, status, Job # / Scheduled / Invoice # meta blocks
+// and all action buttons now live inside the existing client/location
+// CardShell below — one unified detail card instead of two stacked
+// regions. CanonicalDetailHeader is still mounted by InvoiceDetailPage.
+// 2026-05-07: canonical right-rail primitive — mounts the Notes +
+// Labour tabs in the right column. Same primitive ClientDetailPage
+// uses; per-page tab content + active state wiring stay here.
+import {
+  DetailRightRail,
+  RAIL_WIDTH_TRANSITION,
+  type DetailRailTab,
+} from "@/components/detail-rail/DetailRightRail";
+// 2026-05-07: canonical rail-content card primitive used by Notes /
+// Equipment / Labour panels. Notes + Equipment opt into it via the
+// body components' `cardStyle` prop; Labour wraps each entry directly.
+import { RailContentCard } from "@/components/detail-rail/RailContentCard";
 // 2026-05-02 entity-number visual language: blue pill for current
 // entity, green link for cross-entity, muted dash for missing.
 import { EntityNumber } from "@/components/common/EntityNumber";
@@ -198,59 +222,14 @@ interface TimeEntryDisplay {
 // reserved for accent, 8px spacing system throughout.
 // ============================================================================
 
-/** Section card chrome — canonical card surface, 6px radius, soft lift.
- *  Children are responsible for their own internal padding so the card can
- *  host either a flush data table or a padded form panel.
- *  2026-04-29 Color Phase 3: migrated `bg-white` → `bg-card`, added
- *  `shadow-card` so SectionCards lift consistently with the canonical
- *  `<Card>` primitive. Border switched to `border-card-border` so card
- *  surfaces share one border token. */
-function SectionCard({
-  className,
-  children,
-  ...rest
-}: React.HTMLAttributes<HTMLElement>) {
-  return (
-    <section
-      className={cn(
-        "bg-card border border-card-border rounded-md overflow-hidden shadow-card",
-        className,
-      )}
-      {...rest}
-    >
-      {children}
-    </section>
-  );
-}
-
-/** Section header strip — 11px uppercase label with letter-spacing,
- *  optional muted count, optional right-aligned action slot. Always sits
- *  on a 1px bottom divider so the body below reads as a separate band. */
-function SectionHead({
-  label,
-  count,
-  action,
-}: {
-  label: string;
-  count?: number | null;
-  action?: React.ReactNode;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-3 px-4 h-11 border-b border-border-default">
-      <div className="flex items-baseline gap-2 min-w-0">
-        <h3 className="m-0 text-helper font-semibold uppercase tracking-[0.08em] text-text-secondary">
-          {label}
-        </h3>
-        {count !== undefined && count !== null && (
-          <span className="text-helper font-medium text-text-disabled tabular-nums">
-            {count}
-          </span>
-        )}
-      </div>
-      {action}
-    </div>
-  );
-}
+// 2026-05-07 Tier 2 — local SectionCard / SectionHead helpers were
+// removed. Their three usages on this page now route through the
+// canonical CardShell primitives: outer chrome through `<CardShell>`,
+// the compact uppercase-tracked header band through
+// `<CardShellHeader compact>` + `<CardShellTitle density="compact">`.
+// The `compact` variant locks the 44px header height (`h-11`) the
+// previous SectionHead provided; the `density="compact"` title
+// variant locks the 13px text-helper uppercase tracked typography.
 
 /** Header KPI tile — flush flexible cell inside a horizontally-divided
  *  strip. Label top, value bottom. The accent variant fills the cell with
@@ -542,12 +521,61 @@ function LineItemsTable({
   const jobPartsAdapter = useMemo<LineItemsAdapter<JobPartDisplayLine>>(
     () => ({
       surface: "job-parts",
+      // 2026-05-07 Phase A — persisted detail page. Per-row methods
+      // below wrap the same /api/jobs/:jobId/parts endpoints the
+      // legacy saveAll uses (kept as a safety net). reorderLines
+      // mirrors saveAll's sortOrder payload shape.
+      interactionMode: "persisted",
       showCost: true,
       showTax: false,
       allowReorder: true,
       allowEditExisting: true,
       emptyStateLabel: "No billable items added yet.",
       emptyStateCtaLabel: "Add first item",
+      addLine: async (draft) => {
+        await apiRequest<JobPart>(`/api/jobs/${jobId}/parts`, {
+          method: "POST",
+          body: JSON.stringify(draftToJobPartPayload(draft)),
+        });
+        await queryClient.refetchQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
+        queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      },
+      updateLine: async (serverId, draft) => {
+        await apiRequest(`/api/jobs/${jobId}/parts/${serverId}`, {
+          method: "PUT",
+          body: JSON.stringify(draftToJobPartPayload(draft)),
+        });
+        await queryClient.refetchQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
+        queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      },
+      deleteLine: async (serverId) => {
+        await apiRequest(`/api/jobs/${jobId}/parts/${serverId}`, { method: "DELETE" });
+        await queryClient.refetchQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
+        queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      },
+      reorderLines: async (orderedServerIds) => {
+        const reorderPayload = orderedServerIds.map((id, idx) => ({
+          id,
+          sortOrder: idx,
+        }));
+        if (reorderPayload.length === 0) return;
+        await apiRequest(`/api/jobs/${jobId}/parts/reorder`, {
+          method: "PATCH",
+          body: JSON.stringify({ parts: reorderPayload }),
+        });
+        await queryClient.refetchQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
+        queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      },
+      bulkAddLines: async (drafts) => {
+        for (const draft of drafts) {
+          await apiRequest<JobPart>(`/api/jobs/${jobId}/parts`, {
+            method: "POST",
+            body: JSON.stringify(draftToJobPartPayload(draft)),
+          });
+        }
+        await queryClient.refetchQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
+        queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      },
       hydrateDraft: (line) => hydrateDraft(line as unknown as Record<string, unknown>),
       resolveProduct: (line) =>
         line.productId
@@ -888,8 +916,8 @@ export default function JobDetailPage() {
   // 2026-04-27 mock-fidelity rebuild: per-technician aggregation across
   // ALL days. Mock shows two horizontal "tech tiles" at the top of the
   // Labour Tracking card — one per tech who has logged time, with their
-  // total time + total cost. This collapses labourByTechDay across days
-  // for each tech so the tile reads "Daniel · 3h 25m · $439.58".
+  // total time + total cost. Used by the inline Labour summary tile;
+  // the rail panel body has its own (tech → date → entries) shape.
   type TechLabourTotal = {
     technicianId: string;
     name: string;
@@ -919,65 +947,10 @@ export default function JobDetailPage() {
     return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
   }, [jobTimeEntries, techByIdMap]);
 
-  // 2026-04-26: expanded-view grouping. Blocks are keyed by
-  // (technicianId, local-date) so the spec's "Name · Date" header is
-  // always accurate even when a tech has entries on multiple days. Each
-  // block carries a chronologically-sorted entry list, and a per-block
-  // subtotal in minutes / cost. Labour costs use each entry's
-  // `costRateSnapshot` (the rate captured at entry-creation time);
-  // changing a team member's rate later affects future entries only —
-  // historical entries keep the rate that was current when they were
-  // recorded. Entries with a missing or non-numeric snapshot contribute
-  // $0.00.
-  type TechDayLabourBlock = {
-    key: string;
-    technicianId: string;
-    name: string;
-    dateLabel: string;
-    dateSortKey: string;
-    entries: TimeEntryDisplay[];
-    totalMinutes: number;
-    totalCost: number;
-  };
-  const labourByTechDay: TechDayLabourBlock[] = useMemo(() => {
-    const map = new Map<string, TechDayLabourBlock>();
-    for (const e of jobTimeEntries) {
-      if (!e.startAt) continue;
-      const start = new Date(e.startAt);
-      if (Number.isNaN(start.getTime())) continue;
-      const techId = e.technicianId || "__unknown__";
-      const dateSortKey = format(start, "yyyy-MM-dd");
-      const dateLabel = format(start, "MMM d");
-      const key = `${techId}::${dateSortKey}`;
-      let block = map.get(key);
-      if (!block) {
-        block = {
-          key,
-          technicianId: techId,
-          name: e.technicianName || "Unknown",
-          dateLabel,
-          dateSortKey,
-          entries: [],
-          totalMinutes: 0,
-          totalCost: 0,
-        };
-        map.set(key, block);
-      }
-      block.entries.push(e);
-      block.totalMinutes += e.durationMinutes ?? 0;
-      block.totalCost += entryCostDollars(e);
-    }
-    const byStart = (a: TimeEntryDisplay, b: TimeEntryDisplay) =>
-      new Date(a.startAt).getTime() - new Date(b.startAt).getTime();
-    const blocks = Array.from(map.values());
-    blocks.forEach((block) => block.entries.sort(byStart));
-    // Recent dates first within a tech; alphabetical across techs.
-    return blocks.sort((a, b) => {
-      const byTech = a.name.localeCompare(b.name);
-      if (byTech !== 0) return byTech;
-      return b.dateSortKey.localeCompare(a.dateSortKey);
-    });
-  }, [jobTimeEntries]);
+  // 2026-05-07 v2: the prior tech-day bucketing useMemo was unused
+  // after the rail Labour body switched to building its own
+  // (tech → date → entries) shape inline (`labourTechGroups`). The
+  // legacy memo + its `TechDayLabourBlock` type were deleted here.
 
   // 2026-04-26: per-card collapse state. Each card has a "user-toggled"
   // flag so once the user manually opens or closes it we stop reacting
@@ -1000,6 +973,26 @@ export default function JobDetailPage() {
   const [equipmentOpen, setEquipmentOpen] = useState<boolean>(true);
   const [equipmentUserToggled, setEquipmentUserToggled] = useState(false);
   const [equipmentCount, setEquipmentCount] = useState<number | null>(null);
+
+  // 2026-05-07 canonical right-rail: which rail tab is active in the
+  // far-right page-level rail aside. The Equipment + Notes + Labour
+  // cards previously stacked in the body grid are now tabs inside a
+  // `<DetailRightRail>` instance pinned to the page's right edge.
+  //
+  // Tab order (per spec): Notes / Labour / Equipment. Default open
+  // tab is `notes` — Notes is the most-frequent surface a dispatcher
+  // hits on a Job page, and starting with Notes mirrors the reading
+  // order ClientDetailPage uses.
+  type JobRailTab = "notes" | "labour" | "equipment";
+  const [jobRailTab, setJobRailTab] = useState<JobRailTab | null>("notes");
+
+  // 2026-05-07 controlled add-note trigger: incrementing this counter
+  // signals `<EntityNotesSection>` (which already supports the
+  // `openAddNoteSignal` prop) to open its create-note dialog. The
+  // rail panel header `+ Add` action bumps this on click. No
+  // EntityNotesSection changes required — uses the existing controlled
+  // surface.
+  const [notesAddSignal, setNotesAddSignal] = useState(0);
 
   // Auto-collapse when data resolves and the user hasn't intervened.
   useEffect(() => {
@@ -1396,6 +1389,402 @@ export default function JobDetailPage() {
         new Date(a.scheduledStart!).getTime() - new Date(b.scheduledStart!).getTime(),
     )[0];
 
+  // 2026-05-07 canonical right-rail: tab definitions for Notes /
+  // Labour / Equipment. Order is the spec'd reading order; default
+  // open tab is `notes` (state above). Each tab carries:
+  //   - id / label / icon / testId
+  //   - optional `action` JSX rendered top-right of the panel header.
+  //     Action labels are intentionally TERSE ("+ Add", "+ Time",
+  //     "+ Add") because the rail panel header already shows the
+  //     full-word title to the left of the action.
+  //   - panel `content` JSX. Each content slot is "naked" — the
+  //     legacy duplicate inner section headers (Notes/Equipment
+  //     trigger rows, the labour bucket-collapsing strip) are
+  //     suppressed via `hideHeader` props on the body components and
+  //     by replacing the labour bucket renderer with a per-entry
+  //     list grouped by technician only.
+  const canAddTimeEntry = job.status === "open" && job.isActive !== false;
+  const addTimeDisabledHint =
+    job.status === "invoiced"
+      ? "This job is invoiced. Use Reopen Job in the actions menu to log additional time."
+      : "Reopen this job to log time entries.";
+
+  // 2026-05-07 labour grouping v2 — tech → date → entries.
+  //
+  // The prior pass grouped only by technician and listed entries flat;
+  // every entry repeated the date in its prefix ("May 7 · 8:00 AM…")
+  // which created visual noise once a tech logged time across multiple
+  // days. The new shape adds a date axis: each technician's entries
+  // are grouped by calendar start-date, rendered one card per
+  // (tech, date), and the date appears once as the card heading.
+  // Individual entries inside a date card show their type, time range,
+  // duration, and cost — they are NOT merged into a combined span,
+  // and click-to-edit per individual entry is preserved.
+  //
+  // Entries with no `startAt` are skipped (entries without a start
+  // time can't be assigned to a calendar date). They still count in
+  // `labourBuckets.totalMinutes` / `.totalCost` so the panel header
+  // and total summary line remain accurate.
+  type LabourEntryDisplay = TimeEntryDisplay & {
+    typeLabel: string;
+    isTravel: boolean;
+  };
+  type LabourDateGroup = {
+    /** Display label, e.g. "May 7". */
+    dateLabel: string;
+    /** Sortable yyyy-MM-dd key for ordering date groups within a tech. */
+    dateSortKey: string;
+    /** Entries on this date, sorted chronologically by start time. */
+    entries: LabourEntryDisplay[];
+    /** Per-(tech, date) total duration in minutes. Accumulated as
+     *  entries are pushed into this group; rendered on the right side
+     *  of the date-card heading. */
+    totalMinutes: number;
+    /** Per-(tech, date) total cost in dollars. Same accumulation
+     *  semantics as `totalMinutes`. */
+    totalCost: number;
+  };
+  type LabourTechGroup = {
+    technicianId: string;
+    name: string;
+    /** Date sub-groups, sorted most-recent date first within a tech. */
+    dates: LabourDateGroup[];
+  };
+  const labourTechGroups: LabourTechGroup[] = (() => {
+    const techs = new Map<
+      string,
+      { name: string; byDate: Map<string, LabourDateGroup> }
+    >();
+    for (const e of jobTimeEntries) {
+      if (!e.startAt) continue;
+      const start = new Date(e.startAt);
+      if (Number.isNaN(start.getTime())) continue;
+      const techId = e.technicianId || "__unknown__";
+      const dateSortKey = format(start, "yyyy-MM-dd");
+      const dateLabel = format(start, "MMM d");
+      let tech = techs.get(techId);
+      if (!tech) {
+        tech = {
+          name: e.technicianName || "Unknown",
+          byDate: new Map(),
+        };
+        techs.set(techId, tech);
+      }
+      let dateGroup = tech.byDate.get(dateSortKey);
+      if (!dateGroup) {
+        dateGroup = {
+          dateLabel,
+          dateSortKey,
+          entries: [],
+          totalMinutes: 0,
+          totalCost: 0,
+        };
+        tech.byDate.set(dateSortKey, dateGroup);
+      }
+      const isTravel = TRAVEL_TYPES.has(e.type);
+      const typeLabel = isTravel ? "Travel" : "On-site";
+      dateGroup.entries.push({ ...e, typeLabel, isTravel });
+      // Accumulate per-(tech, date) totals so the date-card heading
+      // can render "<duration> · <cost>" without re-iterating entries
+      // at render time. `entryCostDollars(e)` is the same helper the
+      // global `labourBuckets` totals use, so the date-card sum and
+      // the panel-level Total summary line stay consistent.
+      dateGroup.totalMinutes += e.durationMinutes ?? 0;
+      dateGroup.totalCost += entryCostDollars(e);
+    }
+    return Array.from(techs.entries())
+      .map(([technicianId, t]) => ({
+        technicianId,
+        name: t.name,
+        dates: Array.from(t.byDate.values())
+          .map((d) => ({
+            ...d,
+            // Within a date, sort entries chronologically (earliest first).
+            entries: [...d.entries].sort((a, b) => {
+              const aT = a.startAt ? new Date(a.startAt).getTime() : 0;
+              const bT = b.startAt ? new Date(b.startAt).getTime() : 0;
+              return aT - bT;
+            }),
+          }))
+          // Most recent date first within a tech.
+          .sort((a, b) => b.dateSortKey.localeCompare(a.dateSortKey)),
+      }))
+      // Alphabetical across techs.
+      .sort((a, b) => a.name.localeCompare(b.name));
+  })();
+
+  const jobRailTabs: DetailRailTab[] = [
+    {
+      id: "notes",
+      label: "Notes",
+      icon: StickyNote,
+      testId: "job-rail-tab-notes",
+      count: notesCount ?? undefined,
+      // Terse "+ Add" label per spec — the rail panel title to the
+      // left already says "Notes". Bumping `notesAddSignal` opens
+      // EntityNotesSection's create dialog via its existing
+      // `openAddNoteSignal` controlled prop — no Notes-logic change.
+      action: (
+        <button
+          type="button"
+          onClick={() => setNotesAddSignal((n) => n + 1)}
+          className="inline-flex items-center gap-1 h-7 px-2 rounded text-caption font-medium text-[#76B054] hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40"
+          data-testid="button-add-note-rail"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add
+        </button>
+      ),
+      content: (
+        <div data-testid="card-notes">
+          <EntityNotesSection
+            entityType="job"
+            entityId={job.id}
+            embedded={true}
+            // Suppress EntityNotesSection's internal header (icon +
+            // "Notes" + "+ Add Note" button) — the rail panel header
+            // already provides title + action.
+            hideHeader={true}
+            hideAddButton={true}
+            // Page-level controlled trigger replaces the suppressed
+            // "+ Add Note" button.
+            openAddNoteSignal={notesAddSignal}
+            onCountChange={setNotesCount}
+            // 2026-05-07: opt into the canonical rail card chrome
+            // (`<RailContentCard>` per note + canonical typography
+            // tokens). Matches the Equipment + Labour rail cards so
+            // the panel reads as one design system.
+            cardStyle={true}
+          />
+        </div>
+      ),
+    },
+    {
+      id: "labour",
+      label: "Labour",
+      icon: Clock,
+      testId: "job-rail-tab-labour",
+      count: jobTimeEntries.length || undefined,
+      action: (
+        <button
+          type="button"
+          onClick={() => setTimeEntryModal({ open: true, mode: "create", entry: null })}
+          disabled={!canAddTimeEntry}
+          title={canAddTimeEntry ? undefined : addTimeDisabledHint}
+          className="inline-flex items-center gap-1 h-7 px-2 rounded text-caption font-medium text-[#76B054] hover:bg-slate-100 disabled:text-text-disabled disabled:hover:bg-transparent disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40"
+          data-testid="button-add-labour"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Time
+        </button>
+      ),
+      content: (
+        <div data-testid="card-labour-summary">
+          {/* TOTAL summary at the top — total hours + total labour cost.
+              The rail panel header already shows "Labour" + count, so
+              this row surfaces the dollar/hour aggregates only. */}
+          {jobTimeEntries.length > 0 && (
+            <div
+              className="flex items-baseline justify-between gap-2 px-1 pb-3 mb-2 border-b border-border-default"
+              data-testid="labour-summary-totals"
+            >
+              <span className="text-label uppercase tracking-wide text-text-muted">
+                Total
+              </span>
+              <span className="flex items-baseline gap-2 font-mono">
+                <span className="text-row font-semibold tabular-nums text-text-primary">
+                  {formatMinutes(labourBuckets.totalMinutes)}
+                </span>
+                <span className="text-text-disabled">·</span>
+                <span className="text-row font-semibold tabular-nums text-text-primary">
+                  {formatCurrency(labourBuckets.totalCost)}
+                </span>
+              </span>
+            </div>
+          )}
+
+          {/* PER-(TECH, DATE) cards: each card carries the date as its
+              heading and itemizes every entry on that date. Date is no
+              longer repeated per entry row — the entry rows show only
+              type / time-range / duration / cost. Entries are still
+              individually rendered (no bucket-collapsing, no merged
+              time spans) and remain individually click-to-edit. */}
+          {jobTimeEntries.length === 0 ? (
+            <EmptyState
+              title="No time logged yet."
+              hint="Track time against this job to roll travel and on-site hours into the labour total."
+            />
+          ) : (
+            <div className="space-y-4" data-testid="labour-entries-list">
+              {labourTechGroups.map((group) => (
+                <div
+                  key={group.technicianId}
+                  className="space-y-2"
+                  data-testid={`labour-tech-group-${group.technicianId}`}
+                >
+                  {/* Technician name section heading.
+                      Uses canonical `text-section-title` token (18px / 600)
+                      so the technician name reads as a clear h2-level
+                      grouping, distinct from the date-card heading
+                      (text-label, 13px uppercase) below it. */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-section-title font-semibold text-text-primary truncate min-w-0">
+                      {group.name}
+                    </span>
+                  </div>
+
+                  {/* One card per calendar date this tech logged time on. */}
+                  <div className="space-y-2">
+                    {group.dates.map((dateBlock) => (
+                      <RailContentCard
+                        key={dateBlock.dateSortKey}
+                        testId={`labour-date-${group.technicianId}-${dateBlock.dateSortKey}`}
+                      >
+                        {/* Date heading inside the card.
+                            Date label sits left, per-(tech, date)
+                            totals sit right (duration · cost). The
+                            outer flex `items-baseline` aligns the
+                            uppercase date label with the mono
+                            tabular-nums totals on the same baseline. */}
+                        <div
+                          className="flex items-baseline justify-between gap-2 pb-2 border-b border-slate-100"
+                          data-testid={`labour-date-heading-${group.technicianId}-${dateBlock.dateSortKey}`}
+                        >
+                          <span className="text-label uppercase tracking-wide text-text-muted">
+                            {dateBlock.dateLabel}
+                          </span>
+                          <span
+                            className="text-caption font-medium tabular-nums text-text-primary font-mono shrink-0"
+                            data-testid={`labour-date-totals-${group.technicianId}-${dateBlock.dateSortKey}`}
+                          >
+                            {formatMinutes(dateBlock.totalMinutes)}
+                            <span className="text-text-disabled mx-1">·</span>
+                            {formatCurrency(dateBlock.totalCost)}
+                          </span>
+                        </div>
+
+                        {/* Entry rows. Each row is individually
+                            clickable to open the canonical TimeEntryModal
+                            in edit mode. Date is intentionally NOT
+                            repeated here — it's the card heading above. */}
+                        <div className="mt-1.5">
+                          {dateBlock.entries.map((entry, idx) => {
+                            const start = entry.startAt ? new Date(entry.startAt) : null;
+                            const end = entry.endAt ? new Date(entry.endAt) : null;
+                            const startLabel = start ? format(start, "h:mm a") : "—";
+                            const endLabel = end ? format(end, "h:mm a") : null;
+                            const timeRange = endLabel
+                              ? `${startLabel}–${endLabel}`
+                              : `${startLabel}…`;
+                            const isRunning = entry.durationMinutes == null || !entry.endAt;
+                            const minutes = entry.durationMinutes ?? 0;
+                            const cost = entryCostDollars(entry);
+                            return (
+                              <button
+                                key={entry.id}
+                                type="button"
+                                onClick={() =>
+                                  setTimeEntryModal({
+                                    open: true,
+                                    mode: "edit",
+                                    entry,
+                                  })
+                                }
+                                className={cn(
+                                  "w-full text-left rounded px-1 py-2 transition-colors",
+                                  "hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40",
+                                  idx > 0 && "mt-1 pt-3 border-t border-slate-100",
+                                )}
+                                data-testid={`labour-entry-${entry.id}`}
+                                aria-label="Edit time entry"
+                              >
+                                {/* Top row: type label + (optional Running) + cost.
+                                    Type uses canonical `text-row font-semibold`;
+                                    cost uses canonical `text-row font-semibold
+                                    tabular-nums`. */}
+                                <div className="flex items-baseline justify-between gap-2">
+                                  <span className="text-row font-semibold text-text-primary truncate min-w-0">
+                                    {entry.typeLabel}
+                                  </span>
+                                  {isRunning && (
+                                    <span className="inline-flex items-center gap-1 text-caption text-warning shrink-0">
+                                      <Clock className="h-3 w-3 animate-pulse" />
+                                      Running
+                                    </span>
+                                  )}
+                                  <span className="text-row font-semibold tabular-nums text-text-primary font-mono shrink-0">
+                                    {formatCurrency(cost)}
+                                  </span>
+                                </div>
+                                {/* Bottom row: time range + duration.
+                                    Both children use the canonical
+                                    `text-caption tabular-nums text-muted-foreground`
+                                    set explicitly (no parent inheritance) so the
+                                    typography contract is local + verifiable per
+                                    span. */}
+                                <div className="mt-0.5 flex items-baseline justify-between gap-2">
+                                  <span className="text-caption tabular-nums text-muted-foreground font-mono truncate min-w-0">
+                                    {timeRange}
+                                  </span>
+                                  <span className="text-caption tabular-nums text-muted-foreground font-mono shrink-0">
+                                    {formatMinutes(minutes)}
+                                  </span>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </RailContentCard>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ),
+    },
+    {
+      id: "equipment",
+      label: "Equipment",
+      icon: Wrench,
+      testId: "job-rail-tab-equipment",
+      count: equipmentCount ?? undefined,
+      // Terse "+ Add" label per spec.
+      action: (
+        <button
+          type="button"
+          onClick={() => setShowAddEquipmentDialog(true)}
+          className="inline-flex items-center gap-1 h-7 px-2 rounded text-caption font-medium text-[#76B054] hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#76B054]/40"
+          data-testid="button-add-equipment-rail"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add
+        </button>
+      ),
+      content: (
+        <div data-testid="card-equipment">
+          <JobEquipmentSection
+            jobId={job.id}
+            locationId={job.locationId}
+            defaultOpen={true}
+            // Suppress JobEquipmentSection's internal trigger header
+            // (icon + "Equipment" + chevron + add) — the rail panel
+            // header already provides title + action.
+            hideHeader={true}
+            hideAddButton={true}
+            // 2026-05-07: opt into the canonical rail card chrome so
+            // each equipment row matches the Notes + Labour cards.
+            cardStyle={true}
+            externalAddOpen={showAddEquipmentDialog}
+            onExternalAddOpenChange={setShowAddEquipmentDialog}
+            onCountChange={setEquipmentCount}
+          />
+        </div>
+      ),
+    },
+  ];
+
   return (
     <>
       {/* Hidden JobHeaderCard mount — preserved for imperative ref access
@@ -1424,375 +1813,386 @@ export default function JobDetailPage() {
       </div>
 
       {/* ──────────── PAGE SHELL ────────────
-          2026-04-29 (precision UI v3): width model matched to Invoice
-          Detail — page bg `#FAF8F5`, no `min-h-screen` or fixed
-          `max-w-[1440px]`, no centered `mx-auto` on the inner containers.
-          Content now fills the app shell's `<main>` width, mirroring the
-          Invoice Detail page outer wrapper (see InvoiceDetailPage.tsx
-          ~line 2019). */}
-      <div className="bg-app-bg" data-testid="job-detail-page">
+          2026-05-07 layout v4: page outer wrapper promoted to a
+          `flex flex-col lg:flex-row` row so the canonical
+          `<DetailRightRail>` aside can be a sibling of the main
+          content column and pin to the FAR RIGHT of the page (mirrors
+          ClientDetailPage's `client-detail-root` outer flex row).
+          Previously the rail mounted inside a 35% body-grid column,
+          so the closed-state icon strip sat ~65% of the way across
+          the page rather than at the right edge. Width model
+          unchanged: page bg `#FAF8F5`, no `min-h-screen` or fixed
+          `max-w-[1440px]`, no centered `mx-auto`. */}
+      <div
+        className="flex h-full flex-col lg:flex-row bg-app-bg"
+        data-testid="job-detail-page"
+      >
 
-        {/* ──────────── CANONICAL DETAIL HEADER ────────────
-            2026-05-01: title + status + meta (Job # / Scheduled /
-            Invoice #) + edit pencil + actions consolidated into a
-            single full-width strip via the canonical primitive. The
-            actions slot below carries the existing Add Equipment / More
-            menu / status-driven CTA buttons unchanged — no new mutations,
-            no new endpoints. Edit pencil dispatches the existing
-            `enterHeaderEdit` flow that drives the inline edit form in
-            the lower SectionCard. */}
-        <CanonicalDetailHeader
-          testId="job-detail-header"
-          // 2026-05-01 (header refinement): title becomes the editable
-          // summary surface in edit mode. The lower-card summary H1
-          // was removed in this same refinement so summary appears
-          // exactly once.
-          title={editingHeader ? (
-            <textarea
-              ref={summaryInputRef}
-              value={headerDraft.summary}
-              onChange={(e) => {
-                setHeaderDraft((d) => ({ ...d, summary: e.target.value }));
-                setHeaderError(null);
-              }}
-              onKeyDown={(e) => {
-                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                  e.preventDefault();
-                  handleHeaderSave();
-                } else if (e.key === "Escape") {
-                  e.preventDefault();
-                  handleHeaderCancel();
-                }
-              }}
-              rows={1}
-              maxLength={500}
-              placeholder="Job summary"
-              className="w-full max-w-[520px] text-xl font-bold tracking-tight text-text-primary bg-white border border-border-default rounded px-2 py-1 resize-none leading-tight focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
-              data-testid="input-job-summary-header"
-            />
-          ) : (
-            job.summary || (clientName ?? "Job")
-          )}
-          isEditing={editingHeader}
-          statusBadge={(
-            <StatusPill
-              variant={statusToVariant(job.openSubStatus === "on_hold" ? "on_hold" : job.status)}
-              data-testid="header-status-pill"
-            >
-              {getJobStatusDisplay(job).label}
-            </StatusPill>
-          )}
-          items={[
-            {
-              key: "job-number",
-              label: "Job #",
-              // 2026-05-02 entity-number system: see
-              // `client/src/components/common/EntityNumber.tsx` for the
-              // canonical primitive. Job # on the Job page is the
-              // current/primary entity → "primary" variant (blue pill).
-              value: <EntityNumber variant="primary" data-testid="header-job-number-pill">{job.jobNumber}</EntityNumber>,
-              // 2026-05-01: input type changed from "number" to "text"
-              // + inputMode="numeric" so the browser does not render
-              // up/down spinner arrows. Clients can still type only
-              // digits via the inputMode hint (mobile shows a numeric
-              // keypad).
-              editNode: (
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  value={headerDraft.jobNumber}
-                  onChange={(e) => {
-                    // Restrict to digits — same behavior the prior
-                    // type=number step=1 enforced.
-                    const next = e.target.value.replace(/[^0-9]/g, "");
-                    setHeaderDraft((d) => ({ ...d, jobNumber: next }));
-                    setHeaderError(null);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      handleHeaderSave();
-                    } else if (e.key === "Escape") {
-                      e.preventDefault();
-                      handleHeaderCancel();
-                    }
-                  }}
-                  className="w-20 h-7 px-1.5 text-sm font-medium tabular-nums border border-border-default rounded bg-white focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
-                  data-testid="input-job-number"
-                />
-              ),
-            },
-            {
-              key: "scheduled",
-              label: "Scheduled",
-              value: nextVisit?.scheduledStart
-                ? (
-                  <span className="tabular-nums">
-                    {format(new Date(nextVisit.scheduledStart), "MMM d")}
-                    <span className="text-text-disabled mx-1">·</span>
-                    {format(new Date(nextVisit.scheduledStart), "h:mm a")}
-                  </span>
-                )
-                : <span className="text-text-disabled">—</span>,
-            },
-            {
-              key: "invoice-number",
-              label: "Invoice #",
-              // 2026-05-02 entity-number system: cross-entity (Invoice #
-              // shown on the Job page) → "linked" variant via the
-              // canonical primitive. The "View invoice" fallback when
-              // an invoice exists but has no number is preserved.
-              value: (() => {
-                const inv = jobInvoice ?? (jobInvoiceCount > 0 ? firstJobInvoice : null);
-                return inv ? (
-                  <EntityNumber
-                    variant="linked"
-                    onClick={() => setLocation(`/invoices/${inv.id}`)}
-                    data-testid="header-invoice-link"
-                  >
-                    {inv.invoiceNumber || "View invoice"}
-                  </EntityNumber>
-                ) : <EntityNumber variant="missing" />;
-              })(),
-            },
-          ]}
-          // 2026-05-01: edit pencil REMOVED from the canonical header.
-          // The lower-card pencil (rendered by the JobHeaderCard
-          // SectionCard's existing edit affordance) is the single
-          // edit-mode entry point per the refined spec. It dispatches
-          // the same `enterHeaderEdit` flow that drives both the
-          // header's editable title + Job # input AND the lower
-          // card's description textarea.
-          actions={(
-            <>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowAddEquipmentDialog(true)}
-                className="h-9 px-3 gap-1.5 text-row font-medium border-border-default text-text-primary hover:bg-surface-subtle hover:text-text-primary"
-                aria-label="Add equipment"
-                data-testid="button-add-equipment-header"
-              >
-                <Wrench className="h-3.5 w-3.5" />
-                <Plus className="h-3.5 w-3.5" />
-              </Button>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="h-9 w-9 p-0 border-border-default text-text-secondary hover:bg-surface-subtle hover:text-text-primary" data-testid="button-more-actions">
-                    <MoreHorizontal className="h-4 w-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-52">
-                  {job.status === "open" && job.openSubStatus !== "on_hold" && isOfficeUser && (
-                    <DropdownMenuItem onClick={() => setShowActionRequiredModal(true)} data-testid="menu-hold-job">
-                      <Pause className="h-4 w-4 mr-2" />Hold Job
-                    </DropdownMenuItem>
-                  )}
-                  {job.status === "open" && isOfficeUser && (
-                    <DropdownMenuItem onClick={() => setShowCompleteJobConfirm(true)} className="text-emerald-700 font-medium" data-testid="menu-complete-job">
-                      <CheckCircle2 className="h-4 w-4 mr-2" />Complete Job
-                    </DropdownMenuItem>
-                  )}
-                  {job.status === "completed" && isOfficeUser && (
-                    <DropdownMenuItem onClick={() => headerCardRef.current?.openCloseJobDialog()} data-testid="menu-archive-job">
-                      <Archive className="h-4 w-4 mr-2" />Archive Job
-                    </DropdownMenuItem>
-                  )}
-                  {(job.status === "completed" || job.status === "archived" || job.status === "invoiced") && isOfficeUser && (
-                    <DropdownMenuItem onClick={() => headerCardRef.current?.triggerReopenJob()} data-testid="menu-reopen-job">
-                      <RotateCcw className="h-4 w-4 mr-2" />Reopen Job
-                    </DropdownMenuItem>
-                  )}
-                  <DropdownMenuSeparator />
-                  {isOfficeUser && (
-                    <DropdownMenuItem onClick={() => setShowSendJobEmail(true)} data-testid="menu-send-job-email">
-                      <Send className="h-4 w-4 mr-2" />Send Email
-                    </DropdownMenuItem>
-                  )}
-                  {/* 2026-05-02: Create Similar Job — was navigating to
-                      `/jobs/new?cloneFrom=…` which is not a registered
-                      route (see Audit #2 / PR 1). Now opens the canonical
-                      CreateNewDialog with `jobInitialCloneFromJobId` set;
-                      QuickAddJobDialog fetches the source job and
-                      prefills location / summary / description.
-                      Schedule + team are intentionally NOT cloned. */}
-                  <DropdownMenuItem
-                    onClick={() => {
-                      setCreateSimilarFromId(job.id);
-                      setCreateSimilarOpen(true);
-                    }}
-                    data-testid="menu-create-similar"
-                  >
-                    <Copy className="h-4 w-4 mr-2" />Create Similar Job
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => window.print()} data-testid="menu-print">
-                    <Printer className="h-4 w-4 mr-2" />Print
-                  </DropdownMenuItem>
-                  {isOfficeUser && (
-                    <>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem onClick={() => setShowDeleteConfirm(true)} className="text-destructive" data-testid="menu-delete-job">
-                        <Trash2 className="h-4 w-4 mr-2" />Delete Job
-                      </DropdownMenuItem>
-                    </>
-                  )}
-                </DropdownMenuContent>
-              </DropdownMenu>
-              {job.status === "open" && (
-                <Button size="sm" onClick={handleScheduleVisit} data-testid="button-schedule-visit-action">
-                  Schedule Visit
-                </Button>
-              )}
-              {job.status === "completed" && isOfficeUser && (
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    if (jobInvoice) {
-                      setLocation(`/invoices/${jobInvoice.id}`);
-                    } else if (jobInvoiceCount > 0 && firstJobInvoice) {
-                      setLocation(`/invoices/${firstJobInvoice.id}`);
-                    } else {
-                      createInvoiceFromJobMutation.mutate();
-                    }
-                  }}
-                  disabled={createInvoiceFromJobMutation.isPending}
-                  data-testid="button-invoice-action"
-                >
-                  {jobInvoice
-                    ? "View Invoice"
-                    : jobInvoiceCount > 0
-                      ? jobInvoiceCount === 1
-                        ? "View Invoice"
-                        : "View Invoices"
-                      : createInvoiceFromJobMutation.isPending
-                        ? "Creating…"
-                        : "Create Invoice"}
-                </Button>
-              )}
-              {job.status === "archived" && isOfficeUser && (
-                <Button size="sm" onClick={() => headerCardRef.current?.triggerReopenJob()} data-testid="button-restore-job">
-                  Restore Job
-                </Button>
-              )}
-            </>
-          )}
-        />
-        {/* Legacy action-only `<header>` block REMOVED 2026-05-01.
-            All actions now live in the canonical header's `actions`
-            slot above. */}
-
-        {/* ──────────── BODY GRID ────────────
-            2026-04-29 (precision UI v5): top padding dropped (`py-4` →
-            `pt-0 pb-4`) so the first card sits flush below the floating
-            action header — eliminates the previous large blank band.
-            Horizontal padding and grid template unchanged. */}
-        <div className="px-4 lg:px-6 pt-0 pb-4">
-          <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,65%)_minmax(0,35%)] lg:items-start" data-testid="job-detail-grid">
+        {/* ═════════ LEFT COLUMN: page header + body ═════════ */}
+        <div
+          className="flex-1 min-w-0 flex flex-col lg:min-h-0 overflow-hidden"
+          data-testid="job-detail-left-column-shell"
+        >
+        {/* ──────────── BODY ────────────
+            Single-column body now that Equipment moved into the rail
+            and the rail moved out of the body grid. Top padding
+            preserved so the unified detail card sits below the app
+            top bar with breathing room. */}
+        <div className="px-4 lg:px-6 pt-4 pb-4">
+          <div className="flex flex-col gap-5" data-testid="job-detail-grid">
 
             {/* ═════════ LEFT COLUMN ═════════ */}
             <div className="flex flex-col gap-4 min-w-0" data-testid="job-detail-left-column">
 
-              {/* CUSTOMER / JOB HEADER CARD — primary identity card.
-                  2026-04-29 (precision UI v2): rebuilt to mirror Invoice
-                  Detail's InvoiceMetaCard. Two-column body with a vertical
-                  divider — left column is the identity stack (customer
-                  name H1, service address, scheduled), right column is a
-                  vertical key-value list of job-specific metadata
-                  (Job #, Status, Invoice). No backend bindings changed:
+              {/* UNIFIED JOB DETAIL HEADER CARD — primary identity card.
+                  2026-05-07: absorbed the standalone top header strip.
+                  One card now owns: job summary (H1) + status pill,
+                  client/location identity, service address, Job # /
+                  Scheduled / Invoice # meta blocks, edit pencil, and
+                  the full action cluster (Add Equipment, More menu,
+                  status-driven CTA). No backend bindings changed:
                   `clientName`, `job.location`, `nextVisit`, `job.jobNumber`,
                   `job.status`, and `jobInvoice` / `firstJobInvoice` /
                   `jobInvoiceCount` are all reused as-is. */}
-              <SectionCard data-testid="card-job-context">
-                {/* 2026-05-03 spacing fix: client name + edit pencil
-                    now share a single top row. Previously the pencil
-                    rendered in its own `pt-2 pb-1` row before the
-                    body's title row, leaving ~28 px of empty space
-                    above the client name. The two are now siblings
-                    in one `flex items-center justify-between` row,
-                    so the title aligns vertically with the pencil
-                    and the empty band is gone.
-                    The pencil's effective right offset is preserved
-                    (`-mr-2` on the row's right edge cancels 8 px of
-                    the parent's `px-5`, landing the pencil at the
-                    same ~12 px from the card edge it had before).
-                    Pencil click target, behaviour, and aria-label
-                    are unchanged.
-                    Pencil triggers INLINE summary edit (the only
-                    job-level field still editable from this surface).
-                    Location is identity / immutable here; Team
-                    Instructions are visit-scoped and live on
-                    `job_visits.visitNotes`, not `jobs`. Click loads
-                    `job.summary` into the draft, focuses the
-                    textarea next render via `summaryInputRef`, then
-                    `Save` fires the canonical `PATCH /api/jobs/:id`
-                    (summary only) and `Cancel` restores the prior
-                    value. */}
-                <div className="grid grid-cols-1">
-                  <div className="px-5 pt-2 pb-4">
-                    <div className="flex items-center justify-between gap-2 mb-3 -mr-2">
-                      {clientName ? (
-                        <button
-                          type="button"
-                          onClick={() => setLocation(`/clients/${job.locationId}`)}
-                          className="text-section-title font-semibold text-text-secondary hover:text-brand transition-colors text-left truncate min-w-0"
-                          data-testid="link-client-context"
+              <CardShell data-testid="card-job-context">
+                <div
+                  className="px-5 pt-4 pb-4"
+                  data-testid="job-detail-header"
+                >
+                  {/* TOP ROW: title block (left) + actions+meta cluster
+                      (right). 2026-05-07: switched from a 3-sibling
+                      flex-wrap row (title / meta / actions) to a
+                      2-sibling column-on-mobile / row-on-lg layout so
+                      the title block keeps its width at narrow viewports
+                      and the Job # / Scheduled / Invoice # meta blocks
+                      sit UNDER the action buttons in a compact right-side
+                      stack. `min-w-0 flex-1` on the left allows title
+                      truncation/wrapping; `shrink-0` on the right
+                      preserves its content. Below `lg`, the right cluster
+                      drops below the title for full-width readability. */}
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+
+                    {/* ── LEFT: title + status, client name, address.
+                        `min-w-0 flex-1` keeps the title from being
+                        squeezed by the right cluster on tighter
+                        viewports. `max-w-2xl` ceiling preserved so the
+                        H1 doesn't run wall-to-wall on extra-wide
+                        viewports. */}
+                    <div className="flex-1 min-w-0 max-w-2xl">
+                      <div className="flex items-start gap-3 flex-wrap">
+                        {editingHeader ? (
+                          <textarea
+                            ref={summaryInputRef}
+                            value={headerDraft.summary}
+                            onChange={(e) => {
+                              setHeaderDraft((d) => ({ ...d, summary: e.target.value }));
+                              setHeaderError(null);
+                            }}
+                            onKeyDown={(e) => {
+                              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                                e.preventDefault();
+                                handleHeaderSave();
+                              } else if (e.key === "Escape") {
+                                e.preventDefault();
+                                handleHeaderCancel();
+                              }
+                            }}
+                            rows={1}
+                            maxLength={500}
+                            placeholder="Job summary"
+                            className="w-full max-w-[520px] text-page-title font-semibold leading-tight text-text-primary bg-white border border-border-default rounded px-2 py-1 resize-none focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
+                            data-testid="input-job-summary-header"
+                          />
+                        ) : (
+                          <h1
+                            className="m-0 text-page-title font-semibold leading-tight text-text-primary break-words min-w-0"
+                            data-testid="job-detail-header-title"
+                          >
+                            {job.summary || (clientName ?? "Job")}
+                          </h1>
+                        )}
+                        <StatusPill
+                          variant={statusToVariant(job.openSubStatus === "on_hold" ? "on_hold" : job.status)}
+                          className="shrink-0 mt-1"
+                          data-testid="header-status-pill"
                         >
-                          {clientName}
-                        </button>
-                      ) : (
-                        // Empty placeholder so the pencil stays right-aligned
-                        // on cards where the client name hasn't loaded yet.
-                        <div className="min-w-0" />
-                      )}
+                          {getJobStatusDisplay(job).label}
+                        </StatusPill>
+                      </div>
+
+                      {/* IDENTITY STACK — clientName + service address
+                          grouped under the title row. The address is
+                          wrapped in its own `<div>` so the structural
+                          close-tag chain at the end of the title block
+                          reads `</div></div></div>` (address wrapper,
+                          identity stack, title block) — the pin the
+                          unified-header test contract relies on to
+                          assert meta testids never leak into the title
+                          subtree. */}
+                      <div className="mt-2 space-y-2">
+                        {clientName && (
+                          <button
+                            type="button"
+                            onClick={() => setLocation(`/clients/${job.locationId}`)}
+                            className="block text-section-title font-semibold text-text-secondary hover:text-brand transition-colors text-left truncate max-w-full min-w-0"
+                            data-testid="link-client-context"
+                          >
+                            {clientName}
+                          </button>
+                        )}
+
+                        {/* 2026-05-06 RALPH: pass the RAW `location.location`
+                            column (the user-entered location name), NOT
+                            the server-side `locationDisplayNameExpr`
+                            COALESCE that this object's `companyName`
+                            field carries. The COALESCE resolves to the
+                            parent customer name and was duplicating the
+                            H1 above. */}
+                        <div>
+                          <AddressBlock
+                            variant="job"
+                            label="Service Address"
+                            locationName={resolveServiceLocationName(job.location?.location, clientName)}
+                            street={streetLine}
+                            cityLine={cityLine}
+                            testId="block-service-address"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* ── RIGHT: action cluster (top) + meta blocks
+                        (under). 2026-05-07: meta moved out of its own
+                        sibling slot into this right-side stack so the
+                        title can keep more width on smaller viewports.
+                        Outer column is `shrink-0 flex flex-col items-end
+                        gap-3`; on narrow viewports the parent flex-col
+                        layout above lets this whole stack drop below
+                        the title. */}
+                    <div
+                      className="shrink-0 flex flex-col items-end gap-3"
+                      data-testid="job-detail-header-right"
+                    >
+                      {/* Action cluster — edit pencil + add-equipment +
+                          overflow menu + status-driven primary CTA. */}
+                      <div
+                        className="flex items-center gap-2"
+                        data-testid="job-detail-header-actions"
+                      >
                       <Button
                         variant="ghost"
                         size="icon"
                         onClick={enterHeaderEdit}
-                        className="h-7 w-7 shrink-0 text-text-disabled hover:text-text-primary hover:bg-surface-subtle"
+                        className="h-9 w-9 shrink-0 text-text-disabled hover:text-text-primary hover:bg-surface-subtle"
                         aria-label="Edit job header"
                         data-testid="button-edit-job-card"
                         disabled={editingHeader}
                       >
                         <Pencil className="h-3.5 w-3.5" />
                       </Button>
+                      {/* 2026-05-07: Add Equipment combo button (Wrench
+                          + Plus) removed from the top header actions.
+                          Equipment is now a canonical right-rail tab
+                          and the Equipment tab's panel-header `+ Add
+                          Equipment` button is the sole canonical
+                          affordance for opening AddEquipmentDialog. */}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="outline" size="sm" className="h-9 w-9 p-0 border-border-default text-text-secondary hover:bg-surface-subtle hover:text-text-primary" data-testid="button-more-actions">
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-52">
+                          {job.status === "open" && job.openSubStatus !== "on_hold" && isOfficeUser && (
+                            <DropdownMenuItem onClick={() => setShowActionRequiredModal(true)} data-testid="menu-hold-job">
+                              <Pause className="h-4 w-4 mr-2" />Hold Job
+                            </DropdownMenuItem>
+                          )}
+                          {job.status === "open" && isOfficeUser && (
+                            <DropdownMenuItem onClick={() => setShowCompleteJobConfirm(true)} className="text-emerald-700 font-medium" data-testid="menu-complete-job">
+                              <CheckCircle2 className="h-4 w-4 mr-2" />Complete Job
+                            </DropdownMenuItem>
+                          )}
+                          {job.status === "completed" && isOfficeUser && (
+                            <DropdownMenuItem onClick={() => headerCardRef.current?.openCloseJobDialog()} data-testid="menu-archive-job">
+                              <Archive className="h-4 w-4 mr-2" />Archive Job
+                            </DropdownMenuItem>
+                          )}
+                          {(job.status === "completed" || job.status === "archived" || job.status === "invoiced") && isOfficeUser && (
+                            <DropdownMenuItem onClick={() => headerCardRef.current?.triggerReopenJob()} data-testid="menu-reopen-job">
+                              <RotateCcw className="h-4 w-4 mr-2" />Reopen Job
+                            </DropdownMenuItem>
+                          )}
+                          <DropdownMenuSeparator />
+                          {isOfficeUser && (
+                            <DropdownMenuItem onClick={() => setShowSendJobEmail(true)} data-testid="menu-send-job-email">
+                              <Send className="h-4 w-4 mr-2" />Send Email
+                            </DropdownMenuItem>
+                          )}
+                          {/* 2026-05-02: Create Similar Job opens canonical
+                              CreateNewDialog with `jobInitialCloneFromJobId`. */}
+                          <DropdownMenuItem
+                            onClick={() => {
+                              setCreateSimilarFromId(job.id);
+                              setCreateSimilarOpen(true);
+                            }}
+                            data-testid="menu-create-similar"
+                          >
+                            <Copy className="h-4 w-4 mr-2" />Create Similar Job
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => window.print()} data-testid="menu-print">
+                            <Printer className="h-4 w-4 mr-2" />Print
+                          </DropdownMenuItem>
+                          {isOfficeUser && (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem onClick={() => setShowDeleteConfirm(true)} className="text-destructive" data-testid="menu-delete-job">
+                                <Trash2 className="h-4 w-4 mr-2" />Delete Job
+                              </DropdownMenuItem>
+                            </>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                      {job.status === "open" && (
+                        <Button size="sm" onClick={handleScheduleVisit} data-testid="button-schedule-visit-action">
+                          Schedule Visit
+                        </Button>
+                      )}
+                      {job.status === "completed" && isOfficeUser && (
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            if (jobInvoice) {
+                              setLocation(`/invoices/${jobInvoice.id}`);
+                            } else if (jobInvoiceCount > 0 && firstJobInvoice) {
+                              setLocation(`/invoices/${firstJobInvoice.id}`);
+                            } else {
+                              createInvoiceFromJobMutation.mutate();
+                            }
+                          }}
+                          disabled={createInvoiceFromJobMutation.isPending}
+                          data-testid="button-invoice-action"
+                        >
+                          {jobInvoice
+                            ? "View Invoice"
+                            : jobInvoiceCount > 0
+                              ? jobInvoiceCount === 1
+                                ? "View Invoice"
+                                : "View Invoices"
+                              : createInvoiceFromJobMutation.isPending
+                                ? "Creating…"
+                                : "Create Invoice"}
+                        </Button>
+                      )}
+                      {job.status === "archived" && isOfficeUser && (
+                        <Button size="sm" onClick={() => headerCardRef.current?.triggerReopenJob()} data-testid="button-restore-job">
+                          Restore Job
+                        </Button>
+                      )}
+                      </div>
+
+                      {/* META BLOCKS — Job # / Scheduled / Invoice #
+                          stacked under the action cluster. Compact
+                          horizontal flex with gap-x-6 / gap-y-3
+                          flex-wrap so the three label/value pairs
+                          stay aligned with the action cluster's right
+                          edge on desktop and wrap to a second row at
+                          tablet widths without overflowing the right
+                          column.
+
+                          2026-05-07: moved out of its own sibling slot
+                          beside the title and into this right-side
+                          stack so the title block keeps its width on
+                          smaller viewports. Edit affordances + entity-
+                          number variants preserved verbatim. */}
+                      <div
+                        className="flex items-start gap-x-6 gap-y-3 flex-wrap justify-end"
+                        data-testid="job-detail-header-items"
+                      >
+                        <div
+                          className="flex flex-col items-end min-w-0"
+                          data-testid="job-detail-header-item-job-number"
+                        >
+                          <span className="text-label uppercase text-text-muted">Job #</span>
+                          <span className="mt-1 text-row font-medium text-text-primary tabular-nums">
+                            {editingHeader ? (
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                pattern="[0-9]*"
+                                value={headerDraft.jobNumber}
+                                onChange={(e) => {
+                                  const next = e.target.value.replace(/[^0-9]/g, "");
+                                  setHeaderDraft((d) => ({ ...d, jobNumber: next }));
+                                  setHeaderError(null);
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    handleHeaderSave();
+                                  } else if (e.key === "Escape") {
+                                    e.preventDefault();
+                                    handleHeaderCancel();
+                                  }
+                                }}
+                                className="w-20 h-7 px-1.5 text-row font-medium tabular-nums border border-border-default rounded bg-white focus:outline-none focus:ring-2 focus:ring-brand/25 focus:border-brand"
+                                data-testid="input-job-number"
+                              />
+                            ) : (
+                              // 2026-05-02 entity-number system: current
+                              // entity → "primary" variant (blue pill).
+                              <EntityNumber variant="primary" data-testid="header-job-number-pill">
+                                {job.jobNumber}
+                              </EntityNumber>
+                            )}
+                          </span>
+                        </div>
+
+                        <div
+                          className="flex flex-col items-end min-w-0"
+                          data-testid="job-detail-header-item-scheduled"
+                        >
+                          <span className="text-label uppercase text-text-muted">Scheduled</span>
+                          <span className="mt-1 text-row font-medium text-text-primary tabular-nums">
+                            {nextVisit?.scheduledStart ? (
+                              <>
+                                {format(new Date(nextVisit.scheduledStart), "MMM d")}
+                                <span className="text-text-disabled mx-1">·</span>
+                                {format(new Date(nextVisit.scheduledStart), "h:mm a")}
+                              </>
+                            ) : (
+                              <span className="text-text-disabled">—</span>
+                            )}
+                          </span>
+                        </div>
+
+                        <div
+                          className="flex flex-col items-end min-w-0"
+                          data-testid="job-detail-header-item-invoice-number"
+                        >
+                          <span className="text-label uppercase text-text-muted">Invoice #</span>
+                          <span className="mt-1 text-row font-medium text-text-primary">
+                            {(() => {
+                              // 2026-05-02 entity-number system: cross-entity
+                              // (Invoice # shown on Job page) → "linked" variant.
+                              const inv = jobInvoice ?? (jobInvoiceCount > 0 ? firstJobInvoice : null);
+                              return inv ? (
+                                <EntityNumber
+                                  variant="linked"
+                                  onClick={() => setLocation(`/invoices/${inv.id}`)}
+                                  data-testid="header-invoice-link"
+                                >
+                                  {inv.invoiceNumber || "View invoice"}
+                                </EntityNumber>
+                              ) : (
+                                <EntityNumber variant="missing" />
+                              );
+                            })()}
+                          </span>
+                        </div>
+                      </div>
                     </div>
-
-                    {/* 2026-05-06 RALPH: pass the RAW `location.location`
-                        column (the user-entered location name), NOT the
-                        server-side `locationDisplayNameExpr` COALESCE
-                        that this object's `companyName` field carries.
-                        The COALESCE resolves to the parent customer
-                        name and was duplicating the H1 above. The
-                        resolver also suppresses legacy data where
-                        `clients.location` was auto-copied from the
-                        customer name, so the "Service Address" block
-                        no longer repeats the customer name as a
-                        location label. */}
-                    <AddressBlock
-                      variant="job"
-                      label="Service Address"
-                      locationName={resolveServiceLocationName(job.location?.location, clientName)}
-                      street={streetLine}
-                      cityLine={cityLine}
-                      testId="block-service-address"
-                    />
-
-                    {/* 2026-04-29 final polish: Scheduled block moved to
-                        the right-side metadata stack so the left column
-                        stays focused on Identity → Address. The same
-                        nextVisit data drives the new Scheduled row in the
-                        meta column. */}
                   </div>
-
-                  {/* 2026-05-01 (canonical detail header dedup): right
-                      meta column removed entirely. Status / Job # /
-                      Scheduled / Invoice # are owned by the canonical
-                      top header in BOTH read AND edit mode. Job #'s
-                      editable input now lives in the top header's
-                      `editNode` slot, dispatching the same
-                      `headerDraft` state and `updateHeaderMutation`
-                      save path. */}
                 </div>
 
                 {/* JOB DESCRIPTION (OPTIONAL) — appended at the bottom of
@@ -1886,7 +2286,7 @@ export default function JobDetailPage() {
                     </Button>
                   </div>
                 )}
-              </SectionCard>
+              </CardShell>
 
               {/* LINE ITEMS — canonical LineItemsCard mount. 2026-04-29
                   (Phase 3): replaces the prior inline LineItemsTable grid
@@ -1907,8 +2307,10 @@ export default function JobDetailPage() {
                   so it preserves the existing JobDetailPage finance panel
                   styling while the line-items surface above adopts the
                   canonical stone/slate card chrome. */}
-              <SectionCard data-testid="card-billing-summary">
-                <SectionHead label="Billing Summary" count={null} />
+              <CardShell data-testid="card-billing-summary">
+                <CardShellHeader compact>
+                  <CardShellTitle density="compact">Billing Summary</CardShellTitle>
+                </CardShellHeader>
 
                 {/* EXPENSES sub-section. */}
                 <div className="flex items-center justify-between gap-3 px-4 h-10 bg-surface-subtle">
@@ -1978,278 +2380,78 @@ export default function JobDetailPage() {
                     </div>
                   </div>
                 </div>
-              </SectionCard>
-            </div>
-
-            {/* ═════════ RIGHT RAIL ═════════ */}
-            <div className="flex flex-col gap-4 min-w-0" data-testid="job-detail-right-column">
-
-              {/* EQUIPMENT — canonical JobEquipmentSection mount.
-                  2026-04-29 (precision UI v3): the bespoke in-page
-                  Equipment card (display-only rows fed by a parallel
-                  `jobEquipmentRows` query) was removed. JobEquipmentSection
-                  is the canonical owner of the equipment surface and
-                  carries every action the page needs: click row →
-                  EquipmentDetailModal (edit), per-row trash →
-                  removeMutation, "+" → AddEquipmentDialog (existing flow,
-                  same `externalAddOpen` wiring used by the page header
-                  button). Per spec "If no equipment is linked to the job,
-                  hide the equipment card entirely" — the section is
-                  visually hidden via `hidden` class when count is zero,
-                  but stays mounted so the dialog remains reachable from
-                  the page header "+" button. `hideAddButton` suppresses
-                  the section's internal "+" so there's a single canonical
-                  add affordance at the page-header level. */}
-              <div
-                className={equipmentCount === 0 ? "hidden" : ""}
-                data-testid="equipment-card-wrapper"
-              >
-                <JobEquipmentSection
-                  jobId={job.id}
-                  locationId={job.locationId}
-                  defaultOpen={true}
-                  hideAddButton={true}
-                  externalAddOpen={showAddEquipmentDialog}
-                  onExternalAddOpenChange={setShowAddEquipmentDialog}
-                  onCountChange={setEquipmentCount}
-                />
-              </div>
-
-              {/* NOTES — canonical EntityNotesSection mount.
-                  2026-04-29 (precision UI v3): the bespoke avatar feed +
-                  inline composer (which only POSTed plain text and could
-                  not attach files) was removed. EntityNotesSection is
-                  the canonical owner of the job notes surface and
-                  carries: click row → EntityNoteDialog (edit + add/
-                  remove attachments), origin chips for inherited
-                  client / location / company notes, NoteAttachmentStrip
-                  rendering, and the canonical "+ Add Note" entry point
-                  (which routes through EntityNoteDialog with the
-                  canonical mutation). Section's own header already
-                  shows the "Notes" label and count, so no extra wrapper
-                  chrome is needed beyond the Invoice-Detail-style
-                  border. */}
-              <div
-                className="overflow-hidden rounded-md border border-border-default bg-white"
-                data-testid="card-notes"
-              >
-                <EntityNotesSection entityType="job" entityId={job.id} embedded={true} onCountChange={setNotesCount} />
-              </div>
-
-              {/* LABOUR — dashboard module: 3-tile summary + entry rows.
-                  2026-04-29 (precision UI v4): the "+ Time Entry" button
-                  is now disabled when the job is not open. Server-side
-                  `activeWorkJobFilter()` (canonical guard at
-                  `server/storage/timeTracking.ts:452`) requires
-                  `status='open' AND is_active AND deleted_at IS NULL`
-                  before accepting a new time entry; without this gate,
-                  clicking Save in TimeEntryModal would surface the raw
-                  "Job not found or is closed/inactive" 404. The button
-                  remains visible (so the affordance is discoverable) but
-                  inert with a tooltip explaining the rule. The mutation
-                  path, payload, and route (`POST /api/time/entries/manager`)
-                  are unchanged — same canonical surface used everywhere. */}
-              <SectionCard data-testid="card-labour-summary">
-                {/* 2026-04-29 final polish: Labour header re-styled to
-                    match the existing Notes + Equipment header pattern
-                    (`px-4 py-2.5 bg-[#f8fafc] border-b border-[#e2e8f0]`,
-                    `text-sm font-semibold` mixed-case title with leading
-                    icon). This is intentionally NOT using the canonical
-                    typography tokens — both reference cards predate the
-                    typography migration and still render at `text-sm`,
-                    so matching their literal classes is what produces
-                    visual consistency across Notes / Equipment / Labour.
-                    A future combined sweep can migrate all three to the
-                    canonical tokens together.
-
-                    Aggregate summary stays inline in the header
-                    ("Labour · 10h 43m · $589.42") so the body can begin
-                    directly with the per-(tech, day) entry groups. The
-                    "+ Time Entry" button keeps its existing canonical
-                    behavior: same mutation, same modal payload. */}
-                {(() => {
-                  const canAddTime = job.status === "open" && job.isActive !== false;
-                  const disabledHint =
-                    job.status === "invoiced"
-                      ? "This job is invoiced. Use Reopen Job in the actions menu to log additional time."
-                      : "Reopen this job to log time entries.";
-                  return (
-                    <div
-                      className="flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] border-b border-[#e2e8f0]"
-                      data-testid="trigger-labour"
-                    >
-                      <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2 min-w-0 truncate">
-                        <Clock className="h-4 w-4 text-[#64748b] shrink-0" />
-                        <span>Labour</span>
-                        {jobTimeEntries.length > 0 && (
-                          <>
-                            <span className="text-[#cbd5e1] font-normal">·</span>
-                            <span className="font-mono tabular-nums font-medium text-[#475569]">
-                              {formatMinutes(labourBuckets.totalMinutes)}
-                            </span>
-                            <span className="text-[#cbd5e1] font-normal">·</span>
-                            <span className="font-mono tabular-nums text-[#0f172a]">
-                              {formatCurrency(labourBuckets.totalCost)}
-                            </span>
-                          </>
-                        )}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setTimeEntryModal({ open: true, mode: "create", entry: null })}
-                        disabled={!canAddTime}
-                        title={canAddTime ? undefined : disabledHint}
-                        className="text-xs text-[#76B054] hover:text-[#5F9442] font-medium disabled:text-text-disabled disabled:hover:text-text-disabled disabled:cursor-not-allowed"
-                        data-testid="button-add-labour"
-                      >
-                        + Time Entry
-                      </button>
-                    </div>
-                  );
-                })()}
-
-                {/* 2026-04-29 Phase L-1 — Labour card density redesign.
-                 *
-                 * Replaces (a) the 3-tile Driving/On-Site/Total summary strip
-                 * with one compact summary line, and (b) the flat-per-entry
-                 * list with a per-(technician, day) grouped render that
-                 * consumes the previously-unused `labourByTechDay` memo.
-                 *
-                 * Density math: a typical "one tech, four entries on a day"
-                 * (drive + on-site AM + drive + on-site PM) used to render at
-                 * ~320px (4 rows × ~80px). Now renders as ~85px (1 group
-                 * header + 2 bucket lines + optional total). 4× density gain
-                 * with the same data.
-                 *
-                 * Click-to-edit preserved: each bucket line opens the FIRST
-                 * entry of that bucket (sorted earliest-first) in the
-                 * existing TimeEntryModal. For multi-entry buckets the count
-                 * suffix surfaces the additional entries; users navigate to
-                 * specific entries via the dispatch / calendar surfaces if
-                 * needed.
-                 *
-                 * Running indicator: any entry in the group with
-                 * durationMinutes == null OR endAt == null surfaces a
-                 * pulse-Clock chip in the group header.
-                 *
-                 * No backend, mutation, route, or token changes. Empty state
-                 * preserved verbatim. */}
-                {/* 2026-04-29 final polish: body summary strip removed —
-                    the aggregate now lives in the card's header. Body
-                    starts directly with the empty state OR the per-
-                    (technician, day) grouped entries. */}
-                {jobTimeEntries.length === 0 ? (
-                  <EmptyState
-                    title="No time logged yet."
-                    hint="Track time against this job to roll travel and on-site hours into the labour total."
-                  />
-                ) : (
-                  <div className="divide-y divide-border-default" data-testid="labour-entries-list">
-                    {[...labourByTechDay]
-                      .sort((a, b) => {
-                        if (a.dateSortKey !== b.dateSortKey) return b.dateSortKey.localeCompare(a.dateSortKey);
-                        return a.name.localeCompare(b.name);
-                      })
-                      .map((block) => {
-                        const travel = block.entries.filter((e) => TRAVEL_TYPES.has(e.type));
-                        const onSite = block.entries.filter((e) => !TRAVEL_TYPES.has(e.type));
-                        const travelMinutes = travel.reduce((s, e) => s + (e.durationMinutes ?? 0), 0);
-                        const travelCost = travel.reduce((s, e) => s + entryCostDollars(e), 0);
-                        const onSiteMinutes = onSite.reduce((s, e) => s + (e.durationMinutes ?? 0), 0);
-                        const onSiteCost = onSite.reduce((s, e) => s + entryCostDollars(e), 0);
-                        const firstEntry = block.entries[0];
-                        const lastEntry = block.entries[block.entries.length - 1];
-                        const startTime = firstEntry?.startAt ? format(new Date(firstEntry.startAt), "h:mma") : "";
-                        const lastEnd = lastEntry?.endAt ? format(new Date(lastEntry.endAt), "h:mma") : null;
-                        const timeRange = lastEnd ? `${startTime}–${lastEnd}` : startTime;
-                        const hasRunning = block.entries.some((e) => e.durationMinutes == null || !e.endAt);
-                        const openBucket = (entries: TimeEntryDisplay[]) => {
-                          if (entries.length === 0) return;
-                          setTimeEntryModal({ open: true, mode: "edit", entry: entries[0] });
-                        };
-                        return (
-                          <div
-                            key={block.key}
-                            className="px-4 py-2"
-                            data-testid={`labour-group-${block.key}`}
-                          >
-                            {/* 2026-04-29 Polish 2: avatar removed from
-                                group header — initials/colour chip was
-                                visual noise that didn't add information
-                                the technician name doesn't already convey.
-                                Group rows now flush-align with the bucket
-                                lines below. */}
-                            <div className="flex items-center gap-2 mb-0.5">
-                              <span className="text-row-emphasis text-text-primary truncate flex-1 min-w-0">
-                                {block.name}
-                              </span>
-                              {hasRunning && (
-                                <span className="inline-flex items-center gap-1 text-caption text-warning shrink-0">
-                                  <Clock className="h-3 w-3 animate-pulse" />Running
-                                </span>
-                              )}
-                              <span className="text-caption text-text-muted font-mono tabular-nums shrink-0">
-                                {block.dateLabel}
-                                {timeRange && <span className="text-text-disabled mx-1">·</span>}
-                                {timeRange}
-                              </span>
-                            </div>
-
-                            {/* Travel + On-site bucket lines. Each opens
-                                the first entry of its bucket in the
-                                existing TimeEntryModal. Multi-entry
-                                buckets surface a "· N entries" hint.
-                                2026-04-29 Polish 2: per-group total row
-                                dropped — the page-level Labour summary at
-                                the top of the card carries the
-                                aggregate; per-group total was duplicate
-                                information. */}
-                            <div className="space-y-0.5">
-                              {travel.length > 0 && (
-                                <button
-                                  type="button"
-                                  onClick={() => openBucket(travel)}
-                                  className="w-full flex items-center justify-between text-caption text-text-secondary hover:text-text-primary transition-colors"
-                                  data-testid={`labour-bucket-travel-${block.key}`}
-                                >
-                                  <span>
-                                    Travel
-                                    <span className="font-mono tabular-nums text-text-muted ml-1.5">{formatMinutes(travelMinutes)}</span>
-                                    {travel.length > 1 && (
-                                      <span className="text-text-disabled ml-1.5">· {travel.length} entries</span>
-                                    )}
-                                  </span>
-                                  <span className="font-mono tabular-nums">{formatCurrency(travelCost)}</span>
-                                </button>
-                              )}
-                              {onSite.length > 0 && (
-                                <button
-                                  type="button"
-                                  onClick={() => openBucket(onSite)}
-                                  className="w-full flex items-center justify-between text-caption text-text-secondary hover:text-text-primary transition-colors"
-                                  data-testid={`labour-bucket-onsite-${block.key}`}
-                                >
-                                  <span>
-                                    On-site
-                                    <span className="font-mono tabular-nums text-text-muted ml-1.5">{formatMinutes(onSiteMinutes)}</span>
-                                    {onSite.length > 1 && (
-                                      <span className="text-text-disabled ml-1.5">· {onSite.length} entries</span>
-                                    )}
-                                  </span>
-                                  <span className="font-mono tabular-nums">{formatCurrency(onSiteCost)}</span>
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                  </div>
-                )}
-              </SectionCard>
+              </CardShell>
             </div>
 
           </div>
         </div>
+        </div>
+        {/* ═══ /LEFT COLUMN (header + body) ═══ */}
+
+        {/* ═════════ RIGHT RAIL ═════════
+            Page-level sibling of the left column (mirrors
+            ClientDetailPage's `client-right-column` aside). Spans the
+            full page-content height and pins to the far right edge.
+            Width is driven by the `--job-rail-width` CSS variable:
+              - panel closed (`jobRailTab === null`) → fixed 80px (icon
+                strip only)
+              - panel open → fixed 380px (compact comfortable width;
+                no drag-resize on this page)
+            Below `lg` the row collapses to a column and the rail
+            stacks under the body, matching ClientDetailPage's mobile
+            behaviour. The canonical `<DetailRightRail>` primitive
+            owns the icon-strip + panel chrome inside this aside — no
+            page-specific rail logic is duplicated here. */}
+        <aside
+          className={cn(
+            "relative lg:shrink-0 lg:h-full flex flex-col bg-white",
+            "border-t lg:border-t-0 lg:border-l border-slate-200",
+          )}
+          style={{
+            ["--job-rail-width" as any]: `${jobRailTab === null ? 80 : 380}px`,
+          }}
+          data-testid="job-detail-rail-column"
+          data-panel-open={jobRailTab === null ? "false" : "true"}
+        >
+          {/* Below lg: rail stacks under the body; render the rail
+              inline (no fixed width). */}
+          <div className="lg:hidden">
+            <DetailRightRail
+              tabs={jobRailTabs}
+              activeTabId={jobRailTab}
+              onActiveTabChange={(id) => setJobRailTab(id as JobRailTab | null)}
+              testIdPrefix="job-side"
+              ariaLabel="Job information rail"
+            />
+          </div>
+
+          {/* Desktop: aside has explicit width via the CSS variable so
+              the canonical primitive's `flex-1` panel section fills
+              the leftover horizontal space. When the panel is closed
+              the aside collapses to the icon-strip width.
+
+              2026-05-07 RALPH — `RAIL_WIDTH_TRANSITION` animates this
+              wrapper's `width` whenever `--job-rail-width` flips
+              (panel open ↔ closed). Matches the close duration of the
+              main-header Activity drawer (`<Sheet>` 300ms). The
+              primitive's deferred-unmount logic keeps the panel
+              content mounted long enough for this width animation to
+              complete. */}
+          <div
+            className={cn(
+              "hidden lg:flex h-full w-[var(--job-rail-width)] flex-col relative",
+              RAIL_WIDTH_TRANSITION,
+            )}
+          >
+            <DetailRightRail
+              tabs={jobRailTabs}
+              activeTabId={jobRailTab}
+              onActiveTabChange={(id) => setJobRailTab(id as JobRailTab | null)}
+              testIdPrefix="job-side"
+              ariaLabel="Job information rail"
+            />
+          </div>
+        </aside>
       </div>
 
       <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>

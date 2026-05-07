@@ -653,6 +653,16 @@ export const customerCompanies = pgTable("customer_companies", {
   // on the first save-card request and reused thereafter. Never set
   // by user input — always provider-issued.
   providerCustomerId: text("provider_customer_id"),
+  // 2026-05-07: per-client invoice payment-terms default. NULL = inherit
+  // from companies.default_payment_terms_days. The Edit Client dialog
+  // surfaces this as a select with a "Use company default" option that
+  // maps to NULL and a "Custom" option that surfaces a free-form day
+  // input. New invoices for this client default their paymentTermsDays
+  // from this column when set, falling through to the tenant default
+  // when null. Existing invoices are NEVER retroactively changed when
+  // this value is updated — invoice.paymentTermsDays is captured at
+  // create time.
+  paymentTermsDays: integer("payment_terms_days"),
   // Legacy nameSource replaced by useCompanyAsPrimary boolean (2026-04-10)
   nameSource: text("name_source").notNull().default("company"),
   // Soft delete
@@ -7241,3 +7251,74 @@ export const technicianCalendarTokens = pgTable(
 
 export type TechnicianCalendarToken = typeof technicianCalendarTokens.$inferSelect;
 export type InsertTechnicianCalendarToken = typeof technicianCalendarTokens.$inferInsert;
+// ────────────────────────────────────────────────────────────────────
+// User Dashboard Widget Layout (2026-05-07 RALPH)
+// ────────────────────────────────────────────────────────────────────
+// Per-user dashboard layout overrides. One row per widget per dashboard
+// per user; absence of a row means "use the registry default" (no
+// auto-seed at signup). Reset = DELETE rows for (user_id, dashboard_key).
+// See migrations/2026_05_07_user_dashboard_widgets.sql for rationale,
+// and shared/dashboardWidgetRegistry.ts for the canonical widget list.
+//
+// `dashboard_key` is free-form text (not an enum) so future dashboards
+// can be added without a migration. The server route validates against
+// the registry's known dashboard keys; unknown keys are rejected at 400.
+export const userDashboardWidgets = pgTable(
+  "user_dashboard_widgets",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    dashboardKey: text("dashboard_key").notNull(),
+    widgetKey: text("widget_key").notNull(),
+    visible: boolean("visible").notNull().default(true),
+    orderIndex: integer("order_index").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`NOW()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true }),
+  },
+  (table) => ({
+    userKeyWidgetUq: uniqueIndex("user_dashboard_widgets_unique")
+      .on(table.userId, table.dashboardKey, table.widgetKey),
+    lookupIdx: index("idx_user_dashboard_widgets_lookup")
+      .on(table.userId, table.dashboardKey, table.orderIndex),
+  }),
+);
+
+export type UserDashboardWidget = typeof userDashboardWidgets.$inferSelect;
+export type InsertUserDashboardWidget = typeof userDashboardWidgets.$inferInsert;
+
+// ────────────────────────────────────────────────────────────────────
+// Activity Feed Preferences (2026-05-07)
+// ────────────────────────────────────────────────────────────────────
+// Per-user toggle list for the canonical operational event_types that
+// surface in the global Activity Feed drawer. Reads from the existing
+// `events` table — this row only filters which event_types render.
+// Absence of a row means "use canonical defaults" (DEFAULT_ENABLED_EVENT_TYPES
+// in shared/activityFeedRegistry.ts).
+export const activityFeedPreferences = pgTable(
+  "activity_feed_preferences",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: varchar("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tenantId: varchar("tenant_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    enabledEventTypes: jsonb("enabled_event_types").notNull().default(sql`'[]'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`NOW()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true }),
+  },
+  (table) => ({
+    userUq: uniqueIndex("activity_feed_preferences_user_unique").on(table.userId),
+    tenantIdx: index("idx_activity_feed_preferences_tenant").on(table.tenantId),
+  }),
+);
+
+export type ActivityFeedPreference = typeof activityFeedPreferences.$inferSelect;
+export type InsertActivityFeedPreference = typeof activityFeedPreferences.$inferInsert;

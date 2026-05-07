@@ -20,7 +20,7 @@
  * 2026-04-29 (Phase 1) — extracted from InvoiceDetailPage's line-items
  * card JSX.
  */
-import { Fragment, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import {
   DndContext,
   type DragEndEvent,
@@ -39,9 +39,31 @@ import {
 import { Pencil, Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  CardShell,
+  CardShellHeader,
+  CardShellBody,
+  CardShellFooter,
+  CardMetricBlock,
+} from "@/components/ui/card";
 import { formatCurrency } from "@/lib/formatters";
 import { LineItemRow } from "./LineItemRow";
 import { AddLineItemForm } from "./AddLineItemForm";
+import { PricebookPickerModal } from "./PricebookPickerModal";
+import { LineItemEditModal } from "./LineItemEditModal";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { blankDraft } from "@/lib/entities/lineItemMapper";
+import type { LineItemDraft } from "@shared/lineItem";
+import type { ProductOption } from "@/lib/entities/productEntity";
 import type { HeaderMetrics, LineItemsAdapter } from "./types";
 import type { LineItemsDraftsAPI } from "./useLineItemsDrafts";
 
@@ -148,12 +170,45 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
   hidePencilButton = false,
   hideEmptyStateCta = false,
 }: LineItemsCardProps<TServerLine>) {
+  // 2026-05-07: Pricebook bulk picker. One modal mount lives inside the
+  // canonical shared card so all three line-item surfaces (invoice,
+  // quote, job-parts) inherit it for free — no per-page wiring.
+  const [pricebookOpen, setPricebookOpen] = useState(false);
+
+  // 2026-05-07 Phase A — persisted interaction mode (no global edit).
+  // Surface adapter declares `interactionMode`; default is "batched"
+  // for backwards compat (CreateQuotePage / NewInvoicePage flows
+  // depend on the legacy contract). When "persisted":
+  //   • header has no pencil / Save / Cancel
+  //   • rows render directly from serverItems with row-level actions
+  //   • Add item + row Edit open the canonical <LineItemEditModal>
+  //   • Delete fires <AlertDialog> → adapter.deleteLine
+  //   • Drag-end fires adapter.reorderLines (when allowReorder)
+  //   • Pricebook submit fires adapter.bulkAddLines
+  const interactionMode: "persisted" | "batched" =
+    adapter.interactionMode ?? "batched";
+  const isPersisted = interactionMode === "persisted";
+
+  // Persisted-mode UI state. Held here (not in the hook) because the
+  // hook's drafts state machine intentionally stays untouched in this
+  // mode — all mutations route through the adapter directly.
+  const [editingLineId, setEditingLineId] = useState<string | null>(null);
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [persistedSaving, setPersistedSaving] = useState(false);
+
   const sensors = useSensors(
     useSensor(PointerSensor),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  const editing = drafts.editing;
+  // In persisted mode, the legacy `editing` flag must read as `false`
+  // unconditionally — there is no draft state machine. The drafts
+  // hook is still called (for headerMetrics) but we never trigger
+  // `enterEdit` so `drafts.editing` stays false anyway. Pin it here
+  // so a future regression can't accidentally route persisted-mode
+  // through the edit-only branches.
+  const editing = !isPersisted && drafts.editing;
   const showCost = adapter.showCost;
   const sortedServer = [...serverItems].sort((a, b) =>
     (a.lineNumber ?? 0) - (b.lineNumber ?? 0),
@@ -164,10 +219,27 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
     editing && drafts.drafts ? visibleEntries.length : serverItems.length;
 
   // ── DnD handler ───────────────────────────────────────────────────
-  // In edit mode: reorder local drafts; if at least one persisted row
-  // was moved AND the adapter allows reorder, notify the adapter so it
-  // can fire the canonical reorder mutation.
+  // Two paths:
+  //   • persisted mode → fire adapter.reorderLines(orderedServerIds)
+  //     immediately. Server is the source of truth; the next refetch
+  //     will re-sort sortedServer by lineNumber.
+  //   • batched mode → reorder local drafts; if at least one persisted
+  //     row was moved AND the adapter allows reorder, notify the
+  //     adapter so it can fire the canonical reorder mutation.
   const handleDragEnd = (event: DragEndEvent) => {
+    if (isPersisted) {
+      if (!adapter.allowReorder || !adapter.reorderLines) return;
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const oldIndex = sortedServer.findIndex((l) => l.id === active.id);
+      const newIndex = sortedServer.findIndex((l) => l.id === over.id);
+      if (oldIndex < 0 || newIndex < 0) return;
+      const reordered = arrayMove(sortedServer, oldIndex, newIndex);
+      const orderedIds = reordered.map((l) => l.id);
+      // Fire and forget — the caller's mutation hook owns toast/error.
+      void adapter.reorderLines(orderedIds);
+      return;
+    }
     if (!editing || !drafts.drafts) return;
     const { active, over } = event;
     if (!over || active.id === over.id) return;
@@ -184,6 +256,79 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
         .filter((e) => !e.isDeleted && e.serverId)
         .map((e) => e.serverId!) as string[];
       if (persistedIds.length > 0) adapter.onReorder(persistedIds);
+    }
+  };
+
+  // ── Persisted-mode handlers ───────────────────────────────────────
+
+  // Currently-edited row (if any). Resolved from `editingLineId` so
+  // open-modal + serverItems refetch stay in lockstep.
+  const editingLine = editingLineId
+    ? serverItems.find((l) => l.id === editingLineId) ?? null
+    : null;
+  const editingDraftSeed: LineItemDraft | null = editingLine
+    ? adapter.hydrateDraft(editingLine)
+    : null;
+  const editingProductSeed: ProductOption | null = editingLine
+    ? adapter.resolveProduct?.(editingLine) ?? null
+    : null;
+
+  const handlePersistedAdd = async (draft: LineItemDraft) => {
+    if (!adapter.addLine) {
+      throw new Error("addLine not implemented for this surface");
+    }
+    setPersistedSaving(true);
+    try {
+      await adapter.addLine(draft);
+    } finally {
+      setPersistedSaving(false);
+    }
+  };
+
+  const handlePersistedUpdate = async (draft: LineItemDraft) => {
+    if (!editingLineId) return;
+    if (!adapter.updateLine) {
+      throw new Error("updateLine not implemented for this surface");
+    }
+    setPersistedSaving(true);
+    try {
+      await adapter.updateLine(editingLineId, draft);
+    } finally {
+      setPersistedSaving(false);
+    }
+  };
+
+  const handlePersistedDelete = async () => {
+    if (!pendingDeleteId || !adapter.deleteLine) {
+      setPendingDeleteId(null);
+      return;
+    }
+    setPersistedSaving(true);
+    try {
+      await adapter.deleteLine(pendingDeleteId);
+      setPendingDeleteId(null);
+    } finally {
+      setPersistedSaving(false);
+    }
+  };
+
+  // Bulk-add from Pricebook in persisted mode. Default fan-out is
+  // N x addLine; surfaces can override via `bulkAddLines` for a
+  // single endpoint. Errors propagate so the caller's mutation
+  // hook can toast.
+  const handlePersistedBulkAdd = async (drafts: LineItemDraft[]) => {
+    if (drafts.length === 0) return;
+    if (adapter.bulkAddLines) {
+      await adapter.bulkAddLines(drafts);
+      return;
+    }
+    if (!adapter.addLine) {
+      throw new Error("Neither bulkAddLines nor addLine implemented");
+    }
+    // Sequential — keeps per-line server validation deterministic
+    // (mirrors the order users picked in the Pricebook).
+    for (const draft of drafts) {
+      await adapter.addLine(draft);
     }
   };
 
@@ -213,16 +358,20 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
   const isEmpty = !editing && serverItems.length === 0;
 
   return (
-    // 2026-04-29 Color Phase 3: hardcoded `border-stone-200 bg-white`
-    // chrome migrated to canonical `border-card-border bg-card` plus
-    // `shadow-card` for the lifted-from-page elevation. Inner dividers
-    // and the column header strip follow the same migration below.
-    <div
-      className="overflow-hidden rounded-lg border border-card-border bg-card shadow-card"
-      data-testid="card-invoice-line-items"
-    >
+    // 2026-04-29 Color Phase 3: outer chrome on canonical
+    // `border-card-border bg-card` + `shadow-card` tokens.
+    // 2026-05-07 Tier 2: outer wrapper, header band, body region, and
+    // bottom action row routed through CardShell / CardShellHeader /
+    // CardShellBody / CardShellFooter primitives. The header keeps
+    // `px-5 py-3` (overriding CardShellHeader's default `px-4 py-2.5`)
+    // because — per the 2026-05-03 alignment fix near the top of this
+    // file — the body table is also `px-5`, and the per-cell paddings
+    // in LineItemRow / AddLineItemForm are calibrated against the
+    // px-5 inset on BOTH the header and the body. Changing either
+    // side without the other reintroduces header↔body column drift.
+    <CardShell data-testid="card-invoice-line-items">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-card-border px-5 py-3">
+      <CardShellHeader className="px-5 py-3">
         <h3 className={META_LABEL_CLASS}>
           {title}{" "}
           <span className="ml-1 font-medium normal-case tracking-normal text-slate-400">
@@ -243,33 +392,42 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
               surface (e.g., quote_lines has no unit_cost column),
               cost defaults to 0, profit equals revenue, margin reads
               100% — visibility preserved for the pricing-surface
-              audit. */}
+              audit.
+              2026-05-07 Tier 2: each tile renders through the
+              canonical `<CardMetricBlock>` primitive (extracted
+              verbatim from the previous local `HeaderMetricBlock`).
+              Tone (`valueClassName`) and emphasis flag stay caller-
+              owned — CardMetricBlock has no business-math hooks. */}
           {showMetrics && (
             <div
               className="flex flex-wrap items-start gap-x-5 gap-y-1 min-w-0"
               data-testid="text-line-items-metrics"
             >
-              <HeaderMetricBlock
+              <CardMetricBlock
                 label="Full Line Revenue"
                 value={formatCurrency(m.revenue)}
-                testId="metric-full-line-revenue"
+                data-testid="metric-full-line-revenue"
               />
-              <HeaderMetricBlock
+              <CardMetricBlock
                 label="Profit"
                 value={formatCurrency(m.profit)}
                 valueClassName={profitToneClass}
-                testId="metric-profit"
+                data-testid="metric-profit"
               />
-              <HeaderMetricBlock
+              <CardMetricBlock
                 label="Profit Margin"
                 value={`${m.margin.toFixed(2)}%`}
                 valueClassName={profitToneClass}
                 emphasis
-                testId="metric-profit-margin"
+                data-testid="metric-profit-margin"
               />
             </div>
           )}
-          {!isLocked && !editing && !hidePencilButton && (
+          {/* 2026-05-07 Phase A — pencil + Save/Cancel are batched-mode
+              only. Persisted-mode surfaces (invoice / quote / job
+              detail) fire row-level mutations via the modal; no global
+              edit gate. */}
+          {!isPersisted && !isLocked && !editing && !hidePencilButton && (
             <Button
               size="icon"
               variant="ghost"
@@ -281,7 +439,7 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
               <Pencil className="h-4 w-4 text-slate-400" />
             </Button>
           )}
-          {!isLocked && editing && (
+          {!isPersisted && !isLocked && editing && (
             <div className="flex items-center gap-2">
               <Button
                 size="sm"
@@ -305,7 +463,7 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
             </div>
           )}
         </div>
-      </div>
+      </CardShellHeader>
 
       {/*
         Header + body share one horizontal-scroll container so their
@@ -324,8 +482,13 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
         previous `gap-2` on the grid was dropped because cell-internal
         paddings now provide all column spacing — running both systems
         would re-introduce the alignment drift this fix removes.
+
+        2026-05-07 Tier 2: wrapped in `<CardShellBody>` (full-bleed,
+        no `padded` prop) so the body region is marked as the canonical
+        card body without altering the px-5 alignment inset that the
+        column spec depends on.
       */}
-      <div className="overflow-x-auto">
+      <CardShellBody className="overflow-x-auto">
         <div className={showCost ? "min-w-[720px]" : "min-w-[640px]"}>
           {(() => {
             // 2026-05-03 alignment fix: header grid-template-columns
@@ -445,18 +608,45 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
                             <p className="m-0 text-xs text-slate-500">
                               {adapter.emptyStateLabel}
                             </p>
-                            <Button
-                              size="default"
-                              className="h-9 gap-1.5 text-sm"
-                              onClick={() => {
-                                drafts.enterEdit();
-                                drafts.appendNew();
-                              }}
-                              data-testid="button-empty-add-line"
-                            >
-                              <Plus className="h-4 w-4" />
-                              {adapter.emptyStateCtaLabel}
-                            </Button>
+                            <div className="flex items-center gap-2">
+                              {/* 2026-05-07 Phase A: persisted mode opens
+                                  the canonical <LineItemEditModal> in
+                                  add mode; batched mode preserves the
+                                  legacy enterEdit + appendNew flow. */}
+                              <Button
+                                size="default"
+                                className="h-9 gap-1.5 text-sm"
+                                onClick={() => {
+                                  if (isPersisted) {
+                                    setAddModalOpen(true);
+                                  } else {
+                                    drafts.enterEdit();
+                                    drafts.appendNew();
+                                  }
+                                }}
+                                data-testid="button-empty-add-line"
+                              >
+                                <Plus className="h-4 w-4" />
+                                {adapter.emptyStateCtaLabel}
+                              </Button>
+                              {/* Pricebook bulk picker entry point in
+                                  the empty state. Persisted mode skips
+                                  enterEdit because there's no draft
+                                  state; submit fans drafts out via
+                                  adapter.bulkAddLines. */}
+                              <Button
+                                size="default"
+                                variant="outline"
+                                className="h-9 gap-1.5 text-sm"
+                                onClick={() => {
+                                  if (!isPersisted && !drafts.editing) drafts.enterEdit();
+                                  setPricebookOpen(true);
+                                }}
+                                data-testid="button-empty-pricebook"
+                              >
+                                Pricebook
+                              </Button>
+                            </div>
                           </div>
                         )}
                       </td>
@@ -470,6 +660,18 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
                           displayLine={line}
                           isEditing={false}
                           showCost={showCost}
+                          // Persisted mode: row exposes drag handle (if
+                          // the surface supports reorder) + edit/delete
+                          // buttons that drive modal/AlertDialog flows.
+                          // Batched display rows (legacy) remain
+                          // action-less.
+                          showDragHandle={isPersisted && adapter.allowReorder}
+                          onEditClick={
+                            isPersisted ? () => setEditingLineId(line.id) : undefined
+                          }
+                          onDelete={
+                            isPersisted ? () => setPendingDeleteId(line.id) : undefined
+                          }
                         />
                       </Fragment>
                     ))}
@@ -483,22 +685,78 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
             );
           })()}
         </div>
-      </div>
+      </CardShellBody>
 
-      {/* Bottom action row (edit only) */}
-      {editing && !isLocked && (
-        <div className="flex items-center justify-between border-t border-card-border bg-card px-5 py-3">
+      {/* Bottom action row (edit only).
+          2026-05-07 Tier 2: routed through CardShellFooter. The
+          primitive's defaults (`flex items-center justify-end gap-2
+          px-4 py-2.5 border-t border-card-border`) are overridden via
+          className for `justify-between` (Add-another-line on the
+          left + Save/Cancel on the right) and `px-5 py-3` (matches
+          the header band's column-aligned inset). The Save/Cancel
+          split (top-right of the header AND bottom-right of the
+          footer) is intentionally NOT consolidated into a generic
+          ActionFooter — the dual placement is workflow-specific. */}
+      {/* 2026-05-07 Phase A — persisted-mode footer is the always-on
+          add row. Renders only when the card is NOT empty (the
+          empty-state CTA owns the first-add affordance) and the
+          surface is unlocked. Add item opens the canonical add modal;
+          Pricebook opens the bulk picker. No Save/Cancel — every row
+          mutation persists immediately through the adapter. */}
+      {isPersisted && !isLocked && sortedServer.length > 0 && (
+        <CardShellFooter className="justify-start bg-card px-5 py-3 gap-1">
           <Button
             size="sm"
             variant="ghost"
             className="h-8 text-xs"
-            onClick={() => drafts.appendNew()}
-            disabled={drafts.saving}
-            data-testid="button-add-another-line-item"
+            onClick={() => setAddModalOpen(true)}
+            disabled={persistedSaving}
+            data-testid="button-add-line-item"
           >
             <Plus className="h-3 w-3 mr-1" />
-            Add another line item
+            Add item
           </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-8 text-xs"
+            onClick={() => setPricebookOpen(true)}
+            disabled={persistedSaving}
+            data-testid="button-pricebook"
+          >
+            Pricebook
+          </Button>
+        </CardShellFooter>
+      )}
+      {editing && !isLocked && (
+        <CardShellFooter className="justify-between bg-card px-5 py-3">
+          <div className="flex items-center gap-1">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 text-xs"
+              onClick={() => drafts.appendNew()}
+              disabled={drafts.saving}
+              data-testid="button-add-another-line-item"
+            >
+              <Plus className="h-3 w-3 mr-1" />
+              Add another line item
+            </Button>
+            {/* 2026-05-07: Pricebook bulk picker entry point in the
+                edit-mode footer. Sits beside the manual add so the two
+                paths are visually peer-level. Existing manual add is
+                untouched. */}
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 text-xs"
+              onClick={() => setPricebookOpen(true)}
+              disabled={drafts.saving}
+              data-testid="button-pricebook"
+            >
+              Pricebook
+            </Button>
+          </div>
           <div className="flex items-center gap-2">
             <Button
               size="sm"
@@ -520,7 +778,7 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
               {drafts.saving ? "Saving..." : "Save"}
             </Button>
           </div>
-        </div>
+        </CardShellFooter>
       )}
 
       {/* Surface-specific totals slot (discount editor + tax + totals
@@ -528,46 +786,105 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
           for job parts). Rendered inside the card border, below the
           body/action-row. */}
       {renderTotalsFooter}
-    </div>
-  );
-}
 
-/**
- * HeaderMetricBlock — single label/value tile inside the canonical
- * profitability header cluster. Kept private to LineItemsCard so all
- * three surfaces (quote / invoice / job) source the same DOM.
- *
- *   Label: uppercase, tracked, muted slate, 10px — matches the
- *          column-header strip below so the visual rhythm is shared.
- *   Value: tabular-nums, semibold; the optional `emphasis` flag is
- *          set for Profit Margin (the headline KPI), nudging it from
- *          `text-sm` to `text-base` so the eye lands there first.
- */
-function HeaderMetricBlock({
-  label,
-  value,
-  valueClassName,
-  emphasis = false,
-  testId,
-}: {
-  label: string;
-  value: string;
-  valueClassName?: string;
-  emphasis?: boolean;
-  testId?: string;
-}) {
-  return (
-    <div className="flex flex-col items-end leading-tight" data-testid={testId}>
-      <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500">
-        {label}
-      </span>
-      <span
-        className={`tabular-nums font-semibold ${
-          emphasis ? "text-base" : "text-sm"
-        } ${valueClassName ?? "text-slate-700"}`}
-      >
-        {value}
-      </span>
-    </div>
+      {/* 2026-05-07: canonical Pricebook bulk picker. One mount per
+          card. In batched mode the submit appends drafts through the
+          edit-mode pipeline (enterEdit + appendMany). In persisted
+          mode it fans drafts out via `adapter.bulkAddLines` — each
+          becomes its own line server-side, no batched Save needed. */}
+      <PricebookPickerModal
+        open={pricebookOpen}
+        onOpenChange={setPricebookOpen}
+        surface={adapter.surface}
+        onSubmit={(entries) => {
+          if (isPersisted) {
+            void handlePersistedBulkAdd(entries.map((e) => e.draft));
+            return;
+          }
+          if (!drafts.editing) drafts.enterEdit();
+          drafts.appendMany(entries);
+        }}
+      />
+
+      {/* 2026-05-07 Phase A — canonical add/edit modal. Mounted once
+          per card; opens in add mode when `addModalOpen` is true and
+          in edit mode when `editingLine` is non-null. Submit fires
+          adapter.addLine / updateLine; closing without submit is a
+          no-op (cancel). Persisted mode only — batched-mode flows
+          continue to use the inline edit-cells pipeline. */}
+      {isPersisted && (
+        <>
+          <LineItemEditModal
+            open={addModalOpen}
+            onOpenChange={(o) => {
+              setAddModalOpen(o);
+            }}
+            surface={adapter.surface}
+            mode="add"
+            initialDraft={blankDraft()}
+            initialProduct={null}
+            showCost={showCost}
+            onSave={handlePersistedAdd}
+            onRequestCreateProduct={adapter.requestCreateProduct}
+          />
+          {editingDraftSeed && (
+            <LineItemEditModal
+              open={!!editingLineId}
+              onOpenChange={(o) => {
+                if (!o) setEditingLineId(null);
+              }}
+              surface={adapter.surface}
+              mode="edit"
+              initialDraft={editingDraftSeed}
+              initialProduct={editingProductSeed}
+              showCost={showCost}
+              onSave={handlePersistedUpdate}
+              onRequestCreateProduct={adapter.requestCreateProduct}
+            />
+          )}
+          {/* AlertDialog for delete confirmation — modal taxonomy
+              rule #1 (destructive confirm → AlertDialog). One mount;
+              `pendingDeleteId` drives open. */}
+          <AlertDialog
+            open={!!pendingDeleteId}
+            onOpenChange={(o) => {
+              if (!o) setPendingDeleteId(null);
+            }}
+          >
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete line item?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This will remove the line from this {adapter.surface === "invoice"
+                    ? "invoice"
+                    : adapter.surface === "quote" || adapter.surface === "quote-template"
+                      ? "quote"
+                      : "job"}. This cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel
+                  disabled={persistedSaving}
+                  data-testid="button-delete-line-cancel"
+                >
+                  Cancel
+                </AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void handlePersistedDelete();
+                  }}
+                  disabled={persistedSaving}
+                  data-testid="button-delete-line-confirm"
+                  className="bg-rose-600 text-white hover:bg-rose-700 focus:ring-rose-600"
+                >
+                  {persistedSaving ? "Deleting…" : "Delete"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </>
+      )}
+    </CardShell>
   );
 }

@@ -29,26 +29,42 @@ const storeSrc = readFileSync(STORAGE_PATH, "utf-8");
 
 // ── Layout: 3 cards in second row + full-width Needs Attention ──
 
-describe("FinancialDashboard layout — second row is 3 equal cards", () => {
-  it("mounts <PipelineSnapshotCard>, <CollectionsOverviewCard>, <ScheduledRevenueCard> in a 3-column grid", () => {
-    expect(dashSrc).toMatch(/<PipelineSnapshotCard\b/);
-    expect(dashSrc).toMatch(/<CollectionsOverviewCard\b/);
-    expect(dashSrc).toMatch(/<ScheduledRevenueCard\b/);
-    // The grid container that wraps all three.
-    expect(dashSrc).toMatch(/grid grid-cols-1 md:grid-cols-3 gap-3 mb-3/);
+describe("FinancialDashboard layout — registry-driven widget grid (2026-05-07 RALPH)", () => {
+  it("mounts every dashboard widget through the framework's renderer map", () => {
+    // The hardcoded 3-column / 1-column grid containers were replaced
+    // with the canonical `<DashboardWidgetGrid>` driven by the
+    // shared registry. Each widget renders inside the renderers map
+    // keyed by its registry widgetKey, so the JSX-level pins now
+    // anchor on the renderer-map keys rather than the row geometry.
+    expect(dashSrc).toMatch(/<DashboardWidgetGrid\b/);
+    expect(dashSrc).toMatch(/widgets=\{layout\.visibleWidgets\}/);
+    // Every registered widget must appear in the renderers map by its
+    // canonical key so the grid can render it.
+    expect(dashSrc).toMatch(/todays_schedule:\s*\(/);
+    expect(dashSrc).toMatch(/operational_alerts:\s*\(/);
+    expect(dashSrc).toMatch(/pipeline_snapshot:\s*\(/);
+    expect(dashSrc).toMatch(/collections_overview:\s*\(/);
+    expect(dashSrc).toMatch(/scheduled_revenue:\s*\(/);
+    expect(dashSrc).toMatch(/needs_attention:\s*\(/);
   });
 
-  it("mounts <NeedsAttentionCard> as a full-width row below the 3-card grid", () => {
-    expect(dashSrc).toMatch(/<NeedsAttentionCard\b/);
-    // Single-column grid wrapping the full-width Needs Attention row.
-    expect(dashSrc).toMatch(/grid grid-cols-1 gap-3"\s*>\s*\n\s*<NeedsAttentionCard/);
+  it("page no longer carries the prior hardcoded `md:grid-cols-3` / `xl:grid-cols-[…]` row containers", () => {
+    // The pre-RALPH layout used three discrete grid wrappers with
+    // hardcoded responsive templates. After the refactor the page
+    // delegates layout to the registry-derived sizePresets — those
+    // hardcoded JSX wrappers must be gone.
+    expect(dashSrc).not.toMatch(/grid grid-cols-1 md:grid-cols-3 gap-3 mb-3/);
+    expect(dashSrc).not.toMatch(
+      /grid grid-cols-1 xl:grid-cols-\[minmax\(0,1fr\)_auto\] gap-3 mb-3/,
+    );
+    // The bare `grid grid-cols-1 gap-3` row that wrapped Needs
+    // Attention is also gone — the framework grid replaces it.
+    expect(dashSrc).not.toMatch(/grid grid-cols-1 gap-3"\s*>\s*\n\s*<NeedsAttentionCard/);
   });
 
-  it("does NOT make Collections Overview full-width", () => {
-    // The Collections card sits inside the 3-column grid, not the 1-column
-    // wrapper that holds Needs Attention. Defensive pin: it must not be
-    // wrapped in `grid grid-cols-1 gap-3` directly above its mount.
-    expect(dashSrc).not.toMatch(/grid grid-cols-1 gap-3"\s*>\s*\n\s*<CollectionsOverviewCard/);
+  it("mounts the canonical customize affordance + drawer", () => {
+    expect(dashSrc).toMatch(/data-testid="dashboard-customize-button"/);
+    expect(dashSrc).toMatch(/<DashboardCustomizeDrawer\b[\s\S]+?dashboardKey="financial"/);
   });
 });
 

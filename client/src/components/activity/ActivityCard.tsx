@@ -23,6 +23,7 @@ import { format } from "date-fns";
 import { Activity as ActivityIcon, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { CardShell } from "@/components/ui/card";
 
 interface ActivityItem {
   id: string;
@@ -151,16 +152,19 @@ export function ActivityCard({
   const items = useMemo(() => data?.items ?? [], [data]);
   const hasMore = !!data?.hasMore;
 
+  // 2026-05-07 Card canonicalization (Tier 1): outer chrome routed
+  // through CardShell. The collapsible trigger button retains its
+  // distinct background/hover (it's a button, not a static
+  // CardShellHeader) but the body divider now uses the canonical
+  // border-card-border token. Title color swapped to text-text-primary
+  // (resolves to the same slate-900 the literal hex represented).
   return (
-    <div
-      className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden"
-      data-testid={`activity-card-${entityType}`}
-    >
+    <CardShell data-testid={`activity-card-${entityType}`}>
       <Collapsible open={open} onOpenChange={setOpen}>
         <CollapsibleTrigger asChild>
           <button className="w-full flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] hover:bg-slate-100 transition-colors">
-            <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
-              <ActivityIcon className="h-4 w-4 text-[#64748b]" />
+            <span className="text-sm font-semibold text-text-primary flex items-center gap-2">
+              <ActivityIcon className="h-4 w-4 text-text-muted" />
               {TITLE_BY_ENTITY[entityType]}
             </span>
             {open ? (
@@ -171,7 +175,7 @@ export function ActivityCard({
           </button>
         </CollapsibleTrigger>
         <CollapsibleContent>
-          <div className="border-t border-slate-200 px-3 py-2">
+          <div className="border-t border-card-border px-3 py-2">
             {isLoading ? (
               <div className="flex items-center gap-2 px-1 py-2 text-xs text-muted-foreground">
                 <Loader2 className="h-3 w-3 animate-spin" /> Loading…
@@ -221,6 +225,6 @@ export function ActivityCard({
           </div>
         </CollapsibleContent>
       </Collapsible>
-    </div>
+    </CardShell>
   );
 }

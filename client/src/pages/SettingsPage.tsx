@@ -24,7 +24,6 @@ import {
   Settings,
   Zap,
   Wrench,
-  Database,
   Tag,
   Package,
   FormInput,
@@ -141,7 +140,7 @@ const SECTIONS: SettingsSection[] = [
     type: "links",
     preview: "Products, tags, categories, custom fields",
     cards: [
-      { title: "Products & Services", description: "Manage your product catalog", href: "/settings/products", icon: Package },
+      { title: "Pricebook", description: "Manage your saved products and services", href: "/settings/products", icon: Package },
       { title: "Tags", description: "Manage client and location tags", href: "/settings/tags", icon: Tag },
       { title: "Categories", description: "Organize items into categories", href: "/settings/categories", icon: Tag },
       { title: "Custom Fields", description: "Define custom data fields", href: "/settings/custom-fields", icon: FormInput },
@@ -172,21 +171,13 @@ const SECTIONS: SettingsSection[] = [
     title: "Advanced",
     icon: Wrench,
     type: "links",
-    preview: "Integrations, QuickBooks Online",
+    preview: "Integrations, QuickBooks Online, Import Center",
     cards: [
       { title: "Integrations", description: "Connect third-party services", href: "/settings/integrations", icon: Plug },
       { title: "QuickBooks Online", description: "Sync clients, invoices, payments", href: "/settings/integrations/qbo", icon: Plug },
-    ],
-  },
-  {
-    id: "data",
-    title: "Data",
-    icon: Database,
-    type: "links",
-    preview: "Import clients, jobs, products",
-    cards: [
-      // 2026-04-22 Import Center consolidation: one entry covers all
-      // three entity imports. Pick the type inside the wizard.
+      // 2026-05-07: Import Center relocated from the removed "Data" section.
+      // 2026-04-22 Import Center consolidation: one entry covers all three
+      // entity imports. Pick the type inside the wizard.
       { title: "Import Center", description: "Import clients, historical jobs, or products & services from CSV", href: "/settings/import", icon: Upload },
     ],
   },

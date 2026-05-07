@@ -120,6 +120,50 @@ export interface LineItemsAdapter<TServerLine = any> {
   /** Identifies the surface for telemetry / debugging. */
   surface: "invoice" | "quote" | "job-parts" | "job-template" | "quote-template" | "pm-template" | "location-pm";
 
+  /**
+   * 2026-05-07 Phase A — interaction model.
+   *
+   *   • `"persisted"`  — Always-visible rows on a real, saved entity.
+   *     LineItemsCard renders rows directly from `serverItems`, exposes
+   *     row-level Edit + Delete + drag actions, and fires the per-row
+   *     methods below for each user action. NO global edit-mode UI on
+   *     the card (no pencil, no Save/Cancel).
+   *   • `"batched"`    — Legacy edit-mode workflow used by draft-entity
+   *     pages (CreateQuotePage / NewInvoicePage). Card renders the
+   *     pencil → drafts → Save/Cancel cycle and `useLineItemsDrafts`
+   *     batches everything into `saveAll(plan)`. Phase A intentionally
+   *     keeps this shape alive — those pages own a `serverItemsMirror`
+   *     state machine that depends on it.
+   *
+   * Default if omitted: `"batched"` for backwards compatibility — the
+   * three persisted detail pages (invoice / quote / job) declare this
+   * explicitly to opt in to the new model.
+   */
+  interactionMode?: "persisted" | "batched";
+
+  // ── Per-row mutation methods (interactionMode === "persisted" only) ──
+  //
+  // The card's persisted branch fires these directly per user action.
+  // Each method should: (a) hit the existing canonical mutation, (b)
+  // resolve when the server confirms and the query cache is invalidated.
+  // Errors should be re-thrown so the modal/AlertDialog can surface
+  // them via toast in the surface page.
+
+  /** Add ONE new line. Modal-driven add fires this on Save. */
+  addLine?: (draft: LineItemDraft) => Promise<void>;
+  /** Update ONE existing line. Modal-driven edit fires this on Save. */
+  updateLine?: (serverId: string, draft: LineItemDraft) => Promise<void>;
+  /** Delete ONE existing line. Row delete fires this after the
+   *  AlertDialog confirms. */
+  deleteLine?: (serverId: string) => Promise<void>;
+  /** Persist a new ordering of the existing rows. Drag-end fires this
+   *  immediately. Optional — surfaces without a reorder endpoint
+   *  (Quote today) MUST set `allowReorder: false` and omit this. */
+  reorderLines?: (orderedServerIds: string[]) => Promise<void>;
+  /** Bulk add from the Pricebook picker. Default fan-out is N x
+   *  `addLine`; surfaces with a single bulk endpoint can override. */
+  bulkAddLines?: (drafts: LineItemDraft[]) => Promise<void>;
+
   // Capability flags — drive UI conditionals in the shell + row.
   /** Render the per-row Cost column. Job Parts = true; Invoice/Quote = false. */
   showCost: boolean;

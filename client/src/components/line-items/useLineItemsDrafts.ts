@@ -224,6 +224,43 @@ export function useLineItemsDrafts<TServerLine extends { id: string }>({
     ]);
   }, []);
 
+  // 2026-05-07: bulk append for the Pricebook picker. One state update
+  // adds N drafts at once instead of N round-trips through `appendNew`.
+  // Each entry can carry its own resolved `ProductOption` so the chip
+  // renders without a follow-up catalog fetch — same shape `enterEdit`
+  // hydrates server rows into. New rows only; no `original` snapshot.
+  const appendMany = useCallback(
+    (
+      entries: Array<{
+        draft: LineItemDraft;
+        product?: ProductOption | null;
+        showDescription?: boolean;
+      }>,
+    ) => {
+      if (entries.length === 0) return;
+      setDrafts((prev) => [
+        ...(prev ?? []),
+        ...entries.map((entry) => ({
+          clientKey: newClientKey(),
+          serverId: null as string | null,
+          draft: entry.draft,
+          original: null,
+          isDeleted: false,
+          uiSelectedProduct: entry.product ?? null,
+          // The Pricebook picker's "real description" detection happens
+          // at draft-creation time, so we don't re-derive here. If the
+          // draft has a non-empty description, surface the textarea so
+          // the user can edit it without an extra "+ Add description"
+          // click.
+          uiDescriptionFromProduct: !!entry.product && (entry.draft.description ?? "").length > 0,
+          uiShowDescription:
+            entry.showDescription ?? (entry.draft.description ?? "").length > 0,
+        })),
+      ]);
+    },
+    [],
+  );
+
   const selectProduct = useCallback(
     (clientKey: string, product: ProductOption | null) => {
       setDrafts((prev) => {
@@ -481,6 +518,7 @@ export function useLineItemsDrafts<TServerLine extends { id: string }>({
     cancel,
     save,
     appendNew,
+    appendMany,
     updateDraft,
     selectProduct,
     setShowDescription,

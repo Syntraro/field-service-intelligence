@@ -13,8 +13,9 @@
  */
 
 import { useLocation } from "wouter";
-import { Wrench, ChevronRight } from "lucide-react";
+import { Wrench } from "lucide-react";
 import { resolveDashboardNav, type DashboardAction } from "@/lib/dashboardNavigation";
+import { KpiShell, KpiRow } from "@/components/ui/card";
 
 interface PMHealthCardProps {
   overdueCount: number;
@@ -49,51 +50,38 @@ export function PMHealthCard({
     { label: "PM instances awaiting generation", count: awaitingGenerationCount, action: "pipeline.pmAwaiting" },
   ];
 
+  // 2026-05-07 Card canonicalization (Tier 1): outer chrome + header band
+  // + row geometry replaced with the canonical KpiShell + KpiRow
+  // primitives. Behavior, click handlers, urgent state, and chevron
+  // affordance are preserved exactly.
   return (
-    <div
-      className={`bg-white rounded-md border border-[#e2e8f0] flex flex-col ${className}`}
-      style={{ boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}
+    <KpiShell
+      title="PM Health"
+      icon={Wrench}
+      iconColor="text-violet-600"
+      className={className}
       data-testid="pm-health-card"
     >
-      <header className="flex items-center gap-2 px-4 py-2.5 border-b border-[#e2e8f0]">
-        <Wrench className="h-3.5 w-3.5 text-violet-600" />
-        <h3 className="text-sm font-semibold text-[#111827]">PM Health</h3>
-      </header>
-      <div className="flex-1">
-        {isLoading ? (
-          <div className="p-4 text-xs text-[#4b5563]">Loading PM status…</div>
-        ) : (
-          <ul>
-            {rows.map((row, i) => {
-              const isLast = i === rows.length - 1;
-              const isWarn = row.urgent && row.count > 0;
-              return (
-                <li key={row.label}>
-                  <button
-                    type="button"
-                    onClick={() => setLocation(resolveDashboardNav(row.action))}
-                    className={`w-full flex items-center justify-between px-4 py-1.5 text-left transition-colors group ${
-                      isWarn ? "bg-red-50/60 hover:bg-red-50" : "hover:bg-[#F0F5F0]"
-                    } ${!isLast ? "border-b border-[#e2e8f0]" : ""}`}
-                  >
-                    <span className={`text-xs ${isWarn ? "text-red-600 font-medium" : "text-[#4b5563]"}`}>
-                      {row.label}
-                    </span>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className={`text-sm font-bold tabular-nums ${
-                        isWarn ? "text-red-600" : row.count > 0 ? "text-[#111827]" : "text-[#4b5563]"
-                      }`}>
-                        {row.count}
-                      </span>
-                      <ChevronRight className="h-3.5 w-3.5 text-[#94a3b8] group-hover:text-[#111827] transition-colors" />
-                    </div>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
-    </div>
+      {isLoading ? (
+        <div className="p-4 text-xs text-text-muted">Loading PM status…</div>
+      ) : (
+        <ul>
+          {rows.map((row, i) => {
+            const isLast = i === rows.length - 1;
+            return (
+              <li key={row.label}>
+                <KpiRow
+                  label={row.label}
+                  count={row.count}
+                  urgent={row.urgent}
+                  last={isLast}
+                  onClick={() => setLocation(resolveDashboardNav(row.action))}
+                />
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </KpiShell>
   );
 }

@@ -164,6 +164,24 @@ export default function CreateLeadPage() {
   const canCreateClient =
     newCompanyName.trim().length > 0 && !createClientMutation.isPending;
 
+  // 2026-05-07: explain WHY Create Lead is disabled. The button used to
+  // sit silently greyed-out which left first-time users unable to tell
+  // whether they had missed a step or whether the page was broken. We
+  // surface a single short hint listing the missing required field(s)
+  // — never aggressive red, never fired before the user has interacted
+  // with anything. Empty string suppresses the hint entirely (canSubmit
+  // is true, or the user hasn't started yet).
+  const missingFields: string[] = [];
+  if (!selectedLocation?.id) missingFields.push("a client / location");
+  if (title.trim().length === 0) missingFields.push("a title");
+  // Only surface the hint once the user has touched anything — prevents
+  // the hint from flashing on initial page load before the user has
+  // even seen the form.
+  const disabledReason =
+    !canSubmit && !createLeadMutation.isPending && isDirty && missingFields.length > 0
+      ? `Add ${missingFields.join(" and ")} to create the lead.`
+      : null;
+
   // ── Cancel / back — clean form navigates immediately; dirty form
   // routes through the AlertDialog discard-confirm (modal taxonomy
   // rule #1: destructive confirmations use AlertDialog). ──
@@ -306,11 +324,21 @@ export default function CreateLeadPage() {
                   size="sm"
                   onClick={() => createLeadMutation.mutate()}
                   disabled={!canSubmit}
+                  aria-describedby={disabledReason ? "create-lead-disabled-reason" : undefined}
                   data-testid="button-create-lead"
                 >
                   {createLeadMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                   Create Lead
                 </Button>
+                {disabledReason && (
+                  <p
+                    id="create-lead-disabled-reason"
+                    className="text-[11px] text-slate-500 leading-snug px-0.5"
+                    data-testid="text-create-lead-disabled-reason"
+                  >
+                    {disabledReason}
+                  </p>
+                )}
                 <Button
                   variant="outline"
                   className="w-full justify-center gap-2 h-8 text-xs"

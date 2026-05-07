@@ -336,6 +336,10 @@ const updateCustomerCompanySchema = z.object({
   billingPostalCode: z.string().max(20).nullable().optional(),
   billingCountry: z.string().max(100).nullable().optional(),
   isActive: z.boolean().optional(),
+  // 2026-05-07: per-client invoice payment-terms default. NULL =
+  // inherit from companies.defaultPaymentTermsDays. Range matches
+  // the company-settings + invoice-create routes (0–365 days).
+  paymentTermsDays: z.number().int().min(0).max(365).nullable().optional(),
 }).strict();
 
 router.patch("/:companyId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {

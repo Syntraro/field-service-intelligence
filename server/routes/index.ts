@@ -61,6 +61,7 @@ import noteAttachmentsRouter from "./note-attachments";
 import filesRouter from "./files";
 import { fileUploadsRouter, jobNoteFilesRouter } from "./fileUploads";
 import dashboardRouter from "./dashboard";
+import dashboardLayoutRouter from "./dashboardLayout";
 import reportsRouter from "./reports";
 import { timesheetReportsRouter } from "./timesheetReports";
 import paymentsRouter from "./payments";
@@ -102,6 +103,9 @@ import visitsRouter from "./visits";
 // Phase 1 Architecture: Event Log + Attention Queue
 import activityRouter from "./activity";
 import attentionRouter from "./attention";
+// 2026-05-07: Global Activity Feed drawer — filtered + per-user-customizable
+// surface over the canonical events table.
+import activityFeedRouter from "./activityFeed";
 // Real-time dispatch freshness (SSE stream)
 import dispatchStreamRouter from "./dispatch-stream";
 // Phase 5: Visit intelligence signals
@@ -364,6 +368,12 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/suppliers", requireRole(MANAGER_ROLES));
   app.use("/api/suppliers", suppliersRouter);
   app.use("/api/dashboard", requirePermission("dashboard.view"), dashboardRouter);
+  // 2026-05-07 RALPH: per-user dashboard layout persistence (visibility
+  // + ordering). Mounted at a sibling path so the data-aggregation
+  // route whitelist test in tests/dashboard-layout.test.ts stays
+  // intact. The mount-level permission gate lives inside the router
+  // itself (matches `dashboard.view`).
+  app.use("/api/dashboard-layout", dashboardLayoutRouter);
   app.use("/api/reports", reportsRouter);
   // Timesheet Report (2026-04-12): mounts /api/reports/timesheets + payroll-settings.
   app.use("/api/reports", timesheetReportsRouter);
@@ -444,6 +454,8 @@ export function registerRoutes(app: Express): Server {
   // Phase 1 Architecture: Event Log + Attention Queue
   app.use("/api/activity", activityRouter);
   app.use("/api/attention", attentionRouter);
+  // 2026-05-07: Global Activity Feed drawer endpoints (feed + per-user prefs).
+  app.use("/api/activity-feed", activityFeedRouter);
 
   // Real-time dispatch freshness (SSE stream)
   app.use("/api/dispatch", dispatchStreamRouter);

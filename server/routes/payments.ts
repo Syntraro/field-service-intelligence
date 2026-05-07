@@ -20,7 +20,7 @@ import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest, rateLimitPerTenant } from "../auth/tenantIsolation";
 import { paymentRepository } from "../storage/payments";
 import { invoiceRepository } from "../storage/invoices";
-import { isInvoicePaid } from "../lib/invoicePredicates";
+import { isInvoicePaid, isInvoicePartialPaid } from "../lib/invoicePredicates";
 import {
   paymentMethodEnum,
   payments as paymentsTable,
@@ -408,8 +408,9 @@ router.post(
       },
     );
 
-    // Lifecycle event — fires once per invoice that hit `paid` because
-    // of this payment, mirroring the legacy single-invoice flow.
+    // Lifecycle event — fires once per invoice for which this payment
+    // moved status. Fully-paid emits `invoice.paid`; partials emit
+    // `invoice.partial_paid`. Both feed the global Activity Feed.
     for (const inv of result.invoices) {
       if (isInvoicePaid(inv.status)) {
         logEventAsync(getQueryCtx(req), {
@@ -422,6 +423,20 @@ router.post(
             paymentId: result.payment.id,
             method: validated.method,
             multiInvoice: result.invoices.length > 1,
+          },
+        });
+      } else if (isInvoicePartialPaid(inv.status)) {
+        logEventAsync(getQueryCtx(req), {
+          eventType: "invoice.partial_paid",
+          entityType: "invoice",
+          entityId: inv.id,
+          summary: `Partial payment received on Invoice #${inv.invoiceNumber}`,
+          meta: {
+            invoiceNumber: inv.invoiceNumber,
+            paymentId: result.payment.id,
+            method: validated.method,
+            balance: inv.balance,
+            total: inv.total,
           },
         });
       }
@@ -529,7 +544,8 @@ router.post(
         validated
       );
 
-      // 2026-03-20 Phase 4A: Emit invoice.paid event if payment caused fully-paid status
+      // 2026-03-20 Phase 4A: Emit invoice.paid event if payment caused fully-paid status.
+      // 2026-05-07 Activity Feed: also emit invoice.partial_paid for partials.
       const postPaymentInvoice = await invoiceRepository.getInvoice(req.companyId!, req.params.invoiceId);
       if (postPaymentInvoice && isInvoicePaid(postPaymentInvoice.status)) {
         logEventAsync(getQueryCtx(req), {
@@ -538,6 +554,19 @@ router.post(
           entityId: req.params.invoiceId,
           summary: `Invoice #${postPaymentInvoice.invoiceNumber} fully paid`,
           meta: { invoiceNumber: postPaymentInvoice.invoiceNumber, paymentId: payment.id },
+        });
+      } else if (postPaymentInvoice && isInvoicePartialPaid(postPaymentInvoice.status)) {
+        logEventAsync(getQueryCtx(req), {
+          eventType: "invoice.partial_paid",
+          entityType: "invoice",
+          entityId: req.params.invoiceId,
+          summary: `Partial payment received on Invoice #${postPaymentInvoice.invoiceNumber}`,
+          meta: {
+            invoiceNumber: postPaymentInvoice.invoiceNumber,
+            paymentId: payment.id,
+            balance: postPaymentInvoice.balance,
+            total: postPaymentInvoice.total,
+          },
         });
       }
 

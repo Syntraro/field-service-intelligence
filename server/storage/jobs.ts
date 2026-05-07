@@ -917,8 +917,12 @@ export class JobRepository extends BaseRepository {
       throw this.notFoundError("Job");
     }
 
-    // POST-INVOICE GUARD: Check if job is invoiced
-    await this.assertJobNotInvoiced(companyId, jobId, options);
+    // 2026-05-07: invoiced-job lock REMOVED for line-item mutations.
+    // Product rule: line items must remain editable on invoiced jobs.
+    // Tenant isolation (above) and route-level role checks (in
+    // server/routes/jobs.ts) still apply. The `options` parameter
+    // continues to be threaded through unused; the admin override
+    // routes still pass it as a no-op for backwards compat.
 
     // 2026-04-10 FIX: hydrate unit_cost from catalog when missing.
     const hydratedUnitCost = await normalizeJobPartUnitCost({
@@ -969,8 +973,8 @@ export class JobRepository extends BaseRepository {
       return null;
     }
 
-    // POST-INVOICE GUARD: Check if job is invoiced
-    await this.assertJobNotInvoiced(companyId, existingPart.jobId, options);
+    // 2026-05-07: invoiced-job lock REMOVED for line-item mutations.
+    // See createJobPart (above) for rationale.
 
     // Direct tenant isolation via companyId column
     const rows = await db
@@ -1014,8 +1018,8 @@ export class JobRepository extends BaseRepository {
       return false;
     }
 
-    // POST-INVOICE GUARD: Check if job is invoiced
-    await this.assertJobNotInvoiced(companyId, existingPart.jobId, options);
+    // 2026-05-07: invoiced-job lock REMOVED for line-item mutations.
+    // See createJobPart (above) for rationale.
 
     // Canonical soft-delete via deletedAt (read queries filter on deletedAt IS NULL)
     const rows = await db
@@ -1046,8 +1050,8 @@ export class JobRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
-    // POST-INVOICE GUARD: Check if job is invoiced
-    await this.assertJobNotInvoiced(companyId, jobId, options);
+    // 2026-05-07: invoiced-job lock REMOVED for line-item mutations.
+    // See createJobPart (above) for rationale.
 
     await db.transaction(async (tx) => {
       for (const part of parts) {

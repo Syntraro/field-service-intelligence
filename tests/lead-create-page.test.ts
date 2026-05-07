@@ -250,6 +250,100 @@ describe("LeadSummaryCard — supports both saved and draft modes", () => {
   });
 });
 
+// ── Title affordance + required-state contract (2026-05-07) ─────────
+
+describe("LeadSummaryCard — draft-mode title affordance reads as an editable, required input", () => {
+  it("renders a visible 'Title' label with a required-marker indicator", () => {
+    // The label binds to the input via htmlFor. The required marker is
+    // a separate testable element so a future restyling can move it
+    // without breaking the contract.
+    expect(summaryCardSrc).toMatch(/htmlFor="lead-title-input"/);
+    expect(summaryCardSrc).toMatch(/data-testid="lead-title-required-indicator"/);
+    // sr-only "(required)" text for screen readers — pin so an
+    // accessibility regression fails fast.
+    expect(summaryCardSrc).toMatch(/<span\s+className="sr-only">\(required\)<\/span>/);
+  });
+
+  it("the title input declares aria-required and binds aria-invalid to emptiness", () => {
+    // aria-required="true" announces required-ness to screen readers
+    // even when the visual marker is missed; aria-invalid={titleEmpty}
+    // flips after any keystroke that empties the field.
+    expect(summaryCardSrc).toMatch(/aria-required="true"/);
+    expect(summaryCardSrc).toMatch(/aria-invalid=\{titleEmpty\s*\|\|\s*undefined\}/);
+  });
+
+  it("uses input chrome (border + background + shadow + cursor) so it cannot read as passive header text", () => {
+    // The previous render was border-0 / px-0 / py-0 / shadow-none /
+    // bg-transparent — affordance-free. These pins fail if any of
+    // those return.
+    expect(summaryCardSrc).toMatch(/bg-white/);
+    expect(summaryCardSrc).toMatch(/border\s+border-slate-300/);
+    expect(summaryCardSrc).toMatch(/shadow-sm/);
+    expect(summaryCardSrc).toMatch(/cursor-text/);
+    expect(summaryCardSrc).not.toMatch(/className="[^"]*\bborder-0\b[^"]*"\s+data-testid="input-lead-title"/);
+    expect(summaryCardSrc).not.toMatch(/className="[^"]*\bbg-transparent\b[^"]*"\s+data-testid="input-lead-title"/);
+    expect(summaryCardSrc).not.toMatch(/className="[^"]*\bfocus-visible:ring-0\b[^"]*"\s+data-testid="input-lead-title"/);
+  });
+
+  it("hover + focus styles surface the field's interactivity", () => {
+    expect(summaryCardSrc).toMatch(/hover:border-slate-400/);
+    expect(summaryCardSrc).toMatch(/focus-visible:ring-2/);
+    expect(summaryCardSrc).toMatch(/focus-visible:ring-brand\/25/);
+    expect(summaryCardSrc).toMatch(/focus-visible:border-brand/);
+  });
+
+  it("placeholder uses readable slate-400 (not the prior near-invisible slate-300)", () => {
+    expect(summaryCardSrc).toMatch(/placeholder:text-slate-400/);
+    // Pin against the placeholder appearing in a className value
+    // rather than anywhere in the file (a JSDoc comment that
+    // describes the historical regression is allowed to mention the
+    // old token by name without breaking this assertion).
+    expect(summaryCardSrc).not.toMatch(/className="[^"]*placeholder:text-slate-300/);
+  });
+
+  it("retains the existing data-testid='input-lead-title' for downstream tests", () => {
+    expect(summaryCardSrc).toMatch(/data-testid="input-lead-title"/);
+  });
+});
+
+// ── Disabled-button reason hint (2026-05-07) ─────────────────────────
+
+describe("CreateLeadPage — explains why Create Lead is disabled", () => {
+  it("computes a disabledReason string listing missing required fields", () => {
+    expect(createLeadPageSrc).toMatch(/missingFields:\s*string\[\]\s*=\s*\[\]/);
+    expect(createLeadPageSrc).toMatch(/!selectedLocation\?\.id\)\s*missingFields\.push\(/);
+    expect(createLeadPageSrc).toMatch(/title\.trim\(\)\.length\s*===\s*0\)\s*missingFields\.push\(/);
+    expect(createLeadPageSrc).toMatch(/const\s+disabledReason\s*=/);
+  });
+
+  it("only surfaces the hint AFTER the user has interacted (no aggressive red on first paint)", () => {
+    // The hint gates on `isDirty` — same flag the discard-confirm
+    // uses. Pin so a future refactor can't accidentally show the
+    // hint on initial render.
+    expect(createLeadPageSrc).toMatch(/!canSubmit[\s\S]{0,120}?isDirty[\s\S]{0,80}?missingFields/);
+  });
+
+  it("renders the hint inline beneath Create Lead with a stable test id", () => {
+    expect(createLeadPageSrc).toMatch(/data-testid="text-create-lead-disabled-reason"/);
+    // ARIA wiring: button announces the reason via aria-describedby.
+    expect(createLeadPageSrc).toMatch(
+      /aria-describedby=\{disabledReason\s*\?\s*"create-lead-disabled-reason"\s*:\s*undefined\}/,
+    );
+  });
+
+  it("does NOT add a separate Save button for description (single Create Lead action saves everything)", () => {
+    // Description input is a textarea; it must NOT have its own
+    // submit button. The page's single Create Lead button submits
+    // the full payload including description.
+    expect(createLeadPageSrc).not.toMatch(/data-testid="button-save-description"/);
+    expect(createLeadPageSrc).not.toMatch(/data-testid="button-create-description"/);
+    // Confirm description still rides on the single create payload.
+    expect(createLeadPageSrc).toMatch(
+      /apiRequest[^(]*\(\s*["']\/api\/leads["'][\s\S]*?description:\s*description/,
+    );
+  });
+});
+
 describe("LeadDetailsRail — supports both saved and draft modes", () => {
   it("discriminates on a `mode` prop with both 'saved' and 'draft' branches", () => {
     expect(detailsRailSrc).toMatch(/mode:\s*"saved"/);

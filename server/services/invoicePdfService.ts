@@ -45,11 +45,14 @@
  *      Single label only; the prior "Notes:" heading is gone.
  *
  *   7. Footer — pinned LOW on the last page only. A thin hairline,
- *      then optional centred Business Information block (only when
- *      `taxRegistrations` is non-empty), then a centred
- *      "Thank you for choosing {company.name}." line. The Business
- *      Information block reads as two centred lines: a bold uppercase
- *      label and the formatted tax registration(s) below it.
+ *      then a centred "Thank you for choosing {company.name}." line,
+ *      then (when `policy.showTaxNumber === true` AND the tenant has
+ *      at least one configured tax registration) one centred line per
+ *      registration directly under the thank-you line. The label is
+ *      taken verbatim from `taxRegistrations[].label` (e.g. "HST",
+ *      "GST", "VAT") with no hardcoded fallback — when the label is
+ *      blank the line reads "Tax ID # {number}". The "BUSINESS
+ *      INFORMATION" heading from earlier RALPH revisions is gone.
  *
  * Multi-page behavior:
  *   • Line items page-break: when a row would overflow the bottom
@@ -152,14 +155,18 @@ function formatDate(value: unknown): string {
   return isValid(d) ? format(d, "MMMM d, yyyy") : "-";
 }
 
-function getStatusWatermark(status: string): string | null {
-  switch (status) {
-    case "draft":  return "DRAFT";
-    case "voided": return "VOID";
-    case "paid":   return "PAID";
-    default:       return null;
-  }
-}
+// 2026-05-07 RALPH narrow correction: the diagonal status watermark
+// (DRAFT / VOID / PAID rendered at 72pt across the page) was preserved
+// through earlier RALPH revisions on the assumption that it served as
+// a customer-actionable document-state stamp. The user has explicitly
+// asked for it to be removed — there is no documented product
+// requirement for a draft watermark on this invoice surface, and a
+// 72pt diagonal "DRAFT" overlay reads as oversized chrome that fights
+// the compact, modern body. The `getStatusWatermark` helper + the
+// `drawWatermark()` IIFE that called it on every page are gone.
+// Status remains internal context surfaced through the app UI;
+// recipients infer status from the rendered totals (Paid / Balance
+// Due) and the absence of payment.
 
 export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -194,25 +201,12 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       // 30, 2026" to render in one line at fontSize 10.
       const headerRightX = rightEdge - 220;
 
-      // ─── Watermark (pre-existing customer-actionable stamp) ───────
-      // Kept from prior implementation. The diagonal stamp marks
-      // DRAFT / VOID / PAID for the recipient — it is intentionally
-      // distinct from the "no header status badge" rule, which targets
-      // pill-style chips that would otherwise live in the masthead.
-      const watermark = getStatusWatermark(invoice.status);
-      const drawWatermark = () => {
-        if (!watermark) return;
-        doc.save();
-        doc.fontSize(72);
-        doc.fillColor("#e0e0e0");
-        doc.rotate(-45, { origin: [pageW / 2, pageH / 2] });
-        doc.text(watermark, 0, pageH / 2 - 50, {
-          align: "center",
-          width: pageW,
-        });
-        doc.restore();
-      };
-      drawWatermark();
+      // 2026-05-07 RALPH narrow: status watermark removed (see
+      // helper-removal note above). `drawWatermark` is preserved as a
+      // no-op so multi-page page-break call sites stay symmetrical
+      // without conditional logic; if the watermark is ever
+      // reinstated, this is the single hook to flip back on.
+      const drawWatermark = () => { /* no-op — watermark removed */ };
 
       // ════════════════════════════════════════════════════════════
       // 1. TOP HEADER (compact two-column)
@@ -627,73 +621,74 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       const lastPage = range.start + range.count - 1;
       doc.switchToPage(lastPage);
 
-      // Footer Y positions are computed BOTTOM-UP from a safe inset
-      // INSIDE the page's bottom margin. PDFKit pre-emptively
+      // 2026-05-07 RALPH narrow: footer simplified to a centred stack.
+      // Thank-you line on top; tenant tax registration(s) on their own
+      // lines directly below it (one per registration, configured label
+      // first — never hardcoded "HST"). The "BUSINESS INFORMATION"
+      // heading is gone entirely.
+      //
+      // Footer rendering is gated on:
+      //   • `policy.showTaxNumber === true` — tenant Invoice Display
+      //     setting "Show tax registration number" must be ON.
+      //   • At least one configured `taxRegistrations` row with a
+      //     non-empty `number`.
+      // When either is false, only the thank-you line renders. When
+      // the company has no name set, the thank-you line is also
+      // omitted (no fake "Thank you for choosing ." sentence).
+      //
+      // Y positions are computed so the BOTTOM of the LAST rendered
+      // line lands at `pageH - 30` (20pt clearance above the
+      // PDFKit margin boundary at `pageH - 50`). PDFKit pre-emptively
       // auto-paginates a `doc.text()` call when `y + lineHeight` would
-      // cross `pageH - bottomMargin` (= 742 for LETTER + 50pt margin),
-      // which would create a phantom trailing page. Every footer line
-      // here ends at least 9pt above that boundary so PDFKit never
-      // trips the threshold even with `lineBreak: false`.
-      //
-      // 2026-05-06 RALPH v2: Business Information renders as TWO
-      // centred lines (label on its own row above the formatted tax
-      // registrations) so the footer reads as a stacked block instead
-      // of an inline label/value pair.
-      //
-      // Layout (bottom-up, all Ys reference the TOP of the line):
-      //   pageH - 65  thank-you Y     (9pt font, line bottom ≈ pageH-54)
-      //   pageH - 79  Business Info value Y (8pt font, line bottom ≈ pageH-69)
-      //   pageH - 90  Business Info label Y (8pt font, line bottom ≈ pageH-80)
-      //   pageH - 95  divider Y       (with tax regs)
-      //   pageH - 75  divider Y       (without tax regs)
-      //
-      // Footer band: ~45pt with tax regs, ~25pt without. Keeps the
-      // body's vertical budget wide without crowding the margin.
-      const hasTaxRegs =
-        !!taxRegistrations &&
-        taxRegistrations.some((r) => (r.number ?? "").trim().length > 0);
+      // cross that boundary, so every footer line here keeps clear of
+      // it even with `lineBreak: false`.
+      const showTaxRegs = !!policy.showTaxNumber;
+      const taxRegLines: string[] = showTaxRegs && taxRegistrations
+        ? taxRegistrations
+            .map((r) => {
+              const number = (r.number ?? "").trim();
+              if (!number) return "";
+              const label = (r.label ?? "").trim();
+              // No hardcoded HST: configured label is used verbatim.
+              // When the tenant didn't set a label, fall back to the
+              // generic "Tax ID" (matches the top-header rendering
+              // style used elsewhere in this service).
+              return label ? `${label} # ${number}` : `Tax ID # ${number}`;
+            })
+            .filter((s) => s.length > 0)
+        : [];
+
       const thankYou = company.name
         ? `Thank you for choosing ${company.name}.`
         : null;
 
-      const thankYouY = pageH - 65;
-      const bizInfoLabelY = pageH - 90;
-      const bizInfoValueY = pageH - 79;
-      const dividerY = hasTaxRegs ? pageH - 95 : pageH - 75;
+      // Geometry: bottom-up. The TOP Y of the LAST rendered line
+      // anchors at `SAFE_LAST_TOP_Y = pageH - 65`. PDFKit's bottom
+      // margin sits at `pageH - 50` and pre-emptively auto-paginates
+      // when `y + lineHeight > pageH - 50`. With a fontSize 9 / 8
+      // line (height ≈ 11pt), pageH - 65 + 11 = pageH - 54 < pageH
+      // - 50 → safe with ~4pt clearance.
+      //
+      // Lines stack upward from there:
+      //   • If tax regs exist: regs occupy the bottom slot(s); thank-
+      //     you sits one row above the topmost reg.
+      //   • If no tax regs: thank-you occupies the bottom slot.
+      // Divider is 6pt above the thank-you in either case.
+      const TAX_REG_LINE_H = 11;
+      const THANK_YOU_LINE_H = 11;
+      const SAFE_LAST_TOP_Y = pageH - 65;
+      const regCount = taxRegLines.length;
+      // Top Y of the FIRST reg line (the highest reg row).
+      const firstRegY = regCount > 0
+        ? SAFE_LAST_TOP_Y - (regCount - 1) * TAX_REG_LINE_H
+        : SAFE_LAST_TOP_Y;
+      const thankYouY = regCount > 0
+        ? firstRegY - THANK_YOU_LINE_H
+        : SAFE_LAST_TOP_Y;
+      const dividerY = thankYouY - 6;
 
       // Hairline divider above the footer content.
       doc.moveTo(leftCol, dividerY).lineTo(rightEdge, dividerY).lineWidth(0.5).strokeColor(BORDER).stroke();
-
-      // Optional Business Information block — centred two-line stack.
-      // Label line (uppercase, muted-blue) on top, formatted tax
-      // registration(s) below in muted gray. Renders ONLY when the
-      // tenant has at least one tax registration; we never reserve
-      // blank space for it.
-      if (hasTaxRegs) {
-        doc.fontSize(8).fillColor(ACCENT).font("Helvetica-Bold");
-        doc.text("BUSINESS INFORMATION", leftCol, bizInfoLabelY, {
-          characterSpacing: 1,
-          width: contentW,
-          align: "center",
-          lineBreak: false,
-        });
-        // Tax registrations rendered on a single line under the label.
-        const regs = taxRegistrations!
-          .map((r) => {
-            const number = (r.number ?? "").trim();
-            if (!number) return "";
-            const label = (r.label ?? "").trim();
-            return label ? `${label} # ${number}` : `Tax ID # ${number}`;
-          })
-          .filter((s) => s.length > 0)
-          .join("     ");
-        doc.fontSize(8).fillColor(TEXT_MUTED).font("Helvetica");
-        doc.text(regs, leftCol, bizInfoValueY, {
-          width: contentW,
-          align: "center",
-          lineBreak: false,
-        });
-      }
 
       if (thankYou) {
         doc.fontSize(9).fillColor(TEXT_MUTED).font("Helvetica");
@@ -702,6 +697,21 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
           align: "center",
           lineBreak: false,
         });
+      }
+
+      // Tax registration lines rendered ONE per row, centred, muted
+      // gray. No "BUSINESS INFORMATION" heading. Each line sits
+      // `TAX_REG_LINE_H` apart starting from `firstRegY`.
+      if (regCount > 0) {
+        doc.fontSize(8).fillColor(TEXT_MUTED).font("Helvetica");
+        for (let i = 0; i < regCount; i++) {
+          const lineY = firstRegY + i * TAX_REG_LINE_H;
+          doc.text(taxRegLines[i], leftCol, lineY, {
+            width: contentW,
+            align: "center",
+            lineBreak: false,
+          });
+        }
       }
 
       doc.end();

@@ -38,7 +38,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   DollarSign, AlertCircle, ChevronDown, ChevronRight,
   TrendingUp, Users, Receipt, Calendar as CalendarIcon, Plus,
-  FileEdit,
+  FileEdit, LayoutGrid,
 } from "lucide-react";
 import {
   Popover,
@@ -53,14 +53,10 @@ import {
   SlotQuickCreateLauncher,
   type QuickCreateSlot,
 } from "@/components/dispatch/SlotQuickCreateLauncher";
-// 2026-04-30 — the schedule card's "+ Create" button now opens the
-// canonical CreateNewDialog directly with NO prefill (no tech, no
-// date). The previous path went through <SlotQuickCreateLauncher>
-// which always seeds `initialSchedule.assignedTechnicianIds: [firstTech]`,
-// auto-selecting the first technician — wrong per the embedded spec.
-// The slot-click path still uses SlotQuickCreateLauncher for genuine
-// slot prefill.
-import { CreateNewDialog } from "@/components/CreateNewDialog";
+// 2026-05-07 RALPH: the schedule card's "+ Create" button was removed
+// (users create from open slots or the global "+ New" button), so the
+// no-prefill CreateNewDialog import previously mounted from this page
+// is no longer needed.
 // 2026-04-26: canonical Operational Alerts card with configurable row order.
 // Replaces the previous inline AlertRow stack so the Financial dashboard
 // shares the same alerts component the Operations dashboard already uses.
@@ -88,6 +84,14 @@ import { enrichVisitEditorState } from "@/lib/visitEditorPayloadBuilder";
 // exact contract; the dashboard applies it once per render so display +
 // click consume the same clamped block.
 import { clampOpenBlockToNow, roundUpToNextInterval } from "@/lib/findNextAvailableSlot";
+// 2026-05-07 RALPH: customizable dashboard framework. The page still
+// owns data-fetching + handler wiring; the framework owns the resolved
+// widget order, visibility, and the right-side customize drawer.
+import { useDashboardLayout } from "@/dashboard/useDashboardLayout";
+import { DashboardWidgetGrid } from "@/dashboard/DashboardWidgetGrid";
+import { DashboardCustomizeDrawer } from "@/dashboard/DashboardCustomizeDrawer";
+import { Sliders } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 // ---------------------------------------------------------------------------
 // Types — mirror server/storage/dashboard.ts FinancialSummary
@@ -322,11 +326,45 @@ function CardHeader({ icon: Icon, color, title, action }: {
 export default function FinancialDashboard() {
   const [, setLocation] = useLocation();
 
+  // 2026-05-07 RALPH (hidden widget query gating): the framework hook
+  // owns the resolved widget list. Page-level useQuery calls below
+  // only fire when at least one widget consuming that data shape is
+  // visible. Hidden widgets DO NOT trigger their underlying fetches.
+  // Layout-loading state is the canonical loading indicator until the
+  // first GET resolves — until then, every `enabled` flag is false to
+  // avoid a flash of "fetch everything because nothing is visible
+  // yet."
+  const layout = useDashboardLayout("financial");
+  const visibleSet = useMemo(
+    () => new Set(layout.visibleWidgets.map((w) => w.widgetKey)),
+    [layout.visibleWidgets],
+  );
+  // Each map below records WHICH widgets consume a given page-level
+  // query. When zero widgets in a query's set are visible, the
+  // `enabled` flag is false → useQuery stays idle and never hits the
+  // network for that data shape.
+  const FINANCIAL_QUERY_WIDGETS: readonly string[] = [
+    "pipeline_snapshot",
+    "collections_overview",
+    "scheduled_revenue",
+    "needs_attention",
+  ];
+  const WORKFLOW_QUERY_WIDGETS: readonly string[] = [
+    "operational_alerts",
+  ];
+  const financialQueryEnabled =
+    !layout.isLoading &&
+    FINANCIAL_QUERY_WIDGETS.some((k) => visibleSet.has(k));
+  const workflowQueryEnabled =
+    !layout.isLoading &&
+    WORKFLOW_QUERY_WIDGETS.some((k) => visibleSet.has(k));
+
   const { data, isLoading, error } = useQuery<FinancialSummary>({
     queryKey: ["dashboard", "financial"],
     queryFn: () => apiRequest<FinancialSummary>("/api/dashboard/financial"),
     staleTime: 60_000,
     refetchOnWindowFocus: true,
+    enabled: financialQueryEnabled,
   });
 
   // Canonical scheduling launchers — identical mounts to Dashboard.tsx so
@@ -334,10 +372,10 @@ export default function FinancialDashboard() {
   // the rest of the app uses. No forked create/edit flow.
   const [editorState, setEditorState] = useState<VisitEditorState | null>(null);
   const [slot, setSlot] = useState<QuickCreateSlot | null>(null);
-  // 2026-04-30 — no-prefill CreateNewDialog for the schedule card's
-  // "+ Create" button. Distinct from `slot` above which carries
-  // prefill data when the user clicks a specific schedule slot.
-  const [createOpen, setCreateOpen] = useState(false);
+  // 2026-05-07 RALPH: Today's Schedule's "+ Create" button is gone —
+  // users create from open slots (`slot` above) or the global "+ New"
+  // button in the top nav. The CreateNewDialog launcher is no longer
+  // mounted from this page.
 
   // Canonical alert modal — same state pattern Dashboard.tsx uses. Clicking
   // an alert row opens the SAME DashboardActionModal the Operations
@@ -345,6 +383,10 @@ export default function FinancialDashboard() {
   // query cache.
   const [actionModalOpen, setActionModalOpen] = useState(false);
   const [actionModalMode, setActionModalMode] = useState<DashboardActionMode>("requires_attention");
+  // 2026-05-07 RALPH: customize-drawer open state. The framework hook
+  // (`useDashboardLayout`) owns the resolved widget list + persistence;
+  // this state just toggles the right-side Sheet.
+  const [customizeOpen, setCustomizeOpen] = useState(false);
   const openActionModal = (mode: DashboardActionMode) => {
     setActionModalMode(mode);
     setActionModalOpen(true);
@@ -352,12 +394,14 @@ export default function FinancialDashboard() {
 
   // Same canonical workflow summary Operations uses. Shared TanStack Query
   // cache — both dashboards hit the same rowset, a refresh on either tab
-  // benefits both.
+  // benefits both. Gated on visibility so hidden widgets don't trigger
+  // their underlying data fetch.
   const workflowQuery = useQuery<WorkflowSummaryDto>({
     queryKey: ["dashboard", "workflow"],
     queryFn: () => apiRequest<WorkflowSummaryDto>("/api/dashboard/workflow"),
     staleTime: 30_000,
     refetchOnWindowFocus: true,
+    enabled: workflowQueryEnabled,
   });
   const workflow = workflowQuery.data;
   // 2026-04-26: Requires-attention now folds PM instances awaiting job
@@ -369,6 +413,106 @@ export default function FinancialDashboard() {
   const pastDueCount = workflow?.jobs.overdueCount ?? 0;
   const unscheduledJobsCount = workflow?.jobs.unscheduledCount ?? 0;
   const readyToInvoiceCount = workflow?.jobs.requiresInvoicingCount ?? 0;
+
+  // 2026-05-07 RALPH (3-col grid) — Today's Schedule width is dynamic
+  // based on the number of visible team columns inside the schedule
+  // card. Lifting the team-scope state to the page lets the grid size
+  // the schedule cell to match the data inside it (1 tech → 1-col,
+  // 2 → 2-col, 3+ → 3-col). The capacity query reuses the SAME
+  // queryKey the schedule card consumes — TanStack Query dedupes the
+  // network round-trip, so this is a free read from the same cache.
+  const [scheduleScopeIds, setScheduleScopeIds] = useState<string[]>([]);
+  const scheduleCapacityQuery = useQuery<CapacityResponseDto>({
+    queryKey: ["/api/dashboard/capacity"],
+    queryFn: () => apiRequest<CapacityResponseDto>("/api/dashboard/capacity"),
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    enabled: visibleSet.has("todays_schedule"),
+  });
+  const scheduleTechs = scheduleCapacityQuery.data?.technicians ?? [];
+  const scheduleVisibleTechCount = useMemo(() => {
+    if (scheduleTechs.length <= 1) return Math.max(1, scheduleTechs.length);
+    if (
+      scheduleScopeIds.length === 0 ||
+      scheduleScopeIds.length === scheduleTechs.length
+    ) {
+      return scheduleTechs.length;
+    }
+    return scheduleScopeIds.length;
+  }, [scheduleTechs, scheduleScopeIds]);
+  // Clamp to 1 / 2 / 3 — more than 3 visible techs still occupies the
+  // full 3-column row; the schedule card's internal scroll handles
+  // overflow rather than expanding the dashboard grid.
+  const todaysScheduleWidthUnits: 1 | 2 | 3 =
+    scheduleVisibleTechCount <= 1
+      ? 1
+      : scheduleVisibleTechCount === 2
+        ? 2
+        : 3;
+  // 2026-05-07 RALPH: schedule display mode lifted to the page so the
+  // page can derive the width + row-span overrides for the Today's
+  // Schedule grid cell. Stacked mode forces a 1-column width (the
+  // techs are already arranged vertically inside the card, so a wide
+  // 2/3 or 3/3 cell would just leave empty horizontal space). Row
+  // span doubles when the stacked content is large enough that the
+  // standard 300 px card would clip too much (heuristic below).
+  const [scheduleDisplayMode, setScheduleDisplayMode] = useState<
+    "column" | "stacked"
+  >("column");
+  // Filter the capacity techs by the user's scope selection — same
+  // logic the schedule card uses internally to derive `visibleTechs`.
+  // Lifted here so the page can estimate stacked content size for the
+  // row-span heuristic without duplicating the filter inside the card.
+  const scheduleVisibleTechs = useMemo(() => {
+    if (scheduleTechs.length <= 1) return scheduleTechs;
+    if (
+      scheduleScopeIds.length === 0 ||
+      scheduleScopeIds.length === scheduleTechs.length
+    ) {
+      return scheduleTechs;
+    }
+    return scheduleTechs.filter((t) => scheduleScopeIds.includes(t.technicianId));
+  }, [scheduleTechs, scheduleScopeIds]);
+  // Heuristic for "stacked content exceeds standard card height".
+  // Each tech section in stacked mode is ≈ 1 header row + N slot
+  // rows × ~30 px each, plus the card chrome (~46 px header). 7+
+  // total content rows pushes the visible content past the 300 px
+  // card, triggering a row-span-2 (≈ 612 px) cell.
+  const scheduleStackedContentRows = useMemo(
+    () =>
+      scheduleVisibleTechs.reduce(
+        (sum, t) => sum + 1 + t.scheduleBlocks.length,
+        0,
+      ),
+    [scheduleVisibleTechs],
+  );
+  const scheduleStackedNeedsDoubleHeight =
+    scheduleDisplayMode === "stacked" && scheduleStackedContentRows > 6;
+  // In stacked mode, force 1-column width (the brief: "Set width to
+  // 1-column (one-third)"). In column mode, fall back to the
+  // tech-count → unit mapping from the previous iteration.
+  const todaysScheduleWidthUnitsResolved: 1 | 2 | 3 =
+    scheduleDisplayMode === "stacked" ? 1 : todaysScheduleWidthUnits;
+  const widgetWidthOverrides = useMemo<Record<string, 1 | 2 | 3>>(
+    () => ({ todays_schedule: todaysScheduleWidthUnitsResolved }),
+    [todaysScheduleWidthUnitsResolved],
+  );
+  const widgetRowSpanOverrides = useMemo<Record<string, 1 | 2>>(
+    () => ({
+      todays_schedule: scheduleStackedNeedsDoubleHeight ? 2 : 1,
+    }),
+    [scheduleStackedNeedsDoubleHeight],
+  );
+  // 2026-05-07 RALPH: card HEIGHT no longer depends on visible
+  // technician count. All dashboard cards use the canonical `summary`
+  // heightPreset; Today's Schedule scrolls its body internally if
+  // content overflows. The previous height-override mechanism is
+  // intentionally NOT used for Today's Schedule — width stays
+  // dynamic, height stays fixed.
+  //
+  // The compact-header flag still tracks the 1-column case so the
+  // card header stays readable in a 1/3 cell.
+  const todaysScheduleCompact = todaysScheduleWidthUnits === 1;
 
   if (error) {
     return (
@@ -402,100 +546,105 @@ export default function FinancialDashboard() {
       <div className="mx-auto px-4 sm:px-5 lg:px-6 py-4">
         {/* Header */}
         <div
-          className="mb-4"
+          className="mb-4 flex items-start justify-between gap-3"
           style={{ borderBottom: "1px solid #e5e7eb", paddingBottom: "8px" }}
         >
-          <h1 className="text-lg font-semibold text-[#111827] dark:text-gray-100 tracking-tight">
-            Business Dashboard
-          </h1>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Pipeline, collections, scheduled revenue, and today's schedule — at a glance.
-          </p>
+          <div className="min-w-0">
+            <h1 className="text-lg font-semibold text-[#111827] dark:text-gray-100 tracking-tight">
+              Business Dashboard
+            </h1>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Pipeline, collections, scheduled revenue, and today's schedule — at a glance.
+            </p>
+          </div>
+          {/* 2026-05-07 RALPH: customize affordance opens the right-side
+              Sheet that backs the customizable dashboard framework.
+              Compact `size="sm"` button, ghost variant — same density
+              as the existing `View all` controls elsewhere on the page. */}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0 h-8 text-xs"
+            onClick={() => setCustomizeOpen(true)}
+            data-testid="dashboard-customize-button"
+          >
+            <Sliders className="h-3.5 w-3.5 mr-1.5" />
+            Customize
+          </Button>
         </div>
 
-        {/* 2026-04-30 layout swap — Top row now: Today's Schedule (1fr)
-            + Operational Alerts (auto). Operational Alerts surfaces
-            urgent triage above the cash-flow rows so the user's first
-            scan-line carries actionable items. The right column uses
-            `auto` (was `360px`) so when the alerts card collapses to a
-            48 px desktop rail, the schedule card grows into the freed
-            horizontal space. The alerts card itself sets its outer
-            width (`xl:w-[360px]` expanded, `xl:w-12` collapsed) — the
-            grid cell tracks that width.
-
-            2026-04-30 (responsive pass) — breakpoint moved from `lg`
-            (1024 px) to `xl` (1280 px). With four schedule columns
-            (~220 px each + gaps) plus the 360 px alerts rail, the
-            side-by-side layout requires ~1280 px of usable content
-            width before the schedule starts feeling cramped. Below
-            `xl` the grid collapses to a single column: schedule
-            renders full-width, alerts stacks below it as a
-            full-width card (rail variant suppressed inside the
-            alerts component). The alerts component's `xl:w-...`
-            classes mirror this same breakpoint so the card width
-            never drifts out of sync with the parent grid. */}
-        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_auto] gap-3 mb-3">
-          <TodaysScheduleCard
-            onOpenVisit={(visitState) => setEditorState(visitState)}
-            onOpenSlot={(s) => setSlot(s)}
-            onCreate={() => setCreateOpen(true)}
-            unscheduledJobsCount={unscheduledJobsCount}
-          />
-          <OperationalAlertsCard
-            requiresAttentionCount={requiresAttentionCount}
-            pastDueCount={pastDueCount}
-            unscheduledCount={unscheduledJobsCount}
-            readyToInvoiceCount={readyToInvoiceCount}
-            isLoading={workflowQuery.isLoading}
-            onOpenActionModal={openActionModal}
-            order={["requires_attention", "past_due", "unscheduled", "ready_to_invoice"]}
-          />
-        </div>
-
-        {/* 2026-05-06 dashboard restructure — second row: 3 equal cards.
-            Pipeline Snapshot (replaces Revenue Center) | Collections
-            Overview (consolidated) | Scheduled Revenue (new). Stacks
-            cleanly on tablet/mobile. */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
-          <PipelineSnapshotCard
-            data={data}
-            isLoading={isLoading}
-            // 2026-05-06 RALPH: each row opens the SAME shared
-            // DashboardActionModal the Operational Alerts and Needs
-            // Attention rows use. Mode switches in place — no new
-            // modal component, no per-row navigation.
-            onOpenActionModal={openActionModal}
-          />
-          <CollectionsOverviewCard
-            data={data}
-            isLoading={isLoading}
-            onOpenInvoice={(id) => setLocation(`/invoices/${id}`)}
-            onOpenCustomer={(id) => setLocation(`/clients/${id}`)}
-            onViewAll={() => setLocation("/invoices?filter=awaiting_payment")}
-          />
-          <ScheduledRevenueCard
-            data={data}
-            isLoading={isLoading}
-            onOpenJob={(id) => setLocation(`/jobs/${id}`)}
-            onViewAll={() => setLocation("/jobs?filter=scheduled")}
-          />
-        </div>
-
-        {/* 2026-05-06 dashboard restructure — third row: full-width
-            Needs Attention. Compact horizontal layout. Explicitly does
-            NOT include "completed jobs not invoiced" (that belongs to
-            Operational Alerts → Ready to Invoice). */}
-        <div className="grid grid-cols-1 gap-3">
-          <NeedsAttentionCard
-            data={data}
-            isLoading={isLoading}
-            // 2026-05-06 RALPH: routes through the shared
-            // DashboardActionModal — same modal the Operational Alerts
-            // rows open — instead of navigating to `/invoices?filter=draft`.
-            // Mode `invoices_not_sent` is the canonical drill-down.
-            onViewInvoicesNotSent={() => openActionModal("invoices_not_sent")}
-          />
-        </div>
+        {/* 2026-05-07 RALPH — registry-driven dashboard widget grid.
+            The page still owns data-fetching + handler wiring; the
+            `renderers` map binds each widget key to a fully-prepared
+            ReactNode. The framework's `<DashboardWidgetGrid>` resolves
+            the visible widgets in user-saved order and lays them out
+            on a 12-column grid keyed off each widget's registry-
+            declared `sizePreset`. The previous three hardcoded grid
+            rows (Top: Schedule + Alerts / Middle: Pipeline + Collections
+            + Scheduled / Bottom: Needs Attention) are recreated as
+            sizePresets in `shared/dashboardWidgetRegistry.ts`. */}
+        <DashboardWidgetGrid
+          widgets={layout.visibleWidgets}
+          widthOverrides={widgetWidthOverrides}
+          rowSpanOverrides={widgetRowSpanOverrides}
+          renderers={{
+            todays_schedule: (
+              <TodaysScheduleCard
+                onOpenVisit={(visitState) => setEditorState(visitState)}
+                onOpenSlot={(s) => setSlot(s)}
+                unscheduledJobsCount={unscheduledJobsCount}
+                scopeIds={scheduleScopeIds}
+                onScopeIdsChange={setScheduleScopeIds}
+                compact={todaysScheduleCompact}
+                displayMode={scheduleDisplayMode}
+                onDisplayModeChange={setScheduleDisplayMode}
+              />
+            ),
+            operational_alerts: (
+              <OperationalAlertsCard
+                requiresAttentionCount={requiresAttentionCount}
+                pastDueCount={pastDueCount}
+                unscheduledCount={unscheduledJobsCount}
+                readyToInvoiceCount={readyToInvoiceCount}
+                isLoading={workflowQuery.isLoading}
+                onOpenActionModal={openActionModal}
+                order={["requires_attention", "past_due", "unscheduled", "ready_to_invoice"]}
+              />
+            ),
+            pipeline_snapshot: (
+              <PipelineSnapshotCard
+                data={data}
+                isLoading={isLoading}
+                onOpenActionModal={openActionModal}
+              />
+            ),
+            collections_overview: (
+              <CollectionsOverviewCard
+                data={data}
+                isLoading={isLoading}
+                onOpenInvoice={(id) => setLocation(`/invoices/${id}`)}
+                onOpenCustomer={(id) => setLocation(`/clients/${id}`)}
+                onViewAll={() => setLocation("/invoices?filter=awaiting_payment")}
+              />
+            ),
+            scheduled_revenue: (
+              <ScheduledRevenueCard
+                data={data}
+                isLoading={isLoading}
+                onOpenJob={(id) => setLocation(`/jobs/${id}`)}
+                onViewAll={() => setLocation("/jobs?filter=scheduled")}
+              />
+            ),
+            needs_attention: (
+              <NeedsAttentionCard
+                data={data}
+                isLoading={isLoading}
+                onViewInvoicesNotSent={() => openActionModal("invoices_not_sent")}
+              />
+            ),
+          }}
+        />
       </div>
 
       {/* Canonical launchers — identical mounts to Dashboard.tsx. */}
@@ -507,16 +656,14 @@ export default function FinancialDashboard() {
         slot={slot}
         onClose={() => setSlot(null)}
       />
-      {/* 2026-04-30 — no-prefill create launcher for the schedule
-          card's "+ Create" button. Mounts the canonical CreateNewDialog
-          with no `jobInitialSchedule`, so the embedded form opens at
-          its useState defaults: `unscheduled: true`, no tech selected.
-          Distinct from <SlotQuickCreateLauncher> above, which always
-          carries slot-prefill (tech + date + time) for slot clicks. */}
-      <CreateNewDialog
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        defaultTab="job"
+      {/* 2026-05-07 RALPH: customizable dashboard framework drawer.
+          Right-side Sheet with widget visibility toggles + drag-handle
+          reorder + reset. Single instance per page; the framework
+          owns its own data fetch + persistence via useDashboardLayout. */}
+      <DashboardCustomizeDrawer
+        open={customizeOpen}
+        onOpenChange={setCustomizeOpen}
+        dashboardKey="financial"
       />
       {/* Canonical alert modal — same one Operations opens. Single modal
           instance per page; mode switches in place when a different alert
@@ -1139,23 +1286,43 @@ interface CapacityResponseDto {
 function TodaysScheduleCard({
   onOpenVisit,
   onOpenSlot,
-  onCreate,
   unscheduledJobsCount,
+  scopeIds,
+  onScopeIdsChange,
+  compact = false,
+  displayMode,
+  onDisplayModeChange,
 }: {
   onOpenVisit: (state: VisitEditorState) => void;
   onOpenSlot: (slot: QuickCreateSlot) => void;
-  /** 2026-04-30 — invoked by the header "+ Create" button. Opens the
-   *  canonical CreateNewDialog with NO prefill (unscheduled, no tech).
-   *  Slot clicks still go through `onOpenSlot` and carry full prefill. */
-  onCreate: () => void;
   /** 2026-05-06 Phase 1 — feeds the compact "N Unscheduled" indicator next to
    *  the title. Sourced from `/api/dashboard/workflow.jobs.unscheduledCount` —
    *  the same value `OperationalAlertsCard` already consumes; passed in here
    *  rather than re-fetched so the two surfaces stay in lockstep. */
   unscheduledJobsCount: number;
+  /** 2026-05-07 RALPH (3-col grid) — schedule scope is now CONTROLLED
+   *  by the page so the page can compute Today's Schedule's runtime
+   *  width unit (1 / 2 / 3) from the visible team count and pass it
+   *  to <DashboardWidgetGrid> as a width override. */
+  scopeIds: string[];
+  onScopeIdsChange: (next: string[] | ((prev: string[]) => string[])) => void;
+  /** 2026-05-07 RALPH: page-supplied flag set to `true` when the grid
+   *  cell is only 1 column wide (1 visible team member). The header
+   *  collapses to "Today" + the team filter only — booked %, scope
+   *  suffix, and the Create button are all suppressed so the title
+   *  row never wraps in a 1/3-width card. */
+  compact?: boolean;
+  /** 2026-05-07 RALPH: display mode is CONTROLLED by the page so the
+   *  page can derive the schedule cell's width / row-span overrides.
+   *  `"column"` → side-by-side per-tech columns (default).
+   *  `"stacked"` → vertical tech sections; the page narrows the cell
+   *  to 1 column wide and conditionally row-spans 2 when content is
+   *  large enough to need it. */
+  displayMode: "column" | "stacked";
+  onDisplayModeChange: (next: "column" | "stacked") => void;
 }) {
   const [, setLocation] = useLocation();
-  const [scopeIds, setScopeIds] = useState<string[]>([]);
+  const setScopeIds = onScopeIdsChange;
   // 2026-04-30 — open-only filter for the schedule card. State is local to
   // this card so it doesn't bleed into Operational Alerts / Revenue /
   // anywhere else on the dashboard. Composes with `scopeIds` (team filter)
@@ -1163,6 +1330,9 @@ function TodaysScheduleCard({
   // already produced `activeTechs` — both filters layer cleanly in a
   // single derivation step downstream.
   const [openOnly, setOpenOnly] = useState(false);
+  // 2026-05-07 RALPH: display mode is CONTROLLED by the page (props).
+  // Local aliases below keep the rest of this component readable.
+  const scheduleDisplayMode = displayMode;
 
   const capacityQuery = useQuery<CapacityResponseDto>({
     queryKey: ["/api/dashboard/capacity"],
@@ -1289,20 +1459,12 @@ function TodaysScheduleCard({
   };
   const selectAll = () => setScopeIds([]);
 
-  // 2026-04-30 — `firstOpen` derivation removed alongside the openAdd
-  // refactor below. It was only consumed by the previous `openAdd` to
-  // seed prefill into SlotQuickCreateLauncher; with the no-prefill
-  // path it is dead code.
-
-  // 2026-04-30 — "+ Create" launches a clean unscheduled+unassigned
-  // create modal. The previous `onOpenSlot` path always seeded
-  // `assignedTechnicianIds: [firstTech]` via SlotQuickCreateLauncher,
-  // which violated the embedded spec's "Unassigned by default" rule.
-  // Slot clicks (handleBlockClick) still use `onOpenSlot` for genuine
-  // slot prefill — that path is correct and preserved.
-  const openAdd = () => {
-    onCreate();
-  };
+  // 2026-05-07 RALPH: `openAdd` (and its predecessor "+ Create"
+  // button) was removed. The slot-click handler below remains the
+  // canonical create path — clicking an open slot still launches the
+  // tech/time-prefilled create flow via `onOpenSlot`. Users wanting
+  // an unprefilled create use the global "+ New" button in the top
+  // nav.
 
   const handleBlockClick = async (tech: CapacityTechDto, block: CapacityBlockDto) => {
     if (block.kind === "booked" && block.visitId && block.jobId) {
@@ -1333,181 +1495,265 @@ function TodaysScheduleCard({
 
   const offRosterRows = capacityQuery.data?.offRosterAssignments ?? [];
 
+  // 2026-05-07 RALPH: stacked-mode header layout flag. In stacked
+  // mode the title becomes "Schedule" (instead of "Today"), the
+  // booked-% / unscheduled chip is suppressed, the scope-suffix is
+  // suppressed, and the controls cluster moves to a second row so
+  // it never has to wrap inside the 1/3-width card. The
+  // display-mode toggle is also force-shown in stacked mode (even
+  // though `compact` is true, since stacked drops the cell to 1
+  // unit wide) so the user can switch back.
+  const isStackedMode = scheduleDisplayMode === "stacked";
+  // Toggle visibility: visible when stacked (so the user can leave
+  // the mode) OR in any non-compact column variant (multi-tech
+  // column has plenty of header room). Hidden only for the compact
+  // single-tech column case where stacked makes no visual sense.
+  const showDisplayModeToggle = isStackedMode || !compact;
+
+  // Extracted control JSX — shared between the stacked 2-row header
+  // and the default single-row header so we don't duplicate it.
+  const openOnlyToggleControl = (
+    <button
+      type="button"
+      onClick={() => setOpenOnly((v) => !v)}
+      aria-pressed={openOnly}
+      className={`inline-flex items-center h-8 px-3 text-xs font-medium rounded-md border transition-colors ${
+        openOnly
+          ? "border-[#76B054] bg-[#76B054] text-white hover:bg-[#68a14a]"
+          : "border-[#e2e8f0] bg-white text-slate-700 hover:bg-slate-50"
+      }`}
+      data-testid="schedule-open-only-toggle"
+    >
+      Open
+    </button>
+  );
+  const teamFilterControl = isMultiTech ? (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium rounded-md border border-[#e2e8f0] bg-white text-slate-700 hover:bg-slate-50"
+          data-testid="schedule-scope-filter"
+        >
+          {/* In stacked mode, suppress the verbose `scopeLabel` (which
+              can be a comma-separated list of names) so the trigger
+              fits the narrower layout. The count badge to the right
+              still communicates how many techs are selected. */}
+          <span className="truncate max-w-[6rem]">
+            {isStackedMode ? "Team" : scopeLabel}
+          </span>
+          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-semibold text-slate-600">
+            {isAllTeam ? "All" : scopeIds.length}
+          </span>
+          <ChevronDown className="h-3 w-3" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        sideOffset={4}
+        className="w-60 p-0"
+      >
+        <div className="flex flex-col">
+          <div className="py-1 max-h-72 overflow-y-auto">
+            <button
+              type="button"
+              onClick={selectAll}
+              className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-slate-50 ${
+                isAllTeam ? "font-semibold text-[#111827]" : "text-[#4b5563]"
+              }`}
+              data-testid="schedule-scope-all"
+            >
+              <input type="checkbox" readOnly checked={isAllTeam} className="pointer-events-none" />
+              All team
+            </button>
+            <div className="border-t border-[#e2e8f0] my-1" />
+            {techs.map((t) => {
+              const checked = !isAllTeam && scopeIds.includes(t.technicianId);
+              return (
+                <button
+                  key={t.technicianId}
+                  type="button"
+                  onClick={() => toggleTechId(t.technicianId)}
+                  className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-slate-50 ${
+                    checked ? "font-medium text-[#111827]" : "text-[#4b5563]"
+                  }`}
+                  data-testid={`schedule-scope-${t.technicianId}`}
+                >
+                  <input type="checkbox" readOnly checked={checked} className="pointer-events-none" />
+                  <span className="truncate">{t.name}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="border-t border-[#e2e8f0]">
+            <button
+              type="button"
+              onClick={() => setLocation("/settings/team")}
+              className="w-full text-left px-3 py-2 text-xs text-[#76B054] font-medium hover:bg-slate-50 hover:underline"
+              data-testid="schedule-manage-team"
+            >
+              Manage team →
+            </button>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  ) : null;
+  const displayModeToggleControl = showDisplayModeToggle ? (
+    <button
+      type="button"
+      onClick={() =>
+        onDisplayModeChange(
+          scheduleDisplayMode === "column" ? "stacked" : "column",
+        )
+      }
+      data-testid="schedule-display-mode-toggle"
+      data-display-mode={scheduleDisplayMode}
+      aria-label={`Switch to ${scheduleDisplayMode === "column" ? "stacked" : "column"} view (currently ${scheduleDisplayMode})`}
+      title={`Switch to ${scheduleDisplayMode === "column" ? "stacked" : "column"} view`}
+      className={
+        // Stacked layout uses an icon-only square trigger to fit the
+        // narrow row alongside the title. Default layout keeps the
+        // labelled chip pattern of the other header controls.
+        isStackedMode
+          ? "inline-flex items-center justify-center h-8 w-8 rounded-md border border-[#e2e8f0] bg-white text-slate-700 hover:bg-slate-50"
+          : "inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium rounded-md border border-[#e2e8f0] bg-white text-slate-700 hover:bg-slate-50"
+      }
+    >
+      {isStackedMode ? (
+        <LayoutGrid className="h-3.5 w-3.5" />
+      ) : (
+        <span>
+          {scheduleDisplayMode === "column" ? "Column" : "Stacked"}
+        </span>
+      )}
+    </button>
+  ) : null;
+
   return (
     <DashCard>
-      <div className="px-4 py-2.5 border-b border-[#e2e8f0] dark:border-gray-600 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <CalendarIcon className="h-3.5 w-3.5 text-[#76B054] shrink-0" />
-          <h3 className="text-sm font-semibold text-[#111827] dark:text-gray-100 truncate">
-            Today&apos;s Schedule
-            {scopeHeaderSuffix && (
-              <>
-                {" "}
-                <span className="text-xs font-normal text-slate-500">
-                  / {scopeHeaderSuffix}
-                </span>
-              </>
-            )}
-          </h3>
-          {/* 2026-05-06 Phase 1 — compact capacity indicators. Render only
-              when the underlying data is meaningful (tech count > 0 / non-zero
-              unscheduled). Dot-separated, muted typography so they sit beside
-              the title without competing with it. */}
-          {(bookedPercent !== null || unscheduledJobsCount > 0) && (
-            <div
-              className="hidden sm:flex items-center gap-1.5 text-xs text-slate-500 shrink-0"
-              data-testid="todays-schedule-capacity-indicators"
-            >
-              {bookedPercent !== null && (
-                <>
-                  <span className="text-slate-300" aria-hidden>•</span>
-                  <span data-testid="capacity-indicator-booked">
-                    <span className="font-semibold tabular-nums text-slate-700">
-                      {bookedPercent}%
-                    </span>{" "}
-                    Booked
-                  </span>
-                </>
-              )}
-              {unscheduledJobsCount > 0 && (
-                <>
-                  <span className="text-slate-300" aria-hidden>•</span>
-                  <span data-testid="capacity-indicator-unscheduled">
-                    <span className="font-semibold tabular-nums text-slate-700">
-                      {unscheduledJobsCount}
-                    </span>{" "}
-                    Unscheduled
-                  </span>
-                </>
-              )}
+      {isStackedMode ? (
+        // 2026-05-07 RALPH — stacked-mode header layout. Two rows
+        // inside the same px-4 py-2 band so the header stays
+        // visually compact:
+        //   row 1: calendar icon + "Schedule" + icon-only mode
+        //          toggle (right-aligned)
+        //   row 2: Open + Team filter (only rendered if either
+        //          control is meaningful for the current state)
+        // The 1-tech case skips the toggle entirely (same rule as
+        // the default header). Booked% / Unscheduled chips and the
+        // scope suffix are dropped because they don't fit the narrow
+        // 1/3-width card.
+        <div
+          className="px-4 py-2 border-b border-[#e2e8f0] dark:border-gray-600 flex flex-col gap-2"
+          data-testid="todays-schedule-header"
+          data-header-variant="stacked"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <CalendarIcon className="h-3.5 w-3.5 text-[#76B054] shrink-0" />
+              <h3 className="text-sm font-semibold text-[#111827] dark:text-gray-100 truncate">
+                Schedule
+              </h3>
+            </div>
+            {displayModeToggleControl}
+          </div>
+          {(openOnlyToggleControl || teamFilterControl) && (
+            <div className="flex items-center gap-2 flex-wrap">
+              {openOnlyToggleControl}
+              {teamFilterControl}
             </div>
           )}
         </div>
-        {/*
-          2026-04-30 — header controls cluster:
-            • Open-only toggle (left of team dropdown per spec)
-            • Team scope dropdown (multi-tech only, canonical Popover)
-            • Create button (right edge)
-
-          `flex-wrap` lets the cluster wrap onto a second row at narrow
-          tablet widths instead of horizontally overflowing the card or
-          crushing the title beside it.
-        */}
-        <div className="flex items-center gap-2 flex-wrap justify-end">
-          {/*
-            2026-04-30 — pill toggle. Single fixed label "Open"; state
-            is communicated visually only (filled-green when active vs
-            outlined when inactive). The previous text-switching
-            ("Open only" ↔ "Showing open") was replaced because it
-            shifted the button's width on toggle and forced the user
-            to read state instead of seeing it. `aria-pressed` is
-            wired so screen readers announce the toggle correctly.
-          */}
-          <button
-            type="button"
-            onClick={() => setOpenOnly((v) => !v)}
-            aria-pressed={openOnly}
-            className={`inline-flex items-center h-8 px-3 text-xs font-medium rounded-md border transition-colors ${
-              openOnly
-                ? "border-[#76B054] bg-[#76B054] text-white hover:bg-[#68a14a]"
-                : "border-[#e2e8f0] bg-white text-slate-700 hover:bg-slate-50"
-            }`}
-            data-testid="schedule-open-only-toggle"
-          >
-            Open
-          </button>
-          {isMultiTech && (
-            // 2026-04-30 — switched from <MultiSelectDropdown> (absolute-
-            // positioned popover that gets clipped by DashCard's
-            // overflow-hidden) to the canonical <Popover> primitive,
-            // which renders inside <PopoverPrimitive.Portal> and escapes
-            // every parent overflow boundary. The popover content is now
-            // a flex column with a scrollable team list (`max-h-72
-            // overflow-y-auto`) and a pinned, non-scrolling
-            // "Manage team →" footer below it.
-            <Popover>
-              <PopoverTrigger asChild>
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium rounded-md border border-[#e2e8f0] bg-white text-slate-700 hover:bg-slate-50"
-                  data-testid="schedule-scope-filter"
-                >
-                  {scopeLabel}
-                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-semibold text-slate-600">
-                    {isAllTeam ? "All" : scopeIds.length}
+      ) : (
+        // Default single-row header — preserved verbatim from the
+        // pre-stacked layout so column mode stays untouched.
+        <div
+          className="px-4 py-2.5 border-b border-[#e2e8f0] dark:border-gray-600 flex items-center justify-between gap-3"
+          data-testid="todays-schedule-header"
+          data-header-variant="default"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <CalendarIcon className="h-3.5 w-3.5 text-[#76B054] shrink-0" />
+            {/* 2026-05-07 RALPH: "Today" instead of "Today's Schedule".
+                Shorter, fits cleanly in 1-column mode, and reads the
+                same in 2/3-column mode for visual consistency. The
+                `/ <scope>` suffix and the booked-% chip are suppressed
+                entirely in compact mode so the header never wraps in
+                a 1/3-width card. */}
+            <h3 className="text-sm font-semibold text-[#111827] dark:text-gray-100 truncate">
+              Today
+              {!compact && scopeHeaderSuffix && (
+                <>
+                  {" "}
+                  <span className="text-xs font-normal text-slate-500">
+                    / {scopeHeaderSuffix}
                   </span>
-                  <ChevronDown className="h-3 w-3" />
-                </button>
-              </PopoverTrigger>
-              <PopoverContent
-                align="end"
-                sideOffset={4}
-                className="w-60 p-0"
+                </>
+              )}
+            </h3>
+            {/* 2026-05-06 Phase 1 — compact capacity indicators. Render
+                only when the underlying data is meaningful (tech count
+                > 0 / non-zero unscheduled). 2026-05-07: also suppressed
+                in `compact` mode so the 1-column header never has to
+                fit booked% + unscheduled + the team filter on one
+                line. */}
+            {!compact && (bookedPercent !== null || unscheduledJobsCount > 0) && (
+              <div
+                className="hidden sm:flex items-center gap-1.5 text-xs text-slate-500 shrink-0"
+                data-testid="todays-schedule-capacity-indicators"
               >
-                <div className="flex flex-col">
-                  <div className="py-1 max-h-72 overflow-y-auto">
-                    <button
-                      type="button"
-                      onClick={selectAll}
-                      className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-slate-50 ${
-                        isAllTeam ? "font-semibold text-[#111827]" : "text-[#4b5563]"
-                      }`}
-                      data-testid="schedule-scope-all"
-                    >
-                      <input type="checkbox" readOnly checked={isAllTeam} className="pointer-events-none" />
-                      All team
-                    </button>
-                    <div className="border-t border-[#e2e8f0] my-1" />
-                    {techs.map((t) => {
-                      const checked = !isAllTeam && scopeIds.includes(t.technicianId);
-                      return (
-                        <button
-                          key={t.technicianId}
-                          type="button"
-                          onClick={() => toggleTechId(t.technicianId)}
-                          className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-slate-50 ${
-                            checked ? "font-medium text-[#111827]" : "text-[#4b5563]"
-                          }`}
-                          data-testid={`schedule-scope-${t.technicianId}`}
-                        >
-                          <input type="checkbox" readOnly checked={checked} className="pointer-events-none" />
-                          <span className="truncate">{t.name}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <div className="border-t border-[#e2e8f0]">
-                    <button
-                      type="button"
-                      onClick={() => setLocation("/settings/team")}
-                      className="w-full text-left px-3 py-2 text-xs text-[#76B054] font-medium hover:bg-slate-50 hover:underline"
-                      data-testid="schedule-manage-team"
-                    >
-                      Manage team →
-                    </button>
-                  </div>
-                </div>
-              </PopoverContent>
-            </Popover>
-          )}
-          <button
-            type="button"
-            onClick={openAdd}
-            disabled={techs.length === 0}
-            className="inline-flex items-center gap-1 h-8 px-3 text-xs font-medium rounded-md bg-[#76B054] text-white hover:bg-[#68a14a] disabled:opacity-50 disabled:cursor-not-allowed"
-            data-testid="schedule-create"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Create
-          </button>
+                {bookedPercent !== null && (
+                  <>
+                    <span className="text-slate-300" aria-hidden>•</span>
+                    <span data-testid="capacity-indicator-booked">
+                      <span className="font-semibold tabular-nums text-slate-700">
+                        {bookedPercent}%
+                      </span>{" "}
+                      Booked
+                    </span>
+                  </>
+                )}
+                {unscheduledJobsCount > 0 && (
+                  <>
+                    <span className="text-slate-300" aria-hidden>•</span>
+                    <span data-testid="capacity-indicator-unscheduled">
+                      <span className="font-semibold tabular-nums text-slate-700">
+                        {unscheduledJobsCount}
+                      </span>{" "}
+                      Unscheduled
+                    </span>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+          {/* Header controls cluster — preserved single-row layout for
+              column mode. `flex-wrap` lets the cluster wrap onto a
+              second row at narrow tablet widths instead of
+              horizontally overflowing the card. */}
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {openOnlyToggleControl}
+            {teamFilterControl}
+            {displayModeToggleControl}
+          </div>
         </div>
-      </div>
+      )}
       {/* 2026-04-26: body wrapper is `flex-1 flex flex-col` so the
           multi-tech grid below can stretch to the card's full height.
           Together with `DashCard`'s `h-full flex flex-col` this lets
           per-tech column dividers paint top-to-bottom regardless of
-          how much content each column has. */}
-      <div className="flex-1 flex flex-col min-h-0">
+          how much content each column has.
+          2026-05-07 RALPH: card height is now FIXED at the canonical
+          `summary` preset (`h-[420px]`) regardless of technician
+          count, so the body must scroll internally when a busy day
+          has more rows than fit. `overflow-y-auto` + `min-h-0` lets
+          the body claim its share of the fixed card height and
+          scroll the surplus rows. */}
+      <div
+        className="flex-1 flex flex-col min-h-0 overflow-y-auto"
+        data-testid="schedule-body-scroll"
+      >
         {capacityQuery.isLoading ? (
           <div className="p-4 space-y-2">
             {[1, 2, 3, 4, 5, 6].map((i) => <Skeleton key={i} className="h-8" />)}
@@ -1597,7 +1843,12 @@ function TodaysScheduleCard({
           // The column body is identical in both modes; only the container
           // and per-column width class differ.
           (() => {
-            const useGrid = visibleTechs.length <= 4;
+            // 2026-05-07 RALPH: stacked mode forces the vertical
+            // layout regardless of breakpoint or tech count. Column
+            // mode keeps the existing rule (grid for ≤4 techs;
+            // horizontal scroll for ≥5).
+            const isStacked = scheduleDisplayMode === "stacked";
+            const useGrid = !isStacked && visibleTechs.length <= 4;
             const renderColumn = (tech: CapacityTechDto, isLastCol: boolean, widthClass: string) => {
               // 2026-04-26 polish v6: off-shift technicians can still have
               // assigned visits (e.g. accidental booking on a day-off). The
@@ -1714,11 +1965,31 @@ function TodaysScheduleCard({
             // unchanged inline `gridTemplateColumns`. The
             // `gridTemplateColumns` inline style is harmless on a
             // `display: flex` parent — the browser ignores it.
+            // Stacked: vertical sections at every breakpoint, no
+            // grid, no horizontal scroll. Each tech becomes a
+            // full-width section with its name as a compact header
+            // and its rows below. Body wrapper's overflow-y-auto
+            // (set on the parent) handles the internal scroll when
+            // stacked content exceeds the fixed card height.
+            if (isStacked) {
+              return (
+                <div
+                  className="flex flex-col flex-1"
+                  data-testid="schedule-multi-column-view"
+                  data-display-mode="stacked"
+                >
+                  {visibleTechs.map((tech, i) =>
+                    renderColumn(tech, i === visibleTechs.length - 1, "w-full"),
+                  )}
+                </div>
+              );
+            }
             return useGrid ? (
               <div
                 className="flex flex-col xl:grid flex-1"
                 style={{ gridTemplateColumns: `repeat(${visibleTechs.length}, minmax(0, 1fr))` }}
                 data-testid="schedule-multi-column-view"
+                data-display-mode="column"
               >
                 {visibleTechs.map((tech, i) =>
                   renderColumn(tech, i === visibleTechs.length - 1, "w-full xl:min-w-0"),
@@ -1728,6 +1999,7 @@ function TodaysScheduleCard({
               <div
                 className="overflow-x-auto flex-1"
                 data-testid="schedule-multi-column-view"
+                data-display-mode="column"
               >
                 <div className="flex h-full" style={{ minWidth: "min-content" }}>
                   {visibleTechs.map((tech, i) =>

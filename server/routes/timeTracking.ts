@@ -36,6 +36,9 @@ import { emitDispatch } from "../lib/dispatchBus";
 import { db } from "../db";
 import { and, desc, eq, gte, isNotNull, lte } from "drizzle-orm";
 import { timeEntries, users, jobs, jobVisits } from "@shared/schema";
+// Phase 1 Architecture: Event Log — Activity Feed signal for clock in/out.
+import { logEventAsync } from "../lib/events";
+import { getQueryCtx } from "../lib/queryCtx";
 
 // Main time tracking router (mounted at /api/time)
 const timeRouter = Router();
@@ -91,6 +94,22 @@ timeRouter.post(
     );
 
     emitDispatch(req.companyId!, { scope: "time", entityType: "visit", entityId: session.id, ts: new Date().toISOString() });
+
+    // Activity Feed event — operational signal so office staff see techs go on-shift.
+    const techName = req.user?.email || "Technician";
+    logEventAsync(getQueryCtx(req), {
+      eventType: "timesheet.clocked_in",
+      entityType: "technician",
+      entityId: req.user!.id,
+      summary: `${techName} clocked in`,
+      meta: {
+        technicianName: techName,
+        sessionId: session.id,
+        at: at.toISOString(),
+        source: validated.source,
+      },
+    });
+
     res.status(201).json(session);
   })
 );
@@ -117,6 +136,20 @@ timeRouter.post(
     );
 
     emitDispatch(req.companyId!, { scope: "time", entityType: "visit", entityId: session.id, ts: new Date().toISOString() });
+
+    // Activity Feed event — operational signal so office staff see techs go off-shift.
+    const techName = req.user?.email || "Technician";
+    logEventAsync(getQueryCtx(req), {
+      eventType: "timesheet.clocked_out",
+      entityType: "technician",
+      entityId: req.user!.id,
+      summary: `${techName} clocked out`,
+      meta: {
+        technicianName: techName,
+        sessionId: session.id,
+      },
+    });
+
     res.json(session);
   })
 );

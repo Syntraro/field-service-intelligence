@@ -334,6 +334,8 @@ router.post(
     const updated = await jobVisitsRepository.getJobVisit(companyId, visitId);
 
     // Phase 4B.1: Emit milestone event for status transitions (unchanged)
+    // 2026-05-07 Activity Feed: also emit visit.on_route for the en_route
+    // transition so the global Activity Feed shows "Technician on route".
     const ctx = getQueryCtx(req);
     if (status === "in_progress" || status === "on_site") {
       logEventAsync(ctx, {
@@ -341,6 +343,14 @@ router.post(
         entityType: "visit",
         entityId: visitId,
         summary: `Visit started (job ${jobId})`,
+        meta: { jobId, status },
+      });
+    } else if (status === "en_route") {
+      logEventAsync(ctx, {
+        eventType: "visit.on_route",
+        entityType: "visit",
+        entityId: visitId,
+        summary: `Technician on route (job ${jobId})`,
         meta: { jobId, status },
       });
     }

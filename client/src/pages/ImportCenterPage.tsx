@@ -82,9 +82,9 @@ const TYPES: TypeDef[] = [
   },
   {
     key: "products",
-    label: "Products & Services",
-    tabLabel: "Products & Services",
-    description: "Line-item catalog for invoices and quotes.",
+    label: "Pricebook",
+    tabLabel: "Pricebook",
+    description: "Saved products and services for line-item pickers.",
     icon: Package,
     config: productImportConfig,
   },

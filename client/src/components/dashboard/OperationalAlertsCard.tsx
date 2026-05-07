@@ -1,12 +1,15 @@
 /**
- * OperationalAlertsCard — right-rail triage card for the Operations
+ * OperationalAlertsCard — triage card on the customizable Financial
  * Dashboard.
  *
- * 2026-04-25 IA correction: Operational Alerts moved out of the top
- * KPI row (which now carries Jobs Ready to Invoice as a glanceable
- * count) and into a functional right-rail card. Each row drives the
- * canonical `<DashboardActionModal>` — same modal the legacy Jobs
- * card opens — keyed by mode. No duplicate alert system.
+ * 2026-05-07 RALPH: this card is now mounted exclusively from
+ * `DashboardWidgetGrid` and lives inside a 1/3-width × 300 px-tall
+ * grid cell. It fills its cell (`w-full h-full`) so its visual
+ * height matches every other dashboard widget. The previous
+ * "right-rail at xl+" variant (collapsed-to-vertical-strip) was
+ * built for the legacy Operations Dashboard side rail, which no
+ * longer exists — that branch was deleted with this change. The
+ * full-card layout is the only render path now.
  *
  * Rows — one mode per row (2026-05-06 normalization):
  *   - Ready to invoice   → mode="ready_to_invoice"
@@ -14,10 +17,12 @@
  *   - Unscheduled        → mode="unscheduled"
  *   - Requires attention → mode="requires_attention"
  *
- * Card chrome matches the rest of the right-rail stack (header band,
- * iconBg block, hover-green rows). Rows with zero count remain
- * visible but de-emphasized so the card height stays predictable —
- * the user wanted equalized heights across the right column.
+ * Card chrome routes through the canonical `<CardShell>`. Rows with
+ * zero count remain visible but de-emphasized so the card height
+ * stays predictable. Auto-collapse (when total count is zero) and
+ * the user-toggle that overrides it are preserved — collapsing now
+ * just hides the body within the fixed-height card; the card itself
+ * keeps its canonical height.
  */
 
 import { useRef, useState } from "react";
@@ -26,10 +31,10 @@ import {
   Briefcase,
   Calendar,
   ChevronDown,
-  ChevronRight,
   Receipt,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { CardShell } from "@/components/ui/card";
 import type { DashboardActionMode } from "@/components/DashboardActionModal";
 
 /**
@@ -157,92 +162,63 @@ export function OperationalAlertsCard({
         ? "bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-300"
         : "bg-slate-100 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300";
 
-  // Outer width is responsive AND state-driven so the parent grid's
-  // `auto` column tracks the card. Below `xl` (< 1280 px): always
-  // full-width and rail-suppressed — the parent grid stacks at the
-  // same breakpoint so the card flows naturally beneath the schedule.
-  // At `xl+`: 360 px expanded, 48 px collapsed (the rail). The
-  // conditional render below hides the full layout at `xl+` when
-  // collapsed and hides the rail entirely below `xl`, so the user
-  // only ever sees one variant per viewport.
-  // 2026-04-30 (responsive pass) — breakpoint moved from `lg` to `xl`
-  // to stay in lockstep with the FinancialDashboard top row's grid
-  // template. At narrower widths the schedule was getting cramped
-  // because the 360 px alerts rail co-existed with 4×220 px tech
-  // columns — the new breakpoint stacks earlier so neither card has
-  // to compete for horizontal room.
-  const outerWidth = isCollapsed
-    ? "w-full xl:w-12"
-    : "w-full xl:w-[360px]";
-
+  // 2026-05-07 RALPH (height fix):
+  //   • `w-full h-full` lets the card fill the dashboard grid cell
+  //     (which owns the canonical `h-[300px]` height + `col-span-*`
+  //     width). The previous `xl:w-[360px]` constraint forced the
+  //     card to a fixed 360 px wide regardless of cell width, leaving
+  //     trailing whitespace inside the cell at xl+; the previous
+  //     content-sized height made it shorter than its peers.
+  //   • `flex flex-col` so the body region can flex-1 + scroll the
+  //     overflow if a future row count exceeds the card height.
+  //   • The legacy "rail at xl+" variant (vertical-strip collapsed
+  //     mode for the old Operations Dashboard right rail) is gone —
+  //     this card has only one consumer today (FinancialDashboard,
+  //     mounted via DashboardWidgetGrid), and the rail variant did
+  //     not fit the 1/3-width grid cell model.
   return (
-    <div
-      className={`bg-white dark:bg-gray-900 rounded-md overflow-hidden border border-[#e2e8f0] dark:border-gray-700 ${outerWidth}`}
-      style={{ boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}
+    <CardShell
+      className="w-full h-full flex flex-col"
       data-testid="card-operational-alerts"
     >
-      {/*
-        Full-card / header-only variant. Always rendered below `xl`;
-        rendered at `xl+` only when expanded. Layout responds to
-        `isCollapsed`:
-          • !isCollapsed → header bar + body (standard full card).
-          • isCollapsed at `< xl` → header-only bar (body branch
-            omitted). This is the regression fix: previously the body
-            kept rendering below `xl` when `isCollapsed` was true, so
-            clicking the chevron flipped state but didn't change what
-            the user saw. Now collapse always produces a meaningful
-            visible state at every viewport.
-          • isCollapsed at `xl+` → entire variant hidden by `xl:hidden`;
-            the rail variant below takes over.
-
-        The chevron is dual: `<ChevronDown>` below `xl` rotates with
-        `isCollapsed` (down = expand body, up = collapse body);
-        `<ChevronRight>` at `xl+` indicates horizontal collapse to the
-        rail. CSS responsive classes show one and hide the other so the
-        affordance always matches the collapse direction the click
-        actually triggers.
-      */}
-      <div className={isCollapsed ? "xl:hidden" : "block"}>
-        <button
-          type="button"
-          onClick={handleToggle}
-          aria-expanded={!isCollapsed}
-          aria-controls="operational-alerts-body"
-          data-testid="operational-alerts-toggle"
-          className={`w-full px-4 py-2.5 flex items-center justify-between text-left transition-colors hover:bg-[#FAFAF7] ${
-            !isCollapsed ? "border-b border-[#e2e8f0] dark:border-gray-600" : ""
-          }`}
-        >
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="p-1.5 rounded-md bg-orange-100 dark:bg-orange-950/30 shrink-0">
-              <AlertTriangle className="h-3.5 w-3.5 text-orange-600" />
-            </div>
-            <h3 className="text-sm font-semibold text-[#111827] dark:text-gray-100 truncate">
-              Operational alerts
-            </h3>
-            {!isLoading && (
-              <span
-                className={`text-xs font-semibold tabular-nums px-2 py-0.5 rounded-full shrink-0 ${badgeColor}`}
-                data-testid="operational-alerts-count-badge"
-              >
-                {totalCount}
-              </span>
-            )}
+      <button
+        type="button"
+        onClick={handleToggle}
+        aria-expanded={!isCollapsed}
+        aria-controls="operational-alerts-body"
+        data-testid="operational-alerts-toggle"
+        className={`w-full px-4 py-2.5 flex items-center justify-between text-left transition-colors hover:bg-[#FAFAF7] shrink-0 ${
+          !isCollapsed ? "border-b border-card-border" : ""
+        }`}
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="p-1.5 rounded-md bg-orange-100 dark:bg-orange-950/30 shrink-0">
+            <AlertTriangle className="h-3.5 w-3.5 text-orange-600" />
           </div>
-          {/* Stacked-mode chevron: down = expand body, up = collapse body. */}
-          <ChevronDown
-            className={`h-4 w-4 text-slate-400 shrink-0 xl:hidden transition-transform ${
-              isCollapsed ? "" : "rotate-180"
-            }`}
-          />
-          {/* Side-by-side chevron: rightward indicates "collapse to rail".
-              Only visible at `xl+`; at `xl+` collapsed, the entire
-              variant is hidden by the parent's `xl:hidden`, so this
-              chevron is effectively only seen at `xl+ expanded`. */}
-          <ChevronRight className="h-4 w-4 text-slate-400 shrink-0 hidden xl:block" />
-        </button>
-        {!isCollapsed && (
-        <div id="operational-alerts-body">
+          <h3 className="text-sm font-semibold text-[#111827] dark:text-gray-100 truncate">
+            Operational alerts
+          </h3>
+          {!isLoading && (
+            <span
+              className={`text-xs font-semibold tabular-nums px-2 py-0.5 rounded-full shrink-0 ${badgeColor}`}
+              data-testid="operational-alerts-count-badge"
+            >
+              {totalCount}
+            </span>
+          )}
+        </div>
+        {/* Chevron rotates with the collapse state — down = expand, up = collapse. */}
+        <ChevronDown
+          className={`h-4 w-4 text-slate-400 shrink-0 transition-transform ${
+            isCollapsed ? "" : "rotate-180"
+          }`}
+        />
+      </button>
+      {!isCollapsed && (
+        <div
+          id="operational-alerts-body"
+          className="flex-1 min-h-0 overflow-y-auto"
+        >
           {isLoading ? (
             <div className="px-4 py-3 space-y-2">
               {[0, 1, 2, 3].map((i) => (
@@ -262,12 +238,9 @@ export function OperationalAlertsCard({
                       `<RevenueCenterFinancialCard>` exactly —
                       `px-3 py-1.5 gap-2`, `h-3 w-3` icon, label
                       `text-xs font-medium`, count
-                      `text-sm font-semibold tabular-nums`. The trailing
-                      chevron + the dependent `group` /
-                      `group-hover:` class were dropped so the count
-                      right-aligns flush to the row edge, matching the
-                      Revenue card's right edge. Click affordance comes
-                      from the hover background alone, same as Revenue.
+                      `text-sm font-semibold tabular-nums`. Click
+                      affordance comes from the hover background, same
+                      as Revenue.
                     */}
                     <button
                       type="button"
@@ -275,7 +248,7 @@ export function OperationalAlertsCard({
                       data-testid={`alert-row-${row.key}`}
                       disabled={muted}
                       className={`w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors ${
-                        !isLast ? "border-b border-[#e2e8f0]" : ""
+                        !isLast ? "border-b border-card-border" : ""
                       } ${
                         row.urgent
                           ? "bg-red-50/40 hover:bg-red-50"
@@ -318,50 +291,7 @@ export function OperationalAlertsCard({
             </ul>
           )}
         </div>
-        )}
-      </div>
-
-      {/* Rail — only shown at `xl+` when collapsed. Single button fills
-          the grid cell vertically (cell stretches to match Today's
-          Schedule height by default), distributing icon + count badge
-          + vertical "Alerts" label + expand chevron from top to
-          bottom. Click anywhere on the rail to expand. Below `xl` the
-          parent grid stacks and the full-card variant takes over —
-          this rail variant never renders. */}
-      <div className={isCollapsed ? "hidden xl:flex h-full" : "hidden"}>
-        <button
-          type="button"
-          onClick={handleToggle}
-          aria-expanded={false}
-          aria-controls="operational-alerts-body"
-          aria-label="Expand operational alerts"
-          data-testid="operational-alerts-toggle-collapsed"
-          className="w-full h-full min-h-[140px] flex flex-col items-center justify-between gap-3 px-2 py-3 hover:bg-[#FAFAF7] transition-colors"
-        >
-          <div className="flex flex-col items-center gap-2">
-            <div className="p-1.5 rounded-md bg-orange-100 dark:bg-orange-950/30 shrink-0">
-              <AlertTriangle className="h-3.5 w-3.5 text-orange-600" />
-            </div>
-            {!isLoading && (
-              <span
-                className={`text-xs font-semibold tabular-nums px-2 py-0.5 rounded-full ${badgeColor}`}
-                data-testid="operational-alerts-count-badge-collapsed"
-              >
-                {totalCount}
-              </span>
-            )}
-          </div>
-          <span
-            className="text-[10px] font-bold uppercase tracking-wider text-slate-500"
-            style={{ writingMode: "vertical-rl" }}
-          >
-            Alerts
-          </span>
-          {/* Chevron points left (rotate-180) — clicking expands the
-              card back to the left, restoring its full-card layout. */}
-          <ChevronRight className="h-4 w-4 text-slate-400 rotate-180 shrink-0" />
-        </button>
-      </div>
-    </div>
+      )}
+    </CardShell>
   );
 }

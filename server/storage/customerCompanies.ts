@@ -249,6 +249,9 @@ export class CustomerCompanyRepository extends BaseRepository {
       billingCountry?: string | null;
       nameSource?: string | null;
       isActive?: boolean;
+      // 2026-05-07: per-client invoice payment-terms default. NULL =
+      // inherit from companies.defaultPaymentTermsDays.
+      paymentTermsDays?: number | null;
     }
   ): Promise<typeof customerCompanies.$inferSelect | null> {
     this.assertCompanyId(companyId);

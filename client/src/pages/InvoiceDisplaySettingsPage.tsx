@@ -217,7 +217,7 @@ export default function InvoiceDisplaySettingsPage() {
               testId="toggle-show-company-email"
             />
             <ToggleRow
-              label="Show tax / HST number"
+              label="Show tax registration number"
               checked={form.invoiceShowTaxNumber}
               onChange={(v) => set("invoiceShowTaxNumber", v)}
               testId="toggle-show-tax-number"

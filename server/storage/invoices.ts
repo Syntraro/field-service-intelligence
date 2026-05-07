@@ -1806,6 +1806,14 @@ export class InvoiceRepository extends BaseRepository {
     // 2026-05-05: also pull tenant Invoice Display defaults so the shell
     // can be seeded with the prefilled client message when the caller
     // didn't supply one explicitly. Caller-supplied wins.
+    // 2026-05-07: client-level payment terms now sit BETWEEN the
+    // caller override and the company default. Resolution chain:
+    //   params.paymentTermsDays (explicit override on the create call)
+    //   → customer_companies.paymentTermsDays (per-client default)
+    //   → companies.defaultPaymentTermsDays (tenant default)
+    //   → 30 (hard fallback)
+    // Only fetched when a customerCompanyId is present on the create
+    // call — no extra DB read for cash-sale / no-customer invoices.
     const [settings] = await db
       .select({
         defaultPaymentTermsDays: companySettings.defaultPaymentTermsDays,
@@ -1815,8 +1823,25 @@ export class InvoiceRepository extends BaseRepository {
       .from(companySettings)
       .where(eq(companySettings.companyId, companyId))
       .limit(1);
+    let clientPaymentTermsDays: number | null = null;
+    if (params.customerCompanyId) {
+      const [customerRow] = await db
+        .select({ paymentTermsDays: customerCompanies.paymentTermsDays })
+        .from(customerCompanies)
+        .where(
+          and(
+            eq(customerCompanies.id, params.customerCompanyId),
+            eq(customerCompanies.companyId, companyId),
+          ),
+        )
+        .limit(1);
+      clientPaymentTermsDays = customerRow?.paymentTermsDays ?? null;
+    }
     const effectiveTerms =
-      params.paymentTermsDays ?? settings?.defaultPaymentTermsDays ?? 30;
+      params.paymentTermsDays
+        ?? clientPaymentTermsDays
+        ?? settings?.defaultPaymentTermsDays
+        ?? 30;
     const prefilledClientMessage = (() => {
       if (params.clientMessage !== undefined) return params.clientMessage;
       if (settings?.invoiceShowClientMessage === false) return null;
