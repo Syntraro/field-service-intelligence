@@ -1,3 +1,30 @@
+/**
+ * Radix AlertDialog wrapper.
+ *
+ * 2026-05-06 modal canonicalization:
+ *  - Title default migrated from `text-lg font-semibold` (legacy
+ *    shadcn) to canonical `text-section-title font-semibold
+ *    text-slate-900 leading-snug tracking-tight` — same triple
+ *    `ModalTitle` locks. Every existing AlertDialog consumer gains
+ *    canonical typography by inheritance with zero call-site changes.
+ *  - Description default migrated from `text-sm text-muted-foreground`
+ *    to canonical `text-row text-slate-600 leading-normal` — matches
+ *    `ModalDescription`.
+ *  - Action / Cancel buttons keep canonical Button variants
+ *    (default = green primary; outline = neutral secondary).
+ *
+ * For NEW modals prefer the canonical `client/src/components/ui/modal.tsx`
+ * primitives (`<ModalShell>`, `<ModalHeader>`, `<ModalTitle>`, etc.) —
+ * they additionally lock structural rhythm (header padding, footer
+ * border, button sizing). AlertDialog stays here only because Radix's
+ * AlertDialog escape-key + focus-trap semantics are intentionally
+ * stricter than Dialog's, which suits destructive confirmation flows.
+ *
+ * DO NOT pass `className` typography overrides
+ * (`text-sm` / `text-base` / `text-lg` / `font-semibold` / etc.) on
+ * <AlertDialogTitle> or <AlertDialogDescription>. The canonical
+ * defaults are the contract — overrides are drift.
+ */
 import * as React from "react"
 import * as AlertDialogPrimitive from "@radix-ui/react-alert-dialog"
 
@@ -75,9 +102,16 @@ const AlertDialogTitle = React.forwardRef<
   React.ElementRef<typeof AlertDialogPrimitive.Title>,
   React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Title>
 >(({ className, ...props }, ref) => (
+  // 2026-05-06: locked to canonical ModalTitle typography.
+  // Was: `text-lg font-semibold`. Now matches `<ModalTitle>` exactly
+  // so destructive AlertDialog headers read the same as confirmation
+  // ModalShell headers across the app.
   <AlertDialogPrimitive.Title
     ref={ref}
-    className={cn("text-lg font-semibold", className)}
+    className={cn(
+      "text-section-title font-semibold text-slate-900 leading-snug tracking-tight",
+      className,
+    )}
     {...props}
   />
 ))
@@ -87,9 +121,12 @@ const AlertDialogDescription = React.forwardRef<
   React.ElementRef<typeof AlertDialogPrimitive.Description>,
   React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Description>
 >(({ className, ...props }, ref) => (
+  // 2026-05-06: locked to canonical ModalDescription typography.
+  // Was: `text-sm text-muted-foreground`. Now matches
+  // `<ModalDescription>` exactly.
   <AlertDialogPrimitive.Description
     ref={ref}
-    className={cn("text-sm text-muted-foreground", className)}
+    className={cn("text-row text-slate-600 leading-normal", className)}
     {...props}
   />
 ))

@@ -188,12 +188,26 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
   };
 
   // ── Header metrics ────────────────────────────────────────────────
-  // Always render Revenue when there are lines. Profit + margin only
-  // when at least one line carries cost — avoids the "NaN%" surface
-  // from the prior invoice fix.
+  // Render all three profitability tiles (Full Line Revenue / Profit /
+  // Profit Margin) on every consuming surface — quote, invoice, job,
+  // create surfaces, all share the same KPI strip. The single gate
+  // is `revenue > 0`: when there are no lines at all, the cluster
+  // hides entirely so the header isn't loud about a quote/invoice
+  // that hasn't started.
+  //
+  // 2026-05-06: previously this gated Profit + Margin behind a
+  // `m.cost !== null` check that hid them on surfaces (Quote / Invoice
+  // without persisted cost) where margin visibility is required —
+  // these are pricing surfaces, the whole point is margin. The hook
+  // now always emits numeric cost (defaulting to 0) so the tiles
+  // render unconditionally; if no line carries cost, the header
+  // honestly reads 100% margin rather than silently disappearing.
   const m = drafts.headerMetrics;
-  const showRevenue = m.revenue > 0;
-  const showProfit = m.cost !== null && m.profit !== null && m.margin !== null;
+  const showMetrics = m.revenue > 0;
+  // Green for positive profit, rose for negative. Single derivation
+  // shared by both Profit and Profit Margin so they cannot drift.
+  const profitToneClass =
+    m.profit >= 0 ? "text-emerald-700" : "text-rose-600";
 
   // ── Empty state guard ─────────────────────────────────────────────
   const isEmpty = !editing && serverItems.length === 0;
@@ -215,22 +229,45 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
             {headerCount}
           </span>
         </h3>
-        <div className="flex items-center gap-3">
-          {showRevenue && (
-            <span className="text-xs text-slate-500" data-testid="text-line-items-metrics">
-              Rev{" "}
-              <span className="font-semibold text-slate-700">{formatCurrency(m.revenue)}</span>
-              {showProfit && (
-                <>
-                  {" · "}Profit{" "}
-                  <span
-                    className={`font-semibold ${(m.profit ?? 0) >= 0 ? "text-emerald-700" : "text-rose-600"}`}
-                  >
-                    {formatCurrency(m.profit ?? 0)} ({(m.margin ?? 0).toFixed(0)}%)
-                  </span>
-                </>
-              )}
-            </span>
+        <div className="flex items-center gap-4 min-w-0">
+          {/* 2026-05-06 (canonical profitability header): three-metric
+              cluster — Full Line Revenue / Profit / Profit Margin —
+              rendered identically on every consuming surface (Quote
+              Detail, Create Quote, Invoice Detail, New Invoice, Job
+              Detail). Margin is the headline KPI and gets a slightly
+              heavier value treatment; Profit + Margin use the
+              canonical emerald token (rose for negative). The cluster
+              wraps onto a second row below `sm` so it never pushes
+              the edit pencil off-screen.
+              Single gate: revenue > 0. When cost is absent on a
+              surface (e.g., quote_lines has no unit_cost column),
+              cost defaults to 0, profit equals revenue, margin reads
+              100% — visibility preserved for the pricing-surface
+              audit. */}
+          {showMetrics && (
+            <div
+              className="flex flex-wrap items-start gap-x-5 gap-y-1 min-w-0"
+              data-testid="text-line-items-metrics"
+            >
+              <HeaderMetricBlock
+                label="Full Line Revenue"
+                value={formatCurrency(m.revenue)}
+                testId="metric-full-line-revenue"
+              />
+              <HeaderMetricBlock
+                label="Profit"
+                value={formatCurrency(m.profit)}
+                valueClassName={profitToneClass}
+                testId="metric-profit"
+              />
+              <HeaderMetricBlock
+                label="Profit Margin"
+                value={`${m.margin.toFixed(2)}%`}
+                valueClassName={profitToneClass}
+                emphasis
+                testId="metric-profit-margin"
+              />
+            </div>
           )}
           {!isLocked && !editing && !hidePencilButton && (
             <Button
@@ -491,6 +528,46 @@ export function LineItemsCard<TServerLine extends DisplayLine>({
           for job parts). Rendered inside the card border, below the
           body/action-row. */}
       {renderTotalsFooter}
+    </div>
+  );
+}
+
+/**
+ * HeaderMetricBlock — single label/value tile inside the canonical
+ * profitability header cluster. Kept private to LineItemsCard so all
+ * three surfaces (quote / invoice / job) source the same DOM.
+ *
+ *   Label: uppercase, tracked, muted slate, 10px — matches the
+ *          column-header strip below so the visual rhythm is shared.
+ *   Value: tabular-nums, semibold; the optional `emphasis` flag is
+ *          set for Profit Margin (the headline KPI), nudging it from
+ *          `text-sm` to `text-base` so the eye lands there first.
+ */
+function HeaderMetricBlock({
+  label,
+  value,
+  valueClassName,
+  emphasis = false,
+  testId,
+}: {
+  label: string;
+  value: string;
+  valueClassName?: string;
+  emphasis?: boolean;
+  testId?: string;
+}) {
+  return (
+    <div className="flex flex-col items-end leading-tight" data-testid={testId}>
+      <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500">
+        {label}
+      </span>
+      <span
+        className={`tabular-nums font-semibold ${
+          emphasis ? "text-base" : "text-sm"
+        } ${valueClassName ?? "text-slate-700"}`}
+      >
+        {value}
+      </span>
     </div>
   );
 }

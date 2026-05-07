@@ -5,16 +5,54 @@
  * Internally the modal still composes the same canonical /api/jobs queries —
  * no parallel backend aggregation introduced.
  *
- * User-facing modes:
- * - action_required:    Jobs on hold (needs parts, customer approval, access,
- *                       internal approval, weather, other). Row action: Open Job.
- *                       Hold reason label rendered via canonical
- *                       `getHoldReasonLabel()` from `@shared/schema`.
- * - scheduling_issues:  Two sections in one modal — Past Due jobs (with
- *                       bulk-unschedule + inline reschedule), then a labelled
- *                       divider, then Jobs Needing Scheduling (inline schedule).
+ * User-facing modes (2026-05-06):
+ * - requires_attention: Jobs on hold (needs parts, customer approval, access,
+ *                       internal approval, weather, other) PLUS PM-due
+ *                       instances awaiting generation. Row action: Open Job
+ *                       (or Generate for PM-due). Hold reason label rendered
+ *                       via canonical `getHoldReasonLabel()` from `@shared/schema`.
+ * - past_due:           Past Due jobs (overdue source ONLY). Bulk-unschedule
+ *                       header controls + per-row inline reschedule.
+ * - unscheduled:        Jobs needing scheduling (unscheduled source ONLY).
+ *                       Per-row inline schedule.
  * - ready_to_invoice:   Completed jobs with no invoice yet. Row action: Create
- *                       Invoice (unchanged from prior implementation).
+ *                       Invoice.
+ * - invoices_not_sent:  Draft invoices that have been created but never sent
+ *                       to a customer. Row actions: Send Invoice (mounts the
+ *                       canonical <SendCommunicationModal>) + Open Invoice.
+ *                       Source: `/api/invoices/list?status=draft` — same
+ *                       canonical feed the rest of the app uses, no parallel
+ *                       aggregation. Folded into the shared
+ *                       <OperationalActionModal> shell so the chrome,
+ *                       typography, and footer rhythm match the other modes.
+ *
+ * - pipeline_leads_followup        : Open leads needing follow-up (status
+ *                                    new/contacted/needs_review). Source:
+ *                                    `/api/leads?bucket=followup`.
+ *                                    Row action: Open Lead.
+ * - pipeline_quotes_not_sent       : Draft quotes never sent. Source:
+ *                                    `/api/quotes/list?status=draft`.
+ *                                    Row actions: Send Quote (mounts the
+ *                                    canonical <SendCommunicationModal>) +
+ *                                    Open Quote.
+ * - pipeline_quotes_awaiting_response: Sent quotes waiting on the customer.
+ *                                      Source: `/api/quotes/list?status=sent`.
+ *                                      Row action: Open Quote.
+ * - pipeline_stale_opportunities   : Open leads OR open quotes whose last
+ *                                    activity is older than the dashboard
+ *                                    threshold (14d). Composes two sources
+ *                                    (stale_leads + stale_quotes). Row
+ *                                    action: Open Lead / Open Quote based
+ *                                    on record type. Stale rows are an
+ *                                    aging escalation overlay — the same
+ *                                    record may also appear in a more
+ *                                    specific bucket (intentional).
+ *
+ * The earlier combined `action_required` (renamed → `requires_attention`) and
+ * `scheduling_issues` (split → `past_due` + `unscheduled`) modes were merged
+ * into one-mode-per-alert-row to match the Operational Alerts card semantics:
+ * each alert row opens a modal scoped to that single bucket, no combined
+ * sections.
  *
  * Internally each mode composes one or two "sources". Each source is a single
  * canonical /api/jobs query param set (the same params the dashboard widget
@@ -34,15 +72,34 @@ import { useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+// 2026-05-06 modal canonicalization: confirm dialogs route through the
+// canonical Modal primitives so typography + spacing + button rhythm
+// match the Scheduling Issues modal. See `client/src/components/ui/modal.tsx`.
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader as MHeader,
+  ModalTitle as MTitle,
+  ModalDescription as MDescription,
+  ModalFooter as MFooter,
+  ModalPrimaryAction,
+  ModalSecondaryAction,
+} from "@/components/ui/modal";
+// 2026-05-06: outer chrome lifted into reusable OperationalActionModal —
+// preserves the Scheduling Issues visual rhythm verbatim, shared across
+// Action Required / Past Due / Unscheduled / Ready to Invoice modes.
+import { OperationalActionModal } from "@/components/OperationalActionModal";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Loader2, Receipt, ArrowUpRight, Wrench,
+  Loader2, Receipt, ArrowUpRight, Wrench, Send, FileEdit, UserPlus, FileText,
 } from "lucide-react";
+// 2026-05-06 RALPH: invoices_not_sent rows reuse the canonical
+// <SendCommunicationModal> for the Send action — same modal the
+// invoice detail page mounts, no dashboard-specific send dialog
+// introduced. Mounted as a sibling sub-modal (mirrors the
+// bulk-unschedule confirm pattern below).
+import { SendCommunicationModal } from "@/components/communication/SendCommunicationModal";
 import {
   JobScheduleFields, createDefaultScheduleValue,
   type JobScheduleValue,
@@ -64,8 +121,19 @@ import { getHoldReasonLabel } from "@shared/schema";
 // Mode / source configuration
 // ============================================================================
 
-/** Three user-facing modes the dashboard Jobs card exposes. */
-export type DashboardActionMode = "action_required" | "scheduling_issues" | "ready_to_invoice";
+/** User-facing modes — one per Operational Alerts row plus the dashboard
+ *  Needs Attention "Invoices not sent" row plus the four actionable
+ *  Pipeline rows (2026-05-06 RALPH). */
+export type DashboardActionMode =
+  | "requires_attention"
+  | "past_due"
+  | "unscheduled"
+  | "ready_to_invoice"
+  | "invoices_not_sent"
+  | "pipeline_leads_followup"
+  | "pipeline_quotes_not_sent"
+  | "pipeline_quotes_awaiting_response"
+  | "pipeline_stale_opportunities";
 
 /**
  * Internal "source" identifies one query shape. Each user-facing mode
@@ -74,27 +142,56 @@ export type DashboardActionMode = "action_required" | "scheduling_issues" | "rea
  * that tile counts and drill-down lists stay in lockstep by construction.
  *
  * 2026-04-26: `pm_due` added — preventive-maintenance instances awaiting
- * job generation. Folded into the `action_required` mode alongside `on_hold`.
+ * job generation. Folded into the `requires_attention` mode alongside `on_hold`.
  * Hits `/api/dashboard/pm-due-instances` (rows mirror the workflow tile's
  * `pm.awaitingGenerationCount`); generation routes through the canonical
  * `POST /api/recurring-templates/generate-selected`.
+ *
+ * 2026-05-06 RALPH: `unsent_invoices` added — draft invoices created but
+ * never sent. Hits `/api/invoices/list?status=draft` (the canonical
+ * invoice feed). Same-shape contract as the job sources: a single canonical
+ * URL + a single render path, no parallel aggregation.
  */
-type InternalSource = "overdue" | "on_hold" | "unscheduled" | "ready_to_invoice" | "pm_due";
+type InternalSource =
+  | "overdue"
+  | "on_hold"
+  | "unscheduled"
+  | "ready_to_invoice"
+  | "pm_due"
+  | "unsent_invoices"
+  // 2026-05-06 RALPH actionable Pipeline sources.
+  | "leads_followup"
+  | "quotes_draft"
+  | "quotes_sent_open"
+  | "stale_leads"
+  | "stale_quotes";
 
 /** Query params per source. Job-table sources hit `/api/jobs?…`; `pm_due`
- *  hits its own dashboard endpoint. */
+ *  hits its own dashboard endpoint; invoice + lead + quote sources hit
+ *  the canonical list endpoints. */
 const SOURCE_PARAMS: Record<InternalSource, string> = {
   overdue: "status=open&overdue=true&limit=50",
   on_hold: "status=open&openSubStatus=on_hold&limit=50",
   unscheduled: "status=open&unscheduledOnly=true&limit=50",
   ready_to_invoice: "readyToInvoiceOnly=true&limit=50",
   pm_due: "limit=50",
+  unsent_invoices: "status=draft&limit=50",
+  leads_followup: "bucket=followup",
+  quotes_draft: "status=draft&limit=50",
+  quotes_sent_open: "status=sent&limit=50",
+  stale_leads: "bucket=stale&staleDays=14",
+  stale_quotes: "bucket=stale&staleDays=14&limit=50",
 };
 
-/** Sources that hit `/api/jobs` (and return `JobsResponse`). `pm_due` is
- *  the lone exception — it returns `PMDueInstancesResponse` instead. */
+/** Sources that hit `/api/jobs` (and return `JobsResponse`). PM/invoice/
+ *  lead/quote sources hit their own canonical list endpoints. */
 function sourceUrl(source: InternalSource): string {
   if (source === "pm_due") return `/api/dashboard/pm-due-instances?${SOURCE_PARAMS.pm_due}`;
+  if (source === "unsent_invoices") return `/api/invoices/list?${SOURCE_PARAMS.unsent_invoices}`;
+  if (source === "leads_followup" || source === "stale_leads")
+    return `/api/leads?${SOURCE_PARAMS[source]}`;
+  if (source === "quotes_draft" || source === "quotes_sent_open" || source === "stale_quotes")
+    return `/api/quotes/list?${SOURCE_PARAMS[source]}`;
   return `/api/jobs?${SOURCE_PARAMS[source]}`;
 }
 
@@ -104,7 +201,13 @@ const SOURCE_SECTION_LABEL: Record<InternalSource, string> = {
   on_hold: "On Hold",
   unscheduled: "Needs Scheduling",
   ready_to_invoice: "Ready to Invoice",
-  pm_due: "PMs Due / Overdue",
+  pm_due: "Maintenance Due / Overdue",
+  unsent_invoices: "Invoices Not Sent",
+  leads_followup: "Leads Needing Follow-Up",
+  quotes_draft: "Quotes Not Sent",
+  quotes_sent_open: "Quotes Awaiting Response",
+  stale_leads: "Stale Leads",
+  stale_quotes: "Stale Quotes",
 };
 
 interface ModeConfig {
@@ -115,23 +218,68 @@ interface ModeConfig {
 }
 
 const MODE_CONFIG: Record<DashboardActionMode, ModeConfig> = {
-  action_required: {
-    title: "Action Required",
-    // 2026-04-26: PM-due rows now fold into "Action Required" alongside
-    // on-hold jobs. Same modal, same dismiss behaviour, two grouped
-    // sections rendered top-to-bottom.
+  requires_attention: {
+    title: "Requires Attention",
+    // PM-due rows fold into Requires Attention alongside on-hold jobs.
+    // Same modal, same dismiss behavior, two grouped sections.
     sources: ["on_hold", "pm_due"],
     viewAllAction: "ops.onHold",
   },
-  scheduling_issues: {
-    title: "Scheduling Issues",
-    sources: ["overdue", "unscheduled"],
+  past_due: {
+    title: "Past Due Jobs",
+    // Single-source mode (was the first half of the old `scheduling_issues`).
+    // Bulk-unschedule header controls + per-row inline reschedule live here.
+    sources: ["overdue"],
+    viewAllAction: "alerts.overdueJobs",
+  },
+  unscheduled: {
+    title: "Unscheduled Jobs",
+    // Single-source mode (was the second half of the old `scheduling_issues`).
+    // Per-row inline schedule lives here. No bulk overdue controls render
+    // because `primarySource !== "overdue"` in this mode.
+    sources: ["unscheduled"],
     viewAllAction: "alerts.overdueJobs",
   },
   ready_to_invoice: {
-    title: "Jobs Ready to Invoice",
+    title: "Ready to Invoice",
     sources: ["ready_to_invoice"],
     viewAllAction: "jobs.needsInvoicing",
+  },
+  invoices_not_sent: {
+    // 2026-05-06 RALPH: dashboard Needs Attention narrowed to billing/admin
+    // actions. This is the only mode that drives the new card. Single
+    // source — draft invoices via the canonical invoice feed.
+    title: "Invoices Not Sent",
+    sources: ["unsent_invoices"],
+    viewAllAction: "invoices.draft",
+  },
+  // 2026-05-06 RALPH: actionable Pipeline modes. Each maps 1:1 to a
+  // Pipeline card row; sources hit canonical /api/leads + /api/quotes
+  // list endpoints with the bucket / status filters their route layers
+  // accept. No new dashboard endpoints introduced.
+  pipeline_leads_followup: {
+    title: "Leads Needing Follow-Up",
+    sources: ["leads_followup"],
+    viewAllAction: "pipeline.leadsFollowUp",
+  },
+  pipeline_quotes_not_sent: {
+    title: "Quotes Not Sent",
+    sources: ["quotes_draft"],
+    viewAllAction: "pipeline.quotesNotSent",
+  },
+  pipeline_quotes_awaiting_response: {
+    title: "Quotes Awaiting Response",
+    sources: ["quotes_sent_open"],
+    viewAllAction: "pipeline.quotesAwaitingResponse",
+  },
+  pipeline_stale_opportunities: {
+    // Composes two sources — stale leads + stale quotes — so the modal
+    // shows both record types in a single drilldown with section
+    // headers. Same composition pattern as `requires_attention`
+    // (on_hold + pm_due).
+    title: "Stale Opportunities",
+    sources: ["stale_leads", "stale_quotes"],
+    viewAllAction: "pipeline.staleOpportunities",
   },
 };
 
@@ -183,6 +331,68 @@ interface PMDueInstancesResponse {
   data: PMDueInstance[];
 }
 
+// 2026-05-06 RALPH: invoice drill-down row for the `invoices_not_sent`
+// mode. Subset of the canonical `InvoiceFeedItem` shape returned by
+// `/api/invoices/list` — only the fields the row actually renders are
+// typed here, so the modal doesn't bind tightly to the full feed DTO.
+interface UnsentInvoiceItem {
+  id: string;
+  invoiceNumber: string | null;
+  status: string | null;
+  total: string | null;
+  createdAt: string;
+  /** COALESCE(parent customer name, child location companyName). */
+  locationDisplayName: string | null;
+  locationName: string | null;
+}
+
+/** Paginated response shape from `/api/invoices/list`. */
+interface UnsentInvoicesResponse {
+  data: UnsentInvoiceItem[];
+}
+
+// ────────────────────────────────────────────────────────────────────
+// 2026-05-06 RALPH: actionable Pipeline drill-down DTOs.
+//
+// Lead rows come from `/api/leads?bucket=...` (returns the canonical
+// lead row shape via `leadRepository.listPipelineBucket`). Quote rows
+// come from `/api/quotes/list?...` (returns rows joined with
+// clientLocations + customerCompanies via `quoteRepository.getQuotes`
+// or `getStalePipelineQuotes`). Only the fields the modal renders are
+// typed below — no tight coupling to the full DB shape.
+// ────────────────────────────────────────────────────────────────────
+
+interface PipelineLeadItem {
+  id: string;
+  title: string | null;
+  status: string | null;
+  estimatedValue: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+}
+
+interface PipelineLeadsResponse {
+  data: PipelineLeadItem[];
+}
+
+interface PipelineQuoteItem {
+  id: string;
+  quoteNumber: string | null;
+  status: string | null;
+  total: string | null;
+  createdAt: string;
+  sentAt: string | null;
+  updatedAt: string | null;
+  /** Joined display name: customer company OR location companyName. */
+  location?: { companyName?: string | null } | null;
+  customerCompany?: { name?: string | null } | null;
+}
+
+/** `/api/quotes/list` response shape — `paginated()` wraps as `{data, meta}`. */
+interface PipelineQuotesResponse {
+  data: PipelineQuoteItem[];
+}
+
 // ============================================================================
 // Component
 // ============================================================================
@@ -213,20 +423,40 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showBulkConfirm, setShowBulkConfirm] = useState(false);
 
+  // 2026-05-06 RALPH: send-invoice sub-modal target (invoices_not_sent
+  // mode only). Non-null id means the canonical SendCommunicationModal
+  // is mounted as a sibling sub-modal — same pattern the bulk-unschedule
+  // confirm uses below. Cleared on success / close so the next click on
+  // a different row gets a fresh modal.
+  const [sendInvoiceId, setSendInvoiceId] = useState<string | null>(null);
+  // 2026-05-06 RALPH: send-quote sub-modal target (pipeline_quotes_not_sent
+  // mode). Reuses the same canonical SendCommunicationModal with
+  // `entityType="quote"` — no quote-specific send dialog introduced.
+  const [sendQuoteId, setSendQuoteId] = useState<string | null>(null);
+
   // ── Data fetches ─────────────────────────────────────────────────────────
   //
   // Every mode has at least a primary source; some modes have a secondary
   // one. All hooks are declared unconditionally (React rule); each is
   // gated via `enabled` when the current mode does not include that
-  // source. 2026-04-26: PM-due rows added under `action_required`. Their
+  // source. 2026-04-26: PM-due rows added under `requires_attention`. Their
   // shape differs from `JobsResponse`, so they have their own query +
   // render path.
   const primarySource = config.sources[0];
   const secondarySource: InternalSource | undefined = config.sources[1];
 
   const isPMDue = (s: InternalSource | undefined) => s === "pm_due";
+  const isUnsentInvoices = (s: InternalSource | undefined) => s === "unsent_invoices";
+  const isLeadSource = (s: InternalSource | undefined) =>
+    s === "leads_followup" || s === "stale_leads";
+  const isQuoteSource = (s: InternalSource | undefined) =>
+    s === "quotes_draft" || s === "quotes_sent_open" || s === "stale_quotes";
   const isJobSource = (s: InternalSource | undefined) =>
-    !!s && s !== "pm_due";
+    !!s &&
+    s !== "pm_due" &&
+    s !== "unsent_invoices" &&
+    !isLeadSource(s) &&
+    !isQuoteSource(s);
 
   // The job-source queries cover every source EXCEPT `pm_due`.
   const primaryJobQuery = useQuery<JobsResponse>({
@@ -253,7 +483,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
   });
 
   // Dedicated PM-due query — fires only when one of the configured
-  // sources is `pm_due` (today: only `action_required`).
+  // sources is `pm_due` (today: only `requires_attention`).
   const pmDueSource = isPMDue(primarySource)
     ? primarySource
     : isPMDue(secondarySource)
@@ -270,29 +500,139 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
     staleTime: 30_000,
   });
 
+  // 2026-05-06 RALPH: dedicated unsent-invoices query. Fires only when
+  // the configured mode is `invoices_not_sent`. Hits the canonical
+  // `/api/invoices/list?status=draft` feed — no parallel aggregation,
+  // no dashboard-specific endpoint. Server enforces `status=draft`
+  // filtering in `getInvoicesFeed`.
+  const unsentInvoicesSource = isUnsentInvoices(primarySource)
+    ? primarySource
+    : isUnsentInvoices(secondarySource)
+      ? secondarySource
+      : null;
+  const unsentInvoicesQuery = useQuery<UnsentInvoicesResponse>({
+    queryKey: ["dashboard-action", mode, "unsent_invoices"],
+    queryFn: async () => {
+      const res = await fetch(sourceUrl("unsent_invoices"), { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch");
+      return res.json();
+    },
+    enabled: open && !!unsentInvoicesSource,
+    staleTime: 30_000,
+  });
+
+  // 2026-05-06 RALPH: lead drill-down queries. Fires only when the
+  // active mode references a lead source (`leads_followup` or
+  // `stale_leads`). Hits `/api/leads?bucket=...` — server applies the
+  // same predicate set the dashboard `getPipelineSnapshot` aggregate
+  // uses. Two independent useQuery calls (one per possible source slot)
+  // so multi-source modes like `pipeline_stale_opportunities` can
+  // surface stale leads alongside stale quotes without re-doing the
+  // primary/secondary plumbing.
+  const primaryLeadSource = isLeadSource(primarySource) ? primarySource : null;
+  const secondaryLeadSource = isLeadSource(secondarySource) ? secondarySource : null;
+  const primaryLeadQuery = useQuery<PipelineLeadsResponse>({
+    queryKey: ["dashboard-action", mode, primaryLeadSource ?? "none"],
+    queryFn: async () => {
+      if (!primaryLeadSource) return { data: [] };
+      const res = await fetch(sourceUrl(primaryLeadSource), { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch");
+      return res.json();
+    },
+    enabled: open && !!primaryLeadSource,
+    staleTime: 30_000,
+  });
+  const secondaryLeadQuery = useQuery<PipelineLeadsResponse>({
+    queryKey: ["dashboard-action", mode, secondaryLeadSource ?? "none-2"],
+    queryFn: async () => {
+      if (!secondaryLeadSource) return { data: [] };
+      const res = await fetch(sourceUrl(secondaryLeadSource), { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch");
+      return res.json();
+    },
+    enabled: open && !!secondaryLeadSource,
+    staleTime: 30_000,
+  });
+
+  // Quote drill-down queries — same pattern. Hits `/api/quotes/list`
+  // with the bucket/status filters the route layer accepts.
+  const primaryQuoteSource = isQuoteSource(primarySource) ? primarySource : null;
+  const secondaryQuoteSource = isQuoteSource(secondarySource) ? secondarySource : null;
+  const primaryQuoteQuery = useQuery<PipelineQuotesResponse>({
+    queryKey: ["dashboard-action", mode, primaryQuoteSource ?? "none"],
+    queryFn: async () => {
+      if (!primaryQuoteSource) return { data: [] };
+      const res = await fetch(sourceUrl(primaryQuoteSource), { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch");
+      return res.json();
+    },
+    enabled: open && !!primaryQuoteSource,
+    staleTime: 30_000,
+  });
+  const secondaryQuoteQuery = useQuery<PipelineQuotesResponse>({
+    queryKey: ["dashboard-action", mode, secondaryQuoteSource ?? "none-2"],
+    queryFn: async () => {
+      if (!secondaryQuoteSource) return { data: [] };
+      const res = await fetch(sourceUrl(secondaryQuoteSource), { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch");
+      return res.json();
+    },
+    enabled: open && !!secondaryQuoteSource,
+    staleTime: 30_000,
+  });
+
   const refetchAll = useCallback(() => {
     if (isJobSource(primarySource)) primaryJobQuery.refetch();
     if (isJobSource(secondarySource)) secondaryJobQuery.refetch();
     if (pmDueSource) pmDueQuery.refetch();
-  }, [primaryJobQuery, secondaryJobQuery, pmDueQuery, primarySource, secondarySource, pmDueSource]);
+    if (unsentInvoicesSource) unsentInvoicesQuery.refetch();
+    if (primaryLeadSource) primaryLeadQuery.refetch();
+    if (secondaryLeadSource) secondaryLeadQuery.refetch();
+    if (primaryQuoteSource) primaryQuoteQuery.refetch();
+    if (secondaryQuoteSource) secondaryQuoteQuery.refetch();
+  }, [
+    primaryJobQuery, secondaryJobQuery, pmDueQuery, unsentInvoicesQuery,
+    primaryLeadQuery, secondaryLeadQuery, primaryQuoteQuery, secondaryQuoteQuery,
+    primarySource, secondarySource, pmDueSource, unsentInvoicesSource,
+    primaryLeadSource, secondaryLeadSource, primaryQuoteSource, secondaryQuoteSource,
+  ]);
 
   const isLoading =
     (isJobSource(primarySource) && primaryJobQuery.isLoading) ||
     (isJobSource(secondarySource) && secondaryJobQuery.isLoading) ||
-    (!!pmDueSource && pmDueQuery.isLoading);
+    (!!pmDueSource && pmDueQuery.isLoading) ||
+    (!!unsentInvoicesSource && unsentInvoicesQuery.isLoading) ||
+    (!!primaryLeadSource && primaryLeadQuery.isLoading) ||
+    (!!secondaryLeadSource && secondaryLeadQuery.isLoading) ||
+    (!!primaryQuoteSource && primaryQuoteQuery.isLoading) ||
+    (!!secondaryQuoteSource && secondaryQuoteQuery.isLoading);
   const isError =
     (isJobSource(primarySource) && primaryJobQuery.isError) ||
     (isJobSource(secondarySource) && secondaryJobQuery.isError) ||
-    (!!pmDueSource && pmDueQuery.isError);
+    (!!pmDueSource && pmDueQuery.isError) ||
+    (!!unsentInvoicesSource && unsentInvoicesQuery.isError) ||
+    (!!primaryLeadSource && primaryLeadQuery.isError) ||
+    (!!secondaryLeadSource && secondaryLeadQuery.isError) ||
+    (!!primaryQuoteSource && primaryQuoteQuery.isError) ||
+    (!!secondaryQuoteSource && secondaryQuoteQuery.isError);
 
   const primaryJobs: JobItem[] = isJobSource(primarySource) ? (primaryJobQuery.data?.data ?? []) : [];
   const secondaryJobs: JobItem[] = isJobSource(secondarySource) ? (secondaryJobQuery.data?.data ?? []) : [];
   const pmDueRows: PMDueInstance[] = pmDueSource ? (pmDueQuery.data?.data ?? []) : [];
-  const totalJobCount = primaryJobs.length + secondaryJobs.length + pmDueRows.length;
+  const unsentInvoiceRows: UnsentInvoiceItem[] = unsentInvoicesSource ? (unsentInvoicesQuery.data?.data ?? []) : [];
+  const primaryLeadRows: PipelineLeadItem[] = primaryLeadSource ? (primaryLeadQuery.data?.data ?? []) : [];
+  const secondaryLeadRows: PipelineLeadItem[] = secondaryLeadSource ? (secondaryLeadQuery.data?.data ?? []) : [];
+  const primaryQuoteRows: PipelineQuoteItem[] = primaryQuoteSource ? (primaryQuoteQuery.data?.data ?? []) : [];
+  const secondaryQuoteRows: PipelineQuoteItem[] = secondaryQuoteSource ? (secondaryQuoteQuery.data?.data ?? []) : [];
+  const totalJobCount =
+    primaryJobs.length + secondaryJobs.length +
+    pmDueRows.length + unsentInvoiceRows.length +
+    primaryLeadRows.length + secondaryLeadRows.length +
+    primaryQuoteRows.length + secondaryQuoteRows.length;
 
-  // Overdue section only surfaces under `scheduling_issues` — that's the only
-  // mode that currently pulls from the "overdue" source. If it shifts in
-  // the future we recompute from the visible sections, not the mode name.
+  // Overdue section only surfaces under `past_due` — that's the only
+  // mode that pulls from the "overdue" source. If it shifts in the future
+  // we recompute from the visible sections, not the mode name.
   const overdueJobs = useMemo<JobItem[]>(() => {
     const out: JobItem[] = [];
     if (primarySource === "overdue") out.push(...primaryJobs);
@@ -326,6 +666,8 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
       setScheduleValue(createDefaultScheduleValue({ unscheduled: false }));
       setSelectedIds(new Set());
       setShowBulkConfirm(false);
+      setSendInvoiceId(null);
+      setSendQuoteId(null);
     }
     onOpenChange(v);
   }, [onOpenChange]);
@@ -469,7 +811,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
     },
   });
 
-  // ── Bulk unschedule mutation (overdue section inside scheduling_issues) ──
+  // ── Bulk unschedule mutation (overdue section, past_due mode only) ──
   //
   // Preserved verbatim from the prior implementation — same canonical
   // `/api/calendar/bulk-unschedule` contract, same visit-id resolution from
@@ -551,7 +893,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
   //
   // The same <JobRow /> shape renders under every section; per-row action
   // varies by the *source* the row came from (not the enclosing mode), so
-  // scheduling_issues can render a "Reschedule" button on overdue rows and
+  // past_due renders a "Reschedule" button on overdue rows and unscheduled
   // "Schedule" on unscheduled rows in the same modal without branching on
   // the user-facing mode.
   function renderJobRow(job: JobItem, source: InternalSource, _isLastInSection: boolean) {
@@ -827,6 +1169,305 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
     );
   }
 
+  // 2026-05-06 RALPH: invoice row renderer for the `invoices_not_sent`
+  // mode. Each row carries the canonical fields the spec requires —
+  // Invoice #, Customer, Amount, created date, Status — and two
+  // actions: Send Invoice (opens canonical <SendCommunicationModal> as
+  // a sub-modal) and Open Invoice (closes the dashboard modal and
+  // navigates to the invoice detail page). Card chrome matches the
+  // Job/PM rows so the modal body keeps a single visual rhythm.
+  function renderInvoiceRow(inv: UnsentInvoiceItem) {
+    const customer = inv.locationDisplayName ?? inv.locationName ?? "—";
+    const totalNumber = inv.total != null ? parseFloat(inv.total) : 0;
+    const amount = Number.isFinite(totalNumber)
+      ? new Intl.NumberFormat("en-CA", {
+          style: "currency",
+          currency: "CAD",
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 0,
+        }).format(totalNumber)
+      : "—";
+    const created = inv.createdAt
+      ? new Date(inv.createdAt).toLocaleDateString("en-CA", {
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+        })
+      : "—";
+    const statusLabel = (inv.status ?? "draft").replace(/_/g, " ");
+    return (
+      <div
+        key={inv.id}
+        className="bg-white rounded-md border border-[#e5e7eb] overflow-hidden"
+        data-testid={`action-row-unsent_invoices-${inv.id}`}
+      >
+        <div className="flex items-center justify-between px-3 py-2.5 hover:bg-[#f8fafc] transition-colors">
+          <div className="min-w-0 flex-1 mr-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <FileEdit className="h-3.5 w-3.5 text-[#76B054] shrink-0" />
+              <span className="text-xs font-bold text-[#4b5563] tabular-nums shrink-0">
+                #{inv.invoiceNumber ?? "—"}
+              </span>
+              <span className="text-sm font-medium text-[#111827] truncate">{customer}</span>
+              <span
+                className="shrink-0 px-1.5 py-0.5 text-label font-semibold uppercase tracking-wider rounded bg-slate-50 text-slate-600 border border-slate-200 whitespace-nowrap"
+                data-testid={`unsent-invoice-status-${inv.id}`}
+              >
+                {statusLabel}
+              </span>
+            </div>
+            <div className="text-xs text-[#4b5563] mt-0.5 truncate">
+              <span className="text-[#111827] font-semibold tabular-nums">{amount}</span>
+              <span className="text-[#94a3b8]"> · Created {created}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <Button
+              size="sm"
+              onClick={() => setSendInvoiceId(inv.id)}
+              className="shrink-0 h-8 text-xs"
+              data-testid={`unsent-invoice-send-${inv.id}`}
+            >
+              <Send className="h-3.5 w-3.5 mr-1" />
+              Send Invoice
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                handleOpenChange(false);
+                setLocation(`/invoices/${inv.id}`);
+              }}
+              className="shrink-0 h-8 text-xs text-[#4b5563] hover:text-[#111827]"
+              data-testid={`unsent-invoice-open-${inv.id}`}
+              title="Open invoice detail"
+            >
+              Open Invoice <ArrowUpRight className="h-3 w-3 ml-0.5" />
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderInvoiceSection(rows: UnsentInvoiceItem[]) {
+    if (rows.length === 0) return null;
+    const showHeader = config.sources.length > 1;
+    return (
+      <div key="unsent_invoices">
+        {showHeader && (
+          <div className="sticky top-0 z-10 bg-[#f1f5f9] px-5 py-1.5 border-b border-[#e5e7eb] flex items-center justify-between gap-2">
+            <span className="text-helper font-semibold uppercase tracking-wider text-[#64748b]">
+              {SOURCE_SECTION_LABEL.unsent_invoices}
+              <span className="ml-2 text-[#94a3b8] tabular-nums normal-case">({rows.length})</span>
+            </span>
+          </div>
+        )}
+        <div className="px-3 py-1.5 space-y-1.5">
+          {rows.map((row) => renderInvoiceRow(row))}
+        </div>
+      </div>
+    );
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // 2026-05-06 RALPH: Pipeline lead/quote row renderers.
+  //
+  // Lead rows show: title (or "Lead" fallback), status pill, estimated
+  // value when reliable, last-activity (updatedAt || createdAt). Action:
+  // Open Lead → navigates to /leads/:id and closes the modal.
+  //
+  // Quote rows show: quote #, customer, amount, status pill, sentAt or
+  // createdAt date. Actions vary by mode:
+  //   - quotes_draft        : Send Quote (canonical SendCommunicationModal
+  //                           sub-modal) + Open Quote.
+  //   - quotes_sent_open    : Open Quote only (no Send — already sent).
+  //   - stale_quotes        : Open Quote (stale escalation; the user opens
+  //                           the quote to follow up manually).
+  //
+  // No standalone "Follow Up" action is invented — the canonical follow-up
+  // path is to open the quote/lead detail page and contact the customer
+  // through the existing per-record send/note flows.
+  // ──────────────────────────────────────────────────────────────────
+
+  function formatLeadStatusLabel(status: string | null): string {
+    if (!status) return "Open";
+    return status.replace(/_/g, " ");
+  }
+  function formatPipelineDate(iso: string | null | undefined): string {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "—";
+    return d.toLocaleDateString("en-CA", { year: "numeric", month: "short", day: "numeric" });
+  }
+  function formatPipelineMoney(raw: string | null | undefined): string | null {
+    if (raw == null) return null;
+    const n = parseFloat(raw);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return new Intl.NumberFormat("en-CA", {
+      style: "currency",
+      currency: "CAD",
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(n);
+  }
+
+  function renderLeadRow(lead: PipelineLeadItem, source: InternalSource) {
+    const status = formatLeadStatusLabel(lead.status);
+    const value = formatPipelineMoney(lead.estimatedValue);
+    const lastActivity = lead.updatedAt ?? lead.createdAt;
+    const sourcePrefix = source === "stale_leads" ? "stale-lead" : "pipeline-lead";
+    return (
+      <div
+        key={lead.id}
+        className="bg-white rounded-md border border-[#e5e7eb] overflow-hidden"
+        data-testid={`action-row-${source}-${lead.id}`}
+      >
+        <div className="flex items-center justify-between px-3 py-2.5 hover:bg-[#f8fafc] transition-colors">
+          <div className="min-w-0 flex-1 mr-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <UserPlus className="h-3.5 w-3.5 text-[#76B054] shrink-0" />
+              <span className="text-sm font-medium text-[#111827] truncate">
+                {lead.title ?? "Lead"}
+              </span>
+              <span
+                className="shrink-0 px-1.5 py-0.5 text-label font-semibold uppercase tracking-wider rounded bg-slate-50 text-slate-600 border border-slate-200 whitespace-nowrap"
+                data-testid={`${sourcePrefix}-status-${lead.id}`}
+              >
+                {status}
+              </span>
+            </div>
+            <div className="text-xs text-[#4b5563] mt-0.5 truncate">
+              {value && (
+                <span className="text-[#111827] font-semibold tabular-nums">{value} · </span>
+              )}
+              <span className="text-[#94a3b8]">Last activity {formatPipelineDate(lastActivity)}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <Button
+              size="sm"
+              onClick={() => { handleOpenChange(false); setLocation(`/leads/${lead.id}`); }}
+              className="shrink-0 h-8 text-xs"
+              data-testid={`${sourcePrefix}-open-${lead.id}`}
+            >
+              Open Lead <ArrowUpRight className="h-3 w-3 ml-0.5" />
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderQuoteRow(quote: PipelineQuoteItem, source: InternalSource) {
+    const customer =
+      quote.customerCompany?.name ?? quote.location?.companyName ?? "—";
+    const amount = formatPipelineMoney(quote.total) ?? "—";
+    const status = (quote.status ?? "draft").replace(/_/g, " ");
+    const dateLabel = source === "quotes_sent_open"
+      ? `Sent ${formatPipelineDate(quote.sentAt ?? quote.createdAt)}`
+      : `Created ${formatPipelineDate(quote.createdAt)}`;
+    const isDraft = source === "quotes_draft";
+    const sourcePrefix =
+      source === "quotes_draft"
+        ? "pipeline-quote-draft"
+        : source === "quotes_sent_open"
+          ? "pipeline-quote-awaiting"
+          : "stale-quote";
+    return (
+      <div
+        key={quote.id}
+        className="bg-white rounded-md border border-[#e5e7eb] overflow-hidden"
+        data-testid={`action-row-${source}-${quote.id}`}
+      >
+        <div className="flex items-center justify-between px-3 py-2.5 hover:bg-[#f8fafc] transition-colors">
+          <div className="min-w-0 flex-1 mr-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <FileText className="h-3.5 w-3.5 text-[#76B054] shrink-0" />
+              <span className="text-xs font-bold text-[#4b5563] tabular-nums shrink-0">
+                #{quote.quoteNumber ?? "—"}
+              </span>
+              <span className="text-sm font-medium text-[#111827] truncate">{customer}</span>
+              <span
+                className="shrink-0 px-1.5 py-0.5 text-label font-semibold uppercase tracking-wider rounded bg-slate-50 text-slate-600 border border-slate-200 whitespace-nowrap"
+                data-testid={`${sourcePrefix}-status-${quote.id}`}
+              >
+                {status}
+              </span>
+            </div>
+            <div className="text-xs text-[#4b5563] mt-0.5 truncate">
+              <span className="text-[#111827] font-semibold tabular-nums">{amount}</span>
+              <span className="text-[#94a3b8]"> · {dateLabel}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {isDraft && (
+              <Button
+                size="sm"
+                onClick={() => setSendQuoteId(quote.id)}
+                className="shrink-0 h-8 text-xs"
+                data-testid={`${sourcePrefix}-send-${quote.id}`}
+              >
+                <Send className="h-3.5 w-3.5 mr-1" />
+                Send Quote
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant={isDraft ? "ghost" : "default"}
+              onClick={() => { handleOpenChange(false); setLocation(`/quotes/${quote.id}`); }}
+              className={`shrink-0 h-8 text-xs ${isDraft ? "text-[#4b5563] hover:text-[#111827]" : ""}`}
+              data-testid={`${sourcePrefix}-open-${quote.id}`}
+              title="Open quote detail"
+            >
+              Open Quote <ArrowUpRight className="h-3 w-3 ml-0.5" />
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderLeadSection(rows: PipelineLeadItem[], source: InternalSource) {
+    if (rows.length === 0) return null;
+    const showHeader = config.sources.length > 1;
+    return (
+      <div key={source}>
+        {showHeader && (
+          <div className="sticky top-0 z-10 bg-[#f1f5f9] px-5 py-1.5 border-b border-[#e5e7eb] flex items-center justify-between gap-2">
+            <span className="text-helper font-semibold uppercase tracking-wider text-[#64748b]">
+              {SOURCE_SECTION_LABEL[source]}
+              <span className="ml-2 text-[#94a3b8] tabular-nums normal-case">({rows.length})</span>
+            </span>
+          </div>
+        )}
+        <div className="px-3 py-1.5 space-y-1.5">
+          {rows.map((row) => renderLeadRow(row, source))}
+        </div>
+      </div>
+    );
+  }
+
+  function renderQuoteSection(rows: PipelineQuoteItem[], source: InternalSource) {
+    if (rows.length === 0) return null;
+    const showHeader = config.sources.length > 1;
+    return (
+      <div key={source}>
+        {showHeader && (
+          <div className="sticky top-0 z-10 bg-[#f1f5f9] px-5 py-1.5 border-b border-[#e5e7eb] flex items-center justify-between gap-2">
+            <span className="text-helper font-semibold uppercase tracking-wider text-[#64748b]">
+              {SOURCE_SECTION_LABEL[source]}
+              <span className="ml-2 text-[#94a3b8] tabular-nums normal-case">({rows.length})</span>
+            </span>
+          </div>
+        )}
+        <div className="px-3 py-1.5 space-y-1.5">
+          {rows.map((row) => renderQuoteRow(row, source))}
+        </div>
+      </div>
+    );
+  }
+
   function renderPMSection(rows: PMDueInstance[]) {
     if (rows.length === 0) return null;
     const showHeader = config.sources.length > 1;
@@ -851,7 +1492,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
               className="text-helper font-medium text-[#76B054] hover:text-[#5F9442] inline-flex items-center gap-1"
               data-testid="pm-due-view-all"
             >
-              View all PMs
+              View all Maintenance
               <ArrowUpRight className="h-3 w-3" />
             </button>
           </div>
@@ -863,24 +1504,25 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
     );
   }
 
+  // 2026-05-06: chrome lifted into <OperationalActionModal>. The
+  // visual contract (max-w-2xl, max-h-[80vh], flex flex-col, header
+  // padding, light-slate body, single-Close footer, count badge) is
+  // owned by that component now and preserved verbatim — this
+  // refactor is intentionally NOT a redesign. All three configured
+  // modes (requires_attention, past_due, unscheduled, ready_to_invoice)
+  // already shared this chrome before, so they all flow through the
+  // new wrapper without per-mode wiring changes. The body content
+  // (loading skeleton / error / empty / sectioned rows) stays
+  // exactly as it was — just passed in as children.
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col p-0">
-        <DialogHeader className="px-5 pt-5 pb-3 border-b border-[#e5e7eb] shrink-0">
-          {/* 2026-05-03 typography standardization: dropped the
-              `text-base font-semibold` override and let `DialogTitle`'s
-              canonical default (`text-lg font-semibold text-[#0F172A]`)
-              size the heading. Keeps the layout/icon row but pulls
-              this modal's title in line with every other modal. */}
-          <DialogTitle className="text-[#111827] flex items-center gap-2">
-            {config.title}
-            {!isLoading && (
-              <span className="inline-flex items-center justify-center h-5 min-w-5 px-1.5 rounded-full bg-[#f8fafc] text-xs font-bold text-[#4b5563] tabular-nums">
-                {totalJobCount}
-              </span>
-            )}
-          </DialogTitle>
-          {showOverdueBulkControls && (
+    <>
+      <OperationalActionModal
+        open={open}
+        onOpenChange={handleOpenChange}
+        title={config.title}
+        count={isLoading ? null : totalJobCount}
+        headerExtras={
+          showOverdueBulkControls ? (
             <div className="flex items-center justify-between mt-2">
               <label className="flex items-center gap-2 cursor-pointer">
                 <Checkbox
@@ -905,75 +1547,149 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
                 </Button>
               )}
             </div>
-          )}
-        </DialogHeader>
+          ) : null
+        }
+      >
+        {isLoading ? (
+          <div className="p-5 space-y-3">
+            {[1, 2, 3].map((i) => <Skeleton key={i} className="h-14" />)}
+          </div>
+        ) : isError ? (
+          <div className="p-5 text-sm text-red-600">Failed to load. Please try again.</div>
+        ) : totalJobCount === 0 ? (
+          <div
+            className="p-8 text-center text-sm text-[#4b5563]"
+            data-testid="dashboard-action-empty"
+          >
+            {mode === "invoices_not_sent"
+              ? "No invoices waiting to be sent."
+              : mode === "pipeline_leads_followup"
+                ? "No leads waiting on follow-up."
+                : mode === "pipeline_quotes_not_sent"
+                  ? "No draft quotes to send."
+                  : mode === "pipeline_quotes_awaiting_response"
+                    ? "No quotes awaiting customer response."
+                    : mode === "pipeline_stale_opportunities"
+                      ? "No stale leads or quotes."
+                      : "No items in this category."}
+          </div>
+        ) : (
+          <div>
+            {/* 2026-04-26 / 2026-05-06: render configured sources in
+                declaration order. PM-due / invoice / lead / quote rows
+                have different shapes and use their own renderers.
+                Empty sections silently no-op, so a multi-source mode
+                whose primary source is empty but whose secondary has
+                rows still renders cleanly. */}
+            {config.sources.map((source) => {
+              if (source === "pm_due") return renderPMSection(pmDueRows);
+              if (source === "unsent_invoices") return renderInvoiceSection(unsentInvoiceRows);
+              if (source === primaryLeadSource) return renderLeadSection(primaryLeadRows, source);
+              if (source === secondaryLeadSource) return renderLeadSection(secondaryLeadRows, source);
+              if (source === primaryQuoteSource) return renderQuoteSection(primaryQuoteRows, source);
+              if (source === secondaryQuoteSource) return renderQuoteSection(secondaryQuoteRows, source);
+              if (source === primarySource) return renderSection(primarySource, primaryJobs);
+              if (source === secondarySource) return renderSection(secondarySource, secondaryJobs);
+              return null;
+            })}
+          </div>
+        )}
+      </OperationalActionModal>
 
-        {/* 2026-04-26: body background switched from default white to
-            a light slate so the action rows below can render as
-            distinct white cards. The visual emphasis (white card on
-            grey body) matches how the dashboard cards themselves sit
-            against the page. */}
-        <div className="flex-1 overflow-y-auto min-h-0 bg-[#f1f5f9]">
-          {isLoading ? (
-            <div className="p-5 space-y-3">
-              {[1, 2, 3].map((i) => <Skeleton key={i} className="h-14" />)}
-            </div>
-          ) : isError ? (
-            <div className="p-5 text-sm text-red-600">Failed to load jobs. Please try again.</div>
-          ) : totalJobCount === 0 ? (
-            <div className="p-8 text-center text-sm text-[#4b5563]">No items in this category.</div>
-          ) : (
-            <div>
-              {/* 2026-04-26: render configured sources in declaration
-                  order. PM-due rows have a different shape and use
-                  their own renderer. Empty sections silently no-op,
-                  so a tenant with on-hold jobs but zero PM-due work
-                  sees only the on-hold section (and vice versa). */}
-              {config.sources.map((source) => {
-                if (source === "pm_due") return renderPMSection(pmDueRows);
-                if (source === primarySource) return renderSection(primarySource, primaryJobs);
-                if (source === secondarySource) return renderSection(secondarySource, secondaryJobs);
-                return null;
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* 2026-04-26: bottom "View all on Jobs page" link removed —
-            section-level links (`View all jobs` beside ON HOLD,
-            `View all PMs` beside the PM section) replace it. The
-            footer keeps just the Close button. */}
-        <div className="px-5 py-3 border-t border-[#e5e7eb] shrink-0 flex items-center justify-end">
-          <Button variant="outline" size="sm" className="text-xs" onClick={() => handleOpenChange(false)}>
-            Close
-          </Button>
-        </div>
-      </DialogContent>
-
+      {/* 2026-05-06 modal canonicalization: this confirm modal was
+          drifting on padding, button sizing, and border radius —
+          inheriting DialogContent's default `p-6 gap-4` plus full-size
+          buttons made it read as bubbly compared to the Scheduling
+          Issues modal above. Rebuilt on the canonical `<ModalShell>`
+          primitives so typography + spacing + button rhythm are
+          locked at the primitive layer. Behavior unchanged. */}
       {showBulkConfirm && (
-        <Dialog open={showBulkConfirm} onOpenChange={(v) => { if (!v) setShowBulkConfirm(false); }}>
-          <DialogContent className="sm:max-w-[440px]">
-            <DialogHeader>
-              <DialogTitle>Move {selectedIds.size} jobs to Unscheduled?</DialogTitle>
-              <DialogDescription>
-                The scheduled date and time will be removed from {selectedIds.size === 1 ? "this job" : `these ${selectedIds.size} jobs`}.
-                They will appear in the Unscheduled queue for future scheduling.
-                This does not delete any jobs.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter className="gap-2 sm:gap-0">
-              <Button variant="outline" onClick={() => setShowBulkConfirm(false)}>Cancel</Button>
-              <Button
-                onClick={() => bulkUnscheduleMutation.mutate(Array.from(selectedIds))}
-                disabled={bulkUnscheduleMutation.isPending}
-              >
-                {bulkUnscheduleMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />}
-                Confirm Move
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        <ModalShell
+          open={showBulkConfirm}
+          onOpenChange={(v) => { if (!v) setShowBulkConfirm(false); }}
+          // 2026-05-06: ModalShell no longer imposes a default width
+          // (it was beating pattern-specific overrides via cascade-
+          // layer precedence). Confirm-style modals pass their own
+          // width here. tailwind-merge in DialogContent's cn()
+          // resolves this against the underlying `max-w-lg` default
+          // because both are recognised Tailwind utilities.
+          className="sm:max-w-[440px]"
+          data-testid="bulk-unschedule-confirm-modal"
+        >
+          <MHeader>
+            <MTitle>Move {selectedIds.size} jobs to Unscheduled?</MTitle>
+            <MDescription>
+              The scheduled date and time will be removed from {selectedIds.size === 1 ? "this job" : `these ${selectedIds.size} jobs`}.
+              They will appear in the Unscheduled queue for future scheduling.
+              This does not delete any jobs.
+            </MDescription>
+          </MHeader>
+          <MFooter>
+            <ModalSecondaryAction
+              onClick={() => setShowBulkConfirm(false)}
+              data-testid="bulk-unschedule-confirm-cancel"
+            >
+              Cancel
+            </ModalSecondaryAction>
+            <ModalPrimaryAction
+              onClick={() => bulkUnscheduleMutation.mutate(Array.from(selectedIds))}
+              disabled={bulkUnscheduleMutation.isPending}
+              data-testid="bulk-unschedule-confirm-action"
+            >
+              {bulkUnscheduleMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />}
+              Confirm Move
+            </ModalPrimaryAction>
+          </MFooter>
+        </ModalShell>
       )}
-    </Dialog>
+
+      {/* 2026-05-06 RALPH: send-invoice sub-modal. Mounted as a sibling
+          to <OperationalActionModal> so the dashboard modal stays open
+          underneath while the user composes the message — same pattern
+          as the bulk-unschedule confirm above. The canonical
+          <SendCommunicationModal> owns the recipients/subject/body
+          flow; this file does not introduce a parallel send dialog. On
+          success we refetch the unsent-invoices source so the row that
+          was just sent disappears from the list. */}
+      {sendInvoiceId && (
+        <SendCommunicationModal
+          entityType="invoice"
+          entityId={sendInvoiceId}
+          isOpen={!!sendInvoiceId}
+          onClose={() => setSendInvoiceId(null)}
+          onSuccess={() => {
+            setSendInvoiceId(null);
+            unsentInvoicesQuery.refetch();
+            queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+            queryClient.invalidateQueries({ queryKey: ["invoices"] });
+            toast({ title: "Invoice sent" });
+          }}
+        />
+      )}
+
+      {/* 2026-05-06 RALPH: send-quote sub-modal — same canonical
+          SendCommunicationModal, just `entityType="quote"`. The send
+          route flips the quote from `draft` → `sent` server-side, so
+          on success we refetch the active source (which is the draft
+          source under pipeline_quotes_not_sent) and the row drops out. */}
+      {sendQuoteId && (
+        <SendCommunicationModal
+          entityType="quote"
+          entityId={sendQuoteId}
+          isOpen={!!sendQuoteId}
+          onClose={() => setSendQuoteId(null)}
+          onSuccess={() => {
+            setSendQuoteId(null);
+            // Refetch any quote source — the same row may also live in
+            // the awaiting-response source after the send succeeds.
+            if (primaryQuoteSource) primaryQuoteQuery.refetch();
+            if (secondaryQuoteSource) secondaryQuoteQuery.refetch();
+            queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+            queryClient.invalidateQueries({ queryKey: ["quotes"] });
+            toast({ title: "Quote sent" });
+          }}
+        />
+      )}
+    </>
   );
 }

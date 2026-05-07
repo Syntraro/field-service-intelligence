@@ -4851,6 +4851,10 @@ export const quoteLines = pgTable("quote_lines", {
   lineItemType: text("line_item_type").notNull().default("service"),
   description: text("description").notNull(),
   quantity: text("quantity").notNull().default("1"),
+  // 2026-05-06: cost basis per unit, mirrors invoice_lines.unit_cost
+  // and job_parts.unit_cost. Nullable for backfill safety on rows
+  // that pre-date the column. headerMetrics treats null/blank as 0.
+  unitCost: numeric("unit_cost", { precision: 12, scale: 2 }),
   unitPrice: numeric("unit_price", { precision: 12, scale: 2 }).notNull().default("0.00"),
   taxRate: numeric("tax_rate", { precision: 5, scale: 4 }).notNull().default("0.0000"),
   lineSubtotal: numeric("line_subtotal", { precision: 12, scale: 2 }).notNull().default("0.00"),
@@ -4876,6 +4880,9 @@ export const updateQuoteLineSchema = z.object({
   lineItemType: z.enum(lineItemTypeEnum).optional(),
   description: z.string().optional(),
   quantity: z.string().optional(),
+  // 2026-05-06: cost basis per unit (nullable). Sent by the canonical
+  // line-item draft mapper; persists into quote_lines.unit_cost.
+  unitCost: z.string().nullable().optional(),
   unitPrice: z.string().optional(),
   taxRate: z.string().optional(),
   lineSubtotal: z.string().optional(),

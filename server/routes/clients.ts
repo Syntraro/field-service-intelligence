@@ -475,13 +475,19 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
   );
 
   // 2) Create primary location (client record linked to customer company)
-  // Location name is optional (2026-04-16). When provided, use it; when
-  // omitted, fall back to a natural label. The display layer (COALESCE
-  // in locationDisplayNameExpr) will resolve the best visible identity.
-  const primaryLocationName = primaryLocation?.name?.trim()
-    || companyName
-    || (clientFirstName ? (clientLastName ? `${clientFirstName} ${clientLastName}` : clientFirstName) : null)
-    || null;
+  //
+  // 2026-05-06 RALPH: location name no longer falls back to the
+  // customer/company/person name. If the user did not enter an explicit
+  // `primaryLocation.name`, the column stays NULL — the display layer
+  // (`locationDisplayNameExpr`'s COALESCE) renders the parent customer
+  // name instead, so the location row no longer visually duplicates
+  // the customer name in lists. Side effect: the
+  // `(companyId, parentCompanyId, lower(location))` dedupe key in
+  // `createOrGetLocation` won't fire when `location` is NULL, so a
+  // double-submit can produce twin primary locations under the same
+  // customer. The user has accepted that tradeoff and will manage
+  // historical duplicates manually.
+  const primaryLocationName = primaryLocation?.name?.trim() || null;
   const primarySelectedMonths = primaryLocation?.selectedMonths || [];
 
   const primaryClientData: any = {

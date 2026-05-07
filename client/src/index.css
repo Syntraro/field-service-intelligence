@@ -387,6 +387,86 @@
   .text-table-header {
     @apply uppercase;
   }
+
+  /* ────────────────────────────────────────────────────────────────
+   * 2026-05-06 — operational-action modal chrome semantic classes.
+   *
+   * These bundle the EXACT Tailwind utilities the Scheduling Issues
+   * modal already shipped (the approved visual baseline). Each rule
+   * compiles to byte-identical CSS as the prior inline class strings,
+   * so the visual output is unchanged. Their job is to give the
+   * modal chrome a semantic name in JSX so future authors don't
+   * re-derive the spacing/border/color values per modal.
+   *
+   * Color choices use arbitrary `[#hex]` syntax intentionally — the
+   * project's `gray` palette in tailwind.config.ts is customised
+   * (`gray-200 = #E3E5E8`, `gray-600 = #616571`), so the inlined
+   * values were ALREADY pinned to specific hex strings, not Tailwind
+   * named greys. Keeping the literal `[#hex]` bypasses the custom
+   * palette and preserves byte-exact fidelity.
+   *
+   * Hex value provenance (prior to refactor, see
+   * client/src/components/OperationalActionModal.tsx history):
+   *   #e5e7eb — header / footer divider lines (default Tailwind
+   *             gray-200, NOT this project's gray-200).
+   *   #f8fafc — count-badge background (default Tailwind slate-50).
+   *   #4b5563 — count-badge text (default Tailwind gray-600, NOT
+   *             this project's gray-600).
+   *   #f1f5f9 — body scroll surface (default Tailwind slate-100).
+   *   #111827 — title color override (default Tailwind gray-900,
+   *             NOT this project's gray-900 = #151824).
+   * ──────────────────────────────────────────────────────────────── */
+
+  /* Outer shell: width, height, vertical flex column. ModalShell's
+     `p-0 gap-0` lock stays in effect; this class controls the wide
+     operational shape. The `!important` modifier on `sm:max-w-2xl`
+     is intentional — `<DialogContent>` bakes in `max-w-lg` (32rem)
+     as a Tailwind utility, and Tailwind compiles utilities AFTER
+     components in the cascade. Without `!important`, `max-w-lg`
+     would silently override the operational `sm:max-w-2xl` (42rem)
+     and the modal would render at the narrower confirm width. The
+     `!` makes the operational width the non-negotiable contract for
+     anything wearing this token. */
+  .operational-modal-shell {
+    @apply sm:!max-w-2xl max-h-[80vh] flex flex-col;
+  }
+
+  /* Header zone: 20px horizontal pad, 20px top, 12px bottom, slate
+     bottom divider, never shrinks when body scrolls. */
+  .operational-modal-header {
+    @apply px-5 pt-5 pb-3 border-b border-[#e5e7eb] shrink-0;
+  }
+
+  /* Title row: color override + horizontal flex layout to seat the
+     count badge alongside the heading text. Size inherits from
+     <DialogTitle>'s canonical `text-modal-title` default. */
+  .operational-modal-title {
+    @apply text-[#111827] flex items-center gap-2;
+  }
+
+  /* Count badge: small pill that surfaces beside the title text. */
+  .operational-modal-count-badge {
+    @apply inline-flex items-center justify-center h-5 min-w-5 px-1.5 rounded-full bg-[#f8fafc] text-xs font-bold text-[#4b5563] tabular-nums;
+  }
+
+  /* Body zone: takes remaining height, scrolls when overflowed,
+     light-slate background that lets row renderers show as white
+     cards (the dashboard-card emphasis pattern). */
+  .operational-modal-body {
+    @apply flex-1 overflow-y-auto min-h-0 bg-[#f1f5f9];
+  }
+
+  /* Footer zone: matching horizontal pad, 12px vertical, slate top
+     divider, single right-aligned action button. */
+  .operational-modal-footer {
+    @apply px-5 py-3 border-t border-[#e5e7eb] shrink-0 flex items-center justify-end;
+  }
+
+  /* Close-button text rhythm: `text-xs` (15.2px on this project's
+     19px html root) keeps the footer compact alongside the chrome. */
+  .operational-modal-close-button {
+    @apply text-xs;
+  }
 }
 
 /**

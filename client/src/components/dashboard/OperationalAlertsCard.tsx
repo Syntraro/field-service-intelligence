@@ -8,11 +8,11 @@
  * canonical `<DashboardActionModal>` — same modal the legacy Jobs
  * card opens — keyed by mode. No duplicate alert system.
  *
- * Rows (per spec):
+ * Rows — one mode per row (2026-05-06 normalization):
  *   - Ready to invoice   → mode="ready_to_invoice"
- *   - Past due           → mode="scheduling_issues"
- *   - Unscheduled        → mode="scheduling_issues"
- *   - Requires attention → mode="action_required"
+ *   - Past due           → mode="past_due"
+ *   - Unscheduled        → mode="unscheduled"
+ *   - Requires attention → mode="requires_attention"
  *
  * Card chrome matches the rest of the right-rail stack (header band,
  * iconBg block, hover-green rows). Rows with zero count remain
@@ -101,7 +101,7 @@ export function OperationalAlertsCard({
       count: pastDueCount,
       icon: AlertTriangle,
       iconColor: "text-red-600",
-      mode: "scheduling_issues",
+      mode: "past_due",
       urgent: pastDueCount > 0,
     },
     unscheduled: {
@@ -110,7 +110,7 @@ export function OperationalAlertsCard({
       count: unscheduledCount,
       icon: Calendar,
       iconColor: "text-amber-600",
-      mode: "scheduling_issues",
+      mode: "unscheduled",
     },
     requires_attention: {
       key: "requires_attention",
@@ -118,7 +118,7 @@ export function OperationalAlertsCard({
       count: requiresAttentionCount,
       icon: Briefcase,
       iconColor: "text-blue-600",
-      mode: "action_required",
+      mode: "requires_attention",
       urgent: requiresAttentionCount > 0,
     },
   };

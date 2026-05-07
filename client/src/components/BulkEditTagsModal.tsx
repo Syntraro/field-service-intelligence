@@ -6,13 +6,26 @@
 import { useState, useMemo, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Plus, Tag, ChevronRight, ArrowLeft } from "lucide-react";
+// 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
+// for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
+// Taxonomy rule #2 (generic / simple modal). Two-step wizard with two
+// distinct returns — both migrated. Step 1 (edit) uses
+// <ModalBody className="space-y-4"> to recreate the prior gap-4 between
+// the search/create input, the Add tags list, and the Remove tags list;
+// the shell carries `flex flex-col max-h-[85vh]` so the modal caps its
+// height on small viewports. Step 2 (review) uses the same body pattern.
+// Both steps have an explicit <ModalFooter> with Cancel/Review or
+// Back/Apply (unlike EditTagsModal's inline-action shape — this modal
+// has explicit step-advance / commit actions). Width `max-w-md` passed
+// at the call-site per Modal Taxonomy rule #5.
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+} from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -199,18 +212,26 @@ export default function BulkEditTagsModal({
   // ── Edit step ──
   if (step === "edit") {
     return (
-      <Dialog open={open} onOpenChange={handleOpenChange}>
-        <DialogContent className="max-w-md max-h-[85vh] flex flex-col">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Tag className="h-4 w-4" />
-              Bulk Edit Tags
-            </DialogTitle>
-            <p className="text-sm text-muted-foreground">
-              Applying to {countLabel}
-            </p>
-          </DialogHeader>
+      // 2026-05-06: width + height + flex stack passed at the call-site
+      // per Modal Taxonomy rule #5. The `flex flex-col max-h-[85vh]`
+      // makes the shell stack header / body / footer vertically and
+      // cap its height on short viewports.
+      <ModalShell
+        open={open}
+        onOpenChange={handleOpenChange}
+        className="max-w-md max-h-[85vh] flex flex-col"
+      >
+        <ModalHeader>
+          <ModalTitle className="flex items-center gap-2">
+            <Tag className="h-4 w-4" />
+            Bulk Edit Tags
+          </ModalTitle>
+          <ModalDescription>
+            Applying to {countLabel}
+          </ModalDescription>
+        </ModalHeader>
 
+        <ModalBody className="space-y-4">
           {/* Search / create input */}
           <div className="space-y-2">
             <Input
@@ -326,20 +347,21 @@ export default function BulkEditTagsModal({
             </div>
           </div>
 
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button variant="ghost" onClick={() => handleOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => setStep("review")}
-              disabled={!hasChanges}
-            >
-              Review Changes
-              <ChevronRight className="h-4 w-4 ml-1" />
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </ModalBody>
+
+        <ModalFooter className="gap-2 sm:gap-0">
+          <Button variant="ghost" onClick={() => handleOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => setStep("review")}
+            disabled={!hasChanges}
+          >
+            Review Changes
+            <ChevronRight className="h-4 w-4 ml-1" />
+          </Button>
+        </ModalFooter>
+      </ModalShell>
     );
   }
 
@@ -348,18 +370,26 @@ export default function BulkEditTagsModal({
   const removeTags = Array.from(removeTagIds).map((id) => tagMap.get(id)).filter(Boolean) as ClientTag[];
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Tag className="h-4 w-4" />
-            Confirm Bulk Tag Changes
-          </DialogTitle>
-        </DialogHeader>
+    // 2026-05-06: width passed at the call-site per Modal Taxonomy
+    // rule #5. The review step has no `max-h` constraint — the
+    // summary + name preview are short enough that natural sizing
+    // works (the longest preview shows up to 10 entity names plus
+    // a "+ N more" overflow line).
+    <ModalShell
+      open={open}
+      onOpenChange={handleOpenChange}
+      className="max-w-md"
+    >
+      <ModalHeader>
+        <ModalTitle className="flex items-center gap-2">
+          <Tag className="h-4 w-4" />
+          Confirm Bulk Tag Changes
+        </ModalTitle>
+      </ModalHeader>
 
-        <div className="space-y-4">
-          {/* Summary */}
-          <div className="rounded-md border p-3 space-y-2 text-sm">
+      <ModalBody className="space-y-4">
+        {/* Summary */}
+        <div className="rounded-md border p-3 space-y-2 text-sm">
             <p className="font-medium">
               {countLabel} will be updated
             </p>
@@ -386,26 +416,25 @@ export default function BulkEditTagsModal({
               {previewNames.map((name) => (
                 <li key={name} className="truncate">{name}</li>
               ))}
-              {remaining > 0 && (
-                <li className="text-muted-foreground">+ {remaining} more</li>
-              )}
-            </ul>
-          </div>
+            {remaining > 0 && (
+              <li className="text-muted-foreground">+ {remaining} more</li>
+            )}
+          </ul>
         </div>
+      </ModalBody>
 
-        <DialogFooter className="gap-2 sm:gap-0">
-          <Button variant="ghost" onClick={() => setStep("edit")}>
-            <ArrowLeft className="h-4 w-4 mr-1" />
-            Back
-          </Button>
-          <Button
-            onClick={() => applyMutation.mutate()}
-            disabled={applyMutation.isPending}
-          >
-            {applyMutation.isPending ? "Applying..." : "Confirm & Apply"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      <ModalFooter className="gap-2 sm:gap-0">
+        <Button variant="ghost" onClick={() => setStep("edit")}>
+          <ArrowLeft className="h-4 w-4 mr-1" />
+          Back
+        </Button>
+        <Button
+          onClick={() => applyMutation.mutate()}
+          disabled={applyMutation.isPending}
+        >
+          {applyMutation.isPending ? "Applying..." : "Confirm & Apply"}
+        </Button>
+      </ModalFooter>
+    </ModalShell>
   );
 }

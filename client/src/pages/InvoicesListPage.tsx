@@ -342,11 +342,16 @@ export default function InvoicesListPage() {
       header: "Description",
       kind: "text",
       ratio: 1.2,
-      // Description is intentionally muted (text-caption text-slate-500)
-      // — smaller than the row's `text-row` body and lighter than
-      // text-slate-700, to give the Client primary line visual priority.
+      // 2026-05-06 RALPH (entity list typography normalization):
+      // dropped the `text-caption` override so Description now inherits
+      // the canonical `text-row` baseline that EntityListTable's
+      // `kind: "text"` wrapper applies. Visual priority for the Client
+      // primary line still comes from `text-row-emphasis` + the darker
+      // `text-slate-800` color on the `kind: "primary"` cell, plus the
+      // muted `text-slate-500` we keep here. No ad-hoc font-size
+      // classes survive on the row body.
       render: (invoice) => (
-        <p className="text-caption text-slate-500 truncate">{invoice.workDescription || "-"}</p>
+        <p className="text-slate-500 truncate">{invoice.workDescription || "-"}</p>
       ),
     },
     {

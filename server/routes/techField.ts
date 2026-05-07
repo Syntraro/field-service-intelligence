@@ -1452,18 +1452,23 @@ router.post(
     // re-submitting the same customer (rare but possible on flaky network)
     // now gets the existing primary location back instead of twinning.
     const sentinelNextDue = new Date("9999-12-31").toISOString();
-    // 2026-05-04: pass `location: displayName` so the canonical dedupe key
-    // `(companyId, parentCompanyId, lower(location))` actually matches on
-    // re-submit. Pre-fix the tech route only set `companyName`, which the
-    // dedupe predicate ignores for child rows — so twin location rows were
-    // produced on every retry despite the existing "now gets the existing
-    // primary location back" comment claiming otherwise. Office full-create
-    // already follows the same pattern (primaryLocationName falls back to
-    // company / person name).
+    // 2026-05-06 RALPH: location name no longer auto-copies from the
+    // customer's display name. The tech form has no location-name input,
+    // so leaving `location` NULL matches the canonical office
+    // full-create flow (where the primary location row also has a
+    // NULL `location` column when the user does not enter one). The
+    // display layer's COALESCE renders the parent customer name in
+    // lists, so the row stops visually duplicating the customer name.
+    // Side effect: `createOrGetLocation`'s `(companyId, parentCompanyId,
+    // lower(location))` dedupe key no longer matches on a tech
+    // re-submit (it ignores NULL), so a flaky-network retry can produce
+    // twin primary locations under the same customer company. The user
+    // has accepted this tradeoff explicitly and will manage historical
+    // duplicates manually.
     const { location, created } = await storage.createOrGetLocation(companyId, userId, {
       parentCompanyId: customerCompany.id,
       companyName: displayName,
-      location: displayName,
+      location: null,
       contactName,
       email: data.email?.trim() || null,
       phone: data.phone?.trim() || null,

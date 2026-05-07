@@ -44,6 +44,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+// Schedule Assessment (form modal, line ~899) still uses raw Dialog —
+// per CLAUDE.md Modal Taxonomy, form modals are deferred to a future
+// sprint. The four destructive/consequence-bearing confirms (Approve,
+// Decline, Delete, Convert to Job) migrated to <AlertDialog> on
+// 2026-05-06 per Rule #1.
 import {
   Dialog,
   DialogContent,
@@ -53,6 +58,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -60,6 +75,11 @@ import {
 import type { Quote, QuoteLine, Client, CustomerCompany } from "@shared/schema";
 import { ApplyQuoteTemplateModal } from "@/components/ApplyQuoteTemplateModal";
 import { QuoteHeaderCard } from "@/components/QuoteHeaderCard";
+// 2026-05-06: extracted shared cards. Both QuoteDetailPage (saved mode)
+// and CreateQuotePage (draft mode) consume the same DOM/CSS so the two
+// pages cannot drift visually.
+import { QuoteSummaryCard } from "@/components/quotes/QuoteSummaryCard";
+import { QuoteDescriptionCard } from "@/components/quotes/QuoteDescriptionCard";
 import { ActivityCard } from "@/components/activity/ActivityCard";
 // Canonical notes section. Quote notes share the same UI + dialog +
 // attachment pipeline as job / invoice notes.
@@ -84,7 +104,6 @@ import {
   type LineItemsAdapter,
 } from "@/components/line-items";
 import { Briefcase as BriefcaseIcon, FileSearch, CalendarCheck } from "lucide-react";
-import { MetaRow } from "@/components/ui/meta-row";
 import { DetailPageShell } from "@/components/layout/DetailPageShell";
 
 interface QuoteDetails {
@@ -121,11 +140,10 @@ export default function QuoteDetailPage() {
   // inline add-row state likewise migrates to the hook's `appendNew`.
   // Quote-specific adapter is built further down, after the mutations.
 
-  // Description / notes collapse state — unchanged.
-  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
+  // 2026-05-06: description card now owns its own collapsed/edit state
+  // (extracted into <QuoteDescriptionCard mode="saved">). Only the Notes
+  // collapse/open-signal state stays here — that's still page-owned.
   const [notesExpanded, setNotesExpanded] = useState(false);
-  const [editingDescription, setEditingDescription] = useState(false);
-  const [descriptionDraft, setDescriptionDraft] = useState("");
   const [notesOpenSignal, setNotesOpenSignal] = useState(0);
 
   // Canonical Product/Service create flow — same pattern as Invoice.
@@ -348,7 +366,7 @@ export default function QuoteDetailPage() {
 
   // 2026-04-14 Phase 3E parity pass — description inline edit mutation.
   // `notesCustomer` on quotes is the Quote Description field (same
-  // column the PDF/email consumes; Phase 1 wired NewQuoteModal to it).
+  // column the PDF/email consumes).
   const updateDescriptionMutation = useMutation({
     mutationFn: (text: string) =>
       apiRequest(`/api/quotes/${quoteId}`, {
@@ -357,7 +375,6 @@ export default function QuoteDetailPage() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
-      setEditingDescription(false);
     },
     onError: (err: Error) =>
       toast({ title: "Failed to save description", description: err.message, variant: "destructive" }),
@@ -591,103 +608,20 @@ export default function QuoteDetailPage() {
             />
             {/* ↓ Description + Line Items inside same scroll column ↓ */}
             <div className="space-y-4">
-              {/* Description — 2026-04-14 Phase 3E parity pass.
-                  Mirrors JobDetailPage lines 1096-1179 byte-for-byte:
-                  Collapsible card (default collapsed), FileText icon,
-                  truncated preview in collapsed row, click-to-edit with
-                  Pencil affordance, inline textarea edit mode with
-                  save/cancel. PATCH /api/quotes/:id { notesCustomer } —
-                  the Quote Description column. */}
-              <div className="rounded-md border border-slate-200 bg-white shadow-sm overflow-hidden" data-testid="card-quote-description">
-                <Collapsible open={descriptionExpanded} onOpenChange={setDescriptionExpanded}>
-                  <CollapsibleTrigger asChild>
-                    <button
-                      className={cn(
-                        "w-full px-4 py-2.5 flex items-center justify-between transition-colors hover:bg-slate-50",
-                        descriptionExpanded && "border-b border-slate-200",
-                      )}
-                      data-testid="trigger-quote-description"
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <FileText className="h-4 w-4 text-slate-400 shrink-0" />
-                        <span className="text-sm font-semibold text-slate-700">Quote Description</span>
-                        {!descriptionExpanded && quote.notesCustomer && (
-                          <span className="text-xs text-slate-400 truncate max-w-[260px]">{quote.notesCustomer}</span>
-                        )}
-                      </div>
-                      <ChevronDown className={cn("h-4 w-4 text-slate-400 transition-transform shrink-0", descriptionExpanded && "rotate-180")} />
-                    </button>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <div className="px-4 py-3" data-testid="text-quote-description">
-                      {editingDescription ? (
-                        <div className="space-y-2">
-                          <Textarea
-                            value={descriptionDraft}
-                            onChange={(e) => setDescriptionDraft(e.target.value)}
-                            rows={5}
-                            autoFocus
-                            disabled={updateDescriptionMutation.isPending}
-                            onKeyDown={(e) => {
-                              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                                e.preventDefault();
-                                updateDescriptionMutation.mutate(descriptionDraft);
-                              } else if (e.key === "Escape") {
-                                setEditingDescription(false);
-                              }
-                            }}
-                            data-testid="input-quote-description"
-                          />
-                          <div className="flex items-center justify-end gap-2">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              disabled={updateDescriptionMutation.isPending}
-                              onClick={() => setEditingDescription(false)}
-                            >
-                              Cancel
-                            </Button>
-                            <Button
-                              size="sm"
-                              disabled={updateDescriptionMutation.isPending}
-                              onClick={() => updateDescriptionMutation.mutate(descriptionDraft)}
-                              data-testid="button-save-quote-description"
-                            >
-                              {updateDescriptionMutation.isPending && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
-                              Save
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => { setDescriptionDraft(quote.notesCustomer ?? ""); setEditingDescription(true); }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              e.preventDefault();
-                              setDescriptionDraft(quote.notesCustomer ?? "");
-                              setEditingDescription(true);
-                            }
-                          }}
-                          className="group flex items-start gap-1.5 cursor-pointer"
-                        >
-                          {quote.notesCustomer && quote.notesCustomer.trim() !== "" ? (
-                            <p className="text-sm text-slate-600 whitespace-pre-wrap flex-1 min-w-0 group-hover:text-slate-800 transition-colors">
-                              {quote.notesCustomer}
-                            </p>
-                          ) : (
-                            <p className="text-sm text-slate-400 italic group-hover:text-slate-500 transition-colors">
-                              Click to add description…
-                            </p>
-                          )}
-                          <Pencil className="h-3.5 w-3.5 text-slate-300 group-hover:text-slate-500 transition-colors shrink-0 mt-0.5" />
-                        </div>
-                      )}
-                    </div>
-                  </CollapsibleContent>
-                </Collapsible>
-              </div>
+              {/* Description — 2026-05-06: extracted into
+                  <QuoteDescriptionCard mode="saved"> so CreateQuotePage's
+                  draft-mode rendering shares the same DOM/CSS. Behavior
+                  matches the prior inline implementation byte-for-byte
+                  (collapsible, click-to-edit, Cmd/Ctrl+Enter to save,
+                  Esc to cancel, Pencil affordance). PATCH still PATCHes
+                  /api/quotes/:id { notesCustomer } via the page's
+                  updateDescriptionMutation — the card is presentational. */}
+              <QuoteDescriptionCard
+                mode="saved"
+                value={quote.notesCustomer}
+                onSave={(text) => updateDescriptionMutation.mutateAsync(text)}
+                isSaving={updateDescriptionMutation.isPending}
+              />
 
               {/* Line Items — canonical 2026-04-29 (Phase 2). The card
                   chrome / header metrics / column header / row bodies /
@@ -728,21 +662,15 @@ export default function QuoteDetailPage() {
       rightRail={
         <>
 
-              {/* 1. Quote Summary — revenue/tax/total. Profitability BLOCKED
-                  until quote_lines.unit_cost column lands (see audit). */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm font-medium">Quote Summary</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2 text-sm">
-                  <MetaRow label="Subtotal" value={formatCurrency(quote.subtotal)} />
-                  <MetaRow label="Tax" value={formatCurrency(quote.taxTotal)} />
-                  <div className="pt-2 border-t flex justify-between items-baseline">
-                    <span className="text-muted-foreground font-medium">Total</span>
-                    <span className="text-lg font-bold text-slate-900">{formatCurrency(quote.total)}</span>
-                  </div>
-                </CardContent>
-              </Card>
+              {/* 1. Quote Summary — 2026-05-06: extracted into
+                  <QuoteSummaryCard> so CreateQuotePage's draft-mode rail
+                  shares the same DOM/CSS. Profitability BLOCKED until
+                  quote_lines.unit_cost column lands (see audit). */}
+              <QuoteSummaryCard
+                subtotal={quote.subtotal}
+                taxTotal={quote.taxTotal}
+                total={quote.total}
+              />
 
               {/* 2. Notes — 2026-04-14 Phase 3E parity pass. Mirrors
                   JobDetailPage notes card byte-for-byte: Collapsible
@@ -885,81 +813,112 @@ export default function QuoteDetailPage() {
         }}
       />
 
+      {/* ── DESTRUCTIVE / CONSEQUENCE-BEARING CONFIRMS ──
+          2026-05-06 modal taxonomy alignment: Approve / Decline /
+          Delete / Convert to Job migrated from raw <Dialog> to
+          canonical <AlertDialog> per CLAUDE.md Modal Taxonomy rule #1.
+          Radix AlertDialog applies stricter focus-trap + escape-key
+          semantics to confirmation flows. Copy, mutation handlers,
+          loading states, and per-confirm visual variants are preserved
+          verbatim — only the primitive layer changed. AlertDialogAction
+          auto-closes on click via Radix Close, but each mutation either
+          refetches the same quote (Approve / Decline) or navigates
+          (Delete → /quotes; Convert to Job → /jobs/:id), so the close
+          path is harmless. */}
+
       {/* Approve Confirmation */}
-      <Dialog open={showApproveConfirm} onOpenChange={setShowApproveConfirm}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Approve Quote</DialogTitle>
-            <DialogDescription>
+      <AlertDialog open={showApproveConfirm} onOpenChange={setShowApproveConfirm}>
+        <AlertDialogContent className="sm:max-w-[400px]">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Approve Quote</AlertDialogTitle>
+            <AlertDialogDescription>
               Mark this quote as approved by the client?
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowApproveConfirm(false)}>Cancel</Button>
-            <Button onClick={() => approveMutation.mutate()} disabled={approveMutation.isPending}>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-approve-cancel">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => approveMutation.mutate()}
+              disabled={approveMutation.isPending}
+              data-testid="button-approve-confirm"
+            >
               {approveMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Mark Approved
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Decline Confirmation */}
-      <Dialog open={showDeclineConfirm} onOpenChange={setShowDeclineConfirm}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Decline Quote</DialogTitle>
-            <DialogDescription>
+      <AlertDialog open={showDeclineConfirm} onOpenChange={setShowDeclineConfirm}>
+        <AlertDialogContent className="sm:max-w-[400px]">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Decline Quote</AlertDialogTitle>
+            <AlertDialogDescription>
               Mark this quote as declined by the client?
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDeclineConfirm(false)}>Cancel</Button>
-            <Button variant="destructive" onClick={() => declineMutation.mutate()} disabled={declineMutation.isPending}>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-decline-cancel">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => declineMutation.mutate()}
+              disabled={declineMutation.isPending}
+              data-testid="button-decline-confirm"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
               {declineMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Mark Declined
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Delete Confirmation */}
-      <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete Quote</DialogTitle>
-            <DialogDescription>
+      <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+        <AlertDialogContent className="sm:max-w-[400px]">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Quote</AlertDialogTitle>
+            <AlertDialogDescription>
               Are you sure you want to delete this quote? This action cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDeleteConfirm(false)}>Cancel</Button>
-            <Button variant="destructive" onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending}>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-delete-cancel">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => deleteMutation.mutate()}
+              disabled={deleteMutation.isPending}
+              data-testid="button-delete-confirm"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
               {deleteMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Delete Quote
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Convert to Job Confirmation */}
-      <Dialog open={showConvertToJobConfirm} onOpenChange={setShowConvertToJobConfirm}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Convert to Job</DialogTitle>
-            <DialogDescription>
+      <AlertDialog open={showConvertToJobConfirm} onOpenChange={setShowConvertToJobConfirm}>
+        <AlertDialogContent className="sm:max-w-[400px]">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Convert to Job</AlertDialogTitle>
+            <AlertDialogDescription>
               This will create a new job from {quote.quoteNumber} with all line items. The quote will be marked as converted.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowConvertToJobConfirm(false)}>Cancel</Button>
-            <Button onClick={() => convertToJobMutation.mutate()} disabled={convertToJobMutation.isPending}>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-convert-to-job-cancel">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => convertToJobMutation.mutate()}
+              disabled={convertToJobMutation.isPending}
+              data-testid="button-convert-to-job-confirm"
+            >
               {convertToJobMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Create Job
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* 2026-04-29 (Phase 2 canonical extraction): one AddProductModal
           instance per page, opened by `requestCreateProduct(name)` from

@@ -3,7 +3,7 @@ import { storage } from "../storage/index";
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
-import { parsePagination } from "../utils/pagination";
+import { parsePagination, parsePaginationLenient } from "../utils/pagination";
 import { paginated } from "../utils/paginatedResponse";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
@@ -493,9 +493,22 @@ router.post("/atomic", requireRole(MANAGER_ROLES), asyncHandler(async (req: Auth
 // not wired at the route. No breaking change — legacy callers that omit
 // these params see identical behavior. Tenant isolation is unchanged
 // (companyId is sourced from ctx, not the query string).
+//
+// 2026-05-06 (RALPH narrow): adds `status` passthrough so the dashboard
+// "Invoices Not Sent" drill-down can fetch only `status='draft'` rows
+// without a new endpoint. The underlying `getInvoicesFeed` already
+// accepts `status` — this just wires the route layer through.
+//
+// 2026-05-06 (RALPH polish — `invoices_not_sent` modal failed-load fix):
+// pagination is now parsed leniently. Strict `parsePagination` rejected
+// any caller that omitted both `offset` and `cursor`, but the dashboard
+// modal sends `?status=draft&limit=50` (no offset/cursor) and the
+// InvoicesListPage already passes `?offset=0&limit=200`. Lenient parsing
+// defaults `offset=0` for the no-pagination case so legacy + dashboard
+// callers both succeed; explicit offset/cursor callers behave unchanged.
 router.get("/list", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const ctx = getQueryCtx(req);
-  const pagination = parsePagination(req.query);
+  const { params: pagination } = parsePaginationLenient(req.query);
   const jobIdParam = typeof req.query.jobId === "string" ? req.query.jobId : undefined;
   const customerCompanyIdParam =
     typeof req.query.customerCompanyId === "string" && req.query.customerCompanyId.length > 0
@@ -506,6 +519,10 @@ router.get("/list", asyncHandler(async (req: AuthedRequest, res: Response) => {
       ? req.query.locationId
       : undefined;
   const unpaidOnlyParam = req.query.unpaidOnly === "true" || req.query.unpaidOnly === "1";
+  const statusParam =
+    typeof req.query.status === "string" && req.query.status.length > 0
+      ? req.query.status
+      : undefined;
   const { items } = await getInvoicesFeed(ctx, {
     limit: pagination.limit,
     offset: pagination.offset ?? 0,
@@ -513,6 +530,7 @@ router.get("/list", asyncHandler(async (req: AuthedRequest, res: Response) => {
     customerCompanyId: customerCompanyIdParam,
     locationId: locationIdParam,
     unpaidOnly: unpaidOnlyParam || undefined,
+    status: statusParam,
   });
   // Preserve existing response shape for backward compatibility
   res.json(paginated(items, { limit: pagination.limit, hasMore: items.length >= pagination.limit }));

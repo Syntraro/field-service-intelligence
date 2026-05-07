@@ -30,6 +30,10 @@ const techLeadVisitDetail = read(
   "client/src/tech-app/pages/LeadVisitDetailPage.tsx",
 );
 const leadDetailPage = read("client/src/pages/LeadDetailPage.tsx");
+// 2026-05-06 PR1: the right-rail "Details" card was extracted to a
+// shared component used by both LeadDetailPage and the new /leads/new
+// CreateLeadPage. The next-visit-row predicate moved with it.
+const leadDetailsRail = read("client/src/components/leads/LeadDetailsRail.tsx");
 const monthData = read(
   "client/src/components/dispatch/useDispatchMonthData.ts",
 );
@@ -278,8 +282,13 @@ describe("LeadDetailPage — next-visit summary instead of static Assigned To", 
   });
 
   it("hides the Next Visit Assignee row entirely when no visits exist", () => {
-    // The MetaRow only renders when leadVisits.length > 0.
-    expect(leadDetailPage).toMatch(/leadVisits\.length > 0 && nextUpcomingVisit/);
-    expect(leadDetailPage).toMatch(/leadVisits\.length > 0 && !nextUpcomingVisit/);
+    // 2026-05-06 PR1: the row predicate moved from inline JSX in
+    // LeadDetailPage to the shared LeadDetailsRail component. The
+    // gating is now expressed as `hasVisits && nextVisit` /
+    // `hasVisits && !nextVisit` against the rail's saved-mode props,
+    // and LeadDetailPage passes `hasVisits={leadVisits.length > 0}`.
+    expect(leadDetailPage).toMatch(/hasVisits=\{leadVisits\.length > 0\}/);
+    expect(leadDetailsRail).toMatch(/hasVisits\s*&&\s*nextVisit/);
+    expect(leadDetailsRail).toMatch(/hasVisits\s*&&\s*!nextVisit/);
   });
 });

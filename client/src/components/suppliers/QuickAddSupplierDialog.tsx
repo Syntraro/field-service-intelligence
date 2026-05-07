@@ -10,14 +10,20 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+// 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
+// for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
+// Taxonomy rule #2 (generic / simple form modal). Completes the supplier
+// modal triplet (paired with AddLocationDialog + EditLocationDialog).
+// Same body-shape decision (use ModalBody), same form structure (form
+// wraps body+footer, header sibling), same width contract.
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+} from "@/components/ui/modal";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Supplier } from "@shared/schema";
@@ -99,18 +105,25 @@ export function QuickAddSupplierDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>Add New Supplier</DialogTitle>
-          <DialogDescription>
-            Add a new supplier. You can add locations and more details later.
-          </DialogDescription>
-        </DialogHeader>
+    // 2026-05-06: width passed at the call-site per Modal Taxonomy
+    // rule #5. The `max-w-md` width matches the prior DialogContent —
+    // a narrow quick-create dialog for the minimal supplier identity
+    // fields. ModalShell stays width-neutral.
+    <ModalShell
+      open={open}
+      onOpenChange={onOpenChange}
+      className="max-w-md"
+    >
+      <ModalHeader>
+        <ModalTitle>Add New Supplier</ModalTitle>
+        <ModalDescription>
+          Add a new supplier. You can add locations and more details later.
+        </ModalDescription>
+      </ModalHeader>
 
-        <form onSubmit={handleSubmit}>
-          <div className="space-y-3 py-3">
-            <div>
+      <form onSubmit={handleSubmit}>
+        <ModalBody className="space-y-3">
+          <div>
               <Label htmlFor="supplier-name">Supplier Name *</Label>
               <Input
                 id="supplier-name"
@@ -155,28 +168,27 @@ export function QuickAddSupplierDialog({
               />
             </div>
 
-            <div>
-              <Label htmlFor="supplier-notes">Notes</Label>
-              <Textarea
-                id="supplier-notes"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Payment terms, contact preferences, etc."
-                rows={2}
-              />
-            </div>
+          <div>
+            <Label htmlFor="supplier-notes">Notes</Label>
+            <Textarea
+              id="supplier-notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Payment terms, contact preferences, etc."
+              rows={2}
+            />
           </div>
+        </ModalBody>
 
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={mutation.isPending}>
-              {mutation.isPending ? "Creating..." : "Create Supplier"}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+        <ModalFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={mutation.isPending}>
+            {mutation.isPending ? "Creating..." : "Create Supplier"}
+          </Button>
+        </ModalFooter>
+      </form>
+    </ModalShell>
   );
 }

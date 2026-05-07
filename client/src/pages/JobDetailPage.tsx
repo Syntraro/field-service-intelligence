@@ -111,6 +111,10 @@ import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
 // preserves the page's heavier typography + truncate + hide-when-empty
 // behavior byte-for-byte.
 import { AddressBlock } from "@/components/common/AddressBlock";
+// 2026-05-06 RALPH: dedupe-resolver for the service-address location
+// label. Shared with InvoiceDetailPage so both surfaces apply the same
+// raw-only / no-customer-duplicate rule.
+import { resolveServiceLocationName } from "@/lib/serviceAddress";
 
 // ============================================================================
 // PERMISSION HELPERS - Role-based action availability
@@ -1754,10 +1758,21 @@ export default function JobDetailPage() {
                       </Button>
                     </div>
 
+                    {/* 2026-05-06 RALPH: pass the RAW `location.location`
+                        column (the user-entered location name), NOT the
+                        server-side `locationDisplayNameExpr` COALESCE
+                        that this object's `companyName` field carries.
+                        The COALESCE resolves to the parent customer
+                        name and was duplicating the H1 above. The
+                        resolver also suppresses legacy data where
+                        `clients.location` was auto-copied from the
+                        customer name, so the "Service Address" block
+                        no longer repeats the customer name as a
+                        location label. */}
                     <AddressBlock
                       variant="job"
                       label="Service Address"
-                      locationName={job.location?.companyName}
+                      locationName={resolveServiceLocationName(job.location?.location, clientName)}
                       street={streetLine}
                       cityLine={cityLine}
                       testId="block-service-address"

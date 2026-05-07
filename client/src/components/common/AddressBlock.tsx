@@ -21,10 +21,17 @@
  *   - Invoice ("invoice" variant) uses the canonical `text-label`
  *     token defaults (weight 500, tracking 0.04em) and renders the
  *     location name as `text-row-emphasis text-text-primary`. No
- *     `truncate`. Missing location name shows a muted dash (`—`) so
- *     the row stays present. No wrapper margin because the parent
+ *     `truncate`. No wrapper margin because the parent
  *     `InvoiceMetaCard` lays the two blocks out with explicit
  *     `<div className="my-2 border-t …" />` dividers.
+ *     2026-05-06 RALPH: missing location name now SKIPS the
+ *     emphasized location-name row entirely (no dash placeholder).
+ *     Callers run the shared `resolveServiceLocationName(rawLocation,
+ *     customerName)` helper and pass its result; when the helper
+ *     returns null (empty raw name OR a name that matches the customer
+ *     name case-insensitively), the row collapses so the customer
+ *     name no longer visually duplicates as a location label. The
+ *     label header + street/city lines still render.
  *
  * Both variants are presentational only. No data fetching, no
  * formatting, no conditional logic beyond the variant-specific
@@ -40,8 +47,6 @@
  *     icon. Different surface, different primitive; intentionally
  *     not migrated.
  */
-
-import type { ReactNode } from "react";
 
 export type AddressBlockVariant = "job" | "invoice";
 
@@ -69,11 +74,6 @@ interface AddressBlockProps {
   /** Optional class appended to the variant's wrapper class. */
   className?: string;
 }
-
-/** Muted em-dash placeholder used by the "invoice" variant when a
- *  field is missing. Matches the local `dash` constant in
- *  InvoiceMetaCard so visual output is byte-equivalent. */
-const DASH: ReactNode = <span className="text-slate-400">—</span>;
 
 export function AddressBlock({
   label,
@@ -116,21 +116,28 @@ export function AddressBlock({
     );
   }
 
-  // variant === "invoice" — always render every row; missing locationName
-  // falls through to the canonical dash. No wrapper margin (parent
-  // owns the divider rhythm). No truncate.
-  // testId is attached to the LOCATION-NAME row here, NOT the outer
-  // wrapper — preserves the pre-extraction `data-testid="meta-service-
-  // location-name"` placement on the emphasized inner `<div>`.
+  // variant === "invoice" — render the label + street/city always.
+  // The emphasized location-name row renders ONLY when the caller's
+  // dedupe-resolver returned a real distinct value. The pre-RALPH
+  // dash placeholder (rendered when locationName was falsy) is
+  // intentionally gone: the brief mandates that the row is present
+  // ONLY when a real user-entered location name exists, so an
+  // empty/duplicate value collapses the row entirely. No wrapper
+  // margin (parent owns the divider rhythm). No truncate. testId is
+  // attached to the LOCATION-NAME row when it renders — preserves the
+  // pre-extraction `data-testid="meta-service-location-name"` selector
+  // for downstream tests.
   return (
     <div className={className}>
       <div className="text-label uppercase text-text-muted mb-0.5">{label}</div>
-      <div
-        className="text-row-emphasis text-text-primary"
-        data-testid={testId}
-      >
-        {locationName || DASH}
-      </div>
+      {locationName && (
+        <div
+          className="text-row-emphasis text-text-primary"
+          data-testid={testId}
+        >
+          {locationName}
+        </div>
+      )}
       {street && <div className="text-row text-text-secondary">{street}</div>}
       {cityLine && (
         <div className="text-row text-text-secondary">{cityLine}</div>

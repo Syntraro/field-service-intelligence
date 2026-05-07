@@ -24,7 +24,7 @@
  * - (needs_review: removed — migrated to on_hold)
  */
 
-import { jobs, invoices, clientLocations as clients, customerCompanies, recurringJobInstances, recurringJobTemplates, quotes, payments } from "@shared/schema";
+import { jobs, invoices, clientLocations as clients, customerCompanies, recurringJobInstances, recurringJobTemplates, quotes, payments, leads, leadVisits } from "@shared/schema";
 import { eq, and, or, sql, asc, desc, isNull, gte, lt, inArray } from "drizzle-orm";
 import type { QueryCtx } from "../lib/queryCtx";
 import { activeJobFilter } from "./jobFilters";
@@ -835,6 +835,404 @@ export interface FinancialSummary {
     customerName: string | null;
     locationName: string | null;
   }[];
+  /**
+   * 2026-05-06 dashboard restructure: Pipeline Snapshot card data.
+   * `conversionRateMonth` is null when there were zero leads created this
+   * month (no denominator → display "—" not "0%"). `staleLeadsValue` is the
+   * SUM of `estimatedValue` for the matching rows; nulls treated as zero.
+   */
+  pipelineSnapshot: {
+    // 2026-05-06 (legacy fields, kept for backward compatibility with
+    // any surface still consuming them — the dashboard card itself now
+    // reads the actionable bucket fields below).
+    leadsCount: number;
+    leadsValue: number;
+    quotesSentCount: number;
+    quotesSentValue: number;
+    awaitingFollowUpCount: number;
+    awaitingFollowUpValue: number;
+    conversionRateMonth: number | null;
+    staleLeadsCount: number;
+    staleLeadsValue: number;
+
+    // 2026-05-06 RALPH actionable Pipeline buckets. Each maps 1:1 to a
+    // dashboard action-modal mode (pipeline_leads_followup,
+    // pipeline_quotes_not_sent, pipeline_quotes_awaiting_response,
+    // pipeline_stale_opportunities). Counts are tenant-scoped, exclude
+    // closed/lost/converted records, and use the SAME predicates the
+    // server-side bucket filters in the leads + quotes route layers
+    // use — so the card's count and the modal's drill-down list stay
+    // in lockstep by construction.
+    /** Open leads needing contact: status IN ('new','contacted','needs_review'). */
+    leadsFollowUpCount: number;
+    leadsFollowUpValue: number;
+    /** Quotes created but never sent: status='draft'. */
+    quotesNotSentCount: number;
+    quotesNotSentValue: number;
+    /** Quotes sent but not yet accepted/declined/converted: status='sent'. */
+    quotesAwaitingResponseCount: number;
+    quotesAwaitingResponseValue: number;
+    /**
+     * Stale opportunities — open leads OR open quotes whose last activity
+     * (`COALESCE(updated_at, created_at)`) is older than 14 days.
+     * Intentionally an OVERLAY over the per-bucket rows above: the same
+     * lead may appear in both Leads-Needing-Follow-Up (current state)
+     * AND Stale Opportunities (aging escalation). This is by design —
+     * stale rows are a time-based escalation of the per-bucket rows,
+     * not a separate set of records.
+     */
+    staleOpportunitiesCount: number;
+    staleOpportunitiesValue: number;
+  };
+  /**
+   * 2026-05-06 dashboard restructure: Scheduled Revenue card data.
+   * Per-job value resolution: `invoices.total` when linked → else
+   * `quotes.total` (quote status in {approved, converted, sent}). Jobs
+   * with no reliable value (NULL after coalesce, or zero) are EXCLUDED
+   * from totals and from `upcomingHighValueJobs`.
+   */
+  scheduledRevenue: {
+    todayValue: number;
+    next7DaysValue: number;
+    next30DaysValue: number;
+    upcomingHighValueJobs: {
+      id: string;
+      jobNumber: number;
+      summary: string | null;
+      customerName: string | null;
+      locationName: string | null;
+      scheduledStart: string | null;
+      value: number;
+    }[];
+  };
+  /**
+   * 2026-05-06 dashboard restructure: Needs Attention card data. Explicitly
+   * does NOT include "completed jobs not invoiced" — that lives in
+   * Operational Alerts → Ready to Invoice. Payments-pending was evaluated
+   * and SKIPPED because `payments` table has no status column (atomic
+   * ledger entries, not pending receivables).
+   */
+  needsAttention: {
+    invoicesNotSentCount: number;
+    invoicesNotSentValue: number;
+    quotesNotFollowedUpCount: number;
+    quotesNotFollowedUpValue: number;
+    leadsNotConvertedCount: number;
+    leadsNotConvertedValue: number;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 2026-05-06 dashboard restructure helpers — Pipeline / Scheduled Revenue /
+// Needs Attention. Each is a pure tenant-scoped read; no schema changes.
+// All three are called in parallel from `getFinancialSummary` below.
+// ---------------------------------------------------------------------------
+
+async function getPipelineSnapshot(
+  companyId: string,
+  monthStart: Date,
+): Promise<FinancialSummary["pipelineSnapshot"]> {
+  // Single round-trip aggregate. CTEs separate each bucket so the
+  // query stays readable. NULL `estimated_value` / `total` → 0.
+  //
+  // 2026-05-06 RALPH: extends the prior aggregate with four actionable
+  // buckets used by the redesigned Pipeline card. The legacy buckets
+  // remain so existing surfaces / tests don't break. Stale-opportunity
+  // SQL deliberately uses the same predicates the leads + quotes route
+  // layer's `bucket=` filters use — modal counts and drill-down rows
+  // stay in lockstep without a parallel data path.
+  const result = await db.execute(sql`
+    WITH lead_agg AS (
+      SELECT
+        COUNT(*)::int AS count,
+        COALESCE(SUM(CAST(estimated_value AS numeric)), 0)::text AS value,
+        COUNT(*) FILTER (WHERE created_at >= ${monthStart})::int AS month_total,
+        COUNT(*) FILTER (
+          WHERE created_at >= ${monthStart}
+            AND status IN ('quoted', 'won')
+        )::int AS month_converted
+      FROM leads
+      WHERE company_id = ${companyId}
+        AND is_active = true
+        AND status NOT IN ('lost')
+    ),
+    quotes_sent AS (
+      SELECT
+        COUNT(*)::int AS count,
+        COALESCE(SUM(CAST(total AS numeric)), 0)::text AS value
+      FROM quotes
+      WHERE company_id = ${companyId}
+        AND status = 'sent'
+    ),
+    quotes_stale AS (
+      SELECT
+        COUNT(*)::int AS count,
+        COALESCE(SUM(CAST(total AS numeric)), 0)::text AS value
+      FROM quotes
+      WHERE company_id = ${companyId}
+        AND status = 'sent'
+        AND sent_at < NOW() - INTERVAL '7 days'
+    ),
+    stale_leads AS (
+      SELECT
+        COUNT(*)::int AS count,
+        COALESCE(SUM(CAST(l.estimated_value AS numeric)), 0)::text AS value
+      FROM leads l
+      WHERE l.company_id = ${companyId}
+        AND l.is_active = true
+        AND l.status NOT IN ('quoted', 'won', 'lost')
+        AND l.created_at < NOW() - INTERVAL '7 days'
+        AND NOT EXISTS (
+          SELECT 1 FROM lead_visits lv
+          WHERE lv.lead_id = l.id
+            AND lv.scheduled_start IS NOT NULL
+        )
+    ),
+    -- 2026-05-06 RALPH: actionable bucket aggregates ----------------
+    leads_followup AS (
+      -- Open leads needing contact: status in the early-pipeline set.
+      -- Excludes 'quoted' (already progressed to a quote), 'won', 'lost'.
+      SELECT
+        COUNT(*)::int AS count,
+        COALESCE(SUM(CAST(estimated_value AS numeric)), 0)::text AS value
+      FROM leads
+      WHERE company_id = ${companyId}
+        AND is_active = true
+        AND status IN ('new', 'contacted', 'needs_review')
+    ),
+    quotes_not_sent AS (
+      -- Draft quotes — created but never sent to the customer.
+      SELECT
+        COUNT(*)::int AS count,
+        COALESCE(SUM(CAST(total AS numeric)), 0)::text AS value
+      FROM quotes
+      WHERE company_id = ${companyId}
+        AND status = 'draft'
+    ),
+    quotes_awaiting AS (
+      -- Sent quotes — waiting on customer accept/decline/conversion.
+      -- Same row set as quotes_sent above; aliased here for clarity in
+      -- the SELECT projection.
+      SELECT
+        COUNT(*)::int AS count,
+        COALESCE(SUM(CAST(total AS numeric)), 0)::text AS value
+      FROM quotes
+      WHERE company_id = ${companyId}
+        AND status = 'sent'
+    ),
+    stale_opps AS (
+      -- Stale opportunities = open leads OR open quotes (draft/sent)
+      -- whose last activity (COALESCE(updated_at, created_at)) is older
+      -- than 14 days. Counts both lead and quote rows in a single sum;
+      -- the modal's drill-down splits them back by record type.
+      SELECT
+        SUM(stale_count)::int AS count,
+        COALESCE(SUM(stale_value), 0)::text AS value
+      FROM (
+        SELECT
+          COUNT(*)::int AS stale_count,
+          COALESCE(SUM(CAST(estimated_value AS numeric)), 0) AS stale_value
+        FROM leads
+        WHERE company_id = ${companyId}
+          AND is_active = true
+          AND status IN ('new', 'contacted', 'needs_review')
+          AND COALESCE(updated_at, created_at) < NOW() - INTERVAL '14 days'
+        UNION ALL
+        SELECT
+          COUNT(*)::int AS stale_count,
+          COALESCE(SUM(CAST(total AS numeric)), 0) AS stale_value
+        FROM quotes
+        WHERE company_id = ${companyId}
+          AND status IN ('draft', 'sent')
+          AND COALESCE(updated_at, created_at) < NOW() - INTERVAL '14 days'
+      ) combined
+    )
+    SELECT
+      lead_agg.count          AS leads_count,
+      lead_agg.value          AS leads_value,
+      lead_agg.month_total    AS month_total,
+      lead_agg.month_converted AS month_converted,
+      quotes_sent.count       AS quotes_sent_count,
+      quotes_sent.value       AS quotes_sent_value,
+      quotes_stale.count      AS awaiting_followup_count,
+      quotes_stale.value      AS awaiting_followup_value,
+      stale_leads.count       AS stale_leads_count,
+      stale_leads.value       AS stale_leads_value,
+      leads_followup.count    AS leads_followup_count,
+      leads_followup.value    AS leads_followup_value,
+      quotes_not_sent.count   AS quotes_not_sent_count,
+      quotes_not_sent.value   AS quotes_not_sent_value,
+      quotes_awaiting.count   AS quotes_awaiting_count,
+      quotes_awaiting.value   AS quotes_awaiting_value,
+      stale_opps.count        AS stale_opps_count,
+      stale_opps.value        AS stale_opps_value
+    FROM lead_agg, quotes_sent, quotes_stale, stale_leads,
+         leads_followup, quotes_not_sent, quotes_awaiting, stale_opps
+  `);
+  const row: any = (result as any).rows?.[0] ?? (Array.isArray(result) ? result[0] : null);
+  const monthTotal = row?.month_total ?? 0;
+  const monthConverted = row?.month_converted ?? 0;
+  const conversionRateMonth = monthTotal > 0
+    ? Math.round((monthConverted / monthTotal) * 1000) / 10
+    : null;
+  return {
+    leadsCount: row?.leads_count ?? 0,
+    leadsValue: parseFloat(row?.leads_value ?? "0"),
+    quotesSentCount: row?.quotes_sent_count ?? 0,
+    quotesSentValue: parseFloat(row?.quotes_sent_value ?? "0"),
+    awaitingFollowUpCount: row?.awaiting_followup_count ?? 0,
+    awaitingFollowUpValue: parseFloat(row?.awaiting_followup_value ?? "0"),
+    conversionRateMonth,
+    staleLeadsCount: row?.stale_leads_count ?? 0,
+    staleLeadsValue: parseFloat(row?.stale_leads_value ?? "0"),
+    leadsFollowUpCount: row?.leads_followup_count ?? 0,
+    leadsFollowUpValue: parseFloat(row?.leads_followup_value ?? "0"),
+    quotesNotSentCount: row?.quotes_not_sent_count ?? 0,
+    quotesNotSentValue: parseFloat(row?.quotes_not_sent_value ?? "0"),
+    quotesAwaitingResponseCount: row?.quotes_awaiting_count ?? 0,
+    quotesAwaitingResponseValue: parseFloat(row?.quotes_awaiting_value ?? "0"),
+    staleOpportunitiesCount: row?.stale_opps_count ?? 0,
+    staleOpportunitiesValue: parseFloat(row?.stale_opps_value ?? "0"),
+  };
+}
+
+async function getScheduledRevenue(
+  companyId: string,
+  todayStart: Date,
+): Promise<FinancialSummary["scheduledRevenue"]> {
+  // Window: [today, today + 30 days). Per-job value resolution prefers
+  // invoice total (linked), then quote total (status approved/converted/
+  // sent). Jobs with no reliable value (resolved value NULL or 0) are
+  // EXCLUDED from totals and from the high-value list.
+  const window30End = new Date(todayStart.getTime() + 30 * 86400000);
+  const window7End = new Date(todayStart.getTime() + 7 * 86400000);
+  const window1End = new Date(todayStart.getTime() + 1 * 86400000);
+  const result = await db.execute(sql`
+    SELECT
+      j.id,
+      j.job_number AS "jobNumber",
+      j.summary,
+      j.scheduled_start AS "scheduledStart",
+      cc.name AS "customerName",
+      cl.company_name AS "locationName",
+      COALESCE(
+        CAST(inv.total AS numeric),
+        CASE
+          WHEN q.status IN ('approved', 'converted', 'sent')
+            THEN CAST(q.total AS numeric)
+          ELSE NULL
+        END
+      )::text AS value
+    FROM jobs j
+    LEFT JOIN invoices inv ON inv.id = j.invoice_id
+    LEFT JOIN quotes q ON q.converted_to_job_id = j.id
+    LEFT JOIN client_locations cl ON cl.id = j.location_id
+    LEFT JOIN customer_companies cc ON cc.id = cl.parent_company_id
+    WHERE j.company_id = ${companyId}
+      AND j.scheduled_start >= ${todayStart}
+      AND j.scheduled_start < ${window30End}
+      AND j.status NOT IN ('cancelled', 'voided')
+      AND COALESCE(
+        CAST(inv.total AS numeric),
+        CASE
+          WHEN q.status IN ('approved', 'converted', 'sent')
+            THEN CAST(q.total AS numeric)
+          ELSE NULL
+        END
+      ) > 0
+    ORDER BY value DESC NULLS LAST
+  `);
+  const rows: any[] = ((result as any).rows ?? (Array.isArray(result) ? result : [])) as any[];
+  let todayValue = 0;
+  let next7DaysValue = 0;
+  let next30DaysValue = 0;
+  for (const r of rows) {
+    const v = parseFloat(r.value ?? "0");
+    if (!Number.isFinite(v) || v <= 0) continue;
+    next30DaysValue += v;
+    const start = r.scheduledStart ? new Date(r.scheduledStart) : null;
+    if (!start) continue;
+    if (start < window7End) next7DaysValue += v;
+    if (start < window1End) todayValue += v;
+  }
+  const upcomingHighValueJobs = rows.slice(0, 3).map((r: any) => ({
+    id: r.id,
+    jobNumber: r.jobNumber,
+    summary: r.summary,
+    customerName: r.customerName,
+    locationName: r.locationName,
+    scheduledStart: r.scheduledStart instanceof Date
+      ? r.scheduledStart.toISOString()
+      : (r.scheduledStart ?? null),
+    value: parseFloat(r.value ?? "0"),
+  }));
+  return {
+    todayValue: Math.round(todayValue * 100) / 100,
+    next7DaysValue: Math.round(next7DaysValue * 100) / 100,
+    next30DaysValue: Math.round(next30DaysValue * 100) / 100,
+    upcomingHighValueJobs,
+  };
+}
+
+async function getNeedsAttention(
+  companyId: string,
+): Promise<FinancialSummary["needsAttention"]> {
+  // Three independent buckets in one round-trip via CTEs.
+  // - invoicesNotSent: status='draft'
+  // - quotesNotFollowedUp: status='sent' AND sent_at < NOW() - 7 days
+  // - leadsNotConverted: created > 14 days ago, status NOT in {quoted,won,lost},
+  //   no scheduled lead_visit (NOT EXISTS).
+  const result = await db.execute(sql`
+    WITH inv_draft AS (
+      SELECT
+        COUNT(*)::int AS count,
+        COALESCE(SUM(CAST(total AS numeric)), 0)::text AS value
+      FROM invoices
+      WHERE company_id = ${companyId}
+        AND status = 'draft'
+    ),
+    quotes_stale AS (
+      SELECT
+        COUNT(*)::int AS count,
+        COALESCE(SUM(CAST(total AS numeric)), 0)::text AS value
+      FROM quotes
+      WHERE company_id = ${companyId}
+        AND status = 'sent'
+        AND sent_at < NOW() - INTERVAL '7 days'
+    ),
+    leads_stale AS (
+      SELECT
+        COUNT(*)::int AS count,
+        COALESCE(SUM(CAST(l.estimated_value AS numeric)), 0)::text AS value
+      FROM leads l
+      WHERE l.company_id = ${companyId}
+        AND l.is_active = true
+        AND l.status NOT IN ('quoted', 'won', 'lost')
+        AND l.created_at < NOW() - INTERVAL '14 days'
+        AND NOT EXISTS (
+          SELECT 1 FROM lead_visits lv
+          WHERE lv.lead_id = l.id
+            AND lv.scheduled_start IS NOT NULL
+        )
+    )
+    SELECT
+      inv_draft.count    AS invoices_not_sent_count,
+      inv_draft.value    AS invoices_not_sent_value,
+      quotes_stale.count AS quotes_stale_count,
+      quotes_stale.value AS quotes_stale_value,
+      leads_stale.count  AS leads_stale_count,
+      leads_stale.value  AS leads_stale_value
+    FROM inv_draft, quotes_stale, leads_stale
+  `);
+  const row: any = (result as any).rows?.[0] ?? (Array.isArray(result) ? result[0] : null);
+  return {
+    invoicesNotSentCount: row?.invoices_not_sent_count ?? 0,
+    invoicesNotSentValue: parseFloat(row?.invoices_not_sent_value ?? "0"),
+    quotesNotFollowedUpCount: row?.quotes_stale_count ?? 0,
+    quotesNotFollowedUpValue: parseFloat(row?.quotes_stale_value ?? "0"),
+    leadsNotConvertedCount: row?.leads_stale_count ?? 0,
+    leadsNotConvertedValue: parseFloat(row?.leads_stale_value ?? "0"),
+  };
 }
 
 export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSummary> {
@@ -873,6 +1271,11 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
     agingRows, topInvoiceRows, topCustomerRows, draftRows, readyToInvoiceRows,
     draftPreviewRows, readyToInvoicePreviewRows,
     recentPaymentRows,
+    // 2026-05-06 dashboard restructure — three new aggregates run in
+    // parallel with the existing query set.
+    pipelineSnapshotData,
+    scheduledRevenueData,
+    needsAttentionData,
   ] = await Promise.all([
     // Revenue by period (4 queries)
     revenueQuery(todayStart, new Date(todayStart.getTime() + 86400000)),
@@ -1146,6 +1549,11 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
       ))
       .orderBy(desc(payments.receivedAt))
       .limit(5),
+
+    // 2026-05-06 dashboard restructure helpers (run in parallel).
+    getPipelineSnapshot(companyId, monthStart),
+    getScheduledRevenue(companyId, todayStart),
+    getNeedsAttention(companyId),
   ]);
 
   // Post-query derivations
@@ -1282,6 +1690,9 @@ export async function getFinancialSummary(ctx: QueryCtx): Promise<FinancialSumma
     draftInvoicesPreview,
     readyToInvoiceJobsPreview,
     recentPayments,
+    pipelineSnapshot: pipelineSnapshotData,
+    scheduledRevenue: scheduledRevenueData,
+    needsAttention: needsAttentionData,
   };
 }
 

@@ -4,14 +4,22 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
+// 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
+// for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
+// Taxonomy rule #2 (generic / simple form modal). Body is a standard
+// space-y form layout with intra-body `border-t pt-2` section separators
+// (Pricing / Duration+Category / Checkboxes rows) — fits cleanly inside
+// <ModalBody>. Width (`sm:max-w-[550px]`) + `overflow-visible` (lets the
+// Type and Category Select dropdowns extend outside the modal) passed at
+// the call-site per Modal Taxonomy rule #5.
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+} from "@/components/ui/modal";
 import { Loader2 } from "lucide-react";
 import { Part, ProductFormData } from "./types";
 
@@ -68,18 +76,26 @@ export function ProductServiceFormDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[550px] overflow-visible" data-testid="dialog-product">
-        <DialogHeader>
-          <DialogTitle>{editingProduct ? "Edit Item" : "Add New Item"}</DialogTitle>
-          <DialogDescription>
-            {editingProduct ? "Update the item details." : "Create a new product or service."}
-          </DialogDescription>
-        </DialogHeader>
+    // 2026-05-06: width + overflow-visible passed at the call-site per
+    // Modal Taxonomy rule #5. The `overflow-visible` is intentional —
+    // the Type and Category Select dropdowns rely on it to extend
+    // outside the modal's content area.
+    <ModalShell
+      open={open}
+      onOpenChange={onOpenChange}
+      className="sm:max-w-[550px] overflow-visible"
+      data-testid="dialog-product"
+    >
+      <ModalHeader>
+        <ModalTitle>{editingProduct ? "Edit Item" : "Add New Item"}</ModalTitle>
+        <ModalDescription>
+          {editingProduct ? "Update the item details." : "Create a new product or service."}
+        </ModalDescription>
+      </ModalHeader>
 
-        <div className="space-y-3 py-1">
-          {/* Row A: Type | SKU */}
-          <div className="grid grid-cols-2 gap-3">
+      <ModalBody className="space-y-3">
+        {/* Row A: Type | SKU */}
+        <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label>Type *</Label>
               <Select value={formData.type} onValueChange={(v: "service" | "product") => setFormField("type", v)}>
@@ -169,27 +185,26 @@ export function ProductServiceFormDialog({
             </div>
           </div>
 
-          {/* Row F: Checkboxes */}
-          <div className="flex items-center gap-4 border-t pt-2">
-            <div className="flex items-center gap-2">
-              <Checkbox id="taxable" checked={formData.isTaxable} onCheckedChange={(c) => setFormField("isTaxable", c as boolean)} />
-              <Label htmlFor="taxable" className="font-normal cursor-pointer">Taxable</Label>
-            </div>
-            <div className="flex items-center gap-2">
-              <Checkbox id="active" checked={formData.isActive} onCheckedChange={(c) => setFormField("isActive", c as boolean)} />
-              <Label htmlFor="active" className="font-normal cursor-pointer">Active</Label>
-            </div>
+        {/* Row F: Checkboxes */}
+        <div className="flex items-center gap-4 border-t pt-2">
+          <div className="flex items-center gap-2">
+            <Checkbox id="taxable" checked={formData.isTaxable} onCheckedChange={(c) => setFormField("isTaxable", c as boolean)} />
+            <Label htmlFor="taxable" className="font-normal cursor-pointer">Taxable</Label>
+          </div>
+          <div className="flex items-center gap-2">
+            <Checkbox id="active" checked={formData.isActive} onCheckedChange={(c) => setFormField("isActive", c as boolean)} />
+            <Label htmlFor="active" className="font-normal cursor-pointer">Active</Label>
           </div>
         </div>
+      </ModalBody>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={onCancel}>Cancel</Button>
-          <Button onClick={onSave} disabled={isSaving || !!checkDuplicate} data-testid="button-save">
-            {isSaving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
-            {editingProduct ? "Save" : "Create"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      <ModalFooter>
+        <Button variant="outline" onClick={onCancel}>Cancel</Button>
+        <Button onClick={onSave} disabled={isSaving || !!checkDuplicate} data-testid="button-save">
+          {isSaving ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+          {editingProduct ? "Save" : "Create"}
+        </Button>
+      </ModalFooter>
+    </ModalShell>
   );
 }

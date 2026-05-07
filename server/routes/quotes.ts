@@ -5,7 +5,7 @@ import { requireRole } from "../auth/requireRole";
 import { requireFeature } from "../auth/requireFeature";
 import { MANAGER_ROLES } from "../auth/roles";
 import { notificationService } from "../services/notificationService";
-import { parsePagination } from "../utils/pagination";
+import { parsePaginationLenient } from "../utils/pagination";
 import { paginated } from "../utils/paginatedResponse";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
@@ -67,6 +67,11 @@ const createQuoteSchema = z.object({
     description: z.string().min(1).max(500),
     quantity: z.string().regex(/^\d+(\.\d{1,2})?$/).optional().default("1"),
     unitPrice: z.string().regex(/^\d+(\.\d{1,2})?$/).optional().default("0.00"),
+    // 2026-05-06: cost basis per unit. Optional + nullable — the
+    // create page passes the draft cost (carried over from the
+    // selected product's `items.cost` by `useLineItemsDrafts`).
+    // Persists into `quote_lines.unit_cost`.
+    unitCost: z.string().regex(/^\d+(\.\d{1,2})?$/).nullable().optional(),
     lineSubtotal: z.string().regex(/^\d+(\.\d{1,2})?$/).optional().default("0.00"),
     taxRate: z.string().regex(/^\d+(\.\d{1,4})?$/).optional().default("0.0000"),
     taxAmount: z.string().regex(/^\d+(\.\d{1,2})?$/).optional().default("0.00"),
@@ -101,12 +106,40 @@ const createQuoteLineSchema = canonicalLineItemInput.strict();
 // ========================================
 
 // GET /api/quotes/list - List all quotes with pagination
-// Supports optional locationId and customerCompanyId query params for scoped views
+// Supports optional locationId and customerCompanyId query params for scoped views.
+//
+// 2026-05-06 RALPH: `bucket=stale` filter added for the dashboard
+// Pipeline "Stale Opportunities" drill-down. Predicates mirror the
+// dashboard `getPipelineSnapshot` aggregate so card counts and modal
+// rows stay in lockstep. Optional `staleDays` overrides the default
+// 14-day threshold.
+//
+// 2026-05-06 RALPH polish (Pipeline modal feed normalization): pagination
+// is parsed leniently to mirror `/api/invoices/list`. The dashboard
+// `<DashboardActionModal>` Pipeline sources (`quotes_draft`,
+// `quotes_sent_open`, `stale_quotes`) send `?status=...&limit=50` /
+// `?bucket=stale&staleDays=14&limit=50` with no offset/cursor — strict
+// `parsePagination` rejected those at 400 and made the modals show
+// "Failed to load." Lenient parsing defaults offset=0 in that case;
+// explicit-pagination callers (e.g. `Quotes.tsx` sends `?offset=0&limit=200`)
+// behave unchanged because they already pass an offset.
 router.get("/list", asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const pagination = parsePagination(req.query);
+  const { params: pagination } = parsePaginationLenient(req.query);
   const status = typeof req.query.status === "string" ? req.query.status : undefined;
   const locationId = typeof req.query.locationId === "string" ? req.query.locationId : undefined;
   const customerCompanyId = typeof req.query.customerCompanyId === "string" ? req.query.customerCompanyId : undefined;
+  const bucket = typeof req.query.bucket === "string" ? req.query.bucket : undefined;
+  const staleDaysRaw = typeof req.query.staleDays === "string" ? parseInt(req.query.staleDays, 10) : undefined;
+  const staleDays =
+    Number.isFinite(staleDaysRaw) && (staleDaysRaw as number) > 0
+      ? (staleDaysRaw as number)
+      : 14;
+
+  if (bucket === "stale") {
+    const items = await quoteRepository.getStalePipelineQuotes(req.companyId!, staleDays, pagination.limit);
+    res.json(paginated(items, { limit: pagination.limit, hasMore: false }));
+    return;
+  }
 
   const result = await quoteRepository.getQuotes(req.companyId!, {
     ...pagination,
@@ -1033,13 +1066,22 @@ router.post("/:id/convert-to-job", requireRole(MANAGER_ROLES), asyncHandler(asyn
     leadId: quoteLeadId,
   });
 
-  // Create job parts from quote lines
+  // Create job parts from quote lines.
+  // 2026-05-06: propagate `unitCost` from quote_lines.unit_cost into
+  // job_parts.unit_cost so the converted job's profitability
+  // surfaces (and any downstream invoice billable-preview hydrated
+  // from it) preserve the cost basis the user recorded on the
+  // quote. Pre-migration quote rows have unitCost = null which the
+  // jobs adapter / canonical headerMetrics treats as 0, same
+  // fallback behaviour as before — only newly-saved quotes carry a
+  // real value through.
   for (const line of lines) {
     await jobRepository.createJobPart(companyId, job.id, {
       companyId,
       jobId: job.id,
       description: line.description,
       quantity: line.quantity,
+      unitCost: (line as Record<string, unknown>).unitCost as string | null ?? null,
       unitPrice: line.unitPrice || null,
       productId: line.productId || null,
       sortOrder: line.lineNumber || 0,

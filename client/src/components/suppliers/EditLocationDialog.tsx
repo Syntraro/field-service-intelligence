@@ -5,14 +5,20 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
+// 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
+// for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
+// Taxonomy rule #2 (generic / simple form modal). Mirrors the
+// AddLocationDialog migration that landed earlier in this Unreleased
+// cycle — same body-shape decision (use ModalBody), same form structure
+// (form wraps body+footer, header sibling), same width contract.
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+} from "@/components/ui/modal";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { SupplierLocation } from "@shared/schema";
@@ -108,16 +114,22 @@ export function EditLocationDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Edit Location</DialogTitle>
-          <DialogDescription>Update location details.</DialogDescription>
-        </DialogHeader>
+    // 2026-05-06: width passed at the call-site per Modal Taxonomy
+    // rule #5. The `max-h-[90vh] overflow-y-auto` triple lets the
+    // form scroll inside the modal when fields exceed the viewport.
+    <ModalShell
+      open={open}
+      onOpenChange={onOpenChange}
+      className="max-w-2xl max-h-[90vh] overflow-y-auto"
+    >
+      <ModalHeader>
+        <ModalTitle>Edit Location</ModalTitle>
+        <ModalDescription>Update location details.</ModalDescription>
+      </ModalHeader>
 
-        <form onSubmit={handleSubmit}>
-          <div className="space-y-4 py-4">
-            <div>
+      <form onSubmit={handleSubmit}>
+        <ModalBody className="space-y-4">
+          <div>
               <Label htmlFor="edit-location-name">Name *</Label>
               <Input
                 id="edit-location-name"
@@ -255,26 +267,25 @@ export function EditLocationDialog({
               />
             </div>
 
-            <div className="flex items-center justify-between py-2">
-              <Label htmlFor="edit-isActive">Active</Label>
-              <Switch
-                id="edit-isActive"
-                checked={formData.isActive}
-                onCheckedChange={(checked) => setFormData({ ...formData, isActive: checked })}
-              />
-            </div>
+          <div className="flex items-center justify-between py-2">
+            <Label htmlFor="edit-isActive">Active</Label>
+            <Switch
+              id="edit-isActive"
+              checked={formData.isActive}
+              onCheckedChange={(checked) => setFormData({ ...formData, isActive: checked })}
+            />
           </div>
+        </ModalBody>
 
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={mutation.isPending}>
-              {mutation.isPending ? "Saving..." : "Save Changes"}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+        <ModalFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={mutation.isPending}>
+            {mutation.isPending ? "Saving..." : "Save Changes"}
+          </Button>
+        </ModalFooter>
+      </form>
+    </ModalShell>
   );
 }

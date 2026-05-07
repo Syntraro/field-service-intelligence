@@ -1222,7 +1222,7 @@ function FinalActionBar({
         <div>
           <div className="font-semibold text-sm">Ready to create this maintenance plan?</div>
           <div className="text-xs text-muted-foreground mt-0.5">
-            Review the details above. When you create the plan, upcoming maintenance will appear in Recurring Jobs when due.
+            Review the details above. When you create the plan, upcoming maintenance will appear on the Maintenance page when due.
           </div>
         </div>
         <Button
@@ -1537,7 +1537,7 @@ export default function PMWizardPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates/upcoming"] });
       toast({
         title: "Maintenance plan created",
-        description: `"${state.title}" is now active. Upcoming maintenance will appear in Recurring Jobs when due.`,
+        description: `"${state.title}" is now active. Upcoming maintenance will appear on the Maintenance page when due.`,
       });
       // Show the explanation modal unless the user opted out previously.
       const hidden = (() => {
@@ -1714,8 +1714,8 @@ export default function PMWizardPage() {
             <DialogTitle>Maintenance plan created</DialogTitle>
             <DialogDescription>
               This plan will track upcoming maintenance based on the schedule
-              you selected. When maintenance is due, it will appear in
-              Recurring Jobs so you can create the work order.
+              you selected. When maintenance is due, it will appear on the
+              Maintenance page so you can create the work order.
             </DialogDescription>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">

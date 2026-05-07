@@ -54,13 +54,41 @@ const createLeadBodySchema = z.object({
 });
 
 /**
- * GET /api/leads — List leads with optional status filter
+ * GET /api/leads — List leads with optional status / bucket filter.
+ *
+ * Query params:
+ *   - `status` (single value)        — exact status filter (legacy).
+ *   - `bucket=followup|stale`        — actionable Pipeline drill-down
+ *                                      buckets. Predicates mirror the
+ *                                      dashboard's getPipelineSnapshot
+ *                                      aggregate so card counts stay in
+ *                                      lockstep with the rows the
+ *                                      DashboardActionModal renders.
+ *   - `staleDays` (default 14)       — threshold for `bucket=stale`.
+ *
+ * 2026-05-06 RALPH: bucket filter added. The `followup` bucket returns
+ * open leads needing contact (status IN new/contacted/needs_review).
+ * The `stale` bucket layers a "no activity for N days" filter on top.
+ * Both buckets exclude lost / quoted / won by definition.
  */
 router.get(
   "/",
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
     const status = typeof req.query.status === "string" ? req.query.status : undefined;
+    const bucket = typeof req.query.bucket === "string" ? req.query.bucket : undefined;
+    const staleDaysRaw = typeof req.query.staleDays === "string" ? parseInt(req.query.staleDays, 10) : undefined;
+    const staleDays =
+      Number.isFinite(staleDaysRaw) && (staleDaysRaw as number) > 0
+        ? (staleDaysRaw as number)
+        : 14;
+
+    if (bucket === "followup" || bucket === "stale") {
+      const leads = await leadRepository.listPipelineBucket(companyId, bucket, staleDays);
+      res.json({ data: leads });
+      return;
+    }
+
     const leads = await leadRepository.listLeads(companyId, { status });
     res.json({ data: leads });
   })

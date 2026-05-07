@@ -422,55 +422,87 @@ function GenerateConfirmModal({
 }
 
 // ============================================================================
-// KpiCard — small primitive used by Work Due
+// KpiStrip — compact horizontal summary used by the Work Due tab
+//
+// 2026-05-06 layout pass: replaced the prior 3-card KpiCard grid with
+// a single white rounded card whose three stats are separated by
+// thin slate-200 dividers. Icon colors / counts / loading semantics
+// are preserved. Stat row sits ~64px tall (icon 32px + py-3) — well
+// under the prior ~110px tile height — so the data table below
+// surfaces ~40-50px higher in the viewport.
 // ============================================================================
 
-function KpiCard({
-  label, count, sub, icon: Icon, iconColor, iconBg, warn, isLoading,
+function KpiStrip({
+  isLoading, dueNow, upcomingWeek, overdue,
+}: {
+  isLoading?: boolean;
+  dueNow: number;
+  upcomingWeek: number;
+  overdue: number;
+}) {
+  return (
+    <div
+      className="bg-white rounded-lg border border-slate-200 shadow-sm flex divide-x divide-slate-200"
+      data-testid="pm-kpi-strip"
+    >
+      <KpiStripItem
+        label="Due Now"
+        count={dueNow}
+        icon={CircleDot}
+        iconBg="bg-orange-100"
+        iconColor="text-orange-600"
+        isLoading={isLoading}
+      />
+      <KpiStripItem
+        label="This Week"
+        count={upcomingWeek}
+        icon={Clock}
+        iconBg="bg-slate-100"
+        iconColor="text-slate-600"
+        isLoading={isLoading}
+      />
+      <KpiStripItem
+        label="Overdue"
+        count={overdue}
+        icon={AlertTriangle}
+        iconBg="bg-red-100"
+        iconColor="text-red-600"
+        warn={overdue > 0}
+        isLoading={isLoading}
+      />
+    </div>
+  );
+}
+
+function KpiStripItem({
+  label, count, icon: Icon, iconColor, iconBg, warn, isLoading,
 }: {
   label: string;
   count: number;
-  sub: string;
   icon: React.ElementType;
   iconColor: string;
   iconBg: string;
   warn?: boolean;
   isLoading?: boolean;
 }) {
-  // 2026-04-26 polish pass: richer card — icon circle on the left, larger
-  // value, subtle hover lift. Soft tinted background only when warn=true so
-  // the Overdue card visually leads.
   return (
-    <Card
-      className={`relative overflow-hidden transition-all duration-150 hover:shadow-md ${
-        warn
-          ? "border-red-200 bg-gradient-to-br from-red-50/60 via-white to-white"
-          : "border-slate-200 bg-white"
-      }`}
-    >
-      {/* 2026-04-26 polish v2: tighter KPI tile — closer to a stat tile than a
-          feature card. Padding `px-4 py-3` (was `px-5 py-5`); icon circle 32px
-          (was 40px); value `text-page-title` (was 34px). Hover lift translate dropped
-          to keep the row from "bouncing". */}
-      <CardContent className="px-4 py-3">
-        <div className="flex items-center gap-2.5 mb-1.5">
-          <div className={`flex items-center justify-center h-8 w-8 rounded-full ${iconBg}`}>
-            <Icon className={`h-4 w-4 ${iconColor}`} />
-          </div>
-          <span className="text-helper font-semibold text-slate-500 uppercase tracking-[0.06em]">
-            {label}
-          </span>
-        </div>
-        <div
-          className={`text-page-title font-bold tabular-nums leading-none ${
+    <div className="flex-1 flex items-center gap-3 px-4 py-3 min-w-0">
+      <div className={`flex items-center justify-center h-8 w-8 rounded-full shrink-0 ${iconBg}`}>
+        <Icon className={`h-4 w-4 ${iconColor}`} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-helper font-semibold text-slate-500 uppercase tracking-[0.06em] truncate">
+          {label}
+        </p>
+        <p
+          className={`text-body font-bold tabular-nums leading-tight ${
             warn ? "text-red-600" : "text-slate-900"
           }`}
         >
           {isLoading ? "—" : count}
-        </div>
-        <p className="text-helper text-slate-500 mt-1.5">{sub}</p>
-      </CardContent>
-    </Card>
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -594,52 +626,29 @@ function WorkDueTab({
   }, [filtered, sort, templatesById]);
 
   return (
-    <div className="space-y-4">
-      {/* KPI summary — 3 cards. */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <KpiCard
-          label="Due Now"
-          count={counts.dueNow}
-          sub="plans need work orders"
-          icon={CircleDot}
-          iconColor="text-orange-600"
-          iconBg="bg-orange-100"
-          isLoading={isLoading}
-        />
-        <KpiCard
-          label="Upcoming This Week"
-          count={counts.upcomingWeek}
-          sub="plans coming up"
-          icon={Clock}
-          iconColor="text-slate-600"
-          iconBg="bg-slate-100"
-          isLoading={isLoading}
-        />
-        <KpiCard
-          label="Overdue"
-          count={counts.overdue}
-          sub="plans past due"
-          icon={AlertTriangle}
-          iconColor="text-red-600"
-          iconBg="bg-red-100"
-          warn={counts.overdue > 0}
-          isLoading={isLoading}
-        />
-      </div>
+    <div className="space-y-3">
+      {/* 2026-05-06 layout pass: 3 KPI cards collapsed into one
+          horizontal strip. Same icon colors / counts / loading
+          behavior — saves ~80px of vertical space versus the prior
+          card grid. Each stat is a flex cell separated by a thin
+          slate-200 divider. */}
+      <KpiStrip
+        isLoading={isLoading}
+        dueNow={counts.dueNow}
+        upcomingWeek={counts.upcomingWeek}
+        overdue={counts.overdue}
+      />
 
-      {/* Section header + controls.
-          2026-04-26 polish v2: bulk action moved INTO this header so it
-          stays visible regardless of how many rows render. The bottom CTA
-          card was removed — putting the action above the table avoids
-          burying it under 20–50 rows. */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h2 className="text-body font-semibold text-slate-900">
-          Plans Due Now
-          {!isLoading && (
-            <span className="ml-2 text-row font-normal text-slate-500">({filtered.length})</span>
-          )}
-        </h2>
-        <div className="flex items-center gap-2">
+      {/* Compact controls row — single white rounded card. Filter +
+          search on the left; bulk-generate CTA on the right. The
+          per-section "Plans Due Now (N)" heading lives separately
+          ABOVE the table (not inside the controls) so the table
+          starts higher in the viewport. */}
+      <div
+        className="bg-white rounded-lg border border-slate-200 shadow-sm flex items-center justify-between gap-3 flex-wrap p-2"
+        data-testid="work-due-controls-row"
+      >
+        <div className="flex items-center gap-2 flex-wrap">
           <Select value={filter} onValueChange={(v) => setFilter(v as WorkDueFilter)}>
             <SelectTrigger className="h-9 w-[140px] rounded-md" data-testid="work-due-filter">
               <SelectValue />
@@ -661,20 +670,29 @@ function WorkDueTab({
               data-testid="work-due-search"
             />
           </div>
-          {!isLoading && (counts.dueNow + counts.overdue) > 0 && (
-            <Button
-              size="sm"
-              onClick={onOpenBulkConfirm}
-              disabled={isGenerating}
-              data-testid="work-due-generate-all"
-              className="h-9"
-            >
-              {isGenerating ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Zap className="mr-1.5 h-3.5 w-3.5" />}
-              Generate All Due Work ({counts.dueNow + counts.overdue})
-            </Button>
-          )}
         </div>
+        {!isLoading && (counts.dueNow + counts.overdue) > 0 && (
+          <Button
+            size="sm"
+            onClick={onOpenBulkConfirm}
+            disabled={isGenerating}
+            data-testid="work-due-generate-all"
+            className="h-9"
+          >
+            {isGenerating ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Zap className="mr-1.5 h-3.5 w-3.5" />}
+            Generate All Due Work ({counts.dueNow + counts.overdue})
+          </Button>
+        )}
       </div>
+
+      {/* Section heading sits directly above the table so the data
+          surfaces as high as possible. */}
+      <h2 className="text-body font-semibold text-slate-900" data-testid="plans-due-now-heading">
+        Plans Due Now
+        {!isLoading && (
+          <span className="ml-2 text-row font-normal text-slate-500">({filtered.length})</span>
+        )}
+      </h2>
 
       {/* Table */}
       {isLoading ? (
@@ -1414,84 +1432,100 @@ export default function PMWorkspacePage() {
 
   return (
     <div className="min-h-screen bg-app-bg" data-testid="pm-workspace-page">
-      <div className="p-6 space-y-5">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-3 flex-wrap">
-          <div>
-            <h1 className="text-page-title font-semibold text-slate-900">Maintenance Plans</h1>
-            <p className="text-row text-slate-500 mt-0.5">
-              Create service plans, schedule recurring work, and generate jobs.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {/* 2026-04-26: Removed the top "Generate Due Work" button — it
-                duplicated the contextual "Generate All Due Work" button that
-                lives just above the Plans-Due-Now table on the Work Due tab,
-                which is where the action belongs. The page-level header now
-                holds only the canonical "+ New Plan" entry point. */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button size="sm" className="gap-1.5 h-9 rounded-md" data-testid="header-new-plan">
-                  <Plus className="h-4 w-4" />New Plan
-                  <ChevronDown className="h-3.5 w-3.5 -ml-1 opacity-70" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => setCreatePmDialogOpen(true)}>
-                  <Wrench className="mr-2 h-4 w-4" />Maintenance plan
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setShowRecurringJobDialog(true)}>
-                  <Repeat className="mr-2 h-4 w-4" />Recurring job
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </div>
-
-        {/* Tabs — wrapped in a premium white container for stronger hierarchy.
-            Tab strip sits flush at the top of the panel; content lives in a
-            padded section below. Border + soft shadow lift the surface off
-            the green page background. */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-          <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <div className="border-b border-slate-200 bg-slate-50/60 px-3 pt-3">
-              <TabsList className="h-auto p-1 bg-white border border-slate-200 shadow-sm">
-                <TabsTrigger value="work_due" className="px-4 py-1.5 text-row" data-testid="tab-work-due">Work Due</TabsTrigger>
-                <TabsTrigger value="plans" className="px-4 py-1.5 text-row" data-testid="tab-plans">Plans</TabsTrigger>
-                <TabsTrigger value="templates" className="px-4 py-1.5 text-row" data-testid="tab-templates">Templates</TabsTrigger>
+      <div className="p-6 space-y-4">
+        {/* 2026-05-06 layout pass: compact single-row header that
+            inlines the tab strip with the page title — replaces the
+            prior stacked layout (large H1 + subtitle + separate
+            tabs-in-card surface). Tabs use an underline-only active
+            style so they read as part of the header rather than as a
+            separate widget. The Tabs root must wrap the entire page
+            below since `TabsContent` looks up the active value via
+            its parent. */}
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+          <div className="flex items-end justify-between gap-3 flex-wrap border-b border-slate-200 pb-3">
+            <div className="flex items-baseline gap-6 flex-wrap">
+              <h1 className="text-page-title font-semibold text-slate-900 leading-none" data-testid="pm-page-title">
+                Maintenance
+              </h1>
+              <TabsList
+                className="h-auto p-0 bg-transparent shadow-none border-0 gap-4 rounded-none -mb-3"
+                data-testid="pm-inline-tabs"
+              >
+                <TabsTrigger
+                  value="work_due"
+                  className="rounded-none border-b-2 border-transparent bg-transparent shadow-none px-1 pb-2 text-row font-medium text-slate-500 data-[state=active]:bg-transparent data-[state=active]:text-slate-900 data-[state=active]:border-b-[#76B054] data-[state=active]:shadow-none"
+                  data-testid="tab-work-due"
+                >
+                  Work Due
+                </TabsTrigger>
+                <TabsTrigger
+                  value="plans"
+                  className="rounded-none border-b-2 border-transparent bg-transparent shadow-none px-1 pb-2 text-row font-medium text-slate-500 data-[state=active]:bg-transparent data-[state=active]:text-slate-900 data-[state=active]:border-b-[#76B054] data-[state=active]:shadow-none"
+                  data-testid="tab-plans"
+                >
+                  Plans
+                </TabsTrigger>
+                <TabsTrigger
+                  value="templates"
+                  className="rounded-none border-b-2 border-transparent bg-transparent shadow-none px-1 pb-2 text-row font-medium text-slate-500 data-[state=active]:bg-transparent data-[state=active]:text-slate-900 data-[state=active]:border-b-[#76B054] data-[state=active]:shadow-none"
+                  data-testid="tab-templates"
+                >
+                  Templates
+                </TabsTrigger>
               </TabsList>
             </div>
+            <div className="flex items-center gap-2">
+              {/* Header right — only "+ New Plan" lives here; the
+                  contextual "Generate All Due Work" stays in the
+                  Work Due controls row above the table. */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="sm" className="gap-1.5 h-9 rounded-md" data-testid="header-new-plan">
+                    <Plus className="h-4 w-4" />New Plan
+                    <ChevronDown className="h-3.5 w-3.5 -ml-1 opacity-70" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => setCreatePmDialogOpen(true)}>
+                    <Wrench className="mr-2 h-4 w-4" />Maintenance plan
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setShowRecurringJobDialog(true)}>
+                    <Repeat className="mr-2 h-4 w-4" />Recurring job
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </div>
 
-            <TabsContent value="work_due" className="mt-0 p-5 sm:p-6">
-              <WorkDueTab
-                items={upcomingItems}
-                isLoading={upcomingLoading}
-                isError={upcomingError}
-                templatesById={templatesById}
-                initialFilter={initialFilter}
-                isGenerating={generateMutation.isPending}
-                pendingRowId={pendingRowId}
-                onGenerateOne={handleGenerateOne}
-                onOpenBulkConfirm={() => setBulkConfirmOpen(true)}
-              />
-            </TabsContent>
+          <TabsContent value="work_due" className="mt-0">
+            <WorkDueTab
+              items={upcomingItems}
+              isLoading={upcomingLoading}
+              isError={upcomingError}
+              templatesById={templatesById}
+              initialFilter={initialFilter}
+              isGenerating={generateMutation.isPending}
+              pendingRowId={pendingRowId}
+              onGenerateOne={handleGenerateOne}
+              onOpenBulkConfirm={() => setBulkConfirmOpen(true)}
+            />
+          </TabsContent>
 
-            <TabsContent value="plans" className="mt-0 p-5 sm:p-6">
-              <PlansTab
-                templates={templates}
-                isLoading={templatesLoading}
-                isError={templatesError}
-                error={templatesErrorObj}
-                onRetry={() => refetchTemplates()}
-                onCreatePlan={() => setCreatePmDialogOpen(true)}
-              />
-            </TabsContent>
+          <TabsContent value="plans" className="mt-0">
+            <PlansTab
+              templates={templates}
+              isLoading={templatesLoading}
+              isError={templatesError}
+              error={templatesErrorObj}
+              onRetry={() => refetchTemplates()}
+              onCreatePlan={() => setCreatePmDialogOpen(true)}
+            />
+          </TabsContent>
 
-            <TabsContent value="templates" className="mt-0 p-5 sm:p-6">
-              <TemplatesTab />
-            </TabsContent>
-          </Tabs>
-        </div>
+          <TabsContent value="templates" className="mt-0">
+            <TemplatesTab />
+          </TabsContent>
+        </Tabs>
 
         {/* Bulk-confirm modal — owned by the page so the header button can
             open it regardless of which tab is currently active. */}

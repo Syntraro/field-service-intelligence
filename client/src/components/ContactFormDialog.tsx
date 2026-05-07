@@ -49,9 +49,22 @@
 import { useState, useEffect, useMemo } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Trash2 } from "lucide-react";
+// 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
+// for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
+// Taxonomy rule #2 (generic / simple modal). The body keeps its custom
+// 2-section flex layout (identity panel + scrolling locations list)
+// directly inside <ModalShell> rather than being wrapped in <ModalBody>
+// — wrapping would compound the canonical px-5 py-4 padding with the
+// inner per-section padding and break the layout. Header + Footer use
+// className overrides to preserve the existing layout (header uses
+// shorter py-3 padding; footer keeps delete-left sm:justify-between
+// + slate-50 bg).
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalFooter,
+} from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -422,13 +435,25 @@ export function ContactFormDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl p-0 gap-0 overflow-hidden">
-        <DialogHeader className="px-5 py-3 border-b border-slate-200">
-          <DialogTitle data-testid="contact-modal-title">
-            {contact ? "Edit Contact" : "Add Contact"}
-          </DialogTitle>
-        </DialogHeader>
+    // 2026-05-06: width passed at the call-site per Modal Taxonomy
+    // rule #5 (ModalShell stays width-neutral). `overflow-hidden`
+    // pairs with the inner scrolling locations list so internal
+    // scroll stays inside the modal chrome. ModalShell's baked
+    // `p-0 gap-0` makes the prior inline `p-0 gap-0` redundant.
+    <ModalShell
+      open={open}
+      onOpenChange={onOpenChange}
+      className="max-w-xl overflow-hidden"
+    >
+      {/* Override ModalHeader's canonical pt-5 pb-3 with py-3 to
+          preserve the existing tighter header rhythm — this dialog's
+          header is content-light (just the title) and the prior
+          padding kept the modal compact. */}
+      <ModalHeader className="py-3">
+        <ModalTitle data-testid="contact-modal-title">
+          {contact ? "Edit Contact" : "Add Contact"}
+        </ModalTitle>
+      </ModalHeader>
 
         {/* ── BODY ─────────────────────────────────────────────────────
             2026-05-03 redesign: single-column. Identity fields stay
@@ -616,40 +641,47 @@ export function ContactFormDialog({
           </div>
         </div>
 
-        <DialogFooter className="px-5 py-3 border-t border-slate-200 sm:justify-between gap-2 bg-slate-50/50">
-          <div className="flex-1 flex justify-start">
-            {contact && allowDelete && (
-              <Button
-                variant="ghost"
-                onClick={() => deleteMutation.mutate()}
-                disabled={isDeleting || isSaving}
-                className="text-destructive hover:text-destructive hover:bg-destructive/10 gap-1.5"
-                data-testid="contact-modal-delete"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                {isDeleting ? "Deleting…" : "Delete Contact"}
-              </Button>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
+      {/* Override ModalFooter's canonical justify-end with the
+          delete-left / cancel-save-right layout this modal needs.
+          The bg-slate-50/50 tint is intentional — it visually grounds
+          the destructive Delete affordance. ModalFooter still bakes
+          `px-5 py-3 border-t border-slate-200 flex flex-row items-
+          center gap-2`; the inner `<div className="flex-1 …">`
+          pushes the action group to the right regardless of the
+          parent's justify, so the override is mostly stylistic. */}
+      <ModalFooter className="sm:justify-between bg-slate-50/50">
+        <div className="flex-1 flex justify-start">
+          {contact && allowDelete && (
             <Button
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-              disabled={isSaving || isDeleting}
-              data-testid="contact-modal-cancel"
+              variant="ghost"
+              onClick={() => deleteMutation.mutate()}
+              disabled={isDeleting || isSaving}
+              className="text-destructive hover:text-destructive hover:bg-destructive/10 gap-1.5"
+              data-testid="contact-modal-delete"
             >
-              Cancel
+              <Trash2 className="h-3.5 w-3.5" />
+              {isDeleting ? "Deleting…" : "Delete Contact"}
             </Button>
-            <Button
-              onClick={() => saveMutation.mutate()}
-              disabled={!canSave || isSaving || isDeleting}
-              data-testid="contact-modal-save"
-            >
-              {isSaving ? "Saving…" : contact ? "Save Contact" : "Add Contact"}
-            </Button>
-          </div>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={isSaving || isDeleting}
+            data-testid="contact-modal-cancel"
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={() => saveMutation.mutate()}
+            disabled={!canSave || isSaving || isDeleting}
+            data-testid="contact-modal-save"
+          >
+            {isSaving ? "Saving…" : contact ? "Save Contact" : "Add Contact"}
+          </Button>
+        </div>
+      </ModalFooter>
+    </ModalShell>
   );
 }

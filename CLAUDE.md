@@ -232,7 +232,19 @@ const { data, isLoading } = useQuery({
 - Atomic design: `components/ui/` for primitives, `components/` for composed components
 - Page components in `pages/`
 - Protected routes use `<ProtectedRoute>` wrapper with optional `requireAdmin` prop
-- All dialogs/modals use shadcn Dialog component
+- Modals follow the canonical taxonomy below — do NOT default to a raw shadcn `Dialog` for new work
+
+### Modal Taxonomy
+
+Pick the modal primitive by intent, not by visual. There are exactly five categories — anything that doesn't fit should be raised before inventing a sixth.
+
+1. **Destructive confirmation** → `AlertDialog`
+2. **Generic / simple modal** → `ModalShell` + `Modal*` primitives (`client/src/components/ui/modal.tsx`)
+3. **Operational / action-row / list drilldown** → `OperationalActionModal`
+4. **Complex reusable workflow** (payment, communication, invoice composition, etc.) → dedicated domain wrapper
+5. **`ModalShell` is width-neutral** — pattern/domain wrappers own dimensions. Do NOT add sizing styles to `ModalShell` itself.
+
+When adding a new dialog/modal, classify against rules 1–4 first and reach for the existing primitive. Only build a new domain wrapper when the workflow is genuinely reusable across pages. Width/sizing concerns live at the domain-wrapper or callsite layer, never inside `ModalShell`.
 
 ## Common Development Tasks
 

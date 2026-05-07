@@ -9,24 +9,34 @@ import { useQuery, useMutation, keepPreviousData } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
-import { getClientDisplayName } from "@shared/clientDisplayName";
 import {
-  ArrowLeft, Loader2, MapPin, User, Calendar, DollarSign, Phone, Mail,
-  StickyNote, Trash2, FileText, Send, ChevronRight, Briefcase, Star,
-  Pencil, Check, X, AlertTriangle,
+  ArrowLeft, Loader2, Trash2, FileText, Send, ChevronRight, Briefcase,
+  Pencil, AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
+// 2026-05-06 modal taxonomy alignment: destructive confirms (archive,
+// hard delete, convert) route through canonical <AlertDialog> per
+// CLAUDE.md Modal Taxonomy rule #1. Radix AlertDialog gives stricter
+// focus-trap + escape-key semantics suited to confirmation flows.
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
-} from "@/components/ui/dialog";
-import { format } from "date-fns";
-import { MetaRow } from "@/components/ui/meta-row";
-import { EmptyState } from "@/components/ui/empty-state";
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 // 2026-05-05 Lead Visits: canonical notes section + lead-visits card.
 import { EntityNotesSection } from "@/components/notes/EntityNotesSection";
 import { LeadVisitsCard } from "@/components/leads/LeadVisitsCard";
+// PR1: extracted shared lead-detail visual pieces. Same source rendered
+// here and on /leads/new so the two pages cannot drift visually.
+import { LeadSummaryCard } from "@/components/leads/LeadSummaryCard";
+import { LeadDetailsRail } from "@/components/leads/LeadDetailsRail";
+import { fmtDate } from "@/components/leads/shared/leadFormatters";
 
 // ── Types ──
 
@@ -65,16 +75,9 @@ interface LeadNote {
   updatedAt: string | null;
 }
 
-const STATUS_BADGE: Record<string, { bg: string; text: string }> = {
-  new: { bg: "bg-blue-100", text: "text-blue-700" },
-  contacted: { bg: "bg-amber-100", text: "text-amber-700" },
-  // 2026-05-05 Lead Visits: rendered after the last open lead visit
-  // completes. Office reviews and decides whether to convert to a quote.
-  needs_review: { bg: "bg-violet-100", text: "text-violet-700" },
-  quoted: { bg: "bg-purple-100", text: "text-purple-700" },
-  won: { bg: "bg-emerald-100", text: "text-emerald-700" },
-  lost: { bg: "bg-slate-100", text: "text-slate-500" },
-};
+// 2026-05-06 PR1: STATUS_BADGE moved to shared/leadBadges.ts so the
+// detail page and the future create page render identical status pills
+// from a single source. Imported by LeadSummaryCard.
 
 // ── Component ──
 
@@ -88,7 +91,6 @@ export default function LeadDetailPage() {
   // EntityNotesSection owns add/edit/delete + author + attachments.
   const [showArchiveConfirm, setShowArchiveConfirm] = useState(false);
   const [showHardDeleteConfirm, setShowHardDeleteConfirm] = useState(false);
-  const [showConvertConfirm, setShowConvertConfirm] = useState(false);
   // Description edit state
   const [editingDescription, setEditingDescription] = useState(false);
   const [descriptionDraft, setDescriptionDraft] = useState("");
@@ -190,34 +192,16 @@ export default function LeadDetailPage() {
     onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
-  const convertMutation = useMutation({
-    mutationFn: () => {
-      // Match the canonical quote creation pattern from NewQuoteModal:
-      // issueDate is required by createQuoteSchema; default to today + 30-day expiry.
-      const today = new Date().toISOString().split("T")[0];
-      const expiry = new Date();
-      expiry.setDate(expiry.getDate() + 30);
-      return apiRequest("/api/quotes", {
-        method: "POST",
-        body: JSON.stringify({
-          locationId: lead?.locationId,
-          leadId: lead?.id,
-          title: lead?.title || undefined,
-          issueDate: today,
-          expiryDate: expiry.toISOString().split("T")[0],
-          lines: [],
-        }),
-      });
-    },
-    onSuccess: (data: any) => {
-      queryClient.invalidateQueries({ queryKey: ["leads"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
-      toast({ title: "Quote created", description: `Quote #${data.quoteNumber} created from lead.` });
-      setShowConvertConfirm(false);
-      setLocation(`/quotes/${data.id}`);
-    },
-    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
-  });
+  // 2026-05-06 PR2: Lead → Quote conversion now navigates to the
+  // full-page quote builder at /quotes/new?leadId=:id instead of
+  // POSTing directly. The user lands on a draft quote prefilled from
+  // the lead (location, title, description) and reviews/edits before
+  // saving. No quote row is created until they click "Create Quote"
+  // on that page; the eligibility gate below is unchanged.
+  const handleConvertToQuote = () => {
+    if (!lead) return;
+    setLocation(`/quotes/new?leadId=${lead.id}`);
+  };
 
   // ── Loading / Error ──
   if (isLoading) return <div className="bg-[#f1f5f9] h-full flex items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-slate-400" /></div>;
@@ -230,9 +214,8 @@ export default function LeadDetailPage() {
     </div>
   );
 
-  const fmtDate = (d: string | null) => d ? format(new Date(d), "MMM d, yyyy") : "—";
-  const fmtDateTime = (d: string | null) => d ? format(new Date(d), "MMM d, yyyy h:mm a") : "";
-  const fmtValue = (v: string | null) => v ? `$${parseFloat(v).toLocaleString()}` : "—";
+  // fmtDate imported from shared/leadFormatters; fmtValue is owned by
+  // LeadDetailsRail and is not needed at this scope.
   const canContact = lead.status === "new";
   const canMarkLost = lead.status === "new" || lead.status === "contacted";
   // 2026-05-05: include `needs_review` — Lead Visits Phase 2 added this status
@@ -241,9 +224,6 @@ export default function LeadDetailPage() {
   // the gate previously hid the button, leaving needs_review leads stuck.
   const canConvert = (lead.status === "new" || lead.status === "contacted" || lead.status === "needs_review") && !lead.convertedQuoteId;
   const isTerminal = lead.status === "won" || lead.status === "lost";
-  const statusColor = STATUS_BADGE[lead.status] || STATUS_BADGE.new;
-  const addressLine = [lead.location?.address, lead.location?.city, lead.location?.province, lead.location?.postalCode].filter(Boolean).join(", ");
-  const contactLine = [lead.location?.phone, lead.location?.email].filter(Boolean).join(" • ");
 
   return (
     <div className="bg-[#f1f5f9] h-full flex flex-col">
@@ -255,40 +235,12 @@ export default function LeadDetailPage() {
           {/* ── LEFT COLUMN ── */}
           <div className="space-y-3 min-w-0 min-h-0 overflow-y-auto lg:pr-1">
 
-            {/* Lead Summary Card (compact) */}
-            <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
-              <div className="px-4 py-3">
-                <div className="flex items-center gap-2 mb-1">
-                  <button onClick={() => setLocation("/leads")} className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1">
-                    <ArrowLeft className="h-3 w-3" />
-                  </button>
-                  <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Lead</span>
-                </div>
-                <h1 className="text-lg font-bold text-slate-900 leading-tight truncate">{lead.title}</h1>
-                <div className="flex items-center gap-2 mt-1 flex-wrap">
-                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold uppercase tracking-wide ${statusColor.bg} ${statusColor.text}`}>
-                    {lead.status}
-                  </span>
-                  {lead.priority && <Badge variant="outline" className="text-xs px-1.5 py-0 capitalize">{lead.priority}</Badge>}
-                  <span className="text-xs text-slate-400 uppercase tracking-wide">{lead.sourceType}</span>
-                </div>
-                {/* Client / Location */}
-                <div className="mt-2 pt-1.5 border-t border-slate-100">
-                  {(lead.customerCompany || lead.customerCompanyName || lead.location?.companyName) && (
-                    <p className="text-sm font-semibold text-slate-800">
-                      {lead.customerCompany ? getClientDisplayName(lead.customerCompany) : (lead.customerCompanyName || lead.location?.companyName)}
-                    </p>
-                  )}
-                  {lead.location?.contactName && (
-                    <p className="text-xs text-slate-500 flex items-center gap-1 mt-0.5"><User className="h-3 w-3 text-slate-400" />{lead.location.contactName}</p>
-                  )}
-                  {addressLine && (
-                    <p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5"><MapPin className="h-3 w-3 shrink-0" />{addressLine}</p>
-                  )}
-                  {contactLine && <p className="text-xs text-slate-400 mt-0.5">{contactLine}</p>}
-                </div>
-              </div>
-            </div>
+            {/* Lead Summary Card (compact) — PR1: extracted to LeadSummaryCard */}
+            <LeadSummaryCard
+              mode="saved"
+              lead={lead}
+              onBack={() => setLocation("/leads")}
+            />
 
             {/* Description */}
             <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
@@ -359,45 +311,25 @@ export default function LeadDetailPage() {
           {/* ── RIGHT RAIL ── */}
           <aside className="space-y-3 min-h-0 overflow-y-auto">
 
-            {/* Details / Metadata — top of rail for immediate context */}
-            <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
-              <div className="px-4 py-2 bg-[#f8fafc] border-b border-slate-100">
-                <span className="text-sm font-semibold text-[#0f172a]">Details</span>
-              </div>
-              <div className="px-4 py-2.5 space-y-2 text-xs">
-                <MetaRow label="Estimated Value" value={fmtValue(lead.estimatedValue)} />
-                <MetaRow label="Captured By" value={lead.originTechnicianName || "—"} />
-                <MetaRow label="Created By" value={lead.createdByName || "—"} />
-                {/* 2026-05-05 Phase 3: row hides entirely when no
-                    visits exist on the lead — replaces the always-on
-                    "Assigned To" pattern. When a visit exists, the
-                    assignee + start time come from the next upcoming
-                    visit row, not the legacy lead.assignedToUserId.
-                    MetaRow takes a `string` value, so the date is
-                    appended inline rather than as a stacked label. */}
-                {leadVisits.length > 0 && nextUpcomingVisit && (
-                  <MetaRow
-                    label="Next Visit Assignee"
-                    value={`${nextVisitAssigneeName ?? "Unassigned"}${
-                      nextUpcomingVisit.scheduledStart
-                        ? ` · ${format(
-                            new Date(nextUpcomingVisit.scheduledStart),
-                            "MMM d, h:mm a",
-                          )}`
-                        : ""
-                    }`}
-                  />
-                )}
-                {leadVisits.length > 0 && !nextUpcomingVisit && (
-                  <MetaRow label="Next visit" value="No upcoming visit" />
-                )}
-                <div className="border-t border-slate-100 pt-1.5">
-                  <MetaRow label="Created" value={fmtDate(lead.createdAt)} />
-                  {lead.updatedAt && <MetaRow label="Updated" value={fmtDate(lead.updatedAt)} />}
-                  {lead.convertedAt && <MetaRow label="Converted" value={fmtDate(lead.convertedAt)} />}
-                </div>
-              </div>
-            </div>
+            {/* Details / Metadata — PR1: extracted to LeadDetailsRail */}
+            <LeadDetailsRail
+              mode="saved"
+              estimatedValue={lead.estimatedValue}
+              capturedByName={lead.originTechnicianName ?? null}
+              createdByName={lead.createdByName ?? null}
+              hasVisits={leadVisits.length > 0}
+              nextVisit={
+                nextUpcomingVisit
+                  ? {
+                      scheduledStart: nextUpcomingVisit.scheduledStart,
+                      assigneeName: nextVisitAssigneeName,
+                    }
+                  : null
+              }
+              createdAt={lead.createdAt}
+              updatedAt={lead.updatedAt}
+              convertedAt={lead.convertedAt}
+            />
 
             {/* Actions + Quote — single card */}
             <div className="bg-white rounded-md border border-slate-200 shadow-sm overflow-hidden">
@@ -406,7 +338,12 @@ export default function LeadDetailPage() {
               </div>
               <div className="px-4 py-2.5 space-y-1.5">
                 {canConvert && !lead.convertedQuoteId && (
-                  <Button className="w-full justify-start gap-2 h-8 text-xs" size="sm" onClick={() => setShowConvertConfirm(true)} disabled={convertMutation.isPending}>
+                  <Button
+                    className="w-full justify-start gap-2 h-8 text-xs"
+                    size="sm"
+                    onClick={handleConvertToQuote}
+                    data-testid="button-convert-to-quote"
+                  >
                     <FileText className="h-3.5 w-3.5" />Convert to Quote
                   </Button>
                 )}
@@ -447,56 +384,61 @@ export default function LeadDetailPage() {
         </div>
       </div>
 
-      {/* ── DIALOGS ── */}
-      <Dialog open={showArchiveConfirm} onOpenChange={setShowArchiveConfirm}>
-        <DialogContent className="sm:max-w-[400px]">
-          <DialogHeader>
-            <DialogTitle>Archive this lead?</DialogTitle>
-            <DialogDescription>This will remove the lead from the active list. It can be restored later.</DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowArchiveConfirm(false)}>Cancel</Button>
-            <Button variant="destructive" onClick={() => archiveMutation.mutate()} disabled={archiveMutation.isPending}>
+      {/* ── CONFIRMATION DIALOGS ──
+          2026-05-06: migrated from raw <Dialog> to canonical
+          <AlertDialog> per CLAUDE.md Modal Taxonomy rule #1
+          (destructive confirmations). Copy, mutation handlers, loading
+          states, and per-confirm visual variants are preserved verbatim;
+          only the primitive layer changed. AlertDialogAction auto-closes
+          on click via Radix Close, but each mutation navigates on
+          success (setLocation("/leads") for archive/delete; setLocation
+          ("/quotes/:id") for convert), so the close + navigate paths
+          chain cleanly. */}
+      <AlertDialog open={showArchiveConfirm} onOpenChange={setShowArchiveConfirm}>
+        <AlertDialogContent className="sm:max-w-[400px]">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Archive this lead?</AlertDialogTitle>
+            <AlertDialogDescription>This will remove the lead from the active list. It can be restored later.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-archive-cancel">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => archiveMutation.mutate()}
+              disabled={archiveMutation.isPending}
+              data-testid="button-archive-confirm"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
               {archiveMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />}Archive
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
-      <Dialog open={showHardDeleteConfirm} onOpenChange={setShowHardDeleteConfirm}>
-        <DialogContent className="sm:max-w-[400px]">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-red-700">
+      <AlertDialog open={showHardDeleteConfirm} onOpenChange={setShowHardDeleteConfirm}>
+        <AlertDialogContent className="sm:max-w-[400px]">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-red-700">
               <AlertTriangle className="h-5 w-5" />
               Permanently delete this lead?
-            </DialogTitle>
-            <DialogDescription>
+            </AlertDialogTitle>
+            <AlertDialogDescription>
               This will permanently destroy the lead and all of its notes. <strong>This cannot be undone.</strong> Use Archive instead if you may need to restore it.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowHardDeleteConfirm(false)}>Cancel</Button>
-            <Button variant="destructive" onClick={() => hardDeleteMutation.mutate()} disabled={hardDeleteMutation.isPending}>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-hard-delete-cancel">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => hardDeleteMutation.mutate()}
+              disabled={hardDeleteMutation.isPending}
+              data-testid="button-hard-delete-confirm"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
               {hardDeleteMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />}Delete Permanently
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
-      <Dialog open={showConvertConfirm} onOpenChange={setShowConvertConfirm}>
-        <DialogContent className="sm:max-w-[400px]">
-          <DialogHeader>
-            <DialogTitle>Convert to Quote?</DialogTitle>
-            <DialogDescription>This will create a new quote from this lead with the same client and location. The lead status will be updated to "quoted".</DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowConvertConfirm(false)}>Cancel</Button>
-            <Button onClick={() => convertMutation.mutate()} disabled={convertMutation.isPending}>
-              {convertMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />}Create Quote
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

@@ -108,12 +108,17 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       testId: "nav-jobs"
     });
     menuItems.push({
-      title: "Recurring Jobs",
+      // 2026-05-06 nav rename: this destination represents maintenance
+      // plans (PM contracts + recurring-job templates) — sidebar label
+      // simplified to "Maintenance". The route, testid, internal type
+      // names, and the recurrence-behavior copy elsewhere in the app
+      // are intentionally unchanged. Pin: tests/recurring-jobs-nav-rename.test.ts.
+      title: "Maintenance",
       icon: Wrench,
       href: "/pm",
       isActive: location === "/pm" || location.startsWith("/pm/"),
       testId: "nav-pm",
-      hoverText: "Preventive Maintenance & Recurring Jobs"
+      hoverText: "Maintenance"
     });
 
     // --- Group 3 leader: Invoices → Payments (billing) ---

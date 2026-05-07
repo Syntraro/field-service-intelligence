@@ -29,7 +29,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
 import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
 import type { Quote } from "@shared/schema";
-import { NewQuoteModal } from "@/components/NewQuoteModal";
+// 2026-05-06: quote creation moved to /quotes/new (full-page CreateQuotePage).
 import { formatCurrency } from "@/lib/formatters";
 
 interface EnrichedQuote extends Quote {
@@ -79,16 +79,13 @@ export default function Quotes() {
   const [visibleCount, setVisibleCount] = useState(QUOTES_PAGE_SIZE);
   // Reset slice on filter / search change.
   useEffect(() => { setVisibleCount(QUOTES_PAGE_SIZE); }, [activeFilter, searchQuery]);
-  // 2026-04-15: the list-page "New Quote" button opens the unified
-  // NewQuoteModal directly. Template selection is inline inside that
-  // modal — the prior two-step chooser → modal flow was collapsed.
-  const [newQuoteModalOpen, setNewQuoteModalOpen] = useState(false);
-
+  // 2026-05-06: the list-page "New Quote" button navigates to the
+  // dedicated /quotes/new full-page flow. The legacy `?create=true`
+  // deep-link is preserved as a redirect into that page.
   useEffect(() => {
     const params = new URLSearchParams(search);
     if (params.get("create") === "true") {
-      setNewQuoteModalOpen(true);
-      setLocation("/quotes", { replace: true });
+      setLocation("/quotes/new", { replace: true });
     }
   }, [search, setLocation]);
 
@@ -283,7 +280,8 @@ export default function Quotes() {
             <h1 className="text-page-title font-semibold text-slate-900">Quotes</h1>
             <p className="text-row text-slate-500 mt-0.5">Quote pipeline overview with full quote list.</p>
           </div>
-          <Button size="sm" className="gap-1.5 h-9 rounded-md" onClick={() => setNewQuoteModalOpen(true)} data-testid="button-new-quote">
+          {/* 2026-05-06: navigates to the full-page /quotes/new flow. */}
+          <Button size="sm" className="gap-1.5 h-9 rounded-md" onClick={() => setLocation("/quotes/new")} data-testid="button-new-quote">
             <Plus className="h-4 w-4" />
             New Quote
           </Button>
@@ -379,10 +377,6 @@ export default function Quotes() {
         />
       </div>
 
-      <NewQuoteModal
-        open={newQuoteModalOpen}
-        onOpenChange={setNewQuoteModalOpen}
-      />
     </div>
   );
 }

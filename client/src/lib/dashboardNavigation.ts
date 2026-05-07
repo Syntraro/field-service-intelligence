@@ -40,7 +40,12 @@ export type DashboardAction =
   | "pipeline.quotesAwaitingApproval"
   | "pipeline.approvedNotConverted"
   | "pipeline.jobsAwaitingScheduling"
-  | "pipeline.jobsAwaitingInvoice";
+  | "pipeline.jobsAwaitingInvoice"
+  // 2026-05-06 RALPH actionable Pipeline destinations.
+  | "pipeline.leadsFollowUp"
+  | "pipeline.quotesNotSent"
+  | "pipeline.quotesAwaitingResponse"
+  | "pipeline.staleOpportunities";
 
 interface DashboardDestination {
   pathname: string;
@@ -78,6 +83,12 @@ const DESTINATIONS: Record<DashboardAction, DashboardDestination> = {
   "pipeline.approvedNotConverted":  { pathname: "/quotes", search: "status=approved" },
   "pipeline.jobsAwaitingScheduling":{ pathname: "/jobs", search: "lifecycle=open&scheduling=unscheduled" },
   "pipeline.jobsAwaitingInvoice":   { pathname: "/jobs", search: "lifecycle=completed" },
+
+  // 2026-05-06 RALPH actionable Pipeline destinations.
+  "pipeline.leadsFollowUp":           { pathname: "/leads" },
+  "pipeline.quotesNotSent":           { pathname: "/quotes", search: "status=draft" },
+  "pipeline.quotesAwaitingResponse":  { pathname: "/quotes", search: "status=sent" },
+  "pipeline.staleOpportunities":      { pathname: "/leads" },
 };
 
 /**

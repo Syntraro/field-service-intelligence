@@ -29,13 +29,22 @@ import { useSurfaceController } from "@/hooks/useSurfaceController";
 import { useToast } from "@/hooks/use-toast";
 import { useActivityStore } from "@/lib/activityStore";
 import { format, parseISO } from "date-fns";
+// 2026-05-06 Phase 1 modal canonicalization (partial): standalone-mode
+// wrapper migrated from raw Dialog primitives to canonical ModalShell +
+// Modal* per CLAUDE.md Modal Taxonomy rule #2. The embedded-mode path
+// has no Dialog wrapper at all (the parent ModalShell from
+// CreateNewDialog provides it). DialogFooter remains imported because
+// it's still used inline inside formBody — that footer renders in BOTH
+// branches and migrating it would inject px-5 + border-t into the
+// embedded path, re-introducing the v3 sticky-footer overflow against
+// the embedded parent's px-4. That migration is intentionally deferred
+// to a future sprint that coordinates the embedded padding rhythm.
+import { DialogFooter } from "@/components/ui/dialog";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+} from "@/components/ui/modal";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -87,7 +96,7 @@ import { resolveTechnicianColor } from "@shared/colors";
 
 // 2026-04-26 polish v5: CreateOrSelectField import removed — Location now
 // uses the inline LocationCombobox below (Popover overlay). Other surfaces
-// of the codebase (NewQuoteModal, etc.) still use CreateOrSelectField.
+// of the codebase still use CreateOrSelectField.
 import {
   useLocationSearch, useLocationById, getLocationKey, getLocationLabel, getLocationDescription,
   type LocationOption,
@@ -2993,14 +3002,22 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
         {formBody}
       </div>
     ) : (
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-w-xl" data-testid="dialog-quick-add-job">
-          <DialogHeader>
-            <DialogTitle data-testid="text-dialog-title">{isEditMode ? "Edit Job" : isRecurringMode ? "Create Recurring Job" : "Create New Job"}</DialogTitle>
-          </DialogHeader>
-          {formBody}
-        </DialogContent>
-      </Dialog>
+      // 2026-05-06: standalone branch migrated to canonical ModalShell.
+      // Width passed via className per Modal Taxonomy rule #5
+      // (ModalShell stays width-neutral). The DialogFooter inside
+      // {formBody} stays raw for now — embedded-mode coupling, see
+      // import doc-comment above.
+      <ModalShell
+        open={open}
+        onOpenChange={onOpenChange}
+        className="max-w-xl"
+        data-testid="dialog-quick-add-job"
+      >
+        <ModalHeader>
+          <ModalTitle data-testid="text-dialog-title">{isEditMode ? "Edit Job" : isRecurringMode ? "Create Recurring Job" : "Create New Job"}</ModalTitle>
+        </ModalHeader>
+        {formBody}
+      </ModalShell>
     )}
 
     {/* 2026-05-04 client-create rewire: canonical CreateClientModal mount.

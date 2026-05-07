@@ -215,7 +215,7 @@ export function EquipmentDetailModal({ open, onOpenChange, equipment, jobId }: E
                  header padding now that the second row is gone */}
         <DialogHeader className="px-6 py-3 border-b border-card-border shrink-0">
           <div className="flex items-center justify-between gap-2 pr-12">
-            <DialogTitle className="m-0 text-xl font-semibold leading-tight truncate min-w-0" data-testid="equipment-name">
+            <DialogTitle className="m-0 leading-tight truncate min-w-0" data-testid="equipment-name">
               {eq.name || "Equipment"}
               {eq.equipmentType && (
                 <span

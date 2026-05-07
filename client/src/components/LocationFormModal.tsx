@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
+// 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
+// for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
+// Taxonomy rule #2 (generic / simple form modal). The body is a standard
+// space-y form layout — fits cleanly inside <ModalBody>; no body-shape
+// override needed (unlike ContactFormDialog's 2-section flex layout).
+// Width (`max-w-lg`) passed at the call-site per Modal Taxonomy rule #5.
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-  DialogDescription,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+} from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -241,19 +247,25 @@ export default function LocationFormModal({
   const isPending = isResolving || createMutation.isPending || updateMutation.isPending;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle>{isEditIntent ? "Edit Location" : "Add Location"}</DialogTitle>
-          <DialogDescription>
-            {isEditIntent
-              ? "Update the location details."
-              : "Add a new service location. Each location maps to a QuickBooks Sub-Customer."}
-          </DialogDescription>
-        </DialogHeader>
+    // 2026-05-06: width passed at the call-site per Modal Taxonomy
+    // rule #5 (ModalShell stays width-neutral). The `max-w-lg` width
+    // matches the prior DialogContent target.
+    <ModalShell
+      open={open}
+      onOpenChange={onOpenChange}
+      className="max-w-lg"
+    >
+      <ModalHeader>
+        <ModalTitle>{isEditIntent ? "Edit Location" : "Add Location"}</ModalTitle>
+        <ModalDescription>
+          {isEditIntent
+            ? "Update the location details."
+            : "Add a new service location. Each location maps to a QuickBooks Sub-Customer."}
+        </ModalDescription>
+      </ModalHeader>
 
-        <div className="space-y-3 py-2">
-          {error && (
+      <ModalBody className="space-y-3">
+        {error && (
             <div className="bg-destructive/10 text-destructive text-sm p-3 rounded-md">
               {error}
             </div>
@@ -339,18 +351,17 @@ export default function LocationFormModal({
               <Switch checked={isActive} onCheckedChange={setIsActive} disabled={isResolving} />
             </div>
           )}
-        </div>
+      </ModalBody>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>
-            Cancel
-          </Button>
-          <Button onClick={handleSubmit} disabled={isPending || !isValid}>
-            {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {isEditIntent ? "Save Changes" : "Add Location"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      <ModalFooter>
+        <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>
+          Cancel
+        </Button>
+        <Button onClick={handleSubmit} disabled={isPending || !isValid}>
+          {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          {isEditIntent ? "Save Changes" : "Add Location"}
+        </Button>
+      </ModalFooter>
+    </ModalShell>
   );
 }

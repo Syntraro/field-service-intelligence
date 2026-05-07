@@ -1,10 +1,90 @@
+/**
+ * Invoice PDF generator — compact modern layout (2026-05-06 RALPH v2).
+ *
+ * v2 changes the brand cue from green to a muted dark blue accent and
+ * pushes CLIENT COMMUNICATION near the bottom of the last page when
+ * line items leave room (so it reads as the closing message rather
+ * than a "Notes after totals" block). Centres the Business Information
+ * footer block. Bumps the table row height for slightly better
+ * readability while still optimising for 8–15+ line items per page.
+ *
+ * Layout zones (top → bottom):
+ *
+ *   1. Top header (compact two-column)
+ *      • Left:  Tenant company name (large bold) + tight company-info
+ *               rows (address / phone / email / website / tax IDs).
+ *      • Right: "INVOICE" word + invoice-number pill (muted-blue
+ *               border) + Issue Date and Due Date rows. Due Date
+ *               value uses the muted-blue accent.
+ *      • Hairline divider closes the header.
+ *
+ *   2. BILL TO (muted-blue uppercase label) — sits HIGH on the page so
+ *      it reads as part of the masthead.
+ *
+ *   3. SERVICE SUMMARY (full-width, light bordered container) —
+ *      conditional on `invoice.workDescription`. Single label only;
+ *      "Scope of Work" is intentionally NOT used as a second heading.
+ *
+ *   4. Line items table — navy header row (#0F172A) with white text,
+ *      columns `Description | Qty | Unit Price | Amount` (the "Rate"
+ *      header is replaced by "Unit Price"). 22pt row height — slightly
+ *      taller than v1 for breathing room while still hosting 8+ items
+ *      on page 1. Subtle row dividers + alternating fill.
+ *
+ *   5. Totals box — right-aligned, compact, light border. Subtotal /
+ *      optional Discount / Tax / divider / TOTAL DUE. TOTAL DUE label
+ *      bold + Amount slightly larger and rendered in the muted-blue
+ *      accent. Amount Paid + Balance Due render only when
+ *      `invoice.amountPaid > 0` AND `invoice.showBalance !== false`.
+ *
+ *   6. CLIENT COMMUNICATION (full-width, light bordered container) —
+ *      conditional on `policy.clientMessage ?? invoice.notesCustomer`.
+ *      v2: positioned NEAR the bottom of the last page (just above the
+ *      footer band) when the body left room. When the body almost
+ *      fills the page, it falls back to immediately after totals.
+ *      Single label only; the prior "Notes:" heading is gone.
+ *
+ *   7. Footer — pinned LOW on the last page only. A thin hairline,
+ *      then optional centred Business Information block (only when
+ *      `taxRegistrations` is non-empty), then a centred
+ *      "Thank you for choosing {company.name}." line. The Business
+ *      Information block reads as two centred lines: a bold uppercase
+ *      label and the formatted tax registration(s) below it.
+ *
+ * Multi-page behavior:
+ *   • Line items page-break: when a row would overflow the bottom
+ *     margin, a new page is created and the navy table header is
+ *     redrawn so subsequent rows still read as a continuation.
+ *   • Totals + Client Communication: each block computes its
+ *     anticipated height up front; if the current page can't fit
+ *     it, we move to the next page BEFORE drawing so the block
+ *     never splits awkwardly.
+ *   • Footer renders ONCE on the LAST page only via
+ *     `bufferPages: true` + `switchToPage(lastPage)`. Y coordinates
+ *     sit safely inside the bottom margin so PDFKit's auto-paginate
+ *     trigger never fires.
+ *
+ * Constraints honoured (per the brief):
+ *   • No tenant logo rendering.
+ *   • No status badges (Paid / Due / Overdue / Draft) in the chrome —
+ *     the diagonal centred WATERMARK for `draft` / `paid` / `voided`
+ *     is preserved because it's a customer-actionable document-state
+ *     stamp, not a header pill.
+ *   • No payment information block.
+ *   • No warranty section.
+ *   • No "Need help?" section.
+ *   • No configurable PDF settings (the existing `policy` flags drive
+ *     visibility only; this redesign does not add new tenant knobs).
+ *   • No service-summary "card" that wastes vertical space — the
+ *     section omits when `workDescription` is empty and stays compact
+ *     when present.
+ *   • No DB-field renames; every binding reads existing columns.
+ *   • Optimised for 8–15+ line items on page 1.
+ */
+
 import PDFDocument from "pdfkit";
 import { format, parseISO, isValid } from "date-fns";
 import type { Invoice, InvoiceLine, Company } from "@shared/schema";
-// 2026-05-05: canonical resolved Invoice Display policy. See
-// `shared/invoiceDisplayPolicy.ts` for the merge rules. Callers that
-// don't pass a policy fall back to the resolver's defaults — matches
-// the prior, pre-tenant-policy rendering behavior exactly.
 import {
   resolveInvoiceDisplayPolicy,
   type InvoiceDisplayPolicy,
@@ -17,7 +97,7 @@ interface InvoicePdfData {
   location: {
     companyName: string;
     address?: string | null;
-    address2?: string | null; // Address line 2 (suite, unit, floor)
+    address2?: string | null;
     city?: string | null;
     provinceState?: string | null;
     postalCode?: string | null;
@@ -27,38 +107,36 @@ interface InvoicePdfData {
   customerCompany?: {
     name: string;
   } | null;
-  /**
-   * 2026-05-03: tenant tax-registration identity (multi-row).
-   * One line is rendered per entry under the company contact
-   * block. Empty / undefined / empty-array → no lines rendered.
-   * Each entry's label is optional (PDF falls back to "Tax ID:");
-   * each entry's number is required to render. Source of truth:
-   * `company_tax_registrations` table, fetched by callers via
-   * `companyTaxRegistrationRepository.list(tenantId)` and passed
-   * here in presentation order.
-   */
   taxRegistrations?: ReadonlyArray<{
     label: string | null;
     number: string;
   }>;
-  /**
-   * 2026-05-05: resolved Invoice Display policy. If omitted, the PDF
-   * falls back to the resolver's defaults using the invoice row alone
-   * — preserving the pre-tenant-policy rendering exactly. Callers that
-   * have access to the tenant `company_settings` row SHOULD pass a
-   * resolved policy so per-tenant overrides take effect.
-   */
   policy?: InvoiceDisplayPolicy;
-  /**
-   * 2026-05-05: optional fields the policy may surface on the PDF.
-   * `jobNumber` shows up only when `policy.showJobNumber` is true.
-   * `companyWebsite` shows up only when `policy.showCompanyWebsite`
-   * is true. Both are passed in by callers (resolved from job +
-   * company storage) since the PDF service has no DB access.
-   */
   jobNumber?: string | null;
   companyWebsite?: string | null;
 }
+
+// ─── Color tokens ────────────────────────────────────────────────────
+//
+// 2026-05-06 RALPH v2: bright green accent dropped entirely. The brand
+// cue is now a muted dark blue (#1E3A5F) used sparingly for section
+// labels (BILL TO, SERVICE SUMMARY, CLIENT COMMUNICATION, BUSINESS
+// INFORMATION), the Due Date value, the invoice-number pill border,
+// and the TOTAL DUE amount. Strong headings + the table header use a
+// near-black navy (#0F172A). All other colors come from a tight gray
+// scale so the document reads as modern and corporate.
+const NAVY = "#0F172A";          // table header background + strong text
+const ACCENT = "#1E3A5F";        // muted dark blue brand cue
+const TEXT_DARK = "#0F172A";     // primary headings (alias of NAVY for clarity)
+const TEXT_BODY = "#334155";     // body text
+const TEXT_MUTED = "#475569";    // labels, secondary metadata
+const BORDER = "#E2E8F0";        // hairlines, container borders
+const CONTAINER = "#F8FAFC";     // light fill for SERVICE SUMMARY / CLIENT COMM
+
+// ─── Layout constants ────────────────────────────────────────────────
+const PAGE_MARGIN = 50;          // standard letter-page margins
+const TABLE_HEADER_H = 24;       // navy header row height (slight bump from 22 for breathing room)
+const TABLE_ROW_H = 22;          // body row height — readable density for 8–15+ items per page
 
 function formatCurrency(amount: string | number | null | undefined): string {
   const num = typeof amount === "string" ? parseFloat(amount) : (amount ?? 0);
@@ -76,14 +154,10 @@ function formatDate(value: unknown): string {
 
 function getStatusWatermark(status: string): string | null {
   switch (status) {
-    case "draft":
-      return "DRAFT";
-    case "voided":
-      return "VOID";
-    case "paid":
-      return "PAID";
-    default:
-      return null;
+    case "draft":  return "DRAFT";
+    case "voided": return "VOID";
+    case "paid":   return "PAID";
+    default:       return null;
   }
 }
 
@@ -91,20 +165,16 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     try {
       const { invoice, lines, company, location, customerCompany, taxRegistrations, jobNumber, companyWebsite } = data;
-      // 2026-05-05: resolved display policy — every visibility decision
-      // below reads from `policy` instead of hand-rolling per-flag null
-      // coalescing. When the caller doesn't supply one, fall back to the
-      // pure resolver against the invoice alone (defaults preserve
-      // pre-tenant-policy behavior exactly).
       const policy: InvoiceDisplayPolicy =
         data.policy ??
         resolveInvoiceDisplayPolicy({
           tenantSettings: null,
           invoice: invoice as any,
         });
+
       const doc = new PDFDocument({
         size: "LETTER",
-        margin: 50,
+        margin: PAGE_MARGIN,
         bufferPages: true,
       });
 
@@ -113,415 +183,527 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       doc.on("end", () => resolve(Buffer.concat(chunks)));
       doc.on("error", reject);
 
-      const pageWidth = doc.page.width - 100; // Margins
-      const leftCol = 50;
-      const rightCol = doc.page.width - 200;
+      const pageW = doc.page.width;          // 612pt
+      const pageH = doc.page.height;         // 792pt
+      const contentW = pageW - PAGE_MARGIN * 2; // 512pt
+      const leftCol = PAGE_MARGIN;            // 50
+      const rightEdge = pageW - PAGE_MARGIN;  // 562
+      // Right column anchor for the header — the INVOICE word + dates
+      // pill align to a column whose left edge sits 220pt from the
+      // right edge of the page. Wide enough for "Due Date: November
+      // 30, 2026" to render in one line at fontSize 10.
+      const headerRightX = rightEdge - 220;
 
-      // ========================================
-      // WATERMARK (if applicable)
-      // ========================================
+      // ─── Watermark (pre-existing customer-actionable stamp) ───────
+      // Kept from prior implementation. The diagonal stamp marks
+      // DRAFT / VOID / PAID for the recipient — it is intentionally
+      // distinct from the "no header status badge" rule, which targets
+      // pill-style chips that would otherwise live in the masthead.
       const watermark = getStatusWatermark(invoice.status);
-      if (watermark) {
+      const drawWatermark = () => {
+        if (!watermark) return;
         doc.save();
         doc.fontSize(72);
         doc.fillColor("#e0e0e0");
-        doc.rotate(-45, { origin: [doc.page.width / 2, doc.page.height / 2] });
-        doc.text(watermark, 0, doc.page.height / 2 - 50, {
+        doc.rotate(-45, { origin: [pageW / 2, pageH / 2] });
+        doc.text(watermark, 0, pageH / 2 - 50, {
           align: "center",
-          width: doc.page.width,
+          width: pageW,
         });
         doc.restore();
-      }
+      };
+      drawWatermark();
 
-      // ========================================
-      // HEADER - Company Info
-      // ========================================
-      doc.fontSize(20).fillColor("#333333").font("Helvetica-Bold");
-      doc.text(company.name, leftCol, 50);
+      // ════════════════════════════════════════════════════════════
+      // 1. TOP HEADER (compact two-column)
+      // ════════════════════════════════════════════════════════════
 
-      doc.fontSize(10).fillColor("#666666").font("Helvetica");
-      let companyY = 75;
-      // 2026-05-05: each company-info line gates on the resolved policy.
-      // "Show address" combines the street + city/state line into one
-      // toggle (they are conceptually one address block).
-      if (policy.showCompanyAddress && company.address) {
-        doc.text(company.address, leftCol, companyY);
-        companyY += 14;
-      }
+      // Left column — company identity
+      doc.fontSize(20).fillColor(TEXT_DARK).font("Helvetica-Bold");
+      doc.text(company.name, leftCol, PAGE_MARGIN, { width: headerRightX - leftCol - 20 });
+
+      // Tight 11pt line-height on contact rows so the masthead stays
+      // compressed even with multiple lines.
+      const COMPANY_LINE_H = 12;
+      let companyY = PAGE_MARGIN + 26;
+      doc.fontSize(9).fillColor(TEXT_MUTED).font("Helvetica");
+      const writeCompanyLine = (text: string) => {
+        doc.text(text, leftCol, companyY, { width: headerRightX - leftCol - 20, lineBreak: false });
+        companyY += COMPANY_LINE_H;
+      };
+      if (policy.showCompanyAddress && company.address) writeCompanyLine(company.address);
       const cityLine = [company.city, company.provinceState, company.postalCode].filter(Boolean).join(", ");
-      if (policy.showCompanyAddress && cityLine) {
-        doc.text(cityLine, leftCol, companyY);
-        companyY += 14;
-      }
-      // 2026-05-03 polish (round 4): drop the "Phone: " / "Email: "
-      // label prefixes so the company block matches the location
-      // block formatting (which already renders raw values). The
-      // surrounding visual context already implies what each line is.
-      if (policy.showCompanyPhone && company.phone) {
-        doc.text(company.phone, leftCol, companyY);
-        companyY += 14;
-      }
-      if (policy.showCompanyEmail && company.email) {
-        doc.text(company.email, leftCol, companyY);
-        companyY += 14;
-      }
-      // 2026-05-05: optional company website line. Renders only when the
-      // tenant policy enables it AND a value was passed in (no schema
-      // column for website yet — caller resolves the value).
+      if (policy.showCompanyAddress && cityLine) writeCompanyLine(cityLine);
+      if (policy.showCompanyPhone && company.phone) writeCompanyLine(company.phone);
+      if (policy.showCompanyEmail && company.email) writeCompanyLine(company.email);
       if (policy.showCompanyWebsite && companyWebsite && companyWebsite.trim().length > 0) {
-        doc.text(companyWebsite, leftCol, companyY);
-        companyY += 14;
+        writeCompanyLine(companyWebsite);
       }
-      // 2026-05-03: tenant tax-registration identity (multi-row).
-      // One line is rendered per active entry directly under the
-      // contact block so they read as part of the sender's identity
-      // (matches the Canadian invoice convention for the HST/GST
-      // registration line — and supports tenants with multiple
-      // registrations, e.g. HST + GST or VAT + EORI).
-      //   • label + number → "{label}: {number}"  e.g. "HST: 739597326 RT0001"
-      //   • only number    → "Tax ID: {number}"
-      //   • blank entries  → skipped (`number` is required to render)
-      //   • empty list     → no lines rendered, no whitespace
-      //                      advance — preserves the existing-tenant
-      //                      default and the current vertical rhythm
-      //                      for tenants who haven't filled it in.
-      // Source: `company_tax_registrations` table, passed in by the
-      // caller via `taxRegistrations` (already in presentation order).
-      // `companyY` advances 14pt per rendered entry — same line-height
-      // as every other contact-block line above.
-      // 2026-05-05: tax-number lines gated by the resolved policy.
       if (policy.showTaxNumber && taxRegistrations && taxRegistrations.length > 0) {
         for (const reg of taxRegistrations) {
           const number = (reg.number ?? "").trim();
           if (!number) continue;
           const label = (reg.label ?? "").trim();
-          const line = label ? `${label}: ${number}` : `Tax ID: ${number}`;
-          doc.text(line, leftCol, companyY);
-          companyY += 14;
+          writeCompanyLine(label ? `${label}: ${number}` : `Tax ID: ${number}`);
         }
       }
 
-      // ========================================
-      // INVOICE TITLE + NUMBER
-      // ========================================
-      doc.fontSize(24).fillColor("#333333").font("Helvetica-Bold");
-      doc.text("INVOICE", rightCol, 50);
+      // Right column — INVOICE word + invoice-# pill + Issue/Due dates
+      doc.fontSize(28).fillColor(NAVY).font("Helvetica-Bold");
+      doc.text("INVOICE", headerRightX, PAGE_MARGIN, { width: 220, align: "right" });
 
-      doc.fontSize(11).fillColor("#666666").font("Helvetica");
-      doc.text(invoice.invoiceNumber || `#${invoice.id.slice(0, 8)}`, rightCol, 80);
+      // Invoice-# pill: small bordered chip aligned to the right edge.
+      const invNumber = invoice.invoiceNumber || `#${invoice.id.slice(0, 8)}`;
+      const pillLabel = `Invoice #${invNumber}`;
+      const pillFontSize = 10;
+      doc.fontSize(pillFontSize).font("Helvetica");
+      const pillTextW = doc.widthOfString(pillLabel);
+      const pillW = pillTextW + 16;
+      const pillH = 18;
+      const pillX = rightEdge - pillW;
+      const pillY = PAGE_MARGIN + 36;
+      // 2026-05-06 RALPH v2: pill border uses the muted-blue accent
+      // so the invoice-number chip carries the brand cue (matches the
+      // BILL TO / SERVICE SUMMARY / CLIENT COMMUNICATION label color).
+      doc.roundedRect(pillX, pillY, pillW, pillH, 9).lineWidth(0.7).strokeColor(ACCENT).stroke();
+      doc.fillColor(TEXT_DARK).text(pillLabel, pillX, pillY + 4, { width: pillW, align: "center", lineBreak: false });
 
-      // ========================================
-      // CLIENT INFO
-      // ========================================
-      const clientY = Math.max(companyY + 20, 140);
+      // Issue / Due dates — two compact rows under the pill. Due Date
+      // value uses the muted-blue accent per the brief.
+      const datesY = pillY + pillH + 10;
+      const labelW = 70;
+      const dateRowH = 14;
+      const dateLabelX = rightEdge - 200;
+      const dateValueX = dateLabelX + labelW;
+      doc.fontSize(10).font("Helvetica").fillColor(TEXT_MUTED);
+      doc.text("Issue Date:", dateLabelX, datesY, { width: labelW, lineBreak: false });
+      doc.fillColor(TEXT_DARK).font("Helvetica-Bold");
+      doc.text(formatDate(invoice.issuedAt || invoice.issueDate), dateValueX, datesY, { width: 200 - labelW, lineBreak: false });
+      doc.font("Helvetica").fillColor(TEXT_MUTED);
+      doc.text("Due Date:", dateLabelX, datesY + dateRowH, { width: labelW, lineBreak: false });
+      doc.fillColor(ACCENT).font("Helvetica-Bold");
+      doc.text(formatDate(invoice.dueDate), dateValueX, datesY + dateRowH, { width: 200 - labelW, lineBreak: false });
 
-      doc.fontSize(11).fillColor("#333333").font("Helvetica-Bold");
-      doc.text("BILL TO:", leftCol, clientY);
+      // Optional Job # / Summary appended under the dates (compact).
+      let extraDatesY = datesY + dateRowH * 2;
+      if (policy.showJobNumber && jobNumber && jobNumber.trim().length > 0) {
+        doc.fontSize(10).font("Helvetica").fillColor(TEXT_MUTED);
+        doc.text("Job #:", dateLabelX, extraDatesY, { width: labelW, lineBreak: false });
+        doc.fillColor(TEXT_DARK).font("Helvetica-Bold");
+        doc.text(jobNumber, dateValueX, extraDatesY, { width: 200 - labelW, lineBreak: false });
+        extraDatesY += dateRowH;
+      }
+      if (policy.showSummary && (invoice as any).summary && String((invoice as any).summary).trim().length > 0) {
+        doc.fontSize(10).font("Helvetica").fillColor(TEXT_MUTED);
+        doc.text("Summary:", dateLabelX, extraDatesY, { width: labelW, lineBreak: false });
+        doc.fillColor(TEXT_DARK).font("Helvetica-Bold");
+        const summaryStr = String((invoice as any).summary);
+        doc.text(summaryStr, dateValueX, extraDatesY, { width: 200 - labelW, lineBreak: false, ellipsis: true });
+        extraDatesY += dateRowH;
+      }
 
-      doc.fontSize(11).fillColor("#333333").font("Helvetica");
-      let clientInfoY = clientY + 16;
+      // Hairline divider closes the masthead.
+      const headerBottom = Math.max(companyY + 4, extraDatesY + 8);
+      doc.moveTo(leftCol, headerBottom).lineTo(rightEdge, headerBottom).lineWidth(0.6).strokeColor(BORDER).stroke();
 
-      // Client name is MANDATORY — always rendered (per spec).
+      // ════════════════════════════════════════════════════════════
+      // 2. BILL TO  (green uppercase label, compact body)
+      // ════════════════════════════════════════════════════════════
+      let cursorY = headerBottom + 14;
+      doc.fontSize(9).fillColor(ACCENT).font("Helvetica-Bold");
+      doc.text("BILL TO:", leftCol, cursorY, { characterSpacing: 1, lineBreak: false });
+      cursorY += 13;
+
       const clientName = customerCompany?.name || location.companyName;
-      doc.font("Helvetica-Bold").text(clientName, leftCol, clientInfoY);
-      clientInfoY += 14;
+      doc.fontSize(11).fillColor(TEXT_DARK).font("Helvetica-Bold");
+      doc.text(clientName, leftCol, cursorY, { width: contentW, lineBreak: false });
+      cursorY += 14;
 
-      // 2026-05-05: location name is now policy-gated. We still skip
-      // the line entirely when it would duplicate the customer-company
-      // name (display-equality, not tenant policy).
+      doc.fontSize(10).font("Helvetica").fillColor(TEXT_BODY);
+      // Show distinct location label only when the resolved value
+      // would not duplicate the customer name.
       if (
         policy.showLocationName &&
         customerCompany &&
-        location.companyName !== customerCompany.name
+        location.companyName &&
+        location.companyName.trim().toLowerCase() !== customerCompany.name.trim().toLowerCase()
       ) {
-        doc.font("Helvetica").text(location.companyName, leftCol, clientInfoY);
-        clientInfoY += 14;
+        doc.text(location.companyName, leftCol, cursorY, { width: contentW, lineBreak: false });
+        cursorY += 13;
       }
-
-      doc.font("Helvetica");
-      // 2026-05-05: service address (the location address block). Spec
-      // distinguishes billing address from service address — when only
-      // one address is known (today's data shape), gating on the union
-      // of the two policy flags keeps existing tenants seeing their
-      // address block until they explicitly turn both off.
       const showAddressBlock = policy.showServiceAddress || policy.showBillingAddress;
       if (showAddressBlock && location.address) {
-        doc.text(location.address, leftCol, clientInfoY);
-        clientInfoY += 14;
+        doc.text(location.address, leftCol, cursorY, { width: contentW, lineBreak: false });
+        cursorY += 13;
       }
       if (showAddressBlock && location.address2) {
-        doc.text(location.address2, leftCol, clientInfoY);
-        clientInfoY += 14;
+        doc.text(location.address2, leftCol, cursorY, { width: contentW, lineBreak: false });
+        cursorY += 13;
       }
-      const locCityLine = [location.city, location.provinceState, location.postalCode].filter(Boolean).join(", ");
-      if (showAddressBlock && locCityLine) {
-        doc.text(locCityLine, leftCol, clientInfoY);
-        clientInfoY += 14;
+      const billCityLine = [location.city, location.provinceState, location.postalCode].filter(Boolean).join(", ");
+      if (showAddressBlock && billCityLine) {
+        doc.text(billCityLine, leftCol, cursorY, { width: contentW, lineBreak: false });
+        cursorY += 13;
       }
-      // Location-level phone/email are NOT in the new tenant policy
-      // (Section 2 explicitly omits them) — render as-before so this
-      // change stays visibility-only and additive.
       if (location.phone) {
-        doc.text(location.phone, leftCol, clientInfoY);
-        clientInfoY += 14;
+        doc.text(location.phone, leftCol, cursorY, { width: contentW, lineBreak: false });
+        cursorY += 13;
       }
       if (location.email) {
-        doc.text(location.email, leftCol, clientInfoY);
-        clientInfoY += 14;
+        doc.text(location.email, leftCol, cursorY, { width: contentW, lineBreak: false });
+        cursorY += 13;
       }
 
-      // ========================================
-      // INVOICE DETAILS (right side)
-      // ========================================
-      doc.fontSize(10).fillColor("#666666").font("Helvetica");
-
-      const detailsX = rightCol;
-      let detailsY = clientY;
-
-      const addDetail = (label: string, value: string) => {
-        doc.font("Helvetica").text(label, detailsX, detailsY, { continued: false });
-        doc.font("Helvetica-Bold").text(value, detailsX + 80, detailsY);
-        detailsY += 16;
-      };
-
-      // Mandatory locked: Issue Date + Due Date always render.
-      addDetail("Issue Date:", formatDate(invoice.issuedAt || invoice.issueDate));
-      addDetail("Due Date:", formatDate(invoice.dueDate));
-      // 2026-05-05: optional policy-gated details — Job Number + Summary.
-      // Both render under the dates only when the tenant policy enables
-      // them AND a value exists. Spec keeps the layout summary-style; no
-      // separate header section is added.
-      if (policy.showJobNumber && jobNumber && jobNumber.trim().length > 0) {
-        addDetail("Job #:", jobNumber);
+      // ════════════════════════════════════════════════════════════
+      // 3. SERVICE SUMMARY  (conditional, compact bordered container)
+      // ════════════════════════════════════════════════════════════
+      const workDesc = (invoice as any).workDescription as string | null | undefined;
+      const showServiceSummary =
+        policy.showJobDescription && workDesc && workDesc.trim().length > 0;
+      if (showServiceSummary) {
+        cursorY += 14;
+        const SUMMARY_LABEL_H = 14;
+        const SUMMARY_PAD = 8;
+        // Compute body height first so the bordered container sizes
+        // tightly to its text. heightOfString accounts for wrapping.
+        doc.fontSize(10).font("Helvetica");
+        const bodyH = doc.heightOfString(workDesc.trim(), { width: contentW - SUMMARY_PAD * 2 });
+        const summaryH = SUMMARY_LABEL_H + bodyH + SUMMARY_PAD * 2 + 4;
+        // Draw container.
+        doc.roundedRect(leftCol, cursorY, contentW, summaryH, 4).lineWidth(0.6).strokeColor(BORDER).stroke();
+        // Label.
+        doc.fontSize(9).fillColor(ACCENT).font("Helvetica-Bold");
+        doc.text("SERVICE SUMMARY", leftCol + SUMMARY_PAD, cursorY + SUMMARY_PAD, {
+          characterSpacing: 1,
+          width: contentW - SUMMARY_PAD * 2,
+          lineBreak: false,
+        });
+        // Body.
+        doc.fontSize(10).fillColor(TEXT_BODY).font("Helvetica");
+        doc.text(workDesc.trim(), leftCol + SUMMARY_PAD, cursorY + SUMMARY_PAD + SUMMARY_LABEL_H, {
+          width: contentW - SUMMARY_PAD * 2,
+        });
+        cursorY += summaryH;
       }
-      if (policy.showSummary && (invoice as any).summary && String((invoice as any).summary).trim().length > 0) {
-        addDetail("Summary:", String((invoice as any).summary));
-      }
 
-      // 2026-05-03 polish: the customer-facing PDF previously rendered an
-      // internal status pill ("AWAITING PAYMENT" / "PARTIAL" / etc.) under
-      // the dates. That state is internal context — customers don't need
-      // to see our billing-pipeline labels — so the badge has been removed.
-      // The diagonal watermark for DRAFT/VOID/PAID handled above remains,
-      // since those carry meaningful guidance for the recipient.
+      // ════════════════════════════════════════════════════════════
+      // 4. LINE ITEMS TABLE
+      // ════════════════════════════════════════════════════════════
+      // Bottom of the page that the table is allowed to draw into.
+      // We reserve a band at the bottom for footer content; totals +
+      // CLIENT COMMUNICATION live above the footer band. Footer
+      // content reserve is ~FOOTER_RESERVE pt; tables can extend to
+      // (pageH - PAGE_MARGIN) but new pages add headers cleanly.
+      const tableBottomY = pageH - PAGE_MARGIN;
 
-      // ========================================
-      // LINE ITEMS TABLE (respects visibility flags)
-      // ========================================
-      // 2026-05-05: visibility flags now come from the resolved policy
-      // (per-invoice override + tenant default merged upstream).
+      // Column geometry. Description: leftCol+10 .. width 248. Numeric
+      // columns right-anchored. Same right edge as `rightEdge`.
+      const COL_DESC_X = leftCol + 10;
+      const COL_DESC_W = 248;
+      const COL_QTY_X = leftCol + 268;
+      const COL_QTY_W = 40;
+      const COL_PRICE_X = leftCol + 320;
+      const COL_PRICE_W = 92;
+      const COL_AMT_X = leftCol + 420;
+      const COL_AMT_W = 92;
+
       const showLineItems = policy.showLineItems;
       const showQty = policy.showQuantities;
       const showUnitPrice = policy.showUnitPrices;
       const showLineTotals = policy.showLineTotals;
-      const showJobDescription = policy.showJobDescription;
 
-      // 2026-05-03 polish (round 4): the `+50` here used to reserve
-      // 30pt gap + 20pt for the status pill that lived under the
-      // dates. The pill was removed in an earlier polish pass; the
-      // stale 20pt was leaving a visible whitespace hole below the
-      // dates block. Now `+30` matches the gap below BILL TO.
-      let descriptionTop = Math.max(clientInfoY + 30, detailsY + 30);
-      const workDesc = (invoice as any).workDescription as string | null | undefined;
-      if (showJobDescription && workDesc && workDesc.trim().length > 0) {
-        // 2026-05-03 polish (round 4): section header was muted gray
-        // (#666) at fontSize 10 — visually weaker than the body text
-        // (#333) it introduced. Bumped to fontSize 11 + #333 so the
-        // header reads as a proper section title.
-        doc.fontSize(11).fillColor("#333333").font("Helvetica-Bold");
-        doc.text("Scope of Work", leftCol, descriptionTop);
-        doc.font("Helvetica").fontSize(10).fillColor("#333333");
-        const descHeight = doc.heightOfString(workDesc, { width: pageWidth });
-        doc.text(workDesc, leftCol, descriptionTop + 14, { width: pageWidth });
-        descriptionTop = descriptionTop + 14 + descHeight + 12;
-      }
+      // Helper to draw the navy table header. Returns the Y position
+      // of the first row below it.
+      const drawTableHeader = (topY: number): number => {
+        doc.rect(leftCol, topY, contentW, TABLE_HEADER_H).fill(NAVY);
+        doc.fontSize(10).fillColor("#ffffff").font("Helvetica-Bold");
+        const headerTextY = topY + 6;
+        doc.text("Description", COL_DESC_X, headerTextY, { width: COL_DESC_W, lineBreak: false });
+        if (showQty) doc.text("Qty", COL_QTY_X, headerTextY, { width: COL_QTY_W, align: "center", lineBreak: false });
+        if (showUnitPrice) doc.text("Unit Price", COL_PRICE_X, headerTextY, { width: COL_PRICE_W, align: "right", lineBreak: false });
+        if (showLineTotals) doc.text("Amount", COL_AMT_X, headerTextY, { width: COL_AMT_W, align: "right", lineBreak: false });
+        return topY + TABLE_HEADER_H;
+      };
 
-      const tableTop = descriptionTop;
+      // Page-break helper for the line-items loop. When called, ensures
+      // the next row of `neededHeight` will fit without crossing the
+      // page bottom. Adds a new page + redraws the navy header when
+      // necessary, then returns the new rowY.
+      const ensureRowRoom = (rowY: number, neededHeight: number): number => {
+        if (rowY + neededHeight <= tableBottomY) return rowY;
+        doc.addPage();
+        drawWatermark();
+        return drawTableHeader(PAGE_MARGIN);
+      };
+
       let rowY: number;
-
       if (showLineItems) {
-        // Table header
-        doc.rect(leftCol, tableTop, pageWidth, 24).fill("#f5f5f5");
-
-        // 2026-05-03 polish (round 4): column offsets realigned so
-        // the Amount column ends inside the 512pt content width
-        // (was overflowing 18pt past the right margin). All four
-        // columns now fit within `pageWidth` with ~10pt right
-        // padding from the table edge.
-        //   Description: leftCol+10 .. width 240 → x 60..300
-        //   Qty:         leftCol+260 .. width 40, center → x 310..350
-        //   Rate:        leftCol+310 .. width 90, right → text ends at x 450
-        //   Amount:      leftCol+410 .. width 92, right → text ends at x 552
-        // Right margin starts at leftCol+pageWidth = 562 (pageWidth=512).
-        doc.fontSize(10).fillColor("#333333").font("Helvetica-Bold");
-        doc.text("Description", leftCol + 10, tableTop + 7, { width: 240 });
-        if (showQty) doc.text("Qty", leftCol + 260, tableTop + 7, { width: 40, align: "center" });
-        if (showUnitPrice) doc.text("Rate", leftCol + 310, tableTop + 7, { width: 90, align: "right" });
-        if (showLineTotals) doc.text("Amount", leftCol + 410, tableTop + 7, { width: 92, align: "right" });
-
-        // Table rows
-        rowY = tableTop + 24;
-        doc.font("Helvetica").fontSize(10).fillColor("#333333");
+        cursorY += 12;
+        rowY = drawTableHeader(cursorY);
 
         if (lines.length === 0) {
-          doc.fillColor("#999999").text("No line items", leftCol + 10, rowY + 10);
-          rowY += 30;
+          rowY = ensureRowRoom(rowY, TABLE_ROW_H);
+          doc.fontSize(10).fillColor(TEXT_MUTED).font("Helvetica");
+          doc.text("No line items", COL_DESC_X, rowY + 6, { width: COL_DESC_W, lineBreak: false });
+          rowY += TABLE_ROW_H;
         } else {
-          for (const line of lines) {
-            const lineHeight = 24;
-
-            // Alternate row background
-            if (lines.indexOf(line) % 2 === 1) {
-              doc.rect(leftCol, rowY, pageWidth, lineHeight).fill("#fafafa");
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            rowY = ensureRowRoom(rowY, TABLE_ROW_H);
+            // Alternate fill on odd rows (subtle).
+            if (i % 2 === 1) {
+              doc.rect(leftCol, rowY, contentW, TABLE_ROW_H).fill("#fafafa");
             }
-
-            doc.fillColor("#333333");
-            doc.text(line.description || "", leftCol + 10, rowY + 7, { width: 240 });
-            if (showQty) doc.text(line.quantity || "1", leftCol + 260, rowY + 7, { width: 40, align: "center" });
-            if (showUnitPrice) doc.text(formatCurrency(line.unitPrice), leftCol + 310, rowY + 7, { width: 90, align: "right" });
-            if (showLineTotals) doc.text(formatCurrency(line.lineSubtotal), leftCol + 410, rowY + 7, { width: 92, align: "right" });
-
-            rowY += lineHeight;
+            // Subtle row divider.
+            doc.moveTo(leftCol, rowY + TABLE_ROW_H)
+              .lineTo(rightEdge, rowY + TABLE_ROW_H)
+              .lineWidth(0.4).strokeColor(BORDER).stroke();
+            doc.fontSize(10).fillColor(TEXT_BODY).font("Helvetica");
+            const cellTextY = rowY + 5;
+            doc.text(line.description || "", COL_DESC_X, cellTextY, { width: COL_DESC_W, lineBreak: false, ellipsis: true });
+            if (showQty) doc.text(line.quantity || "1", COL_QTY_X, cellTextY, { width: COL_QTY_W, align: "center", lineBreak: false });
+            if (showUnitPrice) doc.text(formatCurrency(line.unitPrice), COL_PRICE_X, cellTextY, { width: COL_PRICE_W, align: "right", lineBreak: false });
+            if (showLineTotals) doc.text(formatCurrency(line.lineSubtotal), COL_AMT_X, cellTextY, { width: COL_AMT_W, align: "right", lineBreak: false });
+            rowY += TABLE_ROW_H;
           }
         }
-      } else {
-        // Line items hidden — just leave space for totals
-        rowY = tableTop;
+        cursorY = rowY;
       }
 
-      // ========================================
-      // TOTALS
-      // ========================================
-      const totalsX = leftCol + 350;
-      const totalsWidth = pageWidth - 350;
-      rowY += 10;
-
-      // 2026-05-03 polish (round 4): totals-box height is now
-      // computed dynamically from the rows we will actually
-      // render. Was a fixed `hasDiscount ? 100 : 70` that ignored
-      // the optional Amount Paid + Balance Due block, leaving
-      // those rows rendered OUTSIDE the colored box on
-      // partially-paid invoices. Padding is a consistent 12pt
-      // top + 12pt bottom regardless of variant.
-      const hasDiscount = invoice.discountAmount && parseFloat(invoice.discountAmount) > 0;
+      // ════════════════════════════════════════════════════════════
+      // 5. TOTALS BOX (right-aligned, compact)
+      // ════════════════════════════════════════════════════════════
+      const totalsX = leftCol + 280;
+      const totalsW = contentW - 280;
+      const hasDiscount = !!invoice.discountAmount && parseFloat(invoice.discountAmount) > 0;
       const showAmountPaid =
         invoice.showBalance !== false && parseFloat(invoice.amountPaid || "0") > 0;
-      const totalsHeight =
-        12 +                              // top padding
-        16 +                              // subtotal row
-        (hasDiscount ? 16 : 0) +          // optional discount row
-        16 +                              // tax row
-        6 +                               // separator gap
-        16 +                              // total row (fontSize:12)
-        (showAmountPaid ? 36 : 0) +       // amount paid + balance due block
-        12;                               // bottom padding
+      const TOTALS_PAD_TOP = 10;
+      const TOTALS_PAD_BOT = 12;
+      const TOTAL_ROW_H = 16;
+      const totalsH =
+        TOTALS_PAD_TOP +
+        TOTAL_ROW_H +                                // subtotal
+        (hasDiscount ? TOTAL_ROW_H : 0) +            // discount
+        TOTAL_ROW_H +                                // tax
+        6 +                                          // separator gap
+        18 +                                         // total due (slightly taller)
+        (showAmountPaid ? 36 : 0) +
+        TOTALS_PAD_BOT;
 
-      // Totals box
-      doc.rect(totalsX, rowY, totalsWidth, totalsHeight).fill("#f9f9f9").stroke("#e0e0e0");
+      // Page-break BEFORE drawing — totals must stay together.
+      cursorY += 12;
+      if (cursorY + totalsH > tableBottomY) {
+        doc.addPage();
+        drawWatermark();
+        cursorY = PAGE_MARGIN;
+      }
 
-      let totalsRowY = rowY + 12;
-      doc.fontSize(10).fillColor("#666666").font("Helvetica");
-      doc.text("Subtotal:", totalsX + 10, totalsRowY);
-      doc.text(formatCurrency(invoice.subtotal), totalsX + totalsWidth - 90, totalsRowY, { width: 80, align: "right" });
-      totalsRowY += 16;
+      // Container.
+      doc.roundedRect(totalsX, cursorY, totalsW, totalsH, 4).lineWidth(0.6).strokeColor(BORDER).stroke();
+      let trY = cursorY + TOTALS_PAD_TOP;
+      const totalsLabelX = totalsX + 12;
+      const totalsValueX = totalsX + totalsW - 102;
+      const totalsValueW = 90;
 
-      // Discount (if applicable)
+      doc.fontSize(10).font("Helvetica").fillColor(TEXT_MUTED);
+      doc.text("Subtotal", totalsLabelX, trY, { lineBreak: false });
+      doc.fillColor(TEXT_BODY).font("Helvetica-Bold");
+      doc.text(formatCurrency(invoice.subtotal), totalsValueX, trY, { width: totalsValueW, align: "right", lineBreak: false });
+      trY += TOTAL_ROW_H;
+
       if (hasDiscount) {
         const discountLabel = invoice.discountPercent
-          ? `Discount (${invoice.discountPercent}%):`
-          : "Discount:";
-        doc.fillColor("#4caf50");
-        doc.text(discountLabel, totalsX + 10, totalsRowY);
-        doc.text(`-${formatCurrency(invoice.discountAmount)}`, totalsX + totalsWidth - 90, totalsRowY, { width: 80, align: "right" });
-        totalsRowY += 16;
-        doc.fillColor("#666666");
+          ? `Discount (${invoice.discountPercent}%)`
+          : "Discount";
+        doc.font("Helvetica").fillColor(TEXT_MUTED);
+        doc.text(discountLabel, totalsLabelX, trY, { lineBreak: false });
+        doc.font("Helvetica-Bold").fillColor(ACCENT);
+        doc.text(`-${formatCurrency(invoice.discountAmount)}`, totalsValueX, trY, { width: totalsValueW, align: "right", lineBreak: false });
+        trY += TOTAL_ROW_H;
       }
 
-      doc.text(`Tax (${company.taxName || "Tax"}):`, totalsX + 10, totalsRowY);
-      doc.text(formatCurrency(invoice.taxTotal), totalsX + totalsWidth - 90, totalsRowY, { width: 80, align: "right" });
-      totalsRowY += 16;
+      doc.font("Helvetica").fillColor(TEXT_MUTED);
+      doc.text(`Tax (${company.taxName || "Tax"})`, totalsLabelX, trY, { lineBreak: false });
+      doc.font("Helvetica-Bold").fillColor(TEXT_BODY);
+      doc.text(formatCurrency(invoice.taxTotal), totalsValueX, trY, { width: totalsValueW, align: "right", lineBreak: false });
+      trY += TOTAL_ROW_H;
 
-      doc.rect(totalsX + 10, totalsRowY, totalsWidth - 20, 1).fill("#e0e0e0");
-      totalsRowY += 6;
+      // Divider above Total Due.
+      doc.moveTo(totalsLabelX, trY).lineTo(totalsX + totalsW - 12, trY).lineWidth(0.5).strokeColor(BORDER).stroke();
+      trY += 6;
 
-      doc.fontSize(12).fillColor("#333333").font("Helvetica-Bold");
-      doc.text("Total:", totalsX + 10, totalsRowY);
-      doc.text(formatCurrency(invoice.total), totalsX + totalsWidth - 90, totalsRowY, { width: 80, align: "right" });
+      // 2026-05-06 RALPH v2: TOTAL DUE label is uppercase + bold; the
+      // amount is slightly larger (14pt) and rendered in the muted-blue
+      // accent so it reads as the document's primary number.
+      doc.fontSize(11).fillColor(TEXT_DARK).font("Helvetica-Bold");
+      doc.text("TOTAL DUE", totalsLabelX, trY + 1, { characterSpacing: 0.5, lineBreak: false });
+      doc.fontSize(14).fillColor(ACCENT);
+      doc.text(formatCurrency(invoice.total), totalsValueX, trY, { width: totalsValueW, align: "right", lineBreak: false });
 
-      // Amount Paid and Balance (if any payments and showBalance is enabled).
-      // `showAmountPaid` was computed above so the box height calc and
-      // the actual render path can never disagree.
       if (showAmountPaid) {
-        totalsRowY += 20;
-        doc.fontSize(10).fillColor("#666666").font("Helvetica");
-        doc.text("Amount Paid:", totalsX + 10, totalsRowY);
-        doc.text(formatCurrency(invoice.amountPaid), totalsX + totalsWidth - 90, totalsRowY, { width: 80, align: "right" });
-
-        totalsRowY += 16;
-        const balanceColor = parseFloat(invoice.balance || "0") > 0 ? "#f44336" : "#4caf50";
-        doc.fontSize(12).fillColor(balanceColor).font("Helvetica-Bold");
-        doc.text("Balance Due:", totalsX + 10, totalsRowY);
-        doc.text(formatCurrency(invoice.balance), totalsX + totalsWidth - 90, totalsRowY, { width: 80, align: "right" });
+        trY += 22;
+        doc.fontSize(10).fillColor(TEXT_MUTED).font("Helvetica");
+        doc.text("Amount Paid", totalsLabelX, trY, { lineBreak: false });
+        doc.fillColor(TEXT_BODY).font("Helvetica-Bold");
+        doc.text(formatCurrency(invoice.amountPaid), totalsValueX, trY, { width: totalsValueW, align: "right", lineBreak: false });
+        trY += TOTAL_ROW_H;
+        const balanceColor = parseFloat(invoice.balance || "0") > 0 ? "#d92d20" : ACCENT;
+        doc.fontSize(11).fillColor(balanceColor).font("Helvetica-Bold");
+        doc.text("Balance Due", totalsLabelX, trY, { lineBreak: false });
+        doc.text(formatCurrency(invoice.balance), totalsValueX, trY, { width: totalsValueW, align: "right", lineBreak: false });
       }
 
-      // ========================================
-      // NOTES / CLIENT MESSAGE
+      cursorY += totalsH;
+
+      // ════════════════════════════════════════════════════════════
+      // 6. CLIENT COMMUNICATION  (conditional, pushed LOW on the page)
       //
-      // 2026-05-03 polish (round 4): Notes Y is now derived from
-      // the (dynamic, accurate) end of the totals box rather than
-      // the old fixed `totalsHeight`. With the height bug fixed
-      // above, `totalsEndY` is the actual bottom edge of the
-      // rendered box for every invoice variant, so notes can
-      // never overprint Amount Paid / Balance Due rows.
-      // ========================================
-      const totalsEndY = rowY + totalsHeight;
-      const notesY = totalsEndY + 20;
-      // 2026-05-05: client message is gated by the resolved policy.
-      // The resolver returns null when the tenant has the block off
-      // entirely OR when the per-invoice content is empty/whitespace,
-      // so the renderer never has to second-guess intent. notesCustomer
-      // is the QBO-mirrored CustomerMemo and is still rendered when the
-      // primary client message is absent — that's pre-existing behavior
-      // and is unrelated to the new tenant Client-Message toggle.
+      // 2026-05-06 RALPH v2: instead of rendering this block right
+      // after totals (which left the bottom of the page empty when
+      // line items were sparse), we anchor it just above the footer
+      // band when there is room, so the closing message visually
+      // grounds the bottom of the page. The fallback sits right after
+      // totals only when the body has consumed enough vertical space
+      // that pushing-low would cross the totals.
+      //
+      // The footer band starts at `pageH - 95` (computed from the
+      // bottom-up footer Ys below; see footer geometry doc-block).
+      // Subtract a 12pt gap above the footer divider, then the
+      // computed comm height, to find the desired top.
+      // ════════════════════════════════════════════════════════════
       const messageToRender = policy.clientMessage ?? invoice.notesCustomer ?? null;
-      if (messageToRender && messageToRender.trim().length > 0) {
-        doc.fontSize(11).fillColor("#333333").font("Helvetica-Bold");
-        doc.text("Notes:", leftCol, notesY);
-        doc.fontSize(10).fillColor("#666666").font("Helvetica");
-        doc.text(messageToRender, leftCol, notesY + 16, { width: pageWidth });
+      const messageText = messageToRender ? String(messageToRender).trim() : "";
+      if (messageText.length > 0) {
+        const COMM_LABEL_H = 14;
+        const COMM_PAD = 8;
+        const COMM_GAP_ABOVE_FOOTER = 14;
+        // Compute body height for the bordered container first.
+        doc.fontSize(10).font("Helvetica");
+        const bodyH = doc.heightOfString(messageText, { width: contentW - COMM_PAD * 2 });
+        const commH = COMM_LABEL_H + bodyH + COMM_PAD * 2 + 4;
+        // Footer divider Y (matches the bottom-up footer geometry).
+        // hasTaxRegs branch decides which divider Y is used; we use
+        // the higher (more conservative) of the two so the comm block
+        // never overlaps the optional Business Information line.
+        const footerTopY = pageH - 95; // safe inset above the topmost footer Y (divider with tax regs at pageH-88)
+        const desiredTop = footerTopY - COMM_GAP_ABOVE_FOOTER - commH;
+
+        // Page-break BEFORE drawing — keep the block together. If
+        // the comm block won't fit on the current page even with the
+        // "push low" placement, move to a new page first.
+        const pageBottomBudget = pageH - PAGE_MARGIN; // hard bottom for body content
+        if (cursorY + 16 + commH > pageBottomBudget) {
+          doc.addPage();
+          drawWatermark();
+          cursorY = PAGE_MARGIN;
+        }
+
+        // Choose Y: push to the bottom band when the body left room;
+        // otherwise drop the block right after totals.
+        const minTopAfterTotals = cursorY + 16;
+        const commTop = desiredTop > minTopAfterTotals ? desiredTop : minTopAfterTotals;
+
+        doc.roundedRect(leftCol, commTop, contentW, commH, 4).lineWidth(0.6).strokeColor(BORDER).fillAndStroke(CONTAINER, BORDER);
+        doc.fontSize(9).fillColor(ACCENT).font("Helvetica-Bold");
+        doc.text("CLIENT COMMUNICATION", leftCol + COMM_PAD, commTop + COMM_PAD, {
+          characterSpacing: 1,
+          width: contentW - COMM_PAD * 2,
+          lineBreak: false,
+        });
+        doc.fontSize(10).fillColor(TEXT_BODY).font("Helvetica");
+        doc.text(messageText, leftCol + COMM_PAD, commTop + COMM_PAD + COMM_LABEL_H, {
+          width: contentW - COMM_PAD * 2,
+        });
+        cursorY = commTop + commH;
       }
 
-      // ========================================
-      // FOOTER (rendered ONCE on the last page)
-      //
-      // 2026-05-03 polish (round 4): previously the footer was
-      // drawn inline at `Y = doc.page.height - 50`, which would
-      // either land on whichever page the PDFKit cursor happened
-      // to be on at that moment OR (worse) trigger an auto-paginate
-      // if the cursor had already crossed the bottom margin —
-      // producing occasional blank-looking page-2s.
-      //
-      // The new pattern uses the `bufferPages: true` doc option
-      // (already set on the constructor): walk the buffered page
-      // range AFTER all main rendering has finished, switch to
-      // the LAST page, and draw the footer there with
-      // `lineBreak: false` so the call cannot itself trigger a
-      // new page. Single-page invoices: footer on page 1.
-      // Multi-page invoices: footer on the last page only.
-      // ========================================
+      // ════════════════════════════════════════════════════════════
+      // 7. FOOTER (last page only, pinned LOW)
+      // ════════════════════════════════════════════════════════════
+      // Walk to the last buffered page so the footer is single-page
+      // chrome regardless of how many pages the body produced.
       const range = doc.bufferedPageRange();
       const lastPage = range.start + range.count - 1;
       doc.switchToPage(lastPage);
-      const footerY = doc.page.height - 50;
-      doc.fontSize(9).fillColor("#999999").font("Helvetica");
-      doc.text(
-        `Invoice generated on ${format(new Date(), "MMMM d, yyyy 'at' h:mm a")}`,
-        leftCol,
-        footerY,
-        { width: pageWidth, align: "center", lineBreak: false }
-      );
 
-      // Finalize PDF
+      // Footer Y positions are computed BOTTOM-UP from a safe inset
+      // INSIDE the page's bottom margin. PDFKit pre-emptively
+      // auto-paginates a `doc.text()` call when `y + lineHeight` would
+      // cross `pageH - bottomMargin` (= 742 for LETTER + 50pt margin),
+      // which would create a phantom trailing page. Every footer line
+      // here ends at least 9pt above that boundary so PDFKit never
+      // trips the threshold even with `lineBreak: false`.
+      //
+      // 2026-05-06 RALPH v2: Business Information renders as TWO
+      // centred lines (label on its own row above the formatted tax
+      // registrations) so the footer reads as a stacked block instead
+      // of an inline label/value pair.
+      //
+      // Layout (bottom-up, all Ys reference the TOP of the line):
+      //   pageH - 65  thank-you Y     (9pt font, line bottom ≈ pageH-54)
+      //   pageH - 79  Business Info value Y (8pt font, line bottom ≈ pageH-69)
+      //   pageH - 90  Business Info label Y (8pt font, line bottom ≈ pageH-80)
+      //   pageH - 95  divider Y       (with tax regs)
+      //   pageH - 75  divider Y       (without tax regs)
+      //
+      // Footer band: ~45pt with tax regs, ~25pt without. Keeps the
+      // body's vertical budget wide without crowding the margin.
+      const hasTaxRegs =
+        !!taxRegistrations &&
+        taxRegistrations.some((r) => (r.number ?? "").trim().length > 0);
+      const thankYou = company.name
+        ? `Thank you for choosing ${company.name}.`
+        : null;
+
+      const thankYouY = pageH - 65;
+      const bizInfoLabelY = pageH - 90;
+      const bizInfoValueY = pageH - 79;
+      const dividerY = hasTaxRegs ? pageH - 95 : pageH - 75;
+
+      // Hairline divider above the footer content.
+      doc.moveTo(leftCol, dividerY).lineTo(rightEdge, dividerY).lineWidth(0.5).strokeColor(BORDER).stroke();
+
+      // Optional Business Information block — centred two-line stack.
+      // Label line (uppercase, muted-blue) on top, formatted tax
+      // registration(s) below in muted gray. Renders ONLY when the
+      // tenant has at least one tax registration; we never reserve
+      // blank space for it.
+      if (hasTaxRegs) {
+        doc.fontSize(8).fillColor(ACCENT).font("Helvetica-Bold");
+        doc.text("BUSINESS INFORMATION", leftCol, bizInfoLabelY, {
+          characterSpacing: 1,
+          width: contentW,
+          align: "center",
+          lineBreak: false,
+        });
+        // Tax registrations rendered on a single line under the label.
+        const regs = taxRegistrations!
+          .map((r) => {
+            const number = (r.number ?? "").trim();
+            if (!number) return "";
+            const label = (r.label ?? "").trim();
+            return label ? `${label} # ${number}` : `Tax ID # ${number}`;
+          })
+          .filter((s) => s.length > 0)
+          .join("     ");
+        doc.fontSize(8).fillColor(TEXT_MUTED).font("Helvetica");
+        doc.text(regs, leftCol, bizInfoValueY, {
+          width: contentW,
+          align: "center",
+          lineBreak: false,
+        });
+      }
+
+      if (thankYou) {
+        doc.fontSize(9).fillColor(TEXT_MUTED).font("Helvetica");
+        doc.text(thankYou, leftCol, thankYouY, {
+          width: contentW,
+          align: "center",
+          lineBreak: false,
+        });
+      }
+
       doc.end();
     } catch (error) {
       reject(error);

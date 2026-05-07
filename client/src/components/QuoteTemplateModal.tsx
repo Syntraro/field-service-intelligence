@@ -328,7 +328,7 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
   // clicking Save then closing (outside-click / Escape / Cancel) looked like
   // "it saved when I closed it" — because TanStack Query does not cancel the
   // mutation when the modal unmounts, and `onSuccess` still invalidates the
-  // list. Mirrors NewQuoteModal.handleClose.
+  // list.
   const handleAttemptClose = () => {
     if (!saveMutation.isPending) onClose();
   };

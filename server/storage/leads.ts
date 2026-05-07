@@ -2,7 +2,7 @@
  * Lead Repository — CRUD storage for leads table.
  * Follows the same repository pattern as quotes.ts and jobs.ts.
  */
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import { leads, leadNotes, type InsertLead, type UpdateLead } from "@shared/schema";
 
@@ -40,6 +40,47 @@ export const leadRepository = {
       .from(leads)
       .where(and(...conditions))
       .orderBy(desc(leads.createdAt));
+  },
+
+  /**
+   * 2026-05-06 RALPH: actionable Pipeline drill-down rows.
+   *
+   * Predicates mirror the dashboard's `getPipelineSnapshot` aggregate
+   * (`server/storage/dashboard.ts`) so the card's bucket counts and the
+   * modal's drill-down list stay in lockstep.
+   *
+   *   followup → leads with status IN (new, contacted, needs_review).
+   *              No time threshold — surfaces the full early-pipeline
+   *              backlog the user can act on.
+   *
+   *   stale    → same status set + last activity older than `staleDays`
+   *              (default 14). `COALESCE(updated_at, created_at)` is the
+   *              activity timestamp, matching the dashboard SQL.
+   *
+   * Both buckets exclude lost / quoted / won by definition (those rows
+   * never enter the status-set above).
+   */
+  async listPipelineBucket(
+    companyId: string,
+    bucket: "followup" | "stale",
+    staleDays: number = 14,
+  ): Promise<(typeof leads.$inferSelect)[]> {
+    assertCompanyId(companyId);
+    const openStatuses = ["new", "contacted", "needs_review"];
+    const conditions = [
+      eq(leads.companyId, companyId),
+      eq(leads.isActive, true),
+      inArray(leads.status, openStatuses),
+    ];
+    if (bucket === "stale") {
+      conditions.push(sql`COALESCE(${leads.updatedAt}, ${leads.createdAt}) < NOW() - (${staleDays} || ' days')::interval`);
+    }
+    return db
+      .select()
+      .from(leads)
+      .where(and(...conditions))
+      .orderBy(desc(sql`COALESCE(${leads.updatedAt}, ${leads.createdAt})`))
+      .limit(50);
   },
 
   async updateLead(companyId: string, leadId: string, data: UpdateLead & { convertedQuoteId?: string; convertedAt?: Date }): Promise<typeof leads.$inferSelect | undefined> {

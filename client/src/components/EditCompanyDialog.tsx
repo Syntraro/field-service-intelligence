@@ -11,9 +11,22 @@
  */
 import { useState, useEffect } from "react";
 import { useMutation } from "@tanstack/react-query";
+// 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
+// for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
+// Taxonomy rule #2 (generic / simple form modal). Body is a standard
+// space-y form layout — fits cleanly inside <ModalBody>; same precedent
+// as CreateClientModal / LocationFormModal / AddEquipmentDialog. Width
+// (`max-w-lg`) made explicit at the call-site per Modal Taxonomy rule
+// #5 — the prior <DialogContent> had no explicit max-w and relied on
+// the shadcn default; the explicit value documents the contract at the
+// call-site without changing the byte-effective width.
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalBody,
+  ModalFooter,
+} from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -97,14 +110,22 @@ export function EditCompanyDialog({
   });
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Edit Client</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-4 py-2">
-          {/* Identity fields — matches create modal structure */}
-          <fieldset className="space-y-2">
+    // 2026-05-06: width passed at the call-site per Modal Taxonomy
+    // rule #5 (ModalShell stays width-neutral). `max-w-lg` makes the
+    // contract explicit (matches the prior implicit DialogContent
+    // default); `max-h-[90vh] overflow-y-auto` lets long forms scroll
+    // inside the modal on short viewports.
+    <ModalShell
+      open={open}
+      onOpenChange={onOpenChange}
+      className="max-w-lg max-h-[90vh] overflow-y-auto"
+    >
+      <ModalHeader>
+        <ModalTitle>Edit Client</ModalTitle>
+      </ModalHeader>
+      <ModalBody className="space-y-4">
+        {/* Identity fields — matches create modal structure */}
+        <fieldset className="space-y-2">
             <legend className="text-sm font-medium">
               Client Identity <span className="text-xs font-normal text-muted-foreground">(first name or company required)</span>
             </legend>
@@ -150,34 +171,33 @@ export function EditCompanyDialog({
               onChange={e => setForm(f => ({ ...f, billingStreet2: e.target.value }))}
               placeholder="Suite, Unit, PO Box (optional)" />
           </div>
-          <div className="grid grid-cols-3 gap-3">
-            <div className="space-y-2">
-              <Label>City</Label>
-              <Input value={form.billingCity}
-                onChange={e => setForm(f => ({ ...f, billingCity: e.target.value }))} />
-            </div>
-            <div className="space-y-2">
-              <Label>Province</Label>
-              <Input value={form.billingProvince}
-                onChange={e => setForm(f => ({ ...f, billingProvince: e.target.value }))} />
-            </div>
-            <div className="space-y-2">
-              <Label>Postal Code</Label>
-              <Input value={form.billingPostalCode}
-                onChange={e => setForm(f => ({ ...f, billingPostalCode: e.target.value }))} />
-            </div>
+        <div className="grid grid-cols-3 gap-3">
+          <div className="space-y-2">
+            <Label>City</Label>
+            <Input value={form.billingCity}
+              onChange={e => setForm(f => ({ ...f, billingCity: e.target.value }))} />
+          </div>
+          <div className="space-y-2">
+            <Label>Province</Label>
+            <Input value={form.billingProvince}
+              onChange={e => setForm(f => ({ ...f, billingProvince: e.target.value }))} />
+          </div>
+          <div className="space-y-2">
+            <Label>Postal Code</Label>
+            <Input value={form.billingPostalCode}
+              onChange={e => setForm(f => ({ ...f, billingPostalCode: e.target.value }))} />
           </div>
         </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button
-            onClick={() => editClientMutation.mutate()}
-            disabled={!canSave || editClientMutation.isPending}
-          >
-            {editClientMutation.isPending ? "Saving..." : "Save Changes"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      </ModalBody>
+      <ModalFooter>
+        <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+        <Button
+          onClick={() => editClientMutation.mutate()}
+          disabled={!canSave || editClientMutation.isPending}
+        >
+          {editClientMutation.isPending ? "Saving..." : "Save Changes"}
+        </Button>
+      </ModalFooter>
+    </ModalShell>
   );
 }

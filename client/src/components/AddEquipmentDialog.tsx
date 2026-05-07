@@ -21,14 +21,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+// 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
+// for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
+// Taxonomy rule #2 (generic / simple modal). ModalShell stays width-
+// neutral (rule #5); the call-site supplies width via className.
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+} from "@/components/ui/modal";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { EquipmentTypeCombobox } from "@/components/EquipmentTypeCombobox";
@@ -184,93 +188,101 @@ export function AddEquipmentDialog({
   const submitLabel = isEdit ? "Save Changes" : "Add Equipment";
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) resetAndClose(); }}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>{dialogTitle}</DialogTitle>
-          <DialogDescription>{dialogDescription}</DialogDescription>
-        </DialogHeader>
-        <div className="grid gap-3 py-2">
+    // 2026-05-06: width-bearing className lives at the call-site per
+    // Modal Taxonomy rule #5 (ModalShell stays width-neutral). The
+    // `max-w-md` width matches the prior DialogContent contract — a
+    // narrow create/edit dialog. The intercepted onOpenChange ensures
+    // any Radix-driven close (Esc / overlay click) routes through
+    // `resetAndClose` so form state clears alongside the close.
+    <ModalShell
+      open={open}
+      onOpenChange={(o) => { if (!o) resetAndClose(); }}
+      className="max-w-md"
+    >
+      <ModalHeader>
+        <ModalTitle>{dialogTitle}</ModalTitle>
+        <ModalDescription>{dialogDescription}</ModalDescription>
+      </ModalHeader>
+      <ModalBody className="grid gap-3">
+        <div className="grid gap-1.5">
+          <Label htmlFor="eq-name" className="text-xs">Equipment Name *</Label>
+          <Input
+            id="eq-name"
+            value={form.name}
+            onChange={(e) => setForm(prev => ({ ...prev, name: e.target.value }))}
+            placeholder="RTU #1, Walk-in Cooler, etc."
+            className="h-8 text-sm"
+            autoFocus
+          />
+        </div>
+        <div className="grid gap-1.5">
+          <Label className="text-xs">Type</Label>
+          <EquipmentTypeCombobox
+            value={form.equipmentType}
+            onChange={(name) => setForm(prev => ({ ...prev, equipmentType: name }))}
+            placeholder="Select or create type..."
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
           <div className="grid gap-1.5">
-            <Label htmlFor="eq-name" className="text-xs">Equipment Name *</Label>
+            <Label htmlFor="eq-manufacturer" className="text-xs">Manufacturer</Label>
             <Input
-              id="eq-name"
-              value={form.name}
-              onChange={(e) => setForm(prev => ({ ...prev, name: e.target.value }))}
-              placeholder="RTU #1, Walk-in Cooler, etc."
-              className="h-8 text-sm"
-              autoFocus
-            />
-          </div>
-          <div className="grid gap-1.5">
-            <Label className="text-xs">Type</Label>
-            <EquipmentTypeCombobox
-              value={form.equipmentType}
-              onChange={(name) => setForm(prev => ({ ...prev, equipmentType: name }))}
-              placeholder="Select or create type..."
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="grid gap-1.5">
-              <Label htmlFor="eq-manufacturer" className="text-xs">Manufacturer</Label>
-              <Input
-                id="eq-manufacturer"
-                value={form.manufacturer}
-                onChange={(e) => setForm(prev => ({ ...prev, manufacturer: e.target.value }))}
-                placeholder="Carrier, Lennox..."
-                className="h-8 text-sm"
-              />
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="eq-model" className="text-xs">Model Number</Label>
-              <Input
-                id="eq-model"
-                value={form.modelNumber}
-                onChange={(e) => setForm(prev => ({ ...prev, modelNumber: e.target.value }))}
-                placeholder="Model #"
-                className="h-8 text-sm"
-              />
-            </div>
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="eq-serial" className="text-xs">Serial Number</Label>
-            <Input
-              id="eq-serial"
-              value={form.serialNumber}
-              onChange={(e) => setForm(prev => ({ ...prev, serialNumber: e.target.value }))}
-              placeholder="S/N"
+              id="eq-manufacturer"
+              value={form.manufacturer}
+              onChange={(e) => setForm(prev => ({ ...prev, manufacturer: e.target.value }))}
+              placeholder="Carrier, Lennox..."
               className="h-8 text-sm"
             />
           </div>
           <div className="grid gap-1.5">
-            <Label htmlFor="eq-notes" className="text-xs">Notes</Label>
-            <Textarea
-              id="eq-notes"
-              value={form.notes}
-              onChange={(e) => setForm(prev => ({ ...prev, notes: e.target.value }))}
-              placeholder="Optional details..."
-              rows={2}
-              className="text-sm resize-none"
+            <Label htmlFor="eq-model" className="text-xs">Model Number</Label>
+            <Input
+              id="eq-model"
+              value={form.modelNumber}
+              onChange={(e) => setForm(prev => ({ ...prev, modelNumber: e.target.value }))}
+              placeholder="Model #"
+              className="h-8 text-sm"
             />
           </div>
         </div>
-        <DialogFooter>
-          <Button type="button" variant="outline" size="sm" onClick={resetAndClose}>
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            onClick={handleSubmit}
-            disabled={!form.name.trim() || isPending}
-          >
-            {isPending ? (
-              <Loader2 className="h-4 w-4 animate-spin mr-1" />
-            ) : null}
-            {submitLabel}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        <div className="grid gap-1.5">
+          <Label htmlFor="eq-serial" className="text-xs">Serial Number</Label>
+          <Input
+            id="eq-serial"
+            value={form.serialNumber}
+            onChange={(e) => setForm(prev => ({ ...prev, serialNumber: e.target.value }))}
+            placeholder="S/N"
+            className="h-8 text-sm"
+          />
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor="eq-notes" className="text-xs">Notes</Label>
+          <Textarea
+            id="eq-notes"
+            value={form.notes}
+            onChange={(e) => setForm(prev => ({ ...prev, notes: e.target.value }))}
+            placeholder="Optional details..."
+            rows={2}
+            className="text-sm resize-none"
+          />
+        </div>
+      </ModalBody>
+      <ModalFooter>
+        <Button type="button" variant="outline" size="sm" onClick={resetAndClose}>
+          Cancel
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          onClick={handleSubmit}
+          disabled={!form.name.trim() || isPending}
+        >
+          {isPending ? (
+            <Loader2 className="h-4 w-4 animate-spin mr-1" />
+          ) : null}
+          {submitLabel}
+        </Button>
+      </ModalFooter>
+    </ModalShell>
   );
 }

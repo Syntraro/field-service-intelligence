@@ -22,13 +22,17 @@ import {
   INVALID_EMAIL_MESSAGE,
   isValidOptionalEmail,
 } from "@shared/lib/emailValidation";
+// 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
+// for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
+// Taxonomy rule #2 (generic / simple modal). ModalShell stays width-
+// neutral (rule #5); width is passed via className at this call-site.
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalBody,
+  ModalFooter,
+} from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -282,13 +286,23 @@ export function CreateClientModal({
   };
 
   return (
-    <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto" data-testid="dialog-create-client">
-        <DialogHeader>
-          <DialogTitle>New Client</DialogTitle>
-        </DialogHeader>
+    // 2026-05-06: width-bearing className lives at the call-site per
+    // Modal Taxonomy rule #5 (ModalShell stays width-neutral). The
+    // `sm:max-w-lg max-h-[90vh] overflow-y-auto` triple matches the
+    // prior DialogContent contract: comfortable form width, vertical
+    // scroll inside the modal when fields exceed the viewport.
+    <ModalShell
+      open={open}
+      onOpenChange={handleClose}
+      className="sm:max-w-lg max-h-[90vh] overflow-y-auto"
+      data-testid="dialog-create-client"
+    >
+      <ModalHeader>
+        <ModalTitle>New Client</ModalTitle>
+      </ModalHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-4 py-1">
+      <form onSubmit={handleSubmit}>
+        <ModalBody className="space-y-4">
           {/* Server error */}
           {serverError && (
             <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -460,29 +474,30 @@ export function CreateClientModal({
             </fieldset>
           )}
 
-          {/* ── Footer ── */}
-          <DialogFooter className="pt-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => handleClose(false)}
-              disabled={createMutation.isPending}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              disabled={!canSubmit || createMutation.isPending}
-              data-testid="button-save-client"
-            >
-              {createMutation.isPending ? (
-                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-              ) : null}
-              {createMutation.isPending ? "Creating..." : "Create Client"}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+        </ModalBody>
+
+        {/* ── Footer ── */}
+        <ModalFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => handleClose(false)}
+            disabled={createMutation.isPending}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            disabled={!canSubmit || createMutation.isPending}
+            data-testid="button-save-client"
+          >
+            {createMutation.isPending ? (
+              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+            ) : null}
+            {createMutation.isPending ? "Creating..." : "Create Client"}
+          </Button>
+        </ModalFooter>
+      </form>
+    </ModalShell>
   );
 }

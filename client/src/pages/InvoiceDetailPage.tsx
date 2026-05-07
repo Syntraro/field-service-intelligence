@@ -136,10 +136,21 @@ import { formatCurrency } from "@/lib/formatters";
 // 2026-05-02 (Audit #2 follow-up): shared "Service Address" primitive.
 // Same JSX previously inlined in InvoiceMetaCard (~line 455). The
 // "invoice" variant preserves the canonical text-label + text-row-emphasis
-// typography + dash fallback exactly. Billing Address block remains
-// inline below — it has a different shape (no emphasized name row) and
-// is not duplicated across surfaces.
+// typography exactly. Billing Address block remains inline below — it
+// has a different shape (no emphasized name row) and is not duplicated
+// across surfaces.
+//
+// 2026-05-06 RALPH: the invoice variant no longer dash-falls when the
+// resolved location name is missing — it simply omits the location-name
+// row, matching the brief that "Show location name above the address
+// ONLY when [conditions]". The dedupe-resolver below decides whether a
+// real label exists.
 import { AddressBlock } from "@/components/common/AddressBlock";
+// 2026-05-06 RALPH: shared dedupe-resolver. Returns the raw
+// `clients.location` value when it's a real, distinct location label;
+// returns null when the value is empty OR matches the customer name
+// (case/whitespace-insensitive). Same helper JobDetailPage uses.
+import { resolveServiceLocationName } from "@/lib/serviceAddress";
 // 2026-05-02 (Audit #2 invoice-flow Phase 3): discount editor extracted
 // from this page into a draft-capable controlled primitive. The page
 // passes `value` from the persisted invoice, emits PATCHes through the
@@ -1925,7 +1936,15 @@ export default function InvoiceDetailPage() {
                 billLine1={billLine1}
                 billLine2={billLine2}
                 serviceAddress={serviceAddress ?? null}
-                locationName={location.companyName || location.location || ""}
+                // 2026-05-06 RALPH: pass the RAW `clients.location`
+                // column (not the COALESCE display name carried by
+                // `location.companyName`) and run the dedupe resolver
+                // so the row collapses when the value is empty OR
+                // matches the customer name. Replaces the prior
+                // `location.companyName || location.location || ""`
+                // chain that fell back to the COALESCE display name
+                // first and was the source of the duplicated label.
+                locationName={resolveServiceLocationName(location.location, clientName)}
                 invoiceNumber={invoice.invoiceNumber}
                 issueDate={invoice.issueDate}
                 dueDate={invoice.dueDate}

@@ -5,12 +5,20 @@
 import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { X, Plus, Tag } from "lucide-react";
+// 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
+// for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
+// Taxonomy rule #2 (generic / simple modal). No <ModalFooter> — this
+// modal has no explicit footer in the source (actions trigger inline:
+// Enter-to-create on the search input + click-to-assign-or-remove on
+// the tag chips). Body uses <ModalBody className="space-y-4"> to
+// recreate the prior `<DialogContent>` `gap-4` inter-section rhythm.
+// Width `max-w-md` passed at the call-site per Modal Taxonomy rule #5.
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalBody,
+} from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -128,15 +136,23 @@ export default function EditTagsModal({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Tag className="h-4 w-4" />
-            Manage Tags
-          </DialogTitle>
-        </DialogHeader>
+    // 2026-05-06: width passed at the call-site per Modal Taxonomy
+    // rule #5 (ModalShell stays width-neutral). The `max-w-md` width
+    // matches the prior DialogContent target (~28rem, narrow tag-
+    // management dialog).
+    <ModalShell
+      open={open}
+      onOpenChange={onOpenChange}
+      className="max-w-md"
+    >
+      <ModalHeader>
+        <ModalTitle className="flex items-center gap-2">
+          <Tag className="h-4 w-4" />
+          Manage Tags
+        </ModalTitle>
+      </ModalHeader>
 
+      <ModalBody className="space-y-4">
         {/* Current tags */}
         {currentTags.length > 0 && (
           <div className="flex flex-wrap gap-1.5 pb-2">
@@ -237,7 +253,7 @@ export default function EditTagsModal({
             No matching tags found
           </p>
         )}
-      </DialogContent>
-    </Dialog>
+      </ModalBody>
+    </ModalShell>
   );
 }

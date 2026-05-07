@@ -401,7 +401,7 @@ export function TimeEntryModal({
         <DialogContent className="sm:max-w-[600px]" data-testid="time-entry-modal">
           <form onSubmit={handleSubmit}>
             <DialogHeader className="pb-3">
-              <DialogTitle className="flex items-center gap-2 text-base">
+              <DialogTitle className="flex items-center gap-2">
                 <Clock className="h-4 w-4" />
                 {isEdit ? "Edit Time Entry" : "Add Time Entry"}
                 {isLocked && <Lock className="h-4 w-4 text-amber-500" />}

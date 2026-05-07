@@ -150,7 +150,7 @@ export function SendCommunicationModal(props: SendCommunicationModalProps) {
         data-testid={`modal-send-${entityType}`}
       >
         <DialogHeader className="px-5 pt-4 pb-3 border-b">
-          <DialogTitle className="text-base">{title ?? defaultTitle(entityType)}</DialogTitle>
+          <DialogTitle>{title ?? defaultTitle(entityType)}</DialogTitle>
           {/* 2026-05-03 polish: visible blurb removed — title is now
               specific (caller composes "Email invoice #X to Y").
               DialogDescription kept sr-only for a11y / aria-describedby. */}

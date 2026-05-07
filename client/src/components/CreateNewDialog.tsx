@@ -29,13 +29,17 @@
  * resets via the per-body `useEffect(open)` cleanup.
  */
 import { useState, useEffect } from "react";
+// 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
+// for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
+// Taxonomy rule #2 (generic / simple modals). Tabs are the first visible
+// content — the accessible title stays sr-only so Radix's a11y check is
+// satisfied without competing with the tab strip for visual chrome.
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+} from "@/components/ui/modal";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ClipboardList, CheckSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -121,104 +125,109 @@ export function CreateNewDialog({
   }, [open, normalizedDefaultTab]);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      {/* 2026-04-26 polish v4: header copy removed (Create New / subtitle).
-          Tabs are the first real content. Modal pin reduced because the
-          freed vertical lets the Job tab fit at common desktop heights
-          (≈ 720+) without the embedded form scrolling internally. The
-          shadcn DialogContent still renders the absolute-positioned close
-          X at top-right; we keep the accessible DialogTitle visually
-          hidden via `sr-only` so Radix's a11y check stays happy. */}
-      <DialogContent
-        className="max-w-xl sm:max-w-[600px] h-auto max-h-[90vh] flex flex-col p-0 gap-0 overflow-hidden"
-        data-testid="dialog-create-new"
+    // 2026-04-26 polish v4 / 2026-05-06 canonicalization:
+    //   • Header copy is sr-only — tabs are the first visible content.
+    //   • Width is owned at the call-site per Modal Taxonomy rule #5
+    //     (ModalShell stays width-neutral). The width string is
+    //     wider than the underlying DialogContent's `max-w-lg` default
+    //     so the embedded job/task forms have breathing room; the
+    //     `max-h-[90vh] flex flex-col overflow-hidden` triple lets the
+    //     tab body scroll internally on short viewports. ModalShell's
+    //     baked `p-0 gap-0` matches the prior structural lock.
+    //   • The shadcn DialogContent still renders the absolute-positioned
+    //     close X at top-right; the accessible title stays sr-only so
+    //     Radix's a11y check is satisfied.
+    <ModalShell
+      open={open}
+      onOpenChange={onOpenChange}
+      className="max-w-xl sm:max-w-[600px] h-auto max-h-[90vh] flex flex-col overflow-hidden"
+      data-testid="dialog-create-new"
+    >
+      <ModalHeader className="sr-only">
+        <ModalTitle data-testid="text-create-new-title">Create New</ModalTitle>
+        <ModalDescription>Choose what you'd like to create.</ModalDescription>
+      </ModalHeader>
+
+      <Tabs
+        value={tab}
+        onValueChange={(v) => setTab(v as "job" | "task")}
+        className="flex-1 min-h-0 flex flex-col"
       >
-        <DialogHeader className="sr-only">
-          <DialogTitle data-testid="text-create-new-title">Create New</DialogTitle>
-          <DialogDescription>Choose what you'd like to create.</DialogDescription>
-        </DialogHeader>
+        {/* Tab strip: tight padding, right-padded so it doesn't touch the
+            shadcn close X (positioned absolute at right-4 top-4).
+            2026-04-30 (compact pass): `h-8 p-0.5` overrides the
+            primitive's `h-10` outer; trigger icons drop from
+            `h-3.5 w-3.5` → `h-3 w-3` so they match the body's row icons.
+            2026-05-01: Supplier Visit tab removed (merged into Task);
+            grid is now 2-col. */}
+        <div className="px-4 pt-2.5 pb-1.5 pr-12 shrink-0">
+          <TabsList className="grid grid-cols-2 w-full bg-slate-100 h-8 p-0.5">
+            <TabsTrigger value="job" className={cn(TAB_TRIGGER_CLASS)} data-testid="tab-job">
+              <ClipboardList className="h-3 w-3" />
+              Job
+            </TabsTrigger>
+            <TabsTrigger value="task" className={cn(TAB_TRIGGER_CLASS)} data-testid="tab-task">
+              <CheckSquare className="h-3 w-3" />
+              Task
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
-        <Tabs
-          value={tab}
-          onValueChange={(v) => setTab(v as "job" | "task")}
-          className="flex-1 min-h-0 flex flex-col"
+        {/* Each TabsContent owns its embedded body. Bodies stay mounted
+            when the user switches tabs (Radix Tabs unmounts inactive
+            content by default — we use `forceMount` to keep state). */}
+        <TabsContent
+          value="job"
+          forceMount
+          className={cn(
+            "mt-0 flex-1 min-h-0 flex flex-col data-[state=inactive]:hidden",
+          )}
+          data-testid="content-job"
         >
-          {/* Tab strip: tight padding, right-padded so it doesn't touch the
-              shadcn close X (positioned absolute at right-4 top-4).
-              2026-04-30 (compact pass): `h-8 p-0.5` overrides the
-              primitive's `h-10` outer; trigger icons drop from
-              `h-3.5 w-3.5` → `h-3 w-3` so they match the body's row icons.
-              2026-05-01: Supplier Visit tab removed (merged into Task);
-              grid is now 2-col. */}
-          <div className="px-4 pt-2.5 pb-1.5 pr-12 shrink-0">
-            <TabsList className="grid grid-cols-2 w-full bg-slate-100 h-8 p-0.5">
-              <TabsTrigger value="job" className={cn(TAB_TRIGGER_CLASS)} data-testid="tab-job">
-                <ClipboardList className="h-3 w-3" />
-                Job
-              </TabsTrigger>
-              <TabsTrigger value="task" className={cn(TAB_TRIGGER_CLASS)} data-testid="tab-task">
-                <CheckSquare className="h-3 w-3" />
-                Task
-              </TabsTrigger>
-            </TabsList>
-          </div>
+          {/* 2026-04-25 — pass `open` (not `open && tab===...`) so that
+              switching tabs does NOT trigger the body's `useEffect(open)`
+              reset path. Each tab's form state persists while the modal
+              is open, per spec. The Dialog wrapper is gone in embedded
+              mode, so `open` here only drives data-fetch enable + close
+              cleanup, not visibility. */}
+          <QuickAddJobDialog
+            open={open}
+            onOpenChange={onOpenChange}
+            embedded
+            compact
+            preselectedLocationId={jobPreselectedLocationId}
+            initialSchedule={jobInitialSchedule}
+            cloneFromJobId={jobInitialCloneFromJobId}
+            onSuccess={onJobCreated}
+          />
+        </TabsContent>
 
-          {/* Each TabsContent owns its embedded body. Bodies stay mounted
-              when the user switches tabs (Radix Tabs unmounts inactive
-              content by default — we use `forceMount` to keep state). */}
-          <TabsContent
-            value="job"
-            forceMount
-            className={cn(
-              "mt-0 flex-1 min-h-0 flex flex-col data-[state=inactive]:hidden",
-            )}
-            data-testid="content-job"
-          >
-            {/* 2026-04-25 — pass `open` (not `open && tab===...`) so that
-                switching tabs does NOT trigger the body's `useEffect(open)`
-                reset path. Each tab's form state persists while the modal
-                is open, per spec. The Dialog wrapper is gone in embedded
-                mode, so `open` here only drives data-fetch enable + close
-                cleanup, not visibility. */}
-            <QuickAddJobDialog
-              open={open}
-              onOpenChange={onOpenChange}
-              embedded
-              compact
-              preselectedLocationId={jobPreselectedLocationId}
-              initialSchedule={jobInitialSchedule}
-              cloneFromJobId={jobInitialCloneFromJobId}
-              onSuccess={onJobCreated}
-            />
-          </TabsContent>
+        <TabsContent
+          value="task"
+          forceMount
+          className={cn(
+            "mt-0 flex-1 min-h-0 flex flex-col data-[state=inactive]:hidden",
+          )}
+          data-testid="content-task"
+        >
+          <TaskDialog
+            open={open}
+            onOpenChange={onOpenChange}
+            embedded
+            forcedType="GENERAL"
+            initialData={taskInitialData}
+            onChanged={onTaskChanged}
+          />
+        </TabsContent>
 
-          <TabsContent
-            value="task"
-            forceMount
-            className={cn(
-              "mt-0 flex-1 min-h-0 flex flex-col data-[state=inactive]:hidden",
-            )}
-            data-testid="content-task"
-          >
-            <TaskDialog
-              open={open}
-              onOpenChange={onOpenChange}
-              embedded
-              forcedType="GENERAL"
-              initialData={taskInitialData}
-              onChanged={onTaskChanged}
-            />
-          </TabsContent>
-
-          {/* 2026-05-01 — The previous third <TabsContent value="supplier-visit">
-              that mounted <TaskDialog forcedType="SUPPLIER_VISIT" /> was
-              removed. Supplier-visit creation is now an inline expandable
-              section inside the Task tab body (see TaskDialog embedded
-              "+ Add supplier visit" affordance). The underlying TaskDialog
-              still supports `forcedType="SUPPLIER_VISIT"` for any
-              non-embedded callers that may need it. */}
-        </Tabs>
-      </DialogContent>
-    </Dialog>
+        {/* 2026-05-01 — The previous third <TabsContent value="supplier-visit">
+            that mounted <TaskDialog forcedType="SUPPLIER_VISIT" /> was
+            removed. Supplier-visit creation is now an inline expandable
+            section inside the Task tab body (see TaskDialog embedded
+            "+ Add supplier visit" affordance). The underlying TaskDialog
+            still supports `forcedType="SUPPLIER_VISIT"` for any
+            non-embedded callers that may need it. */}
+      </Tabs>
+    </ModalShell>
   );
 }

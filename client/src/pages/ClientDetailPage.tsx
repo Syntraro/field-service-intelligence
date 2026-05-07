@@ -56,7 +56,6 @@ import { cn } from "@/lib/utils";
 // `jobPreselectedLocationId`, so the client-scoped create still keeps its
 // location prefill.
 import { CreateNewDialog } from "@/components/CreateNewDialog";
-import { NewQuoteModal } from "@/components/NewQuoteModal";
 import LocationFormModal from "@/components/LocationFormModal";
 import NotesPanel, { type NotesPanelRef } from "@/components/NotesPanel";
 import PMScheduleCard from "@/components/PMScheduleCard";
@@ -566,7 +565,9 @@ export default function ClientDetailPage() {
 
   // ── Dialogs ──
   const [jobDialogOpen, setJobDialogOpen] = useState(false);
-  const [quoteDialogOpen, setQuoteDialogOpen] = useState(false);
+  // 2026-05-06: quote creation now navigates to /quotes/new instead of
+  // opening a modal. The state slot is retired; the button below
+  // routes via setLocation.
   const [addLocationDialogOpen, setAddLocationDialogOpen] = useState(false);
   const [editClientDialogOpen, setEditClientDialogOpen] = useState(false);
   const [newLocationForm, setNewLocationForm] = useState({
@@ -1163,7 +1164,8 @@ export default function ClientDetailPage() {
               <Button size="sm" className="h-8 text-xs" onClick={() => setJobDialogOpen(true)} data-testid="header-create-job">
                 <Plus className="mr-1 h-3 w-3" />Create Job
               </Button>
-              <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setQuoteDialogOpen(true)} data-testid="header-create-quote">
+              {/* 2026-05-06: navigates to the full-page /quotes/new flow. */}
+              <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setLocation("/quotes/new")} data-testid="header-create-quote">
                 <Plus className="mr-1 h-3 w-3" />Create Quote
               </Button>
               <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setLocation("/invoices/new")} data-testid="header-create-invoice">
@@ -1859,11 +1861,6 @@ export default function ClientDetailPage() {
         defaultTab="job"
         jobPreselectedLocationId={scopeType === "location" ? selectedLocationId ?? undefined : undefined}
       />
-
-      {/* Create Quote — canonical NewQuoteModal. Modal has its own
-          location picker; client pre-selection is not supported by the
-          canonical API, so users pick inside the dialog. */}
-      <NewQuoteModal open={quoteDialogOpen} onOpenChange={setQuoteDialogOpen} />
 
       {/* Delete / Archive Confirmation Dialog */}
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>

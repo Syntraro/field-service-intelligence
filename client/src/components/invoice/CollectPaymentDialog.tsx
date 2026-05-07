@@ -467,11 +467,11 @@ export function CollectPaymentDialog({
       >
         {/* Header — compact. */}
         <DialogHeader className="px-5 py-3 border-b border-slate-200">
-          <DialogTitle className="text-base font-semibold">
+          <DialogTitle>
             New Payment{context?.customerCompany ? ` for ${context.customerCompany.name}` : ""}
           </DialogTitle>
           {sourceInvoiceNumber && (
-            <DialogDescription className="text-xs">
+            <DialogDescription>
               Started from invoice #{sourceInvoiceNumber}
             </DialogDescription>
           )}

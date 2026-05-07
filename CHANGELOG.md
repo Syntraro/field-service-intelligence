@@ -6,6 +6,2041 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### Invoice PDF v2 — muted-blue palette + push Client Communication low (2026-05-06 RALPH v2)
+
+Tightens the modern invoice layout. Drops the bright green accent entirely and replaces it with a muted dark blue (#1E3A5F) used sparingly for section labels (BILL TO, SERVICE SUMMARY, CLIENT COMMUNICATION, BUSINESS INFORMATION), the Due Date value, the invoice-number pill border, and the TOTAL DUE amount. Strong headings + the table header use a near-black navy (#0F172A). Color-token sweep ensures every hex literal appears once in the source — the doc body now references constants only.
+
+**Layout deltas vs. v1:**
+
+1. **Color palette** — `GREEN = "#76B054"` removed entirely. New `ACCENT = "#1E3A5F"`. Token map: `NAVY = #0F172A`, `TEXT_DARK = #0F172A`, `TEXT_BODY = #334155`, `TEXT_MUTED = #475569`, `BORDER = #E2E8F0`, `CONTAINER = #F8FAFC`. Aligns with the spec's tight gray scale.
+2. **Invoice-number pill** — border now uses `ACCENT` instead of `BORDER`, so the chip carries the brand cue alongside the BILL TO / SERVICE SUMMARY labels.
+3. **Table row height** — bumped from 20pt → 22pt for slightly better readability while still hosting 8–15+ items per page. Header row from 22pt → 24pt to match.
+4. **TOTAL DUE** — label now uppercase + bold (11pt with 0.5pt tracking); amount slightly larger (14pt) and rendered in `ACCENT` so it reads as the document's primary number.
+5. **CLIENT COMMUNICATION pushed LOW** — when the body left vertical room on the last page, the bordered comm block anchors above the footer band (`commTop = footerTopY - 14 - commH`). When the body has consumed the page, it falls back to the immediately-after-totals placement. Either way the block stays whole — no mid-block page splits.
+6. **BUSINESS INFORMATION** — re-rendered as TWO centred lines: an uppercase ACCENT-colored label (`"BUSINESS INFORMATION"`) on top, formatted tax registrations (`HST # 123…  GST # 456…`) below in muted gray. Replaces the prior left-aligned inline `Business Information   HST #…` row. The block still renders only when at least one tax registration exists.
+7. **Footer Y math updated** — added a Business Info value Y row, so the band totals ~45pt with tax regs (vs. ~30pt in v1) / ~25pt without. All Ys remain comfortably inside the PDFKit bottom margin so no auto-pagination trigger fires.
+
+**HST/tax investigation findings (audit, no PDF-side fix needed):**
+
+The brief asked to investigate why HST/tax may be missing from some invoices. Audit findings (delegated to a focused explore agent + spot-checks of the writer/reader chain):
+
+- **The PDF render itself is correct.** `Tax (${company.taxName || "Tax"})` + `formatCurrency(invoice.taxTotal)` render unconditionally. `company.taxName` defaults to `"HST"` (`shared/schema.ts`) for every tenant — it's never null. The PDF never skips the tax row.
+- **`invoice.taxTotal` is correctly aggregated** by `recalculateInvoiceTotalsInTx()` (`server/storage/invoices.ts:800`) as `SUM(line.lineSubtotal * line.taxRate)`. This recalc fires inside `createInvoiceLine()`, `updateInvoiceLine()`, and `batchApplyLineTax()` — every line write triggers it.
+- **Real bug surface 1: PM billing service.** `createInvoiceFromBillingEvent()` (`server/storage/invoices.ts:~1583`) creates an invoice shell without ever calling `applyTaxGroupToInvoice()`. `taxGroupId` stays null; subsequent line writes leave `line.taxRate = 0`; `taxTotal` aggregates to 0. **Real bug — but fixing it is a billing-logic change, out of scope for this PDF redesign.**
+- **Real bug surface 2: Standalone POST /api/invoices.** `routes/invoices.ts:276–283` only calls `storage.updateInvoice(…{taxGroupId})`. This works in practice — the line-add route at line 985 reads `invoice.taxGroupId` and applies the per-line tax math via `parseMoney(group.rates).reduce(...)`, then `createInvoiceLine` recalculates totals. The agent's initial concern was overstated; this path produces correct tax IF the tenant has a default tax group configured.
+- **Configuration surface (not a bug):** if a tenant has NO default tax group set up (the `company_tax_groups.isDefault` flag is unset), `taxRepository.getDefaultTaxGroup()` returns null at standalone-create time. `taxGroupId` stays null, lines have `taxRate = 0`, and `taxTotal = 0` is correct (the tenant genuinely hasn't configured tax). The PDF correctly renders `Tax (HST) $0.00`.
+
+**Recommended follow-up (not in this change):** mirror `applyTaxGroupToInvoice()` from the canonical create-from-job pattern into `createInvoiceFromBillingEvent`. File reference: `server/services/invoiceCreationService.ts:129`.
+
+**Files changed.**
+
+- `server/services/invoicePdfService.ts` — color tokens swapped to v2 muted-blue palette; pill border uses ACCENT; table dimensions bumped (24pt header / 22pt rows); TOTAL DUE uppercase + 14pt + ACCENT; CLIENT COMMUNICATION push-low logic with `desiredTop = footerTopY - 14 - commH` and a fallback to `cursorY + 16`; Business Information re-rendered as a centred two-line stack with uppercase ACCENT label + muted-gray tax registrations; footer Y math updated to accommodate the taller Business Information block.
+- `tests/invoice-pdf-no-generated-footer.test.ts` — color-token contract updated to v2 (NAVY=#0F172A, ACCENT=#1E3A5F, gray scale), GREEN constant + #76B054 negative-pinned away, table dimensions pinned to 24/22, TOTAL DUE uppercase + ACCENT pinned, footer Y math pins updated for the taller two-line Business Information block, Due Date ACCENT pin, and three new describe blocks: pill-border-uses-ACCENT, CLIENT-COMMUNICATION-pushes-low (desiredTop math + fallback), and centred BUSINESS INFORMATION label with stacked layout.
+
+**Tests added/updated.**
+
+- 39 source-pin tests in `tests/invoice-pdf-no-generated-footer.test.ts` — every v2 layout decision pinned (palette, pill, table dims, TOTAL DUE, push-low CLIENT COMM, centred BUSINESS INFORMATION, footer Y math).
+- 5 render-time smoke tests in `tests/invoice-pdf-render-smoke.test.ts` (no changes — they validate page-count behavior which v2 preserves).
+
+**Commands run.**
+
+- `npm run check` → clean.
+- `npx vitest run` on the PDF + RALPH-affected suites (12 files) → **362 passed**, 0 failures.
+- `npm run build` → frontend (3154 modules, 8.42s) + backend (83 modules, 142ms) both succeed.
+
+**Known limitations.**
+
+- The PM-billing tax-application bug identified in the audit is real but out of scope. A separate change should call `applyTaxGroupToInvoice()` inside `createInvoiceFromBillingEvent`.
+- Quote PDF (`server/services/quotePdfService.ts`) still uses the v1-era palette + footer pattern. Brief is invoice-specific.
+- `tests/invoice-pdf-render-smoke.test.ts` counts pages via the `/Type /Page` PDF object marker — stable across PDFKit versions but treat any future smoke-test failure as a signal to inspect the actual rendered output.
+
+### Changed
+
+#### ProductServiceFormDialog migrated to canonical ModalShell + Modal* primitives — closes the safe/moderate tenant modal sprint (2026-05-06)
+
+Aligned `ProductServiceFormDialog` with the Modal Taxonomy in `CLAUDE.md` (rule #2: generic / simple modals → `<ModalShell>` + `<Modal*>` primitives, NOT raw `<Dialog>`). **This migration closes the safe/moderate tenant modal sprint.** The modal is the canonical surface for adding / editing product + service items in the items management settings — mounted from `ProductsServicesManager`. Behavior, validation gating (duplicate-name guard disables Save + shows red border + inline error), the auto-calculation handlers (`handleCostChange` / `handleMarkupChange` recompute the unit price as `cost × (1 + markup/100)`), the create/edit mode resolution (`editingProduct` controls title / description / submit label), the controlled-component data flow via `setFormField` → `onFormDataChange`, and every form field are preserved verbatim — only the primitive layer changed.
+
+**Body-shape decision.** Standard `space-y` form layout with intra-body `border-t pt-2` section separators (Pricing / Duration+Category / Checkboxes rows) — fits cleanly inside `<ModalBody>`. The separators are intra-body styling, unrelated to the body's outer shape. Same precedent as `AddEquipmentDialog` / `QuickAddSupplierDialog`. The prior `py-1` on the body div is dropped because `<ModalBody>` bakes its own canonical `py-4`.
+
+**Width contract.** `sm:max-w-[550px] overflow-visible` passed at the call-site per Modal Taxonomy rule #5. The `overflow-visible` is intentional — the Type and Category Select dropdowns rely on it to extend outside the modal's content area.
+
+**No `<form>` wrapper.** Uses `<Button onClick>` rather than form-submit. Negative pin asserts no `<form>` element is introduced.
+
+**What changed.**
+
+- Imports: `Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle` from `@/components/ui/dialog` → `ModalShell, ModalHeader, ModalTitle, ModalDescription, ModalBody, ModalFooter` from `@/components/ui/modal`. Zero raw Dialog imports remain.
+- `<Dialog open={open} onOpenChange={onOpenChange}>` → `<ModalShell open={open} onOpenChange={onOpenChange} className="sm:max-w-[550px] overflow-visible" data-testid="dialog-product">`. Width + overflow + wrapper testid all passed at the call-site.
+- `<DialogHeader><DialogTitle>{mode-aware}</DialogTitle><DialogDescription>{mode-aware}</DialogDescription></DialogHeader>` → `<ModalHeader><ModalTitle>{mode-aware}</ModalTitle><ModalDescription>{mode-aware}</ModalDescription></ModalHeader>`.
+- `<div className="space-y-3 py-1">…body…</div>` → `<ModalBody className="space-y-3">…body…</ModalBody>`.
+- `<DialogFooter>` → `<ModalFooter>`.
+
+**Behavior preserved.**
+
+- Mode-aware copy: `editingProduct` controls title (`"Edit Item"` / `"Add New Item"`), description (`"Update the item details."` / `"Create a new product or service."`), and submit label (`"Save"` / `"Create"`).
+- Duplicate-name guard: when `checkDuplicate` is set, the Name input gets `border-destructive` + an inline error (`"An item named \"{checkDuplicate.name}\" already exists"`); Save button disabled via `disabled={isSaving || !!checkDuplicate}`.
+- Auto-calculation: `handleCostChange` recomputes `unitPrice = (cost × (1 + markup/100)).toFixed(2)` when markup > 0 (else empty string); `handleMarkupChange` does the same when cost > 0. Price input remains manually editable to override the auto-calculation.
+- Form sections (6 rows): Type/SKU 2-col grid, Name (full width with duplicate-check), Description Textarea (rows={2}), Pricing 3-col grid (Cost/Markup/Price with $ and % adornments) with `border-t pt-2`, Duration/Category 2-col grid with `border-t pt-2`, Taxable+Active checkboxes flex row with `border-t pt-2`.
+- Category select: uses `__none__` sentinel for the Uncategorized option (round-trips to empty string in `formData.category`).
+- Submit gating: Save button disabled while `isSaving || !!checkDuplicate`. Loader spinner gated on `isSaving`. Submit label switches `"Create"` ↔ `"Save"` based on mode.
+- All 10 testids preserved: `dialog-product`, `select-type`, `input-sku`, `input-name`, `input-description`, `input-cost`, `input-markup`, `input-price`, `input-duration`, `select-category`, `button-save`.
+- Controlled-component data flow: `setFormField` proxies to `onFormDataChange({ ...formData, [field]: value })`; the parent owns the form state.
+- Cancel button calls the caller-supplied `onCancel` callback.
+
+**Files changed.**
+
+- `client/src/components/products-services/ProductServiceFormDialog.tsx` — primitive swap. Inline doc-comment documents the body-shape decision (use ModalBody; intra-body separators stay) and the explicit `overflow-visible` rationale (Select dropdowns).
+- `tests/product-service-form-dialog.test.ts` — new file, 30 source-pin tests organized as 7 describe blocks. Pins: canonical Modal primitives imported, no raw Dialog import (using `[^}]*?` to keep the regex inside one import block), no raw `<Dialog*>` JSX, `<ModalShell>` with `sm:max-w-[550px] overflow-visible` + wrapper testid + no inline `p-0 gap-0`, mode-aware ModalTitle + ModalDescription, `<ModalBody className="space-y-3">` with no `py-` override, no `<form>` wrapper (regression pin), ModalFooter wraps Cancel + Save, all 6 row sections (Type/SKU 2-col, Name with duplicate-check, Description Textarea, Pricing 3-col with border-t, Duration/Category 2-col with border-t and `__none__` sentinel, Taxable+Active flex with border-t), auto-calculation handlers (cost-change, markup-change, manual price override), submit gating (disabled gate + spinner + label switch), Cancel button onCancel callback, mode-aware title/description/submit-label resolution, `setFormField` controlled-component proxy.
+- `CHANGELOG.md` — this entry.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/product-service-form-dialog.test.ts tests/modal-canonical.test.ts` — 96/96 pass first run (30 + 66).
+- Repo grep on `ProductServiceFormDialog.tsx`: zero `<Dialog>` / `<DialogContent>` / `<DialogTitle>` / `<DialogHeader>` / `<DialogDescription>` / `<DialogFooter>` JSX; zero `from "@/components/ui/dialog"` import; zero `<form>` element.
+
+**Width contract (Modal Taxonomy rule #5).** ModalShell stays width-neutral. The call-site passes `className="sm:max-w-[550px] overflow-visible"` — byte-identical to the prior `<DialogContent>` target. ModalShell's baked `p-0 gap-0` replaces the prior implicit `p-6 gap-4` from DialogContent — slight outer-padding tightening matching the rest of the canonicalized form-modal surface. Regression pin asserts the call-site className doesn't accidentally re-introduce `p-0 gap-0`.
+
+**Items-settings behavior unchanged.** The `ProductsServicesManager` caller integration is untouched; the prop contract (`open` / `onOpenChange` / `editingProduct` / `formData` / `onFormDataChange` / `onSave` / `onCancel` / `isSaving` / `checkDuplicate` / `uniqueCategories`) is preserved verbatim. Form fields, validation, auto-calculations, mode-aware copy, controlled-component data flow, and the duplicate-check gate all work identically.
+
+**Sprint close — Phase 1 safe/moderate tenant modal sprint complete.** All 9 modals from the original sprint scope are now canonical:
+
+| Modal | Status |
+|---|---|
+| ContactFormDialog | ✓ |
+| LocationFormModal | ✓ |
+| AddLocationDialog (suppliers) | ✓ |
+| EditLocationDialog (suppliers) | ✓ |
+| QuickAddSupplierDialog | ✓ |
+| EditCompanyDialog | ✓ |
+| EditTagsModal | ✓ |
+| BulkEditTagsModal | ✓ |
+| ProductServiceFormDialog | ✓ |
+
+Plus the earlier Phase 1 cluster (also canonical): `OperationalActionModal`, `CreateNewDialog`, `CreateClientModal`, `QuickAddJobDialog` standalone wrapper, `AddEquipmentDialog`, `QboOverrideModal`, `ConfirmVoidModal` (verified), Lead/Quote destructive confirms (`LeadDetailPage`, `QuoteDetailPage`), and the dead-modal cleanup (`ApplyTemplateModal` + `StaffTakeCardDialog` deleted).
+
+**Deferred high-risk modal categories** (NOT in this sprint's scope — flagged in the original Phase 1 audit as Phase 3 / high-risk):
+
+- **Payment / Stripe path:** `CollectPaymentDialog` (embedded Stripe Elements + webhook polling), `RefundPaymentDialog`, `SendPaymentLinkDialog`. Need Stripe-specific test scaffolding before migration.
+- **Invoice composition:** `InvoiceCompositionDialog` (composition logic + allocation guards), `BatchSendInvoicesModal`. Critical-path revenue flows.
+- **Communication wrapper:** `SendCommunicationModal` — reused across job / invoice / quote (high blast radius if drift). Likely needs a dedicated `SendCommunicationModalShell` domain wrapper per the original audit.
+- **Dispatch / scheduling:** `EditVisitModal`, `AddVisitDialog`, `ScheduleLeadVisitModal` — schedule-grid + visit-state coupling makes these higher-risk.
+- **Timesheets:** `TimeEntryModal`, `TimeEntryEditModal`, `JobSessionCreateModal`, `JobSessionEditModal` — payroll-critical paths.
+- **Job templates:** `JobTemplateModal`, `QuoteTemplateModal`, `ApplyQuoteTemplateModal`, `ApplyTemplateModalBase` — complex line-item editor patterns.
+- **Misc deferred:** `EquipmentDetailModal` (different from AddEquipmentDialog), `PartsSelectorModal`, `CreateMaintenancePlanDialog`, `CreateLeadModal` family if any, `Send*` / batch-* invoice modals not yet covered.
+- **Embedded coupling deferred:** `QuickAddJobDialog`'s inner `<DialogFooter>` (still raw — embedded-mode coupling means migrating it would change the layout in `CreateNewDialog`'s Job tab).
+
+Each high-risk category should get its own focused planning + test-pinning sprint.
+
+#### EditCompanyDialog migrated to canonical ModalShell + Modal* primitives (2026-05-06)
+
+Aligned `EditCompanyDialog` with the Modal Taxonomy in `CLAUDE.md` (rule #2: generic / simple modals → `<ModalShell>` + `<Modal*>` primitives, NOT raw `<Dialog>`). The modal is the canonical surface for editing a customer company's identity (firstName / lastName / companyName / use-company-as-primary toggle) + contact (phone / email) + billing address — mounted from `ClientDetailPage`. Behavior, validation gating (`firstName OR companyName` required, matching the create-modal rule), the `useEffect` prefill flow with the anti-overwrite guard (`if (parentCompany && !open)`), the PATCH mutation contract with the `useCompanyAsPrimary` derivation rule, the canonical query invalidations (clients overview + clients detail + customer-companies detail), and every form field are preserved verbatim — only the primitive layer changed.
+
+**Body-shape decision.** Standard `space-y` form layout — fits cleanly inside `<ModalBody>`. Same precedent as `LocationFormModal` / `AddEquipmentDialog` / `CreateClientModal`. The prior `py-2` on the body div is dropped because `<ModalBody>` bakes its own canonical `py-4`.
+
+**Width contract.** The prior `<DialogContent>` had no explicit `max-w` (relied on the shadcn default `max-w-lg`). Migration makes the width explicit at the call-site per Modal Taxonomy rule #5 — `className="max-w-lg max-h-[90vh] overflow-y-auto"`. Net visual effect is byte-identical (same effective width, just documented at the call-site for taxonomy compliance).
+
+**No `<form>` wrapper.** Uses `<Button onClick>` rather than form-submit — same pattern as `LocationFormModal` / `AddEquipmentDialog`. Negative pin asserts no `<form>` element is introduced.
+
+**No `<ModalDescription>`.** No description in source. Pinned absence preserved.
+
+**What changed.**
+
+- Imports: `Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter` from `@/components/ui/dialog` → `ModalShell, ModalHeader, ModalTitle, ModalBody, ModalFooter` from `@/components/ui/modal`. Zero raw Dialog imports remain.
+- `<Dialog open={open} onOpenChange={onOpenChange}>` → `<ModalShell open={open} onOpenChange={onOpenChange} className="max-w-lg max-h-[90vh] overflow-y-auto">`.
+- `<DialogHeader><DialogTitle>Edit Client</DialogTitle></DialogHeader>` → `<ModalHeader><ModalTitle>Edit Client</ModalTitle></ModalHeader>`.
+- `<div className="space-y-4 py-2">…body…</div>` → `<ModalBody className="space-y-4">…body…</ModalBody>` — the `py-2` was redundant once `<ModalBody>`'s canonical `px-5 py-4` took over.
+- `<DialogFooter>` → `<ModalFooter>` — the canonical `px-5 py-3 border-t border-slate-200` rhythm replaces the prior implicit no-divider gap.
+
+**Behavior preserved.**
+
+- `canSave = !!(form.firstName.trim() || form.name.trim())` — the canonical "firstName OR companyName required" rule, matching the create-modal validation.
+- Save button disabled when `!canSave || editClientMutation.isPending`. Label switches `"Save Changes"` ↔ `"Saving..."`.
+- Cancel button calls `onOpenChange(false)`.
+- Mutation: `PATCH /api/customer-companies/:companyId` with the full payload. Every text field trimmed and mapped to `null` when blank.
+- `useCompanyAsPrimary` derivation rule preserved verbatim: if there's no company name → `false` (can't use empty company as primary); if there's no first name → `true` (company is the only identity available); otherwise honor the user's checkbox.
+- Success: invalidates `["/api/clients", clientId, "overview"]` + `["/api/clients", clientId]` + `["/api/customer-companies", companyId]` (when `companyId` is set); closes the modal; toasts `"Client updated"` with description `"Client details saved."`.
+- Error: destructive toast surfacing `error?.message ?? "Failed to update client."`. Form state preserved — no setter calls in `onError` (regression-pinned).
+- `companyId` guard: mutation throws `"Company not loaded yet."` when `companyId` is undefined.
+- Prefill flow: `useEffect(() => { if (parentCompany && !open) { setForm({…}); } }, [parentCompany, open])`. The `!open` guard prevents overwriting in-flight user edits when the parent re-renders with new `parentCompany` data while the modal is open. Writes all 11 form fields with `|| ""` fallbacks for nullable strings; `useCompanyAsPrimary: parentCompany.useCompanyAsPrimary !== false` (defaults to true if undefined or null).
+- Initial state (useState seed) is an empty form — prefill happens via `useEffect`, not the initializer.
+
+**Files changed.**
+
+- `client/src/components/EditCompanyDialog.tsx` — primitive swap. Inline doc-comment documents the canonicalization + the body-shape decision (uses ModalBody, same precedent as LocationFormModal etc.) + the explicit-width contract.
+- `tests/edit-company-dialog.test.ts` — new file, 30 source-pin tests organized as 7 describe blocks. Pins: canonical Modal primitives imported, no raw Dialog import (using `[^}]*?` to keep the regex inside one import block), no raw `<Dialog*>` JSX, no `<ModalDescription>` (regression pin), `<ModalShell>` with `max-w-lg max-h-[90vh] overflow-y-auto` + no inline `p-0 gap-0`, `<ModalHeader><ModalTitle>Edit Client</ModalTitle></ModalHeader>`, `<ModalBody className="space-y-4">` with no `py-` override, no `<form>` wrapper (regression pin), Identity fieldset with all 4 controls (First name + Last name + Company name + use-company-as-primary checkbox + canonical legend copy), Phone+Email 2-col grid, Billing Street + Billing Street 2 (with placeholder), City+Province+Postal Code 3-col grid, Footer with Cancel + Save Changes, `canSave` gate + disabled gate + label switch, mutation endpoint (`PATCH /api/customer-companies/:companyId`), payload trim+null-mapping for all 10 text fields, the `useCompanyAsPrimary` 3-way derivation rule, success invalidations (3 query keys) + toast copy, error path preserves form state, `companyId` guard throws canonical error message, useEffect prefill with anti-overwrite guard + 11-field write + dependency array `[parentCompany, open]`, useState empty-seed.
+- `CHANGELOG.md` — this entry.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/edit-company-dialog.test.ts tests/modal-canonical.test.ts` — 96/96 pass (30 + 66).
+- Repo grep on `EditCompanyDialog.tsx`: zero `<Dialog>` / `<DialogContent>` / `<DialogTitle>` / `<DialogHeader>` / `<DialogDescription>` / `<DialogFooter>` JSX; zero `from "@/components/ui/dialog"` import; zero `<form>` element; zero `<ModalDescription>` mount.
+
+**One test-file iteration.** First test run failed with an esbuild parse error on a test-name string that contained unescaped `""` inside a double-quoted JS string literal. Fixed by switching that one test name's quote delimiter to single quotes (`'…with `|| ""` fallbacks…'`). All other tests passed on the second run.
+
+**Width contract (Modal Taxonomy rule #5).** ModalShell stays width-neutral. The call-site passes `className="max-w-lg max-h-[90vh] overflow-y-auto"`. ModalShell's baked `p-0 gap-0` replaces the prior implicit `p-6 gap-4` from DialogContent — slight outer-padding tightening matching the rest of the canonicalized form-modal surface. Regression pin asserts the call-site className doesn't accidentally re-introduce `p-0 gap-0`.
+
+**Client edit behavior unchanged.** The `ClientDetailPage` caller integration is untouched; the prop contract (`open` / `onOpenChange` / `companyId` / `parentCompany` / `clientId`) is preserved verbatim. Identity / contact / billing address edits, validation, mutation endpoint, query invalidations, success/error toasts, and the prefill flow with the anti-overwrite guard all work identically.
+
+#### Invoice PDF redesigned to a compact modern layout (2026-05-06 RALPH)
+
+The customer-facing invoice PDF was rewritten end-to-end into a tighter, more modern layout that surfaces more line items per page and removes the cluttered "Scope of Work / Notes / generated-on" stack. Every binding still reads existing schema columns — no DB renames, no new tenant settings, no logo / payment-info / warranty / "Need help?" additions.
+
+**What changed (top → bottom):**
+
+1. **Compact two-column header.** Left column: tenant company name (20pt bold) + tight 12pt-leading rows for address / city / phone / email / website / tax IDs. Right column: large navy "INVOICE" word, an `Invoice #N` rounded pill, then Issue Date and Due Date rows with the Due Date value rendered in the brand green (#76B054). A hairline divider closes the masthead.
+2. **BILL TO** sits high on the page (right after the header divider). Green uppercase label, bold client name, then optional location label + address + phone/email rows. The location label dedupe (case/whitespace-insensitive vs. customer name) is preserved verbatim from the prior `client/src/lib/serviceAddress.ts` policy.
+3. **SERVICE SUMMARY** — single label, bordered container, rendered ONLY when `invoice.workDescription` is non-empty. Replaces the prior "Scope of Work" heading. Body text wraps naturally; the container sizes tightly to its content height.
+4. **Line items table** — navy header row (#1f2a44) with white text. Columns: `Description | Qty | Unit Price | Amount` (the prior "Rate" header is renamed to "Unit Price"). Compact 20pt row height with subtle 0.4pt dividers + alternating fill. Designed for 8+ items on page 1 and pagination on truly long invoices.
+5. **Totals box** — right-aligned, light bordered. Subtotal / optional Discount / `Tax (HST)` / divider / `Total Due`. Total Due is bold + larger (13pt) + green. Amount Paid / Balance Due render only when payments exist AND `invoice.showBalance !== false`. The block page-breaks together — totals never split.
+6. **CLIENT COMMUNICATION** — single label, light bordered container. Renders ONLY when `policy.clientMessage ?? invoice.notesCustomer` is non-empty (no dash placeholder, no "Notes:" heading). Page-breaks together.
+7. **Footer** — pinned LOW on the LAST page only. A 0.5pt hairline divider at `pageH - 88` (with tax regs) or `pageH - 74` (without). When at least one tax registration exists, an inline "Business Information   HST #739597326 RT0001   …" row at `pageH - 84`. A centred `Thank you for choosing {company.name}.` at `pageH - 70`. Every Y is computed bottom-up to sit comfortably inside the PDFKit bottom margin (`pageH - 50 = 742`); no draw operation ever crosses the boundary, so the auto-pagination trigger that previously created a blank page-2 cannot fire.
+
+**Multi-page mechanics:**
+
+- **Table page-break** — `ensureRowRoom(rowY, neededHeight)` checks each row before drawing. When the row would overflow `pageH - 50`, it calls `doc.addPage()`, redraws the watermark, and re-emits the navy table header on the new page so subsequent rows still read as a continuation.
+- **Totals + Client Communication** — each block computes its full height upfront and page-breaks BEFORE drawing if the current page can't fit it. No mid-block splits.
+- **Footer** — uses `bufferPages: true` + `bufferedPageRange()` + `switchToPage(lastPage)` so the footer chrome lands on the final page only, regardless of page count.
+- **Watermark** — DRAFT / VOID / PAID diagonal stamp redraws on every new page so multi-page documents keep the same backdrop.
+
+**Constraints honoured (per the brief):**
+
+- **No tenant logo** — the renderer never calls `doc.image()`.
+- **No header status badges** — the diagonal watermark for `draft` / `paid` / `voided` is preserved (it's a customer-actionable document-state stamp, not a header pill), but no new pill-style status indicator is introduced.
+- **No payment information block** — no "Payment Instructions" / "E-Transfer" / "Pay your invoices" copy added.
+- **No warranty section.** **No "Need Help?" section.**
+- **No new tenant-configurable PDF settings** — the existing `policy` flags drive visibility only; `showWarranty` / `showPaymentInfo` / `showLogo` / `showNeedHelp` are explicitly forbidden by tests.
+- **No DB-field renames** — every binding reads existing columns (`invoice.workDescription`, `invoice.notesCustomer`, `policy.clientMessage`, `taxRegistrations`, `company.name/address/phone/email/taxName`, `invoice.invoiceNumber/issuedAt/issueDate/dueDate/subtotal/taxTotal/total/discountAmount/discountPercent/amountPaid/balance/showBalance`).
+- **Color tokens locked** — `NAVY = #1f2a44`, `GREEN = #76B054`, `BORDER = #e5e7eb`, `CONTAINER = #fafbfc`, `TEXT_DARK / TEXT_BODY / TEXT_MUTED` for the gray scale. Each hex literal appears exactly once in the source (the constant declaration); a sweep-test fails if any future inline hex re-introduces a raw color.
+
+**Files changed.**
+
+- `server/services/invoicePdfService.ts` — full layout rewrite (data shape and `formatCurrency` / `formatDate` / `getStatusWatermark` helpers preserved). Added color-token constants, footer geometry constants, multi-page `drawTableHeader` + `ensureRowRoom` helpers, bottom-up footer Y computation. Comment block at top documents the layout zones, multi-page contract, and the brief's hard "no" list.
+- `tests/invoice-pdf-no-generated-footer.test.ts` — replaced the prior narrow footer guard with a 34-test layout-contract suite covering: forbidden timestamp + Date.now wrappers, hard "no" list (logo / status badge / payment info / warranty / Need Help / new tenant settings), source ordering for BILL TO → SERVICE SUMMARY → table → totals → CLIENT COMM, single labels (no "Scope of Work" / no "Notes:"), navy table + 20pt row height + Unit Price column, "Total Due" + green accent + divider above, footer copy + last-page-only switchToPage + safe Y coordinates, multi-page `drawTableHeader` + `ensureRowRoom` helpers, totals + client-comm page-break-before guards, watermark redraw on each new page, Issue Date + Due Date with green accent, and color-token sweep (no inline hex duplicates).
+- `tests/invoice-pdf-render-smoke.test.ts` — new file. Boots the actual PDFKit pipeline and counts pages via the `/Type /Page` PDF object marker. Five scenarios: simple 3-line invoice → 1 page; dense 8-line + tax registrations → 1 page (the brief's "8+ line items on page 1" requirement); 40-line stress → 2-4 natural pages; empty work-description / no client message → 1 page; tax registrations don't force a second page.
+
+**Commands run.**
+
+- `npm run check` → clean.
+- `npx vitest run tests/invoice-pdf-no-generated-footer.test.ts tests/invoice-pdf-render-smoke.test.ts tests/invoice-display-settings.test.ts` → 79 passed.
+- Broader RALPH sweep (12 files, 357 tests) → all passed.
+- `npm run build` → frontend (3154 modules, 8.41s) + backend (83 modules, 133ms) both succeed.
+
+**Known limitations / out of scope.**
+
+- The same `<service>generated on</service>` block in `server/services/quotePdfService.ts` was NOT touched (brief is invoice-specific). Mirroring this redesign for quotes is a follow-up.
+- `tests/invoice-pdf-render-smoke.test.ts` counts pages via a regex over the binary PDF stream rather than a full PDF parser. The `/Type /Page` marker is stable across PDFKit versions, but a future PDFKit revision that compresses the page-tree differently could affect the count. Treat any future smoke-test failure as a signal to inspect the actual rendered output, not a flaky test.
+- The diagonal status watermark (DRAFT/VOID/PAID) is preserved as a centred backdrop; it is intentionally not a header status badge. If a future spec mandates removal, `getStatusWatermark` + the `drawWatermark()` helper at the top of `generateInvoicePdf` are the single removal point.
+
+#### Quote line item cost now persists end-to-end (2026-05-06 follow-up)
+
+Closes the persistence gap surfaced by the canonical profitability header rewrite. The shared `<LineItemsCard>` now renders Full Line Revenue / Profit / Profit Margin on every consuming surface, but on Quote Detail saved quotes were reading back with `unitCost = 0` and reporting 100 % margin even when the user picked a product with real cost during creation. Audit confirmed the gap: `quote_lines.unit_cost` column did not exist, so Drizzle's typed insert was silently dropping the field at the DB boundary while the Zod schema, the canonical line-item mapper, and the client draft state all carried it correctly.
+
+**Audit findings.**
+
+- **Schema gap**: `quote_lines` had no `unit_cost` column. By contrast `invoice_lines.unit_cost` (`shared/schema.ts:2045`) and `job_parts.unit_cost` (`shared/schema.ts:3833`) both exist — the omission was an oversight, not a deliberate design choice.
+- **Wire was already cost-aware**: `canonicalLineItemInput.unitCost` is optional (`shared/lineItem.ts:218`); `draftToQuoteLinePayload` projects via `toCanonicalPayload` which includes `unitCost` (`client/src/lib/entities/lineItemMapper.ts:271-285`); `useLineItemsDrafts.ts:110` writes the selected product's `cost` into `draft.unitCost` automatically. Drop happened at `db.insert(quoteLines).values(...)` — the typed insert ignored unknown fields.
+- **Quote → Job conversion dropped cost**: `server/routes/quotes.ts:1066-1074` built `job_parts` rows without `unitCost`. So even if quote cost had been persisted, the conversion would lose it; the converted job — and the invoice billable-preview hydrated from it — both fell back to 0.
+- **No direct Quote → Invoice route**. The chain is Quote → Job → Invoice (via `/api/jobs/:id/billable-preview` → mirror line). Fixing the quote-to-job leg propagates cost through the rest of the pipeline.
+- **Insertion sites for `quote_lines`** (audited): `server/storage/quotes.ts:232` (`createQuote` initial-lines), `server/storage/quotes.ts:337` (`createQuoteLine` per-row append), `server/storage/quotes.ts:367` (`updateQuoteLine` PATCH), `server/storage/quoteTemplates.ts:427` (template-apply). Storage methods spread `data` into `.values(...)` — so once Drizzle's table definition includes `unitCost`, every site picks it up automatically without a per-call edit. The route boundary is the place the field has to be admitted; once admitted, it flows through the storage layer unchanged.
+- **Quote templates** (`quote_template_lines`) also lack a cost column. Out of scope for this PR — apply-template can hydrate cost from `productId → items.cost` if a future PR wants templates to carry cost forward; the current `normalizeJobPartUnitCost` helper that fires inside `createJobPart` already does this same hydration on the job-parts side, so the chain self-heals when an unset cost meets a product reference.
+
+**What changed.**
+
+- **Migration `2026_05_06_quote_lines_unit_cost.sql`** — adds `quote_lines.unit_cost numeric(12, 2)` (nullable, IF NOT EXISTS). Mirrors `invoice_lines.unit_cost` / `job_parts.unit_cost` precision and nullability exactly. Idempotent — safe to re-run. Applied via `npm run db:migrate:one`.
+- **`shared/schema.ts`** — added `unitCost: numeric("unit_cost", { precision: 12, scale: 2 })` to the `quoteLines` Drizzle table definition. The `InsertQuoteLine` type (inferred from the table) now includes `unitCost`, so every `db.insert(quoteLines).values({...})` and `db.update(quoteLines).set({...})` site picks the field up by structural typing without further per-call edits. Also extended `updateQuoteLineSchema` Zod to accept `unitCost: z.string().nullable().optional()` so the existing `PATCH /api/quotes/:id/lines/:lineId` route admits the field on per-row edits.
+- **`server/routes/quotes.ts`** — added `unitCost: z.string().regex(...).nullable().optional()` to `createQuoteSchema.lines` so the inline-create batch (`POST /api/quotes` with `lines: [...]`) admits cost on each new line. The convert-to-job loop at lines 1066–1077 now passes `unitCost: line.unitCost` into `createJobPart`. Cast via `(line as Record<string, unknown>).unitCost` because the canonical `QuoteLine` type was inferred BEFORE the migration; once the next type-check rebuild runs the cast becomes redundant but it's harmless. The downstream `normalizeJobPartUnitCost` helper inside `createJobPart` already hydrates from `items.cost` when unitCost is null, so pre-migration quote rows that convert post-deploy still get a cost basis on the job side.
+- **`client/src/components/quotes/draftQuoteLineItemsAdapter.ts`** — `InlineCreateQuoteLine` interface gained `unitCost?: string | null`. `mirrorLineToInlineCreate` reads `(line as { unitCost?: string | null }).unitCost ?? null` and projects it into the create payload. Defensive cast because mirror entries can predate the field on a long-lived session; `?? null` keeps the projection valid.
+- **`client/src/pages/CreateQuotePage.tsx`** — comments updated: the synthetic mirror's `unitCost` now persists into the column rather than being discarded at the wire boundary. The two `onCommit` reconciliation call sites (new entries + existing-row updates) already passed `entry.draft.unitCost || null` from the previous PR; no change needed there.
+
+**Detail-page hydration**.
+
+`QuoteDetailPage`'s saved adapter calls `hydrateDraft(line)` from `lib/entities/lineItemMapper.ts`, which already extracts `row.unitCost` with a `"0.00"` default. With the column now present, saved quotes read back with the real cost; pre-migration rows continue to read `"0.00"` (pinned by the canonical fallback in the mapper). The header math defaults absent / blank cost to 0, so legacy quotes display 100 % margin until the user re-enters edit mode and saves — at which point the row picks up the product cost via the `useLineItemsDrafts.ts:110` carry-over and persists it.
+
+**Profit / Profit Margin behavior on each surface (post-fix).**
+
+| Surface | Cost source | Round-trip behavior |
+|---|---|---|
+| Quote Detail (saved) | `quote_lines.unit_cost` | Survives reload — Profit / Margin reflect persisted cost |
+| Create Quote | Synthetic mirror → inline-create payload | Saves into `quote_lines.unit_cost`; reload shows the same numbers |
+| Quote → Job conversion | Quote line's `unitCost` → `job_parts.unit_cost` | Margin propagates to converted job (and downstream to invoice via billable-preview hydration) |
+| Job Detail | `job_parts.unit_cost` | Unchanged (already persisted; convert-to-job now feeds it correctly) |
+| Invoice Detail / New Invoice | `invoice_lines.unit_cost` | Unchanged (already persisted) |
+
+**Constraints honored.**
+
+- Single canonical `<LineItemsCard>` visual — no per-page header.
+- Single canonical `headerMetrics` math — `useLineItemsDrafts` is still the only owner.
+- No new business logic — the change is at the persistence layer; the math (`profit = revenue − cost`, `margin = profit / revenue × 100`) is unchanged.
+- Absent / null cost still treated as 0 — but only as a fallback, no longer as the typical saved-quote outcome.
+- Naming aligned with existing convention — `unit_cost` (snake_case) on the column, `unitCost` (camelCase) in TypeScript, mirroring `invoice_lines` / `job_parts`.
+
+**Files changed.**
+
+- `migrations/2026_05_06_quote_lines_unit_cost.sql` — new.
+- `shared/schema.ts` — `quoteLines.unitCost` added; `updateQuoteLineSchema` accepts `unitCost`.
+- `server/routes/quotes.ts` — `createQuoteSchema.lines.unitCost` accepted; convert-to-job passes `line.unitCost` into `createJobPart`.
+- `client/src/components/quotes/draftQuoteLineItemsAdapter.ts` — `InlineCreateQuoteLine.unitCost`; `mirrorLineToInlineCreate` projects cost.
+- `client/src/pages/CreateQuotePage.tsx` — doc-block updated to reflect persistence.
+- `tests/quote-line-cost-persistence.test.ts` — new (14 source-pin tests covering migration existence + shape, schema column, both Zod schemas, the convert-to-job propagation, the wire shape, and the canonical mapper).
+- `CHANGELOG.md` — this entry.
+
+**Verification.**
+
+- Migration applied: `npm run db:migrate:one -- migrations/2026_05_06_quote_lines_unit_cost.sql` → `DONE`.
+- `npm run check` — clean.
+- `npx vitest run tests/quote-line-cost-persistence.test.ts tests/line-items-profitability-header.test.ts tests/quote-create-page.test.ts tests/lead-quote-conversion.test.ts` — 130/130 pass (14 new pins + 31 + 67 + 18 existing).
+
+#### BulkEditTagsModal migrated to canonical ModalShell + Modal* primitives (2026-05-06)
+
+Aligned `BulkEditTagsModal` with the Modal Taxonomy in `CLAUDE.md` (rule #2: generic / simple modals → `<ModalShell>` + `<Modal*>` primitives, NOT raw `<Dialog>`). **Completes the tag-management pair** — paired with the `EditTagsModal` migration earlier in this Unreleased cycle, the entire client-side tag-management surface is now under canonical compliance. The modal is the canonical surface for bulk tag application (add/remove tags across many entities at once) — mounted from `Clients.tsx` and `Locations.tsx`. Behavior, the entity-type config (`customerCompany` vs `location` with their distinct endpoints, `idField` for the request body, and `cacheKey` for invalidation), the two-step wizard (edit → review), the `addTagIds` / `removeTagIds` Set-based selection state, the `hasChanges` gate, the inline create-and-add flow with color picker, the close-resets-state wrapper, and the entity name preview (first 10 + "+ N more" overflow) are preserved verbatim — only the primitive layer changed.
+
+**Two-step wizard preserved.** The component has two distinct returns: `step === "edit"` returns the search/create + Add list + Remove list view; the terminal return is the `step === "review"` summary view. Both migrated. State `step: "edit" | "review"` starts at `"edit"` and is reset to `"edit"` when the modal closes (the `handleOpenChange` close-resets-state wrapper also clears both selection Sets and the search input).
+
+**Body-shape decision.** Both steps use `<ModalBody className="space-y-4">` to recreate the prior `<DialogContent>` `gap-4` between body sections. Step 1 (edit) carries `flex flex-col max-h-[85vh]` on `<ModalShell>` so the modal caps its height on small viewports; step 2 (review) has no `max-h` (the review summary + name preview are short enough that natural sizing works).
+
+**Step 1 has `<ModalDescription>`.** The count line (`"Applying to N clients/locations"`) was previously a `<p className="text-sm text-muted-foreground">` after `<DialogTitle>`; migrated to `<ModalDescription>` for canonical typography compliance (matches the description tokens used by `LocationFormModal`, `AddLocationDialog`, etc.).
+
+**Step 2 has no `<ModalDescription>`.** The review step's title is self-describing; no description in the source. Pinned absence preserved.
+
+**Both steps have `<ModalFooter>`.** Unlike `EditTagsModal`'s inline-action shape, this modal has explicit step-advance / commit actions:
+- Step 1 footer: Cancel + "Review Changes" (with `disabled={!hasChanges}` gate). The Review Changes button advances `step` to `"review"`.
+- Step 2 footer: Back + "Confirm & Apply" (with `disabled={applyMutation.isPending}` gate). The Back button returns to `"edit"`; Apply fires the bulk mutation.
+
+Both footers carry the `className="gap-2 sm:gap-0"` override (preserved verbatim).
+
+**What changed.**
+
+- Imports: `Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter` from `@/components/ui/dialog` → `ModalShell, ModalHeader, ModalTitle, ModalDescription, ModalBody, ModalFooter` from `@/components/ui/modal`. Zero raw Dialog imports remain.
+- Step 1 `<Dialog>` → `<ModalShell open={open} onOpenChange={handleOpenChange} className="max-w-md max-h-[85vh] flex flex-col">`. The `flex flex-col` makes the shell stack header / body / footer vertically; `max-h-[85vh]` caps height on short viewports.
+- Step 1 `<DialogHeader><DialogTitle>…</DialogTitle><p>…count…</p></DialogHeader>` → `<ModalHeader><ModalTitle className="flex items-center gap-2"><Tag />Bulk Edit Tags</ModalTitle><ModalDescription>Applying to {countLabel}</ModalDescription></ModalHeader>`.
+- Step 1 body sections (search/create input + color picker + create button block, Add tags list, Remove tags list) wrapped in `<ModalBody className="space-y-4">`.
+- Step 1 `<DialogFooter className="gap-2 sm:gap-0">` → `<ModalFooter className="gap-2 sm:gap-0">`.
+- Step 2 `<Dialog>` → `<ModalShell open={open} onOpenChange={handleOpenChange} className="max-w-md">`. No `max-h`, no `flex flex-col` — short content uses natural sizing.
+- Step 2 `<DialogHeader><DialogTitle>…</DialogTitle></DialogHeader>` → `<ModalHeader><ModalTitle className="flex items-center gap-2"><Tag />Confirm Bulk Tag Changes</ModalTitle></ModalHeader>`.
+- Step 2 `<div className="space-y-4">…summary + preview…</div>` → `<ModalBody className="space-y-4">…</ModalBody>` (the inner div's `space-y-4` collapses into ModalBody).
+- Step 2 `<DialogFooter className="gap-2 sm:gap-0">` → `<ModalFooter className="gap-2 sm:gap-0">`.
+
+**Behavior preserved.**
+
+- Bulk-mode selection: `addTagIds: Set<string>` and `removeTagIds: Set<string>`. `toggleAdd(tagId)` and `toggleRemove(tagId)` flip membership. Addable tags exclude tags already in the remove list (and vice versa).
+- `hasChanges = addTagIds.size > 0 || removeTagIds.size > 0`. Review Changes button disabled when `!hasChanges`.
+- Close-resets-state wrapper: `handleOpenChange(false)` clears `step → "edit"`, both selection Sets, and the search input.
+- Inline create-tag flow: same shape as `EditTagsModal`. Enter on the search input triggers `handleCreateAndAdd` when `canCreate` is true. `canCreate` gate: blank search returns `false`; existing tag-name match (case-insensitive, trimmed) returns `false`. Color picker (9-color set) gated on `canCreate`. Create button gated on `canCreate` + disabled while `createMutation.isPending`. On `createMutation` success: invalidates `["/api/tags"]`, auto-adds the new tag to the Add Set via `setAddTagIds((prev) => new Set(prev).add(newTag.id))`, clears the search input.
+- Bulk apply mutation: `applyMutation` POSTs to the entity-typed bulk-tags endpoint (`/api/customer-companies/bulk-tags` or `/api/locations/bulk-tags`) with `{ [config.idField]: selectedIds, addTagIds: Array.from(addTagIds), removeTagIds: Array.from(removeTagIds) }`. On success: invalidates `config.cacheKey` (`["/api/tags/assignments"]` for clients, `["/api/tags/location-assignments"]` for locations), toasts `"Updated tags for N clients/locations"` (uses `config.labelPlural`), closes the modal via `handleOpenChange(false)`, fires the parent's `onApplied()` callback. On error: surfaces destructive toast with the server error message.
+- Preview names take the first 10 entity names from `selectedNames`; remaining count rendered as `"+ N more"`.
+- Count label pluralizes correctly: `${selectedIds.length} ${length !== 1 ? config.labelPlural : config.label}`.
+- `useQuery` for `/api/tags` is enabled only when `open` is truthy.
+
+**Files changed.**
+
+- `client/src/components/BulkEditTagsModal.tsx` — primitive swap on both step returns. Inline doc-comment documents the two-step migration + the body-shape decision (use ModalBody on both steps; ModalShell carries `flex flex-col max-h-[85vh]` on step 1 only).
+- `tests/bulk-edit-tags-modal.test.ts` — new file, 41 source-pin tests organized as 9 describe blocks. Pins use a per-step extraction helper that anchors on `</ModalShell>` to avoid the non-greedy regex stopping inside JSX arrow function bodies. Pins: canonical Modal primitives imported, no raw Dialog import (using `[^}]*?` to keep the regex inside one import block), no raw `<Dialog*>` JSX, two-step wizard structure (`Step` union, `useState<Step>("edit")`, two `<ModalShell>` mounts, edit branch via `if (step === "edit")`, review as terminal return), step 1 composition (ModalShell `max-w-md max-h-[85vh] flex flex-col`, `handleOpenChange` wiring, header icon-title + description, ModalBody `space-y-4`, footer Cancel + Review Changes with `!hasChanges` gate), step 2 composition (ModalShell `max-w-md` — no max-h / no flex stack, header icon-title with no description, ModalBody `space-y-4`, footer Back + Confirm & Apply with `applyMutation.isPending` gate + label switch), width-contract regression pin (no inline `p-0 gap-0` on either ModalShell, no padding override on ModalBody on either step), bulk state preservation (`Set<string>` types, `toggleAdd` / `toggleRemove` shapes, addable-vs-removable filter mutual exclusion, `hasChanges` gate, close-resets-state wrapper, preview names first-10 cap, count-label pluralization), mutation contracts (entity-type config discriminator, bulk endpoint payload shape, success path with config-based invalidation + toast pluralization + onApplied callback, error path with destructive toast), inline create-tag flow preserved (createMutation endpoint, success path with auto-add + setSearch clear, Enter-to-create handler, `canCreate` gate, color picker gating, create button gating), `useQuery({ enabled: open })` gate.
+- `CHANGELOG.md` — this entry.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/bulk-edit-tags-modal.test.ts tests/edit-tags-modal.test.ts tests/modal-canonical.test.ts` — 135/135 pass (41 + 28 + 66). The companion `edit-tags-modal.test.ts` was re-run as a sanity check on the related tag-management surface.
+- Repo grep on `BulkEditTagsModal.tsx`: zero `<Dialog>` / `<DialogContent>` / `<DialogTitle>` / `<DialogHeader>` / `<DialogDescription>` / `<DialogFooter>` JSX; zero `from "@/components/ui/dialog"` import.
+
+**Test extraction caveat.** The first run failed 13 tests because the per-step extraction regex used `[\s\S]*?` non-greedy walkers that stopped at the first `);` inside a JSX arrow function body (`onKeyDown={(e) => { ... handleCreateAndAdd(); }}` etc.). Fixed by anchoring the extraction on `</ModalShell>` (which appears exactly twice in the file, once per step). Same regex-discipline issue I hit on the QuickAddJobDialog migration's import block — `[^X]*?` or anchor-on-unique-marker beats `[\s\S]*?` for any structured-source extraction.
+
+**Width contract (Modal Taxonomy rule #5).** ModalShell stays width-neutral on both steps. Step 1 className `max-w-md max-h-[85vh] flex flex-col` matches the prior `<DialogContent>` byte-for-byte. Step 2 className `max-w-md` matches the prior `<DialogContent>`. ModalShell's baked `p-0 gap-0` replaces the prior implicit `p-6 gap-4` from DialogContent — the visual rhythm shifts to ModalHeader's `px-5 pt-5 pb-3 border-b` + ModalBody's `px-5 py-4` + ModalFooter's `px-5 py-3 border-t`, which adds visual separators between the three regions and matches the rest of the canonicalized form-modal surface.
+
+**Bulk tag-application behavior unchanged.** The 2 caller integrations (`Clients.tsx`, `Locations.tsx`) are untouched; the prop contract (`open` / `onOpenChange` / `entityType` / `selectedIds` / `selectedNames` / `onApplied`) is preserved verbatim.
+
+**Outcome.** The tag-management pair (`EditTagsModal` + `BulkEditTagsModal`) is now fully Modal Taxonomy compliant. Tags is the fourth domain to reach full canonical compliance after the location-modal pair (`LocationFormModal` on the client side), the contact surface (`ContactFormDialog`), and the supplier triplet (`AddLocationDialog` + `EditLocationDialog` + `QuickAddSupplierDialog`).
+
+#### EditTagsModal migrated to canonical ModalShell + Modal* primitives (2026-05-06)
+
+Aligned `EditTagsModal` with the Modal Taxonomy in `CLAUDE.md` (rule #2: generic / simple modals → `<ModalShell>` + `<Modal*>` primitives, NOT raw `<Dialog>`). First half of the tag-management pair (paired with the upcoming `BulkEditTagsModal` migration). The modal is the canonical surface for managing tags on a single customer-company or location entity — mounted from `ClientDetailPage`, `Locations.tsx`, and `Clients.tsx`. Behavior, the entity-typed assignment URL + cache key resolution (`customerCompany` vs `location`), the inline create-and-assign flow with color picker, the tag-chip remove buttons, the available-tags list, the search filter, the `canCreate` gate (blank search returns false; existing tag-name match returns false), and the `useQuery({ enabled: open })` gating on `/api/tags` are preserved verbatim — only the primitive layer changed.
+
+**Body-shape decision.** Mirror the prior `<DialogContent>` layout — multiple sibling sections (current-tags chip strip, search/create input + color picker + create button, available-tags list, empty state) that previously relied on `<DialogContent>`'s baked `gap-4`. Migration uses `<ModalBody className="space-y-4">` to recreate that 16px inter-section rhythm. `<ModalShell>`'s canonical `p-0 gap-0` lock means top-level children no longer get implicit gap, so the rhythm has to live inside `<ModalBody>`.
+
+**Three pinned absences.** This modal has no explicit footer (`<ModalFooter>`), no description (`<ModalDescription>`), and no `<form>` wrapper in the source — actions trigger inline (Enter-to-create on the search input + click-to-assign-or-remove on the tag chips). All three absences are regression-pinned so a future "let's standardize" pass can't add them without coordinating with the inline-action pattern.
+
+**What changed.**
+
+- Imports: `Dialog, DialogContent, DialogHeader, DialogTitle` from `@/components/ui/dialog` → `ModalShell, ModalHeader, ModalTitle, ModalBody` from `@/components/ui/modal`.
+- `<Dialog>` → `<ModalShell open={open} onOpenChange={onOpenChange} className="max-w-md">`. Width passed at the call-site per Modal Taxonomy rule #5 (~28rem narrow tag-management dialog).
+- `<DialogHeader><DialogTitle className="flex items-center gap-2"><Tag />Manage Tags</DialogTitle></DialogHeader>` → `<ModalHeader><ModalTitle className="flex items-center gap-2"><Tag />Manage Tags</ModalTitle></ModalHeader>`. The `flex items-center gap-2` layout override on `<ModalTitle>` is allowed — the typography defaults still apply; only the flex axis is added.
+- Body sections wrapped in `<ModalBody className="space-y-4">` to recreate the prior `<DialogContent>` `gap-4` inter-section rhythm.
+
+**Behavior preserved.**
+
+- Enter-to-create: `<Input>` `onKeyDown` handler triggers `handleCreateAndAssign` only when `canCreate` is true; calls `e.preventDefault()` to suppress any implicit form submit. autoFocus preserved.
+- Tag-chip remove: `handleRemoveTag(tagId)` → `assignMutation.mutate({ removeTagIds: [tagId] })`.
+- Available-tag assign: `handleAddTag(tagId)` → `assignMutation.mutate({ addTagIds: [tagId] })`.
+- `canCreate` gate: blank search returns `false`; existing tag-name match (case-insensitive, trimmed) returns `false`.
+- Color picker (9 colors: red / orange / yellow / green / cyan / blue / violet / pink / gray) gated on `canCreate`. Create button gated on `canCreate` + disabled while `createMutation.isPending`. `handleCreateAndAssign` no-ops when `!canCreate`; otherwise dispatches `createMutation.mutate({ name: search.trim(), color: newTagColor })`.
+- Mutation contracts:
+  - `assignMutation` POSTs to entity-typed URL (`/api/customer-companies/:id/tags` or `/api/locations/:id/tags`) with `{ addTagIds?, removeTagIds? }` payload; success invalidates the entity-typed cache key + `["/api/tags/assignments"]`.
+  - `createMutation` POSTs to `/api/tags` with `{ name, color }`; success invalidates `["/api/tags"]`, auto-assigns the new tag, and clears the search input via `setSearch("")`.
+- `useQuery` for `/api/tags` is enabled only when `open` is truthy.
+
+**Files changed.**
+
+- `client/src/components/EditTagsModal.tsx` — primitive swap. Inline doc-comment documents the no-footer / no-form-wrapper / no-description decisions and the body-shape decision.
+- `tests/edit-tags-modal.test.ts` — new file, 28 source-pin tests organized as 7 describe blocks. Pins: canonical Modal primitives imported, no raw Dialog import (using `[^}]*?` to keep the regex inside one import block), no raw `<Dialog*>` JSX, no `<ModalDescription>` (regression pin), no `<ModalFooter>` (regression pin — locks the inline-action pattern), `<ModalShell>` with `max-w-md` + no inline `p-0 gap-0`, header carries the flex+icon layout class + `<Tag>` icon + canonical copy, `<ModalBody className="space-y-4">` with no `px-`/`py-` overrides, body section structural sequence (chip strip → search/create → available list → empty state), Enter-to-create handler, autoFocus, chip remove + available-tag assign click handlers, `canCreate` gate two-clause expression, color picker gating, create button gating + dispatch shape, mutation contracts (entity-typed URL + cache key, tag-creation endpoint, payload shapes), invalidations (assignment success + creation success + auto-assign + setSearch clear), `useQuery({ enabled: open })` gate.
+- `CHANGELOG.md` — this entry.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/edit-tags-modal.test.ts tests/modal-canonical.test.ts` — 94/94 pass first run (28 + 66).
+- Repo grep on `EditTagsModal.tsx`: zero `<Dialog>` / `<DialogContent>` / `<DialogTitle>` / `<DialogHeader>` / `<DialogDescription>` / `<DialogFooter>` JSX; zero `from "@/components/ui/dialog"` import; zero `<ModalDescription>` / `<ModalFooter>` JSX (correct — neither applies here).
+
+**Tag-management behavior unchanged.** The 3 caller integrations (`ClientDetailPage`, `Locations.tsx`, `Clients.tsx`) are untouched; the prop contract (`open` / `onOpenChange` / `entityType` / `entityId` / `currentTags`) is preserved verbatim.
+
+#### Profitability header now visible on every line-items surface (2026-05-06 follow-up)
+
+Follow-up to the canonical profitability header rewrite earlier today. The previous pass replaced the abbreviated `Rev …` cluster with three explicit tiles (Full Line Revenue / Profit / Profit Margin), but on Quote Detail / Create Quote / Invoice Detail / New Invoice the Profit + Profit Margin tiles stayed hidden because the shared `headerMetrics` returned `null` cost / profit / margin whenever no row carried a `unitCost > 0`. Quote and Invoice are pricing surfaces — margin visibility is the whole point — so hiding the KPIs there was wrong. After this PR every surface that consumes the shared `<LineItemsCard>` shows all three tiles whenever revenue > 0.
+
+**Why.** The `hasCost` gate in `useLineItemsDrafts.ts::headerMetrics` was a holdover from when only Job Detail tracked unit cost. Quote/invoice line schemas evolved (invoice_lines.unit_cost exists; quote_lines doesn't yet, see audit below) but the gate didn't, so on quote/invoice surfaces the header was a mute "Full Line Revenue" tile by itself. Treating absent unit cost as zero is honest — a $455 quote with no recorded cost has 100% margin, not "no margin".
+
+**Audit.**
+
+- **Schema cost columns**: `invoice_lines.unit_cost` exists (`shared/schema.ts:2045`); `job_parts.unit_cost` exists (`shared/schema.ts:3833`); **`quote_lines` has no unit_cost column** today. Server-side this means `getQuoteLines` returns rows without cost.
+- **Adapters feeding `<LineItemsCard>`**: live adapters on `QuoteDetailPage`, `InvoiceDetailPage`, `JobDetailPage`; draft adapters in `client/src/components/quotes/draftQuoteLineItemsAdapter.ts` and `client/src/components/invoice/draftInvoiceLineItemsAdapter.ts`. All five delegate hydration to the canonical `hydrateDraft` in `lib/entities/lineItemMapper.ts`, which already extracts `row.unitCost` with a `"0.00"` default — so the canonical draft shape always carries a numeric `unitCost`.
+- **Per-page divergence**: zero. The hide-Profit behavior was at the calculation layer (`headerMetrics` returning null), not in any per-page render.
+- **Create-surface drift**: `NewInvoicePage.makeMirrorLine` already accepted and persisted `unitCost` on the synthetic mirror; **`CreateQuotePage.makeMirrorLine` did not** — the args type omitted `unitCost` entirely, so even live edit-mode profitability previewed via the carry-over rule (`useLineItemsDrafts.ts:110` writes `product.cost` into the draft when a product is picked) was silently dropped on the next reconcile pass. Root cause #2 of the visible bug.
+
+**What changed.**
+
+- `client/src/components/line-items/useLineItemsDrafts.ts` — the `headerMetrics` memo now always emits numeric `cost / profit / margin`. The `hasCost` flag and the `{ cost: null, profit: null, margin: null }` early-return are gone. Per-row guard preserved: blank/null/non-numeric `unitCost` clamps to 0 via `parseMoney`; rows with `unitCost <= 0` don't contribute (so a poison `-5` cost can't drag profit negative). Divide-by-zero guard preserved: `revenue > 0 ? (profit / revenue) * 100 : 0`.
+- `client/src/components/line-items/types.ts` — `HeaderMetrics.cost / profit / margin` widened from `number | null` to required `number` so the type contract enforces always-emit at the compiler level. Any future regression that tried to return null would fail `npm run check`.
+- `client/src/components/line-items/LineItemsCard.tsx` — the `showProfit = m.cost !== null && m.profit !== null && m.margin !== null` gate is gone. Single conditional now: `showMetrics = m.revenue > 0`. All three tiles render together inside one `{showMetrics && (...)}` block. Profit and Profit Margin display values dropped the now-redundant `?? 0` defaults (`formatCurrency(m.profit)`, `m.margin.toFixed(2)`) since the hook contract guarantees numerics. Negative-profit tone (`text-rose-600`) wired via the existing single `profitToneClass` derivation, unchanged.
+- `client/src/pages/CreateQuotePage.tsx` — `makeMirrorLine` args extended with `unitCost: string | null`, surfaced onto the synthetic `QuoteLine` mirror as a runtime extra field (the `as QuoteLine` cast suppresses excess-property checks; `quote_lines.unit_cost` doesn't exist server-side so the field is dropped at the `mirrorLineToInlineCreate` boundary). Both `onCommit` reconciliation paths (new entries + existing-row updates) now pass `entry.draft.unitCost || null` into the mirror so cost survives every edit-Save cycle inside the page.
+
+**Visibility on each surface (post-fix).**
+
+| Surface | Source of `unitCost` | Header behavior |
+|---|---|---|
+| Quote Detail | `hydrateDraft(quote_line)` — column missing → defaults to `"0.00"` | Full Line Revenue / Profit (= revenue) / Profit Margin (100%) when revenue > 0; updates live during edit when a product with cost is picked |
+| Create Quote | Mirror line carries draft.unitCost across edits | Same as Quote Detail; live-updates as soon as a product with cost lands in the row |
+| Invoice Detail | `hydrateDraft(invoice_line)` — `invoice_lines.unit_cost` real column | All three tiles with real numbers when lines have cost (typical when invoice was hydrated from a job's billable preview); 100% margin on lines with no recorded cost |
+| New Invoice | Mirror line preserves `unitCost` (already, no change needed) | Same as Invoice Detail |
+| Job Detail | `hydrateDraft(job_part)` — `job_parts.unit_cost` real column | All three tiles, real numbers — unchanged from before |
+
+**No new business logic, no per-page header.**
+
+- The KPI math (revenue / cost / profit / margin) lives only in `useLineItemsDrafts.headerMetrics`; source-pin tests sweep `client/src` to assert no other file declares a `const headerMetrics: HeaderMetrics = …`.
+- The visual rendering lives only in `<LineItemsCard>`; source-pin tests assert no consuming page renders a competing `label="Full Line Revenue"` / `label="Profit Margin"` or duplicates the `metric-*` test ids.
+- Existing safeguards intact: `revenue > 0` gate hides the cluster on empty surfaces; row-level cost clamping prevents poison values from skewing the totals; divide-by-zero guard on margin.
+
+**Out of scope.**
+
+- A `quote_lines.unit_cost` migration is **not** included. With it absent, quote lines that aren't actively being edited will show 100% margin (cost defaults to 0) — visibility now satisfied. Adding the column (and a server-side join from `productId → items.cost` for backfill) is a separate, larger change.
+
+**Files changed.**
+
+- `client/src/components/line-items/useLineItemsDrafts.ts` — headerMetrics rewrite (always-emit numerics).
+- `client/src/components/line-items/types.ts` — `HeaderMetrics` shape widened from nullable to required `number`.
+- `client/src/components/line-items/LineItemsCard.tsx` — single-gate profitability cluster; `showMetrics = revenue > 0`.
+- `client/src/pages/CreateQuotePage.tsx` — `makeMirrorLine` carries `unitCost`; both onCommit reconciliation call sites pass `entry.draft.unitCost`.
+- `tests/line-items-profitability-header.test.ts` — new pins: single `revenue > 0` gate, no `showProfit` identifier, no `&& m.cost !== null` boolean expression in JSX or assignments, all three tiles render inside one `{showMetrics && (...)}` block, hook always returns numeric cost/profit/margin (no `hasCost` / no `cost: null` return), `HeaderMetrics` type uses `number` (not `number | null`), CreateQuotePage + NewInvoicePage `makeMirrorLine` accept and persist `unitCost`, both onCommit reconciliations pass `entry.draft.unitCost || null`, draft adapters do not strip cost, saved-surface adapters delegate hydration to the canonical `hydrateDraft` (preserves cost). 31 pins total in this file.
+- `CHANGELOG.md` — this entry.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/line-items-profitability-header.test.ts tests/quote-create-page.test.ts tests/lead-quote-conversion.test.ts` — 116/116 pass (31 new pins + 67 + 18 existing).
+
+#### QuickAddSupplierDialog migrated to canonical ModalShell + Modal* primitives (2026-05-06)
+
+Aligned `client/src/components/suppliers/QuickAddSupplierDialog.tsx` with the Modal Taxonomy in `CLAUDE.md` (rule #2: generic / simple modals → `<ModalShell>` + `<Modal*>` primitives, NOT raw `<Dialog>`). **Completes the supplier modal triplet** — paired with the `AddLocationDialog` and `EditLocationDialog` migrations earlier in this Unreleased cycle, the entire supplier modal surface is now under canonical compliance. The modal is the canonical surface for quickly creating a supplier with the minimal identity fields — mounted from `SuppliersListPage` (the "+ New Supplier" entry point on the suppliers list) and from `TaskDialog` (the inline "create supplier" affordance inside the task / supplier-visit form). Behavior, validation gating (`name` required via native `required` + custom `name.trim()` toast guard), the create mutation contract (`POST /api/suppliers`), the form-reset-on-success flow, the optional `onSuccess(supplier)` callback wiring, and every form field are preserved verbatim — only the primitive layer changed.
+
+**Body-shape decision.** Standard `space-y` form layout — fits cleanly inside `<ModalBody>`. Same precedent as the rest of the supplier triplet + `LocationFormModal` / `AddEquipmentDialog` / `CreateClientModal`.
+
+**Form structure.** Mirrors the rest of the supplier triplet and `CreateClientModal`: `<form>` wraps `<ModalBody>` + `<ModalFooter>`; `<ModalHeader>` is sibling outside the form so submit-on-Enter only fires from inputs inside the body.
+
+**What changed.**
+
+- Imports: `Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle` from `@/components/ui/dialog` → `ModalShell, ModalHeader, ModalTitle, ModalDescription, ModalBody, ModalFooter` from `@/components/ui/modal`. Zero raw Dialog imports remain.
+- `<Dialog open={open} onOpenChange={onOpenChange}>` → `<ModalShell open={open} onOpenChange={onOpenChange} className="max-w-md">`. Width passed at the call-site per Modal Taxonomy rule #5; the `max-w-md` (~28rem) target matches the prior `<DialogContent>` byte-for-byte — narrow quick-create dialog suited to the compact 5-field set.
+- `<DialogHeader><DialogTitle>Add New Supplier</DialogTitle><DialogDescription>Add a new supplier. You can add locations and more details later.</DialogDescription></DialogHeader>` → `<ModalHeader><ModalTitle>Add New Supplier</ModalTitle><ModalDescription>Add a new supplier. You can add locations and more details later.</ModalDescription></ModalHeader>`.
+- `<form>` wraps `<div className="space-y-3 py-3">…body…</div>` and `<DialogFooter>` → `<form>` wraps `<ModalBody className="space-y-3">…body…</ModalBody>` and `<ModalFooter>`. The vertical-rhythm `space-y-3` moved from the body div to `<ModalBody>`; the prior `py-3` was redundant once `<ModalBody>`'s canonical `px-5 py-4` took over.
+- `<DialogFooter>` → `<ModalFooter>` — the canonical `px-5 py-3 border-t border-slate-200` rhythm replaces the prior implicit no-divider gap, matching the rest of the canonicalized supplier triplet.
+
+**Behavior preserved.**
+
+- Submit-on-Enter via `<form>` wrap; `<Button type="submit">` is the form's submit boundary.
+- Validation: native `required` + `autoFocus` on the Name `<Input>`; custom `name.trim()` toast guard in `handleSubmit` (`title: "Validation Error"`, `description: "Supplier name is required"`). Submit disabled while `mutation.isPending`; label switches `"Create Supplier"` ↔ `"Creating..."`.
+- Submit payload trims `name` and maps blank optional fields (`email`, `phone`, `accountNumber`, `notes`) to `null`.
+- Mutation: `POST /api/suppliers` with the canonical payload shape.
+- Success flow: invalidates `["/api/suppliers"]`, toasts `"Supplier created successfully"`, closes the modal, calls `resetForm()` to clear all 5 fields, then fires the optional `onSuccess(data.supplier)` callback (used by `TaskDialog` to auto-attach the new supplier to the supplier-visit task).
+- Error flow: destructive toast that surfaces the server message via `err?.message ?? "Failed to create supplier"`. The `onError` handler does NOT touch form state — user input is preserved across server-validation failures (regression-pinned).
+- All 5 field IDs preserved (`supplier-name`, `supplier-email`, `supplier-phone`, `supplier-account`, `supplier-notes`) with matching `htmlFor` labels. Email uses `type="email"`; Phone uses `type="tel"`. Email + Phone share a 2-column grid for compact layout. Notes Textarea config (`rows={2}`) preserved.
+
+**Files changed.**
+
+- `client/src/components/suppliers/QuickAddSupplierDialog.tsx` — primitive swap. Inline doc-comment notes the migration completes the supplier triplet.
+- `tests/quick-add-supplier-dialog.test.ts` — new file, 29 source-pin tests organized as 7 describe blocks. Pins: canonical Modal primitives imported, no raw Dialog import (using `[^}]*?` to keep the regex inside one import block), no raw `<Dialog*>` JSX, `<ModalShell>` with `max-w-md` + no inline `p-0 gap-0`, `<ModalTitle>Add New Supplier</ModalTitle>` + canonical description copy, form structure (header outside form, body+footer inside form, `<ModalBody className="space-y-3">` with no `py-` override, close sequence), every form field's `id` + `htmlFor` pair (5 fields), Name asterisk + native `required` + `autoFocus`, Email `type="email"` / Phone `type="tel"`, Email+Phone 2-column grid, Notes 2-row Textarea, submit gating, `handleSubmit` empty-name toast guard, payload trims + null-mapping, mutation endpoint, success flow (invalidations + toast + close + reset + onSuccess callback), `resetForm` clears all 5 fields, error path uses server message + preserves form state.
+- `CHANGELOG.md` — this entry.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/quick-add-supplier-dialog.test.ts tests/add-location-dialog.test.ts tests/edit-location-dialog.test.ts tests/modal-canonical.test.ts` — 171/171 pass first run (29 + 37 + 39 + 66). The companion supplier-triplet tests were re-run as a sanity check on the related supplier surface.
+- Repo grep on `QuickAddSupplierDialog.tsx`: zero `<Dialog>` / `<DialogContent>` / `<DialogTitle>` / `<DialogHeader>` / `<DialogDescription>` / `<DialogFooter>` JSX; zero `from "@/components/ui/dialog"` import.
+
+**Width contract (Modal Taxonomy rule #5).** ModalShell stays width-neutral. The call-site passes `className="max-w-md"` — byte-identical to the prior `<DialogContent>` target. ModalShell's baked `p-0 gap-0` replaces the prior implicit `p-6 gap-4` from DialogContent — slight outer-padding tightening matching the rest of the canonicalized form-modal surface. Regression pin asserts the call-site className doesn't accidentally re-introduce `p-0 gap-0`.
+
+**Supplier creation behavior unchanged.** The `SuppliersListPage` and `TaskDialog` caller integrations are untouched; the prop contract (`open` / `onOpenChange` / optional `onSuccess`) is preserved verbatim. Form fields, validation, mutation endpoint, query invalidations, success toast + reset + callback, error toast, and the create copy all work identically.
+
+**Outcome.** The supplier modal triplet (`AddLocationDialog` + `EditLocationDialog` + `QuickAddSupplierDialog`) is now fully Modal Taxonomy compliant. The supplier surface is the third domain to reach full canonical compliance after the location-modal pair (`LocationFormModal` on the client side) and the contact surface (`ContactFormDialog`).
+
+#### Canonical profitability header on the shared LineItemsCard (2026-05-06)
+
+Replaced the abbreviated `Rev $X · Profit $Y (Z%)` header on the shared `<LineItemsCard>` with three explicit metric tiles — **Full Line Revenue**, **Profit**, **Profit Margin** — rendered identically on every consuming surface. The change lives entirely in the canonical card; no per-page header rendering exists, no calculation was duplicated, and all three pages (Quote, Job, Invoice) already mounted this card without overrides, so Quote Detail / Job Detail / Invoice Detail / Create Quote / New Invoice now share one visual source.
+
+**Why.** The abbreviated `Rev` cluster surfaced two different KPIs in one squeezed string, hid Margin behind parentheses, and dropped to a single decimal. The header sits at the top of the most-used card on the most-used pages — it should read like a KPI strip (clear label hierarchy, headline KPI emphasized) rather than a one-line shorthand.
+
+**Visual contract.**
+
+- Three right-aligned tiles. Each tile: `text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500` label sitting above a `tabular-nums font-semibold` value.
+- **Full Line Revenue** (slate-700) → **Profit** (emerald-700 / rose-600) → **Profit Margin** (emerald-700 / rose-600). Profit Margin is the headline KPI — its value renders at `text-base` while Revenue + Profit values render at `text-sm`, so the eye lands there first.
+- The tile cluster is `flex flex-wrap items-start gap-x-5 gap-y-1 min-w-0`. On narrow widths the metrics wrap onto a second row inside the header so the edit pencil / Save / Cancel cluster stays anchored on the right and never gets pushed off-screen. The `min-w-0` prevents a long currency string from forcing horizontal overflow on the whole card.
+- Profit Margin uses two decimal places (`(margin ?? 0).toFixed(2)`); the previous header rounded to 0 which collapsed adjacent values like 84.6% / 85.4% to the same display.
+- Negative profit flips both Profit and Profit Margin to `text-rose-600` via a single `profitToneClass` derivation; both tiles read the same source so the colour pair never drifts.
+
+**No new business logic.**
+
+- Reuses the existing `headerMetrics` from `useLineItemsDrafts.ts` verbatim. `revenue = Σ qty × unitPrice`, `cost = Σ qty × unitCost` (only counted when present), `profit = revenue − cost`, `margin = revenue > 0 ? profit / revenue × 100 : 0`. The hook is the sole owner — search confirmed no other file declares `const headerMetrics: HeaderMetrics = …`.
+- Existing safeguards preserved exactly: `showRevenue = m.revenue > 0` keeps the cluster hidden when there are no lines; `showProfit` requires non-null `cost / profit / margin` so Profit + Margin only render when at least one line carries a positive `unitCost` (Quote / Invoice surfaces hide them entirely; Job shows them once the parts adapter populates cost).
+- The lower per-page summary panels are untouched: Job Detail's Billing Summary card (Parts → Labour → Expenses → Subtotal → Tax → Total) and the Invoice / Quote totals footers (rendered through the existing `renderTotalsFooter` slot inside the card) all remain as-is. Header KPIs and lower-summary KPIs source the same `headerMetrics` numbers, so they cannot drift.
+
+**No per-page variants.**
+
+- `<LineItemsCard>` is the single rendering site. Confirmed via grep that no consuming page (`QuoteDetailPage`, `InvoiceDetailPage`, `JobDetailPage`, `CreateQuotePage`, `NewInvoicePage`, plus the `LineItemsTable` Job Detail wrapper) renders a competing "Full Line Revenue" / "Profit Margin" header.
+- The new `HeaderMetricBlock` helper is private to `LineItemsCard.tsx` — keeps it from being subclassed or skinned by individual surfaces.
+
+**Files changed.**
+
+- `client/src/components/line-items/LineItemsCard.tsx` — replaced the abbreviated `<span>` cluster with three `<HeaderMetricBlock>` tiles + a private `HeaderMetricBlock` component. Added a single `profitToneClass` derivation. The pencil / Save / Cancel / lock / hide-pencil props and their alignment are unchanged.
+- `tests/line-items-profitability-header.test.ts` — new source-pin tests asserting: canonical labels (Full Line Revenue / Profit / Profit Margin); no abbreviated forms (`Rev`, `GP`, `Gross`, `Margin %`); stable tile test ids (`metric-full-line-revenue`, `metric-profit`, `metric-profit-margin`); `showRevenue` / `showProfit` safeguards; `formatCurrency(m.revenue)` / `formatCurrency(m.profit ?? 0)` (no recomputation); `(margin ?? 0).toFixed(2)`; `emphasis` on Profit Margin only; the green/red `profitToneClass` reused on both Profit and Margin tiles; `flex-wrap` proximity to the cluster's data-testid; `useLineItemsDrafts` is the sole owner of `headerMetrics` (no duplicates anywhere in `client/src`); all five consuming pages mount `<LineItemsCard>` from the canonical module and none ship their own "Full Line Revenue" / "Profit Margin" header.
+- `CHANGELOG.md` — this entry.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/line-items-profitability-header.test.ts tests/quote-create-page.test.ts tests/lead-quote-conversion.test.ts` — 104/104 pass (19 new pins, 67 + 18 existing).
+
+**Rendered output.** All three pages (Quote Detail / Job Detail / Invoice Detail) and both create surfaces (Create Quote / New Invoice) render the header tile cluster exactly the same:
+
+```
+                                       FULL LINE REVENUE   PROFIT     PROFIT MARGIN     [✎]
+                                       $455.00             $386.75    85.19%
+```
+
+Quote / Invoice (no `unitCost` on their line schemas) hide Profit + Profit Margin tiles via the `showProfit` guard and render Full Line Revenue alone. Job Detail (parts adapter populates `unitCost`) renders all three.
+
+### Fixed
+
+#### Invoice PDFs no longer show generated timestamp footers or create unnecessary trailing pages (2026-05-06 RALPH)
+
+Invoice PDFs were drawing an "Invoice generated on …" timestamp at the very bottom of the last page (`Y = doc.page.height - 50`). The timestamp itself was irrelevant on a customer-facing document — the invoice already carries Issue Date and Due Date in the right-side details block — and the placement at exactly the bottom margin tripped PDFKit's auto-pagination, producing a blank-looking page-2 on otherwise single-page invoices. The original 2026-05-03 polish tried to keep the footer "on the last page only" via `bufferPages: true` + `switchToPage(lastPage)` + `lineBreak: false`, but that workaround addressed the *placement* without preventing the auto-paginate trigger.
+
+**What changed:**
+
+1. **Footer block removed entirely** from `server/services/invoicePdfService.ts`. The `bufferedPageRange()` + `switchToPage(lastPage)` + bottom-margin `doc.text(...)` sequence is gone, replaced with a doc-block that explains both rationales (irrelevant timestamp + auto-pagination trigger) so a future author doesn't mistake the absence for an oversight.
+2. **No replacement timestamp.** Per the brief, the footer is not replaced with a different generated-at line. Tests pin the absence of `format(new Date(), …)`, `Generated on`, `generatedAt`, etc., so a sneaky rename can't reintroduce the same noise.
+3. **Issue Date and Due Date preserved verbatim** in the right-side invoice details — same `addDetail("Issue Date:", formatDate(invoice.issuedAt || invoice.issueDate))` and `addDetail("Due Date:", formatDate(invoice.dueDate))` mounts, same `formatDate` helper, same date-fns `format` import (kept because the helper still consumes it).
+4. **Pagination behavior is now natural-overflow only.** The render flow uses absolute coordinates throughout and never calls `doc.addPage()` directly — multi-page output happens only when actual content (line items, scope of work, notes, totals block) overflows page 1 via PDFKit's built-in auto-pagination. Removing the bottom-margin footer eliminates the only artificial trigger that produced a trailing blank page on simple invoices.
+5. **`bufferPages: true` doc option left in place.** No other consumer in this file relies on it, but it's harmless at runtime and removing it is unrelated to the bug. The failing tests guard against the *pattern* (any `bufferedPageRange` / `switchToPage` call in this service) so a future regression that re-adds it would fail.
+6. **Quote PDF is unchanged.** The same `Quote generated on …` block exists in `server/services/quotePdfService.ts` and has the same potential to force a blank page-2, but the brief is invoice-specific. A follow-up can mirror this fix for quotes if/when the user surfaces the same symptom there.
+
+**Files changed.**
+
+- `server/services/invoicePdfService.ts` — removed the 28-line FOOTER block (lines 494–522 pre-fix). Replaced with a doc-block titled `FOOTER — REMOVED 2026-05-06 RALPH` that documents both the customer-facing reason (timestamp is noise; Issue Date and Due Date already cover what the recipient needs) and the layout reason (drawing at the bottom-margin tripped PDFKit auto-pagination).
+- `tests/invoice-pdf-no-generated-footer.test.ts` — new file, 10 tests. Covers:
+  - The literal phrase "Invoice generated on" is gone from the executable source (comments stripped before assertion so the new doc-block doesn't false-trip).
+  - No `switchToPage(` / `bufferedPageRange(` calls remain — the two PDFKit calls that powered the prior pattern.
+  - No `doc.page.height - 50` text positioning — the exact coordinate that tripped auto-pagination.
+  - No replacement timestamp under common alternative names (`Generated on`, `generatedAt`, ``Generated…``) — the brief explicitly disallows substitution.
+  - No `format(new Date(), …)` call survives — the only `format` call in this service now wraps invoice-row values inside `formatDate`.
+  - Issue Date + Due Date `addDetail(...)` calls are still present, the `formatDate` helper still exists, and the date-fns `format` import is kept (consumed by `formatDate`).
+  - No `doc.addPage()` call exists in the render flow — manual page breaks are forbidden.
+  - No `for (let X = range.start; …)` loop — guards against the multi-page-chrome antipattern.
+  - The source carries the new `FOOTER — REMOVED 2026-05-06 RALPH` doc-block with the rationale phrases (`auto-pagination`, `Issue Date and …Due Date`).
+
+#### Job and invoice detail service addresses no longer repeat client/company names as location labels (2026-05-06 RALPH)
+
+Both Job Detail and Invoice Detail's SERVICE ADDRESS block were rendering the customer/company name a second time inside the address card. The card already shows the customer name as the H1 above the address; repeating it as the emphasized location label produced the duplicate (e.g. "Fady's Hockey" twice). Both call sites were passing the wrong field — Job Detail used `job.location?.companyName` (the server-side `locationDisplayNameExpr` COALESCE that resolves to the parent customer name), and Invoice Detail used `location.companyName || location.location || ""` which fell back to the same COALESCE first. Per the brief, both must use the RAW `clients.location` column with a dedupe check that suppresses the row when it equals the customer name.
+
+**What changed:**
+
+1. **New shared resolver** `resolveServiceLocationName(rawLocationName, customerName)` (`client/src/lib/serviceAddress.ts`). Pure / no React deps. Returns the trimmed raw value when it is a real distinct location label; returns null when the value is empty / whitespace OR when it case/whitespace-insensitively matches the customer name. The helper deliberately uses ONLY the raw input — it never falls back to `locationDisplayName` / `customerDisplayName` / a COALESCE chain.
+2. **JobDetailPage** now passes `locationName={resolveServiceLocationName(job.location?.location, clientName)}` to `<AddressBlock variant="job">`. Replaces the prior `job.location?.companyName` binding (which was the COALESCE display name and the source of the duplicate).
+3. **InvoiceDetailPage** now passes `locationName={resolveServiceLocationName(location.location, clientName)}` to `<InvoiceMetaCard>`. Replaces the prior `location.companyName || location.location || ""` chain.
+4. **InvoiceMetaCard** prop type widened: `locationName: string` → `locationName: string | null`. Callers must pass the resolver's nullable result.
+5. **AddressBlock invoice variant behavior tweak**: the emphasized location-name row now renders only when `locationName` is truthy (no dash placeholder). The label header + street/city lines still render unconditionally so the section is still recognizable. Matches the brief: "Show location name above the address ONLY when [conditions]". The job variant's existing hide-when-falsy behavior is preserved verbatim.
+6. **Address lines unchanged**: street and city/province/postal lines still render in all three cases (null / duplicate / distinct location name), per the brief's "Always show the address lines."
+7. **No data migration**: legacy `clients.location` rows that hold the auto-copied customer name still exist in the database; the dedupe is a pure presentation fix that suppresses the duplicate without touching old data.
+
+**Files changed.**
+
+- `client/src/lib/serviceAddress.ts` — new file. The shared resolver with a doc-block explaining both the empty-name and dedupe cases plus the explicit no-fallback rule.
+- `client/src/pages/JobDetailPage.tsx` — imports the resolver; the `<AddressBlock variant="job">` mount now passes `locationName={resolveServiceLocationName(job.location?.location, clientName)}` instead of the prior `companyName` binding. Inline comment documents the COALESCE-vs-raw distinction.
+- `client/src/pages/InvoiceDetailPage.tsx` — imports the resolver; the `<InvoiceMetaCard>` mount now passes `locationName={resolveServiceLocationName(location.location, clientName)}` instead of the prior fallback chain. Inline comment documents the change.
+- `client/src/components/invoice/InvoiceMetaCard.tsx` — `locationName` prop typed `string | null` with a JSDoc comment pointing callers at the canonical resolver.
+- `client/src/components/common/AddressBlock.tsx` — invoice variant now skips the emphasized location-name row when `locationName` is falsy (no dash placeholder). Removed the now-unused `DASH` constant + `ReactNode` import. File header doc-block updated to describe the new behavior; the "missing location name shows a muted dash" line is replaced with the post-RALPH suppression rule.
+- `tests/service-address-location-label.test.ts` — new file, 27 tests. Covers: helper semantics in isolation (null / undefined / empty / whitespace raw, case-insensitive trim dedupe against customer, raw passthrough for distinct labels, no fallback synthesis, no false-positive suppression when customer name is missing), helper source contract (lives in canonical lib path, no COALESCE / display-name fallback in the function body, case-insensitive trim predicate), Job Detail mounts the helper with `job.location?.location` and does NOT pass `job.location?.companyName`, Invoice Detail mounts the helper with `location.location` and drops the prior `location.companyName || ...` chain, AddressBlock invoice variant collapses the row when locationName is falsy + retired the DASH constant + the `ReactNode` import, AddressBlock job variant continues to hide the row when falsy, address lines (street + city) still render unconditionally, InvoiceMetaCard prop type accepts null, and a three-case smoke test that exercises the resolver against realistic data shapes (null / duplicate / distinct).
+
+### Changed
+
+#### EditLocationDialog (suppliers) migrated to canonical ModalShell + Modal* primitives (2026-05-06)
+
+Aligned `client/src/components/suppliers/EditLocationDialog.tsx` with the Modal Taxonomy in `CLAUDE.md` (rule #2: generic / simple modals → `<ModalShell>` + `<Modal*>` primitives, NOT raw `<Dialog>`). Pairs with the `AddLocationDialog` migration that landed earlier in this Unreleased cycle — together they bring the supplier-side location-modal pair under canonical compliance, mirroring the client-side `LocationFormModal` (which handles both create and edit modes in one component). The modal is the canonical surface for editing a supplier service location — mounted from `SupplierDetailPage`. Behavior, validation gating, the address autocomplete + Google Places geocoding integration, the update mutation contract (`PATCH /api/suppliers/:supplierId/locations/:id`), the `useEffect`-driven prefill flow when the `location` prop changes, and every form field are preserved verbatim — only the primitive layer changed.
+
+**What changed.**
+
+- Imports: `Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle` from `@/components/ui/dialog` → `ModalShell, ModalHeader, ModalTitle, ModalDescription, ModalBody, ModalFooter` from `@/components/ui/modal`. Zero raw Dialog imports remain.
+- `<Dialog>` → `<ModalShell open={open} onOpenChange={onOpenChange} className="max-w-2xl max-h-[90vh] overflow-y-auto">`. Width + height + scroll triple passed at the call-site per Modal Taxonomy rule #5.
+- `<DialogHeader><DialogTitle>Edit Location</DialogTitle><DialogDescription>Update location details.</DialogDescription></DialogHeader>` → `<ModalHeader><ModalTitle>Edit Location</ModalTitle><ModalDescription>Update location details.</ModalDescription></ModalHeader>`.
+- `<form>` wraps `<div className="space-y-4 py-4">…</div>` + `<DialogFooter>` → `<form>` wraps `<ModalBody className="space-y-4">…</ModalBody>` + `<ModalFooter>`. The `space-y-4` rhythm class moved from the body div to `<ModalBody>`; the prior `py-4` was redundant once `<ModalBody>`'s canonical `px-5 py-4` took over.
+
+**Behavior preserved.**
+
+- Submit-on-Enter via `<form>` wrap; native `required` on Name input + custom `name.trim()` toast guard; submit disabled while pending; label switches `"Save Changes"` ↔ `"Saving..."`.
+- Mutation: `PATCH /api/suppliers/:supplierId/locations/:locationId` with the full `formData` payload. Success path invalidates `["/api/suppliers", supplierId]`, toasts `"Location updated successfully"`, closes the modal. **No form reset on success** (unlike `AddLocationDialog`'s create flow) — the form stays in sync via the location-prop `useEffect` on the next open. Regression pin asserts this absence.
+- Error path: destructive toast (`"Failed to update location"`); form state preserved across server-validation failures (regression-pinned).
+- Geocoding: identical to AddLocationDialog — `<AddressAutocomplete>`'s `onPlaceSelect` writes street + optional city/province/postal/country + lat/lng/placeId; manual edits to address / city / province / postalCode / country fields all clear lat + lng + placeId.
+- Edit-mode prefill: initial `useState` reads from the `location` prop (with sensible nullable fallbacks: `|| ""` for strings, `|| null` for geo, `?? true` for `isActive`). `useEffect` re-syncs `formData` whenever the `location` prop changes.
+- All 12 field IDs preserved with the `edit-` prefix (`edit-location-name`, `edit-address`, `edit-address2`, `edit-city`, `edit-province`, `edit-postalCode`, `edit-country`, `edit-contactName`, `edit-phone`, `edit-email`, `edit-notes`, `edit-isActive`).
+- Active toggle uses `<Switch>` (distinguishes from `AddLocationDialog`'s isPrimary `<Checkbox>`); a regression pin locks the Switch identity.
+
+**Files changed.**
+
+- `client/src/components/suppliers/EditLocationDialog.tsx` — primitive swap. Inline doc-comment notes the migration mirrors AddLocationDialog (same body-shape decision, same form structure, same width contract).
+- `tests/edit-location-dialog.test.ts` — new file, 39 source-pin tests across 9 describe blocks. Pins: canonical Modal primitives, no raw Dialog, no `<Dialog*>` JSX, ModalShell width + no `p-0 gap-0`, edit-mode header copy, form structure (header outside form, body+footer inside form, `<ModalBody>` with no `py-` override, close sequence), 12 `edit-`-prefixed field IDs, Name required, AddressAutocomplete, Notes 3-row Textarea, Switch identity for Active, submit gating, empty-name toast guard, PATCH mutation endpoint, success path with no-form-reset regression pin, error path preserves form, geocoding write/clear, edit-mode prefill from location prop, useEffect re-sync on location prop change.
+- `CHANGELOG.md` — this entry.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/edit-location-dialog.test.ts tests/add-location-dialog.test.ts tests/modal-canonical.test.ts` — 142/142 pass first run (39 + 37 + 66).
+- Repo grep on `EditLocationDialog.tsx`: zero `<Dialog>` / `<DialogContent>` / `<DialogTitle>` / `<DialogHeader>` / `<DialogDescription>` / `<DialogFooter>` JSX; zero `from "@/components/ui/dialog"` import.
+
+**Supplier location editing behavior unchanged.** The `SupplierDetailPage` caller integration is untouched; the prop contract (`open` / `onOpenChange` / `supplierId` / `location`) is preserved verbatim.
+
+#### AddLocationDialog (suppliers) migrated to canonical ModalShell + Modal* primitives (2026-05-06)
+
+Aligned `client/src/components/suppliers/AddLocationDialog.tsx` with the Modal Taxonomy in `CLAUDE.md` (rule #2: generic / simple modals → `<ModalShell>` + `<Modal*>` primitives, NOT raw `<Dialog>`). Continues the Phase 1 sweep into the supplier surface — paired with the upcoming `EditLocationDialog` migration (the supplier-side equivalent of the client-side `LocationFormModal` that landed earlier in this Unreleased cycle). The modal is the canonical surface for adding a supplier service location — mounted from `SupplierDetailPage` (and one render in `ClientDetailPage` per the cross-file grep). Behavior, validation gating (`name` required via native `required` + custom `name.trim()` toast guard), the address autocomplete + Google Places geocoding integration, the create mutation contract (POST `/api/suppliers/:supplierId/locations`), the form-reset-on-success flow, and every form field are preserved verbatim — only the primitive layer changed.
+
+**Body-shape decision.** Standard `space-y` form layout — fits cleanly inside `<ModalBody>` without the per-section padding concerns that drove `ContactFormDialog` to skip the wrapper. The prior `py-4` on the body div is dropped because `<ModalBody>` bakes its own canonical `py-4`. Same precedent as `LocationFormModal` / `AddEquipmentDialog` / `CreateClientModal`.
+
+**Form structure.** Mirrors `CreateClientModal`: `<form>` wraps `<ModalBody>` + `<ModalFooter>`; `<ModalHeader>` is sibling outside the form. This preserves submit-on-Enter from inputs inside the body via `<Button type="submit">` while keeping the header outside the form's submit boundary.
+
+**What changed.**
+
+- Imports: `Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle` from `@/components/ui/dialog` → `ModalShell, ModalHeader, ModalTitle, ModalDescription, ModalBody, ModalFooter` from `@/components/ui/modal`. Zero raw Dialog imports remain on the file.
+- `<Dialog open={open} onOpenChange={onOpenChange}>` → `<ModalShell open={open} onOpenChange={onOpenChange} className="max-w-2xl max-h-[90vh] overflow-y-auto">`. Width + height + scroll triple passed at the call-site per Modal Taxonomy rule #5; matches the prior `<DialogContent>` byte-for-byte (~42rem wide, internal scroll for tall forms).
+- `<DialogHeader><DialogTitle>Add Location</DialogTitle><DialogDescription>Add a new location for this supplier.</DialogDescription></DialogHeader>` → `<ModalHeader><ModalTitle>Add Location</ModalTitle><ModalDescription>Add a new location for this supplier.</ModalDescription></ModalHeader>`.
+- `<form>` wraps `<div className="space-y-4 py-4">…body…</div>` and `<DialogFooter>` → `<form>` wraps `<ModalBody className="space-y-4">…body…</ModalBody>` and `<ModalFooter>`. The vertical-rhythm `space-y-4` moved from the body div to `<ModalBody>`; the prior `py-4` was redundant once `<ModalBody>`'s canonical `px-5 py-4` took over.
+- `<DialogFooter>` → `<ModalFooter>` — the canonical `px-5 py-3 border-t border-slate-200` rhythm replaces the prior implicit no-divider gap, matching the rest of the canonicalized location-modal surface (`LocationFormModal`).
+
+**Behavior preserved.**
+
+- Submit-on-Enter: the `<form>` wraps both `<ModalBody>` and `<ModalFooter>`, so the `type="submit"` Add Location button remains the form's submit boundary.
+- Validation gating: native `required` on the Name `<Input>`; custom `name.trim()` toast guard in `handleSubmit`; submit disabled while `mutation.isPending`; label switches `"Add Location"` ↔ `"Adding..."`.
+- Mutation contract: `POST /api/suppliers/:supplierId/locations` with the full `formData` payload. Success path invalidates `["/api/suppliers", supplierId]`, toasts `"Location added successfully"`, closes the modal, resets all 15 `formData` fields. Error path fires a destructive toast (`"Failed to add location"`) and does NOT touch form state — the user's input is preserved (regression-pinned).
+- Geocoding: `<AddressAutocomplete>`'s `onPlaceSelect` writes `address` (street) + optional `city` / `province` / `postalCode` / `country` (via spread-conditional) + `lat` / `lng` / `placeId`. Manual edits to address / city / province / postalCode / country fields all clear `lat` + `lng` + `placeId` so Google's geocode doesn't drift from the user's manual values.
+- All 12 field IDs (`location-name`, `address`, `address2`, `city`, `province`, `postalCode`, `country`, `contactName`, `phone`, `email`, `notes`, `isPrimary`) preserved verbatim with matching `htmlFor` labels. Notes Textarea config (`rows={3}`) preserved. isPrimary Checkbox copy ("Set as primary location") preserved.
+
+**Files changed.**
+
+- `client/src/components/suppliers/AddLocationDialog.tsx` — primitive swap. Inline doc-comment documents the canonicalization + the body-shape decision. The inner field block indentation is one level too deep after the wrapping `<div className="space-y-4 py-4">` collapse — cosmetic only, JSX whitespace is non-significant; left as-is to keep the diff focused on the migration.
+- `tests/add-location-dialog.test.ts` — new file, 37 source-pin tests organized as 8 describe blocks. Pins: canonical Modal primitives imported, no raw Dialog import (using `[^}]*?` to keep the regex inside one import block), no raw `<Dialog*>` JSX, `<ModalShell>` with the call-site-owned width + no inline `p-0 gap-0`, header copy, form structure (header outside form, body+footer inside form, `<ModalBody className="space-y-4">` with no `py-` override, close sequence), every form field's `id` + `htmlFor` pair (12 fields), Name asterisk + native `required`, AddressAutocomplete mount, Notes 3-row Textarea, isPrimary copy, submit gating, `handleSubmit` empty-name toast guard, mutation endpoint + success invalidations + reset flow, error path preserves form state, geocoding write + clear behaviors.
+- `CHANGELOG.md` — this entry.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/add-location-dialog.test.ts tests/location-form-modal.test.ts tests/modal-canonical.test.ts` — 140/140 pass first run (37 + 37 + 66).
+- Repo grep on `AddLocationDialog.tsx`: zero `<Dialog>` / `<DialogContent>` / `<DialogTitle>` / `<DialogHeader>` / `<DialogDescription>` / `<DialogFooter>` JSX; zero `from "@/components/ui/dialog"` import.
+
+**Width contract (Modal Taxonomy rule #5).** ModalShell stays width-neutral. The call-site passes `className="max-w-2xl max-h-[90vh] overflow-y-auto"` — byte-identical to the prior `<DialogContent>` target. ModalShell's baked `p-0 gap-0` replaces the prior implicit `p-6 gap-4` from DialogContent — slight outer-padding tightening that matches the rest of the canonicalized form-modal surface. Regression pin asserts the call-site className doesn't accidentally re-introduce `p-0 gap-0`.
+
+**Supplier location creation behavior unchanged.** The `SupplierDetailPage` and `ClientDetailPage` caller integrations are untouched; the prop contract (`open` / `onOpenChange` / `supplierId`) is preserved verbatim.
+
+#### LocationFormModal migrated to canonical ModalShell + Modal* primitives (2026-05-06)
+
+Aligned `LocationFormModal` with the Modal Taxonomy in `CLAUDE.md` (rule #2: generic / simple modals → `<ModalShell>` + `<Modal*>` primitives, NOT raw `<Dialog>`). Continues the Phase 1 sweep on the client-management surface (paired with the earlier `ContactFormDialog` migration). The modal is the single canonical surface for adding / editing client service locations — mounted from `ClientDetailPage`. Behavior, validation gating (`name OR full address` rule with mode-specific error copy), the `isEditIntent` mode resolution (driven by `locationId` from route), the address autocomplete + Google Places geocoding integration, the create vs update mutation routing, and the active/inactive toggle (edit-only) are preserved verbatim — only the primitive layer changed.
+
+**Body-shape decision.** Standard `space-y` form layout — fits cleanly inside `<ModalBody>` without the per-section padding concerns that drove `ContactFormDialog` to skip the wrapper. The prior `py-2` on the body div is dropped because `<ModalBody>` bakes its own canonical `py-4`. Same precedent as `AddEquipmentDialog` / `CreateClientModal`. A regression pin asserts `<ModalBody>`'s className doesn't accidentally re-introduce a `py-` override.
+
+**What changed.**
+
+- Imports: `Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription` from `@/components/ui/dialog` → `ModalShell, ModalHeader, ModalTitle, ModalDescription, ModalBody, ModalFooter` from `@/components/ui/modal`. Zero raw Dialog imports remain on the file.
+- `<Dialog open={open} onOpenChange={onOpenChange}>` → `<ModalShell open={open} onOpenChange={onOpenChange} className="max-w-lg">`. Width passed at the call-site per Modal Taxonomy rule #5; matches the prior `<DialogContent className="max-w-lg">` target byte-for-byte (~32rem).
+- `<DialogHeader><DialogTitle>{titleText}</DialogTitle><DialogDescription>{descriptionText}</DialogDescription></DialogHeader>` → `<ModalHeader><ModalTitle>{titleText}</ModalTitle><ModalDescription>{descriptionText}</ModalDescription></ModalHeader>`. Mode-aware copy preserved verbatim: `"Edit Location"` / `"Add Location"` for the title; `"Update the location details."` / `"Add a new service location. Each location maps to a QuickBooks Sub-Customer."` for the description.
+- `<div className="space-y-3 py-2">…body…</div>` → `<ModalBody className="space-y-3">…body…</ModalBody>` — the `py-2` was redundant once `<ModalBody>`'s canonical `px-5 py-4` took over.
+- `<DialogFooter>` → `<ModalFooter>` — the canonical `px-5 py-3 border-t border-slate-200` rhythm replaces the prior implicit no-divider gap, matching the rest of the canonicalized client surface (`ContactFormDialog`, `CreateClientModal`).
+
+**Behavior preserved.**
+
+- `isValid = hasName || (hasStreet && hasCity)` — the canonical "name OR full address" rule, with the four mode-specific error messages preserved verbatim:
+  - `"Provide a location name, or a street address and city."`
+  - `"City is required when providing a street address."`
+  - `"Street address is required when providing a city."`
+  - `"Provide a location name, or both street address and city."`
+- Submit gating: Cancel + Submit both disabled while `isPending` (`isResolving || createMutation.isPending || updateMutation.isPending`).
+- Submit label switches between `"Add Location"` (create) and `"Save Changes"` (edit).
+- Edit-mode resolution: `isEditIntent = Boolean(locationId)`; `activeLocation = location ?? resolvedLocation`. When `location` prop is missing AND `isEditIntent`, the modal fetches via `/api/clients/:locationId` on open transition.
+- Prefill on open: writes `activeLocation.location` → name, `roofLadderCode` → siteCode, `address`/`address2`/`city`/`province`/`postalCode`/`country` → respective state, `lat`/`lng`/`placeId` → geo state, `billWithParent` (default `true`), `!inactive` → isActive.
+- Create defaults: empty form + `country="Canada"` + `billWithParent=true` + `isActive=true`.
+- Mutation routing: create → `POST /api/customer-companies/:parentCompanyId/locations` (requires `parentCompanyId`); update → `PATCH /api/clients/:targetId` where `targetId = activeLocation?.id || locationId`.
+- Query invalidations on success: `["/api/clients"]`, `["/api/clients/search-locations"]`, `["/api/customer-companies", parentCompanyId, "locations"]`, `["/api/customer-companies", parentCompanyId, "overview"]` for both paths; the update path additionally invalidates `["/api/clients", targetId]`.
+- Error paths surface inline via `setError(message)` (no toast — the inline banner at the top of the body is the error surface). Toasts fire only on success: `"Location created"` / `"Location updated"`.
+- Geocoding: `<AddressAutocomplete>`'s `onPlaceSelect` writes street + city + province + postal + country + lat/lng/placeId. Manual edits to street / city / province / postal / country clear `lat` + `lng` + `placeId` so Google's geocode doesn't drift from the user's manual values. Payload includes `lat` / `lng` / `placeId` only when set; `parentCompanyId` always included when provided (keeps linkage consistent).
+- Bill-with-parent toggle preserves the conditional helper copy (`"Invoices for this location will be billed to the parent company."` vs `"This location will be billed directly to this location."`).
+- Active toggle is gated on `isEditIntent` (edit-only) with the canonical helper copy `"Inactive locations are hidden from schedules and reports."`.
+- Active toggle is gated on `isEditIntent` (edit-only).
+
+**Files changed.**
+
+- `client/src/components/LocationFormModal.tsx` — primitive swap. Inline doc-comment documents the canonicalization + the body-shape decision (uses ModalBody — same precedent as AddEquipmentDialog / CreateClientModal).
+- `tests/location-form-modal.test.ts` — new file, 37 source-pin tests organized as 9 describe blocks. Pins: canonical Modal primitives imported, no raw Dialog import (using `[^}]*?` to keep the regex inside one import block), no raw `<Dialog*>` JSX, ModalShell with `max-w-lg` + no inline `p-0 gap-0`, ModalTitle + ModalDescription mode-aware resolution, `<ModalBody className="space-y-3">` (regression pin asserts no `py-` override), every form field (Location Name, Site Code, Service Address with `<AddressAutocomplete>`, Address Line 2, City/Province/Postal/Country grid, Bill-with-parent + Active toggles), error banner render, the `isValid` rule + the 4 mode-specific error messages, mutation endpoints + payload shape, query invalidations on success, error path uses inline `setError` (no toast), success toasts, geocoding write/clear behavior, edit-mode resolution + prefill flow, create defaults.
+- `CHANGELOG.md` — this entry.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/location-form-modal.test.ts tests/contact-form-dialog.test.ts tests/modal-canonical.test.ts` — 142/142 pass first run (37 + 39 + 66). The companion `contact-form-dialog.test.ts` was re-run as a sanity check on the related client-management surface.
+- Repo grep on `LocationFormModal.tsx`: zero `<Dialog>` / `<DialogContent>` / `<DialogTitle>` / `<DialogHeader>` / `<DialogDescription>` / `<DialogFooter>` JSX; zero `from "@/components/ui/dialog"` import.
+
+**Width contract (Modal Taxonomy rule #5).** ModalShell stays width-neutral. The call-site passes `className="max-w-lg"` — byte-identical to the prior `<DialogContent>` target. ModalShell's baked `p-0 gap-0` cn-merges with the call-site className, replacing the prior `<DialogContent>`'s implicit `p-6 gap-4` — slight outer-padding tightening that matches the `CreateClientModal` / `AddEquipmentDialog` / `ContactFormDialog` rhythm. Regression pin asserts the call-site className doesn't accidentally re-introduce `p-0 gap-0`.
+
+**Location creation / editing behavior unchanged.** The `ClientDetailPage` caller integration is untouched; the prop contract (`open` / `onOpenChange` / `location` / `locationId` / `companyId` / `parentCompanyId` / `onSuccess`) is preserved verbatim. Form fields, validation, mode-specific error messages, mutation endpoints, query invalidations, address autocomplete, geocoding, bill-with-parent toggle, edit-only Active toggle, and the create vs edit copy resolution all work identically.
+
+#### ContactFormDialog migrated to canonical ModalShell + Modal* primitives (2026-05-06)
+
+Aligned `ContactFormDialog` with the Modal Taxonomy in `CLAUDE.md` (rule #2: generic / simple modals → `<ModalShell>` + `<Modal*>` primitives, NOT raw `<Dialog>`). Continues the Phase 1 sweep on the client-management surface. The dialog is the single canonical surface for adding / editing client contacts and managing per-location role assignments — mounted from `ClientDetailPage`. Behavior, validation gating, mutation contract (PATCH on edit with diff-driven assignment changes; POST on create with `association.locations[]`), the `filterCanonicalRoles` save-time normalization, the `STANDARD_CONTACT_ROLES` constant, the diff-uses-full-roles vs emit-uses-canonical-only contract, every form field, and every `data-testid` are preserved verbatim — only the primitive layer changed.
+
+**Body-shape decision.** The body keeps its custom 2-section flex layout (identity panel + scrolling locations list, capped at `max-h-[70vh]`) directly inside `<ModalShell>` rather than being wrapped in `<ModalBody>`. Wrapping would compound `<ModalBody>`'s canonical `px-5 py-4` padding with the inner per-section padding (`px-3 py-2.5` for identity, `px-3 pt-2 pb-1` for the locations header, etc.), producing 32px horizontal gutters and breaking the compact rhythm. Same precedent as `CreateNewDialog` (which mounts its `<Tabs>` directly under `<ModalShell>` for the same reason). A regression pin in the new test file locks the absence of `<ModalBody>` so a future "let's standardize body wrappers" pass can't accidentally re-introduce double padding.
+
+**What changed.**
+
+- Imports: `Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter` from `@/components/ui/dialog` → `ModalShell, ModalHeader, ModalTitle, ModalFooter` from `@/components/ui/modal` (no ModalBody, no ModalDescription — neither applies here). Zero raw Dialog imports remain on the file.
+- `<Dialog open={open} onOpenChange={onOpenChange}>` → `<ModalShell open={open} onOpenChange={onOpenChange} className="max-w-xl overflow-hidden">`. Width passed via className per Modal Taxonomy rule #5; `overflow-hidden` pairs with the inner scrolling locations list. The prior `p-0 gap-0` inline classes are dropped because ModalShell bakes them in (a regression pin asserts `p-0 gap-0` is absent from the call-site className).
+- `<DialogHeader className="px-5 py-3 border-b border-slate-200">` → `<ModalHeader className="py-3">`. ModalHeader bakes `px-5 pt-5 pb-3 border-b border-slate-200`; the `py-3` override preserves the existing tighter header rhythm (this dialog's header is content-light — just the title — and the prior `py-3` kept the modal compact).
+- `<DialogTitle data-testid="contact-modal-title">…</DialogTitle>` → `<ModalTitle data-testid="contact-modal-title">…</ModalTitle>` with the create/edit copy preserved.
+- The body `<div className="flex flex-col min-h-0 max-h-[70vh]">…</div>` is unchanged — it's a direct sibling of `<ModalHeader>` and `<ModalFooter>` under `<ModalShell>`, exactly as it was a sibling of `<DialogHeader>` and `<DialogFooter>` under `<DialogContent>` pre-migration.
+- `<DialogFooter className="px-5 py-3 border-t border-slate-200 sm:justify-between gap-2 bg-slate-50/50">` → `<ModalFooter className="sm:justify-between bg-slate-50/50">`. The `px-5 py-3 border-t border-slate-200 gap-2` chrome is baked into ModalFooter; the `sm:justify-between` + `bg-slate-50/50` overrides preserve the delete-left layout (Delete on the left in a `flex-1` div, Cancel + Save on the right).
+
+**Behavior preserved.**
+
+- `canSave = form.firstName.trim().length > 0 && emailValid` — pin asserts the exact gate.
+- Save / Cancel / Delete buttons all disabled while either mutation is pending (`isSaving || isDeleting`).
+- Save mutation routes to `PATCH /api/customer-companies/:companyId/contacts/:id` on edit (with diff-driven `POST /assign` + `PATCH /assignments/:id` + `DELETE /assignments/:id` calls for assignment changes), or `POST /api/customer-companies/:companyId/contacts` on create with the canonical `association.locations[]` payload.
+- Delete mutation `DELETE /api/customer-companies/:companyId/contacts/:id` + closes modal on success.
+- `filterCanonicalRoles` strips legacy roles on every actively-touched assignment (POST + PATCH bodies); diff comparison still uses the full role set so a no-op save doesn't accidentally strip legacy roles from the DB.
+- `STANDARD_CONTACT_ROLES = ["billing", "scheduling", "site_contact", "maintenance"]` and the recipient-resolver-driven role pill tooltips are unchanged.
+- Select-all checkbox keeps its tri-state (`true` / `false` / `"indeterminate"`) via Radix Checkbox.
+- Role pills render only for already-linked locations (defensive `if (!next[locId]) return f` guard inside `toggleRole`).
+- All 14 root testids preserved verbatim (`contact-modal-title`, `contact-modal-title-select`, `contact-modal-firstname`, `contact-modal-lastname`, `contact-modal-jobtitle`, `contact-modal-phone`, `contact-modal-email`, `contact-modal-email-error`, `contact-modal-isprimary`, `contact-modal-loc-count`, `contact-modal-select-all`, `contact-modal-loc-list`, `contact-modal-cancel`, `contact-modal-save`, `contact-modal-delete`) plus the per-location templated testids (`contact-modal-loc-row-${loc.id}`, `contact-modal-loc-toggle-${loc.id}`, `contact-modal-role-${loc.id}-${role}`).
+
+**Files changed.**
+
+- `client/src/components/ContactFormDialog.tsx` — primitive swap with explicit className overrides on ModalHeader (`py-3`) and ModalFooter (`sm:justify-between bg-slate-50/50`). Inline doc-comment documents the canonicalization + the body-shape decision.
+- `tests/contact-form-dialog.test.ts` — new file, 39 source-pin tests organized as 7 describe blocks. Pins: canonical Modal primitives imported, no raw Dialog import (using `[^}]*?` to keep the regex inside one import block), no raw `<Dialog*>` JSX, no `<ModalBody>` (regression pin on the body-shape decision), `<ModalShell>` with width + overflow + no inline `p-0 gap-0`, header `py-3` override + `contact-modal-title` testid + create/edit copy, footer `sm:justify-between bg-slate-50/50` override + delete-left flex-1 layout + Cancel/Save action group, every existing form-field testid (14 root + 3 templated patterns), `canSave` gate, every action-button disabled gate, save/delete mutation endpoints, error path preserves form state, Radix tri-state on select-all, role-pill defensive guard, `STANDARD_CONTACT_ROLES` constant, and the `filterCanonicalRoles` save-time-only contract (emit-canonical / diff-full).
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/contact-form-dialog.test.ts tests/modal-canonical.test.ts` — 105/105 pass (39 + 66).
+- Repo grep on `ContactFormDialog.tsx`: zero `<Dialog>` / `<DialogContent>` / `<DialogTitle>` / `<DialogHeader>` / `<DialogFooter>` JSX; zero `from "@/components/ui/dialog"` import.
+
+**Contact creation / editing behavior unchanged.** The `ClientDetailPage` caller integration is untouched; the prop contract (`open` / `onOpenChange` / `companyId` / `contact` / `assignments` / `locations` / `preselectLocationId` / `onSuccess` / `allowDelete` / legacy `associationType` / `locationId`) is preserved verbatim. Identity field interactions, the per-location link toggle, role pill toggling, the select-all tri-state behavior, the diff-driven save on edit, the canonical create payload shape, and the destructive Delete affordance all work identically.
+
+#### Normalized entity list row typography to the canonical row text token (2026-05-06 RALPH)
+
+The shared `<EntityListTable>` already routes every cell through `kindCellClasses()`, which bakes the canonical typography tokens into each column kind: `text-row-emphasis text-slate-800` for `primary`, `text-row text-slate-700` for `text` / `date` / `money`, and `text-row` (size-only) for `status` / `badge`. Per-page render functions on Jobs / Invoices / Leads / Quotes mostly let this baseline flow through and only override color / weight via inner spans. One outlier — InvoicesListPage's Description column — explicitly downgraded to `text-caption`, which broke the canonical body baseline for one of the row's main fields. This change removes that override so every list-row body field uses the canonical `text-row` token consistently across all four list pages.
+
+**What changed:**
+
+1. **Invoice Description column** (`client/src/pages/InvoicesListPage.tsx:341`) — dropped the `text-caption` size override on the row body. The muted color (`text-slate-500`) is preserved so the Client primary line keeps its visual priority via `text-row-emphasis text-slate-800`. The size now inherits the canonical `text-row` baseline that the `kind: "text"` cell wrapper applies.
+2. **Status pills + Invoice/Job/Quote number pills + table headers — untouched.** Per the brief, those carry their own typography (`<StatusBadge>`, `<StatusPill>`, `<EntityNumber>`, `text-label` on `listHeaderRowClass`) and are explicitly preserved.
+3. **Secondary metadata sub-lines — untouched.** The brief preserves "secondary metadata if already intentionally smaller". Sub-lines like the Jobs job-type under the number pill, the Lead description under the title, and the Invoice / Jobs / Quotes secondary location underline keep their `text-caption` (canonical token for secondary text). Source-pinned individually so future migrations don't accidentally inflate them.
+4. **No `<EntityListTable>` change required.** The shared component's `kindCellClasses` already mapped every kind to the canonical `text-row` / `text-row-emphasis` baseline before this pass — the change is purely a cleanup of one page-level override.
+
+**Files changed.**
+
+- `client/src/pages/InvoicesListPage.tsx` — Description column renderer drops `text-caption`; muted color + truncation preserved. Inline comment documents the normalization decision and that visual hierarchy now comes from the cell wrapper's `text-row` vs `text-row-emphasis` weight delta plus the muted color.
+- `tests/entity-list-row-typography.test.ts` — new file, 30 tests. Covers:
+  - `EntityListTable.kindCellClasses` maps every kind (`primary` / `text` / `date` / `money` / `status` / `badge`) to the canonical `text-row` / `text-row-emphasis` token.
+  - The resolver does NOT spread ad-hoc `text-(xs|sm|base|lg|xl|2xl)` or arbitrary `text-[Npx]` utilities across cells.
+  - `listHeaderRowClass` keeps `text-label` on the column-header row (negative pin scoped to the className value, not surrounding doc commentary).
+  - Per-page column-array literals on Jobs (`liveJobColumns` + `historyJobColumns`), Invoices (`invoiceColumns`), Leads (`LEAD_COLUMNS`), and Quotes (`quoteColumns`) carry no ad-hoc font-size class anywhere in the row body.
+  - The Invoice Description renderer no longer carries `text-caption` and renders as `<p className="text-slate-500 truncate">{invoice.workDescription || "-"}</p>`.
+  - Status pills (`<StatusBadge>`, `<StatusPill>`) and number pills (`<EntityNumber>`) keep their own typography on every list page.
+  - Secondary metadata sub-lines (Jobs secondary location + jobType, Invoice secondary location, Lead description, Quote secondary location) stay on `text-caption` — pinned individually with the exact JSX shape so a future migration can't accidentally inflate them.
+
+### Fixed
+
+#### Jobs list now suppresses fallback client-name location labels when location names are blank (2026-05-06 RALPH polish)
+
+After the earlier RALPH change stopped auto-copying the customer/company name into `clients.location` for newly created clients, the Invoice list rendered cleanly but the Jobs list still showed the customer name twice in the "Client / Location" column. The Jobs list's secondary line was rendering whatever raw `clients.location` value the backend returned — and pre-fix legacy rows still hold the auto-copied customer name in that column. This change adds a defensive frontend dedupe so the duplicate visual disappears for both new clients (`location` = NULL — secondary line hidden) and legacy clients (`location` = auto-copied customer name — secondary line suppressed because it matches the primary line).
+
+**Audit findings.** The backend was already correct: `getJobsFeed` (`server/storage/jobsFeed.ts:191`) and the canonical `getInvoicesFeed` both map `locationName` directly to the raw `clients.location` column with no COALESCE / fallback to customer name. The Invoice list happened to read correctly because the user's invoices were all created post-fix; the Jobs list exposed the legacy data because their open jobs predated the fix. No data migration was performed (per the brief).
+
+**What changed:**
+
+1. **`secondaryLocationLine()` helper** added at the top of `client/src/pages/Jobs.tsx`. Pure function, no React deps. Returns the trimmed raw `locationName` when it is a real, distinct location label; returns null otherwise. Suppression rules:
+   - `locationName` is null / undefined / empty / whitespace-only → null.
+   - `locationName.trim().toLowerCase() === locationDisplayName.trim().toLowerCase()` → null. This catches legacy rows where the customer name was auto-copied into `clients.location`, and also covers the case where the user explicitly enters their own customer name as the location name (visually noise either way).
+   - Otherwise → the trimmed raw `locationName` (verbatim, no synthesis).
+2. **Both Jobs-list column variants** (`liveJobColumns` and `historyJobColumns`) now route their secondary-line render through the helper. The render gate becomes `{secondary && ...}` instead of `{job.locationName && ...}`, where `secondary = secondaryLocationLine(job)`.
+3. **No backend change.** `clients.location` is still the canonical raw column on both feeds. The dedupe lives at the render layer because the duplicate is purely a presentation problem caused by legacy data.
+4. **Invoice list left alone** per the brief — the existing `{invoice.locationName && invoice.locationDisplayName && ...}` gate is preserved verbatim and the Jobs helper is not imported.
+
+**Tradeoff (documented in code + tests):** if a user explicitly enters their company name AS the location name (e.g. a single-location HVAC business that types "ACME Corp" into both fields), the secondary line will be suppressed because it matches the primary line. The brief calls out that the secondary line exists to surface a *real distinct* location label — duplicating the primary line carries no user value, so suppression is the correct default. Users who want a per-location label can enter something distinct (e.g. "Downtown branch", "Warehouse B").
+
+**Files changed.**
+
+- `client/src/pages/Jobs.tsx` — added `secondaryLocationLine()` helper with a doc-block explaining both the empty-name and the dedupe cases. Replaced the inline `{job.locationName && ...}` render with `{secondary && ...}` in both `liveJobColumns` and `historyJobColumns`. Primary-line render (`{job.locationDisplayName || "Unknown Company"}`) and the cell testid (`text-location-${job.id}`) are unchanged.
+- `tests/jobs-list-secondary-location.test.ts` — new file, 22 tests. Covers: helper semantics in isolation (null/undefined/empty/whitespace `locationName`, case-insensitive dedupe against `locationDisplayName`, raw value passthrough when distinct, no fallback to customer name, no false-positive suppression when `locationDisplayName` is missing), source-pin checks that the production helper carries the same shape (early-out on empty raw, case-insensitive trim predicate, no fallback synthesis), both Jobs columns route through the helper, the legacy `{job.locationName && ...}` shape is gone, the primary line still uses the canonical `locationDisplayName || "Unknown Company"` chain, the Invoice list is unaffected (still uses its own `{invoice.locationName && invoice.locationDisplayName && ...}` gate, doesn't import the Jobs helper, primary fallback to `locationName` preserved), and backend canonical feeds (`getJobsFeed` + `getInvoicesFeed`) keep mapping `locationName` to the raw `clients.location` column with no COALESCE dressing.
+
+### Changed
+
+#### QboOverrideModal migrated to canonical ModalShell + Modal* primitives (2026-05-06)
+
+Aligned `QboOverrideModal` with the Modal Taxonomy in `CLAUDE.md` (rule #2: generic / simple modals → `<ModalShell>` + `<Modal*>` primitives, NOT raw `<Dialog>`). Continues the Phase 1 sweep on the invoice surface — `ConfirmVoidModal` was verified compliant earlier in this Unreleased cycle; `QboOverrideModal` was the last raw-Dialog modal on `InvoiceDetailPage`. Mounted via the co-exported `useQboOverride` hook from any billing-change path on a QBO-synced invoice. Behavior, validation gating (acknowledgement checkbox AND ≥10-char reason), the destructive-styled "Proceed with Change" button, the amber warning chrome, the inline 10-char counter hint, and the close-resets-form behavior are preserved verbatim — only the primitive layer changed.
+
+**Taxonomy decision: ModalShell, not AlertDialog.** `QboOverrideModal` hosts interactive form input (Checkbox + Textarea + 10-char-min validation) and a destructive primary action. AlertDialog's primitives target informational confirms (Cancel + Action with text-only body) — they don't naturally host forms. The other AlertDialog consumers in the codebase (LeadDetailPage / QuoteDetailPage / `ConfirmVoidModal`) are all pure-text confirms with no form input. The consequence emphasis on this surface is communicated through the amber warning panel, the `text-amber-600` AlertTriangle in the title, and the `variant="destructive"` Proceed button — none of which depend on the AlertDialog primitive.
+
+**What changed.**
+
+- Imports: `Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle` from `@/components/ui/dialog` → `ModalShell, ModalHeader, ModalTitle, ModalDescription, ModalBody, ModalFooter` from `@/components/ui/modal`. Zero raw Dialog imports remain on the file.
+- `<Dialog open={open} onOpenChange={handleOpenChange}>` → `<ModalShell open={open} onOpenChange={handleOpenChange} className="sm:max-w-[500px]">` — the close-resets-form `handleOpenChange` (which clears `acknowledged` + `reason` when the modal closes) is preserved verbatim.
+- `<DialogContent className="sm:max-w-[500px]">` → width passed via `<ModalShell className="sm:max-w-[500px]">` per Modal Taxonomy rule #5 (ModalShell stays width-neutral). The 500px target is byte-identical to the prior contract.
+- `<DialogHeader>` / `<DialogTitle className="flex items-center gap-2 text-amber-600">` / `<DialogDescription className="text-left">` → `<ModalHeader>` / `<ModalTitle className="flex items-center gap-2 text-amber-600">` / `<ModalDescription className="text-left">` — the amber state-color override + flex-with-icon layout are preserved (per `modal.tsx`'s explicit allowance of state-color overrides on ModalTitle).
+- `<div className="space-y-4 py-4">{warningPanel}{formFields}</div>` → `<ModalBody className="space-y-4">…</ModalBody>` — the redundant `py-4` was dropped because ModalBody bakes its own canonical `px-5 py-4` padding; the `space-y-4` field-rhythm class merges in.
+- `<DialogFooter>` → `<ModalFooter>` — the canonical `px-5 py-3 border-t border-slate-200` rhythm replaces the prior implicit no-divider gap, matching the `CreateClientModal` / `AddEquipmentDialog` rhythm.
+- All form fields, the 3 testids (`qbo-override-acknowledge`, `qbo-override-reason`, `qbo-override-confirm`), the inline `Please provide at least 10 characters (X more needed)` counter, the `canSubmit = acknowledged && reason.trim().length >= 10` gate, and the `useQboOverride` hook API (`isOpen` / `operationType` / `requestOverride` / `closeModal` / `handleConfirm`) are preserved verbatim.
+
+**Files changed.**
+
+- `client/src/components/invoice/QboOverrideModal.tsx` — primitive swap. Inline doc-comment documents the canonicalization + the explicit Rule #2 (not Rule #1) classification + the call-site-owned width contract.
+- `tests/qbo-override-modal.test.ts` — new file, 25 source-pin tests organized as 6 describe blocks. Pins: canonical Modal primitives imported, no raw Dialog import (using `[^}]*?` to keep the regex inside one import block), no raw `<Dialog*>` JSX, AlertDialog NOT used (defensive — this is a form modal, not a destructive confirm), `<ModalShell>` mount with `handleOpenChange` + the explicit `sm:max-w-[500px]` width, `handleOpenChange` resets `acknowledged` + `reason` on close, ModalTitle carries the amber state-color override + AlertTriangle icon + canonical copy, ModalDescription with the dynamic invoice number + optional QBO ID detail, `<ModalBody className="space-y-4">` replaces the inner `space-y-4 py-4` div, amber warning panel preserved with operationType interpolation, acknowledgement Checkbox + reason Textarea testids preserved, inline 10-char hint, `canSubmit` gate, `handleConfirm` pre-condition guard, Proceed button disabled gate + label switch + destructive variant, Cancel button outline variant + handleOpenChange wiring + isPending gate, `useQboOverride` hook API surface, and the InvoiceDetailPage caller wiring (`open=qboOverride.isOpen` / `onOpenChange=(o) => !o && qboOverride.closeModal()`).
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/qbo-override-modal.test.ts tests/modal-canonical.test.ts tests/confirm-void-modal.test.ts` — 110/110 pass (25 + 66 + 19). `confirm-void-modal.test.ts` re-run as a sanity check on the invoice destructive-confirm surface.
+- Repo grep on `QboOverrideModal.tsx`: zero `<Dialog>` / `<DialogContent>` / `<DialogTitle>` / `<DialogHeader>` / `<DialogDescription>` / `<DialogFooter>` JSX; zero `from "@/components/ui/dialog"` import; zero `<AlertDialog>` JSX (defensive).
+
+**QBO override behavior unchanged.** `InvoiceDetailPage`'s mount point continues to wire the canonical hook contract (`open={qboOverride.isOpen}` / `onOpenChange={(open) => !open && qboOverride.closeModal()}` / `invoiceNumber={invoice.invoiceNumber}` / `onConfirm={…}` via the hook). The acknowledgement-gated billing-change flow on QBO-synced invoices works identically: user must check the acknowledgement box AND enter a reason ≥10 chars before the destructive "Proceed with Change" action unlocks. No QBO sync logic, no invoice mutation logic, no audit-trail behavior was touched. The visible-change-free contract holds at the API surface and the form-state lifecycle.
+
+#### ConfirmVoidModal — modal taxonomy compliance verified, regression-lock pins added (2026-05-06)
+
+Audit pass on `client/src/components/invoice/ConfirmVoidModal.tsx` against the Modal Taxonomy (`CLAUDE.md` rule #1: destructive / consequence-bearing confirmations route through `<AlertDialog>`). The component was **already fully compliant** when this audit landed — no primitive migration was needed. This entry records the verification + adds source-pin tests so the contract can't quietly regress.
+
+**Verification — already canonical.**
+
+- All 8 imports (`AlertDialog`, `AlertDialogAction`, `AlertDialogCancel`, `AlertDialogContent`, `AlertDialogDescription`, `AlertDialogFooter`, `AlertDialogHeader`, `AlertDialogTitle`) come from `@/components/ui/alert-dialog`. Zero raw Dialog imports.
+- `<AlertDialog open={open} onOpenChange={onOpenChange}>` wraps the canonical Header / Title / Description / Footer / Cancel / Action tree.
+- `<AlertDialogCancel disabled={isPending}>Cancel</AlertDialogCancel>` blocks cancel during a void-in-flight.
+- `<AlertDialogAction onClick={onConfirm} disabled={isPending} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">` carries the canonical destructive className that matches the rest of the destructive-confirm surface (LeadDetailPage / QuoteDetailPage migrations).
+- Pending state swaps the action label from `"Void Invoice"` → `"Voiding..."` while the mutation is in flight.
+- The `font-medium text-destructive` warning span on the body's "This action cannot be undone…" sentence renders the consequence emphasis the user reads before confirming.
+
+**Files changed.**
+
+- `client/src/components/invoice/ConfirmVoidModal.tsx` — **no code changes** (already compliant).
+- `tests/confirm-void-modal.test.ts` — new file, 19 source-pin tests organized as 5 describe blocks. Pins: AlertDialog primitive set imported, no raw Dialog import (using `[^}]*?` to keep the regex inside one import block), no raw `<Dialog*>` JSX, AlertDialog NOT used (defensive — destructive confirms stay on AlertDialog per Rule #1, never ModalShell), canonical AlertDialog tree (open + onOpenChange forwarded; Header → Title + Description; Footer → Cancel + Action in canonical order), behavior contracts (Cancel `disabled={isPending}`, Action `onClick={onConfirm}` + `disabled={isPending}` + destructive className, label switch on pending), copy verbatim ("Void Invoice?", body interpolation with `invoiceNumber || "Draft"` fallback, full warning sentence, `font-medium text-destructive` emphasis class), caller wiring on `InvoiceDetailPage` (correct prop forwarding for `open` / `onOpenChange` / `invoiceNumber` / `onConfirm` → `voidMutation.mutate(undefined)` / `isPending` → `voidMutation.isPending`).
+
+**Verification (commands run).**
+
+- `npm run check` — clean.
+- `npx vitest run tests/confirm-void-modal.test.ts tests/modal-canonical.test.ts` — 85/85 pass (19 + 66).
+- Repo grep on `ConfirmVoidModal.tsx`: zero `<Dialog*>` JSX; zero `from "@/components/ui/dialog"` import; zero `from "@/components/ui/modal"` import.
+
+**Invoice void behavior unchanged.** The `InvoiceDetailPage` caller continues to pass the canonical props (`open={showVoidConfirm}` / `onOpenChange={setShowVoidConfirm}` / `invoiceNumber={invoice.invoiceNumber}` / `onConfirm={() => voidMutation.mutate(undefined)}` / `isPending={voidMutation.isPending}`). The void mutation, query invalidations, error handling, and the "This action cannot be undone." warning are all visible-change-free at the API surface.
+
+#### AddEquipmentDialog migrated to canonical ModalShell + Modal* primitives (2026-05-06)
+
+Aligned `AddEquipmentDialog` with the Modal Taxonomy in `CLAUDE.md` (rule #2: generic / simple modals → `<ModalShell>` + `<Modal*>` primitives, NOT raw `<Dialog>`). Continues the Phase 1 sweep that already covered `CreateNewDialog`, `CreateClientModal`, and `QuickAddJobDialog`'s standalone wrapper. The dialog is the single canonical surface for both equipment create and edit flows; it's mounted from `JobDetailPage`, `JobEquipmentSection`, `ClientDetailPage`, `EquipmentDetailModal`, `EquipmentPicker`, `QuickAddJobDialog`'s equipment combobox, and `EditVisitModal`. Behavior, validation gating, mutation contract (POST for create, PATCH for edit), all 6 form fields, the EquipmentTypeCombobox, the per-mode title/description/submit copy, and the open-transition prefill flow (edit hydrates from `existingEquipment`; create seeds from `defaultName`) are preserved verbatim — only the primitive layer changed.
+
+**What changed.**
+
+- Imports: `Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter` from `@/components/ui/dialog` → `ModalShell, ModalHeader, ModalTitle, ModalDescription, ModalBody, ModalFooter` from `@/components/ui/modal`. Zero raw Dialog imports remain on the file.
+- `<Dialog open={open} onOpenChange={(o) => { if (!o) resetAndClose(); }}>` → `<ModalShell open={open} onOpenChange={(o) => { if (!o) resetAndClose(); }}>` — the intercepted onOpenChange that routes any Radix-driven close (Esc / overlay click) through `resetAndClose` is preserved verbatim so form state still clears alongside the close.
+- `<DialogContent className="max-w-md">` → width passed via `<ModalShell className="max-w-md">` per Modal Taxonomy rule #5 (ModalShell stays width-neutral). The `max-w-md` (~28rem) target is byte-identical to the prior contract — narrow create/edit dialog suited to the compact field set.
+- `<DialogHeader><DialogTitle>{dialogTitle}</DialogTitle><DialogDescription>{dialogDescription}</DialogDescription></DialogHeader>` → `<ModalHeader><ModalTitle>{dialogTitle}</ModalTitle><ModalDescription>{dialogDescription}</ModalDescription></ModalHeader>` — typography now inherits the canonical `text-section-title font-semibold text-slate-900` (title) + `text-row text-slate-600 leading-normal` (description) defaults.
+- `<div className="grid gap-3 py-2">…body…</div>` → `<ModalBody className="grid gap-3">…body…</ModalBody>` — the `grid gap-3` field-rhythm class merges into ModalBody's canonical `px-5 py-4`. The prior `py-2` on the inner div was redundant once ModalBody took over vertical padding.
+- `<DialogFooter>…</DialogFooter>` → `<ModalFooter>…</ModalFooter>` — the canonical `px-5 py-3 border-t border-slate-200` rhythm replaces the prior implicit no-divider gap, adding a clean visual separator that matches the rest of the canonicalized modal surface.
+- All field IDs, placeholders, autoFocus on Equipment Name, the EquipmentTypeCombobox mount, the `Equipment Name *` required-marker, the Cancel + Submit button labels, and the Loader2 spinner placement are preserved verbatim.
+
+**No `<form>` wrapper.** AddEquipmentDialog uses Button `onClick={handleSubmit}` rather than a form-submit handler — this is the existing behavior (Enter-to-submit was never wired). Preserved as-is; the migration does not introduce a form element.
+
+**Files changed.**
+
+- `client/src/components/AddEquipmentDialog.tsx` — primitive swap. Inline doc-comment documents the canonicalization + the call-site-owned width contract + the intercepted onOpenChange rationale.
+- `tests/add-equipment-dialog.test.ts` — new file, 33 source-pin tests organized as 7 describe blocks. Pins: canonical Modal primitives imported, no raw Dialog import, no raw `<Dialog*>` JSX, ModalShell composition with the intercepted onOpenChange + the explicit `max-w-md` width + ModalHeader/Title/Description structure + `<ModalBody className="grid gap-3">`, per-mode title/description/submit-label resolution, all 5 field IDs (`eq-name`, `eq-manufacturer`, `eq-model`, `eq-serial`, `eq-notes`) + the `Equipment Name *` required-marker + EquipmentTypeCombobox mount + the Notes Textarea (`rows={2} className="text-sm resize-none"`), submit gating (Name required + isPending across both mutations), loading spinner format, handleSubmit branching (edit→PATCH, create→POST), mutation endpoints (`/api/clients/:locationId/equipment` create + `/equipment/:id` PATCH), location + job query invalidations, success paths (onCreated + onSaved + resetAndClose + toast for create; onSaved + resetAndClose + toast for update), error paths (toast only — no form-state mutation, regression-pinned), and the open-transition prefill flow.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/add-equipment-dialog.test.ts tests/modal-canonical.test.ts` — 99/99 pass (33 + 66).
+- Repo grep on `AddEquipmentDialog.tsx`: zero `<Dialog>` / `<DialogContent>` / `<DialogTitle>` / `<DialogHeader>` / `<DialogDescription>` / `<DialogFooter>` JSX; zero `from "@/components/ui/dialog"` import.
+
+**Width contract (Modal Taxonomy rule #5).** ModalShell stays width-neutral. The call-site passes `max-w-md` — byte-identical to the prior DialogContent target. ModalShell's baked `p-0 gap-0` cn-merges with the call-site className, replacing the prior DialogContent's implicit `p-6 gap-4` — slight outer-padding tightening that matches the rhythm of `CreateNewDialog`, `CreateClientModal`, and `QuickAddJobDialog`'s standalone wrapper.
+
+**Equipment creation behavior unchanged.** All 7 known callers (`JobDetailPage`, `JobEquipmentSection`, `ClientDetailPage`, `EquipmentDetailModal`, `EquipmentPicker`, `QuickAddJobDialog`, `EditVisitModal`) keep their full prop contract: `locationId` / `open` / `onOpenChange` / `onCreated` / `defaultName` / `mode` / `existingEquipment` / `jobId` / `onSaved`. Form fields, validation, prefill flow, mutation endpoints, query invalidations (location-scoped + optional job-scoped), success/error toasts, and the close-via-resetAndClose pattern are visible-change-free at the API surface.
+
+#### QuickAddJobDialog standalone wrapper migrated to canonical ModalShell + Modal*; embedded-mode footer migration deferred (2026-05-06)
+
+Brought the `embedded === false` branch of `QuickAddJobDialog` under the canonical Modal Taxonomy (`CLAUDE.md` rule #2). The `embedded === true` branch — used by `CreateNewDialog`'s Job tab and the dashboard open-slot quick-create launcher — has no Dialog wrapper at all (the parent `<ModalShell>` from `CreateNewDialog` provides the shell), so this migration is invisible to that path. The standalone branch is used by legacy edit / recurring / clone flows mounted directly from `JobDetailPage`, `JobHeaderCard`, `Jobs`, `TasksPanel`, and similar surfaces.
+
+**Deliberate partial migration.** The `<DialogFooter>` at the end of `formBody` (still inside the form, with `data-testid="button-cancel"` + `data-testid="button-create-job"`) is intentionally NOT migrated. That footer renders in BOTH branches; swapping it to `<ModalFooter>` would inject `px-5 py-3 border-t border-slate-200` into the embedded path, where the parent div uses `px-4` and the prior compactness pass explicitly avoided extra horizontal padding (the inline doc-comment in `QuickAddJobDialog` near the footer references the v3 sticky-footer overflow regression). Footer harmonization is queued for a future sprint that coordinates the embedded padding rhythm at the same time. The `DialogFooter` import from `@/components/ui/dialog` is retained for this reason.
+
+**What changed (lines ~2985–3003 only).**
+
+- `<Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-w-xl" data-testid="dialog-quick-add-job"><DialogHeader><DialogTitle data-testid="text-dialog-title">{title}</DialogTitle></DialogHeader>{formBody}</DialogContent></Dialog>`
+  →
+  `<ModalShell open={open} onOpenChange={onOpenChange} className="max-w-xl" data-testid="dialog-quick-add-job"><ModalHeader><ModalTitle data-testid="text-dialog-title">{title}</ModalTitle></ModalHeader>{formBody}</ModalShell>`
+- The 3-mode title ternary (`isEditMode ? "Edit Job" : isRecurringMode ? "Create Recurring Job" : "Create New Job"`) is preserved verbatim.
+- All testids preserved: `dialog-quick-add-job`, `text-dialog-title`, `embedded-quick-add-job`, `button-cancel`, `button-create-job`.
+- Width passed via `className="max-w-xl"` per Modal Taxonomy rule #5 (ModalShell stays width-neutral).
+- ModalShell's baked `p-0 gap-0` lock replaces the prior implicit `p-6 gap-4` from `<DialogContent>`; matches the rhythm of `CreateNewDialog`, `CreateClientModal`.
+
+**Imports.**
+
+- Removed: `Dialog, DialogContent, DialogHeader, DialogTitle` from `@/components/ui/dialog`.
+- Retained: `DialogFooter` from `@/components/ui/dialog` (still used inline in `formBody` — see above).
+- Added: `ModalShell, ModalHeader, ModalTitle` from `@/components/ui/modal`.
+- Untouched: the entire `AlertDialog` import + the scheduling-conflict `<AlertDialog>` mount at the bottom of the component (already canonical).
+
+**Files changed.**
+
+- `client/src/components/QuickAddJobDialog.tsx` — primitive swap on the standalone branch; new doc-comment on the import block documenting the deferred footer migration + the embedded-mode coupling rationale.
+- `tests/quick-add-job-dialog-shell.test.ts` — new file, 13 source-pin tests organized as 4 describe blocks. Pins: ModalShell + Modal* primitives imported, the four migrated names dropped from the dialog import (with `[^}]*?` to keep the regex inside one import block), DialogFooter retained, embedded-branch `<div>` with the canonical compactness className + testid + `{formBody}` mount, standalone-branch `<ModalShell>` with the `max-w-xl` width + canonical testid, `<ModalHeader>`/`<ModalTitle>` with the `text-dialog-title` testid, three-mode title ternary verbatim, `{formBody}` after `</ModalHeader>`, no raw `<Dialog>`/`<DialogContent>`/`<DialogHeader>`/`<DialogTitle>` JSX anywhere, retained `<DialogFooter className="pt-1.5">` inside `formBody`, `button-cancel` + `button-create-job` testids preserved.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/quick-add-job-dialog-shell.test.ts tests/quick-create-job-client-flow.test.ts tests/dashboard-open-slot-refresh.test.ts tests/create-new-dialog.test.ts tests/modal-canonical.test.ts` — 125/125 pass (13 + 17 + 10 + 19 + 66). The four pre-existing dependent suites continue to pass — none pinned Dialog primitives directly.
+- Repo grep on `QuickAddJobDialog.tsx`: zero `<Dialog>` / `<DialogContent>` / `<DialogHeader>` / `<DialogTitle>` JSX; one retained `<DialogFooter>` (line 2964); zero changes to the `<AlertDialog>` scheduling-conflict mount.
+
+**Behavior preserved.** Embedded mode (CreateNewDialog Job tab / dispatch quick-create / dashboard open-slot) is byte-for-byte identical — the parent ModalShell from `CreateNewDialog` already provides the wrapper, so this path was never affected by the Dialog primitive in QuickAddJobDialog. Standalone mode (legacy edit / recurring / clone) keeps the same width (`max-w-xl`), same title, same testids, same form fields, same submit + mutation contract; only the wrapper primitive changed (the `<DialogContent>`'s `p-6 gap-4` becomes ModalShell's `p-0 gap-0`, which slightly tightens the outer padding to match the canonical rhythm). The 30+ `embedded`-flag branches inside `formBody`, the scheduling-conflict `<AlertDialog>`, the inline `<CreateClientModal>` mount, and every form/mutation behavior are untouched.
+
+**Outcome.** QuickAddJobDialog's standalone wrapper is now Modal Taxonomy compliant. The deferred inner-`<DialogFooter>` migration is the only remaining raw Dialog usage on the file; it's queued for a future sprint that addresses the embedded padding rhythm at the same time.
+
+#### Client creation no longer defaults blank location names to the client/company name (2026-05-06 RALPH)
+
+When a user created a client without entering a separate location name, the server was filling the primary location's `location` column with the customer's company name (or, for residential clients, the person's first/last name). The list views then rendered the customer name AND the location name on the same row — visually identical strings stacked on top of each other. Both server-side write paths now persist `location: NULL` when the user did not enter an explicit name.
+
+**What changed:**
+
+1. **`POST /api/clients/full-create`** — `primaryLocationName` is now `primaryLocation?.name?.trim() || null`. The fallback chain that copied `companyName` / `firstName` / `lastName` into the column is removed at the WRITE site. The validation guard's local `primaryLocName` chain is unchanged: a submission is still considered identifiable when it carries an identity (company name OR first name) OR an address (street + city), so the modal's "either name or address" gate still works the same way — only the stored column changes.
+2. **`POST /api/tech/clients`** — the tech-field create now writes `location: null` instead of `location: displayName`. The pre-fix line was added in 2026-05-04 specifically so the `(companyId, parentCompanyId, lower(location))` dedupe key in `createOrGetLocation` would match on a flaky-network re-submit; that dedupe protection is intentionally given up. The customer-company linkage (`companyName: displayName`) is preserved, so the parent customer is still attached.
+3. **List rendering is unchanged.** Per the brief, no duplicate-suppression helper was introduced. The `locationDisplayNameExpr` COALESCE in the storage layer already prefers the parent customer's current name when the child row has a NULL `location`, so list rows will naturally render only the customer name once new clients save NULL location names. Old data carrying the duplicated name is the user's to manage manually — no migration was added.
+
+**Tradeoff (documented in code + tests):** `createOrGetLocation`'s primary-location dedupe is keyed on `lower(location)`. With NULL location names, the dedupe predicate skips the lookup entirely — so a double-submit of the New Client modal can now produce twin primary location rows under the same customer company. The `customer_companies` row is still deduplicated by name, so only the location row twins. The user explicitly accepted this.
+
+**Audit trail.** All canonical client-create entry points were checked:
+
+- `<CreateClientModal>` (Clients page, dashboard "+ Add", QuickAddJobDialog `onCreateNew`, NewInvoicePage inline create, CreateQuotePage inline create) — posts to `/api/clients/full-create` without a `primaryLocation.name`. Covered by the server-side fix.
+- `<CreateLeadPage>` — also posts to `/api/clients/full-create` directly without a `primaryLocation.name`. Covered by the same fix.
+- Tech-app create-client flow — posts to `/api/tech/clients`. Fixed at the route layer.
+- The legacy `POST /api/clients` is unaffected: it accepts the caller's body verbatim and does not synthesize a location name.
+
+**Files changed.**
+
+- `server/routes/clients.ts` — `primaryLocationName` reduced to `primaryLocation?.name?.trim() || null`. Inline comment documents the dedupe tradeoff.
+- `server/routes/techField.ts` — `createOrGetLocation` payload now passes `location: null` for the primary location. Inline comment documents the intentional regression of the 2026-05-04 dedupe-on-resubmit fix.
+- `tests/client-create-no-name-autocopy.test.ts` — new file, 11 tests. Pins:
+  - the new `primaryLocationName = primaryLocation?.name?.trim() || null` write expression,
+  - the absence of a `companyName` / `firstName` / `lastName` fallback at the write site,
+  - the validation guard's local chain still allows identity-only OR address-only submissions,
+  - the tech-field route writes `location: null` (not `displayName`) and still writes `companyName: displayName`,
+  - the canonical frontend create paths (CreateClientModal, CreateLeadPage) do NOT include a `name:` field on the `primaryLocation` request body,
+  - no duplicate-suppression helper (`suppressDuplicateLocation` / `hideDuplicateLocationName` / `isDuplicateLocationName` / `deduplicateLocationName`) exists in `client/src`,
+  - no list-row component compares `location.name === customer.name` to hide one of them.
+
+### Fixed
+
+#### Normalized quote list pagination parsing for dashboard modal feeds (2026-05-06 RALPH polish)
+
+Follow-up to the `/api/invoices/list` lenient-pagination fix shipped earlier today. The same latent failure existed on `/api/quotes/list`: strict `parsePagination(req.query)` rejected any caller that omitted both `offset` and `cursor`, and the dashboard `<DashboardActionModal>` Pipeline sources all hit `/api/quotes/list` without pagination params — `?status=draft&limit=50` (`quotes_draft`), `?status=sent&limit=50` (`quotes_sent_open`), `?bucket=stale&staleDays=14&limit=50` (`stale_quotes`). Opening any Pipeline modal whose mode references one of those sources would have flipped the modal to "Failed to load. Please try again." for the same reason `Invoices not sent` did. `client/src/pages/ClientDetailPage.tsx:667` was also affected — it sends `?customerCompanyId=...&limit=200` with no offset.
+
+`server/routes/quotes.ts:111` is now wired through `parsePaginationLenient` (defaults `offset=0` when neither offset nor cursor is supplied; otherwise identical to the strict parser). The strict `parsePagination` import was dropped from the file because it has no remaining callers there. No filtering semantics changed — `status`, `locationId`, `customerCompanyId`, `bucket`, and `staleDays` continue to flow through to `quoteRepository.getQuotes` and `quoteRepository.getStalePipelineQuotes` exactly as before. Response shapes are unchanged. No new endpoint added.
+
+**Pipeline modes verified to load.**
+
+- `pipeline_leads_followup` → `/api/leads?bucket=followup` (no `parsePagination` on the leads route — never affected by this bug; included as a smoke-pin in the test).
+- `pipeline_quotes_not_sent` → `/api/quotes/list?status=draft&limit=50` — fixed.
+- `pipeline_quotes_awaiting_response` → `/api/quotes/list?status=sent&limit=50` — fixed.
+- `pipeline_stale_opportunities` → `/api/leads?bucket=stale&staleDays=14` (already worked) + `/api/quotes/list?bucket=stale&staleDays=14&limit=50` (fixed).
+
+**Files changed.**
+
+- `server/routes/quotes.ts` — `parsePaginationLenient` import added; `parsePagination` import removed (no remaining callers); `GET /list` swapped to `const { params: pagination } = parsePaginationLenient(req.query)`. Header comment block notes the rationale + the parallel `/api/invoices/list` fix.
+- `tests/dashboard-pipeline-actionable.test.ts` — new `/api/quotes/list — lenient pagination (Pipeline modal feed normalization)` describe block with three pins: (1) source-pin that the `/list` handler uses `parsePaginationLenient`, that `parsePagination(req.query)` is gone, that strict `parsePagination` is no longer imported, and that the existing Pipeline filtering semantics (`bucket === "stale"`, `getStalePipelineQuotes`, `getQuotes`) still flow through; (2) unit-pin running each of the four Pipeline modal query shapes through `parsePaginationLenient` and asserting `limit=…`, `offset=0` defaulted, `cursor=undefined`, and `explicit=true` because `limit` was passed; (3) unit-pin proving explicit-pagination callers (`?offset=0&limit=200` from `Quotes.tsx`, cursor pagination, no-pagination `?customerCompanyId=…&limit=200` from `ClientDetailPage.tsx`) all behave correctly under the lenient parser. The test slices the `/list` handler block by anchoring on the next `router.<verb>` declaration (the naive `[\s\S]+?\}\)\);` slice was ambiguous — it stopped at the inner `res.json(paginated(...))`).
+- The earlier "Note on parallel routes" follow-up call-out under the prior `/api/invoices/list` entry is now resolved by this change.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/dashboard-pipeline-actionable.test.ts tests/dashboard-invoices-not-sent.test.ts tests/dashboard-layout.test.ts tests/dashboard-operational-alerts-modes.test.ts` — 122/122 pass (41 in `dashboard-pipeline-actionable.test.ts`, including the 3 new ones in this change). No tests outside `dashboard-pipeline-actionable.test.ts` reference `/api/quotes/list` or `quoteRepository.getQuotes`. Pre-existing failures in `server/utils/pagination.test.ts` (3, around `MAX_LIMIT` capping and NaN handling) predate this change — verified with `git stash` against clean main — and are out of scope.
+
+#### `invoices_not_sent` modal feed loading — `/api/invoices/list` now uses lenient pagination (2026-05-06 RALPH polish)
+
+The `Needs Attention → Invoices not sent` row opened the shared `<DashboardActionModal>` but the body rendered "Failed to load. Please try again." instead of the draft invoices. Root cause sat on the server: `server/routes/invoices.ts:501` (`GET /api/invoices/list`) called the strict `parsePagination(req.query)`, which throws HTTP 400 when both `offset` and `cursor` are missing. The dashboard modal sends `?status=draft&limit=50` (no offset/cursor — see `client/src/components/DashboardActionModal.tsx:178` and `:516`), so every modal request 400'd before reaching `getInvoicesFeed`, React Query saw `!res.ok`, and the modal flipped to its `isError` branch.
+
+The route is now wired through `parsePaginationLenient`, which defaults `offset=0` for the no-pagination case and otherwise behaves identically to the strict parser. This matches the original intent of the route — the handler already does `offset: pagination.offset ?? 0` and `InvoicesListPage` callers explicitly pass `?offset=0&limit=200` — and matches the historical contract documented in the project's archived migration notes (only `/api/invoices` and `/api/jobs` were ever supposed to default offset). Explicit-pagination callers are unchanged. No data-model change, no new endpoint.
+
+**Note on parallel routes.** `/api/quotes/list` (`server/routes/quotes.ts:111`) currently has the same latent shape — it also uses strict `parsePagination` while the dashboard Pipeline modal sends `status=...&limit=50`. That bug surfaces only when a Pipeline `quotes_draft` / `quotes_sent_open` / `stale_quotes` modal is opened. Out of brief scope for this change ("Do NOT touch Pipeline"); flagging here for a follow-up.
+
+**Files changed.**
+
+- `server/routes/invoices.ts` — `parsePaginationLenient` import added; `GET /list` swapped to `const { params: pagination } = parsePaginationLenient(req.query)`; the existing `pagination.limit` / `pagination.offset` consumers are unchanged because `params` carries the same `PaginationParams` shape.
+
+#### Needs Attention now uses compact clickable action rows (2026-05-06 RALPH polish)
+
+`NeedsAttentionCard` (`client/src/pages/FinancialDashboard.tsx`) now renders the `Invoices not sent` row in the same compact one-line shape as Pipeline and Operational Alerts. The previous shape stacked label + count + currency on two lines and parked a separate `View` button on the right edge — visually inconsistent with the two cards beside it.
+
+**Layout changes (UI only — no modal-mode, no `DashboardActionModal` logic, no data threading touched).**
+
+- The whole row is now a `<button type="button">` element bound to `onView`. Native `<button>` semantics give us `tabIndex` / Enter / Space / focus-ring without hand-rolling `role="button"`. The previous inner `View` button (and its `${key}-view` testid) is removed.
+- Row geometry mirrors Operational Alerts / Pipeline: `w-full flex items-center gap-2 px-3 py-1.5 text-left`. Label sits on the left at `flex-1 text-xs font-medium truncate`; count sits on the right at `text-sm font-semibold tabular-nums`. No chevron, no currency line — kept off the row to preserve a single-line layout per the brief.
+- Hover state `hover:bg-[#F0F5F0]`; focus state `focus-visible:bg-[#F0F5F0]` plus an inset `ring-2 ring-amber-300` so keyboard users see where they are. Amber-tinted ring matches the card's amber `AlertCircle` chrome (Pipeline uses indigo).
+- `count === 0` rows stay visible but mute the label + count to `text-slate-400` and disable the `<button>` so it cannot be focused or clicked into. The card-level empty state ("No billing/admin items need attention.") still wins when every row is zero.
+- The card body wraps rows in `<ul>/<li>`. Skeleton loader tightened from a stack of two-line rows to a single `h-6` bar to match the new row height.
+- The `value: na?.invoicesNotSentValue` prop is no longer threaded into the row; the backing `FinancialSummary.needsAttention.invoicesNotSentValue` field is untouched (other surfaces may still consume it).
+
+**Files changed.**
+
+- `client/src/pages/FinancialDashboard.tsx` — `NeedsAttentionCard` rebuilt: `<ul>/<li>` row container, `value` removed from the items array, body wrapped in a single `<button>` row matching the Pipeline pattern.
+- `tests/dashboard-invoices-not-sent.test.ts` — added a `NeedsAttentionCard — compact single-line clickable rows` describe block pinning: no inner View button or `-view` testid, row is a `<button>` bound to `it.onView` with `disabled={!hasItems}`, count renders to the right of the label, density matches the Pipeline / Operational Alerts pattern (`px-3 py-1.5 gap-2`, no `flex-wrap`/`items-baseline`/`formatCurrency`/`invoicesNotSentValue`), hover + focus-visible affordances are present, and zero-count row mutes label + count without disappearing. Added `/api/invoices/list — lenient pagination (invoices_not_sent feed fix)` describe block pinning: `parsePaginationLenient` is imported and used in the `/list` handler, the strict `parsePagination(req.query)` call is gone, the `status` passthrough still threads through to `getInvoicesFeed`, and the modal's exact `?status=draft&limit=50` query shape parses cleanly through the lenient parser (limit=50, offset defaulted to 0, cursor undefined, `explicit` flag set).
+- The existing `each row exposes Send Invoice + Open Invoice actions` test in the same file already pins both row actions in `<DashboardActionModal>` — those assertions still pass against the unchanged modal.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/dashboard-invoices-not-sent.test.ts tests/dashboard-pipeline-actionable.test.ts tests/dashboard-layout.test.ts tests/dashboard-operational-alerts-modes.test.ts` — 119/119 pass (26 in `dashboard-invoices-not-sent.test.ts`, including 8 new ones for the row polish + lenient pagination fix).
+- The shared `<DashboardActionModal>` is untouched, so `Send Invoice` / `Open Invoice` row actions and the canonical `<SendCommunicationModal>` sub-modal mount continue to work as before.
+
+### Changed
+
+#### CreateClientModal migrated to canonical ModalShell + Modal* primitives (2026-05-06)
+
+Aligned `CreateClientModal` with the Modal Taxonomy in `CLAUDE.md` (rule #2: generic / simple modals → `<ModalShell>` + `<Modal*>` primitives, NOT raw `<Dialog>`). Continues the Phase 1 sweep that already covered `CreateNewDialog`. The modal hosts the canonical client/company creation flow used from the Clients page, the global `+ New` launcher's client path, `QuickAddJobDialog`'s "create new client" affordance, `CreateQuotePage`'s inline create-new client, and `NewInvoicePage`. Behavior, validation gating, mutation contract, callback signature, every form field, and every existing `data-testid` are preserved verbatim — only the primitive layer changed.
+
+**What changed.**
+
+- Imports: `Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle` from `@/components/ui/dialog` → `ModalShell, ModalHeader, ModalTitle, ModalBody, ModalFooter` from `@/components/ui/modal`. Zero raw Dialog imports remain on the file.
+- `<Dialog><DialogContent>...</DialogContent></Dialog>` → single `<ModalShell>` mount. Width passed via `className="sm:max-w-lg max-h-[90vh] overflow-y-auto"` per Modal Taxonomy rule #5 (ModalShell stays width-neutral; the call-site supplies dimensions). The structural lock `p-0 gap-0` is already baked into ModalShell, so the implicit DialogContent default `p-6 gap-4` no longer leaks back in.
+- `<DialogHeader><DialogTitle>New Client</DialogTitle></DialogHeader>` → `<ModalHeader><ModalTitle>New Client</ModalTitle></ModalHeader>` with the canonical `text-section-title font-semibold text-slate-900` typography lock inherited from `ModalTitle` (was an implicit `text-modal-title` from `DialogTitle`).
+- `<form onSubmit={handleSubmit} className="space-y-4 py-1">` → `<form onSubmit={handleSubmit}>` wrapping `<ModalBody className="space-y-4">` + `<ModalFooter>`. The vertical-rhythm `space-y-4` moved from the form to `<ModalBody>` so inter-section spacing between fieldsets stays at 16px; the prior `py-1` was redundant once `<ModalBody>`'s canonical `px-5 py-4` padding took over.
+- `<DialogFooter className="pt-2">` → `<ModalFooter>`. The prior 8px `pt-2` and the implicit no-divider gap above the footer become the canonical `px-5 py-3 border-t border-slate-200` rhythm — slight tightening, plus a clean visual separator that matches `LeadDetailPage` / `QuoteDetailPage` confirms.
+- All testids preserved verbatim: `dialog-create-client`, `input-client-first-name`, `input-client-last-name`, `input-company-name`, `checkbox-use-company-primary`, `input-contact-phone`, `input-contact-email`, `input-service-{street,street2,city,province,postal}`, `checkbox-billing-same`, `input-billing-{street,street2,city,province,postal}`, `button-save-client`, `contact-email-error`.
+
+**Behavior preserved.**
+
+- Submit-on-Enter: the `<form>` wraps both `<ModalBody>` and `<ModalFooter>`, so the type=submit Save button remains the form's submit boundary. `<ModalHeader>` sits outside the form (matching the prior structure where `<DialogHeader>` was a sibling of `<form>`).
+- Validation gating: `canSubmit = (clientFirstName || companyName) && emailValid && (locationNameSatisfied || locationAddressSatisfied)`. Save disabled while `createMutation.isPending`. Cancel disabled while pending. `handleClose` blocks closing while pending.
+- Loading state: `<Loader2>` spinner + "Creating..." label preserved verbatim on the submit button.
+- Success flow: invalidates `["/api/clients"]` + `["/api/customer-companies"]` + `["/api/subscriptions/can-add-location"]`, fires the "Client Created" toast, calls `resetForm()`, calls `onOpenChange(false)`, then either invokes the optional `onCreated(customerCompanyId, primaryLocationId)` callback or navigates to `/clients/{id}` by default.
+- Error flow: `setServerError(error.message)` surfaces the API error inline at the top of the form. The `onError` handler does NOT touch any form-state setter — the user's input is preserved so they can retry after a server-side validation failure (a regression test pin guards this).
+- Initial-values prefill: `useEffect(open)` applies `initialValues.{companyName,firstName,lastName}` on every open transition. Address fields are deliberately NOT prefilled (callers don't know address info).
+
+**Files changed.**
+
+- `client/src/components/CreateClientModal.tsx` — primitive swap + width passed via className. Inline doc-comment documents the canonicalization + the call-site-owned width contract.
+- `tests/create-client-modal.test.ts` — new file, 36 source-pin tests organized as 6 describe blocks. Pins: canonical Modal primitives imported, no raw Dialog import, no raw `<Dialog*>` JSX, ModalShell mount + width className + wrapper testid, ModalHeader/ModalTitle structure, form structure (header outside form, body+footer inside form), `space-y-4` on `<ModalBody>`, every form field's `data-testid` preserved (18 testids pinned), `canSubmit` gate clauses, Save disabled gate, Cancel disabled gate, `handleClose` in-flight guard, spinner + "Creating..." label, `resetForm` covers all setters, success flow (invalidations + reset + close + onCreated/navigate), error flow preserves user input.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/create-client-modal.test.ts tests/quick-create-job-client-flow.test.ts tests/quote-create-page.test.ts tests/modal-canonical.test.ts` — 186/186 pass (36 + 17 + 67 + 66). The two pre-existing dependent test files (`quick-create-job-client-flow.test.ts` and `quote-create-page.test.ts`) continue to pass — neither pinned Dialog primitives directly.
+- Repo grep on `CreateClientModal.tsx`: zero `<Dialog>` / `<DialogContent>` / `<DialogTitle>` / `<DialogHeader>` / `<DialogFooter>` JSX; zero `from "@/components/ui/dialog"` import.
+
+**Width contract (Modal Taxonomy rule #5).** ModalShell stays width-neutral. The call-site passes `sm:max-w-lg max-h-[90vh] overflow-y-auto` — same width target as before (`max-w-lg` is the underlying DialogContent default; the explicit `sm:max-w-lg` matches it byte-for-byte at sm+), with the height/scroll triple preserved so long forms scroll inside the modal rather than bleeding past the viewport. ModalShell's baked `p-0 gap-0` cn-merges with the call-site className, replacing the prior DialogContent's implicit `p-6 gap-4` — that's where the slight outer-padding tightening comes from, and it brings the modal in line with `CreateNewDialog`'s rhythm.
+
+**No behavior change for callers.** The 4 in-tree consumers (Clients page, QuickAddJobDialog inline-create-client, CreateQuotePage inline-create-client, NewInvoicePage) keep their full prop contract: `open` / `onOpenChange` / `onCreated` / `initialValues`. Form submission, validation, loading state, and the "Client Created" toast are visible-change-free.
+
+#### CreateNewDialog migrated to canonical ModalShell + Modal* primitives (2026-05-06)
+
+Aligned the global "+ New" launcher (`client/src/components/CreateNewDialog.tsx`) with the Modal Taxonomy in `CLAUDE.md` (rule #2: generic / simple modals → `<ModalShell>` + `<Modal*>` primitives, NOT raw `<Dialog>`). The launcher hosts the canonical Job + Task creation tabs across the app shell, dispatch quick-create, and dashboard surfaces; routing it through the canonical primitives brings the most-touched modal entry point in the app under taxonomy compliance. Behavior, layout, embedded child mounts (`QuickAddJobDialog`, `TaskDialog`), tab state preservation (`forceMount`), legacy `defaultTab="supplier-visit"` mapping, and every existing `data-testid` are preserved verbatim.
+
+**What changed.**
+
+- Imports: `Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle` from `@/components/ui/dialog` → `ModalShell, ModalHeader, ModalTitle, ModalDescription` from `@/components/ui/modal`. Zero raw Dialog imports remain on the file.
+- `<Dialog><DialogContent>...</DialogContent></Dialog>` → single `<ModalShell>` mount. Width/height/flex/overflow now passed via `className="max-w-xl sm:max-w-[600px] h-auto max-h-[90vh] flex flex-col overflow-hidden"` per Modal Taxonomy rule #5 (ModalShell stays width-neutral; the call-site supplies dimensions). The structural lock string `p-0 gap-0` was already baked into ModalShell, so the prior inline `p-0 gap-0` is no longer needed at the call-site.
+- `<DialogHeader className="sr-only">` → `<ModalHeader className="sr-only">`. Tabs remain the first visible content; the accessible title + description stay sr-only so Radix's a11y check is satisfied without competing for visual chrome.
+- `<DialogTitle>` / `<DialogDescription>` → `<ModalTitle>` / `<ModalDescription>` with the same `text-create-new-title` testid + identical copy.
+- All other testids preserved verbatim (`dialog-create-new`, `tab-job`, `tab-task`, `content-job`, `content-task`).
+- Re-indented the inner `<Tabs>` block by one level after removing the `<DialogContent>` wrapper. Cosmetic only — JSX whitespace is non-significant.
+
+**Files changed.**
+
+- `client/src/components/CreateNewDialog.tsx` — primitive swap + width passed via className. Inline doc-comment documents the canonicalization + the call-site-owned width contract.
+- `tests/create-new-dialog.test.ts` — new file, 19 source-pin tests organized as 5 describe blocks. Pins: canonical Modal primitives imported, no raw Dialog import, no raw `<Dialog*>` JSX, `<ModalShell>` mounted with `open` + `onOpenChange` + the explicit width className + the wrapper testid, `<ModalHeader className="sr-only">` so the tab strip is the first visible content, accessible `<ModalTitle>` + `<ModalDescription>` preserved, the two TabsTriggers (Job / Task) preserve their testids and labels, exactly two TabsTriggers exist (Supplier Visit was merged into Task in 2026-05-01), TabsList uses the 2-col grid, each TabsContent uses `forceMount` + `data-[state=inactive]:hidden` so form state persists across tab switches, Job tab routes to `<QuickAddJobDialog embedded compact />` with prefill prop pass-through, Task tab routes to `<TaskDialog embedded forcedType="GENERAL" />`, legacy `defaultTab="supplier-visit"` normalizes to `"task"`, the public `CreateNewTab` union retains the legacy id for back-compat, and the active tab re-syncs when the modal is (re-)opened.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/create-new-dialog.test.ts tests/modal-canonical.test.ts tests/dashboard-open-slot-refresh.test.ts` — 95/95 pass (19 + 66 + 10). The dashboard test was the one external file that pinned `<CreateNewDialog>` mounted by `SlotQuickCreateLauncher`; it continues to pass after the migration.
+- Repo grep on `CreateNewDialog.tsx`: zero `<Dialog>` / `<DialogContent>` / `<DialogTitle>` / `<DialogHeader>` / `<DialogFooter>` / `<DialogDescription>` JSX; zero `from "@/components/ui/dialog"` import.
+
+**Width contract (Modal Taxonomy rule #5).** ModalShell stays width-neutral. The CreateNewDialog call-site passes `max-w-xl sm:max-w-[600px] h-auto max-h-[90vh] flex flex-col overflow-hidden` — wider than the underlying `<DialogContent>`'s default `max-w-lg` so the embedded job/task forms have breathing room, plus the height/flex/overflow triple that lets the tab body scroll internally on short viewports. ModalShell's baked `p-0 gap-0` cn-merges with the call-site className, matching the prior structural lock byte-for-byte.
+
+**No behavior change.** All 13 callers of `<CreateNewDialog>` (App.tsx header, FinancialDashboard, ClientDetailPage, JobDetailPage, JobHeaderCard, Jobs, TasksPanel, SlotQuickCreateLauncher, plus child components) keep their current prop contract. The Job + Task creation flows, legacy `defaultTab="supplier-visit"` callers, and the dispatch quick-create slot launcher all continue to work without any caller-side changes.
+
+#### QuoteDetailPage destructive confirms migrated to canonical AlertDialog (2026-05-06)
+
+Aligned `QuoteDetailPage` with the Modal Taxonomy (`CLAUDE.md` rule #1: destructive / consequence-bearing confirmations route through `<AlertDialog>`, not raw `<Dialog>`). Mirrors the `LeadDetailPage` migration that landed earlier today. Four confirms moved off the legacy primitive — Approve, Decline, Delete, Convert to Job. Behavior, copy, mutation handlers, permission gates, and per-confirm visual variants are preserved verbatim; only the primitive layer changed.
+
+**Migrated flows.**
+
+- **Approve Quote** — `<AlertDialog open={showApproveConfirm}>` with default (green primary) action variant. Approving is positive consequence-bearing; mirrors `LeadDetailPage`'s non-destructive Convert to Quote. testids `button-approve-cancel` / `button-approve-confirm`.
+- **Decline Quote** — `<AlertDialog open={showDeclineConfirm}>` with destructive variant on the action (`className="bg-destructive text-destructive-foreground hover:bg-destructive/90"`). testids `button-decline-cancel` / `button-decline-confirm`.
+- **Delete Quote** — `<AlertDialog open={showDeleteConfirm}>` with destructive variant. The "This action cannot be undone." warning copy is preserved verbatim. testids `button-delete-cancel` / `button-delete-confirm`.
+- **Convert to Job** — `<AlertDialog open={showConvertToJobConfirm}>` with default action variant (positive workflow transition: creates a new job from the quote and marks the quote as converted). testids `button-convert-to-job-cancel` / `button-convert-to-job-confirm`.
+
+All four use `<AlertDialogContent className="sm:max-w-[400px]">` matching the LeadDetailPage convention. Trigger callbacks are unchanged — `QuoteHeaderCard`'s `onApprove` / `onDecline` / `onDelete` / `onConvertToJob` props still call `setShow*Confirm(true)` exactly as before.
+
+**Schedule Assessment is intentionally untouched.** It is a form modal (Rule #2 territory) and stays on raw `<Dialog>` until the future form-modal migration sprint. The Dialog import on this page is retained because Schedule Assessment uses every Dialog primitive.
+
+**Behavior preserved.**
+
+- Each `<AlertDialogAction>` auto-closes the dialog on click via Radix `Close`. All four mutations either refetch the same quote (Approve / Decline) or navigate (Delete → `/quotes`; Convert to Job → `/jobs/:id`), so the close → next-state chain is harmless.
+- `disabled={mutation.isPending}` prevents double-submit during the brief click → close window.
+- `Loader2` spinner gated on the same pending flag preserved verbatim (`h-4 w-4 mr-2 animate-spin`).
+- AlertDialog typography inherits the canonical `text-section-title font-semibold text-slate-900` (title) + `text-row text-slate-600 leading-normal` (description) defaults locked at the alert-dialog primitive — no className typography overrides at the call site.
+
+**Files changed.**
+
+- `client/src/pages/QuoteDetailPage.tsx` — added the canonical AlertDialog imports; rebuilt the four destructive `<Dialog>` confirms as `<AlertDialog>` trees with proper variants + testids; section header comment documents the Rule #1 alignment + the auto-close → navigate chain. Schedule Assessment block + the Dialog import surface remain unchanged.
+- `tests/quote-detail-destructive-confirms.test.ts` — new file, 30 source-pin tests organized as 6 describe blocks. Uses an `extractConfirmBlock(stateName)` helper (mirrors `tests/lead-detail-destructive-confirms.test.ts`) so per-section assertions can't span sibling confirms via greedy `[\s\S]` walks. Pins: AlertDialog primitives imported, Dialog import retained for Schedule Assessment, four migrated confirm states bound to `<AlertDialog>` (negative pin on `<Dialog open={showXConfirm}>`), per-confirm wiring (testids, mutation handlers, disabled gate, destructive className on Decline + Delete and absent on Approve + Convert, loader spinner gated on `isPending`), copy verbatim across all four confirms, trigger callbacks still set `setShow*Confirm(true)`, Schedule Assessment scope guard (still raw `<Dialog>`, NOT bound to `<AlertDialog>`, copy + form fields preserved).
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/quote-detail-destructive-confirms.test.ts tests/quote-create-page.test.ts tests/modal-canonical.test.ts` — 163/163 pass (30 + 67 + 66).
+- Repo grep on `QuoteDetailPage.tsx`: 4 `<AlertDialog>` mounts (Approve, Decline, Delete, Convert to Job); 1 remaining `<Dialog>` mount (Schedule Assessment, by design); zero raw `<Dialog open={showXConfirm}>` for any of the migrated states.
+
+**Outcome.** QuoteDetailPage now follows the Modal Taxonomy fully for destructive / consequence-bearing confirmations. Schedule Assessment remains as the only raw `<Dialog>` consumer on the page, queued for the form-modal sprint.
+
+#### Lead → Quote conversion routes through `/quotes/new?leadId=…`, retired modal deleted (2026-05-06 PR2)
+
+Follow-up to the quote-creation modal-to-page migration. The retired `client/src/components/NewQuoteModal.tsx` is deleted, and the Lead → Quote conversion path on `LeadDetailPage` now navigates to the full-page quote builder (prefilled from the lead) instead of POSTing directly. Users see and edit the draft before saving, and the new page enforces the one-lead-to-one-quote invariant on the client as well.
+
+**Why.** With creation on a dedicated page, the lead conversion flow no longer needs an AlertDialog confirmation — the user lands on the same draft surface they can review, adjust, and abandon if they change their mind. Folding both paths through `/quotes/new` also means the create payload (line items, template, dates, leadId, etc.) lives in exactly one place.
+
+**Modal deletion + reference scrub.**
+
+- Deleted `client/src/components/NewQuoteModal.tsx`.
+- Scrubbed every remaining reference (comments, transitional notes) across `client/src/App.tsx`, `client/src/pages/Quotes.tsx`, `client/src/pages/ClientDetailPage.tsx`, `client/src/pages/QuoteDetailPage.tsx`, `client/src/pages/CreateQuotePage.tsx`, `client/src/components/QuoteTemplateModal.tsx`, and `client/src/components/QuickAddJobDialog.tsx`. After this PR `grep -r NewQuoteModal client/src` returns zero matches.
+
+**Lead → Quote unification.**
+
+- `client/src/pages/LeadDetailPage.tsx` — replaced `convertMutation` (direct POST `/api/quotes`) and the `showConvertConfirm` AlertDialog with a `handleConvertToQuote` handler that calls `setLocation(\`/quotes/new?leadId=\${lead.id}\`)`. Eligibility gates are unchanged: the button only renders when `canConvert && !lead.convertedQuoteId`, where `canConvert` covers `new / contacted / needs_review`. Added stable `data-testid="button-convert-to-quote"`. Removed legacy `button-convert-confirm` / `button-convert-cancel` test ids — the dialog they belonged to is gone.
+
+**`/quotes/new?leadId=…` prefill (CreateQuotePage).**
+
+- Reads `leadId` from the URL search params; when present, runs `useQuery({ queryKey: ["leads", "detail", leadIdFromQuery], queryFn: () => apiRequest(\`/api/leads/\${id}\`), enabled: !!leadIdFromQuery, staleTime: 5 * 60_000 })`. The query key matches `LeadDetailPage`'s exactly so the React Query cache is warm-shared when the user clicks Convert from a lead they were just viewing.
+- One-shot prefill via a `prefillAppliedRef`. Once the lead resolves with usable data the page sets `selectedLocation` (synthesised from `lead.locationId` + `lead.location.{companyName,address,city}`), `title` (from `lead.title`), and `description` (from `lead.description`). Subsequent renders never re-apply, so the user's edits stick.
+- `leadId` is included in the `POST /api/quotes` payload via `...(leadIdFromQuery ? { leadId: leadIdFromQuery } : {})`. Server already accepts the field in `createQuoteSchema` and links the new quote to the lead (`status="quoted"`, `convertedQuoteId`, `convertedAt`).
+- Three guard states render in place of the form:
+  - `data-testid="create-quote-loading"` while the lead query is in flight (only when leadId is present).
+  - `data-testid="create-quote-already-converted"` when `lead.convertedQuoteId` is set; offers `button-back-to-lead` and `button-open-existing-quote` actions. Prevents duplicate quotes from a stale link.
+  - `data-testid="create-quote-lead-error"` when the lead can't be loaded; offers `button-back-to-lead` and a quotes-list fallback.
+- Direct `/quotes/new` (no leadId) is unaffected — the lead query is disabled, the location selector / template combobox / line items / save flow all behave exactly as in PR1. Verified by source-pin tests asserting the lead query's `enabled: !!leadIdFromQuery` gate and the unconditional mounting of `<CreateOrSelectField>` + `Create new client` + `select-quote-template`.
+
+**Tests.**
+
+- `tests/quote-create-page.test.ts` — replaced the burn-in `existsSync(...).toBe(true)` pin with deletion-guard pins:
+  - `NewQuoteModal.tsx` does NOT exist on disk.
+  - No `import { NewQuoteModal }` or `<NewQuoteModal>` JSX in `App.tsx`, `Quotes.tsx`, `ClientDetailPage.tsx`, or `LeadDetailPage.tsx`.
+  - Walks the entire `client/src` tree and asserts zero `NewQuoteModal` import/JSX usages anywhere (skips test files).
+  - Pins LeadDetailPage's Convert button to `setLocation(\`/quotes/new?leadId=\${lead.id}\`)`, asserts no `apiRequest("/api/quotes", …)` remains in the page, and confirms the legacy AlertDialog and its test ids are gone.
+  - Pins CreateQuotePage's lead query (queryKey shape, `enabled` gate, `apiRequest("/api/leads/:id")`), the one-shot prefill ref, the `leadId` payload spread, and all three guard states (loading / blocked / error) by their stable test ids.
+- `tests/lead-quote-conversion.test.ts` — unchanged; the server-side conversion contract is unchanged (same POST `/api/quotes` payload shape, same `quote.leadId` / `lead.status="quoted"` invariants). All 18 server-integration tests still pass.
+
+**Files changed.**
+
+- Deleted: `client/src/components/NewQuoteModal.tsx`.
+- Edited: `client/src/pages/LeadDetailPage.tsx`, `client/src/pages/CreateQuotePage.tsx`, `client/src/pages/QuoteDetailPage.tsx`, `client/src/pages/Quotes.tsx`, `client/src/pages/ClientDetailPage.tsx`, `client/src/App.tsx`, `client/src/components/QuoteTemplateModal.tsx`, `client/src/components/QuickAddJobDialog.tsx`, `tests/quote-create-page.test.ts`, `CHANGELOG.md`.
+
+**Out of scope (deferred).**
+
+- Unsaved-change protection on `/quotes/new` (e.g., navigation prompt when meaningful input has been entered) was explicitly deferred. The lightweight `window.confirm` Cancel guard from PR1 is unchanged.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/quote-create-page.test.ts tests/lead-quote-conversion.test.ts` — 85/85 pass.
+
+#### LeadDetailPage destructive confirms migrated to canonical AlertDialog (2026-05-06)
+
+Aligned `LeadDetailPage` with the Modal Taxonomy added to `CLAUDE.md` earlier today (rule #1: destructive confirmations route through `<AlertDialog>`, not raw `<Dialog>`). The three confirms — Archive, Hard Delete, Convert to Quote — were the last raw `<Dialog>` consumers on this page; they now mount Radix's `<AlertDialog>` so the stricter focus-trap + escape-key semantics apply uniformly. No behavior change: copy, mutation handlers, loading states, and visual variants are preserved verbatim.
+
+**What changed.**
+
+- Archive confirm: `<Dialog>` → `<AlertDialog>` with `<AlertDialogCancel data-testid="button-archive-cancel">` and `<AlertDialogAction onClick={archiveMutation.mutate} disabled={archiveMutation.isPending} className="bg-destructive text-destructive-foreground hover:bg-destructive/90" data-testid="button-archive-confirm">`. Loader spinner during pending state preserved.
+- Hard-delete confirm: same migration. Title keeps the `<AlertTriangle>` icon + `text-red-700` emphasis. Body keeps the "**This cannot be undone.**" warning. testids `button-hard-delete-cancel` / `button-hard-delete-confirm`.
+- Convert-to-Quote confirm: same migration. Action button stays on the canonical default (green primary) variant — convert is non-destructive (creates a quote + transitions the lead's status; the lead row is not removed). testids `button-convert-cancel` / `button-convert-confirm`.
+- The `Dialog`, `DialogContent`, `DialogHeader`, `DialogTitle`, `DialogFooter`, `DialogDescription` import from `@/components/ui/dialog` is removed. LeadDetailPage no longer references the legacy primitive.
+
+**Behavior preserved.**
+
+- Each `<AlertDialogAction>` auto-closes the dialog on click (Radix `Close` semantics). All three mutations navigate on success (`setLocation("/leads")` for archive + hard delete; `setLocation("/quotes/:id")` for convert), so the close → navigate chain is smooth.
+- `disabled={mutation.isPending}` prevents double-submit during the brief click → close window.
+- Sidebar trigger buttons still call `setShow*Confirm(true)` exactly as before. Permission gates (`canConvert`, `canContact`, `canMarkLost`, `isTerminal` etc.) are untouched.
+- AlertDialog typography inherits the canonical `text-section-title font-semibold text-slate-900` (title) + `text-row text-slate-600 leading-normal` (description) defaults that the alert-dialog primitive locks per the earlier Phase D pass — no className typography overrides at the call site.
+
+**Files changed.**
+
+- `client/src/pages/LeadDetailPage.tsx` — swapped Dialog primitive imports for AlertDialog primitives; rebuilt the three `<Dialog>` confirms as `<AlertDialog>` trees. Inline header comment documents the migration + the rationale (Modal Taxonomy rule #1; auto-close → navigate chain).
+- `tests/lead-detail-destructive-confirms.test.ts` — new file, 19 source-pin tests. Covers: AlertDialog primitives imported, no `from "@/components/ui/dialog"` import, no raw `<Dialog*>` JSX, each confirm wraps the right state via `<AlertDialog open={show*Confirm}>`, action handlers wired to the right mutations, destructive className present on archive + hard delete and absent on convert, loader spinner gated on pending state, hard-delete title preserves the `<AlertTriangle>` + `text-red-700` emphasis, copy preserved verbatim across all three confirms, and trigger buttons still call `setShow*Confirm(true)`.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/lead-detail-destructive-confirms.test.ts tests/lead-create-page.test.ts tests/lead-quote-conversion.test.ts tests/lead-visits.test.ts tests/lead-visits-phase3.test.ts tests/modal-canonical.test.ts` — 205/205 pass (19 + 46 + 18 + 28 + 28 + 66).
+- Repo grep on `LeadDetailPage.tsx`: zero `<Dialog`, `<DialogContent`, `<DialogTitle`, `<DialogFooter`, `<DialogHeader`, `<DialogDescription` JSX; zero `from "@/components/ui/dialog"` imports.
+
+**Outcome.** LeadDetailPage now follows the Modal Taxonomy fully — the only `<Dialog>` consumer in the lead surface area is gone. Future lead-surface modals should use the canonical `<ModalShell>` / `<AlertDialog>` / `<OperationalActionModal>` per the rules in `CLAUDE.md` and `MEMORY.md`.
+
+#### Quote creation moved from a modal to a dedicated `/quotes/new` page (2026-05-06)
+
+The "New Quote" entry path now navigates to a full-page create flow at `/quotes/new` (`client/src/pages/CreateQuotePage.tsx`) that visually matches the existing `/quotes/:id` Quote Detail page by reusing extracted shared cards. Replaces the prior `NewQuoteModal` mount on the Quotes list page, the global header `+ New → New Quote` dropdown, and the ClientDetailPage "Create Quote" header button. Mirrors the lead create-page migration that landed earlier in this Unreleased cycle.
+
+**Why.** A modal can't host the full identity / line-items / summary / description scaffolding the saved Quote Detail page renders. Moving creation to a dedicated page lets the user see and edit the same chrome they will see post-save, including line items in draft mode — which the modal could not surface. It also unblocks the next-PR work to attach a quote to a lead via `?leadId=…` without a modal trampoline.
+
+**Component extraction (one source of truth for both pages).**
+
+- `client/src/components/quotes/QuoteSummaryCard.tsx` — pure presentational subtotal / tax / total card. Both `QuoteDetailPage` (saved) and `CreateQuotePage` (draft) consume it; the saved page passes `quote.subtotal / taxTotal / total`, the create page passes the same shape computed locally from draft line items.
+- `client/src/components/quotes/QuoteDescriptionCard.tsx` — discriminated `mode: "saved" | "draft"`. Saved mode is the byte-for-byte equivalent of the prior inline collapsible-with-click-to-edit-and-Pencil block on `QuoteDetailPage`; draft mode is an always-expanded textarea controlled by the parent. Saved-mode `onSave` returns a Promise so the card closes edit-mode on success and stays open on error.
+- `client/src/components/quotes/shared/quoteFormatters.ts` — `safeFormatDate` extracted from the page (pinned "MMM d, yyyy" / "—" output).
+- `client/src/components/quotes/shared/QuoteMetaRow.tsx` — domain-local re-export of `MetaRow` (mirrors `LeadMetaRow`; not a wrapper).
+- `client/src/components/quotes/draftQuoteLineItemsAdapter.ts` — local-state line-items adapter for the create page. Mirrors `draftInvoiceLineItemsAdapter` byte-for-byte on its surface-agnostic concerns (`validateEntry`, `hydrateDraft`, `resolveProduct`, `saveAll → onCommit`); only diverges on the surface flag (`"quote"`) and `allowReorder: false` (saved Quote has no reorder mutation). Also exposes `mirrorLineToInlineCreate` so the page projects mirror rows directly to the `lines: []` shape `POST /api/quotes` accepts.
+
+**Routing.**
+
+- `client/src/App.tsx` — registers `<Route path="/quotes/new">` BEFORE `<Route path="/quotes/:id">` so wouter does not capture `"new"` as an `:id`. Same `<ProtectedRoute requireAdmin>` gate the rest of the `/quotes/*` routes use.
+
+**Entry-point migration.**
+
+- `client/src/pages/Quotes.tsx` — `button-new-quote` now `setLocation("/quotes/new")`. The `NewQuoteModal` import + state + mount removed. The legacy `?create=true` deep-link is preserved as a redirect to `/quotes/new`. `data-testid="button-new-quote"` preserved.
+- `client/src/App.tsx` — global `+ New → New Quote` dropdown (`data-testid="quick-new-quote"`) navigates to `/quotes/new`. The `NewQuoteModal` import / `newQuoteModalOpen` state / page-level mount all removed.
+- `client/src/pages/ClientDetailPage.tsx` — `header-create-quote` button now `setLocation("/quotes/new")`. `quoteDialogOpen` state and the `<NewQuoteModal>` mount removed. `data-testid="header-create-quote"` preserved.
+- `client/src/components/NewQuoteModal.tsx` — retained on disk as burn-in safety; no live caller mounts it. Safe to delete in a follow-up PR after a soak period.
+
+**Page behavior — `CreateQuotePage`.**
+
+- Layout uses `<DetailPageShell>` (same primitive the saved page uses): two-column shell with left main column + right rail (collapses to one column below `lg`). Card chrome (`bg-white rounded-md border border-slate-200 shadow-sm`) and typography match the saved page.
+- Left column: identity / dates / template-or-blank-fields card → `<QuoteDescriptionCard mode="draft">` → `<LineItemsCard>` with the draft adapter, totals footer, and "applied at save" tax row.
+- Right rail: `<QuoteSummaryCard>` (computed from local mirror) + a "Save first" placeholder card for the saved-only sections (Notes / Reference / Workflow / Activity require a `quoteId`) + an Actions card with `Create Quote` and `Cancel` buttons.
+- Client / Location selector: canonical `<CreateOrSelectField>` + `useLocationSearch` from `@/lib/entities/locationEntity`. The `Create new client` action opens the canonical `<CreateClientModal>`; on creation the new primary location auto-selects in the field. Search-locations + clients query keys are invalidated post-create. This preserves the "search → if not found, create new client" pattern app-wide.
+- Template selector: same inline `Popover + Command` combobox the modal rendered, with the same "no template = blank" placeholder behavior. Selecting a template hides the Title + Description fields server-side template scaffolding takes over after the create-then-apply step.
+- Submit payload exactly mirrors `NewQuoteModal`: `POST /api/quotes` `{ locationId, issueDate, expiryDate, title?, notesCustomer?, leadId?, lines: InlineCreateQuoteLine[] }`. When a template is selected, the page follows up with `POST /api/quote-templates/:id/apply` `{ quoteId, mode: "replace" }` — same flow the modal owned. Defaults: `issueDate = today`, `expiryDate = today + 30 days`. Same query invalidations on success (`["/api/quotes"]`, `["/api/quotes/list"]`), same activity-store event (`type: "created"`, `entityType: "quote"`), same success toast copy. Navigates to `/quotes/${quote.id}`.
+- Cancel: navigates to `/quotes`. A lightweight `window.confirm` dirty-form guard fires only when the user has meaningful input (location selected / title / description / template / line item / dates touched).
+- `?leadId=` query param: when present, the page passes it through on the create payload so the server can link the quote to its originating lead. No prefetch / no client-side prefill is wired in this PR — the leadId is purely an attribution pointer; richer pre-seeding (location / title from the lead) is documented as a follow-up.
+
+**Detail-page parity.**
+
+- `client/src/pages/QuoteDetailPage.tsx` — the prior inline `Quote Description` block (collapsible + click-to-edit + Save / Cancel + Pencil) and the prior inline `Quote Summary` Card (subtotal / tax / total via `MetaRow`) were replaced by `<QuoteDescriptionCard mode="saved">` and `<QuoteSummaryCard>` respectively. Visual output is unchanged. Page-level `descriptionExpanded / editingDescription / descriptionDraft` state and the unused `MetaRow` import were removed; the page-owned `updateDescriptionMutation` is now invoked via `mutateAsync` so the card can close edit-mode on success and stay open on error.
+
+**Tests.**
+
+- `tests/quote-create-page.test.ts` (new) — source-pin tests for: `/quotes/new` route exists and is registered before `/quotes/:id`; the same `requireAdmin` gate the other quote routes use; Quotes-list `button-new-quote` and ClientDetailPage `header-create-quote` and the App-header `quick-new-quote` all navigate to `/quotes/new`; the legacy `?create=true` deep-link redirects to `/quotes/new`; the create payload contract still matches `NewQuoteModal` (locationId / issueDate / expiryDate + optional title / notesCustomer / leadId / lines, gated on `!selectedTemplateId`); the create-then-apply-template flow is preserved; the canonical `CreateOrSelectField + useLocationSearch + CreateClientModal` create-new client flow is wired; `<QuoteSummaryCard>` and `<QuoteDescriptionCard>` are consumed by both `QuoteDetailPage` (saved) and `CreateQuotePage` (draft); the draft adapter capability flags match the saved adapter. Mirrors the source-pin style used in `tests/lead-create-page.test.ts`.
+- `tests/lead-quote-conversion.test.ts` — unchanged; lead → quote conversion still POSTs to `/api/quotes` directly through `LeadDetailPage.convertMutation`. The audit confirmed this path is independent of the modal and the new page does not break it.
+
+**Lead conversion follow-up.** Wiring `/quotes/new?leadId=…` for richer lead pre-seeding (location + title from the lead) is documented as the next PR. The current PR's `?leadId=` pass-through is an attribution-only escape hatch; the LeadDetailPage convert button still uses its own direct-POST mutation unchanged.
+
+**Files changed.**
+
+- New: `client/src/pages/CreateQuotePage.tsx`, `client/src/components/quotes/QuoteSummaryCard.tsx`, `client/src/components/quotes/QuoteDescriptionCard.tsx`, `client/src/components/quotes/draftQuoteLineItemsAdapter.ts`, `client/src/components/quotes/shared/quoteFormatters.ts`, `client/src/components/quotes/shared/QuoteMetaRow.tsx`, `tests/quote-create-page.test.ts`.
+- Edited: `client/src/App.tsx`, `client/src/pages/Quotes.tsx`, `client/src/pages/QuoteDetailPage.tsx`, `client/src/pages/ClientDetailPage.tsx`, `CHANGELOG.md`.
+- Retained on disk: `client/src/components/NewQuoteModal.tsx` (no live caller; safe to delete after soak).
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/quote-create-page.test.ts tests/lead-quote-conversion.test.ts` — green.
+
+#### Pipeline card rows compacted into single-line clickable action rows (2026-05-06 RALPH polish)
+
+The Pipeline card on the Operations Dashboard (`PipelineSnapshotCard` inside `client/src/pages/FinancialDashboard.tsx`) now renders each bucket as a single-line clickable row whose density mirrors `<OperationalAlertsCard>` exactly. The previous shape stacked a `text-sm` label on top of a `text-sm font-semibold` count plus optional currency value, with a separate inline `View` button on the right edge — that produced a two-line row almost twice as tall as the Operational Alerts rows beside it.
+
+**Layout changes (UI only — no data, modal-mode, or DashboardActionModal logic touched).**
+
+- The whole row is now a `<button type="button">` element. Native `<button>` semantics give us tabIndex / Enter / Space / focus-ring without hand-rolling `role="button"`. The previous inner `View` button (and its `${testId}-view` testid) is removed.
+- Row geometry matches Operational Alerts: `w-full flex items-center gap-2 px-3 py-1.5 text-left`. Label is `flex-1 text-xs font-medium truncate`; count sits on the right at `text-sm font-semibold tabular-nums`. No chevron, no currency value — kept off the row to preserve a single-line layout per the brief.
+- Hover state matches the rest of the right-rail stack: `hover:bg-[#F0F5F0]`. Focus state is `focus-visible:bg-[#F0F5F0]` plus an inset `ring-2 ring-indigo-300` so keyboard users see where they are.
+- Empty buckets (`count === 0`) keep the row visible but mute it: label slips to `text-slate-400`, count to `text-slate-400`, and the `<button>` carries `disabled` so it cannot be clicked or focused into.
+- The card body wraps the rows in a `<ul>` and each row in a `<li>` for semantic list grouping. The skeleton loader was tightened from `h-9` to `h-6` to match the shorter row height.
+- Empty state copy and the `data-testid="pipeline-empty"` shell are preserved.
+
+**Files changed.**
+
+- `client/src/pages/FinancialDashboard.tsx` — `PipelineSnapshotCard` body simplified (rows now in `<ul>/<li>`, no `value` threading); `PipelineActionRow` rewritten as a single `<button>` row with `isLast` for borders.
+- `tests/dashboard-pipeline-actionable.test.ts` — renamed the existing "View button" mode-binding test to "click handler", added a `does not render any per-row View buttons in the card body` pin in the card-body describe, and added a new `PipelineActionRow — compact single-line row` describe block pinning: row is a `<button>` bound to `onView`, no inner View button or `-view` testid, count renders to the right of the label, density matches Operational Alerts (`px-3 py-1.5 gap-2`, no `flex-wrap`/`items-baseline`/`formatCurrency`), hover + focus-visible affordances are present, and zero-count rows mute label + count without disappearing.
+
+**Verification.**
+
+- `npm run check` — clean.
+- `npx vitest run tests/dashboard-pipeline-actionable.test.ts tests/dashboard-layout.test.ts tests/dashboard-operational-alerts-modes.test.ts tests/dashboard-invoices-not-sent.test.ts tests/dashboard-authz.test.ts tests/dashboard-open-slot-refresh.test.ts` — 134/134 pass.
+- Existing modal-behavior tests untouched and green — Pipeline rows still open the same `DashboardActionMode` values, and the shared `<DashboardActionModal>` is unchanged.
+
+#### Lead create-page QA polish — AlertDialog discard, immutability hint, encapsulated badge map (2026-05-06)
+
+QA pass over the new `/leads/new` flow. The modal taxonomy rule that landed earlier today (rule #1: destructive confirmations use `<AlertDialog>`, never `window.confirm`) was applied to the discard-confirm; the immutability of `originTechnicianId` is now visible to the user instead of being a server-side surprise; the extracted lead badge map was encapsulated to a single public helper. No behavior change to the create payload, route order, or list page.
+
+**What changed.**
+
+1. **Dirty-form guard now uses `<AlertDialog>` instead of `window.confirm`.** `CreateLeadPage` previously called `window.confirm("Discard this lead?…")` when Cancel/back was pressed on a dirty form. That browser-native primitive (a) is visually inconsistent with every other destructive confirmation in the app and (b) violates modal taxonomy rule #1 (destructive confirmation → `AlertDialog`). The new flow:
+   - Adds `showDiscardConfirm` state.
+   - `navigateBack()` opens the dialog when `isDirty` is true; clean form still navigates immediately.
+   - `<AlertDialog>` mounts with title `"Discard this lead?"`, description `"Your changes haven't been saved. If you leave now, the lead won't be created."`, a destructive-variant `Discard` action and a `Keep editing` cancel.
+   - Both buttons carry `data-testid` pins (`button-discard-confirm`, `button-discard-cancel`).
+   - The dirty-state predicate is unchanged — meaningful-input only (title, description, estimatedValue, location selected, priority changed off default, capturedBy changed off current user, or the inline create-client form is open).
+
+2. **`Captured By` immutability is surfaced inline.** The server (`server/routes/leads.ts`) rejects PATCH attempts to mutate `originTechnicianId`; the create page is the only chance to set it correctly. Draft mode of `LeadDetailsRail` now renders `Cannot be changed after creation.` as a small italic helper line below the selector (testid: `text-captured-by-immutable-hint`). Saved mode is untouched.
+
+3. **`STATUS_BADGE` map encapsulated.** `client/src/components/leads/shared/leadBadges.ts` previously exported the map and its row interface alongside the helper. Consumers only ever needed `getLeadStatusColors`, so the map and `LeadStatusBadgeColors` interface are now non-exported (single public surface). Pinned by a new test that fails if either re-becomes `export`.
+
+4. **Stale modal-reference doc-comments cleaned.** `App.tsx` had a `// CreateLeadModal entry path on LeadsPage` comment from the migration; `CreateLeadPage.tsx` had three migration-context comments naming the deleted modal. All four were trimmed — the only remaining mentions of the deleted file in `client/src` are no-op references in changelog history. A new repo-scan test fails if any `<CreateLeadModal[\s/>]` JSX, `from "...CreateLeadModal"` import, or `lazy(...CreateLeadModal...)` reference is reintroduced anywhere in the page+component trees.
+
+5. **`onError` documented as non-resetting.** Added a short comment above the create-lead `onError` block clarifying that the handler intentionally does NOT reset state — the user's input survives a server validation failure so they can retry. Pinned by a test that captures the `onError` body and asserts none of `setTitle` / `setDescription` / `setSelectedLocation` / `setEstimatedValue` / `setPriority` / `setCapturedByUserId` / `resetForm` are called from it.
+
+**What was reviewed and intentionally not changed.**
+
+- **Visual parity.** `/leads/new` already renders the same two-column shell, card chrome, typography scale, and 360px rail width as `/leads/:id`. No padding / border / radius / shadow differences between the two pages.
+- **Description card header on the create page.** The header carries `flex items-center justify-between` even though there's no right-side child in draft mode. Left as-is — preserves visual parity with the saved detail page where `justify-between` accommodates the inline Edit button.
+- **Routing edge cases.** `/leads/new` is admin-gated, registered before `/leads/:id`, refreshes cleanly (stateless), and post-create the URL is `/leads/:id`. All four behaviors had pins; no regression.
+- **Validation + error display.** Toast-based error display matches the rest of the app. Save button stays disabled until `selectedLocation?.id && title.trim().length > 0`; inline create-client button stays disabled until a non-empty company name is entered. Both behaviors had implicit gates; both now have explicit pins.
+- **Server schemas / routes.** Untouched.
+
+**Files changed.**
+
+- `client/src/pages/CreateLeadPage.tsx` — `<AlertDialog>` discard-confirm replaces `window.confirm`; `showDiscardConfirm` state; cleaned migration-context comments; Lucide imports tidied; `onError` comment added.
+- `client/src/components/leads/LeadDetailsRail.tsx` — draft-mode `Captured By` row now renders `Cannot be changed after creation.` helper text below the selector slot.
+- `client/src/components/leads/shared/leadBadges.ts` — `STATUS_BADGE` const and `LeadStatusBadgeColors` interface made non-exported.
+- `client/src/App.tsx` — stale `CreateLeadModal entry path` comment trimmed.
+- `tests/lead-create-page.test.ts` — added 18 QA-pass pins across required-field gating (3), duplicate-submit prevention (2), AlertDialog dirty-guard (6 — including the explicit "no `window.confirm`" pin), `onError` does-not-reset-state (1), Captured By immutability hint (1), encapsulated badge map (1), and dead-reference sweep (1). The "payload contract matches CreateLeadModal" describe block was renamed to "payload contract" since the modal is gone.
+
+**Validation.** `npm run check` passes. `npx vitest run tests/lead-create-page.test.ts tests/lead-quote-conversion.test.ts tests/lead-visits.test.ts tests/lead-visits-phase3.test.ts` — 4/4 files, **120/120 tests pass**.
+
+#### Pipeline card redesigned as an actionable sales queue + four shared-modal pipeline modes (2026-05-06)
+
+The Financial Dashboard's Pipeline card was a static KPI strip (Leads / Quotes sent / Follow-up Due / Conversion%) plus a one-row "stale leads" banner. None of those tiles routed the user to a list of records they could act on. The card now renders four actionable rows, and each one opens the same shared `<DashboardActionModal>` chrome the Operational Alerts and Needs Attention rows use — Pipeline counts and modal rows come from the same `/api/dashboard/financial` aggregate, no parallel data path.
+
+**What changed:**
+
+1. **Pipeline card body is four actionable rows** — Leads needing follow-up, Quotes not sent, Quotes awaiting response, Stale opportunities. Each carries a label, count, optional total value (only when reliable), and a `View` button. When all four rows are zero the card renders the empty state `No pipeline actions need attention.` (testid `pipeline-empty`). The legacy 4-up KPI grid, the conversion-rate cell, the stale-leads bottom banner, and the `PipelineKpiCell` helper are all removed.
+2. **Four new canonical modes** added to `DashboardActionMode`: `pipeline_leads_followup`, `pipeline_quotes_not_sent`, `pipeline_quotes_awaiting_response`, `pipeline_stale_opportunities`. Each mode reuses the same `<OperationalActionModal>` shell — same width, header padding, body background, footer rhythm, count badge.
+3. **Five new internal sources** thread through canonical list endpoints: `leads_followup` → `/api/leads?bucket=followup`, `quotes_draft` → `/api/quotes/list?status=draft`, `quotes_sent_open` → `/api/quotes/list?status=sent`, `stale_leads` → `/api/leads?bucket=stale&staleDays=14`, `stale_quotes` → `/api/quotes/list?bucket=stale&staleDays=14`. Stale Opportunities composes both stale sources (mirrors the existing `requires_attention = on_hold + pm_due` composition pattern).
+4. **Backend aggregate extended** — `getPipelineSnapshot` (`server/storage/dashboard.ts`) now emits four bucket fields (`leadsFollowUpCount/Value`, `quotesNotSentCount/Value`, `quotesAwaitingResponseCount/Value`, `staleOpportunitiesCount/Value`) alongside the legacy fields. SQL CTEs use the same predicates the route-layer bucket filters use, so card counts and modal rows stay in lockstep by construction. Closed / lost / converted records are excluded by definition (status sets are `('new','contacted','needs_review')` for leads and `('draft','sent')` for quotes).
+5. **Route extensions, no new endpoints** — `/api/leads` accepts `bucket=followup|stale&staleDays=N`; `/api/quotes/list` accepts `bucket=stale&staleDays=N`. The dashboard route whitelist is unchanged. The leads/quotes route layers delegate to two new repository methods (`leadRepository.listPipelineBucket`, `quoteRepository.getStalePipelineQuotes`) that share predicates with the dashboard aggregate.
+6. **Row actions reuse canonical flows** — Lead rows expose `Open Lead` (`/leads/:id`). Quote rows expose `Open Quote` (`/quotes/:id`); draft quotes ALSO expose `Send Quote`, which mounts the canonical `<SendCommunicationModal entityType="quote">` as a sibling sub-modal (same pattern Invoices Not Sent uses for `Send Invoice`). No invented "Follow Up" action — opening the record IS the follow-up entry point.
+7. **Stale opportunities is an aging escalation overlay** — the same record may also appear in a more-specific bucket (e.g. a 20-day-old draft quote is in both `Quotes Not Sent` and `Stale Opportunities`). Documented in code + tests; the alternative (de-dupe across buckets) would hide the urgency signal that makes the stale row worth surfacing.
+
+**Visual + architectural constraints respected:**
+
+- No new modal component — verified by a repo-scan test that fails if a file matching `PipelineLeadsModal` / `PipelineQuotesModal` / `StaleOpportunitiesModal` / `PipelineActionModal` lands in `client/src`.
+- Needs Attention card body, Operational Alerts row → mode mapping, Today's Schedule, Collections, Scheduled Revenue, and the dashboard card grid are all untouched. Pinned by tests in `dashboard-pipeline-actionable.test.ts`.
+- Pipeline row typography uses dashboard tokens (`text-sm` / `text-xs`) — no `text-[10px]` / `text-[11px]` arbitrary classes. Same density as Needs Attention + Operational Alerts.
+- The shared `<DashboardActionModal>` still mounts ONCE per page; mode switches in place via `setActionModalMode`.
+
+**Files changed.**
+
+- `client/src/components/DashboardActionModal.tsx` — extended `DashboardActionMode` with four pipeline modes; added `leads_followup` / `quotes_draft` / `quotes_sent_open` / `stale_leads` / `stale_quotes` to `InternalSource` + `SOURCE_PARAMS` + `SOURCE_SECTION_LABEL`; routed lead/quote sources to `/api/leads` and `/api/quotes/list` via a single `sourceUrl()` switch; added `MODE_CONFIG` entries for all four pipeline modes (Stale Opportunities composes two sources); added per-source useQuery for primary + secondary lead and quote source slots; added `renderLeadRow` / `renderQuoteRow` / `renderLeadSection` / `renderQuoteSection` (dashboard-token typography, status pills, Open Lead / Open Quote actions, Send Quote on draft rows); mounted a second `<SendCommunicationModal>` sibling sub-modal driven by `sendQuoteId`; added per-mode empty-state copy for the four pipeline modes.
+- `client/src/pages/FinancialDashboard.tsx` — replaced `PipelineSnapshotCard` body with four actionable rows + empty state + the new `PipelineActionRow` helper; deleted the legacy `PipelineKpiCell` helper and the stale-leads bottom banner; extended `FinancialSummary.pipelineSnapshot` interface with the four actionable bucket fields; replaced the page's `<PipelineSnapshotCard>` mount props (`onViewAll`/`onViewLeads`/`onViewQuotes`) with a single `onOpenActionModal` that routes through the existing page-level modal handler.
+- `client/src/lib/dashboardNavigation.ts` — added four `pipeline.*` `DashboardAction` entries (`leadsFollowUp`, `quotesNotSent`, `quotesAwaitingResponse`, `staleOpportunities`) so each pipeline mode's `viewAllAction` is a real, navigable destination.
+- `server/storage/dashboard.ts` — extended `FinancialSummary.pipelineSnapshot` type; extended `getPipelineSnapshot` SQL with `leads_followup`, `quotes_not_sent`, `quotes_awaiting`, `stale_opps` CTEs (single round-trip) and projected the four new bucket counts + values. Inline comments document the de-dup decision (stale is an aging overlay) and that predicates mirror the route-layer `bucket=` filters.
+- `server/routes/leads.ts` — `/api/leads` now reads `req.query.bucket` (followup|stale) + optional `staleDays` (default 14) and dispatches to `leadRepository.listPipelineBucket`. Legacy `status` filter behavior is preserved when `bucket` is absent.
+- `server/routes/quotes.ts` — `/api/quotes/list` now reads `req.query.bucket=stale` + optional `staleDays` (default 14) and dispatches to `quoteRepository.getStalePipelineQuotes`. Legacy `status` / `locationId` / `customerCompanyId` filters preserved.
+- `server/storage/leads.ts` — added `leadRepository.listPipelineBucket(companyId, bucket, staleDays)`. Excludes lost / quoted / won by definition (status set `new|contacted|needs_review`). `stale` overlays a `COALESCE(updated_at, created_at) < NOW() - N days` filter.
+- `server/storage/quotes.ts` — added `quoteRepository.getStalePipelineQuotes(companyId, staleDays, limit)`. Excludes approved / declined / converted by definition (status set `draft|sent`). Joins location + customerCompany so the modal renders Customer / Quote # / Amount / date.
+- `tests/dashboard-layout.test.ts` — `Pipeline Snapshot` describe block rewritten to assert the four actionable rows, the retired KPI grid + helper, and the empty-state copy.
+- `tests/dashboard-pipeline-actionable.test.ts` — new file, 31 tests. Covers: card body rewrite (no KPI labels, no PipelineKpiCell, four row keys with correct mode bindings), empty-state copy, typography cleanup, page-level mount uses `onOpenActionModal`, mode union extension, `MODE_CONFIG` shape per mode, source URL params, lead/quote row contents + Open / Send actions, draft-only Send Quote gating, modal empty-state copy per mode, stale_opportunities composing both record types, backend bucket SQL excludes closed/lost/converted, no NEW dashboard route added (whitelist preserved), `/api/leads` + `/api/quotes/list` bucket passthroughs, repository methods exclude terminal statuses, no new pipeline modal component file, Needs Attention + Operational Alerts contracts unchanged.
+
+### Removed
+
+#### Dead code cleanup — CreateLeadModal + unused fmtDateTime export (2026-05-06)
+
+Follow-up to the lead-creation page migration earlier today. After the burn-in pass, `CreateLeadModal.tsx` had zero JSX mounts and zero imports anywhere outside the test that read it for burn-in safety; the file is removed. The `fmtDateTime` formatter that landed alongside `fmtDate` / `fmtValue` in PR1 has zero callers and is removed.
+
+**Removed.**
+
+- `client/src/components/CreateLeadModal.tsx` — replaced by `/leads/new` (`CreateLeadPage`). Verification: the `tests/lead-create-page.test.ts` "modal still on disk" burn-in describe block was the only reference outside CHANGELOG history; it is replaced with a positive assertion that the file no longer exists.
+- `fmtDateTime` export from `client/src/components/leads/shared/leadFormatters.ts` — no consumer. The local `fmtDateTime` inside `client/src/components/leads/LeadVisitsCard.tsx` is a separate function with the same name and is untouched.
+
+**Verification.**
+
+- Repo grep across `client/src` for `CreateLeadModal`: zero `from "..."` imports, zero `<CreateLeadModal[\s/>]` JSX renders, zero `lazy(() => import("..."))` references. Remaining mentions are confined to (a) historical doc-comments in `CreateLeadPage.tsx` / `App.tsx` that describe the migration intent and (b) the existence-check test in `tests/lead-create-page.test.ts`.
+- Stale comment in `client/src/pages/LeadsPage.tsx` that claimed the modal "remains on disk pending the burn-in window" was updated to drop the on-disk note now that the file is gone.
+- `npm run check` — clean.
+- `npx vitest run tests/lead-create-page.test.ts tests/lead-quote-conversion.test.ts tests/lead-visits.test.ts tests/lead-visits-phase3.test.ts` — passes.
+
+**Files changed.**
+
+- `client/src/components/CreateLeadModal.tsx` — deleted.
+- `client/src/components/leads/shared/leadFormatters.ts` — `fmtDateTime` export removed.
+- `client/src/pages/LeadsPage.tsx` — stale "remains on disk" comment updated.
+- `client/src/pages/LeadDetailPage.tsx` — comment that referenced `fmtDateTime` updated.
+- `tests/lead-create-page.test.ts` — `createLeadModalSrc` read removed; the burn-in `describe("CreateLeadModal — payload still matches CreateLeadPage")` block was replaced with a positive `existsSync(...) === false` assertion under `describe("CreateLeadModal — fully retired")`. All payload-contract pins on `CreateLeadPage` and the inline create-new-client behavior pins are kept unchanged.
+
+### Changed
+
+#### CLAUDE.md: documented canonical modal taxonomy (2026-05-06)
+
+Added a `Modal Taxonomy` subsection under `Important Patterns` in `CLAUDE.md` codifying the five-category decision tree the recent modal canonicalization work converged on: `AlertDialog` for destructive confirmations, `ModalShell`+`Modal*` primitives for generic dialogs, `OperationalActionModal` for action-row/list drilldowns, dedicated domain wrappers for complex reusable workflows, and a hard rule that `ModalShell` stays width-neutral so dimensions live at the wrapper/callsite. The pre-existing "All dialogs/modals use shadcn Dialog component" line under `Component Structure` was replaced with a pointer to the new taxonomy because raw `Dialog` is no longer the default for new work.
+
+**Files changed.**
+
+- `CLAUDE.md` — new `### Modal Taxonomy` subsection under `## Important Patterns`; `### Component Structure` bullet updated to reference the taxonomy instead of recommending raw shadcn `Dialog`.
+
+#### Lead creation: modal → dedicated `/leads/new` page reusing Lead Detail components (2026-05-06)
+
+Lead creation moved from the LeadsPage `<CreateLeadModal>` mount to a dedicated `/leads/new` full-page flow that reuses extracted Lead Detail components in draft mode. Same payload contract, same query invalidations, same inline "search → select → create new client" affordance — only the surface changed. The modal file remains on disk for the burn-in window.
+
+**What changed.**
+
+1. **PR1 — extracted shared lead-detail visual pieces.** `STATUS_BADGE`, `fmtDate`/`fmtDateTime`/`fmtValue`, the `Lead` summary card chrome, and the right-rail "Details" card were extracted from `LeadDetailPage.tsx` so the saved detail page and the new create page render from a single visual source. New files:
+   - `client/src/components/leads/shared/leadFormatters.ts` — value/date formatters.
+   - `client/src/components/leads/shared/leadBadges.ts` — `STATUS_BADGE` map + `getLeadStatusColors` helper.
+   - `client/src/components/leads/shared/LeadMetaRow.tsx` — re-export of the canonical `MetaRow` under the leads-domain namespace (no parallel implementation).
+   - `client/src/components/leads/LeadSummaryCard.tsx` — top summary card with `mode: "saved" | "draft"`. Saved mode renders the same DOM the prior inline JSX produced. Draft mode renders an editable title input, a "Draft" pill, an inline priority `Select`, source-type tag, and a `clientLocationSlot` ReactNode the create page fills with `<CreateOrSelectField>` or the inline create-client form.
+   - `client/src/components/leads/LeadDetailsRail.tsx` — right-rail "Details" card with the same two modes. Saved mode produces the same DOM via `LeadMetaRow` (Estimated Value, Captured By, Created By, optional Next Visit Assignee, Created/Updated/Converted block). Draft mode renders an editable Estimated Value input + a `capturedBySlot` ReactNode for the technician selector, with `Created By` and `Created` rendered as `"—"` placeholders since those values don't exist before first save.
+   - `LeadDetailPage.tsx` was refactored to consume `<LeadSummaryCard mode="saved">` and `<LeadDetailsRail mode="saved">` in place of the inline JSX. **No visual change** to `/leads/:id`. `LeadVisitsCard`, `EntityNotesSection`, the Description card, and the Actions/Quote card are intentionally NOT extracted — they all assume a saved `lead.id` and have no role on the create page.
+
+2. **PR2 — `/leads/new` full-page create flow.**
+   - `client/src/pages/CreateLeadPage.tsx` — renders the same two-column shell `LeadDetailPage` uses (`grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4 h-full`), with `<LeadSummaryCard mode="draft">` + a Description card on the left and `<LeadDetailsRail mode="draft">` + an Actions card on the right. Submit posts the SAME payload `<CreateLeadModal>` posts (`{ locationId, originTechnicianId, title, description, priority, estimatedValue, sourceType: "office" }`), invalidates `["leads"]`, and navigates to `/leads/:id` for the freshly-created lead. Cancel/back navigates to `/leads` after a lightweight `window.confirm` dirty-form guard (only triggers when meaningful input exists — untouched defaults like `priority="medium"` and `capturedBy=current user` are not counted).
+   - **Inline create-new-client preserved.** When the user searches and finds no match, the existing `CreateOrSelectField` "Create new client" action opens an inline form that posts to `/api/clients/full-create` and auto-selects the resulting location for the lead. Same endpoint and post-success behavior the modal used. `["/api/clients"]` is invalidated after inline client creation.
+   - **`/leads/new` route added in `client/src/App.tsx`** under `<ProtectedRoute requireAdmin>`, registered BEFORE `/leads/:id` so wouter does not capture the literal string `"new"` as a lead id.
+   - **`LeadsPage` button migrated.** The `data-testid="button-new-lead"` trigger now calls `setLocation("/leads/new")` instead of `setCreateModalOpen(true)`. The modal mount and its state were removed from LeadsPage; the legacy `<CreateLeadModal>` import was dropped from this page only. `client/src/components/CreateLeadModal.tsx` remains on disk pending the burn-in window — deletion is a follow-up once the new page is verified in production.
+
+**Why a dedicated page.** The modal's `max-w-md` envelope cramped the form (six fields stacked, plus an inline create-client sub-flow on top). The new page renders the same layout, typography, and card chrome the saved detail page uses, so creating a lead and viewing one feel like the same surface — and the inline create-client flow has full-width room to breathe.
+
+**Files changed.**
+
+- `client/src/pages/LeadDetailPage.tsx` — refactored to consume `<LeadSummaryCard>` + `<LeadDetailsRail>`. Inline `STATUS_BADGE`, `fmtDate`/`fmtDateTime`/`fmtValue`, summary-card JSX, and Details-rail JSX removed (now sourced from the extracted components). Visual output unchanged.
+- `client/src/pages/CreateLeadPage.tsx` — new file. Full-page lead creation flow.
+- `client/src/components/leads/LeadSummaryCard.tsx` — new file.
+- `client/src/components/leads/LeadDetailsRail.tsx` — new file.
+- `client/src/components/leads/shared/leadFormatters.ts` — new file.
+- `client/src/components/leads/shared/leadBadges.ts` — new file.
+- `client/src/components/leads/shared/LeadMetaRow.tsx` — new file (re-export).
+- `client/src/App.tsx` — `CreateLeadPage` import + `/leads/new` route registered before `/leads/:id`.
+- `client/src/pages/LeadsPage.tsx` — "New Lead" button now navigates to `/leads/new`. Modal mount + its state removed; `CreateLeadModal` import dropped from this page.
+- `tests/lead-create-page.test.ts` — new file. 33 source-pin assertions covering: route registration + ordering; admin gate on `/leads/new`; LeadsPage button navigation + preserved testid; payload contract parity with `CreateLeadModal`; query invalidations; navigate-to-`/leads/:id` on success; Cancel returns to `/leads`; preserved inline create-new-client flow + `/api/clients/full-create` endpoint + `["/api/clients"]` invalidation; reuse of `<LeadSummaryCard>` + `<LeadDetailsRail>` in both `mode="saved"` and `mode="draft"`; absence of saved-only sections (`<LeadVisitsCard>`, `<EntityNotesSection>`, Convert/Mark/Archive actions) on the create page; placeholder semantics for saved-only metadata in draft mode; modal-still-on-disk burn-in safety check.
+- `tests/lead-visits-phase3.test.ts` — the existing pin on `leadVisits.length > 0 && nextUpcomingVisit` was updated. The predicate moved from inline JSX in `LeadDetailPage.tsx` into `LeadDetailsRail.tsx` as `hasVisits && nextVisit` / `hasVisits && !nextVisit`. The test now reads `LeadDetailsRail.tsx` for the rail-side predicate and pins that `LeadDetailPage.tsx` passes `hasVisits={leadVisits.length > 0}` into the rail.
+
+**Out of scope (deferred follow-up).**
+
+- Deletion of `CreateLeadModal.tsx`. The file is unused at runtime now (zero JSX mounts, no imports outside the test that reads it for burn-in safety), but the brief explicitly said to keep it pending verification.
+- Adding "Lead" to the App-header Quick Create dropdown.
+- Server schema changes — none.
+
+**Validation.** `npm run check` passes. `npx vitest run tests/lead-quote-conversion.test.ts tests/lead-visits.test.ts tests/lead-visits-phase3.test.ts tests/lead-create-page.test.ts` — 107/107 pass.
+
+#### Dashboard operational alerts — canonical presentation layer locked (2026-05-06)
+
+Verification + stabilization pass for the existing dashboard operational alerts modal architecture. No redesign, no new behavior — this entry records the architectural contract and the additional regression pins that lock it.
+
+**Architectural contract (now verified end-to-end).**
+
+- `DashboardActionModal` owns orchestration and state ONLY (mode → source resolution, query fan-out, per-row actions, bulk-unschedule + send-invoice sub-modal mounting). It does not import any name from `@/components/ui/dialog` and does not render raw `Dialog` / `DialogContent` / `DialogTitle` / `DialogFooter` JSX for its main chrome.
+- `OperationalActionModal` is the canonical presentation layer for dashboard drill-down modals — width, header padding, body background, footer rhythm, count-badge styling. It composes `ModalShell` underneath rather than forking a second wrapper layer.
+- `ModalShell` remains width-neutral (structural lock = `p-0 gap-0` only). Each pattern wrapper supplies its own width: `OperationalActionModal` via the semantic class `.operational-modal-shell`; the bulk-unschedule confirm explicitly via `className="sm:max-w-[440px]"` on its `ModalShell` mount.
+- The seven `.operational-modal-*` semantic classes in `client/src/index.css` (`-shell`, `-header`, `-title`, `-count-badge`, `-body`, `-footer`, `-close-button`) `@apply` to the EXACT Tailwind utility strings the approved Scheduling Issues baseline shipped — verified by source-of-truth pins that compare each rule's `@apply` argument against the prior inline class string.
+- `.operational-modal-shell` uses `sm:!max-w-2xl` (the `!important` modifier) so the operational width survives the cross-layer cascade against `<DialogContent>`'s baked `max-w-lg` (both live in `@layer utilities`; the operational rule lives in `@layer components` and would otherwise lose).
+
+**Visual parity.** Scheduling Issues, Requires Attention, Past Due, Unscheduled, Ready to Invoice, and Invoices Not Sent all flow through the same `<OperationalActionModal>` shell. Width, header padding, count-badge styling, body background, and footer rhythm are byte-identical to the approved Scheduling Issues baseline because the semantic classes resolve to the verbatim prior utilities.
+
+**New regression-lock pins (Section 11 in `tests/modal-canonical.test.ts`).**
+
+- `DashboardActionModal does NOT import any name from @/components/ui/dialog` — negative pin (with comment-stripping) on the orchestrator's import surface. Catches drift if a future edit reaches for raw Dialog primitives.
+- `exactly ONE file in client/src exports OperationalActionModal` — singleton pin. Catches a parallel wrapper landing under a different path.
+- `OperationalActionModal composes ModalShell` — re-pinned as part of the architectural contract (no second wrapper layer).
+- `DashboardActionModal mounts <OperationalActionModal> exactly once` — single-mount pin (with comment-stripping). Catches drift where a future mode forks its own operational shell instead of routing through the canonical one.
+
+**Files changed.**
+
+- `tests/modal-canonical.test.ts` — extended 62 → 66 pins (4 new in a Section 11 "Dashboard operational alerts — orchestration/presentation lock" describe block). No changes to the prior 62 pins.
+- `CHANGELOG.md` — this entry.
+
+**Verification.**
+
+- `npm run check` — clean (TypeScript compilation, no errors).
+- `npx vitest run tests/modal-canonical.test.ts` — 66/66 pass.
+- `npx vitest run tests/dashboard-layout.test.ts tests/dashboard-operational-alerts-modes.test.ts tests/dashboard-invoices-not-sent.test.ts` — 72/72 pass (35 + 19 + 18).
+- Repo grep: 0 raw `from "@/components/ui/dialog"` imports in `DashboardActionModal.tsx`; 0 raw `<Dialog(Content|Title|Description|Footer|Header)>` JSX in `DashboardActionModal.tsx`; `operational-modal-shell` referenced only in `index.css` (definition), `OperationalActionModal.tsx` (consumer), and doc comments; one and only one file exports `OperationalActionModal`.
+
+**Going forward.** Dashboard operational alerts is now the canonical operational modal pattern for the app. New action-row drill-down surfaces (e.g., future dashboard alerts) should route through `<OperationalActionModal>` rather than re-implementing the chrome. New confirm-style modals should consume `<ModalShell>` + `<ModalHeader>`/`<ModalTitle>`/`<ModalDescription>`/`<ModalFooter>` + `<ModalPrimaryAction>`/`<ModalSecondaryAction>` and supply their own width via `className`.
+
+#### Needs Attention narrowed to actionable billing/admin items + Invoices Not Sent reuses shared dashboard modal (2026-05-06)
+
+The Financial Dashboard's `Needs Attention` card was carrying three signals that were either duplicates of the Pipeline surface (quote follow-ups, stale leads) or informational rather than actionable (payments pending). The card now surfaces ONLY items the owner can clear from the dashboard itself, and the one remaining row — "Invoices not sent" — opens the same shared `<DashboardActionModal>` chrome the Operational Alerts rows use, instead of redirecting to a filtered list page.
+
+**What changed:**
+
+1. **`NeedsAttentionCard` is billing/admin-only.** Removed the "Quotes not followed up (>7d)", "Stale leads (>14d)", and any payments-pending rows. The card keeps the "Invoices not sent" row and, when there are no actionable billing/admin items, renders the empty state `No billing/admin items need attention.` (testid `needs-attention-empty`). Card layout downgrades from a 3-up grid to a single stacked list — same `<DashCard>` chrome, no surrounding card-grid changes.
+2. **New canonical mode `invoices_not_sent`.** Extended `DashboardActionMode` from four modes to five. The new mode reuses the same `<OperationalActionModal>` shell the four operational modes already share — same width, header padding, body background, footer rhythm, count badge — and a new internal source (`unsent_invoices`) that hits the canonical `/api/invoices/list?status=draft&limit=50` feed. No parallel aggregation, no dashboard-specific endpoint.
+3. **Send Invoice action reuses `<SendCommunicationModal>`.** Each row in the new mode renders Invoice #, Customer, Amount, created date, and a status pill, with two actions: `Send Invoice` (mounts the canonical `<SendCommunicationModal entityType="invoice">` as a sibling sub-modal — same pattern the bulk-unschedule confirm uses) and `Open Invoice` (closes the modal and navigates to `/invoices/:id`). On send success the modal refetches the unsent-invoices source so the row that was just sent disappears.
+4. **`/api/invoices/list` accepts `status` passthrough.** The route already passes `jobId`/`customerCompanyId`/`locationId`/`unpaidOnly` through to `getInvoicesFeed`; this adds `status`, which the storage layer already supports. No new endpoint, no changes to the dashboard endpoint whitelist.
+5. **Typography cleanup.** `NeedsAttentionCard` no longer uses the sub-12px arbitrary sizes `text-[10px]` / `text-[11px]` for label/count/supporting text. Label is `text-sm font-medium`, supporting text is `text-xs`, the count is `text-sm font-semibold tabular-nums` — matches the readability the Operational Alerts and Collections cards established.
+
+**Visual + architectural constraints respected:**
+
+- No new invoice modal component introduced — verified by a repo-scan test that fails if a file matching `InvoicesNotSentModal` / `DraftInvoicesModal` / `UnsentInvoicesModal` ever lands in `client/src`.
+- Operational Alerts, Today's Schedule, and the dashboard card grid are untouched — the change is scoped to the Needs Attention card body, the modal mode union, the modal source switch, and the route status passthrough.
+- The shared modal still mounts ONCE per page (`<DashboardActionModal mode={actionModalMode}>`); mode switches in place via `setActionModalMode`. The Invoices not sent View handler routes through `openActionModal("invoices_not_sent")` instead of the prior `setLocation("/invoices?filter=draft")`.
+
+**Files changed.**
+
+- `client/src/components/DashboardActionModal.tsx` — added `"invoices_not_sent"` to `DashboardActionMode`; added `"unsent_invoices"` `InternalSource` + URL/section-label entries; added `MODE_CONFIG.invoices_not_sent`; added a dedicated `useQuery` for the unsent-invoices source (gated by `isUnsentInvoices(...)`, mirrors the PM-due query path); added `renderInvoiceRow` + `renderInvoiceSection` and wired them into the body's source switch alongside `renderPMSection`; mounted `<SendCommunicationModal>` as a sibling sub-modal driven by a `sendInvoiceId` state; added the empty-state copy `No invoices waiting to be sent.` for this mode.
+- `client/src/pages/FinancialDashboard.tsx` — `NeedsAttentionCard` items array narrowed to `[{ key: "invoices-not-sent", ... }]`; props reduced to `data` / `isLoading` / `onViewInvoicesNotSent`; empty-state branch added (`needs-attention-empty`); typography moved off `text-[10px]` / `text-[11px]`. Page-level mount: `onViewInvoicesNotSent={() => openActionModal("invoices_not_sent")}` replaces the prior `setLocation("/invoices?filter=draft")`.
+- `server/routes/invoices.ts` — `/api/invoices/list` route now reads `req.query.status` and passes it through to `getInvoicesFeed({ ..., status: statusParam })`. Backwards-compatible: omitting the param preserves the prior behavior.
+- `tests/dashboard-layout.test.ts` — the prior "Needs Attention exclusions enforced" suite was rewritten as "Needs Attention — narrowed to actionable billing/admin only" with positive pins on the empty state, the View handler, and the typography cleanup, plus negative pins on the dropped buckets, the dropped view-handler props, and the prior `setLocation` redirect.
+- `tests/dashboard-operational-alerts-modes.test.ts` — `DashboardActionMode` union pin extended to require `"invoices_not_sent"`; new `MODE_CONFIG.invoices_not_sent` source + title pin; new `unsent_invoices: "status=draft&limit=50"` `SOURCE_PARAMS` pin.
+- `tests/dashboard-invoices-not-sent.test.ts` — new file. Covers: NeedsAttentionCard narrowing (removed rows, empty-state copy, typography), View → `openActionModal("invoices_not_sent")` wiring, single-instance JSX mount on the page, `MODE_CONFIG.invoices_not_sent` shape, route-layer status passthrough, row-level metadata + actions (`Send Invoice`, `Open Invoice`), Open Invoice navigation, Send Invoice mounting `<SendCommunicationModal>` (no fork), modal empty-state copy, and a repo-wide scan that fails if a parallel `InvoicesNotSentModal` / `DraftInvoicesModal` / `UnsentInvoicesModal` component file is introduced.
+
+### Removed
+
+#### Dead modal cleanup — ApplyTemplateModal + StaffTakeCardDialog (2026-05-06)
+
+Two confirmed-dead modal component files removed after a reachability audit found zero JSX mounts and zero imports for either. No behavior change — both were already replaced by their canonical successors, and tests that assert the old components are not mounted continue to pass.
+
+**Removed:**
+
+- `client/src/components/ApplyTemplateModal.tsx` — job-side wrapper around `ApplyTemplateModalBase`. `QuoteDetailPage` mounts the active sibling `ApplyQuoteTemplateModal` (the misleadingly-named `showApplyTemplateModal` state in `QuoteDetailPage.tsx:114` drives the quote variant, not this file). Zero `from "...ApplyTemplateModal"` imports across the repo. The shared base `ApplyTemplateModalBase.tsx` and the active quote wrapper `ApplyQuoteTemplateModal.tsx` are untouched.
+- `client/src/components/invoice/StaffTakeCardDialog.tsx` — legacy staff-side Stripe card-take surface from the 2026-04-29 Stripe pass. Replaced 2026-05-06 PR3 by `CollectPaymentDialog` (single CTA, embeds `EmbeddedStripeCardForm` for the credit-card method). `InvoiceDetailPage.tsx:119,2474` already documented the mount as removed; this entry removes the orphaned file. Zero `from "...StaffTakeCardDialog"` imports across the repo.
+
+**Verification.**
+
+- Re-grep across the full repo: zero `from "..."` imports of either component, zero JSX renders (`<ApplyTemplateModal[\s/>]`, `<StaffTakeCardDialog[\s/>]`), zero dynamic / `lazy(() => import(...))` references. Remaining matches are confined to (a) historical `CHANGELOG.md` entries (textual record), (b) `tests/collect-payment.test.ts:522` and `tests/collect-payment-card.test.ts:660` which assert the absence of `<StaffTakeCardDialog` in `InvoiceDetailPage` source — these continue to pass after deletion because the page already does not mount the component.
+- `npm run check` — clean.
+- `npx vitest run tests/collect-payment.test.ts tests/collect-payment-card.test.ts` — 42/42 pass, including both `<StaffTakeCardDialog` absence assertions.
+
+**No behavior change.** Both files were dead at runtime; deleting the source removes the orphan without affecting any rendered surface, route, or workflow.
+
+### Fixed
+
+#### OperationalActionModal width regression — restore wide operational shell (2026-05-06)
+
+After the token-mapping pass earlier today, the Scheduling Issues modal regressed to confirm-width (~440px). Job titles truncated, location lines wrapped, row actions crowded the text. The architectural shape was right; the CSS cascade was wrong.
+
+**Root cause: CSS layer precedence beats `cn()` argument order.**
+
+- `<DialogContent>` bakes in `max-w-lg` (32rem) — a Tailwind utility, lives in `@layer utilities`.
+- `<ModalShell>` was adding `sm:max-w-[440px]` (27.5rem) — also a Tailwind utility, also `@layer utilities`.
+- `.operational-modal-shell` is a custom class with `@apply sm:max-w-2xl ...` defined in `@layer components`.
+
+Tailwind compiles layers in the order `base → components → utilities`. The utilities layer is emitted **after** the components layer, so utility classes win cascade resolution at equal specificity regardless of HTML class attribute order. `cn()` (which uses `tailwind-merge`) couldn't help: it can reconcile `sm:max-w-[440px]` against `sm:max-w-2xl` when both are recognised Tailwind utilities, but `operational-modal-shell` is a custom class it has no knowledge of. So both classes ended up in the DOM and the utilities-layer rule won.
+
+Result: at `sm+` viewports the operational modal rendered at `sm:max-w-[440px]` (or `max-w-lg` if the ModalShell default were removed naively) instead of `sm:max-w-2xl`.
+
+**Three-part fix.**
+
+1. **`<ModalShell>` no longer imposes a default width.** Per the architectural directive, "ModalShell must not impose one fixed modal width across all modal types." The structural lock is now just `p-0 gap-0` (so subcomponents own padding). Pattern wrappers supply their own width via `className`.
+2. **Confirm-style callers pass their own width.** `DashboardActionModal`'s bulk-unschedule confirm now passes `className="sm:max-w-[440px]"` on its `<ModalShell>`. `tailwind-merge` resolves this cleanly against `<DialogContent>`'s baked `max-w-lg` because both are recognised Tailwind utilities.
+3. **`.operational-modal-shell` uses `sm:!max-w-2xl`** (`!important` modifier). DialogContent's `max-w-lg` still lives in `@layer utilities` and would otherwise beat the components-layer rule. The `!` asserts that the operational width is non-negotiable when the token is applied. Visual result is the same `sm:max-w-2xl` (42rem) the prior inline class produced — just guaranteed to win.
+
+**Why `!important` and not "move the class to `@layer utilities`."** Both options work in principle. `!important` is the more localised fix — it expresses intent ("this token's width is the contract") and doesn't rely on subtle source-order rules within the utilities layer that a future Tailwind version or build-tool change could perturb. The mapping test now asserts `sm:!max-w-2xl max-h-[80vh] flex flex-col` so the `!` notation is locked.
+
+**Files changed.**
+
+- `client/src/components/ui/modal.tsx` — removed `sm:max-w-[440px]` from the `cn()` lock string. Updated the file-header doc-comment to call out the layer-precedence root cause and the architectural rule (pattern wrappers own width).
+- `client/src/components/DashboardActionModal.tsx` — bulk-unschedule confirm `<ModalShell>` now passes `className="sm:max-w-[440px]"` explicitly. Inline comment links the change to the architectural shift.
+- `client/src/index.css` — `.operational-modal-shell` `@apply` rule changed from `sm:max-w-2xl` to `sm:!max-w-2xl`. Inline comment explains why the `!` is intentional.
+- `tests/modal-canonical.test.ts` — extended 56 → 62 pins (6 new):
+  - `ModalShell does NOT impose a default width` — negative pins on every modal-width Tailwind utility (`sm:max-w-[440px]`, `sm:max-w-(sm|md|lg|xl|2xl|3xl|4xl)`, arbitrary `max-w-[...]`) plus a positive pin on the new structural lock string `"p-0 gap-0",`.
+  - Updated mapping pin: `.operational-modal-shell` now resolves to `sm:!max-w-2xl max-h-[80vh] flex flex-col`.
+  - New "Width regression" describe block (5 pins): `sm:!max-w-2xl` modifier present, ModalShell width-clean, bulk-confirm passes its own width, OperationalActionModal does NOT bolt a width override onto the semantic class, and the doc-comment in modal.tsx explains the layer-precedence root cause.
+
+**Width behavior — before/after.**
+
+| Surface | Before | After |
+|---|---|---|
+| Operational modal at `sm+` | `27.5rem` (ModalShell's `sm:max-w-[440px]` won the cascade) | `42rem` (`.operational-modal-shell { sm:!max-w-2xl }` wins via `!important`) |
+| Bulk-unschedule confirm at `sm+` | `27.5rem` (ModalShell default) | `27.5rem` (now passed explicitly via `className`) |
+| Hypothetical new ModalShell consumer with no className | n/a | `32rem` (`<DialogContent>`'s baked `max-w-lg` is the safe fallback) |
+
+**Verification.** `npm run check` clean. 62/62 modal-canonical pins pass (6 new). Visual: Scheduling Issues modal restored to wide operational layout — job titles render fully, location lines no longer wrap, row actions sit comfortably alongside the text. Bulk-unschedule confirm continues to render at its prior 440px confirm width. No behavior change to any modal flow.
+
+### Changed
+
+#### OperationalActionModal — map approved chrome to semantic tokens (2026-05-06)
+
+Follow-up to the OperationalActionModal extraction earlier today. The component intentionally shipped with hardcoded class strings ("preserve the approved Scheduling Issues visual baseline first, generalize to tokens after"). This pass closes that loop: every hardcoded class string is now a semantic component class defined under `@layer components` in `client/src/index.css`. Compiled CSS is byte-for-byte identical to the prior inline classes — this is intentionally NOT a redesign.
+
+**Why semantic classes (not Tailwind named greys).** This project's `tailwind.config.ts:222-232` overrides the `gray` palette (`gray-200 = #E3E5E8`, `gray-600 = #616571` — different from Tailwind's defaults `#e5e7eb` / `#4b5563`). The Scheduling Issues modal was already pinned to specific hex values via arbitrary `[#hex]` syntax to bypass that custom palette. Switching to the project's named `gray-*` classes would change the rendered colors. Each new semantic class therefore preserves the literal `[#hex]` inside its `@apply` directive — fidelity over abbreviation.
+
+**New tokens added** (all in `client/src/index.css` `@layer components`):
+
+| Class | Resolves to |
+|---|---|
+| `.operational-modal-shell` | `sm:max-w-2xl max-h-[80vh] flex flex-col` |
+| `.operational-modal-header` | `px-5 pt-5 pb-3 border-b border-[#e5e7eb] shrink-0` |
+| `.operational-modal-title` | `text-[#111827] flex items-center gap-2` |
+| `.operational-modal-count-badge` | `inline-flex items-center justify-center h-5 min-w-5 px-1.5 rounded-full bg-[#f8fafc] text-xs font-bold text-[#4b5563] tabular-nums` |
+| `.operational-modal-body` | `flex-1 overflow-y-auto min-h-0 bg-[#f1f5f9]` |
+| `.operational-modal-footer` | `px-5 py-3 border-t border-[#e5e7eb] shrink-0 flex items-center justify-end` |
+| `.operational-modal-close-button` | `text-xs` |
+
+Hex provenance is documented in the CSS file directly above the rules: `#e5e7eb` (default Tailwind gray-200), `#f8fafc` (slate-50), `#4b5563` (default gray-600), `#f1f5f9` (slate-100), `#111827` (default gray-900). All five are NOT the same as this project's identically-numbered greys.
+
+**Hardcoded classes removed.** `client/src/components/OperationalActionModal.tsx` now contains zero raw chrome class strings. Inline `text-[#111827]`, `bg-[#f8fafc]`, `bg-[#f1f5f9]`, `border-[#e5e7eb]`, `text-xs font-bold`, `px-5 pt-5 pb-3`, `px-5 py-3` etc. are all gone — replaced one-for-one with the seven semantic class names. The `cn` import dropped (no longer needed since each chrome element takes a single class).
+
+**Drift prevention.** `tests/modal-canonical.test.ts` extended 42 → 56 pins (14 new):
+
+1. **Semantic-class wiring (7 pins)** — assert each chrome element in `OperationalActionModal.tsx` uses the canonical `operational-modal-*` class by name.
+2. **CSS mapping (8 pins)** — read `client/src/index.css`, parse each `.operational-modal-*` rule, assert the `@apply` argument string matches the approved utility list EXACTLY. Catches a future edit silently swapping `bg-[#f1f5f9]` for `bg-slate-100` (same color in default Tailwind, but different in this project's customised palette).
+3. **No-raw-values drift scan (5 pins)** — fail the build if `OperationalActionModal.tsx` reintroduces any of:
+   - raw `[#hex]` colors inside className strings,
+   - raw `text-(xs|sm|base|lg|xl|2xl)` classes,
+   - raw `font-(bold|semibold|medium)` classes,
+   - arbitrary `(p|m|border)-[…]` overrides,
+   - bypass of the canonical `operational-modal-*` chrome classes.
+
+The doc-comment at the top of `OperationalActionModal.tsx` was updated to reference the seven tokens by name and to call out the drift rule (with a pointer to `tests/modal-canonical.test.ts`).
+
+**Files changed.**
+
+- `client/src/index.css` — added 7 semantic component classes under the existing `@layer components` block, with a header comment documenting hex provenance and the "byte-identical to inline" contract. (~75 LOC of CSS + comments.)
+- `client/src/components/OperationalActionModal.tsx` — replaced inline class strings with semantic tokens; expanded the file-header comment to reference the new token names and the drift rule; dropped the now-unused `cn` import.
+- `tests/modal-canonical.test.ts` — replaced verbatim-string assertions with semantic-class-wiring assertions (7 pins); added new "semantic class mapping" describe block (8 pins) reading index.css; added new "drift scan" describe block (5 pins) ensuring the modal cannot reintroduce raw values without failing CI.
+
+**Verification.**
+
+- `npm run check` clean.
+- 56/56 modal-canonical pins pass (14 new).
+- 300/300 UI-touching tests pass (`modal-canonical` 56, `timesheets-day-view` 135, `timesheets-week-timeline` 97, `timesheets-week-stack` 12).
+- Visual baseline confirmed: every `@apply` directive matches the prior inline class string byte-for-byte (locked by the 8 mapping pins). The Scheduling Issues modal renders identically — same width, same border colors, same body bg, same count-badge styling, same footer rhythm, same Close button.
+
+#### OperationalActionModal — extract Scheduling Issues chrome into reusable surface (2026-05-06)
+
+The Scheduling Issues drill-down modal in `DashboardActionModal.tsx` already had the right visual rhythm — wider container, light-slate scrollable body, compact Close footer, count-badge title. Generalized that exact pattern into a reusable `OperationalActionModal` so the same chrome powers Action Required / Past Due / Unscheduled / Ready to Invoice without each mode re-deriving its own padding, border, and footer rhythm.
+
+**This is a refactor, not a redesign.** Every class string is preserved verbatim from the prior `DashboardActionModal:879-963` block. No new visual decisions were made.
+
+**Visual contract preserved verbatim.**
+
+| Element | Class string (unchanged) |
+|---|---|
+| Outer | `sm:max-w-2xl max-h-[80vh] flex flex-col` (passed through `<ModalShell>`'s className override; `p-0 gap-0` already locked at the primitive) |
+| Header | `<DialogHeader className="px-5 pt-5 pb-3 border-b border-[#e5e7eb] shrink-0">` |
+| Title | `<DialogTitle className="text-[#111827] flex items-center gap-2">` (color override + structural layout for the count-badge row; canonical Phase E `text-modal-title` size inherits) |
+| Count badge | `inline-flex items-center justify-center h-5 min-w-5 px-1.5 rounded-full bg-[#f8fafc] text-xs font-bold text-[#4b5563] tabular-nums` |
+| Body | `flex-1 overflow-y-auto min-h-0 bg-[#f1f5f9]` (white row-cards on slate body — the existing emphasis pattern) |
+| Footer | `px-5 py-3 border-t border-[#e5e7eb] shrink-0 flex items-center justify-end` + `<Button variant="outline" size="sm" className="text-xs">Close</Button>` |
+
+**API.**
+
+```tsx
+<OperationalActionModal
+  open={open}
+  onOpenChange={handleOpenChange}
+  title={config.title}
+  count={isLoading ? null : totalJobCount}     // null hides the badge
+  headerExtras={showOverdueBulkControls ? bulkControlsRow : null}
+>
+  {bodyContent}
+</OperationalActionModal>
+```
+
+The wrapper composes `<ModalShell>` underneath (so it inherits `p-0 gap-0` + the canonical Dialog primitives) but overrides the confirm-style 440px width with `sm:max-w-2xl max-h-[80vh] flex flex-col`. The header / body-container / footer divs are inlined inside the wrapper because their padding + border-color are part of the visual contract — the canonical `<ModalHeader>` / `<ModalBody>` / `<ModalFooter>` primitives are tuned for confirm modals (different padding rhythm) and would change the look.
+
+**Wiring.** All three configured modes in `DashboardActionModal` (`action_required`, `scheduling_issues`, `ready_to_invoice`) already shared this chrome; they all flow through the new wrapper without per-mode changes. Behavior preserved exactly: same data sources, same `handleOpenChange` reset path (clears `expandedJobId` / `scheduleValue` / `selectedIds` / `showBulkConfirm`), same bulk-confirm sub-modal mounted as a sibling. The count badge renders only when count is a number (caller passes `null` while loading — same behavior as the original `{!isLoading && <span>…</span>}` gate).
+
+**Files changed.**
+
+- `client/src/components/OperationalActionModal.tsx` — NEW. ~140 LOC including a 50-line file-header comment that documents the no-redesign contract and the verbatim-class-strings rule.
+- `client/src/components/DashboardActionModal.tsx` — replaced the inline `<Dialog>` + `<DialogContent>` + chrome (lines 879-963 prior to refactor) with `<OperationalActionModal>`. Outer return wraps in a fragment so the bulk-confirm `<ModalShell>` mounts as a sibling. Removed unused Dialog primitive imports (`Dialog`, `DialogContent`, `DialogHeader`, `DialogTitle`, `DialogDescription`, `DialogFooter`).
+- `tests/modal-canonical.test.ts` — extended 26 → 42 pins. New describe blocks: "OperationalActionModal — preserves Scheduling Issues visual contract" (11 pins on the verbatim class strings, count-badge gating, doc-comment presence) and "DashboardActionModal — wired through OperationalActionModal" (5 pins on the import + wrapper mount + count/headerExtras forwarding + Close behavior + absence of the prior raw `<DialogContent>` + `<DialogHeader>` chrome). Existing bulk-confirm pins updated to anchor on `</ModalShell>` since the outer `</Dialog>` boundary moved.
+
+**Out of scope (intentional).** The other LOW/MEDIUM/HIGH-risk modal sites identified in the prior audit are NOT touched. Only the existing Scheduling Issues / Action Required / Ready to Invoice trio (which already shared chrome) flows through the new wrapper. Future operational-action surfaces — should they emerge — can mount the same wrapper with a one-line config addition.
+
+**Verification.** `npm run check` clean. 42/42 modal-canonical pins pass (16 new). Bulk-confirm sub-modal pins still pass after regex anchor update. Visual result: identical to the prior Scheduling Issues modal — the class strings are byte-for-byte the same, just lifted to a different file.
+
+#### Operational Alerts — modes normalized 1:1 with card rows (2026-05-06)
+
+Operational Alerts now route all rows through the shared Operational Action Modal with mode-specific filtered content. Each row of the four-row alerts card opens the SAME shared modal but scoped to that single bucket — no combined "Scheduling Issues" page that mixed past-due + unscheduled into one drilldown, no aliased mode names. **Card layout, counts, alert routing, modal shell, and write-action wiring are all unchanged**; this is purely a mode-config + row-prop normalization.
+
+**Audit findings (verified before any edits).**
+
+  * `OperationalAlertsCard` and `DashboardActionModal` already share a single canonical modal — no per-row modal components were ever created. The Operational Action Modal shell is reused as-is.
+  * Three of the four rows had drift, however:
+    * `past_due` row passed `mode="scheduling_issues"`
+    * `unscheduled` row passed `mode="scheduling_issues"` (same mode as past_due — both opened the same combined drilldown)
+    * `requires_attention` row passed `mode="action_required"`
+    * Only `ready_to_invoice` was already 1:1.
+
+**Fix — canonical 4-mode union.**
+
+  ```ts
+  export type DashboardActionMode =
+    | "requires_attention"
+    | "past_due"
+    | "unscheduled"
+    | "ready_to_invoice";
+  ```
+
+  `MODE_CONFIG` (in `client/src/components/DashboardActionModal.tsx`) updated to one mode per Operational Alerts row:
+
+  | Mode | Sources | Title | Bulk-controls / per-row action |
+  |---|---|---|---|
+  | `requires_attention` | `["on_hold", "pm_due"]` | `Requires Attention` | Open job (or Generate for PM-due) |
+  | `past_due` | `["overdue"]` | `Past Due Jobs` | Bulk-unschedule + per-row Reschedule |
+  | `unscheduled` | `["unscheduled"]` | `Unscheduled Jobs` | Per-row inline Schedule |
+  | `ready_to_invoice` | `["ready_to_invoice"]` | `Ready to Invoice` | Create Invoice |
+
+  The combined `scheduling_issues` mode is gone. The modal renderer is generic over `config.sources` — splitting `["overdue", "unscheduled"]` into two single-source modes was a pure config-side change; the source-rendering loop and bulk-overdue header controls (gated on `primarySource === "overdue"`) work as-is.
+
+**Updated card row → mode mapping (`OperationalAlertsCard.tsx`).**
+
+  ```ts
+  ready_to_invoice:   { ..., mode: "ready_to_invoice" }    // unchanged
+  past_due:           { ..., mode: "past_due" }            // was "scheduling_issues"
+  unscheduled:        { ..., mode: "unscheduled" }         // was "scheduling_issues"
+  requires_attention: { ..., mode: "requires_attention" }  // was "action_required"
+  ```
+
+  The single-line dispatch — `onClick={() => onOpenActionModal(row.mode)}` — is unchanged. Counts, layout, urgency styling, icon colors, and the `order` prop are all unchanged.
+
+**Counts → modal source parity (no count drift).** Card row counts come from `/api/dashboard/workflow.jobs.{onHoldCount, overdueCount, unscheduledCount, requiresInvoicingCount}` (+ `pm.awaitingGenerationCount` for `requires_attention`). Modal sources hit `/api/jobs?status=open&overdue=true|unscheduledOnly=true|openSubStatus=on_hold|readyToInvoiceOnly=true` — the SAME predicates the workflow counter uses. Tests pin both sides.
+
+**Bulk-overdue header controls retained.** The "Select all N past-due" / bulk-unschedule controls in the modal header surface only when `primarySource === "overdue"` (i.e. `past_due` mode). In the new `unscheduled` mode they correctly disappear because `primarySource === "unscheduled"`. Verified by the existing `showOverdueBulkControls` predicate.
+
+**Files changed.**
+
+  * `client/src/components/DashboardActionModal.tsx` — mode union widened to 4 names; `MODE_CONFIG` rewired (each mode has the per-row sources only); doc comments + prose references to `action_required` / `scheduling_issues` updated to the new names.
+  * `client/src/components/dashboard/OperationalAlertsCard.tsx` — three row mode literals updated; doc-block at the top updated to reflect the 1:1 mapping.
+  * `client/src/pages/FinancialDashboard.tsx` — `useState<DashboardActionMode>("action_required")` → `useState<DashboardActionMode>("requires_attention")`; one stale comment refresh.
+  * `tests/dashboard-operational-alerts-modes.test.ts` — new file, 18 source-pin tests covering: the 4-mode union, retired mode names absent, per-mode `sources` filtering (positive + negative), title strings, row → mode mapping, `onOpenActionModal(row.mode)` wiring, count-source parity, bulk-overdue gating, FinancialDashboard initial mode.
+
+**Files NOT changed.**
+
+  * Operational Alerts card layout / styling / urgency rules — untouched.
+  * Card-level alert counts — untouched (same workflow data sources).
+  * Modal shell (`OperationalActionModal` primitive) — untouched.
+  * Backend `/api/dashboard/workflow`, `/api/dashboard/financial`, `/api/jobs?...` predicates — untouched.
+  * `DashboardActionModal` write-action mutations (schedule, reschedule, bulk-unschedule, create-invoice, PM-generate) — untouched.
+
+**Verification.**
+
+  * `npx tsc --noEmit -p tsconfig.json` — 0 errors on touched files (pre-existing unrelated errors elsewhere are someone else's in-flight work).
+  * `npx vitest run tests/dashboard-operational-alerts-modes.test.ts tests/dashboard-layout.test.ts` — 49 / 49 pass (18 new + 31 prior).
+
+#### Business Dashboard — Collections summary strip simplified to 2 columns (2026-05-06)
+
+Collections card simplified: removed open invoice count; focused on outstanding and overdue balances. The `Open invoices` count cell — the third column of the summary strip — was redundant alongside the Outstanding total (a dollar reading of the same set) and the Overdue total (the actionable subset). Dropped to a clean 2-column grid; both metrics now read at equal width.
+
+  * **Summary strip layout.** `grid grid-cols-3 gap-2 px-3 py-2` → `grid grid-cols-2 gap-2 px-3 py-2`. Same testid (`collections-summary-strip`), same padding, same column gap. No layout shift to anything else on the card.
+  * **Removed:** the `data-testid="collections-summary-open"` cell, the local `outstandingCount` derivation in `CollectionsOverviewCard`, and the "Open" label.
+  * **Calculations untouched.** `Outstanding` still reads `data.ar.outstandingTotal`; `Overdue` still reads `data.ar.pastDueTotal`. Backend storage layer (`getFinancialSummary` in `server/storage/dashboard.ts`) is unchanged — `outstandingCount` survives on the `FinancialSummary` interface for any other surfaces still consuming it; this card just no longer renders it.
+  * **Customer / invoice lists untouched.** "Top customers" still sources `data.topCustomerBalances` (all open balances, overdue or not). "Overdue invoices" keeps the strict `daysLate > 0` filter from the prior commit, with the "No overdue invoices." empty state unchanged.
+
+**Tests.** `tests/dashboard-layout.test.ts` gained a new 3-test block:
+
+  * pins both `collections-summary-outstanding` and `collections-summary-overdue` testids,
+  * pins the absence of `collections-summary-open` testid + the local `outstandingCount` reference + any `Open` / `Open invoices` JSX text inside the card body — defensively, so the cell can't quietly come back,
+  * pins the new `grid grid-cols-2 …` wrapper class on the summary strip and asserts the prior `grid grid-cols-3 …` is gone.
+
+**Files changed.**
+
+  * `client/src/pages/FinancialDashboard.tsx` — `CollectionsOverviewCard` summary-strip cell removal + grid-cols swap. ~12 lines net deletion.
+  * `tests/dashboard-layout.test.ts` — new "summary strip is 2 columns" describe block (3 tests).
+
+**Verification.**
+
+  * `npx tsc --noEmit -p tsconfig.json` — 0 errors on touched file.
+  * `npx vitest run tests/dashboard-layout.test.ts` — 31 / 31 pass (was 28; added 3).
+
+### Fixed
+
+#### Business Dashboard — Collections "Overdue invoices" semantics (2026-05-06)
+
+The "Overdue invoices" section on the Collections card was sourced from `data.topOutstandingInvoices` (server-side: top-N by outstanding balance, regardless of due date). It rendered an `Overdue` red label only when `daysLate > 0`, but the rows themselves still appeared even when the invoice was current or not yet due — misleading under the "Overdue invoices" heading.
+
+Now the section is strictly overdue-only: client-side `.filter((inv) => (inv.daysLate ?? 0) > 0)` runs before the `.slice(0, 3)`, so any unpaid invoice whose due date has not yet passed is dropped from the list. When the filter empties the list, the empty state renders **"No overdue invoices."** (was the generic "None.") — no backfill from the broader outstanding-balance pool.
+
+**What's untouched.**
+
+  * **Top customers owing.** Still sourced from `data.topCustomerBalances` (all open unpaid invoices, overdue or not). A customer with a fully-current open balance must still appear here, and the source list is not filtered.
+  * **Summary strip.** `Outstanding`, `Overdue`, `Open invoices` values unchanged. They continue to come from `data.ar.outstandingTotal`, `pastDueTotal`, `outstandingCount` — the Overdue cell always reads `pastDueTotal` ($0 when nothing is past due, in which case the new empty state correctly fires below).
+  * **Backend.** No changes to `server/storage/dashboard.ts`. `getFinancialSummary()` still emits `topOutstandingInvoices` ordered by balance; the strict overdue filter is purely a UI concern (consumer-side).
+  * **Operational Alerts, Today's Schedule, Pipeline, Scheduled Revenue, Needs Attention** — all unchanged.
+
+**Files changed.**
+
+  * `client/src/pages/FinancialDashboard.tsx` — `CollectionsOverviewCard` `overdueInvoices` derivation now applies a `daysLate > 0` filter before slicing; empty-state message tightened to "No overdue invoices."
+  * `tests/dashboard-layout.test.ts` — added a 4-test `Collections — Overdue invoices section is strictly overdue-only` block:
+    * pins the `.filter((inv) => (inv.daysLate ?? 0) > 0)` derivation,
+    * pins the `EmptyState message="No overdue invoices."` copy,
+    * pins the absence of "No outstanding invoices." inside the `collections-invoices-list` block (no fallback backfill),
+    * pins the heading reads `Overdue invoices` (not `Top overdue`),
+    * pins the `Top customers` source remains the untouched `topCustomerBalances` slice.
+
+**Verification.**
+
+  * `npx tsc --noEmit -p tsconfig.json` — 0 errors on touched file.
+  * `npx vitest run tests/dashboard-layout.test.ts` — 28 / 28 pass (24 prior + 4 new).
+
+### Changed
+
+#### Business Dashboard — copy polish (2026-05-06)
+
+Dashboard copy polish: clarified pipeline and collections labels; standardized empty state text. Text-only changes — no layout, logic, data binding, or component edits.
+
+  * **Pipeline card.** `Awaiting f-up` → `Follow-up Due` (full words, no abbreviation). `Stale leads (>7d)` → `Leads needing action` (action-oriented, no internal threshold leakage).
+  * **Collections card.** `Top overdue` → `Overdue invoices`. Matches the existing `Overdue invoices` label used by `ReportsAR`, `TopKpiRow`, and `RevenueCenterCard` so the dashboard surfaces share copy.
+  * **Scheduled Revenue empty state.** Was rendered as italicized + slate-400 muted body (`text-[11px] text-slate-400 italic`). Now standard body styling: `text-xs text-slate-700`. Text content unchanged: "No upcoming jobs with reliable value."
+  * **Code-comment freshen.** The `Lower section — two side-by-side columns` comment in `CollectionsOverviewCard` was updated from `Top overdue` to `Overdue invoices` to match the rendered label.
+
+**No tests required updating.** The existing `tests/dashboard-layout.test.ts` source-pin assertions all key on `data-testid` / `testId` values, not on display strings — none of the renamed labels had test pins. All 24 layout tests still pass.
+
+**Files changed.**
+
+  * `client/src/pages/FinancialDashboard.tsx` — four label edits inside `PipelineSnapshotCard`, `CollectionsOverviewCard`, `ScheduledRevenueCard` empty-state styling, and one comment-string refresh.
+
+**Verification.**
+
+  * `npx tsc --noEmit -p tsconfig.json` — 0 errors on touched file.
+  * `npx vitest run tests/dashboard-layout.test.ts` — 24 / 24 pass.
+
+#### Business Dashboard — second-row density polish (2026-05-06)
+
+Layout-only follow-up to the dashboard restructure. **Zero data, backend, route, Operational Alerts, or Today's Schedule body changes.** The four cards keep their existing fields, queries, and routing; this pass only tightens visual rhythm so the second row matches the approved-mockup density and the Needs Attention strip is fully visible above the fold on a standard desktop height.
+
+**Pipeline Snapshot — vertical row list → 4-column KPI grid.** The five-row stack (Leads / Quotes sent / Awaiting follow-up / Conversion / Stale leads) was replaced with:
+
+  * A top **4-column KPI grid** (`grid grid-cols-4 divide-x`) — each cell shows label (`text-[10px] uppercase`), count (`text-base font-semibold tabular-nums`), and optional dollar value (`text-[10px] tabular-nums`). The cells are individually clickable: Leads/Conversion → `/leads`, Quotes sent/Awaiting follow-up → `/quotes`. Awaiting follow-up retains its amber tint when count > 0; Conversion still renders `—` when the denominator is zero (no fake `0%`).
+  * A bottom **Stale leads action row** — full-width clickable strip with `count · $value · View →`. Amber-tinted when count > 0.
+  * Footer "View all" → `/leads` unchanged. Test ids preserved: `pipeline-snapshot`, `pipeline-kpi-grid` (new), `pipeline-leads`, `pipeline-quotes-sent`, `pipeline-awaiting-followup`, `pipeline-conversion`, `pipeline-stale-leads`. Per-cell ids now arrive via the `testId` prop on `PipelineKpiCell` instead of inline `data-testid` on row buttons; test pins updated to match.
+
+**Collections Overview — vertical lists → side-by-side columns.** Top summary strip (Outstanding / Overdue / Open) unchanged. The two lists below (Top customers, Top overdue) were stacked vertically; they now render side-by-side via `grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x`. Row height tightened from `py-1.5` → `py-1` and section labels from `text-[11px]` → `text-[10px]` to keep the card compact at 1/3 width. Empty state shortened from "No outstanding balances." → "None." Test ids preserved (`collections-summary-strip`, `collections-summary-outstanding`, `collections-summary-overdue`, `collections-summary-open`, `collections-customers-list`, `collections-invoices-list`).
+
+**Scheduled Revenue — vertical rows → 3-column KPI strip.** Today / Next 7 days / Next 30 days were three vertical rows (`<ScheduledRevRow>`); they're now a 3-column KPI strip (`<ScheduledRevCell>` with `grid grid-cols-3 divide-x`) matching the Pipeline KPI rhythm. Upcoming list rows tightened (`py-1.5` → `py-1`). Empty state collapsed from a full `<EmptyState>` block to a single muted italic line so it doesn't dominate the card vertically. Helper text "Based on scheduled jobs." preserved verbatim. Test ids preserved (`scheduled-revenue`, `scheduled-today`, `scheduled-7d`, `scheduled-30d`, `scheduled-upcoming-list`); new wrapper id `scheduled-kpi-grid` added.
+
+**Needs Attention — compacted padding/typography.** Three-column horizontal action strip layout preserved. Per-item padding `px-4 py-2.5` → `px-3 py-1.5`, label size `text-xs` → `text-[11px]`, count size `text-base` → `text-sm`, View button `px-2.5 py-1 text-xs` → `px-2 py-0.5 text-[11px]`. Net result: the entire card sits in ~70px of vertical space (was ~100px) so it stays visible above the fold on a standard 768px desktop with the second row + sidebar present. Test ids preserved.
+
+**Page subtitle copy.** "Cash flow, receivables, and today's schedule — at a glance." → **"Pipeline, collections, scheduled revenue, and today's schedule — at a glance."** Reflects the new card lineup.
+
+**Files changed.**
+
+  * `client/src/pages/FinancialDashboard.tsx` — restructured the four card components in place: `PipelineSnapshotCard` (replaced `PipelineRow` with new `PipelineKpiCell`), `CollectionsOverviewCard` (lists side-by-side, tightened row height), `ScheduledRevenueCard` (replaced `ScheduledRevRow` with new `ScheduledRevCell`), `NeedsAttentionCard` (tightened padding/typography). Subtitle copy updated.
+  * `tests/dashboard-layout.test.ts` — updated only the Pipeline assertion to reflect the KPI-cell layout: replaced `data-testid="pipeline-conversion"` (was an inline div) with `testId="pipeline-conversion"` (now a prop on `PipelineKpiCell`); added `data-testid="pipeline-kpi-grid"` wrapper assertion. All 24 tests pass.
+
+**Files NOT changed.**
+
+  * `server/storage/dashboard.ts`, `server/routes/dashboard.ts` — no backend changes.
+  * `client/src/components/dashboard/OperationalAlertsCard.tsx`, `client/src/components/DashboardActionModal.tsx` — unchanged.
+  * Today's Schedule body / capacity indicators / `OperationalAlertsCard` mount — unchanged.
+  * Data fields / query keys / routing destinations — unchanged.
+
+**Verification.**
+
+  * `npx tsc --noEmit -p tsconfig.json` — 0 errors on `FinancialDashboard.tsx` (unrelated pre-existing errors elsewhere are someone else's in-flight work).
+  * `npx vitest run tests/dashboard-layout.test.ts` — 24 / 24 pass.
+
+#### Business Dashboard — full restructure: Pipeline, Collections, Scheduled Revenue, Needs Attention (2026-05-06)
+
+Approved-mockup dashboard layout shipped end-to-end. The top row stays exactly as it was (Today's Schedule + Operational Alerts). The second row is now three equal-width cards — Pipeline Snapshot, Collections Overview, Scheduled Revenue — replacing the prior Revenue Center / Top Outstanding / Top Customers strip. Below that, a full-width Needs Attention card surfaces the four sales/billing buckets that were previously buried in feeds. The compact `NN% Booked · N Unscheduled` capacity indicators added to the Today's Schedule header in the prior pass are kept verbatim. **Operational Alerts is byte-for-byte unchanged** (modal logic, counts, modes, props, routing — all preserved); the canonical Day View / Today's Schedule body / `/api/dashboard/workflow` / `/api/dashboard/capacity` are likewise unchanged.
+
+**Backend extension — single canonical endpoint, no new HTTP route.** All four cards consume `GET /api/dashboard/financial`, the existing summary endpoint already used by the dashboard. `server/storage/dashboard.ts` gained three pure helpers (`getPipelineSnapshot`, `getScheduledRevenue`, `getNeedsAttention`) and three new top-level fields on the `FinancialSummary` interface (`pipelineSnapshot`, `scheduledRevenue`, `needsAttention`). Each helper runs in parallel with the existing query set inside `getFinancialSummary`'s `Promise.all`, adding ~3 indexed round-trips to a request that already fans out ~17. No schema changes; the only schema imports that grew are `leads` and `leadVisits` (existing tables) on the storage file.
+
+**Pipeline Snapshot card.** Indigo trending-up icon. Five rows + footer.
+
+  * **Leads** — count + summed `leads.estimated_value` (NULLs → 0). `WHERE company_id=? AND is_active=true AND status NOT IN ('lost')`.
+  * **Quotes sent** — count + summed `quotes.total` for `status='sent'`.
+  * **Awaiting follow-up** — same predicate as quotes-sent but `sent_at < NOW() - 7 days`. Amber-tinted when count > 0.
+  * **Conversion** — this-month leads with `status IN ('quoted','won')` ÷ this-month leads created. Renders as `NN%`. **When the denominator is zero, the row renders `—`** — never a fake `0%`.
+  * **Stale leads (>7d)** — leads created >7d ago, status NOT IN (`quoted`, `won`, `lost`), with **no `lead_visits` row that has `scheduled_start IS NOT NULL`** (NOT EXISTS subquery). Amber-tinted when count > 0.
+  * Footer "View all" → `/leads`. Per-row clicks route to `/leads` or `/quotes`.
+
+**Collections Overview card — slimmed to fit 1/3 width.**
+
+  * Compact 3-cell summary strip: `Outstanding` · `Overdue` · `Open` (count). Sourced from existing `data.ar.outstandingTotal`, `pastDueTotal`, `outstandingCount`. `Overdue` cell turns red-700 when > 0.
+  * **Top customers (max 3)** — single-row pattern: customer name + outstanding amount. Click → `/clients/:id`.
+  * **Top overdue (max 3)** — customer or location name + invoice number + outstanding balance. Click → `/invoices/:id`.
+  * Single "View all" → `/invoices?filter=awaiting_payment`. No double-section card chrome.
+
+**Scheduled Revenue card.** Emerald calendar icon. Three day-bucket rows + top-3 high-value list + footer.
+
+  * **Today / Next 7 days / Next 30 days** values: SUM of resolved per-job value where `scheduled_start` falls within the bucket.
+  * **Per-job value resolution** (priority order):
+    1. `invoices.total` if the job is linked to an invoice (`jobs.invoice_id IS NOT NULL`).
+    2. `quotes.total` if a quote is linked via `quotes.converted_to_job_id = jobs.id` AND `quotes.status IN ('approved', 'converted', 'sent')`.
+    3. **Otherwise excluded** — null after COALESCE. The SQL filter is explicit: `COALESCE(...) > 0`. No fallback to invented estimates.
+  * **Upcoming high-value list (max 3):** the three highest-value jobs in the 30-day window, ordered by `value DESC NULLS LAST`. Each row shows `#jobNumber · customerName` + dollar value. Click → `/jobs/:id`.
+  * Helper text at footer: "Based on scheduled jobs."
+  * "View all" → `/jobs?filter=scheduled`.
+
+**Needs Attention card — full-width row, three buckets.** Amber alert-circle icon. Compact 3-column row layout (stacks on mobile via `divide-y sm:divide-y-0 sm:divide-x`).
+
+  * **Invoices not sent** — count + SUM(total) where `invoices.status = 'draft'`. View → `/invoices?filter=draft`.
+  * **Quotes not followed up (>7d)** — same SQL as the Pipeline "Awaiting follow-up" row. View → `/quotes?filter=awaiting-followup`.
+  * **Stale leads (>14d)** — leads created >14d ago, status NOT IN (`quoted`, `won`, `lost`), no `lead_visits` with `scheduled_start IS NOT NULL`. View → `/leads?filter=stale`.
+  * Each item shows: count (`text-base font-semibold`, amber-700 when > 0 / slate-400 when 0), optional dollar value where reliable, and a `View` button that disables when count is zero.
+  * **Explicit exclusions** spelled out in code comments and pinned by tests:
+    * **NOT** "completed jobs not invoiced" — that bucket is owned by Operational Alerts → Ready to Invoice. Test asserts `function NeedsAttentionCard(...)` body never references `readyToInvoice` or `completedNotInvoiced`.
+    * **NOT** "payments pending / processing" — the `payments` table has no status column (atomic ledger entries, not pending receivables). Documented in the storage helper's comment.
+
+**Today's Schedule capacity indicators (kept verbatim from the prior pass).** `bookedPercent` (`useMemo` over `technicians[].scheduleBlocks`, `kind === "booked"` minutes ÷ total minutes) + `unscheduledJobsCount` (threaded as a prop from the parent's existing `/api/dashboard/workflow` query). Hidden on `<sm` screens. **No "Overbooked" indicator** — the current capacity payload doesn't surface per-tech workday-minute totals, so an Overbooked calc would be guesswork. Per spec, omitted.
+
+**Old/dead components fully deleted.** `RevenueCenterFinancialCard`, `TopOutstandingInvoicesCard`, `TopCustomersOwingCard` were removed from `FinancialDashboard.tsx` (no JSX call sites, no test pins — verified). The four new card definitions plus the slim Collections Overview are colocated in the same file.
+
+**Test coverage — `tests/dashboard-layout.test.ts` (new, 24 tests, all passing).**
+
+  * Layout: 3 cards in second row, Needs Attention full-width below, Collections is NOT full-width.
+  * Removed cards: `RevenueCenterFinancialCard`, `TopOutstandingInvoicesCard`, `TopCustomersOwingCard` strings absent (component refs and their test ids).
+  * Capacity indicators: testids present, `bookedPercent` computed via `useMemo` over real `kind === "booked"` blocks, `unscheduledJobsCount` threaded as prop, **no Overbooked indicator** rendered.
+  * Operational Alerts: prop set unchanged (`requiresAttentionCount`, `pastDueCount`, `unscheduledCount`, `readyToInvoiceCount`, `onOpenActionModal`, `order=[…]`).
+  * Today's Schedule body: `schedule-open-only-toggle` + `schedule-scope-filter` + `/api/dashboard/capacity` queryKey present.
+  * Pipeline: all five rows present + `—` rendering for null conversion rate (no fake 0%).
+  * Scheduled Revenue: helper text present, storage helper enforces `q.status IN ('approved', 'converted', 'sent')` + `COALESCE(... ) > 0` exclusion.
+  * Needs Attention: only the three approved item keys present; `key: "ready-to-invoice"` and `key: "completed-not-invoiced"` absent. Card body never references `readyToInvoice` / `completedNotInvoiced`.
+  * Backend: `FinancialSummary` declares the three new fields; `getFinancialSummary` calls all three helpers in parallel; `server/routes/dashboard.ts` route surface unchanged (whitelist of 6 existing routes — no new HTTP route added).
+
+**Files changed.**
+
+  * `server/storage/dashboard.ts` — added `leads`, `leadVisits` imports; added `pipelineSnapshot`, `scheduledRevenue`, `needsAttention` interface fields; added `getPipelineSnapshot`, `getScheduledRevenue`, `getNeedsAttention` helpers; called all three in the existing `Promise.all` and added them to the return object.
+  * `client/src/pages/FinancialDashboard.tsx` — extended the local `FinancialSummary` mirror; deleted `RevenueCenterFinancialCard`, `TopOutstandingInvoicesCard`, `TopCustomersOwingCard` definitions; added `PipelineSnapshotCard`, slim `CollectionsOverviewCard`, `ScheduledRevenueCard`, `NeedsAttentionCard`; restructured the second row to a 3-column grid + added a full-width Needs Attention row; preserved the prior pass's Today's Schedule capacity indicators and the existing Operational Alerts mount.
+  * `tests/dashboard-layout.test.ts` — new file, 24 source-pin tests.
+
+**Files NOT changed.**
+
+  * `server/routes/dashboard.ts` — no new HTTP route; existing 6 routes intact.
+  * `client/src/components/dashboard/OperationalAlertsCard.tsx` — unchanged.
+  * `client/src/components/DashboardActionModal.tsx` — unchanged.
+  * `shared/schema.ts` — no schema changes (existing `leads`, `lead_visits`, `quotes`, `invoices`, `jobs` tables only).
+
+**Verification.**
+
+  * `npx tsc --noEmit -p tsconfig.json` — 0 errors on touched files (unrelated pre-existing errors in `server/services/payments/paymentApplicationService.ts` and `client/src/pages/portal/PortalInvoiceDetail.tsx` are someone else's in-flight work).
+  * `npx vitest run tests/dashboard-layout.test.ts` → 24 / 24 pass.
+
+#### Canonical modal enforcement pass — lock primitive defaults, scan-test guard (2026-05-06)
+
+Follow-up to the canonical Modal primitives landing earlier today. Audit revealed the actual modal-drift footprint was much smaller than first feared (5 typography-override sites across ~114 modal usages), but the AlertDialog primitive's own defaults were still legacy (`text-lg font-semibold` / `text-sm text-muted-foreground`), silently rendering all 33 AlertDialog consumers off-canonical. This pass closes both gaps and adds repo-wide scan enforcement so future drift fails the build.
+
+**Audit numbers (real, verified by direct grep over `client/src/`).**
+
+- 81 files use `<DialogTitle>` (108 occurrences) · 33 files use `<AlertDialogTitle>` (50 occurrences) · 1 file imports the new `@/components/ui/modal`.
+- 5 files passed hardcoded typography overrides on `<DialogTitle>` / `<DialogDescription>`.
+- 0 files passed overrides on `<AlertDialogTitle>` / `<AlertDialogDescription>`.
+- 0 files passed `className` overrides on `<AlertDialogAction>` / `<AlertDialogCancel>`.
+
+**Decision on AlertDialog: Option A — refactor the primitive in place.** Replacing 33 AlertDialog consumers with `<ModalShell>` would lose Radix-AlertDialog's stricter focus-trap + escape-key semantics (intentionally suited to destructive confirms). Locking the primitive's typography defaults pulls every consumer into canonical alignment with zero behavior change.
+
+- `client/src/components/ui/alert-dialog.tsx` — `AlertDialogTitle` default migrated from `text-lg font-semibold` → `text-section-title font-semibold text-slate-900 leading-snug tracking-tight` (matches `<ModalTitle>` exactly). `AlertDialogDescription` default migrated from `text-sm text-muted-foreground` → `text-row text-slate-600 leading-normal` (matches `<ModalDescription>`). Top-of-file deprecation comment directs new modals to `client/src/components/ui/modal.tsx`.
+- `client/src/components/ui/dialog.tsx` — typography defaults already canonical (Phase C / E). Updated top-of-file commentary to point new modals at `modal.tsx` and explicitly forbid `className` typography overrides on `<DialogTitle>` / `<DialogDescription>`.
+
+**Drift sites cleaned (5 files).**
+
+- `client/src/components/communication/SystemImagePickerDialog.tsx:188` — dropped `text-base` on title + `text-xs` on description.
+- `client/src/components/communication/SendCommunicationModal.tsx:153` — dropped `text-base` on title.
+- `client/src/components/EquipmentDetailModal.tsx:218` — dropped `text-xl font-semibold` on title (kept structural `m-0 leading-tight truncate min-w-0`).
+- `client/src/components/invoice/CollectPaymentDialog.tsx:470,474` — dropped `text-base font-semibold` on title + `text-xs` on description.
+- `client/src/components/time/TimeEntryModal.tsx:404` — dropped `text-base` on title (kept structural `flex items-center gap-2`).
+
+After cleanup, the same regex scan returns zero hits.
+
+**Enforcement (test-based equivalent of an ESLint rule).**
+
+The codebase has no custom ESLint rule infrastructure, so enforcement lives in `tests/modal-canonical.test.ts` (extended from 18 → 26 pins). New scan tests:
+
+1. **AlertDialog primitive defaults are canonical** — pins `text-section-title font-semibold text-slate-900` on `AlertDialogTitle` and `text-row text-slate-600 leading-normal` on `AlertDialogDescription`. Negative pins on the legacy `text-lg font-semibold` / `text-sm text-muted-foreground` strings.
+2. **Dialog primitive defaults remain canonical** — pins `text-modal-title` (Phase E) and `text-caption` (Phase C).
+3. **Both primitive files point future authors at `modal.tsx`** and forbid `className` typography overrides.
+4. **Repo-wide scan**: walks every `.tsx` / `.ts` file in `client/src/`, fails the build if any non-primitive file passes `text-(xs|sm|base|lg|xl|2xl)` or `font-(bold|semibold|medium)` on `<DialogTitle>` / `<DialogDescription>` / `<AlertDialogTitle>` / `<AlertDialogDescription>`. Reports offending file paths and line numbers in the failure message so drift is fixable in one read.
+5. **Re-export bypass guard**: fails if any file does `export const X = DialogTitle` / `AlertDialogTitle` (the obvious workaround for the typography lock).
+
+**Out of scope (deliberately).** Mass-rewriting the 114 existing modal sites onto `<ModalShell>` is unverifiable in a single pass without a visual regression suite. The existing primitives stay exported and consumed by the 81 + 33 call sites; they now render canonical typography by inheritance. Migrating individual modals onto `<ModalShell>` is a per-call-site decision (the Scheduling Issues / Move-to-Unscheduled pair landed earlier today; future modal touches can opt in cheaply).
+
+**Verification.** `npm run check` clean. 270/270 UI-touching tests pass (`modal-canonical.test.ts` 26, `timesheets-day-view.test.ts` 135, `timesheets-week-timeline.test.ts` 97, `timesheets-week-stack.test.ts` 12). Pre-existing server-side test failures (pagination, calendar-drag-drop, etc.) are unrelated to this pass — DB-dependent suites that fail in this environment regardless.
+
+**Files changed.**
+
+- `client/src/components/ui/alert-dialog.tsx` — primitive defaults canonicalized + top-of-file guidance.
+- `client/src/components/ui/dialog.tsx` — top-of-file guidance pointing to `modal.tsx`.
+- `client/src/components/communication/SystemImagePickerDialog.tsx` · `client/src/components/communication/SendCommunicationModal.tsx` · `client/src/components/EquipmentDetailModal.tsx` · `client/src/components/invoice/CollectPaymentDialog.tsx` · `client/src/components/time/TimeEntryModal.tsx` — typography-override className strings stripped from `<DialogTitle>` / `<DialogDescription>`.
+- `tests/modal-canonical.test.ts` — extended with 8 new pins (4 primitive-default pins + 1 deprecation-comment pin + 3 repo-scan pins).
+
+#### Canonical Modal primitives — lock typography + structural rhythm (2026-05-06)
+
+The "Move N jobs to Unscheduled?" confirmation modal in `DashboardActionModal` was visually drifting from the Scheduling Issues modal next to it: oversized buttons, airy `p-6 gap-4` padding, no header / footer dividers. Root cause: callers were dropping straight onto the shadcn `Dialog` + `DialogContent` defaults, which left every confirm-style modal to re-derive its own padding, button sizing, and border treatment.
+
+**Built `client/src/components/ui/modal.tsx`** — a thin wrapper layer over the existing Radix `Dialog`. No second design system, no parallel primitives. The wrapper composes `Dialog` underneath but locks the typography and structural rhythm at the primitive level so callers can't drift.
+
+**Primitives.**
+
+- `ModalShell` — locks `p-0 gap-0 sm:max-w-[440px]` so internal subcomponents own all spacing.
+- `ModalHeader` — locks `px-5 pt-5 pb-3 border-b border-slate-200`.
+- `ModalTitle` — locks `text-section-title font-semibold text-slate-900 leading-snug tracking-tight`.
+- `ModalDescription` — locks `text-row text-slate-600 leading-normal`.
+- `ModalBody` — locks `text-row text-slate-700 leading-normal` + `px-5 py-4`.
+- `ModalFooter` — locks `px-5 py-3 border-t border-slate-200 flex justify-end gap-2` (overrides `DialogFooter`'s `flex-col-reverse sm:flex-row` so rhythm is consistent at every breakpoint).
+- `ModalPrimaryAction` — defaults to `<Button size="sm">` (canonical green primary).
+- `ModalSecondaryAction` — defaults to `<Button variant="outline" size="sm">`.
+
+**Developer guidance.** A 40-line comment block at the top of `modal.tsx` documents the rules: no raw `text-sm` / `text-base` / `font-bold` / `text-slate-…` overrides on the subcomponents; no one-off header / footer divs; no second wrapper layer.
+
+**Refactored modal.** `DashboardActionModal.tsx:953` (the bulk-unschedule confirmation) now mounts `<ModalShell>` + `<ModalHeader>` + `<ModalTitle>` + `<ModalDescription>` + `<ModalFooter>` + `<ModalSecondaryAction>` + `<ModalPrimaryAction>` instead of stacking raw `Dialog` + `DialogContent` + `Button`. Behavior unchanged — same `bulkUnscheduleMutation.mutate(Array.from(selectedIds))` call, same copy, same close-on-cancel semantics. New testids: `bulk-unschedule-confirm-modal` / `-cancel` / `-action`.
+
+**Files changed.**
+
+- `client/src/components/ui/modal.tsx` — NEW; 250 LOC including the developer-guidance comment block.
+- `client/src/components/DashboardActionModal.tsx` — added `@/components/ui/modal` imports (M-prefixed aliases to coexist with the file's existing `Dialog` imports for the non-confirm modes), refactored the `showBulkConfirm` block onto canonical primitives.
+- `tests/modal-canonical.test.ts` — NEW; 18 pins under three describes:
+  - **canonical primitives exist + lock typography** (10): file present, all 8 primitives exported, `ModalTitle` locks `text-section-title`, `ModalDescription` locks `text-row`, `ModalBody` locks `text-row text-slate-700`, `ModalShell` locks `p-0 gap-0`, header padding + border-b, footer padding + border-t + justify-end, action buttons default `size="sm"` + outline variant for secondary, developer-guidance comment present.
+  - **bulk-unschedule confirm modal canonical wiring** (6): canonical imports present, confirm block mounts canonical primitives (no raw `<DialogContent>` / `<DialogTitle>` / `<DialogDescription>` / `<DialogFooter>` left in that block), copy preserved, primary action still calls the same mutation, cancel does NOT call mutation, all three testids exposed.
+  - **no typography drift in the refactored modal** (2): `<MTitle>` and `<MDescription>` carry no `className` overrides; action buttons carry no raw `text-sm` / `text-base` / `font-semibold` className overrides; legacy `sm:max-w-[440px]` width is gone from raw `<DialogContent>` because the width default lives on `ModalShell` now.
+
+**Out of scope.** This pass refactors only the bulk-unschedule confirm modal. Other modals continue to use their existing primitives — they can migrate at their own cadence by switching imports and removing per-call typography overrides. The canonical layer is opt-in via import; nothing breaks if a modal doesn't migrate. Scheduling Issues itself is NOT touched (it's the visual target).
+
+18/18 new pins pass. Typecheck clean. No backend, schema, or API changes. No behavior change to the unschedule mutation.
+
+#### Maintenance page — compact layout, table surfaces higher (2026-05-06)
+
+UI-only restructure of `/pm` that pulls the Work Due table ~120px higher in the viewport. Backend, save endpoints, generation behavior, recurrence model, and per-tab table styling are unchanged.
+
+* **Header.** The stacked "Maintenance Plans" H1 + marketing subtitle + separate tabs-in-card surface collapsed into a single compact row: H1 reads `Maintenance` (matches the renamed sidebar destination), inline `Work Due | Plans | Templates` tabs sit beside the title with an underline-only active style (lime `#76B054` accent), and the `+ New Plan` dropdown is the only header-right action. The full `<Tabs>` root now wraps the entire page so `<TabsContent>` resolves correctly.
+* **KPI strip.** The 3-card `KpiCard` grid (`grid-cols-1 sm:grid-cols-3 gap-3`, ~110px tall per tile) is replaced by a single `KpiStrip` — one white rounded card with three flex cells separated by `divide-x divide-slate-200`. Each cell is a 32px icon circle + uppercase label + count, ~64px total height. Icon colors and counts preserved (`Due Now` / orange · `This Week` / slate · `Overdue` / red+warn). The "Upcoming This Week" label is shortened to `This Week` per the brief.
+* **Controls row.** Filter + search (left) and the contextual `Generate All Due Work` button (right) now live inside one white rounded card (`bg-white rounded-lg border border-slate-200 shadow-sm`, p-2). The `Plans Due Now (N)` heading was lifted OUT of the controls row and now sits as its own line **directly above the table** — that source ordering is what pulls the data up the viewport.
+* **Dead code removed.** The unused `KpiCard` function (the prior 3-card primitive) was deleted now that nothing imports it.
+* **Untouched (intentional).** Routes (`/pm`, `/pm/new`, `/pm/:id`, `/pm/templates/*`), all API calls (`/api/recurring-templates/*`, `/api/pm/templates`), the generation logic, the inner `<Table>` markup + sortable headers + per-row Generate buttons, the `Recurring job` dropdown action and every other recurrence-behavior surface. Mobile/iPad: header `flex-wrap` keeps tabs and `+ New Plan` from overlapping; controls row `flex-wrap` keeps filter/search/CTA from overflowing.
+* **Regression test.** New `tests/maintenance-page-layout.test.ts` (14 cases). Pins: H1 reads `Maintenance` (not `Maintenance Plans`), the long subtitle is gone, tabs are inline (the prior outer card wrapper around tabs is gone), all three tab testids preserved, active tab uses the underline accent, header `+ New Plan` testid preserved, KPI strip exists with `divide-x` separators, all three (label, iconBg, iconColor) pairings preserved, the prior 3-grid layout AND the `KpiCard` function are gone, controls row + canonical filter/search/generate testids preserved, source order is `controls-row → plans-due-now-heading → <Table>` (the data-up-the-viewport pin), recurrence behavior copy ("Recurring job") preserved.
+* **Verification.** `npm run check` clean. `tests/maintenance-page-layout.test.ts` 14 / 14 pass. `tests/recurring-jobs-nav-rename.test.ts` 14 / 14 still pass. `tests/sidebar-width.test.ts` 8 / 8 still pass.
+* **Files affected.** `client/src/pages/PMWorkspacePage.tsx`, `tests/maintenance-page-layout.test.ts` (new).
+
+#### Sidebar — width settled at 136px after 128px regression (2026-05-06)
+
+The previous trim to 128px (8rem) was too aggressive: under the active-item semibold weight, "Maintenance" hit `truncate`'s ellipsis. Bumped to 136px (8.5rem) to restore label headroom while still keeping the column ~18px narrower than the 154px starting point.
+
+* **Authoritative override.** `client/src/App.tsx` — `<SidebarProvider>` style prop now sets `--sidebar-width: "8.5rem"` (136px). Was briefly 8rem this morning; previously 9.625rem.
+* **Fallback constant.** `client/src/components/ui/sidebar.tsx` — `SIDEBAR_WIDTH = "8.5rem"` (kept in sync with the App.tsx override; only matters for callers that mount `<SidebarProvider>` without a style override).
+* **Main content offset auto-tracks.** `var(--sidebar-width)` is the single source of truth — the fixed sidebar pane AND the layout spacer that pushes main content right both read it (`ui/sidebar.tsx:174,222,233`). No separate offset to update; no overlap between content and sidebar; no horizontal scroll introduced.
+* **Why 8.5rem fits where 8rem didn't.** At 128px, after subtracting `px-1.5` padding (12px) + `gap-1` (4px) + icon (16px) + active-state left border (3px), only 93px remained for the label. "Maintenance" in Inter 14px **semibold** (active state) measures ~84-88px depending on rendering — close enough to the 93px ceiling that subpixel layout could trip ellipsis. At 136px the label area becomes 101px, comfortably above semibold's measured width with ~13px headroom.
+* **Routes / order / labels / icons / collapse behavior unchanged.** Menu order, route hrefs, testids, label literals, icon components, active-item styling (lime border, white/16% bg, lime icon), `SIDEBAR_WIDTH_ICON` (3rem collapse) and `SIDEBAR_WIDTH_MOBILE` (18rem mobile sheet) are all untouched.
+* **Regression test updated.** `tests/sidebar-width.test.ts` (8 cases) now pins `8.5rem` in both App.tsx and ui/sidebar.tsx, and explicitly forbids both the 9.625rem original AND the regressed 8rem value — so a future revert to either is caught. The five tenant labels (Dashboard / Dispatch / Maintenance / Timesheets / Suppliers) are still pinned, and "Maintenance" is anchored to `href: "/pm"` to prevent a stray label from satisfying the title-only assertion.
+* **Verification.** `npm run check` clean. `tests/sidebar-width.test.ts` 8 / 8 pass. `tests/recurring-jobs-nav-rename.test.ts` 14 / 14 still pass.
+* **Files affected.** `client/src/App.tsx`, `client/src/components/ui/sidebar.tsx`, `tests/sidebar-width.test.ts`.
+
+#### Sidebar — "Recurring Jobs" → "Maintenance" (2026-05-06)
+
+Surgical UI-only nav rename. The destination at `/pm` represents maintenance plans (PM contracts + recurring-job templates), so the sidebar label is now "Maintenance". The route, the API surface, the data model, and the recurrence-behavior copy elsewhere in the product are intentionally unchanged — only user-facing destination labels were touched.
+
+* **Sidebar.** `client/src/components/AppSidebar.tsx` — the `/pm` menu entry now renders `title: "Maintenance"` and `hoverText: "Maintenance"` (was `"Recurring Jobs"` / `"Preventive Maintenance & Recurring Jobs"`). The `href: "/pm"` and `testId: "nav-pm"` are intentionally unchanged.
+* **Page heading.** `client/src/pages/RecurringJobsPage.tsx` — standalone H1 reads `Maintenance` (was `Recurring Jobs`). The Card-section title and empty-state copy inside the page (`<CardTitle>Recurring Jobs</CardTitle>`, "Active recurring jobs will generate work…", "No recurring jobs yet…") are NOT renamed because they describe the listed records, not the destination.
+* **Pointer copy.** `client/src/pages/PMWizardPage.tsx` — three review/toast/dialog strings now point users at "the Maintenance page" (was `"in Recurring Jobs"`). Specifically: the review-step body, the plan-activation toast description, and the post-create explanation dialog body.
+* **Untouched (intentional).** "Make Recurring" toggle, "Recurring schedule" form section, `title: "Recurring Job Created"` toast, all `RecurringJobTemplate` / `RecurringJobSeries` types, `/api/recurring-templates` endpoints, `recurringJobs.ts` storage module, and every code-comment reference to recurring jobs. The brief explicitly forbids a global replacement: recurrence is the BEHAVIOR, "Maintenance" is just the new DESTINATION label.
+* **Regression test.** New `tests/recurring-jobs-nav-rename.test.ts` (14 cases). Pins: sidebar entry shows `title: "Maintenance"` paired with `href: "/pm"`, hover tooltip is `"Maintenance"`, no `title: "Recurring Jobs"` literal exists in the sidebar, the standalone page H1 reads `Maintenance`, the three PMWizard pointer strings now say "Maintenance page", AND the behavior copy that MUST stay (Make Recurring, Recurring schedule, "Recurring Job Created" toast, "No recurring jobs yet" empty state) is still present. The test file is the regression guard against either a revert or an over-eager global replace.
+* **Verification.** `npm run check` clean. `tests/recurring-jobs-nav-rename.test.ts` 14 / 14 pass. (The pre-existing `tests/recurring-jobs.test.ts` integration-test failures around date arithmetic + DB state are unrelated to this rename — that file does not touch any of the UI sources changed here.)
+* **Files affected.** `client/src/components/AppSidebar.tsx`, `client/src/pages/RecurringJobsPage.tsx`, `client/src/pages/PMWizardPage.tsx`, `tests/recurring-jobs-nav-rename.test.ts` (new).
+
 ### Fixed
 
 #### Invoice Client Visibility — Reset to defaults validation + showJobDescription round-trip (2026-05-06)

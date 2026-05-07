@@ -33,6 +33,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   DollarSign, AlertCircle, ChevronDown, ChevronRight,
@@ -159,6 +160,52 @@ interface FinancialSummary {
     customerName: string | null;
     locationName: string | null;
   }[];
+  pipelineSnapshot: {
+    // Legacy fields — kept so other consumers don't break, but the
+    // Pipeline card no longer reads them after the 2026-05-06 RALPH
+    // redesign.
+    leadsCount: number;
+    leadsValue: number;
+    quotesSentCount: number;
+    quotesSentValue: number;
+    awaitingFollowUpCount: number;
+    awaitingFollowUpValue: number;
+    /** null when this-month leads-created denominator is zero — UI renders "—". */
+    conversionRateMonth: number | null;
+    staleLeadsCount: number;
+    staleLeadsValue: number;
+    // 2026-05-06 RALPH actionable buckets (server: getPipelineSnapshot).
+    leadsFollowUpCount: number;
+    leadsFollowUpValue: number;
+    quotesNotSentCount: number;
+    quotesNotSentValue: number;
+    quotesAwaitingResponseCount: number;
+    quotesAwaitingResponseValue: number;
+    staleOpportunitiesCount: number;
+    staleOpportunitiesValue: number;
+  };
+  scheduledRevenue: {
+    todayValue: number;
+    next7DaysValue: number;
+    next30DaysValue: number;
+    upcomingHighValueJobs: {
+      id: string;
+      jobNumber: number;
+      summary: string | null;
+      customerName: string | null;
+      locationName: string | null;
+      scheduledStart: string | null;
+      value: number;
+    }[];
+  };
+  needsAttention: {
+    invoicesNotSentCount: number;
+    invoicesNotSentValue: number;
+    quotesNotFollowedUpCount: number;
+    quotesNotFollowedUpValue: number;
+    leadsNotConvertedCount: number;
+    leadsNotConvertedValue: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -297,7 +344,7 @@ export default function FinancialDashboard() {
   // dashboard opens; counts come from the shared `["dashboard", "workflow"]`
   // query cache.
   const [actionModalOpen, setActionModalOpen] = useState(false);
-  const [actionModalMode, setActionModalMode] = useState<DashboardActionMode>("action_required");
+  const [actionModalMode, setActionModalMode] = useState<DashboardActionMode>("requires_attention");
   const openActionModal = (mode: DashboardActionMode) => {
     setActionModalMode(mode);
     setActionModalOpen(true);
@@ -315,7 +362,7 @@ export default function FinancialDashboard() {
   const workflow = workflowQuery.data;
   // 2026-04-26: Requires-attention now folds PM instances awaiting job
   // generation (`pm.awaitingGenerationCount`) into the same count as
-  // on-hold jobs. The action modal's `action_required` mode renders
+  // on-hold jobs. The action modal's `requires_attention` mode renders
   // both sources in a single drilldown — see `DashboardActionModal`.
   const requiresAttentionCount =
     (workflow?.jobs.onHoldCount ?? 0) + (workflow?.pm?.awaitingGenerationCount ?? 0);
@@ -362,7 +409,7 @@ export default function FinancialDashboard() {
             Business Dashboard
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Cash flow, receivables, and today's schedule — at a glance.
+            Pipeline, collections, scheduled revenue, and today's schedule — at a glance.
           </p>
         </div>
 
@@ -392,6 +439,7 @@ export default function FinancialDashboard() {
             onOpenVisit={(visitState) => setEditorState(visitState)}
             onOpenSlot={(s) => setSlot(s)}
             onCreate={() => setCreateOpen(true)}
+            unscheduledJobsCount={unscheduledJobsCount}
           />
           <OperationalAlertsCard
             requiresAttentionCount={requiresAttentionCount}
@@ -404,36 +452,48 @@ export default function FinancialDashboard() {
           />
         </div>
 
-        {/* 2026-04-30 layout swap — Second row: Revenue Center moves
-            here from the top-right slot it previously held, joining
-            Top Outstanding Invoices + Top Customers Owing in the
-            three-column receivables strip. The Revenue cell uses
-            `self-start` so it does NOT stretch to match the heavier
-            invoice/customer cards — Revenue is a compact summary
-            (4 short rows) and looks visually wrong when stretched.
-            The other two cells keep default `stretch` so they remain
-            equal-height. Stacks vertically on mobile. */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <div className="self-start">
-            <RevenueCenterFinancialCard
-              data={data}
-              isLoading={isLoading}
-              onNavigate={(dest) => setLocation(dest)}
-            />
-          </div>
-
-          <TopOutstandingInvoicesCard
+        {/* 2026-05-06 dashboard restructure — second row: 3 equal cards.
+            Pipeline Snapshot (replaces Revenue Center) | Collections
+            Overview (consolidated) | Scheduled Revenue (new). Stacks
+            cleanly on tablet/mobile. */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+          <PipelineSnapshotCard
+            data={data}
+            isLoading={isLoading}
+            // 2026-05-06 RALPH: each row opens the SAME shared
+            // DashboardActionModal the Operational Alerts and Needs
+            // Attention rows use. Mode switches in place — no new
+            // modal component, no per-row navigation.
+            onOpenActionModal={openActionModal}
+          />
+          <CollectionsOverviewCard
             data={data}
             isLoading={isLoading}
             onOpenInvoice={(id) => setLocation(`/invoices/${id}`)}
-            onViewAll={() => setLocation("/invoices?filter=awaiting_payment")}
-          />
-
-          <TopCustomersOwingCard
-            data={data}
-            isLoading={isLoading}
             onOpenCustomer={(id) => setLocation(`/clients/${id}`)}
             onViewAll={() => setLocation("/invoices?filter=awaiting_payment")}
+          />
+          <ScheduledRevenueCard
+            data={data}
+            isLoading={isLoading}
+            onOpenJob={(id) => setLocation(`/jobs/${id}`)}
+            onViewAll={() => setLocation("/jobs?filter=scheduled")}
+          />
+        </div>
+
+        {/* 2026-05-06 dashboard restructure — third row: full-width
+            Needs Attention. Compact horizontal layout. Explicitly does
+            NOT include "completed jobs not invoiced" (that belongs to
+            Operational Alerts → Ready to Invoice). */}
+        <div className="grid grid-cols-1 gap-3">
+          <NeedsAttentionCard
+            data={data}
+            isLoading={isLoading}
+            // 2026-05-06 RALPH: routes through the shared
+            // DashboardActionModal — same modal the Operational Alerts
+            // rows open — instead of navigating to `/invoices?filter=draft`.
+            // Mode `invoices_not_sent` is the canonical drill-down.
+            onViewInvoicesNotSent={() => openActionModal("invoices_not_sent")}
           />
         </div>
       </div>
@@ -482,352 +542,6 @@ function EmptyState({ message }: { message: string }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// RevenueCenterFinancialCard — top-right card for the Financial Dashboard.
-// Distinct from the Operations Dashboard's RevenueCenterCard (which lists
-// operations follow-ups). This card surfaces cash-flow and receivables
-// totals only. Data already lives on /api/dashboard/financial — no new
-// endpoint, no client aggregation.
-// ---------------------------------------------------------------------------
-
-interface RevenueCenterFinancialCardProps {
-  data?: FinancialSummary;
-  isLoading: boolean;
-  onNavigate: (destination: string) => void;
-}
-
-function RevenueCenterFinancialCard({
-  data,
-  isLoading,
-  onNavigate,
-}: RevenueCenterFinancialCardProps) {
-  const ar = data?.ar;
-  const draftCount = data?.draft.count ?? 0;
-  const draftTotal = data?.draft.total ?? 0;
-  const cashThisMonth = data?.revenue.month ?? 0;
-
-  // 2026-04-30 compact pass — labels shortened per spec, sub merged
-  // into the right-aligned summary string with a `·` separator. Each
-  // row is now a single horizontal line: icon + label left, summary
-  // right. No more two-line stack of label-above-value.
-  const rows: Array<{
-    key: string;
-    label: string;
-    value: string;
-    sub?: string;
-    icon: React.ElementType;
-    iconColor: string;
-    iconBg: string;
-    onClick?: () => void;
-    urgent?: boolean;
-  }> = [
-    {
-      key: "cash-this-month",
-      label: "This month",
-      value: formatCurrency(cashThisMonth),
-      icon: TrendingUp,
-      iconColor: "text-emerald-600",
-      iconBg: "bg-emerald-100 dark:bg-emerald-950/30",
-    },
-    {
-      key: "outstanding-ar",
-      label: "Outstanding",
-      value: formatCurrency(ar?.outstandingTotal ?? 0),
-      sub:
-        (ar?.outstandingCount ?? 0) > 0
-          ? `${ar?.outstandingCount} invoice${ar?.outstandingCount === 1 ? "" : "s"}`
-          : undefined,
-      icon: DollarSign,
-      iconColor: "text-amber-600",
-      iconBg: "bg-amber-100 dark:bg-amber-950/30",
-      onClick: () => onNavigate("/invoices?filter=awaiting_payment"),
-    },
-    {
-      key: "overdue-ar",
-      label: "Overdue",
-      value: formatCurrency(ar?.pastDueTotal ?? 0),
-      sub:
-        (ar?.pastDueCount ?? 0) > 0
-          ? `${ar?.pastDueCount} past due`
-          : undefined,
-      icon: AlertCircle,
-      iconColor: "text-red-600",
-      iconBg: "bg-red-100 dark:bg-red-950/30",
-      onClick: () => onNavigate("/invoices?filter=overdue"),
-      urgent: (ar?.pastDueTotal ?? 0) > 0,
-    },
-    {
-      key: "draft-invoices",
-      label: "Drafts",
-      value: draftCount > 0 ? formatCurrency(draftTotal) : "$0",
-      sub: draftCount > 0 ? `${draftCount} draft${draftCount === 1 ? "" : "s"}` : undefined,
-      icon: FileEdit,
-      iconColor: "text-slate-600",
-      iconBg: "bg-slate-100 dark:bg-slate-800/40",
-      onClick: () => onNavigate("/invoices?filter=draft"),
-    },
-  ];
-
-  return (
-    <DashCard>
-      <CardHeader
-        icon={DollarSign}
-        color="text-[#76B054]"
-        title="Revenue Center"
-        action={
-          <button
-            type="button"
-            onClick={() => onNavigate("/invoices?filter=awaiting_payment")}
-            className="text-xs text-[#76B054] hover:underline"
-            data-testid="revenue-center-open-financials"
-          >
-            Open A/R
-          </button>
-        }
-      />
-      <div data-testid="revenue-center-financial">
-        {isLoading ? (
-          <div className="p-3 space-y-1.5">
-            {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-7 w-full" />)}
-          </div>
-        ) : (
-          <ul>
-            {rows.map((row, idx) => {
-              const Icon = row.icon;
-              const isLast = idx === rows.length - 1;
-              const interactive = !!row.onClick;
-              // Right-aligned summary: when both `sub` and `value` are
-              // present, render them on one line joined by a thin-space
-              // bullet — e.g. "1 draft · $0", "3 past due · $300".
-              // When only `value` exists, render just `$0`.
-              const summary = row.sub ? `${row.sub} · ${row.value}` : row.value;
-              const className = `w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors ${
-                !isLast ? "border-b border-[#e2e8f0]" : ""
-              } ${
-                row.urgent
-                  ? "bg-red-50/40 hover:bg-red-50"
-                  : interactive
-                    ? "hover:bg-[#F0F5F0]"
-                    : ""
-              }`;
-              // 2026-04-30 micro-polish: trailing chevron dropped from
-              // every Revenue row. Each row's right edge now ends with
-              // the value/summary string so the four rows right-align
-              // consistently with each other. Click affordance on
-              // interactive rows is signaled solely by the existing
-              // hover background — `hover:bg-[#F0F5F0]` (or
-              // `hover:bg-red-50` for the urgent row) — and by the
-              // `<button>` cursor.
-              const inner = (
-                <>
-                  <div className={`p-1 rounded shrink-0 ${row.iconBg}`}>
-                    <Icon className={`h-3 w-3 ${row.iconColor}`} />
-                  </div>
-                  <span
-                    className={`flex-1 text-xs font-medium truncate ${
-                      row.urgent ? "text-red-700" : "text-slate-700 dark:text-gray-200"
-                    }`}
-                  >
-                    {row.label}
-                  </span>
-                  <span
-                    className={`text-sm font-semibold tabular-nums shrink-0 ${
-                      row.urgent ? "text-red-700" : "text-[#111827] dark:text-gray-100"
-                    }`}
-                  >
-                    {summary}
-                  </span>
-                </>
-              );
-              return (
-                <li key={row.key}>
-                  {interactive ? (
-                    <button
-                      type="button"
-                      onClick={row.onClick}
-                      className={className}
-                      data-testid={`revenue-row-${row.key}`}
-                    >
-                      {inner}
-                    </button>
-                  ) : (
-                    <div className={className} data-testid={`revenue-row-${row.key}`}>{inner}</div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
-    </DashCard>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// TopOutstandingInvoicesCard / TopCustomersOwingCard — Financial-only
-// inline cards. Use the existing /api/dashboard/financial payload (zero
-// new endpoints). Kept inline (not the components in
-// `@/components/dashboard/RightColumnFinancialCards`) because those use
-// USD formatting; the Financial dashboard standardizes on CAD.
-// ---------------------------------------------------------------------------
-
-interface TopOutstandingInvoicesCardProps {
-  data?: FinancialSummary;
-  isLoading: boolean;
-  onOpenInvoice: (invoiceId: string) => void;
-  onViewAll: () => void;
-}
-
-function TopOutstandingInvoicesCard({
-  data,
-  isLoading,
-  onOpenInvoice,
-  onViewAll,
-}: TopOutstandingInvoicesCardProps) {
-  return (
-    <DashCard>
-      <CardHeader
-        icon={Receipt}
-        color="text-amber-600"
-        title="Top Outstanding Invoices"
-        action={
-          <button
-            type="button"
-            onClick={onViewAll}
-            className="text-xs text-[#76B054] hover:underline"
-            data-testid="link-view-all-invoices"
-          >
-            View all
-          </button>
-        }
-      />
-      <div>
-        {isLoading ? (
-          <div className="p-4 space-y-2">
-            {[1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-8" />)}
-          </div>
-        ) : !data?.topOutstandingInvoices.length ? (
-          <div className="p-4"><EmptyState message="No outstanding invoices." /></div>
-        ) : (
-          <div>
-            {data.topOutstandingInvoices.slice(0, 5).map((inv, idx, arr) => {
-              const isLast = idx === arr.length - 1;
-              const isOverdue = (inv.daysLate ?? 0) > 0;
-              return (
-                <button
-                  key={inv.id}
-                  type="button"
-                  onClick={() => onOpenInvoice(inv.id)}
-                  className={`w-full text-left px-4 py-2 hover:bg-[#F0F5F0] transition-colors flex items-center gap-3 group ${!isLast ? "border-b border-[#e2e8f0]" : ""}`}
-                  data-testid={`top-invoice-${inv.id}`}
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-normal text-[#111827] truncate">
-                      {inv.customerName ?? inv.locationName ?? "Unknown customer"}
-                    </div>
-                    <div className="text-xs text-slate-500 truncate">
-                      {inv.invoiceNumber ? `#${inv.invoiceNumber}` : "(no number)"} · Due {formatDate(inv.dueDate)}
-                    </div>
-                  </div>
-                  <div className="text-right whitespace-nowrap">
-                    <div className="text-sm font-semibold tabular-nums text-[#111827]">
-                      {formatCurrencyPrecise(inv.balance)}
-                    </div>
-                    {isOverdue && (
-                      <div className="text-xs text-red-600 font-medium">
-                        {inv.daysLate} day{inv.daysLate === 1 ? "" : "s"} late
-                      </div>
-                    )}
-                  </div>
-                  <ChevronRight className="h-3.5 w-3.5 text-slate-400 group-hover:text-[#111827] transition-colors" />
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </DashCard>
-  );
-}
-
-interface TopCustomersOwingCardProps {
-  data?: FinancialSummary;
-  isLoading: boolean;
-  onOpenCustomer: (customerCompanyId: string) => void;
-  onViewAll: () => void;
-}
-
-function TopCustomersOwingCard({
-  data,
-  isLoading,
-  onOpenCustomer,
-  onViewAll,
-}: TopCustomersOwingCardProps) {
-  return (
-    <DashCard>
-      <CardHeader
-        icon={Users}
-        color="text-blue-600"
-        title="Top Customers Owing"
-        action={
-          <button
-            type="button"
-            onClick={onViewAll}
-            className="text-xs text-[#76B054] hover:underline"
-            data-testid="link-view-all-customers-owing"
-          >
-            View all
-          </button>
-        }
-      />
-      <div>
-        {isLoading ? (
-          <div className="p-4 space-y-2">
-            {[1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-8" />)}
-          </div>
-        ) : !data?.topCustomerBalances.length ? (
-          <div className="p-4"><EmptyState message="No customers with outstanding balances." /></div>
-        ) : (
-          <div>
-            {data.topCustomerBalances.slice(0, 5).map((c, idx, arr) => {
-              const isLast = idx === arr.length - 1;
-              const hasOverdue = c.overdue > 0;
-              return (
-                <button
-                  key={c.customerCompanyId}
-                  type="button"
-                  onClick={() => onOpenCustomer(c.customerCompanyId)}
-                  className={`w-full text-left px-4 py-2 hover:bg-[#F0F5F0] transition-colors flex items-center gap-3 group ${!isLast ? "border-b border-[#e2e8f0]" : ""}`}
-                  data-testid={`top-customer-${c.customerCompanyId}`}
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-normal text-[#111827] truncate">
-                      {c.name ?? "Unnamed customer"}
-                    </div>
-                    <div className="text-xs text-slate-500 truncate">
-                      {c.openCount} open invoice{c.openCount === 1 ? "" : "s"}
-                      {hasOverdue && (
-                        <span className="ml-1.5 text-red-600 font-medium">
-                          · {formatCurrency(c.overdue)} overdue
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="text-right whitespace-nowrap">
-                    <div className={`text-sm font-semibold tabular-nums ${hasOverdue ? "text-red-700" : "text-[#111827]"}`}>
-                      {formatCurrency(c.outstanding)}
-                    </div>
-                  </div>
-                  <ChevronRight className="h-3.5 w-3.5 text-slate-400 group-hover:text-[#111827] transition-colors" />
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </DashCard>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // TodaysScheduleCard — Financial dashboard's top-left panel.
@@ -843,6 +557,542 @@ function TopCustomersOwingCard({
 // 2026-04-23 version per the redesign brief ("Keep original smaller font
 // sizes — do NOT enlarge names or rows").
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 2026-05-06 dashboard restructure — four cards.
+//   PipelineSnapshotCard, CollectionsOverviewCard, ScheduledRevenueCard
+//   compose the second row (3-column grid). NeedsAttentionCard sits
+//   full-width below.
+//
+//   All four consume `/api/dashboard/financial` (the existing canonical
+//   summary endpoint, extended with `pipelineSnapshot`, `scheduledRevenue`,
+//   and `needsAttention` fields in `server/storage/dashboard.ts`).
+//   No new HTTP endpoint, no client-side aggregation, no fake data.
+// ---------------------------------------------------------------------------
+
+// ── PipelineSnapshotCard ────────────────────────────────────────────────────
+
+// 2026-05-06 RALPH redesign: Pipeline is now an actionable sales queue.
+// Each row maps 1:1 to a DashboardActionMode — clicking a row's View
+// button opens the same shared dashboard action modal the Operational
+// Alerts and Needs Attention rows use. Counts come from the same
+// /api/dashboard/financial aggregate (no parallel data source). Closed
+// / lost / converted records are excluded by the underlying SQL.
+interface PipelineSnapshotCardProps {
+  data?: FinancialSummary;
+  isLoading: boolean;
+  onOpenActionModal: (mode: DashboardActionMode) => void;
+}
+
+function PipelineSnapshotCard({
+  data,
+  isLoading,
+  onOpenActionModal,
+}: PipelineSnapshotCardProps) {
+  const p = data?.pipelineSnapshot;
+  const rows = [
+    {
+      key: "leads-followup",
+      label: "Leads needing follow-up",
+      count: p?.leadsFollowUpCount ?? 0,
+      mode: "pipeline_leads_followup" as const,
+    },
+    {
+      key: "quotes-not-sent",
+      label: "Quotes not sent",
+      count: p?.quotesNotSentCount ?? 0,
+      mode: "pipeline_quotes_not_sent" as const,
+    },
+    {
+      key: "quotes-awaiting-response",
+      label: "Quotes awaiting response",
+      count: p?.quotesAwaitingResponseCount ?? 0,
+      mode: "pipeline_quotes_awaiting_response" as const,
+    },
+    {
+      key: "stale-opportunities",
+      label: "Stale opportunities",
+      count: p?.staleOpportunitiesCount ?? 0,
+      mode: "pipeline_stale_opportunities" as const,
+    },
+  ];
+  const totalActionable = rows.reduce((sum, r) => sum + r.count, 0);
+  const showEmpty = !isLoading && totalActionable === 0;
+
+  return (
+    <DashCard>
+      <CardHeader icon={TrendingUp} color="text-indigo-600" title="Pipeline" />
+      <div data-testid="pipeline-snapshot">
+        {isLoading ? (
+          <div className="p-3 space-y-1.5">
+            {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-6 w-full" />)}
+          </div>
+        ) : showEmpty ? (
+          <div
+            className="px-4 py-3 text-sm text-slate-600"
+            data-testid="pipeline-empty"
+          >
+            No pipeline actions need attention.
+          </div>
+        ) : (
+          <ul>
+            {rows.map((r, idx) => (
+              <li key={r.key}>
+                <PipelineActionRow
+                  testId={`pipeline-row-${r.key}`}
+                  label={r.label}
+                  count={r.count}
+                  isLast={idx === rows.length - 1}
+                  onView={() => onOpenActionModal(r.mode)}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </DashCard>
+  );
+}
+
+// 2026-05-06 RALPH polish: row geometry + typography mirror
+// `<OperationalAlertsCard>` exactly — `px-3 py-1.5 gap-2`, label
+// `text-xs font-medium`, count `text-sm font-semibold tabular-nums` on
+// the right. The whole row is the click target (no inner View
+// button); `<button>` element handles tabIndex / Enter / Space and
+// gives a free `disabled` muted state when the bucket is empty.
+function PipelineActionRow({
+  label,
+  count,
+  onView,
+  testId,
+  isLast,
+}: {
+  label: string;
+  count: number;
+  onView: () => void;
+  testId: string;
+  isLast: boolean;
+}) {
+  const hasItems = count > 0;
+  return (
+    <button
+      type="button"
+      onClick={onView}
+      disabled={!hasItems}
+      data-testid={testId}
+      className={cn(
+        "w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors",
+        !isLast && "border-b border-[#e2e8f0]",
+        hasItems
+          ? "hover:bg-[#F0F5F0] focus-visible:bg-[#F0F5F0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-300"
+          : "cursor-default",
+      )}
+    >
+      <span
+        className={cn(
+          "flex-1 text-xs font-medium truncate",
+          hasItems ? "text-slate-700" : "text-slate-400",
+        )}
+      >
+        {label}
+      </span>
+      <span
+        className={cn(
+          "text-sm font-semibold tabular-nums shrink-0",
+          hasItems ? "text-[#111827]" : "text-slate-400",
+        )}
+      >
+        {count}
+      </span>
+    </button>
+  );
+}
+
+// ── CollectionsOverviewCard ─────────────────────────────────────────────────
+
+interface CollectionsOverviewCardProps {
+  data?: FinancialSummary;
+  isLoading: boolean;
+  onOpenInvoice: (invoiceId: string) => void;
+  onOpenCustomer: (customerCompanyId: string) => void;
+  onViewAll: () => void;
+}
+
+function CollectionsOverviewCard({
+  data,
+  isLoading,
+  onOpenInvoice,
+  onOpenCustomer,
+  onViewAll,
+}: CollectionsOverviewCardProps) {
+  const ar = data?.ar;
+  const outstandingTotal = ar?.outstandingTotal ?? 0;
+  const pastDueTotal = ar?.pastDueTotal ?? 0;
+  const customerBalances = (data?.topCustomerBalances ?? []).slice(0, 3);
+  // 2026-05-06 — strict overdue filter. The "Overdue invoices" list is
+  // semantically OVERDUE-only: drop any unpaid invoice whose due date has
+  // not yet passed (`daysLate <= 0` or null). The empty state below is the
+  // intended fallback when nothing is past due — we never backfill with
+  // current/not-yet-due rows from `topOutstandingInvoices`.
+  const overdueInvoices = (data?.topOutstandingInvoices ?? [])
+    .filter((inv) => (inv.daysLate ?? 0) > 0)
+    .slice(0, 3);
+
+  return (
+    <DashCard>
+      <CardHeader
+        icon={Receipt}
+        color="text-amber-600"
+        title="Collections"
+        action={
+          <button
+            type="button"
+            onClick={onViewAll}
+            className="text-xs text-[#76B054] hover:underline"
+            data-testid="link-view-all-collections"
+          >
+            View all
+          </button>
+        }
+      />
+      {/* Compact summary strip — sits at the top of the 1/3-width card.
+          2026-05-06: simplified from 3 cols → 2 cols. The third metric
+          ("Open invoices" count) was redundant alongside Outstanding
+          (a dollar reading of the same set) and Overdue (the actionable
+          subset). Two equal-width balance metrics tell the story. */}
+      <div
+        className="grid grid-cols-2 gap-2 px-3 py-2 border-b border-[#e2e8f0]"
+        data-testid="collections-summary-strip"
+      >
+        <div data-testid="collections-summary-outstanding">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500">Outstanding</div>
+          <div className="mt-0.5 text-sm font-semibold tabular-nums text-[#111827] truncate">
+            {isLoading ? <Skeleton className="h-4 w-16" /> : formatCurrency(outstandingTotal)}
+          </div>
+        </div>
+        <div data-testid="collections-summary-overdue">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500">Overdue</div>
+          <div className={cn(
+            "mt-0.5 text-sm font-semibold tabular-nums truncate",
+            pastDueTotal > 0 ? "text-red-700" : "text-[#111827]",
+          )}>
+            {isLoading ? <Skeleton className="h-4 w-16" /> : formatCurrency(pastDueTotal)}
+          </div>
+        </div>
+      </div>
+
+      {/* Lower section — two side-by-side columns: Top customers | Overdue invoices.
+          Stacks on narrow widths for safety; on the standard 1/3-width card
+          they sit beside each other so the card stays compact above the fold. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-[#e2e8f0]">
+        <div>
+          <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+            Top customers
+          </div>
+          <div data-testid="collections-customers-list">
+            {isLoading ? (
+              <div className="px-3 pb-2 space-y-1">
+                {[1, 2, 3].map((i) => <Skeleton key={i} className="h-5" />)}
+              </div>
+            ) : customerBalances.length === 0 ? (
+              <div className="px-3 pb-2"><EmptyState message="None." /></div>
+            ) : (
+              <div>
+                {customerBalances.map((c) => {
+                  const hasOverdue = c.overdue > 0;
+                  return (
+                    <button
+                      key={c.customerCompanyId}
+                      type="button"
+                      onClick={() => onOpenCustomer(c.customerCompanyId)}
+                      className="w-full text-left px-3 py-1 hover:bg-[#F0F5F0] transition-colors flex items-center gap-2"
+                      data-testid={`collections-customer-${c.customerCompanyId}`}
+                    >
+                      <span className="flex-1 text-xs text-[#111827] truncate">
+                        {c.name ?? "Unnamed"}
+                      </span>
+                      <span className={cn(
+                        "text-xs font-semibold tabular-nums shrink-0",
+                        hasOverdue ? "text-red-700" : "text-[#111827]",
+                      )}>
+                        {formatCurrency(c.outstanding)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div>
+          <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+            Overdue invoices
+          </div>
+          <div data-testid="collections-invoices-list">
+            {isLoading ? (
+              <div className="px-3 pb-2 space-y-1">
+                {[1, 2, 3].map((i) => <Skeleton key={i} className="h-5" />)}
+              </div>
+            ) : overdueInvoices.length === 0 ? (
+              <div className="px-3 pb-2"><EmptyState message="No overdue invoices." /></div>
+            ) : (
+              <div>
+                {overdueInvoices.map((inv) => {
+                  const isOverdue = (inv.daysLate ?? 0) > 0;
+                  return (
+                    <button
+                      key={inv.id}
+                      type="button"
+                      onClick={() => onOpenInvoice(inv.id)}
+                      className="w-full text-left px-3 py-1 hover:bg-[#F0F5F0] transition-colors flex items-center gap-2"
+                      data-testid={`collections-invoice-${inv.id}`}
+                    >
+                      <span className="flex-1 text-xs text-[#111827] truncate">
+                        {inv.customerName ?? inv.locationName ?? "Unknown"}
+                        {inv.invoiceNumber && (
+                          <span className="text-slate-500"> · #{inv.invoiceNumber}</span>
+                        )}
+                      </span>
+                      <span className={cn(
+                        "text-xs font-semibold tabular-nums shrink-0",
+                        isOverdue ? "text-red-700" : "text-[#111827]",
+                      )}>
+                        {formatCurrencyPrecise(inv.balance)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </DashCard>
+  );
+}
+
+// ── ScheduledRevenueCard ────────────────────────────────────────────────────
+
+interface ScheduledRevenueCardProps {
+  data?: FinancialSummary;
+  isLoading: boolean;
+  onOpenJob: (jobId: string) => void;
+  onViewAll: () => void;
+}
+
+function ScheduledRevenueCard({
+  data,
+  isLoading,
+  onOpenJob,
+  onViewAll,
+}: ScheduledRevenueCardProps) {
+  const sr = data?.scheduledRevenue;
+  return (
+    <DashCard>
+      <CardHeader
+        icon={CalendarIcon}
+        color="text-emerald-600"
+        title="Scheduled Revenue"
+        action={
+          <button
+            type="button"
+            onClick={onViewAll}
+            className="text-xs text-[#76B054] hover:underline"
+            data-testid="link-view-all-scheduled"
+          >
+            View all
+          </button>
+        }
+      />
+      <div data-testid="scheduled-revenue">
+        {isLoading ? (
+          <div className="p-3 space-y-1.5">
+            {[0, 1].map((i) => <Skeleton key={i} className="h-12 w-full" />)}
+          </div>
+        ) : (
+          <>
+            {/* 3-column KPI strip — Today / Next 7d / Next 30d. Mirrors the
+                Pipeline KPI grid + Collections summary strip for visual rhythm. */}
+            <div
+              className="grid grid-cols-3 divide-x divide-[#e2e8f0] border-b border-[#e2e8f0]"
+              data-testid="scheduled-kpi-grid"
+            >
+              <ScheduledRevCell label="Today" value={sr?.todayValue ?? 0} testId="scheduled-today" />
+              <ScheduledRevCell label="Next 7 days" value={sr?.next7DaysValue ?? 0} testId="scheduled-7d" />
+              <ScheduledRevCell label="Next 30 days" value={sr?.next30DaysValue ?? 0} testId="scheduled-30d" />
+            </div>
+            <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+              Upcoming high-value
+            </div>
+            <div data-testid="scheduled-upcoming-list">
+              {!sr || sr.upcomingHighValueJobs.length === 0 ? (
+                <div className="px-3 pb-2 text-xs text-slate-700">No upcoming jobs with reliable value.</div>
+              ) : (
+                <div>
+                  {sr.upcomingHighValueJobs.map((j) => {
+                    return (
+                      <button
+                        key={j.id}
+                        type="button"
+                        onClick={() => onOpenJob(j.id)}
+                        className="w-full text-left px-3 py-1 hover:bg-[#F0F5F0] transition-colors flex items-center gap-2"
+                        data-testid={`scheduled-job-${j.id}`}
+                      >
+                        <span className="flex-1 text-xs text-[#111827] truncate">
+                          #{j.jobNumber}
+                          {j.customerName && (
+                            <span className="text-slate-500"> · {j.customerName}</span>
+                          )}
+                        </span>
+                        <span className="text-xs font-semibold tabular-nums shrink-0 text-[#111827]">
+                          {formatCurrency(j.value)}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <div className="px-3 py-1.5 text-[10px] text-slate-500 border-t border-[#e2e8f0]">
+              Based on scheduled jobs.
+            </div>
+          </>
+        )}
+      </div>
+    </DashCard>
+  );
+}
+
+function ScheduledRevCell({
+  label,
+  value,
+  testId,
+}: {
+  label: string;
+  value: number;
+  testId: string;
+}) {
+  return (
+    <div className="flex flex-col items-start px-2.5 py-2" data-testid={testId}>
+      <span className="text-[10px] uppercase tracking-wider font-medium text-slate-500 truncate w-full">
+        {label}
+      </span>
+      <span className="mt-0.5 text-base font-semibold tabular-nums text-[#111827] truncate w-full">
+        {formatCurrency(value)}
+      </span>
+    </div>
+  );
+}
+
+// ── NeedsAttentionCard ──────────────────────────────────────────────────────
+//
+// 2026-05-06 RALPH narrow: this card now surfaces ONLY actionable
+// billing/admin items. The previous quote-follow-up and stale-lead rows
+// duplicated work that already lives on the Pipeline surface, and the
+// payments-pending row was informational rather than actionable. Both
+// were dropped. The remaining "Invoices not sent" row is the one the
+// owner can clear from this card via the shared
+// <DashboardActionModal mode="invoices_not_sent">.
+
+interface NeedsAttentionCardProps {
+  data?: FinancialSummary;
+  isLoading: boolean;
+  /** Opens the shared dashboard <DashboardActionModal> with mode=invoices_not_sent. */
+  onViewInvoicesNotSent: () => void;
+}
+
+function NeedsAttentionCard({
+  data,
+  isLoading,
+  onViewInvoicesNotSent,
+}: NeedsAttentionCardProps) {
+  const na = data?.needsAttention;
+  // Single billing/admin item. If a future actionable billing/admin
+  // bucket is added (e.g. "QBO sync errors awaiting reconcile"), it
+  // should land in this list AND get its own DashboardActionModal mode
+  // — never a router redirect.
+  const items = [
+    {
+      key: "invoices-not-sent",
+      label: "Invoices not sent",
+      count: na?.invoicesNotSentCount ?? 0,
+      onView: onViewInvoicesNotSent,
+    },
+  ] as const;
+
+  const hasAny = !isLoading && items.some((it) => it.count > 0);
+
+  return (
+    <DashCard>
+      <CardHeader
+        icon={AlertCircle}
+        color="text-amber-600"
+        title="Needs Attention"
+      />
+      <div data-testid="needs-attention">
+        {isLoading ? (
+          <div className="p-3 space-y-1.5">
+            <Skeleton className="h-6 w-full" />
+          </div>
+        ) : !hasAny ? (
+          <div
+            className="px-4 py-3 text-sm text-slate-600"
+            data-testid="needs-attention-empty"
+          >
+            No billing/admin items need attention.
+          </div>
+        ) : (
+          // 2026-05-06 RALPH polish: rows match the Pipeline / Operational
+          // Alerts compact pattern. Whole row is a <button> (native
+          // tabIndex / Enter / Space + a free disabled muted state when
+          // count === 0). Single-line layout: label left, count right.
+          // No inline "View" button, no chevron, no currency line.
+          <ul>
+            {items.map((it, idx) => {
+              const hasItems = it.count > 0;
+              const isLast = idx === items.length - 1;
+              return (
+                <li key={it.key}>
+                  <button
+                    type="button"
+                    onClick={it.onView}
+                    disabled={!hasItems}
+                    data-testid={`needs-attention-${it.key}`}
+                    className={cn(
+                      "w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors",
+                      !isLast && "border-b border-[#e2e8f0]",
+                      hasItems
+                        ? "hover:bg-[#F0F5F0] focus-visible:bg-[#F0F5F0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-amber-300"
+                        : "cursor-default",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "flex-1 text-xs font-medium truncate",
+                        hasItems ? "text-slate-700" : "text-slate-400",
+                      )}
+                    >
+                      {it.label}
+                    </span>
+                    <span
+                      className={cn(
+                        "text-sm font-semibold tabular-nums shrink-0",
+                        hasItems ? "text-[#111827]" : "text-slate-400",
+                      )}
+                    >
+                      {it.count}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </DashCard>
+  );
+}
 
 interface CapacityBlockDto {
   kind: "booked" | "open";
@@ -890,6 +1140,7 @@ function TodaysScheduleCard({
   onOpenVisit,
   onOpenSlot,
   onCreate,
+  unscheduledJobsCount,
 }: {
   onOpenVisit: (state: VisitEditorState) => void;
   onOpenSlot: (slot: QuickCreateSlot) => void;
@@ -897,6 +1148,11 @@ function TodaysScheduleCard({
    *  canonical CreateNewDialog with NO prefill (unscheduled, no tech).
    *  Slot clicks still go through `onOpenSlot` and carry full prefill. */
   onCreate: () => void;
+  /** 2026-05-06 Phase 1 — feeds the compact "N Unscheduled" indicator next to
+   *  the title. Sourced from `/api/dashboard/workflow.jobs.unscheduledCount` —
+   *  the same value `OperationalAlertsCard` already consumes; passed in here
+   *  rather than re-fetched so the two surfaces stay in lockstep. */
+  unscheduledJobsCount: number;
 }) {
   const [, setLocation] = useLocation();
   const [scopeIds, setScopeIds] = useState<string[]>([]);
@@ -917,6 +1173,27 @@ function TodaysScheduleCard({
 
   const techs = capacityQuery.data?.technicians ?? [];
   const isMultiTech = techs.length > 1;
+
+  // 2026-05-06 Phase 1 — compact capacity indicators in the header.
+  // Booked% = team-aggregate booked-block minutes / (booked + open). No
+  // overbooked indicator: requires per-tech workday-minutes which the
+  // current `/api/dashboard/capacity` payload does not surface, and the
+  // spec ("calculate only if reliable; otherwise omit it") flags this
+  // for Phase 2 when the endpoint exposes it.
+  const bookedPercent = useMemo(() => {
+    if (techs.length === 0) return null;
+    let booked = 0;
+    let total = 0;
+    for (const t of techs) {
+      for (const b of t.scheduleBlocks) {
+        const m = b.durationMinutes ?? 0;
+        total += m;
+        if (b.kind === "booked") booked += m;
+      }
+    }
+    if (total <= 0) return null;
+    return Math.round((booked / total) * 100);
+  }, [techs]);
 
   const isAllTeam =
     !isMultiTech ||
@@ -1072,6 +1349,39 @@ function TodaysScheduleCard({
               </>
             )}
           </h3>
+          {/* 2026-05-06 Phase 1 — compact capacity indicators. Render only
+              when the underlying data is meaningful (tech count > 0 / non-zero
+              unscheduled). Dot-separated, muted typography so they sit beside
+              the title without competing with it. */}
+          {(bookedPercent !== null || unscheduledJobsCount > 0) && (
+            <div
+              className="hidden sm:flex items-center gap-1.5 text-xs text-slate-500 shrink-0"
+              data-testid="todays-schedule-capacity-indicators"
+            >
+              {bookedPercent !== null && (
+                <>
+                  <span className="text-slate-300" aria-hidden>•</span>
+                  <span data-testid="capacity-indicator-booked">
+                    <span className="font-semibold tabular-nums text-slate-700">
+                      {bookedPercent}%
+                    </span>{" "}
+                    Booked
+                  </span>
+                </>
+              )}
+              {unscheduledJobsCount > 0 && (
+                <>
+                  <span className="text-slate-300" aria-hidden>•</span>
+                  <span data-testid="capacity-indicator-unscheduled">
+                    <span className="font-semibold tabular-nums text-slate-700">
+                      {unscheduledJobsCount}
+                    </span>{" "}
+                    Unscheduled
+                  </span>
+                </>
+              )}
+            </div>
+          )}
         </div>
         {/*
           2026-04-30 — header controls cluster:

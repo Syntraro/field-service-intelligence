@@ -420,9 +420,20 @@ export function useLineItemsDrafts<TServerLine extends { id: string }>({
 
   // ── Header metrics (revenue / cost / profit / margin) ──────────────
   // Computed from the LIVE drafts when editing, otherwise from the
-  // hydrated server items. Matches the previous Invoice behavior
-  // (server-only metrics outside edit) while supporting live preview
-  // inside edit mode.
+  // hydrated server items. Always emits numeric cost / profit / margin
+  // so every consuming surface (quote, invoice, job — pricing surfaces
+  // all) renders the canonical Full Line Revenue / Profit / Profit
+  // Margin tile cluster on the shared <LineItemsCard>.
+  //
+  // 2026-05-06: cost defaults to 0 when no line carries a unitCost
+  // (quote_lines today has no unit_cost column; invoice / job parts
+  // do — see shared/schema.ts). The previous behavior returned null
+  // cost/profit/margin, which the card then used to hide Profit +
+  // Profit Margin entirely on quote / invoice surfaces. That's wrong
+  // for pricing surfaces where margin visibility is the whole point.
+  // If a row truly has no cost data, profit equals revenue and margin
+  // is 100% — an honest reflection of "no cost recorded yet" rather
+  // than silently dropping the KPIs.
 
   const headerMetrics: HeaderMetrics = useMemo(() => {
     const source: Array<{ quantity: string; unitPrice: string; unitCost?: string | null }> =
@@ -442,33 +453,24 @@ export function useLineItemsDrafts<TServerLine extends { id: string }>({
 
     let revenue = 0;
     let cost = 0;
-    let hasCost = false;
     for (const row of source) {
       const qty = parseMoney(row.quantity);
       const price = parseMoney(row.unitPrice);
       revenue += qty * price;
+      // Treat absent / blank unitCost as zero — pricing surfaces
+      // (quote / invoice) without a persisted cost column still
+      // produce a valid (revenue − 0 = revenue, margin 100%) row.
+      // Negative or non-numeric values clamp to 0 via parseMoney.
       if (row.unitCost != null && row.unitCost !== "") {
         const c = parseMoney(row.unitCost);
-        if (c > 0) {
-          hasCost = true;
-          cost += qty * c;
-        }
+        if (c > 0) cost += qty * c;
       }
     }
 
-    if (!adapter.showCost && !hasCost) {
-      // Surface doesn't expose cost AND no row carries cost data → only
-      // show revenue (Invoice today).
-      // …fall through; cost/profit/margin will be null.
-    }
-
-    if (!hasCost) {
-      return { revenue, cost: null, profit: null, margin: null };
-    }
     const profit = revenue - cost;
     const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
     return { revenue, cost, profit, margin };
-  }, [drafts, serverItems, adapter.showCost]);
+  }, [drafts, serverItems]);
 
   return {
     drafts,

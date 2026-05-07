@@ -198,7 +198,7 @@ export default function JobTemplatesPage() {
             Job Templates
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Manage reusable bundles of line items for service calls, PMs, installs, etc.
+            Manage reusable bundles of line items for service calls, maintenance, installs, etc.
           </p>
         </div>
         <Button onClick={handleNewTemplate} data-testid="button-new-template">

@@ -97,13 +97,19 @@ export interface SaveResult {
 export interface HeaderMetrics {
   /** Sum of qty × unitPrice across non-deleted entries. */
   revenue: number;
-  /** Sum of qty × unitCost across non-deleted entries.
-   *  Hidden in the card UI when null (e.g. surfaces without cost). */
-  cost: number | null;
-  /** revenue − cost; null when cost is null. */
-  profit: number | null;
-  /** profit / revenue × 100; null when cost is null or revenue ≤ 0. */
-  margin: number | null;
+  /** Sum of qty × unitCost across non-deleted entries. Defaults to 0
+   *  when no row carries unitCost — quote / invoice surfaces without
+   *  a persisted cost column still produce a valid (revenue, margin)
+   *  pair instead of silently dropping the Profit + Profit Margin
+   *  tiles. The shared LineItemsCard renders all three tiles whenever
+   *  revenue > 0. */
+  cost: number;
+  /** revenue − cost. Equals `revenue` when cost is 0. */
+  profit: number;
+  /** profit / revenue × 100. Returns 0 when revenue ≤ 0; the card
+   *  uses revenue > 0 as the show / hide gate so the tile cluster
+   *  doesn't render when there are no lines at all. */
+  margin: number;
 }
 
 // ──────────────────────────────────────────────────────────────────────

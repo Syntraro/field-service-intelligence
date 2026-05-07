@@ -39,6 +39,10 @@ import NewInvoicePage from "@/pages/NewInvoicePage";
 import Quotes from "@/pages/Quotes";
 import LeadsPage from "@/pages/LeadsPage";
 import LeadDetailPage from "@/pages/LeadDetailPage";
+// 2026-05-06: full-page lead creation flow.
+import CreateLeadPage from "@/pages/CreateLeadPage";
+// 2026-05-06: full-page quote creation flow at /quotes/new.
+import CreateQuotePage from "@/pages/CreateQuotePage";
 import QuoteDetailPage from "@/pages/QuoteDetailPage";
 import Reports from "@/pages/Reports";
 import ReportsLibrary from "@/pages/ReportsLibrary";
@@ -173,7 +177,6 @@ import { CreateClientModal } from "@/components/CreateClientModal";
 import { CreateNewDialog, type CreateNewTab } from "@/components/CreateNewDialog";
 import CreateMaintenancePlanDialog from "@/components/pm/CreateMaintenancePlanDialog";
 import UniversalSearch from "@/components/UniversalSearch";
-import { NewQuoteModal } from "@/components/NewQuoteModal";
 import { TasksPanel, useActiveTaskCount } from "@/components/tasks/TasksPanel";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
@@ -326,6 +329,15 @@ function Router() {
           <Quotes />
         </ProtectedRoute>
       </Route>
+      {/* 2026-05-06: /quotes/new MUST be registered before /quotes/:id.
+          wouter matches in registration order; if `:id` came first, the
+          string "new" would be captured as an id and resolve to
+          QuoteDetailPage instead of CreateQuotePage. */}
+      <Route path="/quotes/new">
+        <ProtectedRoute requireAdmin>
+          <CreateQuotePage />
+        </ProtectedRoute>
+      </Route>
       <Route path="/quotes/:id">
         <ProtectedRoute requireAdmin>
           <QuoteDetailPage />
@@ -334,6 +346,15 @@ function Router() {
       <Route path="/leads">
         <ProtectedRoute requireAdmin>
           <LeadsPage />
+        </ProtectedRoute>
+      </Route>
+      {/* 2026-05-06: /leads/new MUST be registered before /leads/:id.
+          wouter matches in registration order; if `:id` came first, the
+          string "new" would be captured as an id and resolve to
+          LeadDetailPage instead of CreateLeadPage. */}
+      <Route path="/leads/new">
+        <ProtectedRoute requireAdmin>
+          <CreateLeadPage />
         </ProtectedRoute>
       </Route>
       <Route path="/leads/:id">
@@ -900,7 +921,6 @@ function AppContent() {
     enabled: Boolean(user?.id),
   });
   const [feedbackOpen, setFeedbackOpen] = useState(false);
-  const [newQuoteModalOpen, setNewQuoteModalOpen] = useState(false);
   // 2026-04-26: Create Maintenance Plan chooser modal. Replaces direct
   // navigation to /pm/new from the top-bar "+ New" dropdown so users
   // can pick From Scratch / Use Template / Duplicate before landing
@@ -1014,11 +1034,19 @@ function AppContent() {
     setAddClientModalOpen(true);
   };
 
-  // 2026-04-14: Expanded sidebar width — second-pass trim to 154px (9.625rem).
-  // This override is the authoritative value; the fallback in ui/sidebar.tsx only
-  // applies when no style prop is passed to SidebarProvider.
+  // 2026-05-06 sidebar trim — third pass landed on 136px (8.5rem)
+  // after a brief regression at 128px (8rem) where "Maintenance" was
+  // ellipsis-truncated due to active-state semibold weight pushing it
+  // past the available width. 8.5rem restores the headroom while
+  // still being ~18px narrower than the prior 154px / 9.625rem.
+  //
+  // The variable is the SINGLE source of truth: ui/sidebar.tsx reads
+  // `var(--sidebar-width)` for both the fixed sidebar pane AND the
+  // spacer that pushes the main content right, so this override
+  // automatically updates the main-content offset too — no second
+  // place to keep in sync. Pin: tests/sidebar-width.test.ts.
   const style = {
-    "--sidebar-width": "9.625rem",
+    "--sidebar-width": "8.5rem",
     "--sidebar-width-icon": "3rem",
   };
 
@@ -1171,7 +1199,8 @@ function AppContent() {
                     <Receipt className="h-4 w-4 mr-2" />
                     New Invoice
                   </DropdownMenuItem>
-                  <DropdownMenuItem data-testid="quick-new-quote" onClick={() => setNewQuoteModalOpen(true)}>
+                  {/* 2026-05-06: navigates to the full-page /quotes/new flow. */}
+                  <DropdownMenuItem data-testid="quick-new-quote" onClick={() => setLocation("/quotes/new")}>
                     <FileText className="h-4 w-4 mr-2" />
                     New Quote
                   </DropdownMenuItem>
@@ -1309,10 +1338,6 @@ function AppContent() {
         open={createNewOpen}
         onOpenChange={setCreateNewOpen}
         defaultTab={createNewTab}
-      />
-      <NewQuoteModal
-        open={newQuoteModalOpen}
-        onOpenChange={setNewQuoteModalOpen}
       />
       <CreateMaintenancePlanDialog
         open={createPmDialogOpen}

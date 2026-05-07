@@ -460,6 +460,47 @@ export class QuoteRepository extends BaseRepository {
 
     return rows;
   }
+
+  /**
+   * 2026-05-06 RALPH: drill-down rows for the dashboard Pipeline
+   * "Stale Opportunities" modal. Returns open quotes (status IN
+   * draft/sent) whose last activity (`COALESCE(updated_at, created_at)`)
+   * is older than `staleDays` (default 14, matches the dashboard
+   * aggregate). Joins location + customerCompany the same way `getQuotes`
+   * does so the modal can render Customer / Quote # / Amount / date.
+   * Excludes approved / declined / converted by definition.
+   */
+  async getStalePipelineQuotes(
+    companyId: string,
+    staleDays: number = 14,
+    limit: number = 50,
+  ): Promise<(Quote & { location?: any; customerCompany?: any })[]> {
+    this.assertCompanyId(companyId);
+    const lim = clampLimit(limit);
+    const rows = await db
+      .select({
+        quote: quotes,
+        location: clientLocations,
+        customerCompany: customerCompanies,
+      })
+      .from(quotes)
+      .leftJoin(clientLocations, eq(quotes.locationId, clientLocations.id))
+      .leftJoin(customerCompanies, eq(quotes.customerCompanyId, customerCompanies.id))
+      .where(
+        and(
+          eq(quotes.companyId, companyId),
+          sql`${quotes.status} IN ('draft', 'sent')`,
+          sql`COALESCE(${quotes.updatedAt}, ${quotes.createdAt}) < NOW() - (${staleDays} || ' days')::interval`,
+        )
+      )
+      .orderBy(sql`COALESCE(${quotes.updatedAt}, ${quotes.createdAt}) ASC`)
+      .limit(lim);
+    return rows.map((row) => ({
+      ...row.quote,
+      location: row.location,
+      customerCompany: row.customerCompany,
+    }));
+  }
 }
 
 export const quoteRepository = new QuoteRepository();

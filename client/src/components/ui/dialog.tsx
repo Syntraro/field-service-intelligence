@@ -7,14 +7,38 @@ import { X } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 /**
+ * Radix Dialog wrapper.
+ *
  * UI typography standard (see docs/UI_TYPOGRAPHY.md).
  *
- * 2026-04-29 Typography Phase C: DialogDescription default migrated
- * from `text-sm text-muted-foreground` (17.1px, legacy shadcn color)
- * to canonical `text-caption text-text-muted` (12 / 16, canonical
- * text-muted token — same migration the Card primitive's
- * CardDescription received in Phase B). DialogTitle unchanged
- * (intentional emphasis at `text-lg`).
+ * Phase C (2026-04-29): DialogDescription default migrated to
+ * canonical `text-caption text-text-muted`.
+ * Phase E (2026-05-03): DialogTitle default migrated to canonical
+ * `text-modal-title leading-none tracking-tight text-[#0F172A]`.
+ *
+ * 2026-05-06 modal canonicalization: for NEW modals prefer the
+ * canonical `client/src/components/ui/modal.tsx` primitives
+ * (`<ModalShell>`, `<ModalHeader>`, `<ModalTitle>`,
+ * `<ModalDescription>`, `<ModalBody>`, `<ModalFooter>`,
+ * `<ModalPrimaryAction>`, `<ModalSecondaryAction>`). They additionally
+ * lock structural rhythm (header padding, footer border, button
+ * sizing) so confirmation modals can't drift on spacing the way the
+ * "Move N jobs to Unscheduled?" dialog did before the canonical
+ * layer landed.
+ *
+ * DO NOT pass `className` typography overrides
+ * (`text-sm` / `text-base` / `text-lg` / `text-xl` / `font-semibold` /
+ * etc.) on <DialogTitle> or <DialogDescription>. The canonical
+ * defaults are the contract — overrides are drift. The scan in
+ * `tests/modal-canonical.test.ts` will fail the build if drift
+ * reappears.
+ *
+ * The existing primitives (Dialog, DialogContent, DialogHeader,
+ * DialogTitle, DialogDescription, DialogFooter, DialogClose,
+ * DialogPortal, DialogOverlay, DialogTrigger) stay exported because
+ * 81+ files still consume them directly. Migrating those to
+ * `<ModalShell>` is a per-call-site decision and out of scope for
+ * the canonicalization pass.
  */
 
 const Dialog = DialogPrimitive.Root

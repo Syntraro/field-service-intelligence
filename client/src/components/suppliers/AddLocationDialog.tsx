@@ -5,14 +5,22 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+// 2026-05-06 Phase 1 modal canonicalization: swapped raw Dialog primitives
+// for the canonical ModalShell + Modal* primitives per CLAUDE.md Modal
+// Taxonomy rule #2 (generic / simple form modal). Body is a standard
+// space-y form layout with `<form>` wrapping body + footer (header is
+// sibling outside the form so submit-on-Enter only fires from inputs
+// inside the body) — fits cleanly inside <ModalBody>; same pattern as
+// CreateClientModal. Width (`max-w-2xl`) passed at the call-site per
+// Modal Taxonomy rule #5.
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ModalShell,
+  ModalHeader,
+  ModalTitle,
+  ModalDescription,
+  ModalBody,
+  ModalFooter,
+} from "@/components/ui/modal";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import AddressAutocomplete from "@/components/ui/AddressAutocomplete";
@@ -98,16 +106,22 @@ export function AddLocationDialog({ open, onOpenChange, supplierId }: AddLocatio
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Add Location</DialogTitle>
-          <DialogDescription>Add a new location for this supplier.</DialogDescription>
-        </DialogHeader>
+    // 2026-05-06: width passed at the call-site per Modal Taxonomy
+    // rule #5. The `max-h-[90vh] overflow-y-auto` triple lets the
+    // form scroll inside the modal when fields exceed the viewport.
+    <ModalShell
+      open={open}
+      onOpenChange={onOpenChange}
+      className="max-w-2xl max-h-[90vh] overflow-y-auto"
+    >
+      <ModalHeader>
+        <ModalTitle>Add Location</ModalTitle>
+        <ModalDescription>Add a new location for this supplier.</ModalDescription>
+      </ModalHeader>
 
-        <form onSubmit={handleSubmit}>
-          <div className="space-y-4 py-4">
-            <div>
+      <form onSubmit={handleSubmit}>
+        <ModalBody className="space-y-4">
+          <div>
               <Label htmlFor="location-name">Name *</Label>
               <Input
                 id="location-name"
@@ -245,30 +259,29 @@ export function AddLocationDialog({ open, onOpenChange, supplierId }: AddLocatio
               />
             </div>
 
-            <div className="flex items-center space-x-2">
-              <Checkbox
-                id="isPrimary"
-                checked={formData.isPrimary}
-                onCheckedChange={(checked) =>
-                  setFormData({ ...formData, isPrimary: checked as boolean })
-                }
-              />
-              <Label htmlFor="isPrimary" className="cursor-pointer">
-                Set as primary location
-              </Label>
-            </div>
+          <div className="flex items-center space-x-2">
+            <Checkbox
+              id="isPrimary"
+              checked={formData.isPrimary}
+              onCheckedChange={(checked) =>
+                setFormData({ ...formData, isPrimary: checked as boolean })
+              }
+            />
+            <Label htmlFor="isPrimary" className="cursor-pointer">
+              Set as primary location
+            </Label>
           </div>
+        </ModalBody>
 
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={mutation.isPending}>
-              {mutation.isPending ? "Adding..." : "Add Location"}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+        <ModalFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={mutation.isPending}>
+            {mutation.isPending ? "Adding..." : "Add Location"}
+          </Button>
+        </ModalFooter>
+      </form>
+    </ModalShell>
   );
 }

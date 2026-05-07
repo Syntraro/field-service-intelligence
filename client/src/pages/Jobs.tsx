@@ -137,6 +137,43 @@ function SortableHeaderCell({ field, sortField, sortDirection, onSort, children,
 }
 
 // =============================================================================
+// 2026-05-06 RALPH polish (post-blank-location-name): Jobs list column
+// helper. Returns the secondary `clients.location` value to render under
+// the primary client/company line ONLY when it is a real, distinct
+// location name. Suppresses two cases that produce a visually duplicated
+// row:
+//
+//   1. Empty / null `locationName` — new clients save the column as NULL
+//      after the previous RALPH change; nothing to render.
+//   2. `locationName` that case-insensitively matches the primary
+//      `locationDisplayName` — old clients (created before the
+//      blank-location-name fix) had the customer/company name auto-copied
+//      into `clients.location`, so the raw column value still equals the
+//      parent customer name resolved by `locationDisplayNameExpr`. This
+//      catches that legacy data without a backfill migration. The user
+//      explicitly accepted leaving old rows in place — this is the
+//      defensive render that lets the duplicate disappear visually.
+//
+// The function deliberately reads from the canonical feed shape only
+// (`locationName` is `clients.location` raw; `locationDisplayName` is
+// the COALESCE display). It is NOT a fallback / synthesis: when both
+// fields are truthy and distinct, the raw `locationName` is returned
+// verbatim — same as the prior `{job.locationName && ...}` render
+// produced before this hardening.
+// =============================================================================
+
+function secondaryLocationLine(job: {
+  locationName?: string | null;
+  locationDisplayName?: string | null;
+}): string | null {
+  const raw = (job.locationName ?? "").trim();
+  if (!raw) return null;
+  const primary = (job.locationDisplayName ?? "").trim();
+  if (primary && raw.toLowerCase() === primary.toLowerCase()) return null;
+  return raw;
+}
+
+// =============================================================================
 // Main Jobs Page
 // =============================================================================
 
@@ -388,14 +425,17 @@ export default function Jobs() {
           Client / Location
         </SortableHeaderCell>
       ),
-      render: (job) => (
-        <div className="min-w-0" data-testid={`text-location-${job.id}`}>
-          <div className="truncate">{job.locationDisplayName || "Unknown Company"}</div>
-          {job.locationName && (
-            <div className="text-caption text-slate-500 font-normal truncate">{job.locationName}</div>
-          )}
-        </div>
-      ),
+      render: (job) => {
+        const secondary = secondaryLocationLine(job);
+        return (
+          <div className="min-w-0" data-testid={`text-location-${job.id}`}>
+            <div className="truncate">{job.locationDisplayName || "Unknown Company"}</div>
+            {secondary && (
+              <div className="text-caption text-slate-500 font-normal truncate">{secondary}</div>
+            )}
+          </div>
+        );
+      },
       cellClassName: "px-4 py-2.5 min-w-0",
     },
     {
@@ -497,14 +537,17 @@ export default function Jobs() {
       kind: "primary",
       ratio: 1.5,
       header: "Client / Location",
-      render: (job) => (
-        <div className="min-w-0">
-          <div className="truncate">{job.locationDisplayName || "Unknown Company"}</div>
-          {job.locationName && (
-            <div className="text-caption text-slate-500 font-normal truncate">{job.locationName}</div>
-          )}
-        </div>
-      ),
+      render: (job) => {
+        const secondary = secondaryLocationLine(job);
+        return (
+          <div className="min-w-0">
+            <div className="truncate">{job.locationDisplayName || "Unknown Company"}</div>
+            {secondary && (
+              <div className="text-caption text-slate-500 font-normal truncate">{secondary}</div>
+            )}
+          </div>
+        );
+      },
       cellClassName: "px-4 py-2.5 min-w-0",
     },
     {

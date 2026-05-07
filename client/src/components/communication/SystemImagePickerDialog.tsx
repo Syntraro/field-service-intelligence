@@ -185,8 +185,8 @@ export function SystemImagePickerDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl max-h-[85vh] flex flex-col gap-0 p-0 overflow-hidden">
         <DialogHeader className="px-5 pt-4 pb-3 border-b">
-          <DialogTitle className="text-base">Select images from this customer</DialogTitle>
-          <DialogDescription className="text-xs">
+          <DialogTitle>Select images from this customer</DialogTitle>
+          <DialogDescription>
             Images already stored for this job or customer. Pick up to {maxSelect}.
           </DialogDescription>
         </DialogHeader>

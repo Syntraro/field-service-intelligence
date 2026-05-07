@@ -23,7 +23,8 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { EntityListTable, type EntityListColumn } from "@/components/lists/EntityListTable";
 import { ListLoadMoreFooter } from "@/components/lists/ListLoadMoreFooter";
 import { apiRequest } from "@/lib/queryClient";
-import { CreateLeadModal } from "@/components/CreateLeadModal";
+// 2026-05-06: lead creation moved to /leads/new (full-page CreateLeadPage).
+// The button below navigates via wouter instead of opening a modal.
 import type { Lead } from "@shared/schema";
 
 type LeadFilterStatus = "all" | "needs_action" | "quoted" | "won" | "lost";
@@ -130,7 +131,6 @@ export default function LeadsPage() {
   const [, setLocation] = useLocation();
   const [activeFilter, setActiveFilter] = useState<LeadFilterStatus>("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const [createModalOpen, setCreateModalOpen] = useState(false);
   const [visibleCount, setVisibleCount] = useState(LEADS_PAGE_SIZE);
 
   // Reset slice on filter / search change so the user always sees the
@@ -198,7 +198,9 @@ export default function LeadsPage() {
             <h1 className="text-page-title font-semibold text-slate-900">Leads</h1>
             <p className="text-row text-slate-500 mt-0.5">Sales pipeline overview with full lead list.</p>
           </div>
-          <Button size="sm" className="gap-1.5 h-9 rounded-md" onClick={() => setCreateModalOpen(true)} data-testid="button-new-lead">
+          {/* 2026-05-06: navigates to the full-page /leads/new flow.
+              The data-testid is preserved so existing test pins still match. */}
+          <Button size="sm" className="gap-1.5 h-9 rounded-md" onClick={() => setLocation("/leads/new")} data-testid="button-new-lead">
             <Plus className="h-4 w-4" />
             New Lead
           </Button>
@@ -274,7 +276,6 @@ export default function LeadsPage() {
         />
       </div>
 
-      <CreateLeadModal open={createModalOpen} onOpenChange={setCreateModalOpen} />
     </div>
   );
 }

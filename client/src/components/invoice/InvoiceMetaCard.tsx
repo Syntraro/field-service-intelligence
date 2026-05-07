@@ -101,7 +101,14 @@ export function InvoiceMetaCard({
   billLine1: string | null;
   billLine2: string | null;
   serviceAddress: StructuredAddress | null | undefined;
-  locationName: string;
+  /**
+   * 2026-05-06 RALPH: now nullable. Callers MUST run the canonical
+   * `resolveServiceLocationName(rawLocation, customerName)` helper and
+   * pass its result. When the helper returns null (no real distinct
+   * location name), the AddressBlock invoice variant suppresses the
+   * row entirely instead of showing the prior dash placeholder.
+   */
+  locationName: string | null;
   invoiceNumber: string | null | undefined;
   issueDate: string | Date | null | undefined;
   dueDate: string | Date | null | undefined;
